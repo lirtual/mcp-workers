@@ -516,7 +516,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
 });
 
-test("Workflow readback verifies one integrated runtime, registered GitHub identity and Portal",()=>{
+test("Workflow readback verifies one integrated runtime, GitHub Action audience and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
@@ -525,10 +525,6 @@ test("Workflow readback verifies one integrated runtime, registered GitHub ident
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
-    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
-    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
-    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
@@ -593,10 +589,6 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
-    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
-    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
-    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
@@ -611,31 +603,24 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
 });
 
 
-test("GitHub execution is integral but still pins repository, ref and OIDC audience",()=>{
-  const base=[
+test("Workflow production readback rejects retired fixed executor pins",()=>{
+  const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
+    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"GITHUB_EXECUTOR_REPOSITORY",type:"plain_text",text:"lirtual/mcp-workers"},
-    {name:"GITHUB_EXECUTOR_REPOSITORY_ID",type:"plain_text",text:"1414936394"},
-    {name:"GITHUB_EXECUTOR_REF",type:"plain_text",text:"refs/heads/main"},
-    {name:"GITHUB_EXECUTOR_AUDIENCE",type:"plain_text",text:"workflow-github-claim:production"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
-  const pins=[{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
-    ...["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name,type:"secret_text"}))];
-  const check=(bindings)=>verifyBindings("workflow-mcp-worker",{
-    bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,{mode:"readback"});
-  assert.equal(check([...base,...pins]),true);
-  for(const name of ["GITHUB_EXECUTOR_REPOSITORY","GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF","GITHUB_EXECUTOR_AUDIENCE"]){
-    assert.throws(()=>check([...base,...pins].map(x=>x.name===name?{...x,text:"wrong"}:x)),
-      /executor identity drift/);
-  }
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+  const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
+  const verify=list=>verifyBindings("workflow-mcp-worker",{...settings,bindings:list},secrets,{mode:"readback"});
+  assert.equal(verify(bindings),true);
+  for(const name of ["GITHUB_EXECUTOR_REPOSITORY","GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF","GITHUB_EXECUTOR_AUDIENCE"])
+    assert.throws(()=>verify([...bindings,{name,type:"plain_text",text:"obsolete"}]),/Retired fixed GitHub executor variables/);
 });
-
 
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",

@@ -72,16 +72,11 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (options.mode === "readback") {
       invariant(find("MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
         "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
-      const pins = {
-        GITHUB_EXECUTOR_REPOSITORY: "lirtual/mcp-workers",
-        GITHUB_EXECUTOR_REPOSITORY_ID: "1414936394",
-        GITHUB_EXECUTOR_REF: "refs/heads/main",
-        GITHUB_EXECUTOR_AUDIENCE: "workflow-github-claim:production",
-      };
-      for (const [name,value] of Object.entries(pins)) {
-        invariant(find(name,"plain_text")?.text === value,
-          "Workflow GitHub executor identity drift: " + name);
-      }
+      invariant(!bindings.some(x => ["GITHUB_EXECUTOR_REPOSITORY",
+        "GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF",
+        "GITHUB_EXECUTOR_AUDIENCE","GITHUB_TEST_WORKER_NAME",
+        "GITHUB_TEST_DEDICATED_EXECUTOR"].includes(x.name)),
+        "Retired fixed GitHub executor variables must be removed");
       invariant(find("GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
         "workflow-github-action:production", "Workflow Action OIDC audience drift");
       for (const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {

@@ -108,18 +108,6 @@ jobs:
 
       # GitHub Secrets are the source of truth for all selected Workers, on every
       # explicitly authorized manual release, not just during bootstrap.
-      - name: Verify fixed GitHub registered executor configuration before release
-        if: inputs.worker == 'workflow-mcp-worker'
-        shell: bash
-        env:
-          WORKFLOW_CALLBACK_ORIGIN: https://workflow.lirtual.dpdns.org
-          WORKFLOW_EXECUTOR_AUDIENCE: workflow-github-claim:production
-        run: |
-          set -euo pipefail
-          [[ "$WORKFLOW_CALLBACK_ORIGIN" == 'https://workflow.lirtual.dpdns.org' ]] || exit 1
-          [[ "$WORKFLOW_EXECUTOR_AUDIENCE" == 'workflow-github-claim:production' ]] || exit 1
-          echo "GitHub registered executor origin/audience confirmed (values withheld)"
-
       - name: Stage selected Worker Secrets for every release
         shell: bash
         env:
@@ -157,12 +145,6 @@ jobs:
           set -euo pipefail
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
-
-      - name: Verify dedicated GitHub token without executable dispatch
-        if: inputs.worker == 'workflow-mcp-worker'
-        env:
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-        run: node scripts/verify-github-release-token.mjs
 
       - name: Recheck current main inside acquired release lock
         shell: bash

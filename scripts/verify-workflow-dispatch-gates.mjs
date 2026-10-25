@@ -6,7 +6,6 @@ const read = name => readFileSync(new URL('../.github/workflows/' + name + '.yml
 const ci = read('ci');
 const release = read('release');
 const acceptance = read('acceptance');
-const executor = read('workflow-github-executor');
 const dollar = String.fromCharCode(36);
 function job(source, name) {
   const start = source.indexOf('\n  ' + name + ':\n');
@@ -55,7 +54,6 @@ for (const marker of [
   'Stage selected Worker Secrets for every release',
   'Stage approved Worker variables',
   'node scripts/manual-worker-release.mjs preflight',
-  'run: node scripts/verify-github-release-token.mjs',
   "WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'",
   'Apply complete Workflow D1 migrations',
   'Publish exactly selected Worker',
@@ -88,6 +86,7 @@ for (const source of [release, acceptance]) {
 function smokeKeyPresent(source, key, kind) {
   return source.includes(key + ': ' + dollar + '{{ ' + kind + '.' + key + ' }}');
 }
+assert.doesNotMatch(release, /Verify fixed GitHub registered executor|Verify dedicated GitHub token/);
 assert.match(acceptance, /      test_type:/);
 assert.match(acceptance, /      confirm_portal_write:/);
 assert.match(acceptance, /        default: false/);
@@ -121,9 +120,6 @@ assert.ok(registration.gate.includes('inputs.confirm_portal_write == true'));
 assert.ok(registration.content.includes('group: worker-release-workflow-mcp-worker'));
 assert.ok(registration.content.includes('run: node scripts/register-workflow-portal.mjs'));
 assert.ok(ci.includes('run: node --test scripts/register-workflow-portal.test.mjs'));
-assert.match(executor, /      attempt_id:/);
-assert.match(executor, /      dispatch_id:/);
-assert.match(executor, /      capability_id:/);
 for (const src of [ci, release, acceptance])
   assert.doesNotMatch(src, /wip\/workflow-mcp-public-readonly|wip\/workflow-github-executor/);
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');

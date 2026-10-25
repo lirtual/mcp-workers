@@ -50,10 +50,6 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "workflow-mcp-worker") {
     variables.push(
       "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-      "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
-      "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
-      "GITHUB_EXECUTOR_REF:refs/heads/main",
-      "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
       "GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production"
     );
     // Repository onboarding is an explicit GitHub Environment Variable.

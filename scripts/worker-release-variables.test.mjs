@@ -79,7 +79,7 @@ test("GitHub Actions has no redundant repository allowlist variables", () => {
   }), []);
 });
 
-test("Workflow always has a pinned MCP Portal and GitHub executor without rollout toggles",()=>{
+test("Workflow has pinned MCP Portal and GitHub Action OIDC identity without rollout toggles",()=>{
   const fixed=collectWorkerVars("workflow-mcp-worker",{
     MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp",
     MCP_PORTAL_CLIENT_ID:"test-id",
@@ -88,10 +88,6 @@ test("Workflow always has a pinned MCP Portal and GitHub executor without rollou
   });
   assert.deepEqual(fixed,[
     "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-    "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
-    "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
-    "GITHUB_EXECUTOR_REF:refs/heads/main",
-    "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
     "GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production",
     "MCP_PORTAL_CLIENT_ID:test-id",
   ]);
@@ -115,8 +111,8 @@ test("Workflow Action repository grants are narrowly sourced from an explicit va
     MCP_PORTAL_CLIENT_ID:"test-id",
     GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify(grants),
   });
-  assert.equal(pinned.length,8);
-  assert.deepEqual(JSON.parse(pinned[6].slice("GITHUB_ACTION_APPROVED_REPOSITORIES:".length)),
+  assert.equal(pinned.length,4);
+  assert.deepEqual(JSON.parse(pinned[2].slice("GITHUB_ACTION_APPROVED_REPOSITORIES:".length)),
     grants);
   for(const invalid of [
     "not-json", "{}", JSON.stringify([{...grants[0],commitSha:"main"}]),
