@@ -1072,3 +1072,45 @@ test('lost foreach MCP child checkpoint is fenced on replay without duplicate pe
   assert.equal(calls,1,'an unknown external effect must never be repeated');
   assert.notEqual(replay.steps.find(s=>s.step_id==='each_0_read')?.status,'succeeded');
 });
+
+
+test('foreach MCP validates every frozen argument before the first external effect',async t=>{
+  const {service,admit,run}=setup(t);
+  const admitted=await admit([readForeach({value:{ref:'item.value.name'}})],
+    {items:[{name:'valid'},null]},[ECHO_GRANT]);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  await run(admitted.run_id);
+  const result=await service.result(admitted.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find(x=>x.step_id==='each')?.error_code,'invalid_foreach_items');
+  assert.equal(calls,0,'no partial array effects before complete snapshot validation');
+});
+
+test('foreach MCP cached native snapshot and child checkpoint retain original arguments',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const admitted=await admit([readForeach()],{items:['pinned']},[ECHO_GRANT]);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const cached=new Map<string,unknown>();
+  const native={do:async(name:string,_options:unknown,cb:()=>Promise<unknown>)=>{
+    if(cached.has(name))return cached.get(name);
+    const output=await cb();
+    cached.set(name,output);
+    return output;
+  }} as unknown as WorkflowStep;
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  assert.equal(calls,1);
+  const first=await service.result(admitted.run_id);
+  assert.equal(first.status,'succeeded');
+  sqlite.prepare("UPDATE runs SET outcome='running',inputs=?,result=NULL WHERE id=?")
+    .run(JSON.stringify({items:['different','extra']}),admitted.run_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:admitted.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const replay=await service.result(admitted.run_id);
+  assert.equal(replay.status,'succeeded');
+  assert.deepEqual(replay.result,first.result);
+  assert.equal(calls,1);
+  assert.equal(cached.has('workflow-each_1_read'),false);
+});
