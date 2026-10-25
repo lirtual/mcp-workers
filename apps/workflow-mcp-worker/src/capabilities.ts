@@ -114,6 +114,16 @@ const foreachEmit={version:1,name:'Snapshot bounded array',inputs:{items:['A','B
     }}]}},
   {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
 ]};
+const foreachMcpRead=(tool:PortalToolContract)=>({version:1,name:'Bounded approved MCP reads',
+  inputs:{items:['A','B']},
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+    template:{steps:[{id:'read',uses:'mcp.call',with:{
+      endpoint:tool.endpoint,tool:tool.tool,scope:'read',
+      input_schema:tool.input_schema,
+      ...(tool.output_schema?{output_schema:tool.output_schema}:{}),
+      arguments:tool.arguments,
+    }}]}}],
+});
 const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
   steps:[{id:'read',uses:'mcp.call',with:{
     endpoint:tool.endpoint,tool:tool.tool,scope:'read',
@@ -160,7 +170,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
-  unsupported:['foreach_external_actions','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
+  unsupported:['foreach_github_actions','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -219,10 +229,16 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {type:'object',additionalProperties:false,required:['steps'],
             properties:{steps:{type:'array',minItems:1,maxItems:1,items:{
               type:'object',additionalProperties:false,required:['id','uses','with'],
-              properties:{id:{type:'string'},uses:{const:'result.emit'},
-                with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit'],
-                if:{anyOf:[{type:'boolean'},{type:'object'}]}}}}}},
-        ],description:'Literal repeat uses a single Action; bounded foreach uses exactly one result.emit Step template. Other Actions, nesting and runtime while are not yet supported.'},
+              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call']},
+                with:{type:'object'},
+                if:{anyOf:[{type:'boolean'},{type:'object'}]}},
+              allOf:[
+                {if:{required:['uses'],properties:{uses:{const:'result.emit'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
+                {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+              ]}}}},
+        ],description:'Literal repeat uses one Action; bounded foreach uses one result.emit or approved read-only mcp.call. GitHub dispatch and nesting are not supported.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -260,9 +276,11 @@ const entries=[
   {id:'flow.repeat',kind:'flow',availability:'supported',
    description:'Literal 1–8 repeat iterations flatten into sequential, pinned Steps before Publish. Max 32 expanded Steps; no runtime loops.'},
   {id:'flow.foreach_emit',kind:'flow',availability:'supported',
-   description:'Dynamic array of at most 8 elements; a single result.emit template is snapshotted by native Cloudflare step.do before each bounded child executes. No external Actions or nested steps.'},
+   description:'Dynamic array of at most 8 elements; one result.emit template with native snapshot checkpoints. MCP read-only templates have separate grant and replay constraints; GitHub and nesting unsupported.'},
+  {id:'flow.foreach_mcp_read',kind:'flow',availability:'supported_with_grant',
+   description:'One reviewed read-only mcp.call per bounded item; all arguments and conditions are frozen before dispatch. Every child uses a durable D1 one-shot dispatch fence; an ambiguous response stays indeterminate, not retried.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic repeat, while, foreach external Actions, nested steps and runtime while expansion remain unsupported.'},
+   description:'Dynamic while, GitHub foreach, nested templates and runtime while expansion remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -291,10 +309,10 @@ export async function workflowCapabilities(env:Pick<Env,
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const availability=(entry:Entry)=>
-    entry.id==='action.mcp.call'&&!portalReady?'unavailable':
+    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read')&&!portalReady?'unavailable':
     entry.id==='action.github.run'&&!githubReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.mcp.call','action.github.run'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.mcp.call','action.github.run','flow.foreach_mcp_read'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -368,6 +386,19 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.template_policy={allowed_action:'result.emit',max_items:PLAN_LIMITS.maxForeachItems,
       maximum_flattened_steps:PLAN_LIMITS.maxSteps,snapshot:'native step.do before first child',
       empty_array:'skipped',external_actions:'unsupported'};
+  }
+  if(id==='flow.foreach_mcp_read'){
+    const discovered=await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length)
+      detail.example=await compilingExample(foreachMcpRead(discovered.tools[0]));
+    detail.template_policy={allowed_action:'mcp.call',scope:'read',
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      replay:'D1 child dispatch fence, no blind retries; ambiguous results are indeterminate',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['github.run','nested templates','write-scope tools']};
   }
   if(id==='action.mcp.call'){
     const discovered=await portalDiscovery(env);
