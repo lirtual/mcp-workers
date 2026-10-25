@@ -213,3 +213,58 @@ test('skip-tolerant join is explicit, compiler-pinned, and keeps default Plan di
     steps:[{id:'join',uses:'result.emit',needs_policy:'allow_skipped',with:{data:1}}]}),
     error=>error instanceof PlanError&&error.path==='/steps/0/needs_policy');
 });
+
+
+test('literal bounded repeat expands deterministically to version-pinned sequential DAG',async()=>{
+  const definition={version:1,name:'Repeat literal',inputs:{message:'same'},
+    steps:[{id:'echo',flow:'repeat',times:3,
+      template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
+  const compiled=await compilePlan(definition);
+  assert.deepEqual(compiled.plan.steps.map(s=>({id:s.id,needs:s.needs})),[
+    {id:'echo_0',needs:[]},{id:'echo_1',needs:['echo_0']},
+    {id:'echo_2',needs:['echo_1']},
+  ]);
+  const explicit=await compilePlan({version:1,name:'Repeat literal',inputs:{message:'same'},
+    steps:[
+      {id:'echo_0',uses:'result.emit',with:{data:{ref:'inputs.message'}}},
+      {id:'echo_1',needs:['echo_0'],uses:'result.emit',with:{data:{ref:'inputs.message'}}},
+      {id:'echo_2',needs:['echo_1'],uses:'result.emit',with:{data:{ref:'inputs.message'}}},
+    ]});
+  assert.equal(compiled.digest,explicit.digest,
+    'repeat must have exactly the same immutable semantics as flattened Steps');
+  assert.equal(compiled.digest,(await compilePlan(JSON.stringify(definition))).digest);
+});
+
+test('literal repeat fails closed on invalid times, nested flow, collisions and global step budget',async()=>{
+  const one=(overrides:Record<string,unknown>={})=>({version:1,name:'Fixed repeat',
+    steps:[{id:'loop',flow:'repeat',times:2,
+      template:{uses:'result.emit',with:{data:'ok'}},...overrides}]});
+  for(const times of [0,9,-1,1.5,'2',{ref:'inputs.times'},null]){
+    await assert.rejects(()=>compilePlan(one({times})),
+      e=>e instanceof PlanError&&e.path==='/steps/0/times');
+  }
+  for(const invalid of [
+    {flow:'while'}, {script:'unsafe'}, {template:{flow:'repeat',times:2}},
+    {template:{uses:'result.emit',with:{data:'ok'},needs:['other']}},
+  ])await assert.rejects(()=>compilePlan(one(invalid)),PlanError);
+  await assert.rejects(()=>compilePlan({...one(),steps:[
+    ...one().steps,{id:'loop_0',uses:'result.emit',with:{data:0}},
+  ]}),PlanError,'generated and manually defined ids must not collide');
+  await assert.rejects(()=>compilePlan({...one(),steps:[
+    ...Array.from({length:5},(_,i)=>({
+      id:'loop'+i,flow:'repeat',times:8,
+      template:{uses:'result.emit',with:{data:i}},
+    })),
+  ]}),e=>e instanceof PlanError&&e.path==='/steps');
+  const full=await compilePlan({...one(),steps:
+    Array.from({length:4},(_,i)=>({id:'loop'+i,flow:'repeat',times:8,
+      template:{uses:'result.emit',with:{data:i}}}))});
+  assert.equal(full.plan.steps.length,32);
+});
+
+test('literal repeat still validates each expanded MCP step using existing operation contract',async()=>{
+  await assert.rejects(()=>compilePlan({version:1,name:'Unsafe repeat',
+    steps:[{id:'loop',flow:'repeat',times:3,template:{uses:'mcp.call',
+      with:{endpoint:'https://evil.invalid/mcp',tool:'tool',scope:'write',
+        input_schema:{type:'object'},arguments:{}}}}]}),PlanError);
+});

@@ -4,7 +4,7 @@ import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
-export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8});
+export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
 }
@@ -182,9 +182,46 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         ref:item.ref as string,workflow_path:item.workflow_path as string}];
     }else throw new PlanError('unsupported_trigger','/triggers/0/type');
   }
+  // Literal repeat is compiled to existing, ordered DAG Steps at Publish time.
+  // There is no runtime re-evaluation, dynamic item list or second scheduler.
+  const expanded:unknown[]=[];
+  for(let i=0;i<o.steps.length;i++){
+    const candidate=object(o.steps[i],'invalid_step');
+    if(!Object.hasOwn(candidate,'flow')){
+      expanded.push(candidate);
+      continue;
+    }
+    const path='/steps/'+i;
+    keys(candidate,['id','flow','times','needs','template'],path);
+    if(candidate.flow!=='repeat')throw new PlanError('unsupported_flow',path+'/flow');
+    if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
+       OBJECT_PROTOTYPE_KEYS.has(candidate.id))
+      throw new PlanError('invalid_step_id',path+'/id');
+    if(!Number.isSafeInteger(candidate.times)||Number(candidate.times)<1||
+       Number(candidate.times)>PLAN_LIMITS.maxRepeat)
+      throw new PlanError('invalid_repeat_count',path+'/times');
+    const template=object(candidate.template,'invalid_repeat_template');
+    keys(template,['uses','with','if'],path+'/template');
+    if(!isSupportedStepUse(template.uses))
+      throw new PlanError('unsupported_capability',path+'/template/uses');
+    const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
+    if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
+       new Set(originalNeeds).size!==originalNeeds.length)
+      throw new PlanError('invalid_dependencies',path+'/needs');
+    for(let n=0;n<(candidate.times as number);n++){
+      const generatedId=candidate.id+'_'+n;
+      if(!SAFE_ID.test(generatedId)||OBJECT_PROTOTYPE_KEYS.has(generatedId))
+        throw new PlanError('invalid_step_id',path+'/id');
+      expanded.push({id:generatedId,uses:template.uses,with:template.with,
+        ...(template.if===undefined?{}:{if:template.if}),
+        needs:[...originalNeeds,...(n? [candidate.id+'_'+(n-1)]:[])]});
+      if(expanded.length>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
+    }
+  }
   const steps:Step[]=[];
   const ids=new Set<string>();
-  for(const s0 of o.steps){
+  for(const s0 of expanded){
     const s=object(s0,'invalid_step');
     const stepPath='/steps/'+steps.length;
     keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);

@@ -24,6 +24,8 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
+  assert.equal(catalog.get('flow.repeat')?.availability,'supported');
+  assert.equal(PLAN_LIMITS.maxRepeat,8);
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
   assert.equal(JSON.stringify(overview).includes('test-only-secret'),false);
@@ -32,7 +34,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat']){
     const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -79,6 +81,22 @@ test('advertised skip-tolerant join matches compiler and keeps fail-closed seman
   const rules=(await workflowCapabilities(env)).expression_rules as {needs_policy:string};
   assert.match(rules.needs_policy,/failed or indeterminate/);
   assert.match(rules.needs_policy,/at least one succeeded/);
+});
+
+test('literal repeat discovery is compiler-backed and explicitly bounded',async()=>{
+  const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
+  assert.deepEqual(schema.oneOf.map(x=>x.required),[
+    ['uses','with'],['flow','times','template'],
+  ]);
+  assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
+  assert.ok(schema.oneOf[0].not.anyOf.some(x=>x.required.includes('flow')));
+  assert.ok(schema.oneOf[1].not.anyOf.some(x=>x.required.includes('uses')));
+  const detail=await workflowCapabilities(env,'flow.repeat');
+  assert.equal(detail.availability,'supported');
+  const example=detail.example as {definition:unknown;digest:string};
+  const compiled=await compilePlan(example.definition);
+  assert.equal(compiled.plan.steps.length,3);
+  assert.equal(compiled.digest,example.digest);
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{

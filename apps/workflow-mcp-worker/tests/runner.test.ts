@@ -793,3 +793,59 @@ test('all-skipped join never calls a reviewed external MCP Action',async t=>{
   ]);
   assert.equal(externalCalls,0,'no branch ran so a join may not dispatch an external effect');
 });
+
+
+test('literal repeat runs stable ordered native Steps under one immutable Published Plan',async t=>{
+  const {service,admit,run,sqlite}=setup(t);
+  const started=await admit([
+    {id:'echo',flow:'repeat',times:3,
+      template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}},
+    {id:'after',needs:['echo_2'],uses:'result.emit',with:{data:'completed'}},
+  ],{message:'hello'});
+  const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+    .get(started.published_version_id) as {plan:string};
+  const plan=JSON.parse(saved.plan);
+  assert.deepEqual(plan.steps.map((s:{id:string})=>s.id),
+    ['echo_0','echo_1','echo_2','after']);
+  assert.deepEqual(plan.steps.find((s:{id:string})=>s.id==='echo_2').needs,['echo_1']);
+  await run(started.run_id);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result,'completed');
+  assert.ok(['echo_0','echo_1','echo_2','after'].every(id=>
+    result.steps.find(x=>x.step_id===id)?.status==='succeeded'));
+  assert.equal(result.published_version_id,started.published_version_id);
+});
+
+test('a skipped first repeat iteration prevents later dispatches',async t=>{
+  const {service,admit,run}=setup(t);
+  let dispatched=0;
+  mockPublicPeer(t,async()=>{dispatched++;});
+  const started=await admit([
+    {id:'read',flow:'repeat',times:3,
+      template:{uses:'mcp.call',if:false,with:{
+        endpoint:ECHO_GRANT.endpoint,tool:ECHO_GRANT.tool,scope:'read',
+        input_schema:PINNED_SCHEMA,arguments:{value:'do not dispatch'},
+      }}},
+  ],{},[ECHO_GRANT]);
+  await run(started.run_id);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.steps.map(x=>x.status),['skipped','skipped','skipped']);
+  assert.equal(dispatched,0);
+});
+
+
+test('inline bounded-repeat validation reports repairable errors without D1 writes',async t=>{
+  const {service,sqlite}=setup(t);
+  const before=sqlite.prepare('SELECT COUNT(*) AS n FROM workflows').get() as {n:number};
+  const invalid=await service.validateDefinition(JSON.stringify({version:1,name:'Invalid repeat',
+    steps:[{id:'loop',flow:'repeat',times:99,
+      template:{uses:'result.emit',with:{data:'unused'}}}]}));
+  assert.equal(invalid.valid,false);
+  assert.equal(invalid.issues[0].code,'invalid_repeat_count');
+  assert.equal(invalid.issues[0].path,'/steps/0/times');
+  assert.match(String(invalid.issues[0].suggestion),/literal times integer/);
+  const after=sqlite.prepare('SELECT COUNT(*) AS n FROM workflows').get() as {n:number};
+  assert.equal(after.n,before.n);
+});
