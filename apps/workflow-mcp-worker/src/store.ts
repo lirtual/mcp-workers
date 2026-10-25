@@ -450,11 +450,22 @@ export class WorkflowService {
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
     const publishedPlan=JSON.parse(version.plan) as Plan;
-    const steps=publishedPlan.steps.map(s=>{
-      const saved=byId.get(s.id);
-      if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
-      return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
-    }).sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
+    const dynamicIds=new Set(publishedPlan.steps.flatMap(s=>{
+      if(s.uses!=='flow.foreach')return [];
+      const template=s.with.template as {id?:unknown};
+      const count=s.with.max_items;
+      if(!Number.isSafeInteger(count)||Number(count)<1||Number(count)>8||
+         typeof template?.id!=='string')return [];
+      return Array.from({length:count as number},(_,index)=>s.id+'_'+index+'_'+template.id);
+    }));
+    const steps=[
+      ...publishedPlan.steps.map(s=>{
+        const saved=byId.get(s.id);
+        if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
+        return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
+      }),
+      ...stored.filter(s=>dynamicIds.has(s.step_id)),
+    ].sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
     // A Session may remain live after the parent Workflow succeeds at Ready.
     // Expose its last durable state independently without calling it "online":
     // the GitHub physical health is not live-verified by this D1 snapshot.
