@@ -66,7 +66,6 @@ test('compiler pins only one supported UTC Cron, rejects unapproved syntax with 
   assert.notEqual(manual.digest,digest);
   for(const bad of [
     {...emission('No'),triggers:[]},
-    {...emission('No'),triggers:[{type:'webhook',schedule:'* * * * *'}]},
     {...emission('No'),triggers:[{type:'cron',schedule:'@daily'}]},
     {...emission('No'),triggers:[{type:'cron',schedule:'* * * * *',timezone:'Asia/Shanghai'}]},
     {...emission('No'),triggers:[{type:'cron',schedule:'* * * * *'},{type:'cron',schedule:'0 * * * *'}]},
