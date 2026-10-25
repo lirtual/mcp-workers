@@ -273,8 +273,8 @@ test('dynamic Task OIDC Claim and signed result bind to exact bounded child ID',
   const first=await runPublishedGitHubActionTask(f.env,dynamic,child,runId,f.step,http);
   assert.deepEqual(first,{status:'succeeded',output:{checked:'dynamic'}});
   assert.equal(f.post(),1);
-  const duplicate=await runPublishedGitHubActionTask(f.env,dynamic,child,runId,f.step,http);
-  assert.equal(duplicate.status,'indeterminate');
+  await assert.rejects(()=>runPublishedGitHubActionTask(f.env,dynamic,child,runId,f.step,http),
+    /github_action_attempt_not_registered/);
   assert.equal(f.post(),1,'reentry after missing native checkpoint does not re-dispatch');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
  }finally{f.db.close();}
