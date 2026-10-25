@@ -242,6 +242,10 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
 
 test("SSH production release requires Broker service, own DO, and least-privileged secret bindings", () => {
   const worker = "ssh-mcp-worker";
+  const source = JSON.parse(readFileSync(new URL("../apps/ssh-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  assert.equal(source.observability?.enabled, true);
+  assert.equal(source.observability?.logs?.invocation_logs, true);
+  assert.deepEqual(source.secrets?.required, ["MCP_ACCESS_TOKEN", "SSH_BROKER_TOKEN"]);
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "SSH_BROKER_TOKEN" }];
   const settings = {
     bindings: [
@@ -251,9 +255,15 @@ test("SSH production release requires Broker service, own DO, and least-privileg
         entrypoint: "HostBrokerEntrypoint" },
       { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
     ],
-    observability: { enabled: false },
+    observability: { enabled: true, logs: { invocation_logs: true } },
   };
   assert.equal(verifyBindings(worker, settings, secrets), true);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    observability: { enabled: false, logs: { invocation_logs: false } } }, secrets),
+    /SSH observability and invocation logs/);
+  assert.throws(() => verifyBindings(worker, { ...settings,
+    observability: { enabled: true, logs: { invocation_logs: false } } }, secrets),
+    /SSH observability and invocation logs/);
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: settings.bindings.slice(0, 3) },
     secrets), /SSH Durable Object/);
   assert.throws(() => verifyBindings(worker, { ...settings,
