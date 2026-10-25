@@ -357,10 +357,10 @@ export async function workflowCapabilities(env:Pick<Env,
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const availability=(entry:Entry)=>
-    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read')&&!portalReady?'unavailable':
+    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
     (entry.id==='action.github.run'||entry.id==='flow.foreach_github_task')&&!githubReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.mcp.call','action.github.run','flow.foreach_mcp_read','flow.foreach_github_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.mcp.call','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
