@@ -182,16 +182,19 @@ async function runS2Smoke() {
         scope:'read',arguments:{limit:1},input_schema:candidate.inputSchema,
         ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
       }},
-      // Reuse this exact reviewed Portal grant for bounded runtime MCP reads.
-      // The existing acceptance pipeline handles unique-ID D1 cleanup;
-      // no new test endpoint, runner, Worker or credential is introduced.
+      // Reuse the same reviewed Portal grant; each item runs a pure
+      // prepare Step followed by a real read-only MCP call consuming its
+      // previously checkpointed result. No new test worker or endpoint.
       {id:'each',flow:'foreach',items:{ref:'inputs.limits'},max_items:2,
-        template:{steps:[{id:'list',uses:'mcp.call',with:{
-          endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',
-          scope:'read',arguments:{limit:{ref:'item.value'}},
-          input_schema:candidate.inputSchema,
-          ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
-        }}]}},
+        template:{steps:[
+          {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+          {id:'list',uses:'mcp.call',with:{
+            endpoint:PRODUCTION_PORTAL_ENDPOINT,tool:'ima_list_notebooks',
+            scope:'read',arguments:{limit:{ref:'steps.prepare.output'}},
+            input_schema:candidate.inputSchema,
+            ...(candidate.outputSchema?{output_schema:candidate.outputSchema}:{})
+          }},
+        ]}},
       {id:'emit',needs:['read','each'],uses:'result.emit',
         with:{data:{direct:{ref:'steps.read.output'},mapped:{ref:'steps.each.output'}}}},
     ]};
@@ -226,14 +229,15 @@ async function runS2Smoke() {
     await new Promise(r=>setTimeout(r,1000));
   }
   assert.equal(outcome?.status,'succeeded','Production MCP Workflow did not finish successfully');
-  assert.equal(outcome.steps.length,5);
+  assert.equal(outcome.steps.length,7);
   assert.ok(outcome.steps.every(s=>s.status==='succeeded'));
   assert.ok(Array.isArray(outcome.result?.direct?.content),'No static read-only MCP result');
   assert.equal(outcome.result?.mapped?.length,2,'Bounded Foreach result missing');
   assert.ok(outcome.result.mapped.every(x=>Array.isArray(x?.content)),
     'One dynamic MCP child result missing');
-  for(const id of ['each','each_0_list','each_1_list','read','emit'])
+  for(const id of ['each','each_0_prepare','each_0_list','each_1_prepare','each_1_list','read','emit'])
     assert.equal(outcome.steps.find(s=>s.step_id===id)?.status,'succeeded',id);
+  console.log('MULTI_MCP_FOREACH_PRODUCTION_OK: pinned Portal + per-item prepare result + read-only MCP, native arg checkpoints, published grant and scoped cleanup');
   console.log('MCP_PRODUCTION_SMOKE_OK: pinned Portal + static and bounded dynamic read-only MCP + published Workflow + replay + scoped cleanup');
 }
 
