@@ -1155,7 +1155,8 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  t.after(()=>{globalThis.fetch=old;});
  await run(start.run_id);
  const result=await service.result(start.run_id);
- assert.equal(result.status,'failed',JSON.stringify(result));
+ assert.equal(result.status,'failed',JSON.stringify({result,calls,
+   attempts:sqlite.prepare('SELECT step_id,state,candidate_run_id,owner_run_id FROM step_attempts').all()}));
  assert.equal(result.steps.find(s=>s.step_id==='each_0_task')?.status,'failed',JSON.stringify(result));
  assert.equal(result.steps.find(s=>s.step_id==='each')?.status,'failed');
  assert.equal(calls,1,'failed first Task must not start later dynamic Task');
