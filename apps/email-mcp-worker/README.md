@@ -24,8 +24,20 @@ DO NOT deploy this candidate to production.
 - Durable send fence; ambiguous sends never automatically replay. Bounded
   per-mailbox search (3 concurrent, max 8 accounts) with failure indicators.
 
-NOT SUPPORTED: IMAP/SMTP, Gmail label-based folder moves, provider-specific
-advanced mailbox administration, and verified cross-provider live integration.
+- Generic IMAP 993 and SMTP 465/587 candidate adapter based on ImapFlow,
+  Nodemailer and postal-mime. Native IMAP references contain folder, UIDVALIDITY
+  and UID; operations cover search (INBOX), get, attachments, folders, mark,
+  conditional move/trash and APPEND draft (only where server capabilities permit).
+  SMTP supports text + attachments with a durable pre-dispatch fence.
+- IMAP/SMTP onboarding checks both protocol logins before storing any encrypted
+  credentials. Each connection resolves and validates public DNS addresses,
+  connects to a pinned IP, and supplies the original host for TLS SNI/certificate
+  verification. STARTTLS is mandatory on 587; insecure fallback is forbidden.
+- **IMAP/SMTP has not passed live Cloudflare/provider TLS verification.** The
+  adapter is included for review, not an assertion of production availability.
+
+NOT SUPPORTED: Gmail label-based folder moves, provider-specific advanced mailbox
+administration, and verified cross-provider live integration.
 Do not claim full Spec #279 acceptance from current code.
 
 ## Configuration and release gates
@@ -38,7 +50,9 @@ separate Portal registration. Neither is provided by this branch.
 Required Worker Secrets: MCP_ACCESS_TOKEN, MAIL_ENCRYPTION_KEY (random canonical
 base64 32-byte value), ACCESS_TEAM_DOMAIN, ACCESS_AUD, OWNER_EMAIL,
 GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, MICROSOFT_CLIENT_ID,
-MICROSOFT_CLIENT_SECRET. Optional MAIL_KEY_ID, MAIL_ENCRYPTION_PREVIOUS_KEY,
+MICROSOFT_CLIENT_SECRET for their corresponding providers. Generic IMAP/SMTP
+uses per-account encrypted app credentials (not additional Worker secrets).
+Optional MAIL_KEY_ID, MAIL_ENCRYPTION_PREVIOUS_KEY,
 MAIL_PREVIOUS_KEY_ID, MICROSOFT_TENANT. No credentials in Git/source/D1.
 
 ## Rotation/recovery
@@ -52,8 +66,10 @@ If all copies of the key are lost, reauthorize accounts; no plaintext backup.
 
 ## Remaining release blockers
 
-IMAP/SMTP Workers-native TLS and DNS-rebinding-resistant live integration; real provider
-OAuth/refresh/revoke, Graph upload-session and MIME interoperability testing;
+Real Workers-native IMAP/SMTP TLS and DNS-pinned connection verification,
+including certificate/STARTTLS, UIDVALIDITY changes, server capability
+differences, and SMTP submission fault injection; real provider OAuth/refresh/
+revoke, Graph upload-session and MIME interoperability testing;
 dedicated mailbox end-to-end tests; D1 migrations and binding;
 non-bypassable Access setup/OTP; Portal discovery; independent security review.
 All deployment steps require separate release authorization.

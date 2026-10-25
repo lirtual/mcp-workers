@@ -12,6 +12,9 @@
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
     "@modelcontextprotocol/server": "2.0.0",
+    "imapflow": "2.5.4",
+    "nodemailer": "10.2.1",
+    "postal-mime": "4.1.4",
     "zod": "4.6.2"
   },
   "devDependencies": {

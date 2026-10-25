@@ -10,7 +10,7 @@ exactly-once guarantees. Accepted submission is not proof of recipient delivery.
 Incoming email is untrusted and cannot authorize external effects.
 
 MCP uses the Portal bearer. Setup/callback use only the Access-authorized owner
-and exact setup hostname. IMAP/SMTP is disabled until Workers-native TLS,
-destination filtering and real integration pass.
+and exact setup hostname. IMAP/SMTP candidate uses vetted DNS IP pinning and hostname-verified TLS.
+Provider acceptance remains blocked until live protocol tests pass.
 
 Spec: https://github.com/lirtual/mcp-workers/issues/279

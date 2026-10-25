@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { decrypt, encrypt, sha256 } from './crypto.ts';
 import { validateAttachmentInputs, resolveAttachments } from './attachments.ts';
+import { withImap } from './imap.ts';
 import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
 import {
@@ -52,17 +53,37 @@ export async function listAccounts(env: Env) {
     .bind('disabled').all();
   return result.results;
 }
-function capabilities(account: MailAccount) {
+async function capabilities(env: Env, account: MailAccount) {
   const api = account.provider === 'gmail' || account.provider === 'graph';
+  const imap = account.provider === 'imap_smtp';
+  let hasMove = false, hasTrash = false, hasDrafts = false;
+  if (imap) {
+    const server = await withImap(env, account, async client => {
+      const folders = await client.list();
+      const canMove = client.capabilities.has('MOVE');
+      const canAppend = client.capabilities.has('UIDPLUS');
+      return {
+        move: canMove,
+        trash: canMove && folders.some(f => f.specialUse === '\\Trash' ||
+          /^(trash|deleted items|deleted)$/i.test(f.path)),
+        drafts: canAppend && folders.some(f => f.specialUse === '\\Drafts' || /^drafts$/i.test(f.path)),
+      };
+    });
+    hasMove = server.move;
+    hasTrash = server.trash;
+    hasDrafts = server.drafts;
+  }
   return {
     account_id: account.account_id, provider: account.provider, status: account.status,
-    search: api, get: api, thread: api, folders: api,
-    attachment_get: api, draft_create: api, draft_update: api,
-    send: api, send_attachments: api, reply: api, forward: api,
-    mark_read: api, move: account.provider === 'graph', trash: api,
+    search: api || imap, get: api || imap, thread: api, folders: api || imap,
+    attachment_get: api || imap, draft_create: api || hasDrafts, draft_update: api,
+    send: api || imap, send_attachments: api || imap,
+    reply: api, forward: api, mark_read: api || imap,
+    move: account.provider === 'graph' || hasMove, trash: api || hasTrash,
     permanent_delete: false, bulk_write: false,
   };
 }
+
 type Cursor = {
   expiry: number; digest: string; next: Record<string, string>;
 };
@@ -166,7 +187,7 @@ export function buildMcpServer(env: Env): McpServer {
   server.registerTool('capabilities_get', {
     description: 'Report actually implemented operations for one mailbox; unsupported operations fail closed.',
     inputSchema: z.object({ account_id: accountId }).strict(), annotations: read,
-  }, async ({ account_id }) => safe(async () => capabilities(await getAccount(env, account_id))));
+  }, async ({ account_id }) => safe(async () => capabilities(env, await getAccount(env, account_id))));
   server.registerTool('mail_search', {
     description: 'Search 1-8 explicit mailboxes with bounded per-account results and partial failure reporting.',
     inputSchema: z.object({

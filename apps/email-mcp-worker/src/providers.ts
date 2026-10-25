@@ -1,4 +1,6 @@
 import { accessToken } from './oauth.ts';
+import { imapAttachment, imapDraftCreate, imapFolders, imapGet, imapMark, imapMove, imapSearch, imapTrash } from './imap.ts';
+import { smtpSend } from './smtp.ts';
 import { base64Data, resolveAttachments, validateGraphUploadUrl } from './attachments.ts';
 import type { AttachmentInput, AttachmentFile } from './attachments.ts';
 import { fail } from './types.ts';
@@ -78,6 +80,7 @@ function graphMessage(account: MailAccount, msg: any): Message {
   };
 }
 export async function getMail(env: Env, account: MailAccount, id: string): Promise<Message> {
+  if (account.provider === 'imap_smtp') return imapGet(env, account, id);
   if (account.provider === 'gmail') {
     const msg = await json(env, account, '/messages/' + enc(id) + '?format=full');
     return gmailMessage(account, msg);
@@ -91,6 +94,7 @@ export async function getMail(env: Env, account: MailAccount, id: string): Promi
   return fail('unsupported');
 }
 export async function listFolders(env: Env, account: MailAccount): Promise<unknown> {
+  if (account.provider === 'imap_smtp') return imapFolders(env, account);
   if (account.provider === 'gmail') return { account_id: account.account_id, folders: (await json(env, account, '/labels')).labels ?? [] };
   if (account.provider === 'graph') return { account_id: account.account_id, folders: (await json(env, account, '/mailFolders?$top=100')).value ?? [] };
   return fail('unsupported');
@@ -108,6 +112,7 @@ export function validateGraphNextLink(value: string): string {
 }
 
 export async function searchMail(env: Env, account: MailAccount, query: string, after?: string, limit = 10) {
+  if (account.provider === 'imap_smtp') return imapSearch(env, account, query, after, limit);
   if (account.provider === 'gmail') {
     const params = new URLSearchParams({ q: query, maxResults: String(limit) });
     if (after) params.set('pageToken', after);
@@ -259,6 +264,7 @@ function graphRecipients(to: string[]) {
 export async function sendMail(env: Env, account: MailAccount, to: string[], subject: string, body: string,
   attachments: AttachmentInput[] = []) {
   const files = await attached(env, account, attachments);
+  if (account.provider === 'imap_smtp') return smtpSend(env, account, to, subject, body, files);
   if (account.provider === 'gmail') {
     const response = await json(env, account, '/messages/send', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -334,6 +340,10 @@ export async function graphReplyForwardWithFiles(
 }
 export async function draftCreate(env: Env, account: MailAccount, to: string[], subject: string, body: string, attachments: AttachmentInput[] = []) {
   const files = await attached(env, account, attachments);
+  if (account.provider === 'imap_smtp') {
+    if (files.length) fail('unsupported');
+    return imapDraftCreate(env, account, to, subject, body);
+  }
   if (account.provider === 'gmail') {
     const response = await json(env, account, '/drafts', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -374,6 +384,7 @@ export async function draftUpdate(env: Env, account: MailAccount, id: string, to
   return fail('unsupported');
 }
 export async function markMail(env: Env, account: MailAccount, id: string, isRead: boolean) {
+  if (account.provider === 'imap_smtp') return imapMark(env, account, id, isRead);
   if (account.provider === 'gmail') {
     await json(env, account, '/messages/' + enc(id) + '/modify', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -391,6 +402,7 @@ export async function markMail(env: Env, account: MailAccount, id: string, isRea
   return fail('unsupported');
 }
 export async function moveMail(env: Env, account: MailAccount, id: string, folder: string) {
+  if (account.provider === 'imap_smtp') return imapMove(env, account, id, folder);
   if (account.provider === 'gmail') {
     // Gmail labels aren't folders and must not be represented as a destructive move.
     return fail('unsupported');
@@ -405,6 +417,7 @@ export async function moveMail(env: Env, account: MailAccount, id: string, folde
   return fail('unsupported');
 }
 export async function trashMail(env: Env, account: MailAccount, id: string) {
+  if (account.provider === 'imap_smtp') return imapTrash(env, account, id);
   if (account.provider === 'gmail') {
     const response = await json(env, account, '/messages/' + enc(id) + '/trash', { method: 'POST' });
     return { account_id: account.account_id, id: response.id };
@@ -412,6 +425,7 @@ export async function trashMail(env: Env, account: MailAccount, id: string) {
   return moveMail(env, account, id, 'deleteditems');
 }
 export async function attachmentGet(env: Env, account: MailAccount, messageId: string, attachmentId: string) {
+  if (account.provider === 'imap_smtp') return imapAttachment(env, account, messageId, attachmentId);
   if (account.provider === 'gmail') {
     const result = await json(env, account, '/messages/' + enc(messageId) + '/attachments/' + enc(attachmentId));
     if (Number(result.size) > 5 * 1024 * 1024 || String(result.data ?? '').length > 7 * 1024 * 1024) fail('oversized_attachment');

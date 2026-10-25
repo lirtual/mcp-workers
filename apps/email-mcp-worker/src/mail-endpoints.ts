@@ -38,7 +38,8 @@ export function publicIp(address: string): boolean {
   }
   return false;
 }
-export async function assertPublicMailEndpoint(host: string, requestFetch: typeof fetch = fetch): Promise<string> {
+export async function resolvePublicMailEndpoint(host: string, requestFetch: typeof fetch = fetch):
+  Promise<{ hostname: string; address: string }> {
   const safe = validateMailHost(host);
   const lookups = await Promise.all([1, 28].map(async type => {
     const endpoint = new URL('https://cloudflare-dns.com/dns-query');
@@ -54,7 +55,10 @@ export async function assertPublicMailEndpoint(host: string, requestFetch: typeo
   }));
   const addresses = lookups.flat();
   if (!addresses.length || addresses.length > 24 || addresses.some(ip => !publicIp(ip))) fail('unsafe_mail_host');
-  return safe;
+  return { hostname: safe, address: addresses[0]! };
+}
+export async function assertPublicMailEndpoint(host: string, requestFetch: typeof fetch = fetch): Promise<string> {
+  return (await resolvePublicMailEndpoint(host, requestFetch)).hostname;
 }
 export function validateMailPorts(imapPort: number, smtpPort: number): void {
   if (imapPort !== 993 || (smtpPort !== 465 && smtpPort !== 587)) fail('unsupported_mail_port');

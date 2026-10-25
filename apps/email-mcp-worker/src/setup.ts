@@ -1,5 +1,7 @@
 import { csrfCookie, validateCsrf, verifyAccess } from './access.ts';
-import { nonce } from './crypto.ts';
+import { encrypt, nonce } from './crypto.ts';
+import { validateProtocolCredentials, verifyImapCredentials } from './imap.ts';
+import { verifySmtpCredentials } from './smtp.ts';
 import { rotateCredentials } from './rotation.ts';
 import { beginOAuth, completeOAuth, revokeIfSupported } from './oauth.ts';
 import { listAccounts } from './tools.ts';
@@ -61,7 +63,16 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
         '<input type="hidden" name="csrf" value="' + csrf + '">' +
         '<select name="provider"><option value="gmail">Gmail</option><option value="graph">Microsoft Graph</option></select>' +
         '<button type="submit">Authorize mailbox</button></form></fieldset>' +
-        '<p>Generic IMAP/SMTP onboarding is disabled until Workers-native TLS and destination filtering pass real integration tests.</p>' +
+        '<fieldset><legend>Add IMAP/SMTP account</legend><form method="post" action="/setup/imap/add">' +
+        '<input type="hidden" name="csrf" value="' + csrf + '">' +
+        '<label>Email address <input type="email" name="address" required maxlength="320"></label>' +
+        '<label>IMAP hostname <input name="imap_host" required maxlength="253"></label>' +
+        '<label>SMTP hostname <input name="smtp_host" required maxlength="253"></label>' +
+        '<label>SMTP port <select name="smtp_port"><option value="465">465 (TLS)</option>' +
+        '<option value="587">587 (STARTTLS)</option></select></label>' +
+        '<label>Username <input name="username" required maxlength="320"></label>' +
+        '<label>App-specific password <input name="password" type="password" autocomplete="off" required maxlength="512"></label>' +
+        '<button type="submit">Verify TLS and add</button></form></fieldset>' +
         '<fieldset><legend>Credential key rotation</legend><form method="post" action="/setup/rotate">' +
         '<input type="hidden" name="csrf" value="' + csrf + '">' +
         '<button type="submit">Re-encrypt with current key</button></form></fieldset>',
@@ -83,6 +94,27 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
         url.searchParams.get('code') ?? '', owner.sub, requestFetch);
       return securedHtml('<h1>Mailbox authorized</h1><p>Account ID: <code>' + escapeHtml(accountId) +
         '</code></p><p><a href="/setup">Back to accounts</a></p>');
+    }
+    if (url.pathname === '/setup/imap/add' && request.method === 'POST') {
+      const data = await formValues(request);
+      validateCsrf(request, data.get('csrf') ?? '');
+      const address = (data.get('address') ?? '').trim().toLowerCase();
+      if (!/^[^@\\s,<>]{1,100}@[^@\\s,<>]{3,200}$/.test(address)) fail('invalid_mail_identity');
+      const cfg = validateProtocolCredentials({
+        imap_host: data.get('imap_host') ?? '', imap_port: 993,
+        smtp_host: data.get('smtp_host') ?? '',
+        smtp_port: Number(data.get('smtp_port')) as 465 | 587,
+        username: data.get('username') ?? '', password: data.get('password') ?? '',
+      });
+      // No D1 credentials are saved unless IMAP TLS and authentication actually succeed.
+      await verifyImapCredentials(cfg);
+      await verifySmtpCredentials(cfg);
+      const now = Math.floor(Date.now() / 1000);
+      const accountId = crypto.randomUUID();
+      const sealed = await encrypt(env, 'account:' + accountId + ':imap_smtp', cfg);
+      await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,token_expires_at,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,NULL,?,?)')
+        .bind(accountId, 'imap_smtp', address, 'active', sealed.ciphertext, sealed.keyId, now, now).run();
+      return new Response(null, { status: 303, headers: { location: '/setup', 'cache-control': 'no-store' } });
     }
     if (url.pathname === '/setup/alias' && request.method === 'POST') {
       const data = await formValues(request);
