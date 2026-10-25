@@ -68,7 +68,7 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
  const f=fixture();
  try{
   const fixed={...plan,steps:[{...plan.steps[0],with:{...plan.steps[0].with,
-   action:{...plan.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'fixed'}}}]};
+   action:{...plan.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'fixed'}}}}]};
   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'existing');
@@ -83,7 +83,7 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   f.db.prepare("UPDATE session_executions SET state='uncertain' WHERE run_id=?").run(run(1));
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
   const temporary={...fixed,steps:[{...fixed.steps[0],with:{...fixed.steps[0].with,
-   action:{...fixed.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'temporary'}}}]};
+   action:{...fixed.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'temporary'}}}}]};
   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(temporary),'v');
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(3),'launch'),'reserved');
   assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(3))?.fixed_key,null);
