@@ -34,6 +34,24 @@ There are **no independent capability enable flags**. The documented per-operati
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress currently supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay. It does **not** support direct GitHub webhooks, pull requests or other GitHub event types, repeat/expand, child calls or Saga. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
+### Conditional branch joins
+
+By default, a Step with `needs` runs **only when every dependency succeeded**; a skipped, failed or indeterminate dependency makes the Step skip. For intentional conditional branches, the downstream join may explicitly set `needs_policy: allow_skipped` alongside nonempty `needs`. It executes only after **all** dependencies are settled and each is either `succeeded` or `skipped`. Any `failed` or `indeterminate` dependency still blocks it; the Run retains the failure/uncertainty. The policy never retries or dispatches missing external effects. The omitted/default `all_succeeded` policy preserves existing Published Plan digests.
+
+```json
+{
+  "version": 1, "name": "Branch and join", "inputs": {"choice": "left"},
+  "steps": [
+    {"id": "left", "uses": "result.emit", "if": {"eq": [{"ref": "inputs.choice"}, "left"]}, "with": {"data": "L"}},
+    {"id": "right", "uses": "result.emit", "if": {"eq": [{"ref": "inputs.choice"}, "right"]}, "with": {"data": "R"}},
+    {"id": "join", "uses": "result.emit", "needs": ["left", "right"], "needs_policy": "allow_skipped",
+      "with": {"data": {"left_status": {"ref": "steps.left.status"}, "right_status": {"ref": "steps.right.status"}}}}
+  ]
+}
+```
+
+This is a static DAG branch fan-in, **not** dynamic `foreach`, while/repeat, subworkflow or Saga. No new Worker, D1 schema, scheduler or approval mechanism is involved.
+
 `workflow_validate` accepts either `{workflow_id, revision}` for a saved Draft or `{definition}` with inline YAML/JSON. Inline validation uses the same compiler and reviewed Action checks, returns required Publish approvals or bounded structured issues, and never creates a Draft, writes D1, publishes, or dispatches external jobs. The two input modes cannot be combined. For a new workflow, validate inline before `workflow_create`.
 
 A Cron schedule is optional in the Definition: `triggers: [{type: cron, schedule: '0 9 * * 1-5'}]`. This means 09:00 **UTC** on weekdays; no timezone/DST conversion is promised. Supported five-field syntax: `*`, numbers, comma lists, numeric ranges and `/` steps; names and Quartz special forms are rejected. A single `* * * * *` Cloudflare scheduled event on the existing Worker admits due versions through the same immutable Published Plan and normal eight-Run quota. Each observed minute has a durable idempotency key. **Platform-missed minutes and capacity-rejected minutes are not backfilled or queued**; monitor run history for skipped periods. Cron never adds an extra scheduler, service or D1 migration. Publishing is explicit; saving a Draft never starts execution. `workflow_pause` prevents new admissions but does not stop an active Run or automatically cancel an external Job.
