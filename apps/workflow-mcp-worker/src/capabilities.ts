@@ -263,7 +263,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
                 {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
-              ]}}}},
+              ]},allOf:[{if:{minItems:2},then:{
+                items:{type:'object',properties:{uses:{const:'result.emit'}}},
+              }}]}}},
         ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 pure result.emit Steps; multi-step external Actions, Sessions and nesting are unsupported.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
