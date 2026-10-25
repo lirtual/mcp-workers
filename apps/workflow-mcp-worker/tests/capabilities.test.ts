@@ -26,6 +26,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
+  assert.equal(catalog.get('flow.foreach_mcp_read')?.availability,'unavailable');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
@@ -35,8 +36,8 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit']){
-    const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_mcp_read']){
+    const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
         input_schema:{type:'object',properties:{limit:{type:'number'}}},
@@ -109,6 +110,23 @@ test('dynamic foreach discovery exposes narrow result-only native snapshot contr
   assert.equal((await compilePlan(sample.definition)).plan.steps.length,2);
   assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'result.emit');
   assert.equal(PLAN_LIMITS.maxForeachItems,8);
+});
+
+test('read-only dynamic foreach discovery uses the exact compiler and Portal grant',async()=>{
+  const detail=await workflowCapabilities(portalEnv,'flow.foreach_mcp_read',
+    async()=>({availability:'verified_contract',tools:[{
+      tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+      input_schema:{type:'object',properties:{limit:{type:'number'}}},
+      schema_digest:'a'.repeat(64),arguments:{limit:1},availability:'discovered_not_executed',
+    }]}));
+  assert.equal(detail.availability,'verified_contract');
+  const {definition,digest}=detail.example as {definition:unknown;digest:string};
+  const {plan,digest:compiled}=await compilePlan(definition);
+  assert.equal(compiled,digest);
+  assert.equal(plan.steps[0].uses,'flow.foreach');
+  assert.equal((detail.template_policy as {scope:string}).scope,'read');
+  assert.deepEqual((detail.template_policy as {unsupported:string[]}).unsupported,
+    ['github.run','nested templates','write-scope tools']);
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{
