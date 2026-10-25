@@ -119,7 +119,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const countBefore=(sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n;
     const capabilities=await call('workflow_capabilities',{});
     assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.manual'&&x.availability==='supported'));
-    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.cron'&&x.availability==='unsupported'));
+    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.cron'&&x.availability==='supported'));
     const emitInfo=await call('workflow_capabilities',{id:'action.result.emit'});
     assert.equal(emitInfo.example.validation,'compiler_valid_only');
     assert.equal((await call('workflow_capabilities',{id:'legacy.tsrv'})).availability,'unknown');

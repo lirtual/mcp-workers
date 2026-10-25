@@ -17,7 +17,8 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.deepEqual(overview.limits,PLAN_LIMITS);
   const catalog=new Map((overview.capability_ids as Array<{id:string;availability:string}>).map(x=>[x.id,x]));
   assert.equal(catalog.get('trigger.manual')?.availability,'supported');
-  for(const id of ['trigger.cron','trigger.webhook','trigger.github_event',
+  assert.equal(catalog.get('trigger.cron')?.availability,'supported');
+  for(const id of ['trigger.webhook','trigger.github_event',
     'flow.loop','flow.child','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
@@ -28,7 +29,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 });
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
-  for(const id of ['trigger.manual','action.result.emit','action.mcp.call',
+  for(const id of ['trigger.manual','trigger.cron','action.result.emit','action.mcp.call',
     'flow.static_dag','flow.condition']){
     const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{

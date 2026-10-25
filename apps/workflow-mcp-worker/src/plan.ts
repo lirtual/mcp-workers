@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
@@ -18,12 +19,12 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: CronTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
 const KNOWN_UNSUPPORTED_FIELDS = new Set([
-  'triggers','saga','repeat','expand','approval','foreach','while',
+  'saga','repeat','expand','approval','foreach','while',
   'child','child_workflow','wait','sleep','delay','steps',
 ]);
 const keys = (o: Record<string, unknown>, allowed: string[], basePath = '/') => {
@@ -132,11 +133,22 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
   validateFiniteNumbers(raw);
-  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','steps']);
+  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps']);
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
   if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
   if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs');if(Object.keys(inp).length>PLAN_LIMITS.maxInputs)throw new PlanError('too_many_inputs');}
+  let triggers:CronTrigger[]|undefined;
+  if(o.triggers!==undefined){
+    if(!Array.isArray(o.triggers)||o.triggers.length!==1)
+      throw new PlanError('invalid_triggers','/triggers');
+    const item=object(o.triggers[0],'invalid_cron_trigger');
+    keys(item,['type','schedule'],'/triggers/0');
+    if(item.type!=='cron')throw new PlanError('unsupported_trigger','/triggers/0/type');
+    try{parseUtcCron(item.schedule);}
+    catch{throw new PlanError('invalid_cron_schedule','/triggers/0/schedule');}
+    triggers=[{type:'cron',schedule:item.schedule as string}];
+  }
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of o.steps){
@@ -209,7 +221,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(ready.length>PLAN_LIMITS.maxParallel)throw new PlanError('excessive_parallelism');
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>})};
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

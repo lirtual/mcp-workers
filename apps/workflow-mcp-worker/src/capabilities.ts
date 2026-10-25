@@ -142,7 +142,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   condition:'Boolean literal or safe expression that evaluates to Boolean; eq/ne/gt/lt take 2 operands, and/or take 1-16 operands.',
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
-  unsupported:['foreach','while','repeat','child_workflow','saga','cron','webhook'],
+  unsupported:['foreach','while','repeat','child_workflow','saga','webhook'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -152,6 +152,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     version:{const:1},
     name:{type:'string',minLength:1,maxLength:120},
     inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
+    triggers:{type:'array',minItems:1,maxItems:1,items:{type:'object',additionalProperties:false,
+      required:['type','schedule'],properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
+        description:'Five-field UTC Cron: numbers, *, lists, ranges, and steps; no names or Quartz/DST extensions.'}}}},
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
       required:['id','uses','with'],
@@ -174,8 +177,8 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
 const entries=[
   {id:'trigger.manual',kind:'trigger',availability:'supported',
    description:'Manually admit the current Published Version with workflow_run; supply idempotency_key to deduplicate.'},
-  {id:'trigger.cron',kind:'trigger',availability:'unsupported',
-   description:'The current compiler rejects triggers. No Cron ingress or timezone/DST promise.'},
+  {id:'trigger.cron',kind:'trigger',availability:'supported',
+   description:'One five-field UTC Cron trigger per Published Plan; no timezone/DST, missed-minute backfill or capacity queue. Pausing blocks new admissions.'},
   {id:'trigger.webhook',kind:'trigger',availability:'unsupported',
    description:'No owner-facing business Webhook ingress. GitHub signed Action callbacks are not business Triggers.'},
   {id:'trigger.github_event',kind:'trigger',availability:'unsupported',
@@ -237,7 +240,7 @@ export async function workflowCapabilities(env:Pick<Env,
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
       status:'workflow_status',result:'workflow_result'},
-    admission:'Manual start only; no Cron/Webhook/GitHub business event ingress',
+    admission:'Manual starts and one UTC Cron schedule per Published Plan; no Webhook/GitHub business event ingress',
     note:'Discovery and inline validation never publish or grant execution.',
   };
   const entry=byId.get(id);
@@ -248,6 +251,13 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
   };
+  if(id==='trigger.cron'){
+    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
+    detail.example=await compilingExample({...emit,triggers:[{type:'cron',schedule:'0 * * * *'}]});
+    detail.schedule_policy={timezone:'UTC',tick:'every minute',missed_ticks:'not_backfilled',
+      capacity_exhaustion:'skipped_without_queue',publication:'active_published_version_only',
+      manual_run:'still_supported'};
+  }
   if(id==='action.result.emit'||id==='trigger.manual')
     detail.example=await compilingExample(emit);
   if(id==='flow.static_dag'||id==='flow.condition')
