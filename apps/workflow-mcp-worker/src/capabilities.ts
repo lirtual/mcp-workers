@@ -193,11 +193,13 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {required:['uses','with'],not:{anyOf:[
           {required:['flow']},{required:['times']},{required:['template']},
         ]}},
-        {required:['flow','times','template'],properties:{flow:{const:'repeat'}},not:{anyOf:[
+        {required:['flow','times','template'],properties:{flow:{const:'repeat'},
+          template:{type:'object',required:['uses','with'],not:{required:['steps']}}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['items']},{required:['max_items']},
         ]}},
-        {required:['flow','items','max_items','template'],properties:{flow:{const:'foreach'}},not:{anyOf:[
+        {required:['flow','items','max_items','template'],properties:{flow:{const:'foreach'},
+          template:{type:'object',required:['steps'],not:{required:['uses']}}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['times']},
         ]}},
