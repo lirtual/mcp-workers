@@ -280,7 +280,12 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
  (SELECT count(*) FROM session_executions WHERE state IS NULL OR
    state != 'terminated') AS nonterminated_sessions,
  (SELECT count(*) FROM callback_receipts WHERE notification_delivered IS NULL OR
-   notification_delivered != 1) AS undelivered_callbacks`;
+   notification_delivered != 1) AS undelivered_callbacks,
+ (SELECT count(*) FROM session_executions s
+   JOIN runs r ON r.id=s.run_id
+   JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+   WHERE s.state='ready' AND r.outcome='succeeded'
+   AND a.state='claimed') AS confirmed_ready_sessions`;
 
 export function verifyWorkflowMigrationReadiness(response) {
   invariant(Array.isArray(response) && response.length === 1 &&
@@ -313,6 +318,33 @@ export function verifyWorkflowMigrationReadiness(response) {
     callbacks: row.callback_count,
     cancellations: row.cancellation_count,
   };
+}
+
+/**
+ * Pure-code release gate: keep full quiescence for schema migrations, but
+ * permit only claimed Ready sessions with a succeeded parent business Run.
+ * All incomplete Tasks, unresolved Runs and callbacks remain blocked.
+ */
+export function verifyWorkflowCodeReleaseReadiness(response) {
+  invariant(Array.isArray(response) && response.length === 1 &&
+    response[0]?.success === true && response[0]?.results?.length === 1,
+    "Workflow code-only release D1 readback unavailable");
+  const row=response[0].results[0];
+  for (const key of [
+    "migration_count","expected_migrations","nonterminal_runs",
+    "unresolved_starts","unresolved_steps","nonterminal_attempts",
+    "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
+  ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
+    "Workflow code-only release count unavailable or invalid: "+key);
+  invariant(row.migration_count===8 && row.expected_migrations===8,
+    "Workflow code-only release blocked by D1 migration drift");
+  for (const key of [
+    "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
+  ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
+  invariant(row.nonterminal_attempts===row.confirmed_ready_sessions &&
+    row.nonterminated_sessions===row.confirmed_ready_sessions,
+    "Workflow code-only release blocked by unconfirmed Session or Attempt");
+  return {confirmed_ready_sessions:row.confirmed_ready_sessions};
 }
 
 export function parseWranglerVersion(output) {
@@ -513,10 +545,18 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
   if (mode === "migration-sql") {
     invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
     console.log(WORKFLOW_MIGRATION_READINESS_SQL);
+    return;
+  }
+  if (mode === "code-release-check") {
+    invariant(worker === "workflow-mcp-worker", "Release gate restricted to Workflow");
+    const result = verifyWorkflowCodeReleaseReadiness(
+      JSON.parse(await readFile("/dev/stdin", "utf8")));
+    console.log("Workflow code-only release D1 gate: PASS " +
+      JSON.stringify(result) + "; no migration, no unconfirmed execution");
     return;
   }
   if (mode === "migration-check") {
