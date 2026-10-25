@@ -13,8 +13,7 @@
       "database_id": "a4a477cd-6339-478c-ab7c-f7d87bb0d772", "migrations_dir": "migrations" }
   ],
   "workflows": [
-    { "name": "workflow-mcp-orchestrator", "binding": "WORKFLOW", "class_name": "WorkflowOrchestrator" },
-    { "name": "workflow-mcp-runner", "binding": "WORKFLOW_LEGACY", "class_name": "WorkflowRunner" }
+    { "name": "workflow-mcp-orchestrator", "binding": "WORKFLOW", "class_name": "WorkflowOrchestrator" }
   ],
   "secrets": { "required": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"] }
 }
