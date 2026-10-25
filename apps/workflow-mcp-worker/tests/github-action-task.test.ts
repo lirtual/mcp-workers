@@ -6,7 +6,7 @@ import {generateKeyPair,SignJWT} from 'jose';
 import {runPublishedGitHubActionTask,recordSignedGitHubActionTaskResult} from '../src/github-action-task.ts';
 import {WorkflowService} from '../src/store.ts';
 import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
-import type {Plan} from '../src/plan.ts';
+import {publishedGitHubActionStep,type Plan} from '../src/plan.ts';
 import type {Env} from '../src/store.ts';
 import type {WorkflowStep} from 'cloudflare:workers';
 
@@ -234,4 +234,48 @@ test('workflow_cancel requests a Task cancellation exactly once and preserves pa
   assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'cancelled');
   assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
  }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+
+test('dynamic Task OIDC Claim and signed result bind to exact bounded child ID',async()=>{
+ const f=setup();
+ const dynamic:Plan={...plan,steps:[{id:'each',uses:'flow.foreach',needs:[],
+  with:{items:{ref:'inputs.items'},max_items:2,
+   template:{id:'verify',uses:'github.run',with:plan.steps[0].with}}}]};
+ const child=publishedGitHubActionStep(dynamic,'each_0_verify');
+ assert.ok(child);
+ f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(dynamic),'v');
+ const {privateKey,publicKey}=await generateKeyPair('RS256');
+ const signed=await new SignJWT({repository:repo,repository_id:'123',
+   workflow_ref:workflowRef,ref,sha,run_id:'42',run_attempt:'1',event_name:'workflow_dispatch'})
+  .setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+  .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+ let claimed=false;
+ const http=async(req:Request):Promise<Response>=>{
+  const path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))return Response.json({ref,object:{type:'commit',sha}});
+  if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+  const stored=f.db.prepare('SELECT attempt_id,step_id FROM step_attempts').get() as {
+    attempt_id:string;step_id:string};
+  assert.equal(stored.step_id,'each_0_verify');
+  if(!claimed){
+   claimed=await verifyAndClaimPinnedGitHubAction(f.adapter,stored.attempt_id,
+     signed,audience,publicKey);
+   assert.equal(claimed,true);
+   assert.equal(await recordSignedGitHubActionTaskResult(f.adapter,stored.attempt_id,
+    signed,audience,{checked:'dynamic'},publicKey),'recorded');
+  }
+  return Response.json({id:42,workflow_id:action.workflowId,run_attempt:1,
+   repository:{id:123,full_name:repo},path:action.workflowPath,
+   head_branch:'task-v1',head_sha:sha,event:'workflow_dispatch',
+   status:'completed',conclusion:'success'});
+ };
+ try{
+  const first=await runPublishedGitHubActionTask(f.env,dynamic,child,runId,f.step,http);
+  assert.deepEqual(first,{status:'succeeded',output:{checked:'dynamic'}});
+  assert.equal(f.post(),1);
+  const duplicate=await runPublishedGitHubActionTask(f.env,dynamic,child,runId,f.step,http);
+  assert.equal(duplicate.status,'indeterminate');
+  assert.equal(f.post(),1,'reentry after missing native checkpoint does not re-dispatch');
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
+ }finally{f.db.close();}
 });
