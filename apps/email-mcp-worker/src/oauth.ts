@@ -22,16 +22,21 @@ function config(env: Env, provider: Provider): OAuthConfig {
   }
   return fail('oauth_misconfigured');
 }
-export async function beginOAuth(env: Env, provider: Provider, ownerSub: string): Promise<string> {
+export async function beginOAuth(env: Env, provider: Provider, ownerSub: string, accountId?: string): Promise<string> {
   if (provider !== 'gmail' && provider !== 'graph') fail('unsupported');
+  if (accountId) {
+    const existing = await env.DB.prepare('SELECT account_id,provider FROM mail_accounts WHERE account_id=? AND status!=?')
+      .bind(accountId, 'disabled').first<{ account_id: string; provider: Provider }>();
+    if (!existing || existing.provider !== provider) fail('account_not_found');
+  }
   const cfg = config(env, provider), state = nonce(), verifier = nonce() + nonce();
   const challenge = base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
   const hash = await sha256(state), encrypted = await encrypt(env, 'oauth:' + hash, { verifier });
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare('DELETE FROM oauth_sessions WHERE state_hash IN (SELECT state_hash FROM oauth_sessions WHERE expires_at<? LIMIT 20)')
     .bind(now).run();
-  await env.DB.prepare('INSERT INTO oauth_sessions(state_hash,provider,owner_sub,pkce_ciphertext,key_id,created_at,expires_at) VALUES(?,?,?,?,?,?,?)')
-    .bind(hash, provider, ownerSub, encrypted.ciphertext, encrypted.keyId, now, now + 600).run();
+  await env.DB.prepare('INSERT INTO oauth_sessions(state_hash,provider,account_id,owner_sub,pkce_ciphertext,key_id,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)')
+    .bind(hash, provider, accountId ?? null, ownerSub, encrypted.ciphertext, encrypted.keyId, now, now + 600).run();
   const url = new URL(cfg.auth);
   for (const [k, v] of Object.entries({
     client_id: cfg.clientId, redirect_uri: callback, response_type: 'code', scope: cfg.scope,
@@ -76,7 +81,7 @@ export async function completeOAuth(env: Env, state: string, code: string, owner
     .bind(now, hash, ownerSub, now).run();
   if (changed.meta.changes !== 1) fail('invalid_oauth_state');
   const row = await env.DB.prepare('SELECT * FROM oauth_sessions WHERE state_hash=?').bind(hash)
-    .first<{ provider: Provider; pkce_ciphertext: string; key_id: string }>();
+    .first<{ provider: Provider; account_id: string | null; pkce_ciphertext: string; key_id: string }>();
   if (!row) fail('invalid_oauth_state');
   const { verifier } = await decrypt<{ verifier: string }>(env, 'oauth:' + hash, row.pkce_ciphertext, row.key_id);
   const creds = await exchange(env, row.provider, new URLSearchParams({
@@ -84,9 +89,22 @@ export async function completeOAuth(env: Env, state: string, code: string, owner
   }), requestFetch);
   if (!creds.refresh_token) fail('refresh_token_missing');
   const address = await identity(row.provider, creds.access_token, requestFetch);
-  const accountId = crypto.randomUUID(), encrypted = await encrypt(env, 'account:' + accountId + ':' + row.provider, creds);
-  await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,token_expires_at,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,?,?)')
-    .bind(accountId, row.provider, address, 'active', encrypted.ciphertext, encrypted.keyId, creds.expires_at, now, now).run();
+  const accountId = row.account_id ?? crypto.randomUUID();
+  if (row.account_id) {
+    const old = await env.DB.prepare('SELECT account_id,provider,address,status FROM mail_accounts WHERE account_id=?')
+      .bind(accountId).first<Pick<MailAccount, 'account_id' | 'provider' | 'address' | 'status'>>();
+    if (!old || old.provider !== row.provider || old.address.toLowerCase() !== address || old.status === 'disabled')
+      fail('reauthorization_identity_mismatch');
+  }
+  const encrypted = await encrypt(env, 'account:' + accountId + ':' + row.provider, creds);
+  if (row.account_id) {
+    const updated = await env.DB.prepare('UPDATE mail_accounts SET status=?,credential_ciphertext=?,credential_key_id=?,token_expires_at=?,token_version=token_version+1,refresh_lock_until=NULL,updated_at=? WHERE account_id=? AND provider=? AND lower(address)=? AND status!=?')
+      .bind('active', encrypted.ciphertext, encrypted.keyId, creds.expires_at, now, accountId, row.provider, address, 'disabled').run();
+    if (updated.meta.changes !== 1) fail('reauthorization_identity_mismatch');
+  } else {
+    await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,token_expires_at,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,?,?)')
+      .bind(accountId, row.provider, address, 'active', encrypted.ciphertext, encrypted.keyId, creds.expires_at, now, now).run();
+  }
   return accountId;
 }
 export async function accessToken(env: Env, account: MailAccount, requestFetch: typeof fetch = fetch): Promise<string> {

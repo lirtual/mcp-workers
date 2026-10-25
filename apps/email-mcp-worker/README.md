@@ -11,7 +11,7 @@ DO NOT deploy this candidate to production.
 
 - Strict Portal bearer boundary for MCP; Access JWT signature, audience, issuer,
   expiry and owner check for account setup; host and CSRF enforcement.
-- OAuth PKCE/hashed single-use state; Gmail and Graph authorization; encrypted
+- OAuth PKCE/hashed single-use state; Gmail and Graph authorization/reconnection; encrypted
   on-demand token lifecycle and local account removal.
 - Gmail and Graph native search/read/folders/drafts/send/mark/trash. Gmail
   native threads and Graph reply/forward/move.

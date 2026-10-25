@@ -43,7 +43,16 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
           escapeHtml(item.status) + ') ' + escapeHtml(item.alias) +
           '<form method="post" action="/setup/remove"><input type="hidden" name="csrf" value="' + csrf + '">' +
           '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
-          '<button type="submit">Remove</button></form></li>';
+          '<button type="submit">Remove</button></form>' +
+          (item.provider !== 'imap_smtp'
+            ? '<form method="post" action="/setup/oauth/start"><input type="hidden" name="csrf" value="' + csrf + '">' +
+              '<input type="hidden" name="provider" value="' + escapeHtml(item.provider) + '">' +
+              '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
+              '<button type="submit">Reauthorize</button></form>' : '') +
+          '<form method="post" action="/setup/alias"><input type="hidden" name="csrf" value="' + csrf + '">' +
+          '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
+          '<label>Alias <input name="alias" maxlength="80" value="' + escapeHtml(item.alias ?? '') + '"></label>' +
+          '<button type="submit">Save alias</button></form></li>';
       }).join('');
       return securedHtml('<h1>Mail accounts</h1><p>Only the Access-authorized owner can manage connected mailboxes.</p>' +
         '<ul>' + (rows || '<li>No accounts</li>') + '</ul>' +
@@ -59,7 +68,9 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       validateCsrf(request, data.get('csrf') ?? '');
       const provider = data.get('provider') as Provider;
       if (provider !== 'gmail' && provider !== 'graph') fail('unsupported');
-      const redirect = await beginOAuth(env, provider, owner.sub);
+      const accountId = data.get('account_id') ?? undefined;
+      if (accountId && !/^[0-9a-f-]{36}$/i.test(accountId)) fail('invalid_account');
+      const redirect = await beginOAuth(env, provider, owner.sub, accountId);
       return new Response(null, { status: 303, headers: { location: redirect, 'cache-control': 'no-store' } });
     }
     if (url.pathname === '/oauth/callback' && request.method === 'GET') {
@@ -68,6 +79,20 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
         url.searchParams.get('code') ?? '', owner.sub, requestFetch);
       return securedHtml('<h1>Mailbox authorized</h1><p>Account ID: <code>' + escapeHtml(accountId) +
         '</code></p><p><a href="/setup">Back to accounts</a></p>');
+    }
+    if (url.pathname === '/setup/alias' && request.method === 'POST') {
+      const data = await formValues(request);
+      validateCsrf(request, data.get('csrf') ?? '');
+      const accountId = data.get('account_id') ?? '';
+      const alias = (data.get('alias') ?? '').trim();
+      if (!/^[0-9a-f-]{36}$/i.test(accountId) || alias.length > 80 ||
+        /[\u0000-\u001f\u007f]/.test(alias)) fail('invalid_account_alias');
+      const updated = await env.DB.prepare('UPDATE mail_accounts SET alias=?,updated_at=? WHERE account_id=? AND status!=?')
+        .bind(alias || null, Math.floor(Date.now() / 1000), accountId, 'disabled').run();
+      if (updated.meta.changes !== 1) fail('account_not_found');
+      return new Response(null, { status: 303, headers: {
+        location: '/setup', 'cache-control': 'no-store',
+      } });
     }
     if (url.pathname === '/setup/remove' && request.method === 'POST') {
       const data = await formValues(request);
