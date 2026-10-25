@@ -332,14 +332,23 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     if(s.uses==='flow.foreach'){
-      expression(s.with.items,s);
+      const sourcePath='/steps/'+steps.indexOf(s);
+      const check=(value:unknown,path:string,allowItem=false)=>{
+        try{expression(value,s,0,false,allowItem);}
+        catch(error){
+          if(error instanceof PlanError)throw new PlanError(error.message,path);
+          throw error;
+        }
+      };
+      check(s.with.items,sourcePath+'/items');
       const child=s.with.template as {id:string;uses:string;with:{data?:unknown};if?:unknown};
-      if(child.with.data!==undefined)expression(child.with.data,s,0,false,true);
+      if(child.with.data!==undefined)
+        check(child.with.data,sourcePath+'/template/steps/0/with/data',true);
       if(child.if!==undefined){
-        expression(child.if,s,0,false,true);
+        check(child.if,sourcePath+'/template/steps/0/if',true);
         const op=child.if&&typeof child.if==='object'&&!Array.isArray(child.if)?Object.keys(child.if):[];
         if(typeof child.if!=='boolean'&&!(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
-          throw new PlanError('invalid_condition','/steps/'+steps.indexOf(s)+'/with/template/if');
+          throw new PlanError('invalid_condition',sourcePath+'/template/steps/0/if');
       }
     }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true);
     else if(s.uses==='github.run' && s.with.capability==='github.action') {
