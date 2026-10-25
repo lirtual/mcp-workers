@@ -86,9 +86,9 @@ async function capabilities(env: Env, account: MailAccount) {
 }
 
 type Cursor = {
-  expiry: number; digest: string; next: Record<string, string>;
+  expiry: number; digest: string; next: Record<string, string | null>;
 };
-async function decodeCursor(env: Env, input: string | undefined, digest: string): Promise<Record<string, string>> {
+async function decodeCursor(env: Env, input: string | undefined, digest: string): Promise<Record<string, string | null>> {
   if (!input) return {};
   if (input.length > 8000) fail('invalid_cursor');
   const [keyId, ...rest] = input.split('~');
@@ -97,8 +97,8 @@ async function decodeCursor(env: Env, input: string | undefined, digest: string)
   if (payload.digest !== digest || payload.expiry <= Date.now()) fail('invalid_cursor');
   return payload.next;
 }
-async function encodeCursor(env: Env, digest: string, next: Record<string, string>): Promise<string | undefined> {
-  if (!Object.keys(next).length) return undefined;
+async function encodeCursor(env: Env, digest: string, next: Record<string, string | null>): Promise<string | undefined> {
+  if (!Object.values(next).some(value => value !== null)) return undefined;
   const item = await encrypt(env, 'mail-search-cursor', { expiry: Date.now() + 10 * 60_000, digest, next });
   return item.keyId + '~' + item.ciphertext;
 }
@@ -110,23 +110,29 @@ export async function searchAcross(env: Env, accounts: string[], query: string, 
   const positions = await decodeCursor(env, cursor, digest);
   const statuses: { account_id: string; status: string; error?: string; count: number }[] = [];
   const messages: any[] = [];
-  const next: Record<string, string> = {};
+  const next: Record<string, string | null> = {};
   // Bounded concurrency: at most three upstream accounts per batch.
   for (let i = 0; i < ordered.length; i += 3) {
     const batch = await Promise.all(ordered.slice(i, i + 3).map(async aid => {
       try {
+        if (positions[aid] === null) return { aid, ok: true as const, result: { messages: [], next: undefined } };
         const account = await getAccount(env, aid);
-        const result = await searchMail(env, account, query, positions[aid], 10);
+        const result = await searchMail(env, account, query, positions[aid] ?? undefined, 10);
         return { aid, ok: true as const, result };
       } catch (err) {
         return { aid, ok: false as const, error: err instanceof MailError ? err.code : 'upstream_unavailable' };
       }
     }));
     for (const item of batch) {
-      if (!item.ok) { statuses.push({ account_id: item.aid, status: item.error === 'reauthorization_required' ? 'unauthorized' : 'failed', error: item.error, count: 0 }); continue; }
+      if (!item.ok) {
+        statuses.push({ account_id: item.aid, status: item.error === 'reauthorization_required' ? 'unauthorized' : 'failed', error: item.error, count: 0 });
+        if (positions[item.aid]) next[item.aid] = positions[item.aid];
+        continue;
+      }
       messages.push(...item.result.messages);
       statuses.push({ account_id: item.aid, status: 'success', count: item.result.messages.length });
-      if (item.result.next) next[item.aid] = item.result.next;
+      // Retain completed mailboxes in the cursor; otherwise later pages replay page one.
+      next[item.aid] = item.result.next ?? null;
     }
   }
   messages.sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')) ||
