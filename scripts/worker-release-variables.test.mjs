@@ -26,7 +26,7 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
   assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID"]);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,7);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
@@ -79,7 +79,7 @@ test("GitHub Actions has no redundant repository allowlist variables", () => {
   }), []);
 });
 
-test("Workflow always has a pinned MCP Portal and GitHub executor without rollout toggles",()=>{
+test("Workflow has pinned MCP Portal and GitHub Action OIDC identity without rollout toggles",()=>{
   const fixed=collectWorkerVars("workflow-mcp-worker",{
     MCP_PORTAL_ENDPOINT:"https://attacker.invalid/mcp",
     MCP_PORTAL_CLIENT_ID:"test-id",
@@ -88,10 +88,6 @@ test("Workflow always has a pinned MCP Portal and GitHub executor without rollou
   });
   assert.deepEqual(fixed,[
     "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-    "GITHUB_EXECUTOR_REPOSITORY:lirtual/mcp-workers",
-    "GITHUB_EXECUTOR_REPOSITORY_ID:1414936394",
-    "GITHUB_EXECUTOR_REF:refs/heads/main",
-    "GITHUB_EXECUTOR_AUDIENCE:workflow-github-claim:production",
     "GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production",
     "MCP_PORTAL_CLIENT_ID:test-id",
   ]);
@@ -115,8 +111,8 @@ test("Workflow Action repository grants are narrowly sourced from an explicit va
     MCP_PORTAL_CLIENT_ID:"test-id",
     GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify(grants),
   });
-  assert.equal(pinned.length,8);
-  assert.deepEqual(JSON.parse(pinned[6].slice("GITHUB_ACTION_APPROVED_REPOSITORIES:".length)),
+  assert.equal(pinned.length,4);
+  assert.deepEqual(JSON.parse(pinned[2].slice("GITHUB_ACTION_APPROVED_REPOSITORIES:".length)),
     grants);
   for(const invalid of [
     "not-json", "{}", JSON.stringify([{...grants[0],commitSha:"main"}]),

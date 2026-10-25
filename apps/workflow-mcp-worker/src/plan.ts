@@ -148,8 +148,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
            typeof action.contractDigest!=='string'||! /^[a-f0-9]{64}$/i.test(action.contractDigest))
           throw new PlanError('invalid_github_action');
         object(action.inputs,'invalid_github_action_inputs');
-      } else if(withData.capability!=='github.workflow.check')
-        throw new PlanError('unsupported_github_capability');
+      } else throw new PlanError('unsupported_github_capability');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema']);
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint');

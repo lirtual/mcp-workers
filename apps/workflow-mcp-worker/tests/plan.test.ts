@@ -180,21 +180,9 @@ test('MCP contract requires bounded, concrete JSON Schema; no user-supplied dige
 });
 
 
-test('GitHub only compiles a fixed registered capability without dynamic shell, repo, or token',async()=>{
-  const compiled=await compilePlan({version:1,name:'GitHub echo',steps:[
-    {id:'heavy',uses:'github.run',with:{capability:'github.workflow.check'}},
-    {id:'out',needs:['heavy'],uses:'result.emit',with:{data:{ref:'steps.heavy.output'}}},
-  ]});
-  assert.equal(compiled.plan.steps[0].uses,'github.run');
-  assert.deepEqual(compiled.plan.steps[0].with,{capability:'github.workflow.check'});
-  for(const extra of [
-    {capability:'shell.exec'},
-    {capability:'github.workflow.check',repository:'attacker/other'},
-    {capability:'github.workflow.check',workflow:'other.yml'},
-    {capability:'github.workflow.check',token:{ref:'inputs.token'}},
-    {capability:'github.workflow.check',command:'pwd'},
-    {capability:'github.workflow.check',arguments:{value:'unsafe'}},
-  ]) await assert.rejects(()=>compilePlan({version:1,name:'GitHub invalid',steps:[
-    {id:'heavy',uses:'github.run',with:extra},
-  ]}),PlanError);
+test('retired fixed GitHub Workflow Check and arbitrary commands fail closed',async()=>{
+  for(const capability of ['github.workflow.check','shell.exec',null])
+    await assert.rejects(()=>compilePlan({version:1,name:'Invalid GitHub capability',steps:[
+      {id:'heavy',uses:'github.run',with:{capability}},
+    ]}),PlanError);
 });

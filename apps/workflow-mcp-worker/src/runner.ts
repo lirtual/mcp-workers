@@ -7,8 +7,6 @@ import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.t
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult } from './store.ts';
-import { registerGithubAttempt,recordGithubDispatchResult } from './github-claim.ts';
-import { dispatchGithubAttempt,selectedGithubExecutor } from './github-dispatch.ts';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -74,90 +72,18 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   }
 }
 
-/**
- * GitHub cannot be executed by the generic 30-second step.do callback:
- * dispatch is externally observable, and waiting for a callback belongs in
- * a native Workflow waitForEvent (not inside step.do). The first durable
- * Attempt INSERT is UNIQUE(run_id,step_id), fencing replayed dispatch.
- */
+/** GitHub Action dispatch/terminal verification is handled by its own durable helpers. */
 async function runGithubStep(
   env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
 ):Promise<Outcome>{
   if(plan.github_execution_approved!==true)
     return {status:'failed',error_code:'github_execution_approval_required'};
-  if(s.with.capability==='github.action')
-    return (s.with.action as {type?:unknown}|undefined)?.type==='session'
-      ?runPublishedGitHubActionSession(env,plan,s,runId,step)
-      :runPublishedGitHubActionTask(env,plan,s,runId,step);
-  if(s.with.capability!=='github.workflow.check')
+  // A malformed persisted Plan must never regain retired executor privileges.
+  if(s.with.capability!=='github.action')
     return {status:'failed',error_code:'github_capability_not_registered'};
-  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.GITHUB_EXECUTOR_REPOSITORY||
-     !env.GITHUB_EXECUTOR_REPOSITORY_ID||!env.GITHUB_EXECUTOR_REF||
-     !env.GITHUB_EXECUTOR_AUDIENCE)
-    return {status:'failed',error_code:'github_executor_not_configured'};
-  const db=env.DB;
-  const executor=selectedGithubExecutor(env);
-  // This operation intentionally does not retry on any ambiguity. A new
-  // logical Attempt for the same Run+Step is forbidden by D1 UNIQUE.
-  const dispatch=(await step.do('github-dispatch-'+s.id,{
-    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
-  },async()=>{
-    const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
-    await registerGithubAttempt(db,{
-      attemptId,dispatchId,runId,stepId:s.id,
-      capabilityId:'github.workflow.check',
-      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
-      repositoryId:env.GITHUB_EXECUTOR_REPOSITORY_ID!,
-      ref:env.GITHUB_EXECUTOR_REF!,
-      workflowRef:env.GITHUB_EXECUTOR_REPOSITORY+
-        '/.github/workflows/'+executor.workflow+'@'+env.GITHUB_EXECUTOR_REF,
-      audience:env.GITHUB_EXECUTOR_AUDIENCE!,
-    });
-    const result=await dispatchGithubAttempt({
-      repository:env.GITHUB_EXECUTOR_REPOSITORY!,
-      ref:env.GITHUB_EXECUTOR_REF!,
-      workflow:executor.workflow,
-      ...(executor.workerName?{workerName:executor.workerName}:{}),
-      dispatchToken:env.WORKFLOW_GITHUB_DISPATCH_TOKEN!,
-    },{attemptId,dispatchId,capabilityId:'github.workflow.check'});
-    const persisted=await recordGithubDispatchResult(db,attemptId,result);
-    if(!persisted)throw Error('dispatch_ack_not_persisted');
-    return {attemptId,...result};
-  })) as {attemptId:string;status:string;httpStatus?:number;reason?:string};
-  if(dispatch.status==='rejected')return {
-    status:'failed',error_code:'github_dispatch_rejected_'+
-      String(dispatch.httpStatus??'unknown')+'_'+String(dispatch.reason??'unknown'),
-  };
-  if(dispatch.status!=='confirmed')
-    return {status:'indeterminate',error_code:'github_dispatch_unknown'};
-  type Receipt={callback_id:string;outcome:string;result_json:string};
-  const readReceipt=()=>db.prepare(
-    'SELECT callback_id,outcome,result_json FROM callback_receipts WHERE attempt_id=?'
-  ).bind(dispatch.attemptId).first<Receipt>();
-  let receipt=await readReceipt();
-  // A notification can be lost after its immutable D1 receipt was committed,
-  // or arrive just before waitForEvent is registered. Use native timed waits
-  // with a bounded D1 readback; the event is only a wake hint and NEVER a
-  // source of business facts. No re-dispatch or external job retry occurs.
-  for(let i=0;i<8&&!receipt;i++){
-    try{
-      await step.waitForEvent<{attemptId:string;callbackId:string}>(
-        'github-receipt-'+s.id+'-'+i,
-        {type:'github-receipt-'+s.id,timeout:'30 seconds'});
-    }catch{
-      // Missing notification or timeout: reconcile durable D1 only.
-    }
-    receipt=await readReceipt();
-  }
-  if(!receipt)return {status:'indeterminate',error_code:'github_callback_unconfirmed'};
-  if(receipt.outcome!=='succeeded'&&receipt.outcome!=='failed')
-    return {status:'indeterminate',error_code:'github_callback_invalid'};
-  try{
-    const value=limitResult(JSON.parse(receipt.result_json));
-    return receipt.outcome==='succeeded'
-      ?{status:'succeeded',output:value}
-      :{status:'failed',error_code:'github_job_failed'};
-  }catch{return {status:'indeterminate',error_code:'github_callback_invalid'};}
+  return (s.with.action as {type?:unknown}|undefined)?.type==='session'
+    ?runPublishedGitHubActionSession(env,plan,s,runId,step)
+    :runPublishedGitHubActionTask(env,plan,s,runId,step);
 }
 
 export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}> {
