@@ -98,6 +98,12 @@ const dag = {version:1,name:'Conditional DAG',steps:[
     if:{eq:[{ref:'steps.first.status'},'succeeded']},
     with:{data:{ref:'steps.first.output'}}},
 ]};
+const branchJoin={version:1,name:'Conditional branch and join',inputs:{choice:'left'},steps:[
+  {id:'left',uses:'result.emit',if:{eq:[{ref:'inputs.choice'},'left']},with:{data:'L'}},
+  {id:'right',uses:'result.emit',if:{eq:[{ref:'inputs.choice'},'right']},with:{data:'R'}},
+  {id:'join',needs:['left','right'],needs_policy:'allow_skipped',uses:'result.emit',
+    with:{data:{left_status:{ref:'steps.left.status'},right_status:{ref:'steps.right.status'}}}},
+]};
 const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
   steps:[{id:'read',uses:'mcp.call',with:{
     endpoint:tool.endpoint,tool:tool.tool,scope:'read',
@@ -141,6 +147,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   operators:['ref','eq','ne','gt','lt','and','or','not'],
   condition:'Boolean literal or safe expression that evaluates to Boolean; eq/ne/gt/lt take 2 operands, and/or take 1-16 operands.',
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
+  needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   unsupported:['foreach','while','repeat','child_workflow','saga'],
 });
@@ -175,6 +182,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
+        needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
       },
@@ -206,6 +214,8 @@ const entries=[
    description:'Acyclic needs dependencies, bounded steps and parallel admission. Steps run under one Cloudflare Workflow instance.'},
   {id:'flow.condition',kind:'flow',availability:'supported',
    description:'Step if accepts safe ref/eq/ne/gt/lt/and/or/not expressions with compiler validation.'},
+  {id:'flow.branch_join',kind:'flow',availability:'supported',
+   description:'Explicit needs_policy=allow_skipped joins conditional branches only when at least one succeeded and all other dependencies succeeded or skipped; a wholly skipped branch set, failure or uncertainty blocks execution.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Repeat, while, foreach, nested steps and dynamic expansion are not executable in the current compiler.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
@@ -304,6 +314,8 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(emit);
   if(id==='flow.static_dag'||id==='flow.condition')
     detail.example=await compilingExample(dag);
+  if(id==='flow.branch_join')
+    detail.example=await compilingExample(branchJoin);
   if(id==='action.mcp.call'){
     const discovered=await portalDiscovery(env);
     detail.availability=discovered.availability;

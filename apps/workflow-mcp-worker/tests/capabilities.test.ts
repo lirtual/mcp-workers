@@ -23,6 +23,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   for(const id of ['flow.loop','flow.child','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
+  assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
   assert.equal(JSON.stringify(overview).includes('test-only-secret'),false);
@@ -31,7 +32,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition']){
+    'flow.static_dag','flow.condition','flow.branch_join']){
     const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -68,6 +69,18 @@ test('only source-reviewed Portal tools with bounded actual schemas are returned
   assert.match(result[0].schema_digest,/^[0-9a-f]{64}$/);
   assert.equal(result[0].availability,'discovered_not_executed');
 });
+test('advertised skip-tolerant join matches compiler and keeps fail-closed semantics',async()=>{
+  const field=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.needs_policy;
+  assert.deepEqual(field.enum,['all_succeeded','allow_skipped']);
+  const detail=await workflowCapabilities(env,'flow.branch_join');
+  assert.equal(detail.availability,'supported');
+  const sample=(detail.example as {definition:{steps:Array<{needs_policy?:string}>}}).definition;
+  assert.equal(sample.steps.find(s=>s.needs_policy==='allow_skipped')?.needs_policy,'allow_skipped');
+  const rules=(await workflowCapabilities(env)).expression_rules as {needs_policy:string};
+  assert.match(rules.needs_policy,/failed or indeterminate/);
+  assert.match(rules.needs_policy,/at least one succeeded/);
+});
+
 test('Agent-readable Action schemas document required executable parameters',()=>{
   assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].required,
     ['endpoint','tool','scope','arguments','input_schema']);

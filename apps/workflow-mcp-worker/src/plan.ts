@@ -16,6 +16,7 @@ export class PlanError extends Error {
 }
 export type Step = {
   id: string; uses: 'result.emit' | 'mcp.call' | 'github.run'; needs: string[];
+  needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown;
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
@@ -186,12 +187,18 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   for(const s0 of o.steps){
     const s=object(s0,'invalid_step');
     const stepPath='/steps/'+steps.length;
-    keys(s,['id','uses','needs','if','with'],stepPath);
+    keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
     if(!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
+    // Opt-in branch fan-in: completed/skipped dependencies may join, but a
+    // failed/indeterminate dependency never authorizes downstream effects.
+    if(s.needs_policy!==undefined&&s.needs_policy!=='all_succeeded'&&s.needs_policy!=='allow_skipped')
+      throw new PlanError('invalid_needs_policy',stepPath+'/needs_policy');
+    if(s.needs_policy==='allow_skipped'&&!needs.length)
+      throw new PlanError('invalid_needs_policy',stepPath+'/needs_policy');
     const withData=object(s.with,'invalid_step_arguments');
     if(s.uses==='github.run'){
       // A single fixed CI verification operation. No user-supplied scripts,
@@ -227,7 +234,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }else keys(withData,['data'],stepPath+'/with');
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
-    steps.push({id:s.id,uses:s.uses,needs:needs as string[],with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
+    steps.push({id:s.id,uses:s.uses,needs:needs as string[],
+      ...(s.needs_policy==='allow_skipped'?{needs_policy:'allow_skipped' as const}:{}),
+      with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
   }
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
