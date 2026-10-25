@@ -17,6 +17,9 @@ import readonlyWorker from './fixtures/readonly-worker.ts';
 import {listAvailableGitHubActions} from '../src/github-action-catalog.ts';
 import {parseGitHubAction} from '../src/github-action-contract.ts';
 import {reviewedGitHubAction} from '../src/github-action-review.ts';
+import {generateKeyPair,SignJWT} from 'jose';
+import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
+import {recordSignedGitHubActionTaskResult} from '../src/github-action-task.ts';
 
 // Only the Cloudflare orchestration shell and remote MCP peer are substituted.
 const hook=registerHooks({resolve(specifier,context,next){
@@ -1504,4 +1507,103 @@ test('emit → conditional Task → emit skips all external work and follow-up o
  assert.equal(result.steps.find(s=>s.step_id==='each_0_verify')?.status,'skipped');
  assert.equal(result.steps.find(s=>s.step_id==='each_0_finish')?.status,'skipped');
  assert.equal(calls,0);
+});
+
+test('two staged Tasks deliver signed OIDC receipts and physical success to item-local final emits',async t=>{
+ const {admit,service,env,sqlite}=setup(t);
+ sqlite.exec('BEGIN');
+ sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ sqlite.exec('COMMIT');
+ sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
+ const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
+   {items:['first','second']});
+ const identity={repository:'lirtual/session-actions',repositoryId:123,
+  workflowId:456,workflowPath:'.github/workflows/task.yml',
+  commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
+ const tag='refs/tags/task-v1',audience='workflow-github-action:production';
+ const {plan}=await compilePlan({version:1,name:'Signed ordered Task pipeline',steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+    {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+    {id:'verify',uses:'github.run',with:{capability:'github.action',
+     action:{...identity,ref:tag,inputs:{outcome:'success'}}}},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
+   ]}},
+  {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+ ]});
+ plan.github_execution_approved=true;plan.github_action_approvals=[identity];
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+  .run(JSON.stringify(plan),started.run_id);
+ env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.GITHUB_ACTION_OIDC_AUDIENCE=audience;
+ const {privateKey,publicKey}=await generateKeyPair('RS256');
+ const signed=new Map<number,string>();
+ let posts=0;const claimed=new Set<number>();
+ const savedFetch=globalThis.fetch;
+ globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+  const req=new Request(input,init),path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref:tag,object:{type:'commit',sha:identity.commitSha}});
+  if(req.method==='POST'){
+   posts++;
+   const sent=await req.json() as {ref:string;inputs:Record<string,string>};
+   assert.equal(sent.ref,'task-v1');
+   assert.deepEqual(sent.inputs.outcome,'success');
+   assert.ok(posts<=2,'must dispatch one Task per item');
+   return Response.json({workflow_run_id:41+posts});
+  }
+  const match=path.match(/\/actions\/runs\/(42|43)$/);
+  assert.ok(match,'Only pinned physical Task runs may be inspected: '+path);
+  const physical=Number(match[1]);
+  const stored=sqlite.prepare(
+   'SELECT attempt_id,step_id FROM step_attempts WHERE candidate_run_id=?'
+  ).get(physical) as {attempt_id:string;step_id:string}|undefined;
+  assert.ok(stored,'run must be persisted before physical result');
+  assert.equal(stored.step_id,'each_'+(physical-42)+'_verify');
+  if(!claimed.has(physical)){
+   const jwt=await new SignJWT({
+    repository:identity.repository,repository_id:String(identity.repositoryId),
+    workflow_ref:identity.repository+'/'+identity.workflowPath+'@'+tag,
+    ref:tag,sha:identity.commitSha,run_id:String(physical),run_attempt:'1',
+    event_name:'workflow_dispatch',
+   }).setProtectedHeader({alg:'RS256'})
+     .setIssuer('https://token.actions.githubusercontent.com')
+     .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+   signed.set(physical,jwt);
+   assert.equal(await verifyAndClaimPinnedGitHubAction(env.DB,stored.attempt_id,
+     jwt,audience,publicKey),true);
+   assert.equal(await recordSignedGitHubActionTaskResult(env.DB,stored.attempt_id,
+     jwt,audience,{verified:true,physical},publicKey),'recorded');
+   claimed.add(physical);
+  }
+  return Response.json({id:physical,workflow_id:identity.workflowId,run_attempt:1,
+   repository:{id:identity.repositoryId,full_name:identity.repository},
+   path:identity.workflowPath,head_branch:'task-v1',head_sha:identity.commitSha,
+   event:'workflow_dispatch',status:'completed',conclusion:'success'});
+ }) as typeof fetch;
+ t.after(()=>{globalThis.fetch=savedFetch;});
+ const checkpoints:string[]=[];
+ await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+  {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+  {do:async(name:string,_opts:unknown,fn:()=>Promise<unknown>)=>{
+    checkpoints.push(name);return fn();
+   },sleep:async()=>{}} as unknown as WorkflowStep);
+ const result=await service.result(started.run_id);
+ assert.equal(result.status,'succeeded',JSON.stringify(result));
+ assert.deepEqual(result.result,[{verified:true,physical:42},{verified:true,physical:43}]);
+ assert.equal(posts,2);
+ assert.deepEqual([...claimed],[42,43]);
+ assert.equal(sqlite.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,2);
+ assert.equal(sqlite.prepare("SELECT count(*) AS n FROM step_attempts WHERE state='succeeded'").get()?.n,2);
+ assert.equal(sqlite.prepare("SELECT count(*) AS n FROM callback_receipts WHERE outcome='succeeded'").get()?.n,2);
+ for(const id of ['each','each_0_prepare','each_0_verify','each_0_finish',
+   'each_1_prepare','each_1_verify','each_1_finish','done'])
+  assert.equal(result.steps.find(s=>s.step_id===id)?.status,'succeeded',id);
+ for(const i of [0,1]){
+  const label='each_'+i+'_';
+  assert.ok(checkpoints.indexOf('workflow-'+label+'prepare')<
+    checkpoints.indexOf('github-action-dispatch-'+label+'verify'));
+  assert.ok(checkpoints.indexOf('github-action-dispatch-'+label+'verify')<
+    checkpoints.indexOf('workflow-'+label+'finish'));
+ }
 });
