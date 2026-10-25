@@ -204,9 +204,9 @@ test('mixed ordered read-only MCP and one literal Task compile with exact pinned
  forbidden.steps[0]!.template.steps[1]=structuredClone(forbidden.steps[0]!.template.steps[2]);
  await assert.rejects(()=>compilePlan(forbidden),/unsupported_foreach_action/);
  const writes=structuredClone(source);
- writes.steps[0]!.template.steps[1]!.with.scope='write';
+ (writes.steps[0]!.template.steps[1]!.with as {scope?:string}).scope='write';
  await assert.rejects(()=>compilePlan(writes),/unsupported_operation_scope/);
  const dynamic=structuredClone(source);
- dynamic.steps[0]!.template.steps[2]!.with.action.inputs={outcome:{ref:'item.value'}};
+ (dynamic.steps[0]!.template.steps[2]!.with as {action:{inputs:unknown}}).action.inputs={outcome:{ref:'item.value'}};
  await assert.rejects(()=>compilePlan(dynamic),/unsupported_foreach_inputs/);
 });
