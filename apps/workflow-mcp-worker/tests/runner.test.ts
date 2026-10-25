@@ -1278,3 +1278,46 @@ test('late invalid dynamic Task choice is rejected before any per-item GitHub di
  assert.equal(result.steps.some(x=>x.step_id.startsWith('each_')),false);
  assert.equal(posts,0);
 });
+
+test('valid reviewed item-typed Task reaches one dispatch checkpoint after bounded snapshot',async t=>{
+ const {service,admit,env,sqlite}=setup(t);
+ const start=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
+  {items:['success','success']});
+ const contract={name:'Verify Workflow Action',type:'task' as const,inputs:{
+  outcome:{type:'choice' as const,required:true,
+   description:'Verify the real GitHub task success or failure path',
+   options:['success','failure'],default:'success'},
+ }};
+ const base={repository:'lirtual/session-actions',repositoryId:1430925009,
+  workflowId:394689660,workflowPath:'.github/workflows/verify-action.yml',
+  commitSha:'3b8114a3e478b8acb28ab2f3c404284c33096bcf'};
+ const approved=await reviewedGitHubAction({...base,contract});
+ const {plan}=await compilePlan({version:1,name:'Positive pinned Task',
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[{id:'task',uses:'github.run',with:{
+    capability:'github.action',action:{...approved,ref:'refs/tags/v0.1.25',
+     inputs:{outcome:{ref:'item.value'}}},
+   }}]}}]});
+ plan.github_execution_approved=true;plan.github_action_approvals=[approved];
+ plan.github_dynamic_input_contracts={each:contract};
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+  .run(JSON.stringify(plan),start.run_id);
+ env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ const checkpoints:string[]=[];
+ await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+  {payload:{run_id:start.run_id}} as WorkflowEvent<{run_id:string}>,
+  {do:async(name:string,_options:unknown,callback:()=>Promise<unknown>)=>{
+   checkpoints.push(name);
+   if(name.startsWith('github-action-dispatch-'))
+    return {attemptId:'synthetic-test-only',status:'rejected'};
+   try{return await callback();}catch(error){
+    throw Error('checkpoint '+name+': '+String(error));
+   }
+  }} as unknown as WorkflowStep);
+ const result=await service.result(start.run_id);
+ assert.ok(checkpoints.includes('github-action-dispatch-each_0_task'),
+  'Valid typed snapshot should reach the external dispatch boundary: '+JSON.stringify({checkpoints,result}));
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_task')?.status,'failed');
+ assert.equal(result.steps.find(s=>s.step_id==='each_1_task'),undefined);
+});
