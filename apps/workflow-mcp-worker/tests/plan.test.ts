@@ -400,3 +400,51 @@ test('bounded MCP read foreach pins its child tool contract and item expressions
   bad.steps[0]!.template!.steps[0]!.uses='github.run';
   await assert.rejects(()=>compilePlan(bad),PlanError);
 });
+
+test('bounded pure multi-step foreach reserves child IDs and checks local output references',async()=>{
+  const source={version:1,name:'Pure per-item pipeline',inputs:{items:['A','B']},steps:[
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:3,
+      template:{steps:[
+        {id:'prepare',uses:'result.emit',with:{data:{value:{ref:'item.value'},index:{ref:'item.index'}}}},
+        {id:'finish',uses:'result.emit',if:{eq:[{ref:'steps.prepare.status'},'succeeded']},
+          with:{data:{ref:'steps.prepare.output.value'}}},
+      ]}},
+    {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+  ]};
+  const compiled=await compilePlan(source);
+  const each=compiled.plan.steps.find(s=>s.id==='each');
+  assert.equal(each?.uses,'flow.foreach');
+  assert.equal((each?.with.templates as unknown[]).length,2);
+  assert.match(compiled.digest,/^[a-f0-9]{64}$/);
+  assert.equal(compiled.digest,(await compilePlan(JSON.stringify(source))).digest);
+  const collision=structuredClone(source);
+  collision.steps.push({id:'each_1_finish',uses:'result.emit',with:{data:'collision'}} as never);
+  await assert.rejects(()=>compilePlan(collision),
+    e=>e instanceof PlanError&&e.message==='invalid_step_id');
+  const forward=structuredClone(source);
+  forward.steps[0]!.template!.steps[0]!.with.data={ref:'steps.finish.output'};
+  await assert.rejects(()=>compilePlan(forward),
+    e=>e instanceof PlanError&&e.path==='/steps/0/template/steps/0/with/data');
+  const crossItem=structuredClone(source);
+  crossItem.steps[0]!.template!.steps[1]!.with.data={ref:'steps.each_0_prepare.output'};
+  await assert.rejects(()=>compilePlan(crossItem),PlanError);
+});
+
+test('pure multi-step foreach rejects external children, nested templates and global budget bypass',async()=>{
+  const emit=(id:string)=>({id,uses:'result.emit',with:{data:{ref:'item.value'}}});
+  const make=(children:unknown[],max_items=2)=>({version:1,name:'Guarded stages',
+    inputs:{items:['a','b']},steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},
+      max_items,template:{steps:children}}]});
+  for(const children of [
+    [emit('a'),emit('a')],
+    [emit('a'),{...emit('b'),uses:'mcp.call'}],
+    [emit('a'),{...emit('b'),uses:'github.run'}],
+    [emit('a'),{...emit('b'),flow:'foreach'}],
+    [emit('a'),emit('b'),emit('c'),emit('d'),emit('e')],
+  ])await assert.rejects(()=>compilePlan(make(children)),PlanError);
+  await assert.rejects(()=>compilePlan(make([emit('a'),emit('b'),emit('c'),emit('d')],8)),
+    e=>e instanceof PlanError&&e.message==='invalid_step_count'&&e.path==='/steps');
+  const exact=await compilePlan(make([emit('a'),emit('b'),emit('c')],8));
+  assert.equal(exact.plan.steps.length,1);
+  assert.equal((exact.plan.steps[0]!.with.templates as unknown[]).length,3);
+});
