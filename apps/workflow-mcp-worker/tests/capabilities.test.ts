@@ -25,6 +25,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   }
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
+  assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
@@ -34,7 +35,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit']){
     const result=await workflowCapabilities(id==='action.mcp.call'?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -86,9 +87,10 @@ test('advertised skip-tolerant join matches compiler and keeps fail-closed seman
 test('literal repeat discovery is compiler-backed and explicitly bounded',async()=>{
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
-    ['uses','with'],['flow','times','template'],
+    ['uses','with'],['flow','times','template'],['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
+  assert.equal(schema.properties.max_items.maximum,PLAN_LIMITS.maxForeachItems);
   assert.ok(schema.oneOf[0].not.anyOf.some(x=>x.required.includes('flow')));
   assert.ok(schema.oneOf[1].not.anyOf.some(x=>x.required.includes('uses')));
   const detail=await workflowCapabilities(env,'flow.repeat');
@@ -97,6 +99,16 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
   const compiled=await compilePlan(example.definition);
   assert.equal(compiled.plan.steps.length,3);
   assert.equal(compiled.digest,example.digest);
+});
+
+test('dynamic foreach discovery exposes narrow result-only native snapshot contract',async()=>{
+  const detail=await workflowCapabilities(env,'flow.foreach_emit');
+  assert.equal(detail.availability,'supported');
+  const sample=detail.example as {definition:unknown;digest:string};
+  assert.equal((await compilePlan(sample.definition)).digest,sample.digest);
+  assert.equal((await compilePlan(sample.definition)).plan.steps.length,2);
+  assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'result.emit');
+  assert.equal(PLAN_LIMITS.maxForeachItems,8);
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{
