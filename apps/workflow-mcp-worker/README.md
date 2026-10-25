@@ -32,7 +32,27 @@ There are **no independent capability enable flags**. The documented per-operati
 
 `workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
 
-`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress currently supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay. It does **not** support direct GitHub webhooks, pull requests or other GitHub event types, repeat/expand, child calls or Saga. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress currently supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay. It does **not** support direct GitHub webhooks, pull requests or other GitHub event types, dynamic repeat/foreach/while, child calls or Saga; only literal fixed-count Repeat is available. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+
+### Literal bounded Repeat
+
+A Step may declare `repeat: {count: N}` with an **integer literal from 1 through 8**. The compiler expands it into a strictly serial chain of standard checkpointed DAG Steps (up to **32 Steps in the whole Published Plan**) *before* validation, external Action grant review, Publish or execution. There is no runtime loop interpreter, new database table, scheduler, or second business orchestrator. As an example:
+
+```json
+{
+  "version": 1, "name": "Fixed repeat", "inputs": {"message": "hello"},
+  "steps": [
+    {"id": "emit", "uses": "result.emit", "repeat": {"count": 3},
+      "with": {"data": {"ref": "inputs.message"}}},
+    {"id": "summary", "uses": "result.emit", "needs": ["emit"],
+      "with": {"data": {"ref": "steps.emit.output"}}}
+  ]
+}
+```
+
+The compiled Steps become `emit__r1 → emit__r2 → emit → summary`. The **final iteration retains the original ID**, so an existing downstream `needs: ["emit"]` or `steps.emit.output` always references the last iteration. Intermediate IDs are stable and appear in Run status. Each generated iteration retains original declared dependencies; iteration 2 and later additionally depend on the preceding iteration's **success**, so failure or a skipped iteration never restarts later effects (including when the original Step uses `needs_policy: allow_skipped`). All generated Steps use the existing runtime permissions, checked Action approvals, idempotency/uncertainty semantics and resource quotas. `count: 1` produces the same Plan digest as omitting `repeat`; collisions with generated Step IDs are rejected.
+
+This is **fixed-count repetition of one existing Action**, not `while`, dynamic `foreach`, loop-carried variables, arbitrary scripts or recursive nested workflows. A Repeat may execute an approved external Action more than once, with one separately reviewed and checkpointed Step identity per iteration; clients must review the complete expanded Action list and grant scope before Publish. For `github.run`, normal dispatch/physical lifecycle checks remain mandatory.
 
 ### Conditional branch joins
 
