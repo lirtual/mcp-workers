@@ -186,3 +186,30 @@ test('retired fixed GitHub Workflow Check and arbitrary commands fail closed',as
       {id:'heavy',uses:'github.run',with:{capability}},
     ]}),PlanError);
 });
+
+
+test('skip-tolerant join is explicit, compiler-pinned, and keeps default Plan digests',async()=>{
+  const base={version:1,name:'Join contract',steps:[
+    {id:'left',uses:'result.emit',with:{data:'left'}},
+    {id:'join',needs:['left'],uses:'result.emit',with:{data:'joined'}},
+  ]};
+  const original=await compilePlan(base);
+  const explicitDefault=await compilePlan({...base,steps:[
+    base.steps[0],{...base.steps[1],needs_policy:'all_succeeded'},
+  ]});
+  assert.equal(original.digest,explicitDefault.digest,'default semantics must not republish old Plans');
+  assert.equal(original.plan.steps[1].needs_policy,undefined);
+  const skipAllowed=await compilePlan({...base,steps:[
+    base.steps[0],{...base.steps[1],needs_policy:'allow_skipped'},
+  ]});
+  assert.notEqual(skipAllowed.digest,original.digest);
+  assert.equal(skipAllowed.plan.steps[1].needs_policy,'allow_skipped');
+  for(const value of ['ignore_failure','all_done',true,42,null]) {
+    await assert.rejects(()=>compilePlan({...base,steps:[
+      base.steps[0],{...base.steps[1],needs_policy:value},
+    ]}),error=>error instanceof PlanError&&error.path==='/steps/1/needs_policy');
+  }
+  await assert.rejects(()=>compilePlan({version:1,name:'No dependencies',
+    steps:[{id:'join',uses:'result.emit',needs_policy:'allow_skipped',with:{data:1}}]}),
+    error=>error instanceof PlanError&&error.path==='/steps/0/needs_policy');
+});
