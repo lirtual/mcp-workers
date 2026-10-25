@@ -274,3 +274,42 @@ test('Gmail nested MIME text and attachments are found without executing HTML', 
       'untrusted deeply nested MIME trees must fail closed');
   } finally { globalThis.fetch = previous; }
 });
+
+test('bounded Gmail threads and Graph folders expose truncation metadata', async () => {
+  const { listFolders, threadGet } = await import('../src/providers.ts');
+  const env = { MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 21).toString('base64') } as any;
+  async function account(provider: 'gmail' | 'graph') {
+    const accountId = crypto.randomUUID();
+    const value = await encrypt(env, 'account:' + accountId + ':' + provider, { access_token: 'token-' + provider });
+    return { account_id: accountId, provider, address: 'owner@example.test',
+      status: 'active', credential_ciphertext: value.ciphertext,
+      credential_key_id: value.keyId, token_expires_at: Math.floor(Date.now() / 1000) + 3600 } as any;
+  }
+  const gmail = await account('gmail');
+  const graph = await account('graph');
+  const oldFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/threads/thread-large?format=full'))
+        return Response.json({ messages: Array.from({ length: 31 }, (_, i) =>
+          ({ id: String(i), payload: { headers: [] } })) });
+      if (url.endsWith('/threads/thread-small?format=full'))
+        return Response.json({ messages: [{ id: 'only', payload: { headers: [] } }] });
+      if (url.endsWith('/mailFolders?$top=100'))
+        return Response.json({ value: Array.from({ length: 100 }, (_, i) => ({ id: String(i) })),
+          '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/mailFolders?$skip=100' });
+      throw new Error('unexpected provider request ' + url);
+    }) as typeof fetch;
+    const longThread = await threadGet(env, gmail, 'thread-large');
+    assert.equal(longThread.messages.length, 30);
+    assert.equal(longThread.truncated, true);
+    assert.equal(longThread.consistent_snapshot, false);
+    const shortThread = await threadGet(env, gmail, 'thread-small');
+    assert.equal(shortThread.messages.length, 1);
+    assert.equal(shortThread.truncated, false);
+    const folders = await listFolders(env, graph) as any;
+    assert.equal(folders.folders.length, 100);
+    assert.equal(folders.truncated, true, 'Graph nextLink must be disclosed, not discarded silently');
+  } finally { globalThis.fetch = oldFetch; }
+});
