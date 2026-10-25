@@ -89,6 +89,8 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
     ['uses','with'],['flow','times','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
+  assert.ok(schema.oneOf[0].not.anyOf.some(x=>x.required.includes('flow')));
+  assert.ok(schema.oneOf[1].not.anyOf.some(x=>x.required.includes('uses')));
   const detail=await workflowCapabilities(env,'flow.repeat');
   assert.equal(detail.availability,'supported');
   const example=detail.example as {definition:unknown;digest:string};
