@@ -123,6 +123,20 @@ const foreachMultiEmit={version:1,name:'Bounded per-item emit pipeline',inputs:{
         with:{data:{ref:'steps.prepare.output.value'}}},
     ]}},
     {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}}]};
+const foreachMultiMcpRead=(tool:PortalToolContract)=>({version:1,
+  name:'Bounded sequential MCP read pipeline',inputs:{items:[1,1]},
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+    template:{steps:[
+      {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+      {id:'read',uses:'mcp.call',with:{
+        endpoint:tool.endpoint,tool:tool.tool,scope:'read',
+        input_schema:tool.input_schema,
+        ...(tool.output_schema?{output_schema:tool.output_schema}:{}),
+        arguments:tool.arguments,
+      }},
+    ]}},
+    {id:'done',needs:['each'],uses:'result.emit',
+      with:{data:{ref:'steps.each.output'}}}]});
 const foreachMcpRead=(tool:PortalToolContract)=>({version:1,name:'Bounded approved MCP reads',
   inputs:{items:['A','B']},
   steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
@@ -193,7 +207,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
-  unsupported:['foreach_github_sessions','foreach_dynamic_github_inputs','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
+  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -251,7 +265,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
               if:{anyOf:[{type:'boolean'},{type:'object'}]}}},
           {type:'object',additionalProperties:false,required:['steps'],
             properties:{steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxForeachTemplateSteps,
-               description:'One reviewed Action per item, or 2-4 result.emit Actions in fixed order. Only earlier children of the same item can be referenced.',items:{
+               description:'One reviewed Action per item, or 2-4 ordered result.emit/read-only mcp.call children with exact owner Publish grants. Only earlier children of the same item can be referenced.',items:{
               type:'object',additionalProperties:false,required:['id','uses','with'],
               properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','github.run']},
                 with:{type:'object'},
@@ -264,9 +278,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                 {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
               ]},allOf:[{if:{minItems:2},then:{
-                items:{type:'object',properties:{uses:{const:'result.emit'}}},
+                items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}},
               }}]}}},
-        ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 pure result.emit Steps; multi-step external Actions, Sessions and nesting are unsupported.'},
+        ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 result.emit/read-only mcp.call Steps; GitHub multi-step Actions, Sessions and nesting are unsupported.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -307,12 +321,14 @@ const entries=[
    description:'Dynamic array of at most 8 elements; one result.emit template with native snapshot checkpoints. Pure multi-step templates have a separate capability; external Actions need their own grant and replay constraints.'},
   {id:'flow.foreach_multi_emit',kind:'flow',availability:'supported',
     description:'2-4 ordered result.emit children per bounded item, referencing earlier children of the same item. Native checkpoints and D1 timeline; maximum 32 reserved Steps. No external Actions or nested loops.'},
+  {id:'flow.foreach_multi_mcp_read',kind:'flow',availability:'supported_with_grant',
+    description:'2-4 ordered emit and reviewed read-only MCP children per item, with item-local result refs, native arguments snapshots, D1 one-shot dispatch fences and fail-closed uncertainty; no writes, GitHub Tasks or nesting.'},
   {id:'flow.foreach_mcp_read',kind:'flow',availability:'supported_with_grant',
    description:'One reviewed read-only mcp.call per bounded item; all arguments and conditions are frozen before dispatch. Every child uses a durable D1 one-shot dispatch fence; an ambiguous response stays indeterminate, not retried.'},
   {id:'flow.foreach_github_task',kind:'flow',availability:'supported_with_grant',
    description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic while, nested loops, external multi-step templates, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
+   description:'Dynamic while, nested loops, multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -458,6 +474,21 @@ export async function workflowCapabilities(env:Pick<Env,
       physical_state:'verified GitHub terminal plus signed OIDC Claim/receipt',
       requires:['approved_actions','approve_heavy_execution'],
       unsupported:['session','arbitrary dynamic input expressions','nested templates']};
+  }
+  if(id==='flow.foreach_multi_mcp_read'){
+    const discovered=await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length)
+      detail.example=await compilingExample(foreachMultiMcpRead(discovered.tools[0]));
+    detail.template_policy={allowed_actions:['result.emit','mcp.call'],scope:'read',
+      min_steps:2,max_steps:PLAN_LIMITS.maxForeachTemplateSteps,
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      args_snapshot:'Native checkpoint for each child, with references to earlier child outputs in the same item',
+      replay:'D1 child dispatch fence before tools/call; lost checkpoints stay indeterminate, never re-dispatched',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['github.run','nested templates','write-scope tools']};
   }
   if(id==='flow.foreach_mcp_read'){
     const discovered=await portalDiscovery(env);
