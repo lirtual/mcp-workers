@@ -21,6 +21,11 @@ export type Step = {
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
 export type GithubEventTrigger = {type:'github_event';repository:string;repository_id:number;event:'push';ref:string;workflow_path:string};
+export const GITHUB_EVENT_PATTERNS=Object.freeze({
+  repository:/^(?!.*\.\.)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+  ref:/^refs\/heads\/(?!.*(?:\.\.|\/\/|\/$))[A-Za-z0-9][A-Za-z0-9._\/-]{0,119}$/,
+  workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
+});
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
 export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
@@ -158,18 +163,15 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       triggers=[{type:'webhook',token_sha256:item.token_sha256}];
     }else if(item.type==='github_event'){
       keys(item,['type','repository','repository_id','event','ref','workflow_path'],'/triggers/0');
-      const repo=typeof item.repository==='string'&&/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(item.repository)&&
-        !item.repository.includes('..');
+      const repo=typeof item.repository==='string'&&GITHUB_EVENT_PATTERNS.repository.test(item.repository);
       if(!repo)throw new PlanError('invalid_github_event_repository','/triggers/0/repository');
       if(!Number.isSafeInteger(item.repository_id)||Number(item.repository_id)<=0)
         throw new PlanError('invalid_github_event_repository_id','/triggers/0/repository_id');
       if(item.event!=='push')throw new PlanError('unsupported_github_event','/triggers/0/event');
-      const ref=typeof item.ref==='string'&&/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,119}$/.test(item.ref)&&
-        !item.ref.includes('..')&&!item.ref.includes('//')&&!item.ref.endsWith('/');
+      const ref=typeof item.ref==='string'&&GITHUB_EVENT_PATTERNS.ref.test(item.ref);
       if(!ref)throw new PlanError('invalid_github_event_ref','/triggers/0/ref');
       const workflow=typeof item.workflow_path==='string'&&
-        /^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/.test(item.workflow_path)&&
-        !item.workflow_path.includes('..');
+        GITHUB_EVENT_PATTERNS.workflow_path.test(item.workflow_path);
       if(!workflow)throw new PlanError('invalid_github_event_workflow','/triggers/0/workflow_path');
       if(!o.inputs||typeof o.inputs!=='object'||Array.isArray(o.inputs)||
          !Object.hasOwn(o.inputs,'github'))
