@@ -411,21 +411,24 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,locator_column:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,
+    locator_column:0,fixed_column:0,fixed_index:0,
     attempt_table:1,receipt_table:1,native_column:1,
     session_table:0,cancellation_table:0,
-    active_runs:0,run_count:0,workflow_count:0,
+    active_runs:0,active_sessions:0,run_count:0,workflow_count:0,
   };
   const partial = {...baseline,migration_count:6,migration_v6:1};
   const current = {...partial,migration_count:7,migration_v7:1,
     session_table:1,cancellation_table:1};
   const completed = {...current,migration_count:8,migration_v8:1,locator_column:1};
+  const upgraded = {...completed,migration_count:9,migration_v9:1,fixed_column:1,fixed_index:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(completed),false,true),true);
-  for(const row of [baseline,partial,current]){
+  assert.equal(verifyWorkflowD1Readiness(result(upgraded),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(upgraded),false,true),true);
+  for(const row of [baseline,partial,current,completed]){
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
       /schema migrations/);
   }
@@ -441,22 +444,29 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     {...completed,session_table:0},
     {...completed,cancellation_table:0},
     {...completed,receipt_table:0},
+    {...completed,migration_count:9},
+    {...completed,migration_v9:1},
+    {...upgraded,fixed_index:0},
+    {...upgraded,fixed_column:0},
     {...completed,native_column:0},
   ]){
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
       /schema migrations/);
   }
-  assert.equal(verifyWorkflowD1Readiness(result({...completed,run_count:3,
+  assert.equal(verifyWorkflowD1Readiness(result({...upgraded,run_count:3,
     workflow_count:1}),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_runs:1}),false),
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,run_count:1}),true),
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
+    /active physical Sessions/);
+  assert.equal(verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
 });
 test("Workflow migration preflight requires all independent physical states settled", () => {
   const ready = {
-    migration_count: 8, expected_migrations: 8,
+    migration_count: 9, expected_migrations: 9,
     workflow_count: 7, run_count: 58, session_count: 49,
     attempt_count: 31, callback_count: 4, cancellation_count: 31,
     nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0,
@@ -487,10 +497,10 @@ test("Workflow migration preflight requires all independent physical states sett
     assert.throws(() => verifyWorkflowMigrationReadiness(invalid),
       /readback unavailable/);
   }
-  for (const wrong of [{migration_count:7},{migration_count:9},
-    {expected_migrations:7}]) {
+  for (const wrong of [{migration_count:8},{migration_count:10},
+    {expected_migrations:8}]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,...wrong})), /exact eight reviewed/);
+      response({...ready,...wrong})), /exact nine reviewed/);
   }
   for (const invalid of [null,NaN,1.5,"0",true]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
@@ -507,7 +517,7 @@ test("Workflow migration preflight requires all independent physical states sett
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:8,expected_migrations:8,
+    migration_count:9,expected_migrations:9,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
@@ -523,7 +533,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
   })),{confirmed_ready_sessions:0});
   for(const broken of [
-    {migration_count:7},{expected_migrations:9},
+    {migration_count:8},{expected_migrations:10},
     {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},
@@ -584,7 +594,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   assert.ok(finalQuiescence>migration && finalQuiescence<publish);
   assert.match(ci,/pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "\$query"/);
 
-  for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql"]){
+  for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql","0009_fixed_sessions.sql"]){
     assert.equal(ci.split(name).length,3);
   }
   assert.ok(ci.includes("GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36) + "{{ vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES }}"));

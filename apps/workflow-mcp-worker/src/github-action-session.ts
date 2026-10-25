@@ -15,7 +15,7 @@ const STEP=/^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const TUNNEL_URL=/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/;
 const WEB_PATHS=new Set(['.github/workflows/chrome.yml',
   '.github/workflows/code-server.yml','.github/workflows/openlist.yml']);
-export type SessionReservation='reserved'|'existing'|'full'|'denied';
+export type SessionReservation='reserved'|'existing'|'fixed_conflict'|'full'|'denied';
 export type SessionRelease='released'|'already_released'|'held';
 
 /**
@@ -45,9 +45,15 @@ export async function reservePublishedSessionSlot(
   type:raw.type,contractDigest:raw.contractDigest,
  };
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,reviewed))return 'denied';
+ const declaredInputs=raw.inputs;
+ const mode=declaredInputs&&typeof declaredInputs==='object'&&!Array.isArray(declaredInputs)
+  ?(declaredInputs as Record<string,unknown>).session_mode:undefined;
+ if(mode!==undefined&&mode!=='fixed'&&mode!=='temporary')return 'denied';
+ // Key derived only from the reviewed GitHub Action, not client input.
+ const fixedKey=mode==='fixed'?String(reviewed.repositoryId)+':'+reviewed.workflowPath:null;
  const created=await db.prepare(`INSERT OR IGNORE INTO session_executions
-   (run_id,step_id,slot,state,created_at,updated_at)
-   SELECT ?,?,free.slot,'queued',?,? FROM (
+   (run_id,step_id,slot,fixed_key,state,created_at,updated_at)
+   SELECT ?,?,free.slot,?,'queued',?,? FROM (
      SELECT 1 AS slot UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
    ) AS free
    WHERE NOT EXISTS (
@@ -56,7 +62,7 @@ export async function reservePublishedSessionSlot(
    )
    AND EXISTS (SELECT 1 FROM runs WHERE id=? AND outcome IN ('queued','running'))
    ORDER BY free.slot LIMIT 1`)
-  .bind(runId,stepId,Date.now(),Date.now(),runId).run();
+  .bind(runId,stepId,fixedKey,Date.now(),Date.now(),runId).run();
  if(created.meta.changes===1)return 'reserved';
  const prior=await db.prepare(`SELECT state FROM session_executions
    WHERE run_id=? AND step_id=?`)
@@ -64,6 +70,13 @@ export async function reservePublishedSessionSlot(
  // Duplicate admission must never reserve a second slot; the original
  // reservation remains authoritative even when a transport reply is lost.
  if(prior)return prior.state==='terminated'?'denied':'existing';
+ // The DB unique index, not this read, closes concurrent admissions.
+ if(fixedKey!==null){
+  const holder=await db.prepare(`SELECT 1 AS present FROM session_executions
+   WHERE fixed_key=? AND state!='terminated' LIMIT 1`)
+   .bind(fixedKey).first<{present:number}>();
+  if(holder)return 'fixed_conflict';
+ }
  return 'full';
 }
 
@@ -258,6 +271,7 @@ export async function runPublishedGitHubActionSession(
  },async()=>{
   const slot=await reservePublishedSessionSlot(db,runId,stepPlan.id);
   if(slot==='full')return {status:'quota_full'} as const;
+  if(slot==='fixed_conflict')return {status:'fixed_conflict'} as const;
   if(slot!=='reserved'&&slot!=='existing')return {status:'denied'} as const;
   const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
   const ack=await registerAndDispatchGitHubAction(db,{
@@ -268,6 +282,15 @@ export async function runPublishedGitHubActionSession(
  });
  if(dispatched.status==='quota_full')
   return {status:'failed',error_code:'github_session_capacity_exceeded'};
+ if(dispatched.status==='fixed_conflict'){
+  const key=String(identity.repositoryId)+':'+identity.workflowPath;
+  const holder=await db.prepare(`SELECT run_id,step_id FROM session_executions
+   WHERE fixed_key=? AND state!='terminated' LIMIT 1`)
+   .bind(key).first<{run_id:string;step_id:string}>();
+  // No duplicate physical dispatch; expose the existing run for status lookup.
+  return {status:'failed',error_code:'github_session_fixed_already_active',
+   output:{existing_session:holder??null}};
+ }
  if(dispatched.status==='denied')
   return {status:'failed',error_code:'github_session_admission_denied'};
  if(dispatched.status==='rejected'){

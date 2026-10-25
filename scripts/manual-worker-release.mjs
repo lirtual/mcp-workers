@@ -238,14 +238,25 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
     row?.migration_v8 === 0 && row?.locator_column === 0 &&
     row?.session_table === 1 && row?.cancellation_table === 1;
-  const complete = row?.migration_count === 8 &&
+  const previous = row?.migration_count === 8 &&
     row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 1 && row?.locator_column === 1 &&
+    row?.migration_v8 === 1 && row?.migration_v9 === 0 &&
+    row?.locator_column === 1 && row?.fixed_column === 0 && row?.fixed_index === 0 &&
     row?.session_table === 1 && row?.cancellation_table === 1;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || complete)),
+  const complete = row?.migration_count === 9 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
+    row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
+    row?.session_table === 1 && row?.cancellation_table === 1;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
+  // D1 migration may change Session reservations even after the parent Run
+  // succeeded at Ready. Require a physically quiescent Tailnet before schema
+  // changes; completed-schema code-only releases use their separate gate.
+  if(!complete) invariant(Number.isSafeInteger(row?.active_sessions) &&
+    row.active_sessions===0, "Workflow D1 migration blocked by active physical Sessions");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
     "Workflow first deployment requires empty production Run and Workflow state");
   return true;
@@ -262,7 +273,7 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql',
    '0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
-   '0008_session_locator.sql')) AS expected_migrations,
+   '0008_session_locator.sql','0009_fixed_sessions.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -302,8 +313,8 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant(row.migration_count === 8 && row.expected_migrations === 8,
-    "Workflow migration requires the exact eight reviewed D1 migrations");
+  invariant(row.migration_count === 9 && row.expected_migrations === 9,
+    "Workflow migration requires the exact nine reviewed D1 migrations");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
@@ -336,7 +347,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===8 && row.expected_migrations===8,
+  invariant(row.migration_count===9 && row.expected_migrations===9,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",

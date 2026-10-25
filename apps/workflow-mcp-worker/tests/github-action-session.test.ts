@@ -18,7 +18,7 @@ import type {Env} from '../src/store.ts';
 
 const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0');
 const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
- workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),
+ workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
  type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[action],
  steps:[{id:'launch',uses:'github.run',with:{
@@ -32,7 +32,7 @@ function fixture(){
  }
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql']){
+ for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql','0009_fixed_sessions.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
  db.exec('COMMIT');
@@ -64,6 +64,69 @@ function fixture(){
  };
  return {db,adapter,claim};
 }
+test('fixed Session is unique; temporary Sessions coexist until global quota is full',async()=>{
+ const f=fixture();
+ try{
+  const fixed={...plan,steps:[{...plan.steps[0],with:{...plan.steps[0].with,
+   action:{...plan.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'fixed'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'existing');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,1);
+  // Recreating the same workflow path with a new GitHub numeric ID must not
+  // obtain the same fixed MagicDNS name while the prior Job is still alive.
+  const recreatedAction={...action,workflowId:999};
+  const recreated={...fixed,github_action_approvals:[recreatedAction],
+   steps:[{...fixed.steps[0],with:{...fixed.steps[0].with,
+    action:{...fixed.steps[0].with.action,workflowId:999}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(recreated),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
+  // SQLite's partial unique constraint, not an advisory read, protects races.
+  assert.throws(()=>f.db.prepare(`INSERT INTO session_executions
+   (run_id,step_id,slot,fixed_key,state,created_at,updated_at)
+   VALUES(?,'launch',2,'123:.github/workflows/ubuntu.yml','ready',1,1)`).run(run(2)));
+  f.db.prepare("UPDATE session_executions SET state='stopping' WHERE run_id=?").run(run(1));
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  f.db.prepare("UPDATE session_executions SET state='uncertain' WHERE run_id=?").run(run(1));
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  const temporary={...fixed,steps:[{...fixed.steps[0],with:{...fixed.steps[0].with,
+   action:{...fixed.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(temporary),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(3),'launch'),'reserved');
+  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(3))?.fixed_key,null);
+  f.claim(1,'claimed',true);
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+  f.db.prepare("UPDATE step_attempts SET state='cancelled' WHERE run_id=?").run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
+  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(2))?.fixed_key,'123:.github/workflows/ubuntu.yml');
+ }finally{f.db.close();}
+});
+test('fixed Windows and Ubuntu provide stable MagicDNS locators only after Ready',async()=>{
+ const f=fixture();
+ try{
+  for(const [platform,index] of [['windows',1],['ubuntu',2]] as const){
+   const reviewed={...action,workflowPath:'.github/workflows/'+platform+'.yml',workflowId:456+index};
+   const fixed={...plan,github_action_approvals:[reviewed],steps:[{...plan.steps[0],
+    with:{...plan.steps[0].with,action:{...reviewed,ref:'refs/tags/release-v1',
+     inputs:{duration_minutes:5,session_mode:'fixed'}}}}]};
+   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(fixed),'v');
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(index),'launch'),'reserved');
+   f.claim(index,'claimed',true);
+   f.db.prepare("UPDATE session_executions SET state='ready' WHERE run_id=?").run(run(index));
+   const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+   const info=await service.status(run(index));
+   assert.equal(info.sessions?.[0]?.private_hostname,'session-'+platform);
+   assert.equal(info.sessions?.[0]?.session_mode,'fixed');
+  }
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+  const listed=await service.list();
+  assert.deepEqual(listed.active_sessions.map(s=>s.session_mode),['fixed','fixed']);
+ }finally{f.db.close();}
+});
 test('four concurrent Sessions reserve distinct slots, fifth denied until physically settled',async()=>{
  const f=fixture();
  try{
