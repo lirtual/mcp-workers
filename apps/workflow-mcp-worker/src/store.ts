@@ -88,6 +88,17 @@ type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;activ
 type VersionRow={id:string;plan:string;digest:string};
 type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
+// A bounded dynamic MCP child requires the same explicit Publish grant as an
+// ordinary Step; the compiler has already pinned its exact tool schema.
+function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
+  return plan.steps.flatMap(s=>{
+    if(s.uses==='mcp.call')return [s];
+    if(s.uses!=='flow.foreach')return [];
+    const template=s.with.template as {uses?:unknown;with?:Record<string,unknown>}|undefined;
+    return template?.uses==='mcp.call'&&template.with?[{with:template.with}]:[];
+  });
+}
+
 export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
@@ -177,7 +188,7 @@ export class WorkflowService {
     try {
       const {digest,plan}=await compilePlan(definition);
       const reviewed_actions=await this.checkedGitHubActions(plan);
-      const required_approvals=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
+      const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
@@ -243,7 +254,7 @@ export class WorkflowService {
       throw new StateError('github_action_approval_required');
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
-    const required=[...new Map(plan.steps.filter(s=>s.uses==='mcp.call').map(s=>{
+    const required=[...new Map(approvedMcpSteps(plan).map(s=>{
       const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
       return [JSON.stringify(grant),grant] as const;
     })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
