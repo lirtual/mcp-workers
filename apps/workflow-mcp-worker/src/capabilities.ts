@@ -159,6 +159,12 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       {type:'object',additionalProperties:false,required:['type','token_sha256'],
        properties:{type:{const:'webhook'},token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$',
          description:'SHA-256 hex digest of an independent 32-byte random Webhook bearer secret; never put the raw credential in a Draft.'}}},
+      {type:'object',additionalProperties:false,
+       required:['type','repository','repository_id','event','ref','workflow_path'],
+       properties:{type:{const:'github_event'},repository:{type:'string',pattern:'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'},
+         repository_id:{type:'integer',minimum:1},event:{const:'push'},
+         ref:{type:'string',pattern:'^refs/heads/'},
+         workflow_path:{type:'string',pattern:'^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$'}}},
     ]}},
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
@@ -186,8 +192,8 @@ const entries=[
    description:'One five-field UTC Cron trigger per Published Plan; no timezone/DST, missed-minute backfill or capacity queue. Pausing blocks new admissions.'},
   {id:'trigger.webhook',kind:'trigger',availability:'supported',
    description:'Authenticated per-Workflow Bearer Webhook with a stored token digest, optional stable event ID, and immutable Published Version admission. Never uses the owner MCP token.'},
-  {id:'trigger.github_event',kind:'trigger',availability:'unsupported',
-   description:'GitHub lifecycle callbacks are execution receipts, not user-defined business events.'},
+  {id:'trigger.github_event',kind:'trigger',availability:'supported_with_relay',
+   description:'GitHub Actions OIDC-signed push event from an explicitly pinned repository, ref and forwarding workflow; no GitHub webhook secret or second business orchestrator.'},
   {id:'action.result.emit',kind:'action',availability:'supported',
    description:'Emit a bounded deterministic result; with={data:expression}.'},
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
@@ -218,7 +224,7 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>,
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'>,
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
@@ -230,6 +236,7 @@ export async function workflowCapabilities(env:Pick<Env,
   const availability=(entry:Entry)=>
     entry.id==='action.mcp.call'&&!portalReady?'unavailable':
     entry.id==='action.github.run'&&!githubReady?'unavailable':
+    entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
     ['action.mcp.call','action.github.run'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
@@ -245,7 +252,7 @@ export async function workflowCapabilities(env:Pick<Env,
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
       status:'workflow_status',result:'workflow_result'},
-    admission:'Manual, one UTC Cron schedule, or one authenticated Webhook per Published Plan; no GitHub business event ingress',
+    admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
     note:'Discovery and inline validation never publish or grant execution.',
   };
   const entry=byId.get(id);
@@ -266,6 +273,21 @@ export async function workflowCapabilities(env:Pick<Env,
       event_id_header:'X-Workflow-Event-Id (optional; stable ID enables deduplication)',
       semantics:'D1 admission is pinned to the current active Published Version; absent event ID has no deduplication guarantee',
       warning:'The example contains a placeholder hash, not a usable credential. Never put the raw bearer token in a Draft or log.'};
+  }
+  if(id==='trigger.github_event'){
+    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
+    detail.example=await compilingExample({...emit,inputs:{github:null},
+      triggers:[{type:'github_event',repository:'example/repo',repository_id:12345,
+        event:'push',ref:'refs/heads/main',workflow_path:'.github/workflows/forward.yml'}]});
+    detail.source={provider:'github_actions_oidc',event:'push_only',
+      endpoint:'POST /triggers/github/{workflow_id}',body:'none',
+      authentication:'GitHub Actions OIDC ID token with configured audience; never MCP owner token or arbitrary bearer',
+      identity:'signed repository, repository_id, event_name, ref, workflow_ref and run_id',
+      input:'inputs.github is populated solely from signed JWT claims',
+      admission:'idempotency by GitHub run_id, reruns replay; no delivery backfill',
+      setup:'Forwarder .github/workflows/forward.yml must be configured explicitly in the named GitHub repository',
+      scope:'Pin source repository, repository ID, branch and workflow path in the Published Plan',
+      warning:'This is not a direct GitHub webhook or automatic subscription. The GitHub Actions job forwards a signed event; all business steps still run in Cloudflare.'};
   }
   if(id==='trigger.cron'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
