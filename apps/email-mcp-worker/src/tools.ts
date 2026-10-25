@@ -240,7 +240,7 @@ export function buildMcpServer(env: Env): McpServer {
       () => sendMail(env, acc, to, subject, body, files));
   }));
   server.registerTool('mail_reply', {
-    description: 'Reply to one native message. IMAP requires explicit recipient matching source Reply-To. Durable request_id fences all sends.',
+    description: 'Reply to one native message. Gmail/IMAP require explicit recipient matching source Reply-To. Durable request_id fences all sends.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), body,
       to: z.email().max(320).optional(), attachments: attachmentsSchema,
@@ -250,14 +250,14 @@ export function buildMcpServer(env: Env): McpServer {
     validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
     if (acc.provider !== 'graph' && acc.provider !== 'gmail' && acc.provider !== 'imap_smtp') fail('unsupported');
-    if (acc.provider === 'imap_smtp' && !to) fail('explicit_reply_recipient_required');
+    if ((acc.provider === 'imap_smtp' || acc.provider === 'gmail') && !to) fail('explicit_reply_recipient_required');
     return fencedSend(env, acc, request_id, { op: 'reply', message_id, body, to, attachments: items }, async () => {
       const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
       if (acc.provider === 'imap_smtp') {
         const relation = await imapReplyContext(env, acc, message_id, to!);
         return smtpSend(env, acc, relation.to, relation.subject, body, files, relation);
       }
-      if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, files);
+      if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, to!, files);
       if (files.length) return graphReplyForwardWithFiles(env, acc, 'reply', message_id, body, files);
       await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/reply', {
         method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'IdType="ImmutableId"' },
