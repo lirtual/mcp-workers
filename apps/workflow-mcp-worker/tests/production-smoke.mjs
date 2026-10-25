@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
+import {WORKFLOW_MIGRATION_READINESS_SQL,verifyWorkflowCodeReleaseReadiness} from '../../../scripts/manual-worker-release.mjs';
 
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Environment');
@@ -316,13 +317,16 @@ async function runS3Smoke() {
 async function runActionTaskSmoke() {
   const credential=process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   assert.ok(credential && credential.length>=20,'Dedicated GitHub token missing');
-  // An indeterminate historical Task remains in D1 for audit and is NOT
-  // deleted, retried, nor counted as a physical Session slot. Refuse to start
-  // alongside any still queued/running Workflow or nonterminated Session.
-  const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome IN ('queued','running')");
-  assert.equal(outstanding[0]?.n,0,'Production has active Runs: Action smoke aborted');
-  const occupied=sql("SELECT count(*) AS n FROM session_executions WHERE state != 'terminated'");
-  assert.equal(occupied[0]?.n,0,'Production has live Session slots: Action smoke aborted');
+  // Reuse the proven code-only release safety gate. An already Ready Session
+  // owned by a succeeded parent and a claimed OIDC Attempt is unrelated to
+  // this Task-only check and must remain untouched. Any unsettled Task,
+  // unexpected Session, unresolved Run/Step or undelivered callback aborts.
+  // Cleanup below is still scoped to this test's randomized Workflow UUID.
+  const ready=verifyWorkflowCodeReleaseReadiness([{
+    success:true,results:sql(WORKFLOW_MIGRATION_READINESS_SQL),
+  }]);
+  console.log('TASK_SMOKE_PREFLIGHT_OK: code-release safety gate passed; retained Ready Sessions:',
+    ready.confirmed_ready_sessions);
   await client.connect(transport);
   const catalog=await tool('workflow_action_list',{});
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
@@ -351,12 +355,17 @@ async function runActionTaskSmoke() {
     arguments:read.arguments,input_schema:read.input_schema,
     ...(read.output_schema?{output_schema:read.output_schema}:{}),
   }};
+  const mixed=await tool('workflow_capabilities',{id:'flow.foreach_mixed_task'});
+  assert.equal(mixed.availability,'publishable_after_owner_approval',
+    'The production compiler has not advertised approved mixed Task stages');
+  assert.equal(mixed.template_policy.github_task_count,1);
   const definition={version:1,name:'workflow-agent-first-'+label,
     inputs:{items:['success','success']},
     steps:[readStep,
       {id:'each',flow:'foreach',needs:['read'],items:{ref:'inputs.items'},max_items:2,
         template:{steps:[
           {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+          {...readStep,id:'inspect'},
           {id:'verify',uses:'github.run',
             if:{ne:[{ref:'steps.prepare.output'},'skip']},
             with:{capability:'github.action',action}},
@@ -399,8 +408,9 @@ async function runActionTaskSmoke() {
   const planRows=sql('SELECT plan FROM workflow_versions WHERE id='+quotedId(published.published_version_id));
   const pinnedPlan=JSON.parse(planRows[0]?.plan ?? '{}');
   const templates=pinnedPlan.steps.find(s=>s.id==='each')?.with?.templates;
-  assert.deepEqual(templates?.map(s=>s.uses),['result.emit','github.run','result.emit']);
-  assert.deepEqual(templates[1].with.action.inputs,{outcome:'success'});
+  assert.deepEqual(templates?.map(s=>s.uses),['result.emit','mcp.call','github.run','result.emit']);
+  assert.equal(templates[1].with.scope,'read');
+  assert.deepEqual(templates[2].with.action.inputs,{outcome:'success'});
   const opts={workflow_id:workflowId,inputs:{items:['success','success']},
     idempotency_key:'action-task-smoke-'+label};
   const started=await tool('workflow_run',opts);
@@ -419,10 +429,11 @@ async function runActionTaskSmoke() {
     await new Promise(r=>setTimeout(r,1200));
   }
   assert.equal(outcome?.status,'succeeded','Pinned GitHub Action Task did not succeed');
-  assert.equal(outcome.steps.length,9);
+  assert.equal(outcome.steps.length,11);
   assert.ok(outcome.steps.every(step=>step.status==='succeeded'));
   assert.equal(outcome.result,'succeeded');
-  for(const id of ['read','each','each_0_prepare','each_0_verify','each_0_finish','each_1_prepare','each_1_verify','each_1_finish','out'])
+  for(const id of ['read','each','each_0_prepare','each_0_inspect','each_0_verify','each_0_finish',
+    'each_1_prepare','each_1_inspect','each_1_verify','each_1_finish','out'])
     assert.equal(outcome.steps.find(x=>x.step_id===id)?.status,'succeeded',id);
   const rows=sql('SELECT step_id,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,state FROM step_attempts WHERE run_id='+quotedId(runId)+' ORDER BY step_id');
   assert.equal(rows.length,2,'Expected exactly two bounded GitHub Task Attempts');
@@ -455,7 +466,7 @@ async function runActionTaskSmoke() {
     assert.equal(terminalPhysical,true,'One physical GitHub Task still running');
   }
   githubPhysicalCompleted=true;
-  console.log('FOREACH_EMIT_TASK_EMIT_PRODUCTION_OK: two reviewed literal Task children, native conditional selection, two physical terminal proofs, signed OIDC and item-local follow-up emit');
+  console.log('FOREACH_MCP_TASK_PRODUCTION_OK: approved per-item readonly MCP before two reviewed literal Tasks, native conditional selection, physical terminal proofs, signed OIDC and item-local follow-up emit');
   console.log('FOREACH_GITHUB_TASK_PRODUCTION_OK: pinned Task source, signed Claims, distinct physical GitHub terminal proofs, D1 Attempt identity, no duplicate Run');
 }
 
