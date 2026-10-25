@@ -185,3 +185,51 @@ test('cross-mailbox pagination does not replay a completed mailbox', async () =>
       'a mailbox with no nextPageToken must not be queried again');
   } finally { globalThis.fetch = previous; }
 });
+
+
+test('Graph reply requires a single confirmed native Reply-To before sending', async () => {
+  const { assertGraphReplyRecipient, getMail } = await import('../src/providers.ts');
+  const root = Buffer.alloc(32, 12).toString('base64');
+  const env = { MAIL_ENCRYPTION_KEY: root } as any;
+  const aid = crypto.randomUUID();
+  const secret = await encrypt(env, 'account:' + aid + ':graph', { access_token: 'graph-token' });
+  const account = {
+    account_id: aid, provider: 'graph', address: 'owner@example.test', status: 'active',
+    credential_ciphertext: secret.ciphertext, credential_key_id: secret.keyId,
+    token_expires_at: Math.floor(Date.now() / 1000) + 3600,
+  } as any;
+  const source = {
+    id: 'source-id', from: { emailAddress: { address: 'sender@example.test' } },
+    replyTo: [{ emailAddress: { address: 'untrusted@example.test' } }],
+  };
+  const previous = globalThis.fetch;
+  let sent = 0;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === 'POST') sent++;
+      assert.equal(init?.method, undefined, 'recipient preflight must never send');
+      assert.equal(url.origin, 'https://graph.microsoft.com');
+      assert.equal(url.pathname, '/v1.0/me/messages/source-id');
+      assert.match(url.search, /replyTo/);
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer graph-token');
+      return Response.json(source);
+    }) as typeof fetch;
+    const msg = await getMail(env, account, 'source-id');
+    assert.equal(msg.reply_to, 'untrusted@example.test');
+    await assert.rejects(
+      () => assertGraphReplyRecipient(env, account, 'source-id', 'sender@example.test'),
+      /reply_recipient_mismatch/,
+    );
+    assert.equal(sent, 0);
+    await assertGraphReplyRecipient(env, account, 'source-id', 'untrusted@example.test');
+    source.replyTo.push({ emailAddress: { address: 'second@example.test' } });
+    await assert.rejects(
+      () => assertGraphReplyRecipient(env, account, 'source-id', 'untrusted@example.test'),
+      /unsupported/,
+    );
+    source.replyTo = [];
+    await assertGraphReplyRecipient(env, account, 'source-id', 'sender@example.test');
+    assert.equal(sent, 0);
+  } finally { globalThis.fetch = previous; }
+});
