@@ -849,3 +849,83 @@ test('inline bounded-repeat validation reports repairable errors without D1 writ
   const after=sqlite.prepare('SELECT COUNT(*) AS n FROM workflows').get() as {n:number};
   assert.equal(after.n,before.n);
 });
+
+
+test('dynamic foreach freezes upstream item values before executing all bounded emit children',async t=>{
+  const {service,admit,env}=setup(t);
+  const started=await admit([
+    {id:'source',uses:'result.emit',with:{data:{ref:'inputs.items'}}},
+    {id:'each',flow:'foreach',needs:['source'],items:{ref:'steps.source.output'},max_items:4,
+      template:{steps:[{id:'emit',uses:'result.emit',with:{
+        data:{item:{ref:'item.value'},index:{ref:'item.index'}},
+      }}]}},
+    {id:'done',needs:['each'],uses:'result.emit',with:{data:{ref:'steps.each.output'}}},
+  ],{items:['A','B']});
+  const checkpoints:string[]=[];
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,_options:unknown,callback:()=>Promise<unknown>)=>{
+      checkpoints.push(name);
+      return callback();
+    }} as unknown as WorkflowStep);
+  const output=await service.result(started.run_id);
+  assert.equal(output.status,'succeeded');
+  assert.deepEqual(output.result,[{item:'A',index:0},{item:'B',index:1}]);
+  assert.deepEqual(checkpoints,[
+    'workflow-source','workflow-each-snapshot','workflow-each_0_emit',
+    'workflow-each_1_emit','workflow-done',
+  ]);
+  const byStep=new Map(output.steps.map(x=>[x.step_id,x.status]));
+  assert.equal(byStep.get('each'),'succeeded');
+  assert.equal(byStep.get('each_0_emit'),'succeeded');
+  assert.equal(byStep.get('each_1_emit'),'succeeded');
+  assert.equal(byStep.get('done'),'succeeded');
+});
+
+test('dynamic foreach empty array skips parent and dependent Step without dispatching children',async t=>{
+  const {service,admit,run}=setup(t);
+  const started=await admit([
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:8,
+      template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}},
+    {id:'dependent',needs:['each'],uses:'result.emit',with:{data:'never run'}},
+  ],{items:[]});
+  await run(started.run_id);
+  const output=await service.result(started.run_id);
+  assert.equal(output.status,'succeeded');
+  assert.equal(output.steps.find(x=>x.step_id==='each')?.status,'skipped');
+  assert.equal(output.steps.find(x=>x.step_id==='dependent')?.status,'skipped');
+  assert.equal(output.steps.length,2);
+});
+
+test('dynamic foreach item overflow fails at runtime before any child execution',async t=>{
+  const {service,admit,env}=setup(t);
+  const started=await admit([
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+      template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}},
+  ],{items:['one','two','three']});
+  const names:string[]=[];
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,_options:unknown,cb:()=>Promise<unknown>)=>{
+      names.push(name);return cb();
+    }} as unknown as WorkflowStep);
+  const output=await service.result(started.run_id);
+  assert.equal(output.status,'failed');
+  assert.equal(output.steps.find(x=>x.step_id==='each')?.status,'failed');
+  assert.deepEqual(names,['workflow-each-snapshot']);
+});
+
+test('dynamic foreach per-item if is snapshotted, with skipped item recorded',async t=>{
+  const {service,admit,run}=setup(t);
+  const started=await admit([
+    {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:3,
+      template:{steps:[{id:'emit',uses:'result.emit',
+        if:{eq:[{ref:'item.value'},'yes']},with:{data:{ref:'item.index'}}}]}},
+  ],{items:['no','yes']});
+  await run(started.run_id);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.result,[null,1]);
+  assert.equal(result.steps.find(x=>x.step_id==='each_0_emit')?.status,'skipped');
+  assert.equal(result.steps.find(x=>x.step_id==='each_1_emit')?.status,'succeeded');
+});
