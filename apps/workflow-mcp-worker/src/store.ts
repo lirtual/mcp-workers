@@ -98,15 +98,16 @@ export class WorkflowService {
     // Workflow's business outcome. The existing read-only workflow_list is
     // enough to discover a held/uncertain slot and its server-pinned run_id;
     // no separate public Session enumeration capability is necessary.
-    const held=await this.db.prepare(`SELECT s.slot,s.run_id,s.step_id,s.state,
+    const held=await this.db.prepare(`SELECT s.slot,s.run_id,s.step_id,s.state,s.fixed_key,
       s.updated_at,a.state AS attempt_state
       FROM session_executions s
       LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
       WHERE s.state!='terminated' ORDER BY s.slot LIMIT 4`)
-      .all<{slot:number;run_id:string;step_id:string;state:string;updated_at:number;attempt_state:string|null}>();
+      .all<{slot:number;run_id:string;step_id:string;state:string;fixed_key:string|null;updated_at:number;attempt_state:string|null}>();
     return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state})),
       active_sessions:held.results.map(x=>({slot:x.slot,run_id:x.run_id,
-        step_id:x.step_id,recorded_state:x.state,recorded_at:x.updated_at,
+        step_id:x.step_id,session_mode:x.fixed_key?'fixed':'temporary',
+        recorded_state:x.state,recorded_at:x.updated_at,
         attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
   }
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
@@ -480,33 +481,35 @@ export class WorkflowService {
     }
     // A web Quick Tunnel Session has no Tailnet hostname. Never advertise a
     // guessed MagicDNS host for it just because its GitHub job became Ready.
-    const tailnetSteps=new Set(publishedPlan.steps.filter(step=>{
-      if(step.uses!=='github.run'||step.with.capability!=='github.action')return false;
+    const tailnetSteps=new Map<string,string>(publishedPlan.steps.flatMap(step=>{
+      if(step.uses!=='github.run'||step.with.capability!=='github.action')return [];
       const action=step.with.action as {repository?:unknown;workflowPath?:unknown}|undefined;
-      return action?.repository==='lirtual/session-actions'&&
-        (action.workflowPath==='.github/workflows/linux.yml'||
-         action.workflowPath==='.github/workflows/windows.yml');
-    }).map(step=>step.id));
-    const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,s.session_url,
+      if(action?.repository!=='lirtual/session-actions')return [];
+      const name=action.workflowPath==='.github/workflows/windows.yml'?'session-windows':
+        action.workflowPath==='.github/workflows/ubuntu.yml'?'session-ubuntu':null;
+      return name?[[step.id,name] as [string,string]]:[];
+    }));
+    const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,s.session_url,s.fixed_key,
       s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
       FROM session_executions s
       LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
       WHERE s.run_id=? ORDER BY s.step_id`).bind(run_id)
-      .all<{step_id:string;state:string;session_url:string|null;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
-      .map(record=>({step_id:record.step_id,recorded_state:record.state,
+      .all<{step_id:string;state:string;session_url:string|null;fixed_key:string|null;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
+      .map(record=>({step_id:record.step_id,session_mode:record.fixed_key?'fixed':'temporary',
+        recorded_state:record.state,
         recorded_at:record.updated_at,
         session_url:record.state==='ready'?record.session_url:null,
         github_run_id:record.candidate_run_id,
         github_run_attempt:record.candidate_run_attempt,
-        // Private MagicDNS label selected by the pinned Session GitHub
-        // workflow (hostname: sa-${{ github.run_id }}-a${{ github.run_attempt }}). This is a connection
-        // hint, not proof that Tailnet ACL or service reachability is healthy.
+        // The pinned Runner validates the exact MagicDNS name before signed Ready.
+        // This locator is not proof of physical connectivity.
         private_hostname:record.state==='ready' && tailnetSteps.has(record.step_id) &&
           Number.isSafeInteger(record.candidate_run_id) &&
           (record.candidate_run_id??0)>0
           && Number.isSafeInteger(record.candidate_run_attempt)
           && (record.candidate_run_attempt??0)>0
-          ?'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt:null,
+          ?(record.fixed_key!==null?tailnetSteps.get(record.step_id)??null:
+            'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt):null,
         attempt_state:record.attempt_state,
         physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{})};
