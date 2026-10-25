@@ -393,6 +393,15 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
     secrets, { mode: "readback" }), /Unexpected production resource/);
 });
 
+test("Workflow production smoke SQL uses the currently reviewed D1 binding", () => {
+  const source=JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
+  const smoke=readFileSync(new URL("../apps/workflow-mcp-worker/tests/production-smoke.mjs",import.meta.url),"utf8");
+  const target=source.d1_databases?.[0]?.database_name;
+  assert.equal(target,"workflow-mcp-db");
+  assert.ok(smoke.includes("'"+target+"', '--remote', '--json', '--command', statement"));
+  assert.ok(!smoke.includes("'workflow-mcp-worker', '--remote', '--json', '--command', statement"));
+});
+
 test("Workflow production release must preserve exact reviewed resource and runtime boundaries", () => {
   const owner = JSON.parse(readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
     assert.equal(verifyWorkflowReleaseConfig(owner), true);
