@@ -24,6 +24,7 @@ test("strict typed browser contract forwards only bounded arguments",()=>{
   assert.equal(read?.kind,"read");
   assert.deepEqual(read?.arguments,{session_id});
   assert.deepEqual(BROWSER_TOOLS.map(t=>t.name),[
+    "browser_handoff_request","browser_handoff_status","browser_handoff_return",
     "browser_start","browser_status","browser_navigate","browser_snapshot","browser_close",
     "browser_tabs","browser_click","browser_fill","browser_press_key","browser_select_option",
   ]);

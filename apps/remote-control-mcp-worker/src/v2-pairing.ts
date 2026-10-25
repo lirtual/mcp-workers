@@ -289,8 +289,10 @@ export class V2OwnerCoordinator {
     socket: WebSocket;
     resolve: (status: "confirmed" | "uncertain") => void;
   }>();
+  // Volatile response generations only; the Agent owns control authority.
+  private readonly replyGenerations = new Map<string,number>();
   private readonly pendingReads = new Map<string, {
-    socket: WebSocket; deviceId: string; epoch: string;
+    socket: WebSocket; deviceId: string; epoch: string; generation: number;
     resolve: (response: Response) => void;
     kind: "read" | "operation"; operationId?: string;
   }>();
@@ -310,6 +312,9 @@ export class V2OwnerCoordinator {
       start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
       stop_search: parseSearchSessionId,
       list_sessions: parseListSessions, read_process_output: parseLocalProcessOutput,
+      browser_handoff_request: args => parseBrowserDoArguments("browser_handoff_request", args),
+      browser_handoff_status: args => parseBrowserDoArguments("browser_handoff_status", args),
+      browser_handoff_return: args => parseBrowserDoArguments("browser_handoff_return", args),
       browser_status: args => parseBrowserDoArguments("browser_status", args),
       browser_snapshot: args => parseBrowserDoArguments("browser_snapshot", args),
       browser_tabs: args => parseBrowserDoArguments("browser_tabs", args) && (args as {action:string}).action === "list",
@@ -342,7 +347,9 @@ export class V2OwnerCoordinator {
         typeof deviceId !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deviceId)) {
       return Response.json({ error: "bad_request" }, { status: 400 });
     }
-    if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
+    const handoffRequest = arg.tool === "browser_handoff_request";
+    let generation = this.replyGenerations.get(deviceId) ?? 0;
+    if (!handoffRequest && this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
     const [device, epoch] = await Promise.all([
       this.state.storage.get<V2Device>("device:" + deviceId),
       this.state.storage.get<string>("session:epoch:" + deviceId),
@@ -360,6 +367,17 @@ export class V2OwnerCoordinator {
       } catch { /* Ignore malformed detached sessions. */ }
     }
     if (!active) return Response.json({ error: "offline" }, { status: 503 });
+    if (handoffRequest) {
+      generation = (this.replyGenerations.get(deviceId) ?? 0) + 1;
+      this.replyGenerations.set(deviceId,generation);
+      // Discard pre-handoff payloads, including Agent replies already waiting
+      // on an async DO grant check. Their original operation IDs remain queryable.
+      for (const pending of this.pendingReads.values()) if (pending.deviceId === deviceId) {
+        pending.resolve(Response.json(pending.kind === "operation"
+          ? {operation_id:pending.operationId,status:"timeout_unknown"}
+          : {error:"handoff_blocked"},{status:503}));
+      }
+    }
     // Concurrent requests may all have passed the earlier cap before awaiting
     // SQLite. Enforce the limit again immediately before reserving a slot.
     if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
@@ -371,9 +389,11 @@ export class V2OwnerCoordinator {
         resolve(Response.json(isOperation
           ? { operation_id: operationId, status: "timeout_unknown" }
           : { error: "timeout" }, { status: 503 }));
-      }, 5_000);
+      // Native setup includes drain, capability checks and anonymous OTP proof.
+      // Keep the one-shot secret response alive; status/duplicates never replay URLs.
+      }, handoffRequest ? 120_000 : arg.tool === "browser_handoff_return" ? 30_000 : 5_000);
       this.pendingReads.set(requestId, {
-        socket: selected, deviceId, epoch,
+        socket: selected, deviceId, epoch, generation,
         kind: isOperation ? "operation" : "read",
         ...(isOperation ? { operationId: operationId as string } : {}),
         resolve: response => {
@@ -416,7 +436,11 @@ export class V2OwnerCoordinator {
       ]);
       // A reply to work admitted BEFORE expiry may still settle its existing
       // receipt; expiry only forbids NEW dispatch. Revocation still rejects.
-      if (!device || device.revoked !== false || epoch !== pending.epoch) {
+      if (pending.generation !== (this.replyGenerations.get(pending.deviceId) ?? 0)) {
+        pending.resolve(Response.json(pending.kind === "operation"
+          ? {operation_id:pending.operationId,status:"timeout_unknown"}
+          : {error:"handoff_blocked"},{status:503}));
+      } else if (!device || device.revoked !== false || epoch !== pending.epoch) {
         pending.resolve(Response.json({ error: "unauthorized" }, { status: 503 }));
       } else if (pending.kind === "operation") {
         const result = reply.result;
