@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { beginOAuth, completeOAuth } from '../src/oauth.ts';
+import { beginOAuth, completeOAuth, accessToken } from '../src/oauth.ts';
 import { fencedSend } from '../src/tools.ts';
 
 function fixture() {
@@ -172,5 +172,29 @@ test('IMAP credential replacement can preserve existing account identity atomica
   const opened = await decrypt<{ password: string }>(env,
     'account:' + accountId + ':imap_smtp', row.credential_ciphertext, row.credential_key_id);
   assert.equal(opened.password, 'new');
+  sqlite.close();
+});
+
+test('OAuth refresh distinguishes temporary provider errors from invalid grants', async () => {
+  const { sqlite, env } = fixture();
+  const state = extractState(await beginOAuth(env, 'gmail', 'owner-sub'));
+  const id = await completeOAuth(env, state, 'authorization-code', 'owner-sub', makeFetch());
+  sqlite.prepare('UPDATE mail_accounts SET token_expires_at=0 WHERE account_id=?').run(id);
+  const account = () => sqlite.prepare('SELECT * FROM mail_accounts WHERE account_id=?').get(id) as any;
+  const failure = (status: number, error: string) => (async (url: RequestInfo | URL) => {
+    assert.equal(String(url), 'https://oauth2.googleapis.com/token');
+    return Response.json({ error }, { status });
+  }) as typeof fetch;
+
+  for (const [status, error] of [[429, 'slow_down'], [503, 'temporarily_unavailable']] as const) {
+    await assert.rejects(() => accessToken(env, account(), failure(status, error)), /provider_error/);
+    assert.equal(account().status, 'active', 'temporary errors must not disable a mailbox');
+    assert.equal(account().refresh_lock_until, null, 'refresh lock must be released on errors');
+    assert.equal(account().token_version, 0, 'refresh may be retried without changing credentials');
+  }
+
+  await assert.rejects(() => accessToken(env, account(), failure(400, 'invalid_grant')), /reauthorization_required/);
+  assert.equal(account().status, 'reauthorization_required');
+  assert.equal(account().refresh_lock_until, null);
   sqlite.close();
 });
