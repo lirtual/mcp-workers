@@ -264,6 +264,3 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
   }
 }
 
-// Historical workflow-mcp-runner instances must keep resolving this export
-// until their retention window expires; #204 retires it only after acceptance.
-export { WorkflowOrchestrator as WorkflowRunner };
