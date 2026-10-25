@@ -33,7 +33,9 @@ export async function admitScheduledCron(env:Env,scheduledTime:number):Promise<C
       try{plan=JSON.parse(row.plan) as Plan;}catch{stats.failed++;continue;}
       const triggers=plan.triggers;
       if(!triggers?.length)continue;
-      if(triggers.length!==1 || triggers[0].type!=='cron'){stats.failed++;continue;}
+      if(triggers.length!==1){stats.failed++;continue;}
+      // Other registered Trigger kinds are not malformed Cron schedules.
+      if(triggers[0].type!=='cron')continue;
       let due=false;
       try{due=cronMatchesUtc((triggers[0] as CronTrigger).schedule,scheduledTime);}
       catch{stats.failed++;continue;}
