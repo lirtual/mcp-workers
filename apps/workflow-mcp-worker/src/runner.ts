@@ -207,8 +207,11 @@ async function runForeachStep(
           // All selected Task inputs are fully typed (including choices and
           // required fields) within this single durable snapshot. A late
           // malformed item cannot cause a preceding item to dispatch.
+          // The input validator deliberately uses a null-prototype object
+          // for key safety, but native Cloudflare Workflow checkpoints must
+          // persist an ordinary JSON value. Only reviewed input names survive.
           const evaluated=selected&&typedContract?
-            checkedFrozenTaskInputs(typedContract,candidate):candidate;
+            Object.fromEntries(Object.entries(checkedFrozenTaskInputs(typedContract,candidate))):candidate;
           // Before any external dispatch, reject unresolved arguments across the
           // entire bounded array. Partial pre-dispatch validation is not enough.
           if(selected&&template.uses==='mcp.call'&&
