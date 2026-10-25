@@ -12,7 +12,7 @@ const REF=/^refs\/(heads|tags)\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/;
  * and actual run head_sha must also match the approved SHA.
  */
 export async function verifyActionDispatchRef(
- action:ReviewedGitHubAction,ref:string,token:string,
+ action:Pick<ReviewedGitHubAction,'repository'|'commitSha'>,ref:string,token:string,
  http:Http=fetch,
 ):Promise<ActionDispatchTarget>{
  if(!REF.test(ref)||ref.includes('..')||ref.includes('//')||

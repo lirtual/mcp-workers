@@ -66,7 +66,14 @@ async function digest(s:string):Promise<string>{
   const result=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));
   return [...new Uint8Array(result)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
-export function cleanError(e:unknown):string {return e instanceof StateError||e instanceof PlanError?e instanceof StateError?e.code:e.code:'internal_error';}
+export function cleanError(e:unknown):string {
+  if(e instanceof StateError||e instanceof PlanError)return e.code;
+  // Only our narrowly named discovery failures are safe to expose. Never
+  // reflect GitHub response bodies, transport exceptions or request secrets.
+  if(e instanceof Error&&/^github_(?:discovery|action_catalog|action_tag_discovery)_[a-z_]{1,40}$/.test(e.message))
+    return e.message;
+  return 'internal_error';
+}
 export function limitResult<T>(value:T,maxBytes=MAX_RESULT):T {if(new TextEncoder().encode(JSON.stringify(value)).byteLength>maxBytes)throw new StateError('result_too_large');return value;}
 export function applyStatus(native:string, outcome:string):string {
   if(['succeeded','failed','indeterminate','cancelled'].includes(outcome))return outcome;
@@ -121,10 +128,11 @@ export class WorkflowService {
     const actions=plan.steps.filter(step=>step.uses==='github.run'&&step.with.capability==='github.action');
     if(!actions.length)return [];
     const token=this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
-    if(!token)throw new StateError('github_action_token_missing');
+    if(!token)throw new PlanError('github_action_token_missing','/steps');
     const grants=approvedActionRepositories(this.env.GITHUB_ACTION_APPROVED_REPOSITORIES);
     const approved:ReviewedGitHubAction[]=[];
     for(const step of actions){
+      const path='/steps/'+plan.steps.indexOf(step)+'/with/action';
       const raw=step.with.action as Record<string,unknown>;
       const expected:ReviewedGitHubAction={
         repository:raw.repository as string,repositoryId:raw.repositoryId as number,
@@ -134,19 +142,25 @@ export class WorkflowService {
       };
       const grant=grants.find(g=>g.repository===expected.repository&&
         g.repositoryId===expected.repositoryId);
-      if(!grant)throw new StateError('github_action_repository_not_approved');
+      if(!grant)throw new PlanError('github_action_repository_not_approved',path+'/repository');
       // Discovery follows the current default branch, but validation and
       // Publish must re-read the exact SHA approved in this Draft. A newer
       // default-branch commit must not invalidate an immutable old review.
-      const discovered=await discoverGitHubActions({...grant,token,commitSha:expected.commitSha});
+      let discovered:Awaited<ReturnType<typeof discoverGitHubActions>>;
+      try{discovered=await discoverGitHubActions({...grant,token,commitSha:expected.commitSha});}
+      catch{throw new PlanError('github_action_discovery_unavailable',path+'/commitSha');}
       const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
-      if(!candidate)throw new StateError('github_action_not_found');
+      if(!candidate)throw new PlanError('github_action_not_found',path+'/workflowPath');
       try{
         await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,raw.inputs as Record<string,unknown>);
-        // GitHub dispatch accepts a tag/ref, not an arbitrary pinned commit.
-        // Publication must review and store exactly which tag selects that SHA.
-        await verifyActionDispatchRef(expected,raw.ref as string,token);
-      }catch{throw new StateError('github_action_review_changed');}
+      }catch{throw new PlanError('github_action_contract_or_inputs_changed',path+'/inputs');}
+      // GitHub workflow_dispatch only accepts a verified branch/Tag ref, never
+      // an arbitrary SHA. The existing dispatch/OIDC checks remain mandatory.
+      try{await verifyActionDispatchRef(expected,raw.ref as string,token);}
+      catch(error){
+        const mismatch=error instanceof Error&&error.message==='github_action_ref_mismatch';
+        throw new PlanError(mismatch?'github_action_ref_mismatch':'github_action_ref_unconfirmed',path+'/ref');
+      }
       approved.push(await reviewedGitHubAction(candidate));
     }
     return approved;
@@ -166,7 +180,9 @@ export class WorkflowService {
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
-      return {valid:true,digest,steps:plan.steps.length,issues:[],...(reviewed_actions.length?{reviewed_actions}:{}),
+      return {valid:true,digest,steps:plan.steps.length,issues:[],
+        contract_validation:required_approvals.length?'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
+        ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
         ...(plan.steps.some(s=>s.uses==='github.run')?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
@@ -191,6 +207,12 @@ export class WorkflowService {
         'Submit valid YAML or JSON without duplicate keys.':
         ['invalid_step_count','excessive_parallelism','too_many_inputs'].includes(code)?
         'Reduce the definition to the limits returned by workflow_capabilities.':
+        ['github_action_ref_mismatch','github_action_ref_unconfirmed'].includes(code)?
+        'Choose a verified refs/tags/... ref paired with this exact commitSha from workflow_action_list; do not use a branch or raw SHA.':
+        ['github_action_contract_or_inputs_changed','github_action_not_found'].includes(code)?
+        'Rediscover the released Action contract and inputs with workflow_action_list.':
+        code==='github_action_repository_not_approved'?
+        'Select a repository already authorized by the Workflow server.':
         undefined;
       return {valid:false,issues:[{code,path,
         message:'Workflow definition rejected: '+code,

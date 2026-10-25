@@ -1,12 +1,12 @@
 // Deliberately narrow production acceptance: one temporary result-only Workflow, no deployment.
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
-import { canonicalJsonString, toolSchemaDigest } from '../src/plan.ts';
+import { toolSchemaDigest } from '../src/plan.ts';
 
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Environment');
@@ -289,37 +289,62 @@ async function runActionTaskSmoke() {
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
   const candidates=catalog.actions.filter(a=>a.repository==='lirtual/session-actions' &&
     a.repositoryId===1430925009 && a.workflowPath==='.github/workflows/verify-action.yml' &&
-    a.name==='Verify Workflow Action' && a.type==='task');
-  assert.equal(candidates.length,1,'Expected exactly one reviewed Task in pinned catalog');
+    a.name==='Verify Workflow Action' && a.type==='task' && a.can_publish===true);
+  assert.equal(candidates.length,1,'Expected one verified released Task, not an untagged HEAD');
   const found=candidates[0];
   assert.deepEqual(found.inputs.outcome.options,['success','failure']);
-  const reviewed={
-    repository:found.repository,repositoryId:found.repositoryId,
+  const reviewed={repository:found.repository,repositoryId:found.repositoryId,
     workflowId:found.workflowId,workflowPath:found.workflowPath,
-    // Catalog discovery follows default-branch HEAD. Review and execute the
-    // immutable, previously released v0.1.1 tag instead, after verifying its
-    // GitHub Action contract is identical to the discovered schema.
-    commitSha:'c16660ae054f89ea51ebc0a0a5cca61f17f3b4e1',type:found.type,
-    contractDigest:createHash('sha256').update(canonicalJsonString({
-      name:found.name,type:found.type,inputs:found.inputs,
-    })).digest('hex'),
-  };
-  const action={...reviewed,ref:'refs/tags/v0.1.1',inputs:{outcome:'success'}};
-  const definition={version:1,name:'workflow-action-task-smoke-'+label,
-    steps:[{id:'verify',uses:'github.run',
-      with:{capability:'github.action',action}}]};
+    commitSha:found.commitSha,type:found.type,contractDigest:found.contractDigest};
+  assert.match(found.ref,/^refs\/tags\//,'Task must be pinned to a verified Tag');
+  const action={...reviewed,ref:found.ref,inputs:{outcome:'success'}};
+  // This acceptance client uses only the Workflow MCP's advertised contracts,
+  // not local copies of Portal tool schemas or GitHub version identities.
+  const overview=await tool('workflow_capabilities',{});
+  assert.ok(overview.action_with_schemas?.['mcp.call']);
+  assert.ok(overview.expression_rules?.operators.includes('eq'));
+  const portal=await tool('workflow_capabilities',{id:'action.mcp.call'});
+  assert.equal(portal.availability,'verified_contract','Trusted Portal tool was not accessible');
+  const read=portal.discovered_tools.find(t=>t.tool==='ima_list_notebooks');
+  assert.ok(read && read.availability==='discovered_not_executed');
+  const readStep={id:'read',uses:'mcp.call',with:{
+    endpoint:read.endpoint,tool:read.tool,scope:read.scope,
+    arguments:read.arguments,input_schema:read.input_schema,
+    ...(read.output_schema?{output_schema:read.output_schema}:{}),
+  }};
+  const definition={version:1,name:'workflow-agent-first-'+label,
+    steps:[readStep,
+      {id:'verify',uses:'github.run',needs:['read'],
+        if:{eq:[{ref:'steps.read.status'},'succeeded']},
+        with:{capability:'github.action',action}},
+      {id:'out',uses:'result.emit',needs:['verify'],
+        with:{data:{ref:'steps.verify.status'}}},
+    ]};
+  const before=sql('SELECT count(*) AS n FROM workflows')[0].n;
+  const bad={...definition,steps:[{...readStep,uses:'made_up_action'},...definition.steps.slice(1)]};
+  const invalid=await tool('workflow_validate',{definition:JSON.stringify(bad)});
+  assert.equal(invalid.valid,false);
+  assert.equal(invalid.issues[0].code,'unsupported_capability');
+  assert.equal(invalid.issues[0].path,'/steps/0/uses');
+  const inline=await tool('workflow_validate',{definition:JSON.stringify(definition)});
+  assert.equal(inline.valid,true,'Source-blind inline Definition must validate');
+  assert.equal(sql('SELECT count(*) AS n FROM workflows')[0].n,before,
+    'Inline validation unexpectedly wrote D1');
   const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
   workflowId=draft.workflow_id;
   assert.match(workflowId,uuid);
   const checked=await tool('workflow_validate',{workflow_id:workflowId,revision:1});
   assert.equal(checked.valid,true,'Reviewed Action validation must pass');
   assert.deepEqual(checked.reviewed_actions,[reviewed]);
+  assert.deepEqual(checked.required_approvals,[{endpoint:read.endpoint,tool:read.tool,
+    scope:'read',schema_digest:read.schema_digest}]);
   const denied=await client.callTool({name:'workflow_publish',arguments:{
     workflow_id:workflowId,expected_revision:1,approve_heavy_execution:true,
   }});
   assert.equal(denied.isError,true,'Action Publish without exact reviewed grant must fail');
   const published=await tool('workflow_publish',{
     workflow_id:workflowId,expected_revision:1,
+    approved_operations:checked.required_approvals,accept_target_risks:true,
     approved_actions:checked.reviewed_actions,approve_heavy_execution:true,
   });
   assert.ok(published.published_version_id);
@@ -341,8 +366,9 @@ async function runActionTaskSmoke() {
     await new Promise(r=>setTimeout(r,1200));
   }
   assert.equal(outcome?.status,'succeeded','Pinned GitHub Action Task did not succeed');
-  assert.equal(outcome.steps.length,1);
-  assert.equal(outcome.steps[0].status,'succeeded');
+  assert.equal(outcome.steps.length,3);
+  assert.ok(outcome.steps.every(step=>step.status==='succeeded'));
+  assert.equal(outcome.result,'succeeded');
   const rows=sql('SELECT candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,state FROM step_attempts WHERE run_id='+quotedId(runId));
   assert.equal(rows.length,1,'Expected one durable Task Attempt');
   const attempt=rows[0];
@@ -369,7 +395,7 @@ async function runActionTaskSmoke() {
     await new Promise(r=>setTimeout(r,1000));
   }
   assert.equal(githubPhysicalCompleted,true,'Physical Action Task not terminal');
-  console.log('ACTION_TASK_SMOKE_OK: protected tag, reviewed grant, signed Claim, physical GitHub Task and cleanup gates');
+  console.log('AGENT_FIRST_SMOKE_OK: discover, repair, inline validate with no D1 writes, Portal read, approved GitHub Task, signed Claim and physical completion');
 }
 
 try {

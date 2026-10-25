@@ -37,7 +37,7 @@ function server(paths: string[], wrongIdentity = false) {
     assert.equal(req.redirect, 'manual');
     if (url.pathname.endsWith('/commits/' + sha)) return Response.json({ sha });
     if (url.pathname.endsWith('/actions/workflows'))
-      return Response.json({ workflows: [{ id: 5, path: '.github/workflows/linux.yml' }, { id: 7, path: '.github/workflows/ci.yml' }] });
+      return Response.json({ workflows: [{ id: 5, path: '.github/workflows/linux.yml',state:'active' }, { id: 7, path: '.github/workflows/ci.yml',state:'active' }] });
     if (url.pathname.endsWith('/linux.yml'))
       return Response.json({ path: '.github/workflows/linux.yml', encoding: 'base64', content: btoa(yaml) });
     if (url.pathname.endsWith('/ci.yml'))
@@ -73,7 +73,7 @@ test('authorized repository discovers a fresh default-branch revision without up
     paths.push(url.pathname+url.search);
     if(url.pathname.endsWith('/commits/main'))return Response.json({sha:newest});
     if(url.pathname.endsWith('/actions/workflows'))
-      return Response.json({workflows:[{id:5,path:'.github/workflows/linux.yml'}]});
+      return Response.json({workflows:[{id:5,path:'.github/workflows/linux.yml',state:'active'}]});
     if(url.pathname.endsWith('/linux.yml'))return Response.json({
       path:'.github/workflows/linux.yml',encoding:'base64',content:btoa(yaml),
     });
@@ -84,4 +84,18 @@ test('authorized repository discovers a fresh default-branch revision without up
   assert.equal(actions[0].commitSha,newest);
   assert(paths.some(p=>p.endsWith('?ref='+newest)));
   assert(!paths.some(p=>p.includes(sha)));
+});
+
+test('disabled GitHub workflow is excluded even if its YAML still parses',async()=>{
+ const paths:string[]=[];
+ const normal=server(paths);
+ const http=async(req:Request):Promise<Response>=>{
+   if(new URL(req.url).pathname.endsWith('/actions/workflows'))
+     return Response.json({workflows:[{id:5,path:'.github/workflows/linux.yml',
+       state:'disabled_manually'}]});
+   return normal(req);
+ };
+ const found=await discoverGitHubActions(grant,http);
+ assert.deepEqual(found,[]);
+ assert.equal(paths.some(p=>p.includes('/contents/')),false);
 });

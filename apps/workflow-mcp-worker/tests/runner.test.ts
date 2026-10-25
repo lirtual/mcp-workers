@@ -673,9 +673,10 @@ jobs:
     const root='/repos/'+repository;
     if(url.pathname===root)return Response.json({id:repositoryId,full_name:repository,default_branch:'main'});
     if(url.pathname===root+'/commits/main')return Response.json({sha:newestSha});
+    if(url.pathname===root+'/tags')return Response.json([]);
     if(url.pathname===root+'/commits/'+approvedSha)return Response.json({sha:approvedSha});
     if(url.pathname===root+'/actions/workflows')return Response.json({
-      workflows:[{id:workflowId,path:workflowPath}],
+      workflows:[{id:workflowId,path:workflowPath,state:'active'}],
     });
     if(url.pathname===root+'/contents/'+workflowPath){
       assert.ok(url.searchParams.get('ref')===approvedSha||
