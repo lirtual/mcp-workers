@@ -30,6 +30,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.foreach_mcp_read')?.availability,'unavailable');
    assert.equal(catalog.get('flow.foreach_multi_mcp_read')?.availability,'unavailable');
   assert.equal(catalog.get('flow.foreach_github_task')?.availability,'unavailable');
+   assert.equal(catalog.get('flow.foreach_emit_task_emit')?.availability,'unavailable');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
   assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
@@ -213,4 +214,13 @@ test('multi-emit foreach discovery exposes only sequential pure Actions',async()
   assert.equal(schema.maxItems,4);
   assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
     rule.then.anyOf[0]?.items?.properties.uses.enum?.includes('result.emit')));
+});
+
+test('staged Task Foreach self-description reflects only one literal approved Task',async()=>{
+ const detail=await workflowCapabilities(env,'flow.foreach_emit_task_emit');
+ assert.equal(detail.availability,'no_verified_published_task');
+ const policy=detail.template_policy as {stages:string[];github_task_count:number;github_inputs:string};
+ assert.deepEqual(policy.stages,['result.emit','github.run','result.emit']);
+ assert.equal(policy.github_task_count,1);
+ assert.equal(policy.github_inputs,'literal_only');
 });
