@@ -157,7 +157,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
        properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
          description:'Five-field UTC Cron: numbers, *, lists, ranges, and steps; no names or Quartz/DST extensions.'}}},
       {type:'object',additionalProperties:false,required:['type','token_sha256'],
-       properties:{type:{const:'webhook'},token_sha256:{type:'string',pattern:'^[a-f0-9]{64}
+       properties:{type:{const:'webhook'},token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$',
+         description:'SHA-256 hex digest of an independent 32-byte random Webhook bearer secret; never put the raw credential in a Draft.'}}},
+    ]}},
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
       required:['id','uses','with'],
@@ -265,139 +267,6 @@ export async function workflowCapabilities(env:Pick<Env,
       semantics:'D1 admission is pinned to the current active Published Version; absent event ID has no deduplication guarantee',
       warning:'The example contains a placeholder hash, not a usable credential. Never put the raw bearer token in a Draft or log.'};
   }
-  if(id==='trigger.cron'){
-    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
-    detail.example=await compilingExample({...emit,triggers:[{type:'cron',schedule:'0 * * * *'}]});
-    detail.schedule_policy={timezone:'UTC',tick:'every minute',missed_ticks:'not_backfilled',
-      capacity_exhaustion:'skipped_without_queue',publication:'active_published_version_only',
-      manual_run:'still_supported'};
-  }
-  if(id==='action.result.emit'||id==='trigger.manual')
-    detail.example=await compilingExample(emit);
-  if(id==='flow.static_dag'||id==='flow.condition')
-    detail.example=await compilingExample(dag);
-  if(id==='action.mcp.call'){
-    const discovered=await portalDiscovery(env);
-    detail.availability=discovered.availability;
-    detail.discovered_tools=discovered.tools;
-    if(discovered.reason)detail.reason=discovered.reason;
-    if(discovered.tools.length){
-      detail.example=await compilingExample(mcpRead(discovered.tools[0]));
-      detail.example_validation='compiler_valid_and_live_contract_discovered; tools/call not performed';
-    }
-    detail.grant={scope:'read',...(portalReady?{pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT}:{}),
-      required:['approved_operations','accept_target_risks'],
-      warning:'Only source-reviewed, live-advertised read tools; exact schema is rechecked at execution. Discovery is not an execution or permission grant.'};
-  }
-  if(id==='action.github.run'){
-    const approved=githubReady?await listAvailableGitHubActions(env):{actions:[]};
-    detail.discovered_actions=approved.actions;
-    if(githubReady)detail.availability=approved.actions.some(x=>x.can_publish)?
-      'publishable_after_owner_approval':'no_verified_published_action';
-    detail.grant={required:['approved_actions','approve_heavy_execution'],
-      note:'Discovery is not approval; review exact SHA, immutable tag/ref, workflow and contract digest before Publish.'};
-  }
-  return detail;
-}
-,
-         description:'SHA-256 hex digest of an independent 32-byte random Webhook bearer secret; never put the raw credential in a Draft.'}}},
-    ]}},
-    steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
-      type:'object',additionalProperties:false,
-      required:['id','uses','with'],
-      properties:{
-        id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
-        uses:{enum:[...SUPPORTED_STEP_USES]},
-        needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
-        with:{type:'object',description:'Must match the matching uses/action contract below.'},
-      },
-      allOf:[
-        {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
-        {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
-        {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
-      ],
-    }},
-  },
-});
-
-const entries=[
-  {id:'trigger.manual',kind:'trigger',availability:'supported',
-   description:'Manually admit the current Published Version with workflow_run; supply idempotency_key to deduplicate.'},
-  {id:'trigger.cron',kind:'trigger',availability:'supported',
-   description:'One five-field UTC Cron trigger per Published Plan; no timezone/DST, missed-minute backfill or capacity queue. Pausing blocks new admissions.'},
-  {id:'trigger.webhook',kind:'trigger',availability:'unsupported',
-   description:'No owner-facing business Webhook ingress. GitHub signed Action callbacks are not business Triggers.'},
-  {id:'trigger.github_event',kind:'trigger',availability:'unsupported',
-   description:'GitHub lifecycle callbacks are execution receipts, not user-defined business events.'},
-  {id:'action.result.emit',kind:'action',availability:'supported',
-   description:'Emit a bounded deterministic result; with={data:expression}.'},
-  {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
-   description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
-  {id:'action.github.run',kind:'action',availability:'supported_with_grant',
-   description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
-  {id:'flow.static_dag',kind:'flow',availability:'supported',
-   description:'Acyclic needs dependencies, bounded steps and parallel admission. Steps run under one Cloudflare Workflow instance.'},
-  {id:'flow.condition',kind:'flow',availability:'supported',
-   description:'Step if accepts safe ref/eq/ne/gt/lt/and/or/not expressions with compiler validation.'},
-  {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Repeat, while, foreach, nested steps and dynamic expansion are not executable in the current compiler.'},
-  {id:'flow.child',kind:'flow',availability:'unsupported',
-   description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
-  {id:'flow.saga',kind:'flow',availability:'unsupported',
-   description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
-] as const;
-type Entry=typeof entries[number];
-const byId=new Map<string,Entry>(entries.map(entry=>[entry.id,entry]));
-
-async function compilingExample(definition:unknown){
-  // Each published sample is checked against the exact active compiler.
-  // This is compile-only: tool availability and Publish authorization are
-  // separate gates, especially for the illustrative MCP tool identifier.
-  const {digest}=await compilePlan(definition);
-  return {definition,digest,validation:'compiler_valid_only' as const};
-}
-
-export async function workflowCapabilities(env:Pick<Env,
- 'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>,
- id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
-  const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
-    !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
-  let githubReady=false;
-  try {
-    githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
-      !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
-  }catch { githubReady=false; } // invalid scope is never treated as approved
-  const availability=(entry:Entry)=>
-    entry.id==='action.mcp.call'&&!portalReady?'unavailable':
-    entry.id==='action.github.run'&&!githubReady?'unavailable':
-    ['action.mcp.call','action.github.run'].includes(entry.id)?'configured_unverified':entry.availability;
-  if(id===undefined)return {
-    definition_schema:WORKFLOW_DEFINITION_SCHEMA,
-    action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
-    expression_rules:WORKFLOW_EXPRESSION_RULES,
-    limits:PLAN_LIMITS,
-    capability_ids:entries.map(entry=>({
-      id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
-    })),
-    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',availability:'configured_unverified'}}:{portal:{availability:'unavailable'}},
-    availability_note:'Configured means credentials exist, not verified access or publication permission.',
-    github_repository_scope:githubReady?'configured':'unavailable',
-    tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
-      create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
-      status:'workflow_status',result:'workflow_result'},
-    admission:'Manual starts and one UTC Cron schedule per Published Plan; no Webhook/GitHub business event ingress',
-    note:'Discovery and inline validation never publish or grant execution.',
-  };
-  const entry=byId.get(id);
-  if(!entry)return {id,availability:'unknown',reason:'unknown_capability'};
-  const detail:Record<string,unknown>={...entry,availability:availability(entry),limits:PLAN_LIMITS,
-    ...(id==='flow.condition'?{expression_rules:WORKFLOW_EXPRESSION_RULES}:{}),
-    ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
-    ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
-    ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
-  };
   if(id==='trigger.cron'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
     detail.example=await compilingExample({...emit,triggers:[{type:'cron',schedule:'0 * * * *'}]});
