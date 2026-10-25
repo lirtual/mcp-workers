@@ -52,8 +52,9 @@ test('bounded GitHub Task foreach pins one immutable reviewed template per child
   'each','done','each_-1_verify','each_0_verify__proto__'])
   assert.equal(publishedGitHubActionStep(plan,id),undefined,id);
  for(const invalid of [
-   {...task,type:'session'},{...task,inputs:{outcome:{ref:'item.value'}}},
+   {...task,type:'session'},
    {...task,inputs:{outcome:{ref:'inputs.items'}}},
+   {...task,inputs:{outcome:{ref:'item.not_allowed'}}},
    {...task,ref:'refs/heads/main'},
  ]){
   const bad=structuredClone(source);
@@ -63,4 +64,21 @@ test('bounded GitHub Task foreach pins one immutable reviewed template per child
  const oversized=structuredClone(source);
  oversized.steps[0]!.max_items=9;
  await assert.rejects(()=>compilePlan(oversized));
+});
+
+test('foreach Task accepts exact current-item refs with immutable reviewed identity',async()=>{
+ const task={...action,type:'task' as const,inputs:{outcome:{ref:'item.value'}}};
+ const definition={version:1,name:'Dynamic Task inputs',inputs:{items:['success','failure']},
+  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[{id:'task',uses:'github.run',with:{capability:'github.action',action:task}}]}}]};
+ const {plan,digest}=await compilePlan(definition);
+ assert.equal(digest,(await compilePlan(JSON.stringify(definition))).digest);
+ assert.deepEqual((publishedGitHubActionStep(plan,'each_0_task')!.with.action as typeof task).inputs,
+  {outcome:{ref:'item.value'}});
+ for(const bad of [{ref:'item.value.__proto__'},{ref:'steps.other.output'},
+  {ref:'item.index.other'}, {and:[{ref:'item.value'}]},['success']]){
+  const cloned=structuredClone(definition);
+  cloned.steps[0]!.template.steps[0]!.with.action.inputs={outcome:bad} as never;
+  await assert.rejects(()=>compilePlan(cloned),/unsupported_foreach_inputs|invalid_reference/);
+ }
 });
