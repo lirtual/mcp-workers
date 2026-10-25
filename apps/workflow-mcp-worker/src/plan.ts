@@ -1,6 +1,13 @@
 import YAML from 'yaml';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 
+/** Compiler-owned supported Action kinds; discovery must not invent others. */
+export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
+export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8});
+export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
+  return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
+}
+
 export class PlanError extends Error {
   code = 'invalid_definition';
   constructor(message: string) { super(message); this.name = 'PlanError'; }
@@ -110,7 +117,7 @@ export const evaluateArguments=evaluateExpression;
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
-    if(new TextEncoder().encode(source).byteLength>32*1024)throw new PlanError('definition_too_large');
+    if(new TextEncoder().encode(source).byteLength>PLAN_LIMITS.definitionBytes)throw new PlanError('definition_too_large');
     try{ const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});if(doc.errors.length)throw Error('invalid_yaml');raw=doc.toJS({maxAliasCount:16}); }
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
@@ -118,15 +125,15 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','steps']);
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
-  if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>32)throw new PlanError('invalid_step_count');
-  if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs');if(Object.keys(inp).length>32)throw new PlanError('too_many_inputs');}
+  if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
+  if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs');if(Object.keys(inp).length>PLAN_LIMITS.maxInputs)throw new PlanError('too_many_inputs');}
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of o.steps){
     const s=object(s0,'invalid_step');keys(s,['id','uses','needs','if','with']);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(s.uses!=='result.emit'&&s.uses!=='mcp.call'&&s.uses!=='github.run')throw new PlanError('unsupported_capability');
+    if(!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     const withData=object(s.with,'invalid_step_arguments');
@@ -186,7 +193,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   while(pending.size){
     const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
     if(!ready.length)throw new PlanError('cyclic_dependencies');
-    if(ready.length>8)throw new PlanError('excessive_parallelism');
+    if(ready.length>PLAN_LIMITS.maxParallel)throw new PlanError('excessive_parallelism');
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
   const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>})};

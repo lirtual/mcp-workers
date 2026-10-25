@@ -117,6 +117,14 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     // The public authenticated MCP seam validates without creating a Draft,
     // publishing a grant, dispatching a GitHub job or mutating D1.
     const countBefore=(sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n;
+    const capabilities=await call('workflow_capabilities',{});
+    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.manual'&&x.availability==='supported'));
+    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.cron'&&x.availability==='unsupported'));
+    const emitInfo=await call('workflow_capabilities',{id:'action.result.emit'});
+    assert.equal(emitInfo.example.validation,'compiler_valid_only');
+    assert.equal((await call('workflow_capabilities',{id:'legacy.tsrv'})).availability,'unknown');
+    assert.equal((sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n,countBefore);
+    assert.equal(internetCalls,0);
     const inline=await call('workflow_validate',{definition:JSON.stringify(definition)});
     assert.equal(inline.valid,true);
     assert.deepEqual(inline.required_approvals,[{

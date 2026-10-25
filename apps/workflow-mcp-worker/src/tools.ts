@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { listAvailableGitHubActions } from './github-action-catalog.ts';
+import { workflowCapabilities } from './capabilities.ts';
 import { WorkflowService, cleanError } from './store.ts';
 import type { Env } from './store.ts';
 
@@ -24,6 +25,7 @@ export function buildMcpServer(env:Env){
  const service=new WorkflowService(env);
  const server=new McpServer({name:'workflow-mcp-worker',version:'0.1.0'},
  {capabilities:{tools:{}},instructions:'First use workflow_action_list for reviewed GitHub Actions; construct a Draft definition and use workflow_validate with inline definition before workflow_create. Inline validation never creates, publishes or runs anything. Workflows use immutable published plans. MCP calls through the pinned Portal require exact read-scope/schema grants and explicit target-risk acceptance. Reviewed GitHub Task/Session Actions require explicit repository/revision approval, signed physical GitHub OIDC identity, and durable lifecycle tracking. Approved GitHub Actions may have external side effects; discovery alone never authorizes execution. Arbitrary commands supplied through Workflow MCP, Cron and Webhooks are not supported.'});
+ server.registerTool('workflow_capabilities',{description:'Read compiler-aligned supported/unsupported Triggers, Actions, Flow Control, immutable limits and compiler-checked examples. Optional id selects one capability; current approved GitHub Action discovery uses the existing repository allowlist and does not grant execution.',inputSchema:z.object({id:z.string().min(1).max(128).optional()}).strict(),annotations:externalRead},async({id})=>safe(()=>workflowCapabilities(env,id)));
  server.registerTool('workflow_action_list',{description:'Discover current compatible GitHub Actions only in approved repository identities. Immutable source revisions require separate Publish approval; discovery grants no execution.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
