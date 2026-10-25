@@ -135,7 +135,7 @@ test('GitHub Task dynamic template schema and capability remain scoped',async()=
  const detail=await workflowCapabilities(env,'flow.foreach_github_task');
  assert.equal(detail.availability,'no_verified_published_task');
  assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'github.run');
- assert.match((detail.template_policy as {inputs:string}).inputs,/current-item|item\\.value/);
+ assert.ok((detail.template_policy as {inputs:string}).inputs.includes('item.value'));
  const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template as
    {oneOf:Array<{properties?:{steps?:{items?:{
      properties?:{uses?:{enum?:string[]}},allOf?:Array<{if?:{properties?:{uses?:{const?:string}}}}>
