@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fencedSend } from '../src/tools.ts';
+import { MailError } from '../src/types.ts';
 const account = { account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', provider: 'gmail', status: 'active' } as any;
 function database() {
   const records = new Map<string, { payload_digest: string; status: string; reference: string | null }>();
@@ -16,6 +17,12 @@ function database() {
                 const key = accountId + ':' + id;
                 if (records.has(key)) return { meta: { changes: 0 } };
                 records.set(key, { payload_digest: digest, status, reference: null });
+                return { meta: { changes: 1 } };
+              }
+              if (query.startsWith('UPDATE send_attempts SET status=? WHERE')) {
+                const [status, accountId, id] = params;
+                const item = records.get(accountId + ':' + id)!;
+                item.status = status;
                 return { meta: { changes: 1 } };
               }
               if (query.startsWith('UPDATE send_attempts')) {
@@ -58,5 +65,23 @@ test('unknown send outcome stays fenced and cannot trigger a retry', async () =>
   const replay = await fencedSend(env, account, 'request-abc123', { body: 'Hello' }, fn);
   assert.equal(replay.status, 'indeterminate');
   assert.equal(replay.duplicate, true);
+  assert.equal(dispatches, 1);
+});
+
+test('unconfirmed reply recipient is failed before submission and remains fenced', async () => {
+  const db = database(), env = { DB: db } as any;
+  let dispatches = 0;
+  const operation = async (): Promise<{ status: 'accepted' }> => {
+    dispatches++;
+    throw new MailError('reply_recipient_mismatch');
+  };
+  await assert.rejects(
+    () => fencedSend(env, account, 'reply-check-123', { to: 'wrong@example.test' }, operation),
+    /reply_recipient_mismatch/,
+  );
+  assert.equal(db.records.get(account.account_id + ':reply-check-123')?.status, 'failed');
+  const duplicate = await fencedSend(env, account, 'reply-check-123', { to: 'wrong@example.test' }, operation);
+  assert.equal(duplicate.status, 'failed');
+  assert.equal(duplicate.duplicate, true);
   assert.equal(dispatches, 1);
 });
