@@ -1474,3 +1474,34 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  assert.equal(posts,1,'definitive first Task failure must halt later dispatch');
  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
 });
+
+test('emit → conditional Task → emit skips all external work and follow-up on false condition',async t=>{
+ const {service,admit,env,sqlite,run}=setup(t);
+ const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],{items:['skip']});
+ const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+  workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
+  contractDigest:'b'.repeat(64),type:'task' as const};
+ const {plan}=await compilePlan({version:1,name:'Skipped physical Task',steps:[
+  {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
+   template:{steps:[
+    {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+    {id:'verify',uses:'github.run',if:{ne:[{ref:'steps.prepare.output'},'skip']},
+     with:{capability:'github.action',action:{...identity,ref:'refs/tags/task-v1',
+      inputs:{outcome:'success'}}}},
+    {id:'finish',uses:'result.emit',with:{data:{ref:'steps.verify.output'}}},
+   ]}},
+ ]});
+ plan.github_execution_approved=true;plan.github_action_approvals=[identity];
+ sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
+  .run(JSON.stringify(plan),started.run_id);
+ let calls=0;const before=globalThis.fetch;
+ globalThis.fetch=(async()=>{calls++;throw Error('unexpected GitHub access');}) as typeof fetch;
+ t.after(()=>{globalThis.fetch=before;});
+ await run(started.run_id);
+ const result=await service.result(started.run_id);
+ assert.equal(result.status,'succeeded',JSON.stringify(result));
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_prepare')?.status,'succeeded');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_verify')?.status,'skipped');
+ assert.equal(result.steps.find(s=>s.step_id==='each_0_finish')?.status,'skipped');
+ assert.equal(calls,0);
+});
