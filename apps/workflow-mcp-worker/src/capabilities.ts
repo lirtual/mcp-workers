@@ -98,6 +98,10 @@ const dag = {version:1,name:'Conditional DAG',steps:[
     if:{eq:[{ref:'steps.first.status'},'succeeded']},
     with:{data:{ref:'steps.first.output'}}},
 ]};
+const fixedRepeat={version:1,name:'Fixed repeat',inputs:{message:'hello'},steps:[
+  {id:'emit',uses:'result.emit',repeat:{count:3},with:{data:{ref:'inputs.message'}}},
+  {id:'summary',uses:'result.emit',needs:['emit'],with:{data:{ref:'steps.emit.output'}}},
+]};
 const branchJoin={version:1,name:'Conditional branch and join',inputs:{choice:'left'},steps:[
   {id:'left',uses:'result.emit',if:{eq:[{ref:'inputs.choice'},'left']},with:{data:'L'}},
   {id:'right',uses:'result.emit',if:{eq:[{ref:'inputs.choice'},'right']},with:{data:'R'}},
@@ -149,7 +153,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
-  unsupported:['foreach','while','repeat','child_workflow','saga'],
+  unsupported:['foreach','while','dynamic_repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -182,7 +186,10 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
+        needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires at least one succeeded dependency and blocks failure/indeterminate/all-skipped.'},
+        repeat:{type:'object',additionalProperties:false,required:['count'],
+          properties:{count:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxFixedRepeat}},
+          description:'Literal fixed count, compiled to sequential checkpointed DAG Steps. Count 1 is a no-op. 32 expanded Steps maximum; final iteration keeps original ID.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
       },
@@ -216,8 +223,10 @@ const entries=[
    description:'Step if accepts safe ref/eq/ne/gt/lt/and/or/not expressions with compiler validation.'},
   {id:'flow.branch_join',kind:'flow',availability:'supported',
    description:'Explicit needs_policy=allow_skipped joins conditional branches only when at least one succeeded and all other dependencies succeeded or skipped; a wholly skipped branch set, failure or uncertainty blocks execution.'},
+  {id:'flow.repeat_fixed',kind:'flow',availability:'supported',
+   description:'Literal repeat count 1–8 on a Step, statically expanded into sequential immutable DAG Steps, with 32 flattened Step limit; no dynamic condition or new orchestrator.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Repeat, while, foreach, nested steps and dynamic expansion are not executable in the current compiler.'},
+   description:'Dynamic repeat/while/foreach, nested steps and runtime expansion remain unsupported; see flow.repeat_fixed for literal-count repetition.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -316,6 +325,15 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(dag);
   if(id==='flow.branch_join')
     detail.example=await compilingExample(branchJoin);
+  if(id==='flow.repeat_fixed'){
+    detail.step_schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.repeat;
+    detail.example=await compilingExample(fixedRepeat);
+    detail.expansion={max_count:PLAN_LIMITS.maxFixedRepeat,max_flattened_steps:PLAN_LIMITS.maxSteps,
+      ordering:'serial_dependency_chain',intermediate_ids:'<id>__r1, <id>__r2, ...',
+      last_step_id:'original id',prior_failure_or_skip:'skip remaining iterations',
+      last_output:'steps.<id>.output',grant:'expanded external actions require existing Publish grants',
+      note:'Only literal count; no runtime loop condition, indexed inputs, or dynamic foreach.'};
+  }
   if(id==='action.mcp.call'){
     const discovered=await portalDiscovery(env);
     detail.availability=discovered.availability;
