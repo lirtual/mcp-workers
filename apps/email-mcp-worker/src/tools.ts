@@ -126,7 +126,9 @@ export async function searchAcross(env: Env, accounts: string[], query: string, 
     for (const item of batch) {
       if (!item.ok) {
         statuses.push({ account_id: item.aid, status: item.error === 'reauthorization_required' ? 'unauthorized' : 'failed', error: item.error, count: 0 });
-        if (positions[item.aid]) next[item.aid] = positions[item.aid];
+        // Preserve even an initial-page failure (empty token) so callers can
+        // retry only this mailbox without replaying completed mailboxes.
+        next[item.aid] = positions[item.aid] ?? '';
         continue;
       }
       messages.push(...item.result.messages);
