@@ -393,11 +393,11 @@ test('bounded MCP read foreach pins its child tool contract and item expressions
     {arguments:{value:{ref:'steps.not_declared.output'}}},
   ]){
     const bad=structuredClone(source);
-    Object.assign(bad.steps[0].template.steps[0].with,invalid);
+    Object.assign(bad.steps[0]!.template.steps[0]!.with,invalid);
     await assert.rejects(()=>compilePlan(bad),PlanError);
   }
   const bad=structuredClone(source);
-  bad.steps[0].template.steps[0].uses='github.run';
+  bad.steps[0]!.template.steps[0]!.uses='github.run';
   await assert.rejects(()=>compilePlan(bad),
     (e:unknown)=>e instanceof PlanError&&e.message==='unsupported_foreach_action');
 });
