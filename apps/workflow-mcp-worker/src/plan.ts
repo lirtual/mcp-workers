@@ -192,6 +192,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   for(let i=0;i<o.steps.length;i++){
     const candidate=object(o.steps[i],'invalid_step');
     if(!Object.hasOwn(candidate,'flow')){
+      // Source callers cannot masquerade as an internal compiled Flow Step.
+      // Only the validated flow:foreach branch below may produce this opcode.
+      if(candidate.uses==='flow.foreach')
+        throw new PlanError('unsupported_capability','/steps/'+i+'/uses');
       expanded.push(candidate);
       if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
