@@ -26,6 +26,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
+  assert.equal(catalog.get('flow.foreach_multi_emit')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_mcp_read')?.availability,'unavailable');
   assert.equal(catalog.get('flow.foreach_github_task')?.availability,'unavailable');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
@@ -37,7 +38,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_mcp_read']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read']){
     const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -171,4 +172,20 @@ test('GitHub detail reuses existing allowlist and does not need token for empty 
   assert.equal((await workflowCapabilities(env,'action.mcp.call')).availability,'unavailable');
   const unknown=await workflowCapabilities(env,'legacy.tsrv');
   assert.equal(unknown.availability,'unknown');
+});
+
+test('multi-emit foreach discovery exposes only sequential pure Actions',async()=>{
+  const detail=await workflowCapabilities(env,'flow.foreach_multi_emit');
+  assert.equal(detail.availability,'supported');
+  const example=detail.example as {definition:unknown;digest:string};
+  const {plan,digest}=await compilePlan(example.definition);
+  assert.equal(digest,example.digest);
+  assert.equal((plan.steps.find(s=>s.id==='each')?.with.templates as unknown[]).length,2);
+  const rules=detail.template_policy as {external_actions:string;max_steps:number};
+  assert.equal(rules.external_actions,'unsupported');
+  assert.equal(rules.max_steps,PLAN_LIMITS.maxForeachTemplateSteps);
+  const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+  assert.equal(schema.maxItems,4);
+  assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
+    rule.then.items.properties.uses.const==='result.emit'));
 });
