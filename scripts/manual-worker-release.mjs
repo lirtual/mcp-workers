@@ -43,7 +43,9 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   if (worker === "ssh-mcp-worker") {
-    invariant(settings.observability?.enabled !== true, "SSH observability must remain disabled");
+    invariant(settings.observability?.enabled === true &&
+      settings.observability?.logs?.invocation_logs === true,
+      "SSH observability and invocation logs must remain enabled");
     const broker = find("EDGE_SSH_BROKER", "service");
     invariant(broker?.service === "edgessh" && broker.entrypoint === "HostBrokerEntrypoint",
       "SSH Broker Service Binding missing or changed");
@@ -274,7 +276,9 @@ function readConfiguration(worker, content) {
   invariant(conf.keep_vars === false,
     "GitHub/Wrangler must own all runtime Variables; keep_vars must be false");
   if (worker === "ssh-mcp-worker") {
-    invariant(conf.observability?.enabled === false, "SSH observability must stay disabled");
+    invariant(conf.observability?.enabled === true &&
+      conf.observability?.logs?.invocation_logs === true,
+      "SSH observability and invocation logs must stay enabled");
   } else {
     const logs = worker === "remote-control-mcp-worker" ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
