@@ -21,25 +21,11 @@
 - `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 只读检查正式 Portal；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
 - `GitHub Workflow Check Executor`：仅接受 Workflow MCP 生成的任务标识，不是人工发布入口。
 
-## #204：Workflow 有状态资源切换前的只读门禁
+## Workflow 当前生产资源
 
-迁移 `workflow-mcp-worker` 的**有数据 D1 和 Workflow 实例**前，必须先暂停所有可写入口和新 GitHub 派发，并在此状态下检查生产状态。下面的命令**仅查询**当前旧 D1，不会更新配置或进行迁移：
+正式 Worker 仅绑定 `DB` → `workflow-mcp-db` 与 `WORKFLOW` → `workflow-mcp-orchestrator` / `WorkflowOrchestrator`。旧 Cloudflare Workflow 实例及资源已在所有者授权后退役，不再保留 `WORKFLOW_LEGACY`、`WorkflowRunner` 等兼容入口。已应用的 D1 Migration 文件名属于数据库历史标识，保持不变。
 
-```bash
-set -euo pipefail
-query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
-(cd apps/workflow-mcp-worker &&
-  pnpm exec wrangler d1 execute workflow-mcp-worker --remote --json --command "$query") |
-  node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
-```
-
-检查强制要求 8 个原始 Migration 全部应用，且非终态 Run、未确认启动、未结束 Step/Attempt/Session 和未投递 Callback 都为 0；任意字段缺失或状态不确定必须停止。非零历史记录（包括已经确认终止的 Session、已登记的取消回执）应保留，不要求清空。
-
-**数据库检查通过不等于允许切换：** 每次实际切换前仍需证明入口已阻止新增写入、外部 GitHub Jobs 已物理结束、旧 Cloudflare Workflow 实例已经收敛、真实 D1 导出/导入具有一致性证据。写入暂停与远程检查之间有竞态，必须在冻结后重新读取；不得把非冻结状态下的成功结果当成验收。旧 D1 和旧 Workflow 导出保留到历史实例的独立留存验证完成。**新 D1 开始独有写入后，不得直接将运行绑定回切到旧库**，只能先停写并按已审核的数据修复/前向恢复方案处理差异。
-
-该门禁不同于日常 `Release Worker` 的 `d1-check`：迁移验收必须单独调用，不会被普通发布自动触发。新的 Secret/Variable 配置及生产 D1/Workflow 资源切换依然需要各自明确授权。
-
-#204 的新 Workflow 类名统一为 `WorkflowOrchestrator`。只在迁移过渡期间保留 `WorkflowRunner` 作为**同一实现的导出别名**，确保旧 `workflow-mcp-runner` 历史实例在留存期仍可解析；这不是第二个编排器，也不是长期兼容版本。正式切换时必须先建立新 D1 `workflow-mcp-db` 并取得平台真实 UUID，再将 `DB` 与 `WORKFLOW` 绑定一次性改为新 D1、`workflow-mcp-orchestrator` / `WorkflowOrchestrator`。当前旧绑定和正式 D1 UUID **不得**用临时或猜测值替代；新绑定的真实回读、数据一致性与外部 Job/Workflow 静默检查没有通过前，不得发布。旧类别名仅在确认历史实例留存条件满足后通过独立审查移除。
+后续 Workflow 日常发布继续使用现有 GitHub Actions Release Worker，保留严格的 D1 schema、真实 GitHub Executor/OIDC 和生产绑定读回校验。不为本次历史清理增加功能开关、迁移系统或第二套发布链路。
 
 ## 发布后核对
 
