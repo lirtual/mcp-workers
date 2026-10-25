@@ -1,6 +1,6 @@
 import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES} from './plan.ts';
 import {PRODUCTION_PORTAL_ENDPOINT} from './mcp-public-fetch.ts';
-import {listAvailableGitHubActions} from './github-action-catalog.ts';
+import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
 
 // The compiler is the authority: no secondary validator, remote marketplace,
@@ -79,13 +79,26 @@ async function compilingExample(definition:unknown){
 }
 
 export async function workflowCapabilities(env:Pick<Env,
+ 'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
  'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>,id?:string){
+  const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
+    !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
+  let githubReady=false;
+  try {
+    githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
+      !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+  }catch { githubReady=false; } // invalid scope is never treated as approved
+  const availability=(entry:Entry)=>
+    entry.id==='action.mcp.call'&&!portalReady?'unavailable':
+    entry.id==='action.github.run'&&!githubReady?'unavailable':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     limits:PLAN_LIMITS,
-    capability_ids:entries.map(({id,kind,availability,description})=>({
-      id,kind,availability,description,
+    capability_ids:entries.map(entry=>({
+      id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
     })),
+    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read'}}:{portal:{availability:'unavailable'}},
+    github_repository_scope:githubReady?'configured':'unavailable',
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
       status:'workflow_status',result:'workflow_result'},
@@ -94,19 +107,19 @@ export async function workflowCapabilities(env:Pick<Env,
   };
   const entry=byId.get(id);
   if(!entry)return {id,availability:'unknown',reason:'unknown_capability'};
-  const detail:Record<string,unknown>={...entry,limits:PLAN_LIMITS};
+  const detail:Record<string,unknown>={...entry,availability:availability(entry),limits:PLAN_LIMITS};
   if(id==='action.result.emit'||id==='trigger.manual')
     detail.example=await compilingExample(emit);
   if(id==='flow.static_dag'||id==='flow.condition')
     detail.example=await compilingExample(dag);
   if(id==='action.mcp.call'){
-    detail.example=await compilingExample(mcpRead);
-    detail.grant={scope:'read',pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT,
+    if(portalReady)detail.example=await compilingExample(mcpRead);
+    detail.grant={scope:'read',...(portalReady?{pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT}:{}),
       required:['approved_operations','accept_target_risks'],
       warning:'The example tool is illustrative; availability and exact schema must be reviewed before Publish.'};
   }
   if(id==='action.github.run'){
-    const approved=await listAvailableGitHubActions(env);
+    const approved=githubReady?await listAvailableGitHubActions(env):{actions:[]};
     detail.discovered_actions=approved.actions;
     detail.grant={required:['approved_actions','approve_heavy_execution'],
       note:'Discovery is not approval; review exact SHA, immutable tag/ref, workflow and contract digest before Publish.'};
