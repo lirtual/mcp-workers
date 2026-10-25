@@ -104,6 +104,9 @@ const branchJoin={version:1,name:'Conditional branch and join',inputs:{choice:'l
   {id:'join',needs:['left','right'],needs_policy:'allow_skipped',uses:'result.emit',
     with:{data:{left_status:{ref:'steps.left.status'},right_status:{ref:'steps.right.status'}}}},
 ]};
+const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
+  steps:[{id:'emit_each',flow:'repeat',times:3,
+    template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
 const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contract example',
   steps:[{id:'read',uses:'mcp.call',with:{
     endpoint:tool.endpoint,tool:tool.tool,scope:'read',
@@ -149,7 +152,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs:'Only existing Step IDs, no duplicates or cycles; reference another Step only if it appears in needs.',
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
-  unsupported:['foreach','while','repeat','child_workflow','saga'],
+  unsupported:['foreach','while','dynamic_repeat','child_workflow','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -177,11 +180,18 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     ]}},
     steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,items:{
       type:'object',additionalProperties:false,
-      required:['id','uses','with'],
+      required:['id'],
+      oneOf:[{required:['uses','with']},{required:['flow','times','template']}],
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
+        flow:{const:'repeat'},
+        times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
+        template:{type:'object',additionalProperties:false,required:['uses','with'],
+          properties:{uses:{enum:[...SUPPORTED_STEP_USES]},with:{type:'object'},
+            if:{anyOf:[{type:'boolean'},{type:'object'}]}},
+          description:'One Action template per literal iteration; flattened before Publish to sequential stable <id>_<index> Step identities. No nested or dynamic repeats.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -216,8 +226,10 @@ const entries=[
    description:'Step if accepts safe ref/eq/ne/gt/lt/and/or/not expressions with compiler validation.'},
   {id:'flow.branch_join',kind:'flow',availability:'supported',
    description:'Explicit needs_policy=allow_skipped joins conditional branches only when at least one succeeded and all other dependencies succeeded or skipped; a wholly skipped branch set, failure or uncertainty blocks execution.'},
+  {id:'flow.repeat',kind:'flow',availability:'supported',
+   description:'Literal 1–8 repeat iterations flatten into sequential, pinned Steps before Publish. Max 32 expanded Steps; no runtime loops.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Repeat, while, foreach, nested steps and dynamic expansion are not executable in the current compiler.'},
+   description:'Dynamic repeat, while, foreach, nested steps and runtime expansion remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
    description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
@@ -316,6 +328,8 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(dag);
   if(id==='flow.branch_join')
     detail.example=await compilingExample(branchJoin);
+  if(id==='flow.repeat')
+    detail.example=await compilingExample(literalRepeat);
   if(id==='action.mcp.call'){
     const discovered=await portalDiscovery(env);
     detail.availability=discovered.availability;
