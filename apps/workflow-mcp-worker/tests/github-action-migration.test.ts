@@ -57,3 +57,19 @@ test('migration rolls back fully on schema conflict',()=>{
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM callback_receipts').get()?.n,1);
  }finally{db.close();}
 });
+
+test('fixed-key migration preserves historical Sessions and atomically rejects duplicates',()=>{
+ const db=setup();
+ try{
+  for(const name of ['0006_action_attempt_capabilities.sql',
+   '0007_session_executions.sql','0008_session_locator.sql'])db.exec(read(name));
+  db.exec("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES('r','fixed',1,'ready',1,1)");
+  db.exec(read('0009_fixed_sessions.sql'));
+  assert.equal(db.prepare("SELECT fixed_key FROM session_executions WHERE step_id='fixed'").get()?.fixed_key,null);
+  db.exec("UPDATE session_executions SET fixed_key='123:456' WHERE step_id='fixed'");
+  assert.throws(()=>db.exec("INSERT INTO session_executions(run_id,step_id,slot,fixed_key,state,created_at,updated_at) VALUES('r','other',2,'123:456','queued',1,1)"));
+  db.exec("UPDATE session_executions SET state='terminated' WHERE step_id='fixed'");
+  db.exec("INSERT INTO session_executions(run_id,step_id,slot,fixed_key,state,created_at,updated_at) VALUES('r','other',2,'123:456','queued',1,1)");
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+ }finally{db.close();}
+});
