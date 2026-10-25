@@ -4,7 +4,7 @@ import type {GithubEventTrigger,Plan} from './plan.ts';
 
 type KeyResolver=Parameters<typeof jwtVerify>[1];
 const githubKeys=createRemoteJWKSet(new URL('https://token.actions.githubusercontent.com/.well-known/jwks'));
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // All identity fields are GitHub-issued OIDC claims, never unsigned HTTP body data.
 const SHA=/^[a-f0-9]{40}$/i;
 const NUMBER=/^[1-9][0-9]{0,15}$/;
