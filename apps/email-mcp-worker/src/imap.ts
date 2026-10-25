@@ -203,3 +203,28 @@ export async function imapDraftCreate(env: Env, account: MailAccount, to: string
       id: encodeImapReference({ folder: box.path, uidvalidity: String(result.uidValidity), uid: result.uid }) };
   });
 }
+export function imapReplyHeaders(mail: {
+  from?: { address?: string };
+  replyTo?: { address?: string }[];
+  subject?: string; messageId?: string; references?: string;
+}, explicitTo: string) {
+  // An incoming Reply-To is untrusted; the Agent must specify the matching target.
+  const expected = mail.replyTo?.[0]?.address ?? mail.from?.address;
+  if (!expected || explicitTo.toLowerCase() !== expected.toLowerCase()) fail('reply_recipient_mismatch');
+  const validId = (value: string) => /^<[^\s<>@]{1,150}@[a-zA-Z0-9.-]{3,120}>$/.test(value);
+  const original = mail.messageId ?? '';
+  if (!validId(original)) fail('unsupported');
+  const previous = (mail.references ?? '').split(/\s+/).filter(validId).slice(-10);
+  return {
+    subject: /^(?:re:)/i.test(mail.subject ?? '') ? (mail.subject ?? '').slice(0, 500) :
+      ('Re: ' + (mail.subject ?? '')).slice(0, 500),
+    to: [explicitTo],
+    inReplyTo: original, references: [...previous, original].join(' '),
+  };
+}
+export async function imapReplyContext(env: Env, account: MailAccount, identity: string, explicitTo: string) {
+  const ref = decodeImapReference(identity);
+  return withImap(env, account, client => withSelected(client, ref, async () => {
+    return imapReplyHeaders(await rawMessage(client, ref.uid), explicitTo);
+  }));
+}

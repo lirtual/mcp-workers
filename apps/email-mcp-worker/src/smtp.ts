@@ -24,12 +24,14 @@ export async function verifySmtpCredentials(cfg: ProtocolCredentials): Promise<v
   finally { client.close(); }
 }
 export async function smtpSend(env: Env, account: MailAccount, to: string[],
-  subject: string, body: string, files: AttachmentFile[]) {
+  subject: string, body: string, files: AttachmentFile[],
+  relation?: { inReplyTo: string; references: string }) {
   if (account.provider !== 'imap_smtp') fail('unsupported');
   const client = await createVerifiedTransport(await protocolCredentials(env, account));
   try {
     const result = await client.sendMail({
-      from: account.address, to, subject, text: body, disableFileAccess: true, disableUrlAccess: true,
+      from: account.address, to, subject, text: body,
+      inReplyTo: relation?.inReplyTo, references: relation?.references, disableFileAccess: true, disableUrlAccess: true,
       attachments: files.map(f => ({ filename: f.filename, contentType: f.mimeType,
         content: Buffer.from(f.data) })),
     });

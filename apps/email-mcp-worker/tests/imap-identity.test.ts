@@ -32,3 +32,23 @@ test('DNS resolution pins only verified public IPs, never the attacker-controlle
   const unsafe = (async () => Response.json({ Status: 0, Answer: [{ type: 1, data: '192.168.1.9' }] })) as typeof fetch;
   await assert.rejects(() => resolvePublicMailEndpoint('imap.qq.com', unsafe), /unsafe_mail_host/);
 });
+test('IMAP replies require a caller-confirmed Reply-To and a valid RFC message identity', async () => {
+  const { imapReplyHeaders } = await import('../src/imap.ts');
+  const original = {
+    from: { address: 'sender@example.test' },
+    replyTo: [{ address: 'reply@example.test' }],
+    subject: 'Quarterly update',
+    messageId: '<original123@example.test>',
+    references: '<previous@example.test>',
+  };
+  const relation = imapReplyHeaders(original, 'reply@example.test');
+  assert.deepEqual(relation.to, ['reply@example.test']);
+  assert.equal(relation.subject, 'Re: Quarterly update');
+  assert.equal(relation.inReplyTo, '<original123@example.test>');
+  assert.equal(relation.references, '<previous@example.test> <original123@example.test>');
+  assert.throws(() => imapReplyHeaders(original, 'attacker@example.test'), /reply_recipient_mismatch/);
+  assert.throws(() => imapReplyHeaders({ ...original, messageId: 'bad\r\nBcc:someone@example.test' },
+    'reply@example.test'), /unsupported/);
+  assert.throws(() => imapReplyHeaders({ from: { address: 'sender@example.test' } },
+    'sender@example.test'), /unsupported/);
+});

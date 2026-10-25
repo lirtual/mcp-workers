@@ -28,6 +28,8 @@ DO NOT deploy this candidate to production.
   Nodemailer and postal-mime. Native IMAP references contain folder, UIDVALIDITY
   and UID; operations cover search (INBOX), get, attachments, folders, mark,
   conditional move/trash and APPEND draft (only where server capabilities permit).
+  IMAP reply/forward uses SMTP with an explicit recipient; replies validate the
+  source Reply-To and RFC Message-ID, without inferring native conversations.
   SMTP supports text + attachments with a durable pre-dispatch fence.
 - IMAP/SMTP onboarding checks both protocol logins before storing any encrypted
   credentials. Each connection resolves and validates public DNS addresses,

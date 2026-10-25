@@ -2,7 +2,8 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { decrypt, encrypt, sha256 } from './crypto.ts';
 import { validateAttachmentInputs, resolveAttachments } from './attachments.ts';
-import { withImap } from './imap.ts';
+import { withImap, imapReplyContext } from './imap.ts';
+import { smtpSend } from './smtp.ts';
 import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
 import {
@@ -78,7 +79,7 @@ async function capabilities(env: Env, account: MailAccount) {
     search: api || imap, get: api || imap, thread: api, folders: api || imap,
     attachment_get: api || imap, draft_create: api || hasDrafts, draft_update: api,
     send: api || imap, send_attachments: api || imap,
-    reply: api, forward: api, mark_read: api || imap,
+    reply: api || imap, forward: api || imap, mark_read: api || imap,
     move: account.provider === 'graph' || hasMove, trash: api || hasTrash,
     permanent_delete: false, bulk_write: false,
   };
@@ -239,18 +240,23 @@ export function buildMcpServer(env: Env): McpServer {
       () => sendMail(env, acc, to, subject, body, files));
   }));
   server.registerTool('mail_reply', {
-    description: 'Native Microsoft Graph reply for one exact message; sends externally, fenced by request_id.',
+    description: 'Reply to one native message. IMAP requires explicit recipient matching source Reply-To. Durable request_id fences all sends.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), body,
-      attachments: attachmentsSchema,
+      to: z.email().max(320).optional(), attachments: attachmentsSchema,
     }).strict(), annotations: write,
-  }, async ({ account_id, message_id, request_id, body, attachments }) => safe(async () => {
+  }, async ({ account_id, message_id, request_id, body, to, attachments }) => safe(async () => {
     const items = attachments ?? [];
     validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
-    if (acc.provider !== 'graph' && acc.provider !== 'gmail') fail('unsupported');
-    return fencedSend(env, acc, request_id, { op: 'reply', message_id, body, attachments: items }, async () => {
+    if (acc.provider !== 'graph' && acc.provider !== 'gmail' && acc.provider !== 'imap_smtp') fail('unsupported');
+    if (acc.provider === 'imap_smtp' && !to) fail('explicit_reply_recipient_required');
+    return fencedSend(env, acc, request_id, { op: 'reply', message_id, body, to, attachments: items }, async () => {
       const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
+      if (acc.provider === 'imap_smtp') {
+        const relation = await imapReplyContext(env, acc, message_id, to!);
+        return smtpSend(env, acc, relation.to, relation.subject, body, files, relation);
+      }
       if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, files);
       if (files.length) return graphReplyForwardWithFiles(env, acc, 'reply', message_id, body, files);
       await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/reply', {
@@ -261,7 +267,7 @@ export function buildMcpServer(env: Env): McpServer {
     });
   }));
   server.registerTool('mail_forward', {
-    description: 'Native Microsoft Graph forward for one message, exact recipients and a fenced request_id.',
+     description: 'Forward one native message to explicit recipients, with a durable request_id fence.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), to, body,
       attachments: attachmentsSchema,
@@ -270,9 +276,17 @@ export function buildMcpServer(env: Env): McpServer {
     const items = attachments ?? [];
     validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
-    if (acc.provider !== 'graph' && acc.provider !== 'gmail') fail('unsupported');
+    if (acc.provider !== 'graph' && acc.provider !== 'gmail' && acc.provider !== 'imap_smtp') fail('unsupported');
     return fencedSend(env, acc, request_id, { op: 'forward', message_id, to, body, attachments: items }, async () => {
       const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
+      if (acc.provider === 'imap_smtp') {
+        const original = await getMail(env, acc, message_id);
+        const forwarded = body + '\n\n---------- Forwarded message ----------\n' +
+          'From: ' + original.from + '\nSubject: ' + original.subject +
+          '\n\n' + (original.text ?? original.snippet);
+        if (forwarded.length > 100000) fail('payload_too_large');
+        return smtpSend(env, acc, to, ('Fwd: ' + original.subject).slice(0, 500), forwarded, files);
+      }
       if (acc.provider === 'gmail') return forwardGmail(env, acc, message_id, to, body, files);
       if (files.length) return graphReplyForwardWithFiles(env, acc, 'forward', message_id, body, files, to);
       await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/forward', {
