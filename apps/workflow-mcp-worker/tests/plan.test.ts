@@ -213,3 +213,66 @@ test('skip-tolerant join is explicit, compiler-pinned, and keeps default Plan di
     steps:[{id:'join',uses:'result.emit',needs_policy:'allow_skipped',with:{data:1}}]}),
     error=>error instanceof PlanError&&error.path==='/steps/0/needs_policy');
 });
+
+test('fixed repeat compiles to stable serial Step IDs and matches explicit DAG digest',async()=>{
+  const repeated={version:1,name:'Repeat checkpoint',inputs:{message:'safe'},steps:[
+    {id:'init',uses:'result.emit',with:{data:'start'}},
+    {id:'repeat',uses:'result.emit',needs:['init'],repeat:{count:3},
+      with:{data:{ref:'steps.init.output'}}},
+    {id:'done',uses:'result.emit',needs:['repeat'],
+      with:{data:{ref:'steps.repeat.output'}}},
+  ]};
+  const compiled=await compilePlan(repeated);
+  assert.equal(compiled.plan.steps.length,5);
+  const steps=new Map(compiled.plan.steps.map(s=>[s.id,s]));
+  assert.deepEqual(steps.get('repeat__r1')?.needs,['init']);
+  assert.deepEqual(steps.get('repeat__r2')?.needs,['init','repeat__r1']);
+  assert.deepEqual(steps.get('repeat')?.needs,['init','repeat__r2']);
+  assert.deepEqual(steps.get('done')?.needs,['repeat']);
+  assert.equal(compiled.plan.steps.every(s=>!Object.hasOwn(s,'repeat')),true);
+  const explicitlyUnrolled={...repeated,steps:[
+    repeated.steps[0],
+    {id:'repeat__r1',uses:'result.emit',needs:['init'],with:{data:{ref:'steps.init.output'}}},
+    {id:'repeat__r2',uses:'result.emit',needs:['init','repeat__r1'],with:{data:{ref:'steps.init.output'}}},
+    {id:'repeat',uses:'result.emit',needs:['init','repeat__r2'],with:{data:{ref:'steps.init.output'}}},
+    repeated.steps[2],
+  ]};
+  assert.equal(compiled.digest,(await compilePlan(explicitlyUnrolled)).digest);
+  const one={version:1,name:'Repeat one',steps:[{id:'step',uses:'result.emit',with:{data:1}}]};
+  assert.equal((await compilePlan(one)).digest,
+    (await compilePlan({...one,steps:[{...one.steps[0],repeat:{count:1}}]})).digest);
+});
+
+test('fixed repeat rejects nonliteral, unbounded and conflicting expansion before Publish',async()=>{
+  const base={version:1,name:'Bounded loop',steps:[
+    {id:'emit',uses:'result.emit',with:{data:'fixed'}},
+  ]};
+  for(const value of [0,9,-1,1.5,'3',null,false,{ref:'inputs.count'},Number.MAX_SAFE_INTEGER]){
+    await assert.rejects(()=>compilePlan({...base,steps:[
+      {...base.steps[0],repeat:{count:value}},
+    ]}),(e:unknown)=>e instanceof PlanError&&
+      e.message==='invalid_fixed_repeat_count'&&e.path==='/steps/0/repeat/count');
+  }
+  for(const bad of [null,'3',[],{}, {count:2,while:true}]){
+    await assert.rejects(()=>compilePlan({...base,steps:[
+      {...base.steps[0],repeat:bad},
+    ]}),PlanError);
+  }
+  await assert.rejects(()=>compilePlan({...base,steps:[
+    {...base.steps[0],repeat:{count:2}},
+    {id:'emit__r1',uses:'result.emit',with:{data:'collision'}},
+  ]}),PlanError);
+  await assert.rejects(()=>compilePlan({...base,steps:[
+    {id:'a'.repeat(64),uses:'result.emit',repeat:{count:2},with:{data:'too long'}},
+  ]}),PlanError);
+  const four=Array.from({length:4},(_,i)=>({
+    id:'r'+i,uses:'result.emit',repeat:{count:8},with:{data:i},
+  }));
+  assert.equal((await compilePlan({...base,steps:four})).plan.steps.length,32);
+  await assert.rejects(()=>compilePlan({...base,steps:[...four,
+    {id:'extra',uses:'result.emit',with:{data:1}},
+  ]}),(e:unknown)=>e instanceof PlanError&&e.message==='invalid_step_count');
+  await assert.rejects(()=>compilePlan({...base,steps:[{
+    id:'x',uses:'result.emit',repeat:{count:3},needs:['x'],with:{data:1},
+  }]}),PlanError);
+});
