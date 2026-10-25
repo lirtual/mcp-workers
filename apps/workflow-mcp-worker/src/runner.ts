@@ -1,5 +1,6 @@
 import {watchPersistedSessions} from './github-action-session-watch.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
+import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -183,6 +184,10 @@ async function runForeachStep(
     if(Array.isArray(config.templates))
       return await runPureMultiForeach(env,s,runId,step,ctx);
     const template=config.template as {id:string;uses:string;with:Record<string,unknown>;if?:unknown};
+    const dynamic=dynamicForeachTaskInputs(s);
+    // Never trust a shape-only check for a mutable external input:
+    // the exact GitHub-reviewed contract is persisted at Publish.
+    const typedContract=dynamic?await reviewedForeachTaskContract(plan,s):undefined;
     if(!['result.emit','mcp.call','github.run'].includes(template?.uses)||!Number.isSafeInteger(config.max_items)||
        Number(config.max_items)<1||Number(config.max_items)>8)
       return {status:'failed',error_code:'invalid_foreach_plan'};
@@ -195,10 +200,15 @@ async function runForeachStep(
         const entries=list.map((value,index)=>{
           const itemCtx={...ctx,item:{value,index}};
           const selected=template.if===undefined||evaluateCondition(template.if,itemCtx);
-          const evaluated=selected?evaluateArguments(
+          const candidate=selected?evaluateArguments(
             template.uses==='mcp.call'?template.with.arguments:
               template.uses==='github.run'?(template.with.action as {inputs?:unknown})?.inputs:
               template.with.data,itemCtx):null;
+          // All selected Task inputs are fully typed (including choices and
+          // required fields) within this single durable snapshot. A late
+          // malformed item cannot cause a preceding item to dispatch.
+          const evaluated=selected&&typedContract?
+            checkedFrozenTaskInputs(typedContract,candidate):candidate;
           // Before any external dispatch, reject unresolved arguments across the
           // entire bounded array. Partial pre-dispatch validation is not enough.
           if(selected&&template.uses==='mcp.call'&&
@@ -226,9 +236,30 @@ async function runForeachStep(
       const outcome=template.uses==='github.run'&&entry.selected
         ? await (async():Promise<Outcome>=>{
             try{
-              await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
-                .bind(runId,entry.id,now()).run();
-              const child:Step={id:entry.id,uses:'github.run',needs:s.needs,with:template.with};
+              if(dynamic){
+                const values=entry.output as Record<string,string>;
+                const sha=await frozenTaskInputDigest(values);
+                const marker=JSON.stringify({input_sha256:sha});
+                // D1 stores only a digest, not a raw dynamically generated
+                // argument or secret. Preserve an existing marker on replay.
+                await db.prepare(`INSERT INTO run_steps(run_id,step_id,status,output,updated_at)
+                  SELECT ?,?,'running',?,? WHERE EXISTS(
+                    SELECT 1 FROM runs WHERE id=? AND outcome='running')
+                  ON CONFLICT(run_id,step_id) DO NOTHING`)
+                  .bind(runId,entry.id,marker,now(),runId).run();
+                const frozen=await db.prepare(`SELECT status,output FROM run_steps
+                  WHERE run_id=? AND step_id=?`).bind(runId,entry.id)
+                  .first<{status:string;output:string|null}>();
+                if(frozen?.status!=='running'||frozen.output!==marker)
+                  return {status:'indeterminate',error_code:'github_input_snapshot_unconfirmed'};
+              }else{
+                await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+                  .bind(runId,entry.id,now()).run();
+              }
+              const childWith=dynamic?{...template.with,action:{
+                ...(template.with.action as Record<string,unknown>),inputs:entry.output,
+              }}:template.with;
+              const child:Step={id:entry.id,uses:'github.run',needs:s.needs,with:childWith};
               // The Task's native dispatch checkpoint first registers a
               // UNIQUE D1 Attempt. A lost response cannot dispatch again.
               return await runPublishedGitHubActionTask(env,plan,child,runId,step);
