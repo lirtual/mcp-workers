@@ -292,19 +292,21 @@ export async function sendMail(env: Env, account: MailAccount, to: string[], sub
   }
   return fail('unsupported');
 }
-export async function replyGmail(env: Env, account: MailAccount, messageIdValue: string, body: string, files: AttachmentFile[] = []) {
+export async function replyGmail(env: Env, account: MailAccount, messageIdValue: string, body: string, confirmedTo: string, files: AttachmentFile[] = []) {
   if (account.provider !== 'gmail') fail('unsupported');
   const original = await json(env, account, '/messages/' + enc(messageIdValue) + '?format=full');
   const headers: any[] = original.payload?.headers ?? [];
   const id = messageId(header(headers, 'message-id'));
   const replyTo = mailboxAddress(header(headers, 'reply-to') || header(headers, 'from'));
+  // Inbound Reply-To is untrusted; never silently choose an outbound recipient.
+  if (confirmedTo.toLowerCase() !== replyTo.toLowerCase()) fail('reply_recipient_mismatch');
   const subject = header(headers, 'subject');
   if (replyTo.toLowerCase() === account.address.toLowerCase()) fail('unsupported');
   const references = header(headers, 'references').trim();
   // Preserve native Gmail thread identity and RFC 2822 relation, never infer from subject.
   const relation = 'In-Reply-To: ' + id + '\r\nReferences: ' +
     (references ? references + ' ' + id : id);
-  const raw = gmailRaw(mimeMessage(account.address, [replyTo], subject, body, relation, files));
+  const raw = gmailRaw(mimeMessage(account.address, [confirmedTo], subject, body, relation, files));
   const result = await json(env, account, '/messages/send', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ raw, threadId: String(original.threadId ?? '') }),
