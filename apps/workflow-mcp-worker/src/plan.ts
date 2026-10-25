@@ -142,6 +142,19 @@ export const evaluateArguments=evaluateExpression;
  * The compiler already reserves all possible identities and prevents collisions.
  * Session Action lifecycle is deliberately not supported here.
  */
+export function publishedForeachTaskController(plan:Plan,stepId:string):Step|undefined{
+  if(!Array.isArray(plan.steps))return undefined;
+  for(const controller of plan.steps){
+    if(controller.uses!=='flow.foreach')continue;
+    const config=controller.with,child=config.template as {id?:unknown;uses?:unknown;with?:unknown}|undefined;
+    if(child?.uses!=='github.run'||typeof child.id!=='string'||
+       !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
+       Number(config.max_items)>PLAN_LIMITS.maxForeachItems)continue;
+    for(let i=0;i<Number(config.max_items);i++)
+      if(stepId===controller.id+'_'+i+'_'+child.id)return controller;
+  }
+  return undefined;
+}
 export function publishedGitHubActionStep(plan:Plan,stepId:string):Step|undefined{
   if(!Array.isArray(plan.steps))return undefined;
   const ordinary=plan.steps.find(s=>s.id===stepId);
