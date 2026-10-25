@@ -478,11 +478,14 @@ export class WorkflowService {
     const publishedPlan=JSON.parse(version.plan) as Plan;
     const dynamicIds=new Set(publishedPlan.steps.flatMap(s=>{
       if(s.uses!=='flow.foreach')return [];
-      const template=s.with.template as {id?:unknown};
+      const templates=(Array.isArray(s.with.templates)?s.with.templates:[s.with.template]) as
+        Array<{id?:unknown}|undefined>;
       const count=s.with.max_items;
       if(!Number.isSafeInteger(count)||Number(count)<1||Number(count)>8||
-         typeof template?.id!=='string')return [];
-      return Array.from({length:count as number},(_,index)=>s.id+'_'+index+'_'+template.id);
+         !templates.length||templates.length>4||
+         templates.some(template=>typeof template?.id!=='string'))return [];
+      return Array.from({length:count as number},(_,index)=>
+        templates.map(template=>s.id+'_'+index+'_'+template!.id)).flat();
     }));
     const steps=[
       ...publishedPlan.steps.map(s=>{
