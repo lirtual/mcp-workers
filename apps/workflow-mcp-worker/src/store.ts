@@ -105,7 +105,7 @@ function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
 /** Include validated dynamic Task templates in the existing exact-source
  * discovery, schema review and explicit owner Publish approval. */
 function reviewedGitHubSteps(plan:Plan):Array<{step:Step;path:string}>{
-  return plan.steps.flatMap((step,index)=>{
+  return plan.steps.flatMap<{step:Step;path:string}>((step,index)=>{
     if(step.uses==='github.run'&&step.with.capability==='github.action')
       return [{step,path:'/steps/'+index+'/with/action'}];
     if(step.uses!=='flow.foreach')return [];
