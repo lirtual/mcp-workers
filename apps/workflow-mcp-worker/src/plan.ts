@@ -308,7 +308,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           if(args.scope!=='read')throw new PlanError('unsupported_operation_scope',target+'/scope');
           object(args.arguments,'invalid_step_arguments');
           const schema_digest=await toolSchemaDigest(args.input_schema,args.output_schema);
-          return {...child,with:{...args,schema_digest}} as
+          return {...child,with:{...args,schema_digest}} as unknown as
             {id:string;uses:'result.emit'|'mcp.call';with:Record<string,unknown>;if?:unknown};
         }));
         if(new Set(children.map(child=>child.id)).size!==children.length)
