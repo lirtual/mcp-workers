@@ -17,7 +17,7 @@ type GithubClaims=JWTPayload&{
 };
 type SignedPush={
   repository:string;repository_id:number;event:'push';ref:string;
-  sha:string;run_id:string;run_attempt:number;
+  sha:string;run_id:string;
 };
 
 /** A GitHub Actions job can bridge a native push to this Worker without
@@ -48,7 +48,7 @@ export async function verifyGithubPushEvent(
      !Number.isSafeInteger(Number(claims.run_attempt)))return null;
   return {repository:trigger.repository,repository_id:trigger.repository_id,
     event:'push',ref:trigger.ref,sha:claims.sha,
-    run_id:claims.run_id,run_attempt:Number(claims.run_attempt)};
+    run_id:claims.run_id};
 }
 
 /** Signed GitHub Actions event ingress only. Never accept client-supplied
