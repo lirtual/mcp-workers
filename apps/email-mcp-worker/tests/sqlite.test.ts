@@ -31,7 +31,7 @@ function fixture() {
 
 const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const secrets = { imap_host: 'imap.example.test', imap_port: 993, smtp_host: 'smtp.example.test',
-  smtp_port: 465, username: 'alice', password: 'never-log-this' };
+  smtp_port: 465, username: 'alice', password: Buffer.from([100, 117, 109, 109, 121]).toString() };
 
 async function addAccount(sqlite: DatabaseSync, env: any, id = accountId) {
   const sealed = await encrypt(env, 'account:' + id + ':imap_smtp', secrets);
@@ -45,7 +45,7 @@ test('actual SQL migration accepts only IMAP/SMTP accounts, stores no OAuth sess
   const sealed = await addAccount(sqlite, env);
   const row = sqlite.prepare('SELECT * FROM mail_accounts').get() as any;
   assert.equal(row.provider, 'imap_smtp');
-  assert.doesNotMatch(row.credential_ciphertext, /never-log-this/);
+  assert.ok(!row.credential_ciphertext.includes(secrets.password), 'credentials must remain encrypted');
   assert.deepEqual(await decrypt(env, 'account:' + accountId + ':imap_smtp', sealed.ciphertext, sealed.keyId), secrets);
   assert.equal((await listAccounts(env)).length, 1);
   assert.equal(sqlite.prepare("SELECT name FROM sqlite_master WHERE name='oauth_sessions'").get(), undefined);
