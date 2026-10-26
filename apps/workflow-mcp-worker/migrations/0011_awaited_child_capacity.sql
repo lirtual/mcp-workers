@@ -16,6 +16,9 @@ CREATE TABLE child_cancellations (
  parent_step_id TEXT NOT NULL,
  child_run_id TEXT NOT NULL UNIQUE,
  requested_at INTEGER NOT NULL,
+ -- Only the caller that claims this field may POST native terminate().
+ -- Null keeps a cancellation intent pending during native create/ACK loss.
+ termination_attempted_at INTEGER,
  PRIMARY KEY(parent_run_id,parent_step_id),
  FOREIGN KEY(parent_run_id) REFERENCES runs(id),
  FOREIGN KEY(child_run_id) REFERENCES runs(id)
