@@ -44,6 +44,79 @@ async function call(name,args={}){
   catch { throw Error('email_smoke_tool_result_bad_json'); }
 }
 
+// Opt-in production acceptance. Never print any mailbox-derived values.
+// Default release smoke remains metadata-only; this deeper check is manual.
+async function deepReadAcceptance(account){
+  const aid=account.account_id;
+  const broad=await call('mail_search',{account_ids:[aid],query:'@'});
+  stage='positive_discovery';
+  assert.equal(broad.partial_failure,false,'email_smoke_positive_discovery_failed');
+  assert.equal(broad.accounts?.[0]?.status,'success','email_smoke_positive_discovery_status');
+  assert.ok(['envelope','full_text'].includes(broad.accounts?.[0]?.search_scope),
+    'email_smoke_positive_search_scope');
+  assert.ok(Array.isArray(broad.messages),'email_smoke_positive_result_shape');
+  // No content from unrelated mail is printed, stored in artifacts, or forwarded.
+  const sample=broad.messages.find(message=>
+    typeof message.from==='string'&&/^[^\s@]+@[^\s@]+$/.test(message.from)) ??
+    broad.messages.find(message=>
+      typeof message.to==='string'&&/^[^\s@]+@[^\s@]+$/.test(message.to));
+  if(!sample){
+    console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_NO_SAMPLE');
+    console.log('EMAIL_PRODUCTION_MAIL_GET_NOT_TESTED');
+    console.log('EMAIL_PRODUCTION_ATTACHMENT_NOT_TESTED');
+    return;
+  }
+  const searchTerm=/^[^\s@]+@[^\s@]+$/.test(sample.from??'') ? sample.from : sample.to;
+  const result=await call('mail_search',{account_ids:[aid],query:searchTerm});
+  stage='positive_relevance';
+  assert.equal(result.partial_failure,false,'email_smoke_positive_search_failed');
+  assert.equal(result.accounts?.[0]?.status,'success','email_smoke_positive_search_status');
+  assert.ok(Array.isArray(result.messages)&&result.messages.some(message=>
+    message.id===sample.id&&message.account_id===aid),
+    'email_smoke_positive_missing_expected_message');
+  console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_OK');
+  // ImapFlow fetchOne({source:true}) uses BODY.PEEK[] and must not mark read.
+  // Inspect a tiny sample, never log text, subjects, senders, or raw responses.
+  let gotMessage=false;
+  let foundAttachment=false;
+  for(const hit of result.messages.slice(0,3)){
+    let item;
+    try {item=await call('mail_get',{account_id:aid,message_id:hit.id});}
+    catch(error){
+      if(error?.message==='email_smoke_mail_get_failed_result_too_large')continue;
+      throw error;
+    }
+    stage='message_shape';
+    assert.equal(item.account_id,aid,'email_smoke_mail_get_account_mismatch');
+    assert.equal(item.id,hit.id,'email_smoke_mail_get_id_mismatch');
+    assert.ok(typeof item.subject==='string'&&typeof item.text==='string'&&
+      Array.isArray(item.attachments),'email_smoke_mail_get_invalid_shape');
+    gotMessage=true;
+    const attachment=item.attachments.find(part=>
+      typeof part.id==='string'&&Number.isSafeInteger(part.size)&&
+      part.size>=0&&part.size<=128*1024);
+    if(!attachment)continue;
+    const file=await call('attachment_get',{
+      account_id:aid,message_id:hit.id,attachment_id:attachment.id});
+    stage='attachment_shape';
+    assert.equal(file.account_id,aid,'email_smoke_attachment_account_mismatch');
+    assert.equal(file.message_id,hit.id,'email_smoke_attachment_message_mismatch');
+    assert.equal(file.attachment_id,attachment.id,'email_smoke_attachment_id_mismatch');
+    assert.ok(typeof file.data_base64==='string'&&
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data_base64),
+      'email_smoke_attachment_invalid_base64');
+    const decoded=Buffer.from(file.data_base64,'base64');
+    assert.equal(decoded.length,file.size,'email_smoke_attachment_size_mismatch');
+    assert.equal(decoded.length,attachment.size,'email_smoke_attachment_metadata_mismatch');
+    foundAttachment=true;
+    break;
+  }
+  console.log(gotMessage?'EMAIL_PRODUCTION_MAIL_GET_OK':
+    'EMAIL_PRODUCTION_MAIL_GET_NO_SAFE_SAMPLE');
+  console.log(foundAttachment?'EMAIL_PRODUCTION_ATTACHMENT_GET_OK':
+    'EMAIL_PRODUCTION_ATTACHMENT_NO_SMALL_SAMPLE');
+}
+
 async function main(){
   const accounts=await call('account_list');
   stage='accounts_shape';
@@ -79,7 +152,12 @@ async function main(){
     assert.equal(search.accounts?.[0]?.status,'success','email_smoke_imap_search_status');
     assert.deepEqual(search.messages,[],'email_smoke_unexpected_search_hit');
   }
-  // No mail_get, attachment_get, read-flag change, draft or send is performed.
+  // This remains metadata-only on every ordinary production release.
+  if(process.env.EMAIL_READONLY_ACCEPTANCE==='true'){
+    const qq=active.find(x=>typeof x.address==='string'&&x.address.toLowerCase().endsWith('@qq.com'));
+    await deepReadAcceptance(qq??active[0]);
+  }
+  // No write tools, draft creation, mail sending, or flag updates.
   console.log('EMAIL_PRODUCTION_IMAP_READONLY_ACCEPTANCE_OK active_sample='+Math.min(active.length,3));
 }
 main().catch(error=>{
