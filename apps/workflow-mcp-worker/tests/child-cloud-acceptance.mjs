@@ -164,7 +164,7 @@ async function acceptance(){
   let delayedChild=null;
   for(let i=0;i<100;i++){
     delayedChild=(await query('SELECT id,start_state,outcome FROM runs WHERE parent_run_id=?',[delayed.run_id])).results[0]??null;
-    if(delayedChild?.start_state==='started'&&delayedChild.outcome==='running')break;
+    if(delayedChild?.start_state==='started'&&['queued','running'].includes(delayedChild.outcome))break;
     await new Promise(resolve=>setTimeout(resolve,200));
   }
   assert.equal(delayedChild?.start_state,'started','Child did not reach native dispatch before cancellation');
