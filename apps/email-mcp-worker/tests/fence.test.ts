@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fencedSend } from '../src/tools.ts';
 import { MailError } from '../src/types.ts';
+import { assertSmtpRecipientAcceptance } from '../src/smtp.ts';
 const account = { account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', provider: 'gmail', status: 'active' } as any;
 function database() {
   const records = new Map<string, { payload_digest: string; status: string; reference: string | null }>();
@@ -84,4 +85,40 @@ test('unconfirmed reply recipient is failed before submission and remains fenced
   assert.equal(duplicate.status, 'failed');
   assert.equal(duplicate.duplicate, true);
   assert.equal(dispatches, 1);
+});
+
+test('SMTP partial recipient acceptance is never marked fully accepted', () => {
+  const recipients = ['first@example.test', 'second@example.test'];
+  assert.doesNotThrow(() => assertSmtpRecipientAcceptance({
+    accepted: ['FIRST@example.test', 'second@example.test'], rejected: [],
+  }, recipients));
+  assert.throws(() => assertSmtpRecipientAcceptance({
+    accepted: ['first@example.test'], rejected: ['second@example.test'],
+  }, recipients), /smtp_partial_rejection/);
+  assert.throws(() => assertSmtpRecipientAcceptance({
+    accepted: ['first@example.test'], rejected: [],
+  }, recipients), /smtp_partial_rejection/, 'missing recipient acceptance cannot be ignored');
+  assert.throws(() => assertSmtpRecipientAcceptance({ accepted: [], rejected: [] }, recipients),
+    /smtp_partial_rejection/);
+});
+
+test('partial SMTP submission remains indeterminate and duplicate dispatch is fenced', async () => {
+  const db = database(), env = { DB: db } as any;
+  let dispatches = 0;
+  const send = async (): Promise<{ status: 'accepted' }> => {
+    dispatches++;
+    assertSmtpRecipientAcceptance({
+      accepted: ['first@example.test'], rejected: ['second@example.test'],
+    }, ['first@example.test', 'second@example.test']);
+    return { status: 'accepted' };
+  };
+  const input = { to: ['first@example.test', 'second@example.test'], body: 'hello' };
+  const first = await fencedSend(env, account, 'partial-smtp-123', input, send);
+  assert.equal(first.status, 'indeterminate');
+  assert.equal(first.error, 'smtp_partial_rejection');
+  assert.equal(db.records.get(account.account_id + ':partial-smtp-123')?.status, 'indeterminate');
+  const again = await fencedSend(env, account, 'partial-smtp-123', input, send);
+  assert.equal(again.status, 'indeterminate');
+  assert.equal(again.duplicate, true);
+  assert.equal(dispatches, 1, 'already accepted recipient must never receive an automatic replay');
 });
