@@ -88,7 +88,7 @@ export function applyStatus(native:string, outcome:string):string {
 }
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string};
 type VersionRow={id:string;plan:string;digest:string};
-type RunRow={id:string;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
+type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
 // A bounded dynamic MCP child requires the same explicit Publish grant as an
 // ordinary Step; the compiler has already pinned its exact tool schema.
@@ -205,6 +205,22 @@ export class WorkflowService {
     }
     return approved;
   }
+  private async checkedChildWorkflows(plan:Plan,parentId?:string){
+    const child=plan.steps.find(s=>s.uses==='flow.child');
+    if(!child)return [];
+    const id=child.with.workflow_id as string,version=child.with.version_id as string;
+    if(parentId===id)throw new PlanError('child_self_invocation','/steps');
+    const row=await this.db.prepare(`SELECT w.state,w.active_version_id,v.digest,v.plan
+      FROM workflows w JOIN workflow_versions v ON v.workflow_id=w.id AND v.id=?
+      WHERE w.id=?`).bind(version,id).first<{state:string;active_version_id:string|null;digest:string;plan:string}>();
+    if(!row||row.state!=='active'||row.active_version_id!==version)
+      throw new PlanError('child_version_not_active','/steps');
+    let childPlan:Plan;
+    try{childPlan=JSON.parse(row.plan) as Plan;}catch{throw new PlanError('invalid_child_publication','/steps');}
+    if(!Array.isArray(childPlan.steps)||childPlan.steps.some(s=>s.uses==='flow.child'))
+      throw new PlanError('child_nesting_unsupported','/steps');
+    return [{workflow_id:id,version_id:version,digest:row.digest}];
+  }
   async validate(workflow_id:string,revision:number){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==revision)throw new StateError('revision_conflict');
@@ -216,11 +232,13 @@ export class WorkflowService {
     try {
       const {digest,plan}=await compilePlan(definition);
       const reviewed_actions=await this.checkedGitHubActions(plan);
+      const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
       return {valid:true,digest,steps:plan.steps.length,issues:[],
+        ...(required_children.length?{required_children}:{}),
         contract_validation:required_approvals.length?'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
@@ -272,11 +290,14 @@ export class WorkflowService {
         ...(suggestion?{suggestion}:{})}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[]){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[]){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
     const reviewedActions=await this.checkedGitHubActions(plan);
+    const children=await this.checkedChildWorkflows(plan,workflow_id);
+    if(JSON.stringify(children)!==JSON.stringify(approved_children))
+      throw new StateError('child_approval_required');
     const ordering=(items:ReviewedGitHubAction[])=>items.map(x=>JSON.stringify(x)).sort();
     if(JSON.stringify(ordering(reviewedActions))!==JSON.stringify(ordering(approved_actions)))
       throw new StateError('github_action_approval_required');
@@ -302,7 +323,8 @@ export class WorkflowService {
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
     const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
-    const publishedPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
+    const actionPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
+    const publishedPlan:Plan=children.length?{...actionPlan,child_approvals:children}:actionPlan;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
@@ -354,7 +376,7 @@ export class WorkflowService {
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
-    const stale=await this.db.prepare("SELECT * FROM runs WHERE outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=? ORDER BY created_at ASC LIMIT 8")
+    const stale=await this.db.prepare("SELECT * FROM runs WHERE parent_run_id IS NULL AND outcome='queued' AND start_state IN ('reserved','start_unknown') AND created_at<=? ORDER BY created_at ASC LIMIT 8")
       .bind(now()-START_RECONCILE_WINDOW_MS).all<RunRow>();
     for(const old of stale.results)await this.reconcileStart(old);
     // When all eight slots are occupied, bounded ingress repair also checks
@@ -392,10 +414,13 @@ export class WorkflowService {
     if(protocolActions.length &&
        (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
+    const weight=activePlan.steps.some(s=>s.uses==='flow.child')?2:1;
+    if(weight===2&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
+      throw new StateError('child_approval_required');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
-      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at,capacity_weight) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,?,1 WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND ${capacityAdmissionPredicate(1)}`
-    ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,workflow_id,version).run();
+      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at,capacity_weight) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND ${capacityAdmissionPredicate(weight as 1|2)}`
+    ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
         if(prior){if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
@@ -411,6 +436,7 @@ export class WorkflowService {
     }
   }
   private async reconcileStart(row:RunRow){
+    if(row.parent_run_id)throw new StateError('child_start_requires_parent');
     const started=()=>({run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true});
     if(row.start_state==='started')return started();
     // D1 business terminal state is authoritative. An existing instance can
@@ -475,7 +501,7 @@ export class WorkflowService {
     assertId(run_id);let row=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>();
     if(!row)throw new StateError('run_not_found');
     if(row.start_state==='reserved'||row.start_state==='start_unknown'){
-      await this.reconcileStart(row);
+      if(!row.parent_run_id)await this.reconcileStart(row);
       row=(await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>())!;
     }
     let native='unknown';
