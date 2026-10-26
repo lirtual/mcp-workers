@@ -654,8 +654,17 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     let failed=false;
     let uncertain=false;
     let uncertainCode:string|null=null;
+    const hasEventWait=plan.steps.some(s=>s.uses==='flow.wait_event');
     try{
       while(pending.size){
+        // Cancellation can commit after the native event was received but
+        // before its dependent wave begins. Recheck the durable Run fence.
+        // Existing plans without external event waits retain their flow.
+        if(hasEventWait){
+          const owner=await db.prepare('SELECT outcome FROM runs WHERE id=?')
+            .bind(id).first<{outcome:string}>();
+          if(owner?.outcome!=='running')return;
+        }
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
