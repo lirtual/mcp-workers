@@ -125,13 +125,16 @@ jobs:
             email-acceptance-local --config .acceptance-local.jsonc --local
           export ACCEPTANCE_TOKEN="$(openssl rand -hex 24)"
           export ACCEPTANCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
-          pnpm --filter email-mcp-worker exec wrangler dev \
+          # The workspace-pinned Wrangler bundles successfully, but its local
+          # workerd only supports dates through 2026-09-15. Verify the actual
+          # 2026-10-20 Worker date with an exact newer CLI for local smoke only.
+          ( cd apps/email-mcp-worker && pnpm dlx wrangler@4.152.0 dev \
             --config .acceptance-local.jsonc --local --port 8799 \
             --var "MCP_ACCESS_TOKEN:$ACCEPTANCE_TOKEN" \
             --var "MAIL_ENCRYPTION_KEY:$ACCEPTANCE_KEY" \
             --var 'ACCESS_TEAM_DOMAIN:example.cloudflareaccess.com' \
             --var 'ACCESS_AUD:local-acceptance' \
-            --var 'OWNER_EMAIL:owner@example.test' \
+            --var 'OWNER_EMAIL:owner@example.test' ) \
             >"$RUNNER_TEMP/email-acceptance-workerd.log" 2>&1 &
           worker_pid=$!
           node --input-type=module <<'NODE'
