@@ -45,7 +45,7 @@ function fixture(t:test.TestContext){
     sqlite.prepare(`INSERT INTO runs
       (id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,
        start_state,outcome,created_at,updated_at,capacity_weight)
-      VALUES (?,?,?,?,'top','digest','{}','started','running',1000,1000,?)`)
+      VALUES (?,?,?,?,NULL,'digest','{}','started','running',1000,1000,?)`)
       .run(id,workflowId,'v-'+workflowId,id,weight);
   }
   const count=()=>Number((sqlite.prepare(
