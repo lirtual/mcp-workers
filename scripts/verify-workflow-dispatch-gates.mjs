@@ -135,8 +135,35 @@ assert.match(emailAcceptance, /conclusion == "success"/);
 assert.match(emailAcceptance, /persist-credentials: false/);
 assert.match(emailAcceptance, /pnpm --filter email-mcp-worker check/);
 assert.match(emailAcceptance, /wrangler d1 migrations apply/);
-assert.match(emailAcceptance, /wrangler dev/);
+assert.match(emailAcceptance, /pnpm dlx wrangler@4\.152\.0 dev/);
 assert.match(emailAcceptance, /EMAIL_ISOLATED_LOCAL_WORKER_D1_AND_MCP_OK/);
 assert.doesNotMatch(emailAcceptance, /secrets\.|CLOUDFLARE_API_TOKEN|wrangler deploy|release\.yml|environment:/);
+
+// Cloud preview is a separate explicit approval path. It must never inherit
+// the production release token, deploy to a permanent Worker or omit cleanup.
+const emailCloud = read('email-cloud-acceptance');
+assert.match(emailCloud, /  workflow_dispatch:/);
+assert.doesNotMatch(emailCloud, /\n  (?:push|pull_request|schedule):/);
+assert.match(emailCloud, /confirm_cloud_preview:/);
+assert.match(emailCloud, /confirm_cloud_preview == true/);
+assert.match(emailCloud, /github\.ref == 'refs\/heads\/main'/);
+assert.match(emailCloud, /persist-credentials: false/);
+assert.match(emailCloud, /name: email-mcp-acceptance/);
+assert.match(emailCloud, /secrets\.EMAIL_ACCEPTANCE_CLOUDFLARE_API_TOKEN/);
+assert.match(emailCloud, /email-acc-/);
+assert.match(emailCloud, /d1 migrations apply/);
+assert.match(emailCloud, /dev --remote/);
+assert.match(emailCloud, /method:'DELETE'/);
+assert.match(emailCloud, /EMAIL_ACCEPTANCE_DISPOSABLE_D1_CLEANUP_OK/);
+assert.match(emailCloud, /EMAIL_CLOUDFLARE_PREVIEW_REAL_D1_AND_MCP_OK/);
+assert.match(emailCloud, /\.acceptance-tls\.ts/);
+assert.match(emailCloud, /node:tls/);
+assert.match(emailCloud, /smtp\.gmail\.com/);
+assert.match(emailCloud, /imap\.gmail\.com/);
+assert.match(emailCloud, /requireTLS: port === 587/);
+assert.match(emailCloud, /rejectUnauthorized: true/);
+assert.match(emailCloud, /EMAIL_CLOUDFLARE_IMAP_SMTP_TLS_HANDSHAKE_OK/);
+assert.doesNotMatch(emailCloud, /auth:.*password|mail_send|mail_reply|mail_forward/);
+assert.doesNotMatch(emailCloud, /secrets\.CLOUDFLARE_API_TOKEN|wrangler deploy|wrangler secret put|PORTAL_CLIENT_SECRET/);
 
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');

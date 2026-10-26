@@ -40,7 +40,7 @@ const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0010_awaited_child_capacity.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];

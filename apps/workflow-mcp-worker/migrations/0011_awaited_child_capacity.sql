@@ -1,4 +1,4 @@
--- Awaited child Run reservation, not yet an executable flow.child capability.
+-- Awaited child Run reservation, single reviewed awaited child; deploy with the selected Workflow Worker.
 -- Current ordinary Runs remain weight=1. Future parent admission reserves
 -- weight=2, then transfers one unit atomically into a single child Run.
 ALTER TABLE runs ADD COLUMN capacity_weight INTEGER NOT NULL DEFAULT 1

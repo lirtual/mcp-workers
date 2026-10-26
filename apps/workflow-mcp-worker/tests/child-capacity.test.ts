@@ -12,7 +12,7 @@ function fixture(t:test.TestContext){
   t.after(()=>sqlite.close());
   sqlite.exec('PRAGMA foreign_keys=ON');
   sqlite.exec(readFileSync(new URL('../migrations/0001_s1.sql',import.meta.url),'utf8'));
-  sqlite.exec(readFileSync(new URL('../migrations/0010_awaited_child_capacity.sql',import.meta.url),'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0011_awaited_child_capacity.sql',import.meta.url),'utf8'));
   function prepare(sql:string){
     let bindings:(string|number|null)[]=[];
     return {
