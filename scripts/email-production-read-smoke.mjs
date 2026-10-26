@@ -68,6 +68,13 @@ async function main(){
     const query='mcp-readonly-health-'+randomBytes(20).toString('hex');
     const search=await call('mail_search',{account_ids:[id],query});
     stage='search_shape';
+    if(search.partial_failure===true || search.accounts?.[0]?.status!=='success') {
+      const item=search.accounts?.[0];
+      const code=typeof item?.error==='string'&&/^[a-z_]{1,48}$/.test(item.error)
+        ?item.error:'none';
+      const status=['success','failed','unauthorized'].includes(item?.status)?item.status:'unexpected';
+      console.log('EMAIL_IMAP_SEARCH_STATUS='+status+'_ERROR='+code);
+    }
     assert.equal(search.partial_failure,false,'email_smoke_imap_search_failed');
     assert.equal(search.accounts?.[0]?.status,'success','email_smoke_imap_search_status');
     assert.deepEqual(search.messages,[],'email_smoke_unexpected_search_hit');
@@ -77,8 +84,9 @@ async function main(){
 }
 main().catch(error=>{
   const raw=String(error?.message??'');
-  const safe=/^email_smoke_[a-z0-9_]+$/.test(raw);
-  const diagnostic=safe?raw:('email_smoke_stage_'+stage+'_failed_'+
+  const firstLine=raw.split('\n',1)[0];
+  const safe=/^email_smoke_[a-z0-9_]+$/.test(firstLine);
+  const diagnostic=safe?firstLine:('email_smoke_stage_'+stage+'_failed_'+
     (error instanceof SyntaxError?'syntax':error instanceof TypeError?'type':'other'));
   console.error(diagnostic);
   process.exitCode=1;
