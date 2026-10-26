@@ -19,6 +19,9 @@ DO NOT deploy this candidate to production.
   forward: validated inline Base64 or stable same-mailbox references only.
   Gmail uses safe multipart MIME; Graph uses direct file attachment below 3 MB
   and trusted upload sessions for larger files; no arbitrary URL downloads.
+  Graph mail_get enumerates up to 20 attachment IDs (including inline-only files)
+  using metadata-only queries and reports attachments_truncated if more exist;
+  attachment_get fetches selected file bytes on demand.
 - Owner-only incremental credential key re-encryption with independently verified
   decrypt/readback and concurrency-safe conditional updates.
 - Durable send fence; ambiguous sends never automatically replay. Bounded
