@@ -94,7 +94,7 @@ jobs:
           for (const value of [process.env.ACCEPTANCE_TOKEN, process.env.ACCEPTANCE_KEY]) {
             if (value) log = log.replaceAll(value, '[redacted]');
           }
-          const lines = log.split('\\n').filter(line =>
+          const lines = log.split(String.fromCharCode(10)).filter(line =>
             /error|fail|exception|invalid|unsupported|listening|ready|wrangler/i.test(line));
           console.log('Sanitized Workers runtime diagnostics:');
           for (const line of lines.slice(-20)) console.log(line.slice(0, 400));
