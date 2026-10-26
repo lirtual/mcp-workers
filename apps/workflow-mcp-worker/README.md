@@ -98,8 +98,9 @@ Delivery response `acknowledged` is **not** proof that the Step resumed. Use
 `unconfirmed` delivery may be retried with the identical ID and payload;
 different signals are rejected. To cancel a pending event wait, use
 `workflow_cancel({run_id,step_id:'signal'})`. This records the Run cancellation
-in D1 before attempting native termination, without claiming other external
-effects were physically stopped. The independent bearer is not the Webhook
+in D1 before attempting native termination. Cancellation is accepted only while
+the designated Step is actually waiting and no other Step is active. It never
+claims that external effects have physically stopped. The independent bearer is not the Webhook
 Trigger or Portal credential. No human approval or Saga semantics are implied.
 
 ### Bounded durable wait
