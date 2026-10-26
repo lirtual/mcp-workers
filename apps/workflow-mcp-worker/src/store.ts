@@ -373,6 +373,49 @@ export class WorkflowService {
       let published:Plan|null=null;
       try{published=JSON.parse(planRow.plan) as Plan;}catch{}
       const child=published?.steps.find(s=>s.id===step_id&&s.uses==='flow.child');
+      const waiting=published?.steps.find(s=>s.id===step_id&&s.uses==='flow.wait_event');
+      if(waiting){
+        if(force)throw new StateError('wait_event_force_not_supported');
+        const row=await this.db.prepare('SELECT instance_id,outcome,error_code FROM runs WHERE id=?')
+          .bind(run_id).first<{instance_id:string;outcome:string;error_code:string|null}>();
+        if(!row)throw new StateError('run_not_found');
+        // This entrypoint cancels *an actively waiting event Step*, not any
+        // Run which happens to contain one. Never terminate a Run after the
+        // event resumed or while another independent Step is still active.
+        if(row.outcome==='cancelled'){
+          if(row.error_code!=='event_wait_cancel_requested')
+            throw new StateError('wait_event_not_cancellable');
+        }else{
+          const updated=await this.db.prepare(`UPDATE runs SET outcome='cancelled',
+            error_code='event_wait_cancel_requested',updated_at=?
+            WHERE id=? AND outcome='running'
+            AND EXISTS (SELECT 1 FROM run_steps s
+              WHERE s.run_id=runs.id AND s.step_id=? AND s.status='waiting')
+            AND NOT EXISTS (SELECT 1 FROM run_steps s
+              WHERE s.run_id=runs.id AND s.step_id<>?
+                AND s.status IN ('running','waiting'))`)
+            .bind(now(),run_id,step_id,step_id).run();
+          if(!updated.meta.changes)
+            throw new StateError('wait_event_not_cancellable');
+        }
+        await this.db.prepare(`UPDATE run_steps SET status='cancelled',
+          error_code='event_wait_cancel_requested',updated_at=?
+          WHERE run_id=? AND step_id=? AND status='waiting'`)
+          .bind(now(),run_id,step_id).run();
+        // D1 cancellation is the durable business-effect fence. Native
+        // terminate is best effort and must be independently observed.
+        let nativeTerminated=false;
+        try{
+          const instance=await this.env.WORKFLOW.get(row.instance_id);
+          if(instance.terminate)await instance.terminate();
+          nativeTerminated=(await instance.status()).status==='terminated';
+        }catch{}
+        return {run_id,step_id,cancellation:nativeTerminated?'terminal_confirmed':'requested',
+          native_workflow_terminated:nativeTerminated,
+          // A Cloudflare termination never proves external GitHub resources
+          // or other concurrently executing side effects have stopped.
+          physical_terminated:false};
+      }
       if(child){
         if(force)throw new StateError('child_force_not_supported');
         const state=await cancelAwaitedChild(this.env,run_id,step_id);
@@ -564,7 +607,7 @@ export class WorkflowService {
     const steps=[
       ...publishedPlan.steps.map(s=>{
         const saved=byId.get(s.id);
-        if(saved && ['succeeded','failed','skipped','indeterminate'].includes(saved.status))return saved;
+        if(saved && ['succeeded','failed','skipped','indeterminate','cancelled'].includes(saved.status))return saved;
         return {step_id:s.id,status:terminal?'indeterminate':saved?.status??'waiting',error_code:saved?.error_code??null};
       }),
       ...stored.filter(s=>dynamicIds.has(s.step_id)).map(saved=>

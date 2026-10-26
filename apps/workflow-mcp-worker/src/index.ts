@@ -4,6 +4,7 @@ import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
 import {admitScheduledCron} from './scheduled.ts';
 import {handleWorkflowWebhook} from './webhook.ts';
+import {handleWaitEvent} from './wait-event-ingress.ts';
 import {handleGithubEvent} from './github-event.ts';
 import { handleGithubActionClaimRequest } from './github-action-ingress.ts';
 import { handleSignedSessionDataReport } from './session-runtime-data.ts';
@@ -20,6 +21,7 @@ export default {
  async fetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);
   if(url.pathname.startsWith('/triggers/webhook/'))return handleWorkflowWebhook(request,env);
+  if(url.pathname.startsWith('/events/'))return handleWaitEvent(request,env);
   if(url.pathname.startsWith('/triggers/github/'))return handleGithubEvent(request,env);
   if(url.pathname==='/github/action/session-data')
     return handleSignedSessionDataReport(request,env);
