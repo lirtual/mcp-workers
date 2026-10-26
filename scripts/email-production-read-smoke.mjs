@@ -64,6 +64,8 @@ async function deepReadAcceptance(account){
     console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_NO_SAMPLE');
     console.log('EMAIL_PRODUCTION_MAIL_GET_NOT_TESTED');
     console.log('EMAIL_PRODUCTION_ATTACHMENT_NOT_TESTED');
+    if(process.env.EMAIL_REQUIRE_ATTACHMENT==='true')
+      assert.fail('email_smoke_positive_sample_missing');
     return;
   }
   const searchTerm=/^[^\s@]+@[^\s@]+$/.test(sample.from??'') ? sample.from : sample.to;
@@ -76,17 +78,27 @@ async function deepReadAcceptance(account){
     'email_smoke_positive_missing_expected_message');
   console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_OK');
   // ImapFlow fetchOne({source:true}) uses BODY.PEEK[] and must not mark read.
-  // The sender-filtered positive result can exclude the newly received test
-  // message. Inspect only a few RECENT INBOX matches from the broader search.
+  // The sender-filtered positive result can exclude the owner's new test
+  // message. Date metadata may be missing or skewed on IMAP providers.
+  // Prefer recent matches, then fill up to five slots from the already-fetched
+  // first INBOX search page. Never search more mailboxes or print mail data.
   const now=Date.now();
   const recent=broad.messages.filter(message=>{
     const received=Date.parse(message.date??'');
     return Number.isFinite(received)&&received>=now-2*60*60*1000&&
       received<=now+5*60*1000;
-  }).slice(0,5);
+  });
+  const seen=new Set(recent.map(message=>message.id));
+  const candidates=[
+    ...recent.slice(0,5),
+    ...broad.messages.filter(message=>!seen.has(message.id))
+      .slice(0,Math.max(0,5-recent.length)),
+  ];
+  console.log('EMAIL_ATTACHMENT_SAMPLE_COUNTS matched='+broad.messages.length+
+    ' recent='+recent.length+' inspected='+candidates.length);
   let gotMessage=false;
   let foundAttachment=false;
-  for(const hit of recent){
+  for(const hit of candidates){
     let item;
     try {item=await call('mail_get',{account_id:aid,message_id:hit.id});}
     catch(error){
