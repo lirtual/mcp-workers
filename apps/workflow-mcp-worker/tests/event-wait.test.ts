@@ -171,6 +171,11 @@ test('public cancellation fences the Run before native termination and never cla
  const x=setup(t),wf=await x.service.create(JSON.stringify(definition(30)));
  await x.service.publish(wf.workflow_id,1);
  const started=await x.service.start(wf.workflow_id,{});
+ // The public event cancellation entrypoint must target a physically
+ // admitted waiting Step, never merely a queued Run.
+ x.sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(started.run_id);
+ x.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'signal','waiting',?)")
+  .run(started.run_id,Date.now());
  const cancel=await x.service.cancel(started.run_id,'signal');
  assert.equal(cancel.cancellation,'terminal_confirmed');
  assert.equal(cancel.native_workflow_terminated,true);
@@ -181,4 +186,57 @@ test('public cancellation fences the Run before native termination and never cla
  assert.equal(again.native_workflow_terminated,true);
  await assert.rejects(()=>x.service.cancel(started.run_id,'signal',true),
    (error:unknown)=>error instanceof Error&&error.message==='wait_event_force_not_supported');
+});
+
+test('event cancel cannot terminate a queued Run before its waiting Step is entered',async t=>{
+ const x=setup(t),wf=await x.service.create(JSON.stringify(definition()));
+ await x.service.publish(wf.workflow_id,1);
+ const started=await x.service.start(wf.workflow_id,{});
+ await assert.rejects(()=>x.service.cancel(started.run_id,'signal'),
+   (error:unknown)=>error instanceof Error&&error.message==='wait_event_not_cancellable');
+ const row=x.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(started.run_id) as {outcome:string};
+ assert.equal(row.outcome,'queued');
+});
+test('event cancel cannot terminate a Run after target Step has already succeeded',async t=>{
+ const x=setup(t),wf=await x.service.create(JSON.stringify(definition()));
+ await x.service.publish(wf.workflow_id,1);
+ const started=await x.service.start(wf.workflow_id,{});
+ x.sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(started.run_id);
+ x.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'signal','succeeded',?)")
+  .run(started.run_id,Date.now());
+ await assert.rejects(()=>x.service.cancel(started.run_id,'signal'),
+   (error:unknown)=>error instanceof Error&&error.message==='wait_event_not_cancellable');
+ const row=x.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(started.run_id) as {outcome:string};
+ assert.equal(row.outcome,'running');
+ assert.equal((await x.env.WORKFLOW.get(started.run_id).then(v=>v.status())).status,'running');
+});
+test('event cancel refuses to terminate a Run with another active independent Step',async t=>{
+ const x=setup(t);
+ const spec={...definition(),steps:[...definition().steps,
+  {id:'parallel',uses:'result.emit',with:{data:'unrelated'}}]};
+ const wf=await x.service.create(JSON.stringify(spec));
+ await x.service.publish(wf.workflow_id,1);
+ const started=await x.service.start(wf.workflow_id,{});
+ x.sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(started.run_id);
+ x.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'signal','waiting',?)")
+  .run(started.run_id,Date.now());
+ x.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'parallel','running',?)")
+  .run(started.run_id,Date.now());
+ await assert.rejects(()=>x.service.cancel(started.run_id,'signal'),
+   (error:unknown)=>error instanceof Error&&error.message==='wait_event_not_cancellable');
+ assert.equal((x.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(started.run_id) as {outcome:string}).outcome,'running');
+});
+test('public cancel while the native event resumes retains the cancelled Run and blocks downstream',async t=>{
+ const x=setup(t),wf=await x.service.create(JSON.stringify(definition()));
+ await x.service.publish(wf.workflow_id,1);
+ const started=await x.service.start(wf.workflow_id,{});
+ assert.equal((await x.send(started.run_id,{value:'should-not-emit'})).status,202);
+ await x.run(started.run_id,async()=>{
+  const cancel=await x.service.cancel(started.run_id,'signal');
+  assert.equal(cancel.native_workflow_terminated,true);
+  return {payload:x.deliveries[0]?.payload};
+ });
+ const after=await x.service.result(started.run_id);
+ assert.equal(after.status,'cancelled');
+ assert.notEqual(after.steps.find(s=>s.step_id==='done')?.status,'succeeded');
 });
