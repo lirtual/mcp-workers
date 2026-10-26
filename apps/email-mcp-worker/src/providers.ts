@@ -10,6 +10,7 @@ type Message = {
   account_id: string; provider: string; id: string; thread_id?: string; reply_to?: string;
   subject: string; from: string; to?: string; date: string; snippet: string;
   text?: string; attachments?: { id: string; filename: string; size: number }[];
+  attachments_truncated?: boolean;
 };
 const enc = encodeURIComponent;
 const gmail = 'https://gmail.googleapis.com/gmail/v1/users/me';
