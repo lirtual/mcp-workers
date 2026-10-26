@@ -124,7 +124,7 @@ async function acceptance(){
   const publishedChild=await tool('workflow_publish',{
     workflow_id:draftChild.workflow_id,expected_revision:1,
   });
-  const parentDef={version:1,name:'isolated-parent-'+suffix,steps:[
+  const parentDef={version:1,name:'isolated-parent-'+suffix,inputs:{proof:'normal'},steps:[
     {id:'call',flow:'child',workflow_id:draftChild.workflow_id,
       version_id:publishedChild.published_version_id,inputs:{proof:{ref:'inputs.proof'}}},
     {id:'forward',uses:'result.emit',needs:['call'],with:{data:{ref:'steps.call.output'}}},
