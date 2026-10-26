@@ -496,7 +496,7 @@ async function runWaitForEvent(
     if(recorded?.status!=='waiting')
       return {status:'indeterminate',error_code:'event_wait_admission_unconfirmed'};
     const event=await step.waitForEvent(
-      'workflow-'+s.id+'-event',{type:eventTypeForStep(s.id),timeout:timeout+' seconds'});
+      'workflow-'+s.id+'-event',{type:eventTypeForStep(s.id),timeout:`${timeout} seconds`});
     const payload=event.payload as {event_id?:unknown;data?:unknown}|null;
     const receipt=await env.DB.prepare(`SELECT event_id,payload_digest FROM wait_event_receipts
       WHERE run_id=? AND step_id=?`).bind(runId,s.id)
