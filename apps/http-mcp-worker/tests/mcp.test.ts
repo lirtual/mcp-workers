@@ -157,3 +157,23 @@ test('bounded text/binary response, no retry and write timeout is indeterminate'
  const lost=await call({url:fixture,method:'POST',text:'hello'},mock(()=>{calls++;throw Error('offline');}));
  assert.match(JSON.stringify(lost),/indeterminate/);assert.equal(calls,1);
 });
+
+test('credential reflections in URL path and response headers are filtered and public port rules apply',async()=>{
+ const key='synthetic-private-path';
+ const settings:Env={...env,HTTP_CREDENTIALS_JSON:JSON.stringify([{
+   origin:fixture,pathPrefix:'/',headers:{'X-API-Key':key},
+ }])};
+ const result=await call({url:fixture+'/'+key},mock(()=>new Response('ok',{
+   status:302,headers:{location:'/another/'+key+'?secret=hidden','content-type':'text/plain',
+     'x-debug-credential':key},
+ })),settings);
+ assert.doesNotMatch(JSON.stringify(result),new RegExp(key));
+ assert.equal(data(result).headers.location,fixture+'/another/[REDACTED]');
+ assert.equal(data(result).final_url,fixture+'/[REDACTED]');
+ const invalid=await call({url:'https://api.example.org:0/'},
+   mock(()=>{throw Error('fetch must not happen');}));
+ assert.match(JSON.stringify(invalid),/unsafe_target/);
+ const customPort=await call({url:'https://api.example.org:8443/'},
+   mock((u)=>{assert.equal(u.port,'8443');return Response.json({ok:true});}));
+ assert.equal(data(customPort).status,200);
+});
