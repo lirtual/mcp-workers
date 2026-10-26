@@ -24,6 +24,12 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
+  assert.equal(catalog.get('flow.wait')?.availability,'supported');
+  const wait=(await workflowCapabilities(env,'flow.wait')) as {example:{definition:unknown;digest:string};wait_policy:{native_checkpoint:string;total_budget_seconds:number}};
+  assert.equal(wait.wait_policy.native_checkpoint,'step.sleep');
+  assert.equal(wait.wait_policy.total_budget_seconds,PLAN_LIMITS.maxWaitSeconds);
+  assert.equal((await compilePlan(wait.example.definition)).digest,wait.example.digest);
+  assert.equal((overview.expression_rules as {supported_wait:string}).supported_wait.includes('flow: wait'),true);
   const childDetails=await workflowCapabilities(env,'flow.child');
   assert.equal(childDetails.availability,'supported_with_grant');
   assert.match(String(childDetails.description),/approved_children/);
@@ -55,7 +61,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.wait','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
     const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -108,9 +114,11 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
     ['uses','with'],['flow','times','template'],
-    ['flow','workflow_id','version_id','inputs'],['flow','items','max_items','template'],
+    ['flow','duration_seconds'],['flow','workflow_id','version_id','inputs'],
+    ['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
+  assert.equal(schema.properties.duration_seconds.maximum,PLAN_LIMITS.maxWaitSeconds);
   assert.equal(schema.properties.max_items.maximum,PLAN_LIMITS.maxForeachItems);
   assert.ok(schema.oneOf[0].not.anyOf.some(x=>x.required.includes('flow')));
   assert.ok(schema.oneOf[1].not.anyOf.some(x=>x.required.includes('uses')));

@@ -93,6 +93,59 @@ function setup(t:test.TestContext){
   return {service,admit,run,env,sqlite};
 }
 
+test('native durable wait holds the Step and blocks dependent effects until resume',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const entered=deferred(),release=deferred();
+  const started=await admit([
+    {id:'hold',flow:'wait',duration_seconds:2},
+    {id:'done',uses:'result.emit',needs:['hold'],with:{data:'resumed'}},
+  ]);
+  let nativeCalls=0;
+  const execute=new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_name:unknown,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+      sleep:async(name:string,duration:number)=>{
+        nativeCalls++;
+        assert.equal(name,'workflow-hold-wait');
+        assert.equal(duration,2000);
+        entered.resolve();await release.promise;
+      }} as unknown as WorkflowStep);
+  try{
+    await entered.promise;
+    const status=await service.status(started.run_id);
+    assert.deepEqual(status.steps.map(s=>[s.step_id,s.status]),[
+      ['done','waiting'],['hold','waiting'],
+    ]);
+    assert.equal(sqlite.prepare("SELECT outcome FROM runs WHERE id=?").get(started.run_id)?.outcome,'running');
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM run_steps WHERE run_id=? AND step_id='done'")
+      .get(started.run_id)?.n,0);
+  }finally{release.resolve();await execute;}
+  assert.equal(nativeCalls,1);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result,'resumed');
+  assert.equal(result.steps.find(s=>s.step_id==='hold')?.status,'succeeded');
+});
+
+test('durable wait does not authorize successors if owner becomes nonrunning during sleep',async t=>{
+  const {service,admit,env,sqlite}=setup(t);
+  const started=await admit([
+    {id:'hold',flow:'wait',duration_seconds:1},
+    {id:'effect',uses:'result.emit',needs:['hold'],with:{data:'must-not-emit'}},
+  ]);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_name:unknown,_opt:unknown,cb:()=>Promise<unknown>)=>cb(),
+      sleep:async()=>{
+        sqlite.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(started.run_id);
+      }} as unknown as WorkflowStep);
+  assert.equal(sqlite.prepare("SELECT outcome FROM runs WHERE id=?").get(started.run_id)?.outcome,'cancelled');
+  assert.equal(sqlite.prepare("SELECT status FROM run_steps WHERE run_id=? AND step_id='hold'")
+    .get(started.run_id)?.status,'indeterminate');
+  assert.equal(sqlite.prepare("SELECT status FROM run_steps WHERE run_id=? AND step_id='effect'")
+    .get(started.run_id)?.status,'skipped');
+});
+
 test('explicit null emit remains the Run result when an independent later Step has output',async t=>{
   const {service,admit,run}=setup(t);
   mockPublicPeer(t);

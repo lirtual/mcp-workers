@@ -433,6 +433,43 @@ async function runForeachStep(
   }
 }
 
+/** A bounded time wait uses Cloudflare's native, replayable sleep checkpoint.
+ * No JS timer, external poller, D1 deadline table or second scheduler. The
+ * persisted waiting Step is readable while the Workflow instance is asleep.
+ */
+async function runDurableWait(
+  env:Env,s:Step,runId:string,step:WorkflowStep,
+  outcomes:Record<string,Outcome>,
+):Promise<Outcome>{
+  if(!dependenciesPermitRun(s,outcomes))return {status:'skipped'};
+  const duration=Number(s.with.duration_seconds);
+  if(!Number.isSafeInteger(duration)||duration<1||duration>300)
+    return {status:'failed',error_code:'invalid_wait_duration'};
+  try{
+    await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+      SELECT ?,?,'waiting',? WHERE EXISTS (
+        SELECT 1 FROM runs WHERE id=? AND outcome='running'
+      ) ON CONFLICT(run_id,step_id) DO NOTHING`)
+      .bind(runId,s.id,now(),runId).run();
+    const recorded=await env.DB.prepare(
+      'SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+      .bind(runId,s.id).first<{status:string}>();
+    if(recorded?.status==='succeeded')return {status:'succeeded',output:null};
+    if(recorded?.status!=='waiting')
+      return {status:'indeterminate',error_code:'wait_admission_unconfirmed'};
+    // The stable name and literal duration are pinned to this Published Plan.
+    // A replay resumes the existing native sleep rather than restarting a timer.
+    await step.sleep('workflow-'+s.id+'-wait',duration*1000);
+    const active=await env.DB.prepare('SELECT outcome FROM runs WHERE id=?')
+      .bind(runId).first<{outcome:string}>();
+    if(active?.outcome!=='running')
+      return {status:'indeterminate',error_code:'wait_owner_not_active'};
+    return {status:'succeeded',output:null};
+  }catch{
+    return {status:'indeterminate',error_code:'wait_resume_unconfirmed'};
+  }
+}
+
 /** One awaited, non-recursive child per parent, with its own Published Plan.
  * D1 child lineage is durable before native create; all loop sleeps are
  * Cloudflare-native, not a polling Worker or an external scheduler.
@@ -570,7 +607,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(s.uses==='flow.child'
+          const result=(s.uses==='flow.wait'
+            ? await runDurableWait(this.env,s,id,step,ctx.steps)
+            : s.uses==='flow.child'
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
