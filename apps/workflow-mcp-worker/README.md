@@ -73,6 +73,32 @@ A fixed, reviewed number of iterations can be written as a single `flow: repeat`
 
 The template uses the same `uses`, `with` and optional `if` semantics as an ordinary Step; source-level `needs` apply to every iteration, and each later iteration additionally depends on the previous generated Step succeeding. A skipped/failed/indeterminate iteration does not automatically run later ones. Each iteration is a **real Action execution**: multiple GitHub Task or MCP calls are not coalesced; their ordinary Publish grants are still required. The compiler produces the same immutable Plan digest as an equivalent explicitly expanded DAG. No per-iteration index substitution, nested repeat, dynamic `times`, `foreach`, `while` or runtime result-driven expansion is supported.
 
+### Authenticated external event wait
+
+`flow: wait_event` waits for a signal delivered to **one existing Run/Step**, not a new Trigger:
+
+```json
+{"version":1,"name":"Wait for signal","steps":[
+  {"id":"signal","flow":"wait_event","timeout_seconds":60,
+   "token_sha256":"<SHA-256 hex of an independent 32-byte random base64url Bearer>"},
+  {"id":"done","needs":["signal"],"uses":"result.emit",
+   "with":{"data":{"ref":"steps.signal.output"}}}
+]}
+```
+
+After explicit Publish and manual/Trigger Run admission, send `POST /events/{run_id}/signal`
+with `Authorization: Bearer <event-secret>`, `X-Workflow-Event-Id: <stable-event-id>`,
+`Content-Type: application/json` and an object body of at most 8192 bytes.
+The secret is external and must never appear in the Draft. Each Published Plan
+supports **one** external event wait with literal timeout 1–3600 seconds. A Run
+remains within the existing capacity limits while waiting. Native events may
+arrive before the Step starts; only the preauthorized logical event is accepted.
+Delivery response `acknowledged` is **not** proof that the Step resumed. Use
+`workflow_status` / `workflow_result` for the actual durable result. A 503
+`unconfirmed` delivery may be retried with the identical ID and payload;
+different signals are rejected. The independent bearer is not the Webhook
+Trigger or Portal credential. No human approval or Saga semantics are implied.
+
 ### Bounded durable wait
 
 Use an explicit `flow: wait` step when a Published Plan must delay its next
