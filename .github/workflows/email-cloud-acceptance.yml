@@ -102,7 +102,7 @@ jobs:
           assert.equal(input.compatibility_date, '2026-10-20');
           const config = {
             name: 'email-cloud-acceptance-preview',
-            main: 'src/index.ts',
+            main: '.acceptance-tls.ts',
             compatibility_date: input.compatibility_date,
             workers_dev: false, preview_urls: false,
             d1_databases: [{ binding: 'DB', database_name: process.env.EMAIL_ACCEPTANCE_D1_NAME,
@@ -111,6 +111,75 @@ jobs:
           writeFileSync('apps/email-mcp-worker/.acceptance-cloud.jsonc', JSON.stringify(config));
           console.log('Disposable remote D1 created for the current acceptance run');
           NODE
+          # Ephemeral preview-only wrapper: original Email Worker owns every existing
+          # route; the sole extra path probes fixed public TLS endpoints without
+          # credentials, authentication attempts or SMTP message submission.
+          cat > apps/email-mcp-worker/.acceptance-tls.ts <<'TLS_WRAPPER'
+          import handler from './src/index.ts';
+          import nodemailer from 'nodemailer';
+          import tls from 'node:tls';
+
+          function imapTls(host: string): Promise<void> {
+            return new Promise((resolve, reject) => {
+              const socket = tls.connect({
+                host, port: 993, servername: host, rejectUnauthorized: true,
+                minVersion: 'TLSv1.2', timeout: 10000,
+              });
+              let settled = false;
+              const done = (ok: boolean) => {
+                if (settled) return;
+                settled = true;
+                socket.destroy();
+                if (ok) resolve();
+                else reject(new Error('imap_tls_handshake_failed'));
+              };
+              socket.once('secureConnect', () => done(socket.authorized === true));
+              socket.once('timeout', () => done(false));
+              socket.once('error', () => done(false));
+              socket.once('close', () => done(false));
+            });
+          }
+
+          async function smtpTls(port: 465 | 587): Promise<void> {
+            const transport = nodemailer.createTransport({
+              host: 'smtp.gmail.com', port, secure: port === 465,
+              requireTLS: port === 587, ignoreTLS: false,
+              // No auth is configured: verify() negotiates TLS, then QUIT.
+              tls: { servername: 'smtp.gmail.com', rejectUnauthorized: true,
+                minVersion: 'TLSv1.2' },
+              logger: false, debug: false, pool: false,
+              connectionTimeout: 10000, greetingTimeout: 10000,
+              socketTimeout: 10000,
+            });
+            try { await transport.verify(); }
+            finally { transport.close(); }
+          }
+
+          export default {
+            async fetch(request: Request, env: { MCP_ACCESS_TOKEN: string },
+              context: ExecutionContext): Promise<Response> {
+              const path = new URL(request.url).pathname;
+              if (path !== '/__acceptance/tls')
+                return handler.fetch(request, env as never, context);
+              if (request.method !== 'POST' ||
+                request.headers.get('authorization') !== 'Bearer ' + env.MCP_ACCESS_TOKEN)
+                return new Response('Unauthorized', { status: 401 });
+              const results: {name: string; ok: boolean}[] = [];
+              for (const [name, probe] of [
+                ['gmail-imap-993', () => imapTls('imap.gmail.com')],
+                ['gmail-smtp-465', () => smtpTls(465)],
+                ['gmail-smtp-starttls-587', () => smtpTls(587)],
+              ] as const) {
+                try { await probe(); results.push({ name, ok: true }); }
+                catch { results.push({ name, ok: false }); }
+              }
+              return Response.json({ results }, {
+                status: results.every(result => result.ok) ? 200 : 502,
+                headers: { 'cache-control': 'no-store' },
+              });
+            },
+          };
+          TLS_WRAPPER
           export ACCEPTANCE_TOKEN="$(openssl rand -hex 24)"
           export ACCEPTANCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
           echo "::add-mask::$ACCEPTANCE_TOKEN"
@@ -165,6 +234,16 @@ jobs:
           assert.equal(accounts.result?.isError,false);
           assert.deepEqual(JSON.parse(accounts.result?.content?.[0]?.text),[]);
           console.log('EMAIL_CLOUDFLARE_PREVIEW_REAL_D1_AND_MCP_OK');
+          const tls = await fetch(base + '/__acceptance/tls', {
+            method: 'POST', headers: { authorization: headers.authorization },
+            signal: AbortSignal.timeout(45000),
+          });
+          const report = await tls.json();
+          for (const item of report.results ?? [])
+            console.log('Remote provider TLS handshake:', item.name, item.ok ? 'PASS' : 'FAIL');
+          assert.equal(tls.status, 200, 'Cloudflare outbound mail TLS probe failed');
+          assert.deepEqual(report.results?.map(item => item.ok), [true,true,true]);
+          console.log('EMAIL_CLOUDFLARE_IMAP_SMTP_TLS_HANDSHAKE_OK');
           NODE
 
       - name: Delete only the D1 created by this run
