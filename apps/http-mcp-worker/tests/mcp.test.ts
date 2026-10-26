@@ -89,6 +89,7 @@ test('seven methods; JSON null, form and text; forbidden bodies and headers',asy
  }
  for(const extra of [{json:0,text:'bad'},{headers:{Host:'private'}},
    {url:'http://127.0.0.1'}, {url:'http://localhost'}, {url:'https://a.local'},
+   {url:'https://localhost.localdomain'}, {url:'https://intranet.corp'},
    {url:'https://user:password@api.example.org'}, {headers:{Connection:'close'}}]){
   const result=await call({url:fixture,method:'GET',...extra},mock(()=>{throw Error('must not fetch');}));
   assert.equal(result.isError,true);
