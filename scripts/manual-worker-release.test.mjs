@@ -730,3 +730,14 @@ test("HTTP release only allows strict-public source and exact optional credentia
   assert.match(release,/http-mcp-worker/);
   assert.match(release,/HTTP_CREDENTIALS_JSON/);
 });
+
+test("HTTP readback tolerates only bounded optional Secret inventory propagation",async()=>{
+ let attempts=0;
+ const result=await retryReleaseReadback(async()=>{
+   attempts++;
+   if(attempts===1)throw Error("Optional HTTP_CREDENTIALS_JSON binding inventory drift");
+   return {version_id:"new-version"};
+ },async()=>{});
+ assert.equal(attempts,2);
+ assert.deepEqual(result,{version_id:"new-version"});
+});
