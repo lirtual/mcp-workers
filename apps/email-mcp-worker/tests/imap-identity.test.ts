@@ -131,7 +131,7 @@ test('QQ/163/126 use bounded header search; unrelated text and body-only tokens 
     to: [{ name: '研发', address: 'owner@qq.com' }],
     cc: [{ address: 'team@example.org' }],
   };
-  for (const query of ['季度', '报告', 'ALICE', 'owner@QQ.COM', 'TEAM@EXAMPLE.ORG',]) {
+  for (const query of ['季度', '报告', 'ALICE', 'owner@QQ.COM', 'TEAM@EXAMPLE.ORG']) {
     assert.equal(matchesEnvelopeQuery(envelope, query), true, query);
   }
   for (const query of ['mcp-readonly-health-0123456789abcdef0123456789abcdef', 'body-only-secret', 'nobody@other.example']) {
