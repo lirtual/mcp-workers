@@ -10,13 +10,20 @@ assert.ok(typeof token==='string'&&token.length>0&&!/[\r\n]/.test(token),'email_
 async function call(name,args={}){
   const request={jsonrpc:'2.0',id:1,method:'tools/call',
     params:{name,arguments:args}};
-  const res=await fetch(url,{method:'POST',signal:AbortSignal.timeout(30000),
-    headers:{authorization:'Bearer '+token,'content-type':'application/json',
-      accept:'application/json, text/event-stream'},body:JSON.stringify(request)});
+  let res;
+  try {
+    res=await fetch(url,{method:'POST',signal:AbortSignal.timeout(30000),
+      headers:{authorization:'Bearer '+token,'content-type':'application/json',
+        accept:'application/json, text/event-stream'},body:JSON.stringify(request)});
+  } catch { throw Error('email_smoke_fetch_unavailable'); }
   assert.equal(res.status,200,'email_smoke_transport_denied');
-  const raw=await res.text();
+  let raw;
+  try { raw=await res.text(); }
+  catch { throw Error('email_smoke_body_unavailable'); }
   assert.ok(raw.length<1024*1024,'email_smoke_response_too_large');
-  const document=JSON.parse(raw.match(/^data: (.+)$/m)?.[1]??raw);
+  let document;
+  try { document=JSON.parse(raw.match(/^data: (.+)$/m)?.[1]??raw); }
+  catch { throw Error('email_smoke_rpc_invalid_json'); }
   assert.equal(document.jsonrpc,'2.0','email_smoke_bad_rpc');
   const result=document.result;
   assert.ok(result&&Array.isArray(result.content),'email_smoke_bad_result');
