@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encrypt, decrypt } from '../src/crypto.ts';
 import { verifyAccess, validateCsrf } from '../src/access.ts';
-import { SETUP_CSP } from '../src/setup.ts';
+import { SETUP_CSP, handleSetup } from '../src/setup.ts';
 const env = {
   MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
   ACCESS_TEAM_DOMAIN: 'test.cloudflareaccess.com',
@@ -71,6 +71,26 @@ test('Access JWT requires a trusted RS256 signature, correct audience and owner 
   await assert.rejects(() => verifyAccess(createRequest(wrongAudience), env, mockFetch as any), /unauthorized/);
   const wrongOwner = await sign('trusted-app-audience', 'other@example.com');
   await assert.rejects(() => verifyAccess(createRequest(wrongOwner), env, mockFetch as any), /unauthorized/);
+  // The retired OAuth entry point must fail even for an authorized owner.
+  const retired = await handleSetup(new Request(
+    'https://email.lirtual.dpdns.org/setup/oauth/start',
+    { method: 'POST', headers: { 'cf-access-jwt-assertion': validJwt } },
+  ), env, mockFetch as any);
+  assert.equal(retired.status, 404);
+
+  // A valid Access assertion is not enough to submit IMAP credentials:
+  // same-origin CSRF still needs a cookie-bound token.
+  const invalidCsrf = await handleSetup(new Request(
+    'https://email.lirtual.dpdns.org/setup/imap/add', {
+      method: 'POST',
+      headers: { 'cf-access-jwt-assertion': validJwt,
+        origin: 'https://email.lirtual.dpdns.org',
+        'content-type': 'application/x-www-form-urlencoded' },
+      body: 'csrf=untrusted',
+    },
+  ), env, mockFetch as any);
+  assert.equal(invalidCsrf.status, 400);
+  assert.match(await invalidCsrf.text(), /csrf_rejected/);
   assert.ok(certFetches >= 1);
 });
 
