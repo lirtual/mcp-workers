@@ -3,6 +3,7 @@
 // GitHub resolves an Environment secret over a same-name repository secret.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
 import { writeFile } from "node:fs/promises";
+import { parseCredentials } from "../apps/http-mcp-worker/src/http.ts";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -57,12 +58,8 @@ export function collectBootstrapSecrets(worker, env) {
   }
   if (worker === "http-mcp-worker" && env.HTTP_CREDENTIALS_JSON) {
     const raw = env.HTTP_CREDENTIALS_JSON;
-    if (Buffer.byteLength(raw, "utf8") > 5120) throw Error("HTTP_CREDENTIALS_JSON is too large");
-    let parsed;
-    try { parsed = JSON.parse(raw); }
+    try { parseCredentials(raw); }
     catch { throw Error("Invalid HTTP_CREDENTIALS_JSON"); }
-    if (!Array.isArray(parsed) || parsed.length > 16)
-      throw Error("Invalid HTTP_CREDENTIALS_JSON");
     payload.HTTP_CREDENTIALS_JSON = raw;
   }
   return payload;
