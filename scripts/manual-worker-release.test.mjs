@@ -807,3 +807,14 @@ test("CandyBox release fails closed on stale optional DDG binding and keeps invo
   assert.equal(cfg.observability.logs.invocation_logs,false);
   assert.equal(cfg.keep_vars,false);
 });
+
+test("CandyBox exact readback tolerates only bounded optional Secret propagation",async()=>{
+ let attempts=0;
+ const result=await retryReleaseReadback(async()=>{
+   attempts++;
+   if(attempts===1)throw Error("Optional CANDYBOX_DDG_TOKEN binding inventory drift");
+   return {version_id:"new-version"};
+ },async()=>{});
+ assert.equal(attempts,2);
+ assert.deepEqual(result,{version_id:"new-version"});
+});
