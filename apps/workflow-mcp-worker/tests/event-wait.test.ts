@@ -238,5 +238,5 @@ test('public cancel while the native event resumes retains the cancelled Run and
  });
  const after=await x.service.result(started.run_id);
  assert.equal(after.status,'cancelled');
- assert.notEqual(after.steps.find(s=>s.step_id==='done')?.status,'succeeded');
+ assert.equal(after.steps.find(s=>s.step_id==='done')?.status,'skipped');
 });
