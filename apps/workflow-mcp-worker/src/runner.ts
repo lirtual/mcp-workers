@@ -1,4 +1,6 @@
 import {watchPersistedSessions} from './github-action-session-watch.ts';
+import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
+import {canonicalJsonString} from './plan.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -431,6 +433,81 @@ async function runForeachStep(
   }
 }
 
+/** One awaited, non-recursive child per parent, with its own Published Plan.
+ * D1 child lineage is durable before native create; all loop sleeps are
+ * Cloudflare-native, not a polling Worker or an external scheduler.
+ */
+async function runAwaitedChild(
+ env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
+ ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
+):Promise<Outcome>{
+ if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+ const target=s.with.workflow_id,version=s.with.version_id;
+ const approval=plan.child_approvals?.find(x=>x.workflow_id===target&&x.version_id===version);
+ if(!approval||typeof target!=='string'||typeof version!=='string')
+   return {status:'failed',error_code:'child_approval_required'};
+ let childId:string;
+ let frozen:{inputJson:string;digest:string};
+ try{
+   childId=await awaitedChildRunId(runId,s.id);
+   frozen=await step.do('workflow-'+s.id+'-child-inputs',
+     {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+       const inputs=evaluateArguments(s.with.inputs,ctx);
+       if(!inputs||typeof inputs!=='object'||Array.isArray(inputs)||hasUnresolvedArgument(inputs))
+         throw Error('invalid_child_inputs');
+       const inputJson=canonicalJsonString(limitResult(inputs));
+       const sha=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(inputJson));
+       return {inputJson,digest:[...new Uint8Array(sha)].map(x=>x.toString(16).padStart(2,'0')).join('')};
+     });
+   if(typeof frozen.inputJson!=='string'||typeof frozen.digest!=='string')
+     return {status:'failed',error_code:'invalid_child_snapshot'};
+ }catch{return {status:'failed',error_code:'invalid_child_inputs'};}
+ try{
+   const published=await env.DB.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?')
+     .bind(version,target).first<{digest:string}>();
+   if(published?.digest!==approval.digest)
+     return {status:'failed',error_code:'child_approved_version_changed'};
+   await transferAwaitedChildCapacity(env.DB,{
+     parentRunId:runId,parentStepId:s.id,childRunId:childId,
+     childWorkflowId:target,childVersionId:version,
+     admissionKey:'child-'+childId,requestDigest:frozen.digest,
+     inputJson:frozen.inputJson,timestamp:now(),
+   });
+ }catch{return {status:'indeterminate',error_code:'child_admission_unconfirmed'};}
+ // Child start and every observation use the SAME derived ID. If an ACK
+ // disappears, the helper only retries on a proven native not-found.
+ for(let i=0;i<120;i++){
+   try{
+     const start=await step.do('workflow-'+s.id+'-child-start-'+i,
+       {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+       async()=>startReservedAwaitedChild(env,{
+         parentRunId:runId,parentStepId:s.id,childRunId:childId,timestamp:now(),
+       }));
+     if(start.start_state==='indeterminate')
+       return {status:'indeterminate',error_code:'child_start_unconfirmed'};
+     const status=await step.do('workflow-'+s.id+'-child-status-'+i,
+       {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+         return env.DB.prepare('SELECT outcome,result FROM runs WHERE id=? AND parent_run_id=? AND parent_step_id=?')
+           .bind(childId,runId,s.id).first<{outcome:string;result:string|null}>();
+       });
+     if(!status)return {status:'indeterminate',error_code:'child_lineage_missing'};
+     if(status.outcome==='succeeded'){
+       try{return {status:'succeeded',output:limitResult(status.result===null?null:JSON.parse(status.result))};}
+       catch{return {status:'indeterminate',error_code:'child_result_unreadable'};}
+     }
+     if(status.outcome==='failed'||status.outcome==='cancelled')
+       return {status:'failed',error_code:'child_failed'};
+     if(status.outcome==='indeterminate')
+       return {status:'indeterminate',error_code:'child_outcome_unknown'};
+   }catch{
+     // D1 or native admission uncertainty is not a confirmed child failure.
+     return {status:'indeterminate',error_code:'child_observation_unconfirmed'};
+   }
+   if(i<119)await step.sleep('workflow-'+s.id+'-child-sleep-'+i,30_000);
+ }
+ return {status:'indeterminate',error_code:'child_wait_expired'};
+}
+
 export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -459,7 +536,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(s.uses==='flow.foreach'
+          const result=(s.uses==='flow.child'
+            ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
+            : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
             : s.uses==='github.run'
             ? await (async()=>{
