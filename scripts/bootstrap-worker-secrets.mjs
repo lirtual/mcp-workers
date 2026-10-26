@@ -8,6 +8,7 @@ import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const BOOTSTRAP_SECRETS = Object.freeze({
+  "candybox-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
@@ -63,6 +64,11 @@ export function collectBootstrapSecrets(worker, env) {
       throw new Error("Invalid or duplicate GitHub PAT in ACTIONS_GITHUB_DISPATCH_TOKENS");
     }
     // Avoid copying older secondary Secret even when it remains in GitHub settings.
+  }
+  if (worker === "candybox-mcp-worker" && env.CANDYBOX_DDG_TOKEN) {
+    if (env.CANDYBOX_DDG_TOKEN.trim().length < 12 || /\s/.test(env.CANDYBOX_DDG_TOKEN))
+      throw new Error("Invalid CANDYBOX_DDG_TOKEN");
+    payload.CANDYBOX_DDG_TOKEN = env.CANDYBOX_DDG_TOKEN;
   }
   if (worker === "http-mcp-worker" && env.HTTP_CREDENTIALS_JSON) {
     const raw = env.HTTP_CREDENTIALS_JSON;

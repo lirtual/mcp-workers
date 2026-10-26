@@ -3,6 +3,7 @@ import test from "node:test";
 import { BOOTSTRAP_SECRETS, collectBootstrapSecrets } from "./bootstrap-worker-secrets.mjs";
 
 const fixtures = {
+  "candybox-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
@@ -122,4 +123,13 @@ test("HTTP optional managed credentials are staged only when configured",()=>{
       {origin:"https://api.example.org",pathPrefix:"/v1/items",headers:{"X-API-Key":"b"}}])
   ]) assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",
     {...required,HTTP_CREDENTIALS_JSON:invalid}),/Invalid/);
+});
+
+test("CandyBox optional token is staged only from explicit selected Secret", () => {
+  const base = fixtures["candybox-mcp-worker"];
+  assert.deepEqual(collectBootstrapSecrets("candybox-mcp-worker", base), base);
+  const withToken = { ...base, CANDYBOX_DDG_TOKEN: "synthetic-ddg-token" };
+  assert.deepEqual(collectBootstrapSecrets("candybox-mcp-worker", withToken), withToken);
+  assert.throws(() => collectBootstrapSecrets("candybox-mcp-worker",
+    { ...base, CANDYBOX_DDG_TOKEN: "not valid token" }), /Invalid CANDYBOX_DDG_TOKEN/);
 });

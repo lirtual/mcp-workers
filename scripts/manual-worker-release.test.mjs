@@ -781,3 +781,29 @@ test("HTTP readback tolerates only bounded optional Secret inventory propagation
  assert.equal(attempts,2);
  assert.deepEqual(result,{version_id:"new-version"});
 });
+
+test("CandyBox release fails closed on stale optional DDG binding and keeps invocation logs private",()=>{
+  const base={bindings:[{name:"MCP_ACCESS_TOKEN",type:"secret_text"}],
+    observability:{enabled:true,logs:{invocation_logs:false}}};
+  const required=[{name:"MCP_ACCESS_TOKEN"}];
+  assert.equal(verifyBindings("candybox-mcp-worker",base,required,
+    {mode:"preflight",expectedCandyboxToken:false}),true);
+  assert.equal(verifyBindings("candybox-mcp-worker",base,required,
+    {mode:"readback",expectedCandyboxToken:false}),true);
+  const withToken={...base,bindings:[...base.bindings,
+    {name:"CANDYBOX_DDG_TOKEN",type:"secret_text"}]};
+  const named=[...required,{name:"CANDYBOX_DDG_TOKEN"}];
+  assert.equal(verifyBindings("candybox-mcp-worker",withToken,named,
+    {mode:"readback",expectedCandyboxToken:true}),true);
+  assert.throws(()=>verifyBindings("candybox-mcp-worker",withToken,named,
+    {mode:"preflight",expectedCandyboxToken:false}),/Stale CANDYBOX_DDG_TOKEN/);
+  assert.throws(()=>verifyBindings("candybox-mcp-worker",base,required,
+    {mode:"readback",expectedCandyboxToken:true}),/binding inventory drift/);
+  assert.throws(()=>verifyBindings("candybox-mcp-worker",{...base,
+    observability:{enabled:true,logs:{invocation_logs:true}}},required,
+    {mode:"readback",expectedCandyboxToken:false}),/Invocation Logs/);
+  const cfg=JSON.parse(readFileSync(new URL("../apps/candybox-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
+  assert.deepEqual(cfg.secrets.required,["MCP_ACCESS_TOKEN"]);
+  assert.equal(cfg.observability.logs.invocation_logs,false);
+  assert.equal(cfg.keep_vars,false);
+});

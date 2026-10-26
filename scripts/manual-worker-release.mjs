@@ -3,8 +3,9 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
+const WORKERS = new Set(["candybox-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
 const REQUIRED_SECRETS = {
+  "candybox-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
@@ -16,6 +17,7 @@ const REQUIRED_SECRETS = {
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 };
 const WORKER_ENTRIES = {
+  "candybox-mcp-worker": "src/index.ts",
   "raindrop-mcp-worker": "src/worker.ts",
   "ima-mcp-worker": "src/index.ts",
   "database-mcp-worker": "src/index.ts",
@@ -45,6 +47,20 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
       invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
     }
+  }
+  if (worker === "candybox-mcp-worker") {
+    const configured = options.expectedCandyboxToken === true;
+    const binding = bindings.find(b => b.name === "CANDYBOX_DDG_TOKEN");
+    if (options.mode === "preflight") {
+      invariant(configured || (!binding && !secretNames.has("CANDYBOX_DDG_TOKEN")),
+        "Stale CANDYBOX_DDG_TOKEN must be removed from Cloudflare before release");
+    } else {
+      invariant((binding?.type === "secret_text") === configured &&
+        secretNames.has("CANDYBOX_DDG_TOKEN") === configured,
+        "Optional CANDYBOX_DDG_TOKEN binding inventory drift");
+    }
+    invariant(!bindings.some(b => b.name === "CANDYBOX_DDG_TOKEN" && b.type === "plain_text"),
+      "CANDYBOX_DDG_TOKEN must not be a plaintext Variable");
   }
   if (worker === "http-mcp-worker") {
     const managed = secretNames.has("HTTP_CREDENTIALS_JSON") &&
@@ -79,7 +95,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "SSH legacy broker binding or token remains");
     }
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "candybox-mcp-worker"].includes(worker) ? false : true;
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
@@ -467,12 +483,21 @@ function readConfiguration(worker, content) {
       conf.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must stay enabled");
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "candybox-mcp-worker"].includes(worker) ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
       "Source Invocation Logs setting differs from production");
   }
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
+  if (worker === "candybox-mcp-worker") {
+    invariant(conf.workers_dev === true && conf.preview_urls === false &&
+      JSON.stringify(conf.compatibility_flags) === JSON.stringify(["global_fetch_strictly_public"]) &&
+      JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]) &&
+      !conf.services?.length && !conf.vpc_services && !conf.d1_databases?.length &&
+      !conf.durable_objects?.bindings?.length && !conf.r2_buckets?.length &&
+      !conf.ratelimits?.length && !conf.vars,
+      "CandyBox strict-public Worker source or binding drift");
+  }
   if (worker === "http-mcp-worker") {
     invariant(conf.workers_dev === true && conf.preview_urls === false &&
       JSON.stringify(conf.compatibility_flags) === JSON.stringify(["global_fetch_strictly_public"]) &&
@@ -623,7 +648,7 @@ async function current(account, worker, token, options) {
   }
   if (worker !== "ssh-mcp-worker") {
     invariant(scriptSettings?.observability?.logs?.invocation_logs ===
-      (["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true),
+      (["remote-control-mcp-worker", "email-mcp-worker", "candybox-mcp-worker"].includes(worker) ? false : true),
       "Script-level Invocation Logs drift");
   }
   if (worker === "ima-mcp-worker") {
@@ -721,6 +746,7 @@ async function main() {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
+      expectedCandyboxToken: worker === "candybox-mcp-worker" && !!process.env.CANDYBOX_DDG_TOKEN,
     });
     // Compare the active deployment inside the existing retry loop. Cloudflare
     // may briefly serve the previous version after Wrangler reports success.

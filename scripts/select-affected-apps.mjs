@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const APPLICATIONS = [
+  'candybox-mcp-worker',
   'database-mcp-worker',
   'email-mcp-worker',
   'github-actions-mcp-worker',
