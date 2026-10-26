@@ -116,6 +116,7 @@ jobs:
           # credentials, authentication attempts or SMTP message submission.
           cat > apps/email-mcp-worker/.acceptance-tls.ts <<'TLS_WRAPPER'
           import handler from './src/index.ts';
+          import { resolvePublicMailEndpoint } from './src/mail-endpoints.ts';
           import nodemailer from 'nodemailer';
           import tls from 'node:tls';
 
@@ -140,12 +141,17 @@ jobs:
             });
           }
 
-          async function smtpTls(port: 465 | 587): Promise<void> {
+          async function smtpTls(host: string, port: 465 | 587,
+            pinned = false): Promise<void> {
+            // The pinned mode exactly reproduces the production SMTP adapter's
+            // public-DNS-only destination and independent TLS SNI identity.
+            const target = pinned ? await resolvePublicMailEndpoint(host) :
+              {hostname: host, address: host};
             const transport = nodemailer.createTransport({
-              host: 'smtp.gmail.com', port, secure: port === 465,
+              host: target.address, port, secure: port === 465,
               requireTLS: port === 587, ignoreTLS: false,
               // No auth is configured: verify() negotiates TLS, then QUIT.
-              tls: { servername: 'smtp.gmail.com', rejectUnauthorized: true,
+              tls: { servername: target.hostname, rejectUnauthorized: true,
                 minVersion: 'TLSv1.2' },
               logger: false, debug: false, pool: false,
               connectionTimeout: 10000, greetingTimeout: 10000,
@@ -167,8 +173,12 @@ jobs:
               const results: {name: string; ok: boolean; error?: string}[] = [];
               for (const [name, probe] of [
                 ['gmail-imap-993', () => imapTls('imap.gmail.com')],
-                ['gmail-smtp-465', () => smtpTls(465)],
-                ['gmail-smtp-starttls-587', () => smtpTls(587)],
+                ['gmail-smtp-465', () => smtpTls('smtp.gmail.com', 465)],
+                ['gmail-smtp-starttls-587', () => smtpTls('smtp.gmail.com', 587)],
+                ['gmail-smtp-465-public-ip', () => smtpTls('smtp.gmail.com', 465, true)],
+                ['gmail-smtp-587-public-ip', () => smtpTls('smtp.gmail.com', 587, true)],
+                ['microsoft-smtp-587', () => smtpTls('smtp.office365.com', 587)],
+                ['qq-smtp-465', () => smtpTls('smtp.qq.com', 465)],
               ] as const) {
                 try { await probe(); results.push({ name, ok: true }); }
                 catch (error) {
@@ -242,14 +252,16 @@ jobs:
           console.log('EMAIL_CLOUDFLARE_PREVIEW_REAL_D1_AND_MCP_OK');
           const tls = await fetch(base + '/__acceptance/tls', {
             method: 'POST', headers: { authorization: headers.authorization },
-            signal: AbortSignal.timeout(45000),
+            signal: AbortSignal.timeout(90000),
           });
           const report = await tls.json();
           for (const item of report.results ?? [])
             console.log('Remote provider TLS handshake:', item.name, item.ok ? 'PASS' : 'FAIL',
               item.ok ? '' : String(item.error ?? 'unknown_failure').slice(0, 180));
           assert.equal(tls.status, 200, 'Cloudflare outbound mail TLS probe failed');
-          assert.deepEqual(report.results?.map(item => item.ok), [true,true,true]);
+          assert.equal(report.results?.length, 7, 'All fixed provider probes must run');
+          assert.ok(report.results?.every(item => item.ok),
+            'At least one Cloudflare remote SMTP handshake remains unverified');
           console.log('EMAIL_CLOUDFLARE_IMAP_SMTP_TLS_HANDSHAKE_OK');
           NODE
 
