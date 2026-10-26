@@ -64,7 +64,7 @@ jobs:
       - name: Install pinned dependencies without lifecycle scripts
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Recheck the candidate, then run existing Email application checks
+      - name: Recheck candidate without exposing the GitHub token to code under test
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,11 +73,12 @@ jobs:
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
           [[ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/284" --jq '.head.sha')" == "$CANDIDATE_SHA" ]]
-          pnpm --filter email-mcp-worker check
+
+      - name: Run existing Email application checks without credentials
+        run: pnpm --filter email-mcp-worker check
 
       - name: Verify actual local Workers runtime and isolated D1
         shell: bash
-        timeout-minutes: 4
         run: |
           set -euo pipefail
           config=apps/email-mcp-worker/.acceptance-local.jsonc
