@@ -1808,3 +1808,25 @@ test('unknown native termination response cannot POST terminate twice',async t=>
   assert.equal(attempts,1);
   await assert.rejects(()=>service.cancel(run.run_id,'delegate',true),/child_force_not_supported/);
 });
+
+test('child publish refuses unmanaged physical GitHub actions until cancellation is verified',async t=>{
+  const {service,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Child physical job guard',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]}));
+  const version=await service.publish(child.workflow_id,1);
+  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(
+    JSON.stringify({version:1,name:'Unsafe child',steps:[{
+      id:'unmanaged',uses:'github.run',needs:[],with:{
+        capability:'github.action',action:{type:'session'},
+      },
+    }]}),version.published_version_id);
+  const definition=JSON.stringify({version:1,name:'Parent cannot approve unsafe child',
+    steps:[{id:'call',flow:'child',workflow_id:child.workflow_id,
+      version_id:version.published_version_id,inputs:{}}]});
+  const validation=await service.validateDefinition(definition);
+  assert.equal(validation.valid,false);
+  assert.equal(validation.issues[0]?.code,'child_external_action_unsupported');
+  const parent=await service.create(definition);
+  await assert.rejects(()=>service.publish(parent.workflow_id,1),
+    /child_external_action_unsupported/);
+});
