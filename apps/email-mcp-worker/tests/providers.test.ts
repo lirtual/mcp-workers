@@ -31,7 +31,7 @@ test('Graph search uses untouched upstream nextLink without calculating skip', a
       const url = String(input);
       seen.push(url);
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer token');
-      assert.equal(init?.redirect, 'error');
+      assert.equal(init?.redirect, 'manual');
       if (seen.length === 1) return Response.json({
         value: [{ id:'first', subject:'first', receivedDateTime:'2026-10-25T00:00:00Z' }],
         '@odata.nextLink': NEXT,
