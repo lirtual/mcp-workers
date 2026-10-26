@@ -262,7 +262,7 @@ but can never extend the 90-second server-side TTL.
 
 Use `workflow_session_data_get({run_id,step_id,key:'uu.credentials'})` **only when
 the owner explicitly asks for UU connection details**. It returns `ready` with
-`{device_id,verification_code}` and `expires_at`, otherwise `unavailable`
+`{device_id,verification_code,share_url?}` and `expires_at`, otherwise `unavailable`
 with a safe reason code. Every successful read confirms a running GitHub physical
 Run and rechecks the current sequence and cancellation fence before returning.
 The existing MCP Portal Bearer remains a **single-owner shared credential**;

@@ -15,9 +15,9 @@ const base64=(bytes:Uint8Array)=>btoa(Array.from(bytes,x=>String.fromCharCode(x)
 const unbase64=(value:string)=>Uint8Array.from(atob(value),x=>x.charCodeAt(0));
 
 export type SessionRuntimeDataResult=
- |{status:'ready';data:{device_id:string;verification_code:string};expires_at:string}
+ |{status:'ready';data:{device_id:string;verification_code:string;share_url?:string};expires_at:string}
  |{status:'unavailable';reason:'not_ready'|'expired'|'capture_unavailable'|'physical_unverified'|'unavailable'};
-type Value={device_id:string;verification_code:string};
+type Value={device_id:string;verification_code:string;share_url?:string};
 type Report={attemptId:string;key:typeof KEY;sequence:number;status:'ready'|'unavailable';value?:Value};
 type DataRow={run_id:string;step_id:string;attempt_id:string;key:string;sequence:number;
  status:string;ciphertext:string|null;iv:string|null;expires_at:number};
@@ -27,10 +27,15 @@ const unavailable=(reason:'not_ready'|'expired'|'capture_unavailable'|'physical_
 function validValue(value:unknown):value is Value{
  if(!value||typeof value!=='object'||Array.isArray(value))return false;
  const raw=value as Record<string,unknown>;
- return Object.keys(raw).sort().join(',')==='device_id,verification_code' &&
+ const keys=Object.keys(raw).sort().join(',');
+ return (keys==='device_id,verification_code' ||
+         keys==='device_id,share_url,verification_code') &&
   typeof raw.device_id==='string' && /^[0-9]{9}$/.test(raw.device_id) &&
   typeof raw.verification_code==='string' &&
-  /^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{8}$/.test(raw.verification_code);
+  /^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{8}$/.test(raw.verification_code) &&
+  (!('share_url' in raw) ||
+   (typeof raw.share_url==='string' &&
+    /^https:\/\/uuyc\.163\.com\/invite\/[0-9a-fA-F]{32}$/.test(raw.share_url)));
 }
 function parseReport(raw:unknown):Report|null{
  if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
