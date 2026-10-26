@@ -1,0 +1,291 @@
+name: Email Cloud Preview Acceptance
+
+# Cloudflare remote development uploads a temporary preview, not a production Worker.
+# This must never modify release.yml, Portal, custom routes, or real mailbox accounts.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact current SHA of Draft Email PR #284
+        type: string
+        required: true
+      confirm_cloud_preview:
+        description: Approve temporary Cloudflare preview and disposable D1
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  verify-candidate:
+    name: Verify pinned Email candidate without Cloudflare access
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_cloud_preview == true }}
+    steps:
+      - name: Require unchanged internal Draft PR and successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          pr="repos/$GITHUB_REPOSITORY/pulls/284"
+          [[ "$(gh api "$pr" --jq '.head.sha')" == "$CANDIDATE_SHA" ]]
+          [[ "$(gh api "$pr" --jq '.head.repo.full_name')" == "$GITHUB_REPOSITORY" ]]
+          [[ "$(gh api "$pr" --jq '.state')" == open ]]
+          [[ "$(gh api "$pr" --jq '.draft')" == true ]]
+          [[ "$(gh api "$pr" --jq '.base.ref')" == main ]]
+          ok="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/runs" -f head_sha="$CANDIDATE_SHA" -f event=pull_request \
+            --jq '[.workflow_runs[] | select(.name == "CI" and .status == "completed" and .conclusion == "success")] | length')"
+          [[ "$ok" =~ ^[0-9]+$ && "$ok" -ge 1 ]]
+          echo "EMAIL_CLOUD_PREVIEW_PINNED_SHA_OK"
+
+  cloud-preview:
+    name: Temporary Cloudflare preview and disposable D1
+    needs: verify-candidate
+    if: ${{ needs.verify-candidate.result == 'success' && github.ref == 'refs/heads/main' && inputs.confirm_cloud_preview == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: email-mcp-acceptance
+    concurrency:
+      group: email-cloud-preview-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install without scripts (no Cloudflare credentials)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Run remote preview with disposable D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EMAIL_ACCEPTANCE_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${CLOUDFLARE_API_TOKEN:-}" && "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ ]]
+          # Only this step has Cloudflare credentials; checkout and dependencies did not.
+          export EMAIL_ACCEPTANCE_D1_NAME="email-acc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const api = 'https://api.cloudflare.com/client/v4/accounts/' + process.env.CLOUDFLARE_ACCOUNT_ID;
+          const res = await fetch(api + '/d1/database', { method: 'POST',
+            headers: { Authorization: 'Bearer ' + process.env.CLOUDFLARE_API_TOKEN,
+              'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: process.env.EMAIL_ACCEPTANCE_D1_NAME }) });
+          const json = await res.json();
+          if (!res.ok || json.success !== true ||
+              !/^[a-f0-9-]{36}$/i.test(json.result?.uuid ?? '')) {
+            throw Error('disposable_d1_create_failed_http_' + res.status);
+          }
+          const id = json.result.uuid;
+          writeFileSync(process.env.RUNNER_TEMP + '/email-acceptance-d1-id', id);
+          const input = JSON.parse(readFileSync('apps/email-mcp-worker/wrangler.jsonc','utf8'));
+          assert.equal(input.compatibility_date, '2026-10-20');
+          const config = {
+            name: 'email-cloud-acceptance-preview',
+            main: '.acceptance-tls.ts',
+            compatibility_date: input.compatibility_date,
+            workers_dev: false, preview_urls: false,
+            d1_databases: [{ binding: 'DB', database_name: process.env.EMAIL_ACCEPTANCE_D1_NAME,
+              database_id: id, migrations_dir: 'migrations' }],
+          };
+          writeFileSync('apps/email-mcp-worker/.acceptance-cloud.jsonc', JSON.stringify(config));
+          console.log('Disposable remote D1 created for the current acceptance run');
+          NODE
+          # Ephemeral preview-only wrapper: original Email Worker owns every existing
+          # route; the sole extra path probes fixed public TLS endpoints without
+          # credentials, authentication attempts or SMTP message submission.
+          cat > apps/email-mcp-worker/.acceptance-tls.ts <<'TLS_WRAPPER'
+          import handler from './src/index.ts';
+          import { resolvePublicMailEndpoint } from './src/mail-endpoints.ts';
+          import nodemailer from 'nodemailer';
+          import tls from 'node:tls';
+
+          function imapTls(host: string): Promise<void> {
+            return new Promise((resolve, reject) => {
+              const socket = tls.connect({
+                host, port: 993, servername: host, rejectUnauthorized: true,
+                minVersion: 'TLSv1.2', timeout: 10000,
+              });
+              let settled = false;
+              const done = (ok: boolean) => {
+                if (settled) return;
+                settled = true;
+                socket.destroy();
+                if (ok) resolve();
+                else reject(new Error('imap_tls_handshake_failed'));
+              };
+              socket.once('secureConnect', () => done(socket.authorized === true));
+              socket.once('timeout', () => done(false));
+              socket.once('error', () => done(false));
+              socket.once('close', () => done(false));
+            });
+          }
+
+          async function smtpTls(host: string, port: 465 | 587,
+            pinned = false): Promise<void> {
+            // The pinned mode exactly reproduces the production SMTP adapter's
+            // public-DNS-only destination and independent TLS SNI identity.
+            const target = pinned ? await resolvePublicMailEndpoint(host) :
+              {hostname: host, address: host};
+            const transport = nodemailer.createTransport({
+              host: target.address, port, secure: port === 465,
+              requireTLS: port === 587, ignoreTLS: false,
+              // No auth is configured: verify() negotiates TLS, then QUIT.
+              tls: { servername: target.hostname, rejectUnauthorized: true,
+                minVersion: 'TLSv1.2' },
+              logger: false, debug: false, pool: false,
+              connectionTimeout: 10000, greetingTimeout: 10000,
+              socketTimeout: 10000,
+            });
+            try { await transport.verify(); }
+            finally { transport.close(); }
+          }
+
+          export default {
+            async fetch(request: Request, env: { MCP_ACCESS_TOKEN: string },
+              context: ExecutionContext): Promise<Response> {
+              const path = new URL(request.url).pathname;
+              if (path !== '/__acceptance/tls')
+                return handler.fetch(request, env as never, context);
+              if (request.method !== 'POST' ||
+                request.headers.get('authorization') !== 'Bearer ' + env.MCP_ACCESS_TOKEN)
+                return new Response('Unauthorized', { status: 401 });
+              const results: {name: string; ok: boolean; error?: string}[] = [];
+              for (const [name, probe] of [
+                ['gmail-imap-993', () => imapTls('imap.gmail.com')],
+                ['gmail-smtp-465', () => smtpTls('smtp.gmail.com', 465)],
+                ['gmail-smtp-starttls-587', () => smtpTls('smtp.gmail.com', 587)],
+                ['gmail-smtp-465-public-ip', () => smtpTls('smtp.gmail.com', 465, true)],
+                ['gmail-smtp-587-public-ip', () => smtpTls('smtp.gmail.com', 587, true)],
+                ['microsoft-smtp-587', () => smtpTls('smtp.office365.com', 587)],
+                ['qq-smtp-465', () => smtpTls('smtp.qq.com', 465)],
+              ] as const) {
+                try { await probe(); results.push({ name, ok: true }); }
+                catch (error) {
+                  // No credentials were supplied to the SMTP server. Emit only
+                  // bounded, redacted runtime diagnosis, never a stack trace.
+                  const detail = error instanceof Error ? error.message : 'unknown_failure';
+                  results.push({ name, ok: false,
+                    error: detail.replaceAll(env.MCP_ACCESS_TOKEN, '[redacted]').slice(0, 180) });
+                }
+              }
+              return Response.json({ results }, {
+                status: results.every(result => result.ok) ? 200 : 502,
+                headers: { 'cache-control': 'no-store' },
+              });
+            },
+          };
+          TLS_WRAPPER
+          export ACCEPTANCE_TOKEN="$(openssl rand -hex 24)"
+          export ACCEPTANCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+          echo "::add-mask::$ACCEPTANCE_TOKEN"
+          echo "::add-mask::$ACCEPTANCE_KEY"
+          (cd apps/email-mcp-worker &&
+            pnpm dlx wrangler@4.152.0 d1 migrations apply "$EMAIL_ACCEPTANCE_D1_NAME" \
+              --config .acceptance-cloud.jsonc --remote)
+          preview_pid=''
+          cleanup_preview() {
+            if [[ -n "$preview_pid" ]]; then
+              kill "$preview_pid" 2>/dev/null || true
+              wait "$preview_pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup_preview EXIT
+          (cd apps/email-mcp-worker &&
+            pnpm dlx wrangler@4.152.0 dev --remote \
+              --config .acceptance-cloud.jsonc --port 8799 \
+              --var "MCP_ACCESS_TOKEN:$ACCEPTANCE_TOKEN" \
+              --var "MAIL_ENCRYPTION_KEY:$ACCEPTANCE_KEY" \
+              --var 'ACCESS_TEAM_DOMAIN:example.cloudflareaccess.com' \
+              --var 'ACCESS_AUD:cloud-acceptance' \
+              --var 'OWNER_EMAIL:owner@example.test') \
+            >"$RUNNER_TEMP/email-cloud-preview.log" 2>&1 &
+          preview_pid=$!
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          const base = 'http://127.0.0.1:8799', headers = {
+            authorization: 'Bearer ' + process.env.ACCEPTANCE_TOKEN,
+            'content-type': 'application/json', accept: 'application/json, text/event-stream'
+          };
+          let ready = false;
+          for (let attempt = 0; attempt < 55; attempt++) {
+            try {
+              const response = await fetch(base + '/mcp', {signal: AbortSignal.timeout(3000)});
+              if (response.status === 401) {ready = true; break;}
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          assert.ok(ready, 'Cloudflare remote preview unavailable or missing unauthenticated 401');
+          assert.equal((await fetch(base + '/setup')).status, 404);
+          async function call(method, params, id) {
+            const response = await fetch(base + '/mcp', {method:'POST',headers,
+              body:JSON.stringify({jsonrpc:'2.0',id,method,...(params ? {params} : {})})});
+            assert.equal(response.status, 200, 'Authenticated remote MCP call failed');
+            const raw = await response.text();
+            return JSON.parse(raw.match(/^data: (.+)$/m)?.[1] ?? raw);
+          }
+          const listed = await call('tools/list',undefined,1);
+          assert.equal(listed.result?.tools?.length,15);
+          const accounts = await call('tools/call',{name:'account_list',arguments:{}},2);
+          assert.equal(accounts.result?.isError,false);
+          assert.deepEqual(JSON.parse(accounts.result?.content?.[0]?.text),[]);
+          console.log('EMAIL_CLOUDFLARE_PREVIEW_REAL_D1_AND_MCP_OK');
+          const tls = await fetch(base + '/__acceptance/tls', {
+            method: 'POST', headers: { authorization: headers.authorization },
+            signal: AbortSignal.timeout(90000),
+          });
+          const report = await tls.json();
+          for (const item of report.results ?? [])
+            console.log('Remote provider TLS handshake:', item.name, item.ok ? 'PASS' : 'FAIL',
+              item.ok ? '' : String(item.error ?? 'unknown_failure').slice(0, 180));
+          assert.equal(tls.status, 200, 'Cloudflare outbound mail TLS probe failed');
+          assert.equal(report.results?.length, 7, 'All fixed provider probes must run');
+          assert.ok(report.results?.every(item => item.ok),
+            'At least one Cloudflare remote SMTP handshake remains unverified');
+          console.log('EMAIL_CLOUDFLARE_IMAP_SMTP_TLS_HANDSHAKE_OK');
+          NODE
+
+      - name: Delete only the D1 created by this run
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EMAIL_ACCEPTANCE_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+          const p = process.env.RUNNER_TEMP + '/email-acceptance-d1-id';
+          if (!existsSync(p)) { console.log('No disposable D1 was created'); process.exit(0); }
+          const id = readFileSync(p, 'utf8').trim();
+          if (!/^[a-f0-9-]{36}$/i.test(id) ||
+              !/^[a-f0-9]{32}$/.test(process.env.CLOUDFLARE_ACCOUNT_ID ?? '') ||
+              !process.env.CLOUDFLARE_API_TOKEN) throw Error('disposable_d1_cleanup_configuration_missing');
+          const res = await fetch('https://api.cloudflare.com/client/v4/accounts/' +
+            process.env.CLOUDFLARE_ACCOUNT_ID + '/d1/database/' + id,{
+              method:'DELETE', headers:{Authorization:'Bearer ' + process.env.CLOUDFLARE_API_TOKEN} });
+          const json = await res.json();
+          if (!res.ok || json.success !== true) throw Error('disposable_d1_cleanup_failed_http_' + res.status);
+          unlinkSync(p);
+          console.log('EMAIL_ACCEPTANCE_DISPOSABLE_D1_CLEANUP_OK');
+          NODE

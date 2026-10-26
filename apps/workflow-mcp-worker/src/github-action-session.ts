@@ -105,11 +105,20 @@ export async function releaseVerifiedSessionSlot(
            AND a.state IN ('failed','cancelled'))
        )
    )`).bind(Date.now(),runId,stepId).run();
- if(changed.meta.changes===1)return 'released';
  const prior=await db.prepare(`SELECT state FROM session_executions
    WHERE run_id=? AND step_id=?`).bind(runId,stepId)
   .first<{state:string}>();
- return prior?.state==='terminated'?'already_released':'held';
+ if(prior?.state==='terminated'){
+  // Verified termination is the only deletion gate. A failed cleanup is
+  // retryable on the next reconciliation, without reviving any data.
+  try{
+   await db.prepare(`DELETE FROM session_runtime_data WHERE run_id=? AND step_id=?
+     AND EXISTS (SELECT 1 FROM session_executions s
+       WHERE s.run_id=? AND s.step_id=? AND s.state='terminated')`)
+    .bind(runId,stepId,runId,stepId).run();
+  }catch{ /* Migration not yet present or transient D1 failure. */ }
+ }
+ return changed.meta.changes===1?'released':prior?.state==='terminated'?'already_released':'held';
 }
 
 /** Recover a Session slot only if GitHub *definitively rejected* dispatch

@@ -23,6 +23,7 @@ Environment bindings and credentials:
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
+- `SESSION_RUNTIME_DATA_KEY` as a canonical Base64-encoded 32-byte random AES-GCM key, staged as a GitHub Environment Secret for `workflow-mcp-worker`. Key replacement intentionally invalidates previously stored ciphertext; active Runner observations must refresh it.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
 - `GITHUB_ACTION_APPROVED_REPOSITORIES` is a server-owned JSON list of `{repository,repositoryId}` identities. A previous `commitSha` entry is tolerated but ignored for discovery. The current default-branch SHA is read from GitHub and every YAML is fetched by that exact SHA; approval of any discovered revision remains bound to the immutable Published Plan. Changing the approved repository list still requires a controlled configuration deployment.
 
@@ -30,7 +31,7 @@ There are **no independent capability enable flags**. The documented per-operati
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
+`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause` and `workflow_resume`.
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress currently supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay. It does **not** support direct GitHub webhooks, pull requests or other GitHub event types, repeat/expand, child calls or Saga. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
@@ -72,6 +73,33 @@ A fixed, reviewed number of iterations can be written as a single `flow: repeat`
 
 The template uses the same `uses`, `with` and optional `if` semantics as an ordinary Step; source-level `needs` apply to every iteration, and each later iteration additionally depends on the previous generated Step succeeding. A skipped/failed/indeterminate iteration does not automatically run later ones. Each iteration is a **real Action execution**: multiple GitHub Task or MCP calls are not coalesced; their ordinary Publish grants are still required. The compiler produces the same immutable Plan digest as an equivalent explicitly expanded DAG. No per-iteration index substitution, nested repeat, dynamic `times`, `foreach`, `while` or runtime result-driven expansion is supported.
 
+### Bounded durable wait
+
+Use an explicit `flow: wait` step when a Published Plan must delay its next
+dependency without using an HTTP request, a polling Worker, or an extra scheduler:
+
+```json
+{
+  "version": 1,
+  "name": "Pause before reporting",
+  "steps": [
+    {"id":"hold","flow":"wait","duration_seconds":2},
+    {"id":"done","uses":"result.emit","needs":["hold"],"with":{"data":"resumed"}}
+  ]
+}
+```
+
+The compiler accepts **literal integer seconds 1–300** and rejects a Plan
+whose combined wait durations exceed **300 seconds**. Waiting occupies the
+existing active Run quota slot. Cloudflare's native `step.sleep` checkpoint
+survives a Worker restart; the Step appears as `waiting` until its duration
+elapses, and dependencies cannot run before it completes.
+
+This is a relative delay, **not** a signal/event wait, human Approval Gate or
+an external wake-up endpoint. Paused workflows block new admission, not the
+already-running Run. Native instance termination and external resource
+cancellation are separate status checks; no compensation is promised.
+
 ### Bounded dynamic foreach (pure pipelines and reviewed single Actions)
 
 A `flow: foreach` entry reads a JSON array from declared `inputs` or a completed dependency Step output. The declared `max_items` must be a literal integer from **1 to 8**. Its `template.steps` accepts **one** `result.emit`, read-scoped `mcp.call` or approved `github.run` Task Action, **or 2–4 ordered `result.emit` and reviewed read-only `mcp.call` Steps**. Each child may have safe `if`. Multi-step GitHub Tasks, Session Actions, arbitrary Task input expressions and nested templates remain rejected. The template may reference `item.value`, `item.value.<field>`, `item.index`, normal declared inputs and its controller's dependencies. For example:
@@ -96,9 +124,9 @@ A bounded template can instead call an **explicitly approved read-only MCP tool*
 
 `flow.foreach_emit`, `flow.foreach_multi_emit`, `flow.foreach_mcp_read`, `flow.foreach_multi_mcp_read` and `flow.foreach_github_task` distinguish these limited modes. A reviewed GitHub Task template uses the existing pinned repository, release SHA/Tag, exact input contract and owner `approve_heavy_execution` with matching `approved_actions`; every item's `if` condition may use `item.value` or `item.index`, but GitHub Task inputs may be static literals **or exact current-item references** such as `{\"ref\":\"item.value\"}` / `{\"ref\":\"item.index\"}`. At Publish the immutable Action contract is re-read and pinned; before the first Task dispatch the complete bounded array is checked for type, choice, required fields and byte limits inside one native snapshot. Each selected Task's normalized input map receives a SHA-256 D1 marker before the unique Attempt, and the registration gate compares this marker before GitHub POST. Only the digest—not raw inputs—is recorded in the marker. Each selected Task has a stable <controller>_<index>_<template-id> identity: existing D1 UNIQUE Attempt registration occurs before the GitHub POST and the original GitHub-issued OIDC, Claim and physical terminal proof determine its final result. A missing native checkpoint cannot dispatch a second physical Task for the same child, and uncertain outcomes remain `indeterminate`; no exactly-once claim is made. One Foreach controller executes its selected Tasks sequentially to stay bounded.
 
-Multi-step GitHub support is deliberately limited to exactly **`result.emit → one reviewed literal-input github.run Task → result.emit`** (three stages per item). The last emit can use `steps.<Task-id>.output` only after signed OIDC receipt and verified physical GitHub success. The Task's optional per-item `if` is frozen in its own native checkpoint; skipped or failed Tasks never authorize the follow-up emit. Existing GitHub D1 UNIQUE Attempt-before-POST and physical terminal reconciliation remain in force. No dynamic Task inputs or second GitHub child are allowed in this shape.
+Multi-step GitHub support permits **one reviewed, literal-input `github.run` Task among 2–4 ordered `result.emit` and reviewed read-only `mcp.call` children** per item. The previously shipped `result.emit → github.run → result.emit` path retains its checkpoint semantics. New mixed sequences require every earlier stage to succeed before running another stage; skipped, failed or indeterminate stages never authorize another external effect. Later children can use `steps.<Task-id>.output` only after a signed OIDC receipt and independently verified physical GitHub success. MCP children still use their own frozen arguments and one-shot D1 fences. No dynamic Task inputs, second GitHub Task, Session, write-scope tool or nested flow is supported in this multi-step path.
 
-GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **general multi-step GitHub Tasks or write-scope external Actions**, nested loops, dynamic while, child workflows, general arbitrary HTTP Actions and Saga remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
+GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **multiple GitHub Tasks in one per-item template or write-scope external Actions**, nested loops, dynamic while, child workflows, general arbitrary HTTP Actions and Saga remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
 
 `workflow_validate` accepts either `{workflow_id, revision}` for a saved Draft or `{definition}` with inline YAML/JSON. Inline validation uses the same compiler and reviewed Action checks, returns required Publish approvals or bounded structured issues, and never creates a Draft, writes D1, publishes, or dispatches external jobs. The two input modes cannot be combined. For a new workflow, validate inline before `workflow_create`.
 
@@ -188,3 +216,38 @@ GitHub Actions are dispatched only through the explicitly approved `github.actio
 The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicitly selected through `.github/workflows/acceptance.yml` and are separate from deployment; Portal registration requires a separate `confirm_portal_write` acknowledgment. A passing dry-run does not establish production acceptance.
 
 Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.
+
+### Short-lived Session Runtime Data (Spec #288)
+
+Windows UU Lite is the first and only admitted producer. The reviewed
+`lirtual/session-actions/.github/workflows/windows.yml` GitHub-hosted physical
+Session posts a bounded JSON observation to `POST /github/action/session-data`
+with a fresh GitHub OIDC token, its claimed `attemptId`, the explicitly
+allowlisted `uu.credentials` key and a strictly increasing per-Attempt sequence.
+The signed physical Action, immutable Published Plan and owned Ready Session
+must all agree. A successful UI observation is refreshed about every 30 seconds
+(including unchanged values). An observed failure reports a no-ciphertext
+`unavailable` tombstone; network failure cannot instantly revoke an observation
+but can never extend the 90-second server-side TTL.
+
+Use `workflow_session_data_get({run_id,step_id,key:'uu.credentials'})` **only when
+the owner explicitly asks for UU connection details**. It returns `ready` with
+`{device_id,verification_code}` and `expires_at`, otherwise `unavailable`
+with a safe reason code. Every successful read confirms a running GitHub physical
+Run and rechecks the current sequence and cancellation fence before returning.
+The existing MCP Portal Bearer remains a **single-owner shared credential**;
+Run/Step IDs are locators, not independent ACLs. These codes enter conversation
+history on an explicit read. Normal `workflow_status`, `workflow_result`, GitHub
+logs, Summary, and Artifacts never include the codes.
+
+The `0010_session_runtime_data.sql` migration uses only the existing D1; values
+are AES-256-GCM ciphertext with unique IV and Run/Step/Attempt/key/sequence AEAD
+binding. Supply `SESSION_RUNTIME_DATA_KEY` as a canonical Base64 32-byte Secret,
+not a Variable. Never commit this key, and never use a shared permanent password
+as its replacement. The existing GitHub Actions manual production release blocks
+on this Secret, migration readiness, no active physical Session during schema
+change, and ordinary approval gates. Worker CI and local D1 tests are necessary
+but **not production acceptance**: only a real, approved temporary Windows Session
+can prove UI collection, renewal, rotation, invalidation and normal cleanup. Keep
+the implementation PR Draft and leave the Spec open until that end-to-end evidence
+is collected. No extra Worker, cleanup Cron, queue, or auth service is introduced.

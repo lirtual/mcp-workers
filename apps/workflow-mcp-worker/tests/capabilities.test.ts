@@ -20,9 +20,30 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
-  for(const id of ['flow.loop','flow.child','flow.saga']){
+  for(const id of ['flow.loop','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
+  assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
+  assert.equal(catalog.get('flow.wait')?.availability,'supported');
+  const wait=(await workflowCapabilities(env,'flow.wait')) as {example:{definition:unknown;digest:string};wait_policy:{native_checkpoint:string;total_budget_seconds:number}};
+  assert.equal(wait.wait_policy.native_checkpoint,'step.sleep');
+  assert.equal(wait.wait_policy.total_budget_seconds,PLAN_LIMITS.maxWaitSeconds);
+  assert.equal((await compilePlan(wait.example.definition)).digest,wait.example.digest);
+  assert.equal((overview.expression_rules as {supported_wait:string}).supported_wait.includes('flow: wait'),true);
+  const childDetails=await workflowCapabilities(env,'flow.child');
+  assert.equal(childDetails.availability,'supported_with_grant');
+  assert.match(String(childDetails.description),/approved_children/);
+  assert.match(String(childDetails.description),/non-recursive/);
+  const rules=overview.expression_rules as {supported_child:string;unsupported:string[]};
+  assert.match(rules.supported_child,/flow: child/);
+  assert.match(rules.supported_child,/approved_children/);
+  assert.equal(rules.unsupported.includes('child_workflow'),false);
+  const childGrant=childDetails.grant as {required:string[];note:string};
+  assert.deepEqual(childGrant.required,['approved_children']);
+  assert.match(childGrant.note,/illustrative/);
+  const example=childDetails.example as {definition:unknown;digest:string;validation:string};
+  assert.equal(example.validation,'compiler_valid_only');
+  assert.equal((await compilePlan(example.definition)).digest,example.digest);
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
@@ -40,7 +61,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.wait','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
     const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -92,9 +113,12 @@ test('advertised skip-tolerant join matches compiler and keeps fail-closed seman
 test('literal repeat discovery is compiler-backed and explicitly bounded',async()=>{
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
-    ['uses','with'],['flow','times','template'],['flow','items','max_items','template'],
+    ['uses','with'],['flow','times','template'],
+    ['flow','duration_seconds'],['flow','workflow_id','version_id','inputs'],
+    ['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
+  assert.equal(schema.properties.duration_seconds.maximum,PLAN_LIMITS.maxWaitSeconds);
   assert.equal(schema.properties.max_items.maximum,PLAN_LIMITS.maxForeachItems);
   assert.ok(schema.oneOf[0].not.anyOf.some(x=>x.required.includes('flow')));
   assert.ok(schema.oneOf[1].not.anyOf.some(x=>x.required.includes('uses')));
@@ -178,6 +202,17 @@ test('Agent-readable Action schemas document required executable parameters',()=
     ['capability','action']);
 });
 
+test('awaited-child capability distinguishes valid flow syntax from legacy unsupported fields',async()=>{
+  const detail=await workflowCapabilities(env,'flow.child');
+  const {definition}=detail.example as {definition:Record<string,unknown>};
+  const compiled=await compilePlan(definition);
+  assert.equal(compiled.plan.steps[0]?.uses,'flow.child');
+  await assert.rejects(
+    compilePlan({...definition,child_workflow:'legacy'}),
+    (err:unknown)=>err instanceof PlanError && err.message.includes('unsupported_field:child_workflow'),
+  );
+});
+
 test('unsupported features are rejected by the same production compiler',async()=>{
   for(const forbidden of [
     {version:1,name:'Cron',triggers:[{id:'timer',type:'cron',expression:'* * * * *'}],
@@ -223,4 +258,20 @@ test('staged Task Foreach self-description reflects only one literal approved Ta
  assert.deepEqual(policy.stages,['result.emit','github.run','result.emit']);
  assert.equal(policy.github_task_count,1);
  assert.equal(policy.github_inputs,'literal_only');
+});
+
+test('ordered mixed Task discovery enforces one literal Task and read-only MCP',async()=>{
+ const detail=await workflowCapabilities(env,'flow.foreach_mixed_task');
+ assert.equal(detail.availability,'no_verified_published_task');
+ const rules=detail.template_policy as {
+  github_task_count:number;github_inputs:string;mcp_scope:string;max_steps:number;
+ };
+ assert.equal(rules.github_task_count,1);
+ assert.equal(rules.github_inputs,'literal_only');
+ assert.equal(rules.mcp_scope,'read');
+ assert.equal(rules.max_steps,PLAN_LIMITS.maxForeachTemplateSteps);
+ const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+ assert.ok(schema);
+ assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
+  rule.then.anyOf[1]?.maxContains===1));
 });

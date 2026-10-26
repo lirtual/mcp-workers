@@ -1,4 +1,6 @@
 import {watchPersistedSessions} from './github-action-session-watch.ts';
+import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
+import {canonicalJsonString} from './plan.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -7,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
-import { limitResult } from './store.ts';
+import { limitResult,WorkflowService } from './store.ts';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -104,7 +106,8 @@ const templateIsExternal=(step:Step)=>
 /** Bounded per-item sequential template. A native array checkpoint freezes
  * expansion before execution, and each external child's own native arguments
  * checkpoint freezes its effective request after same-item dependencies.
- * Only approved read-only MCP calls can have external effects in this path.
+ * Mixed templates may contain one reviewed GitHub Task and approved read-only
+ * MCP calls; skipped stages never authorize subsequent external dispatch.
  */
 async function runMultiForeach(
   env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
@@ -113,11 +116,12 @@ async function runMultiForeach(
   const config=s.with;
   const children=config.templates as Array<{id:string;uses:string;with:{data?:unknown;arguments?:unknown;action?:unknown};if?:unknown}>;
   const taskStages=Array.isArray(children)?children.flatMap((c,i)=>c?.uses==='github.run'?[i]:[]):[];
-  const approvedTaskShape=taskStages.length===1&&taskStages[0]===1&&
+  // Keep checkpoint names and decisions for previously Published Plans.
+  const legacyTaskShape=taskStages.length===1&&taskStages[0]===1&&
     children?.length===3&&children[0]?.uses==='result.emit'&&children[2]?.uses==='result.emit';
   if(!Array.isArray(children)||children.length<2||children.length>4||
      children.some(c=>!['result.emit','mcp.call','github.run'].includes(c?.uses)||typeof c.id!=='string')||
-     (taskStages.length>0&&!approvedTaskShape)||
+     taskStages.length>1||
      !Number.isSafeInteger(config.max_items)||Number(config.max_items)<1||
      Number(config.max_items)>8||Number(config.max_items)*children.length+1>32)
     return {status:'failed',error_code:'invalid_foreach_plan'};
@@ -138,16 +142,24 @@ async function runMultiForeach(
     for(const [index,value] of snapshot.items.entries()){
       const localSteps:Record<string,Outcome>={...ctx.steps};
       let final:Outcome={status:'skipped'};
-      for(const child of children){
+      for(const [stage,child] of children.entries()){
         const childId=s.id+'_'+index+'_'+child.id;
         const localCtx={...ctx,steps:localSteps,item:{value,index}};
+        const earlierSucceeded=children.slice(0,stage)
+          .every(prior=>localSteps[prior.id]?.status==='succeeded');
         let outcome:Outcome;
-        if(child.uses==='result.emit'){
+        // New mixed sequences fail closed after a skipped prerequisite.
+        // Original three-stage Plans retain their native checkpoint names.
+        if(taskStages.length>0&&!legacyTaskShape&&!earlierSucceeded){
+          outcome=await step.do('workflow-'+childId+'-blocked',
+            {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+            async():Promise<Outcome>=>({status:'skipped'}));
+        }else if(child.uses==='result.emit'){
           outcome=await step.do('workflow-'+childId,
             {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async():Promise<Outcome>=>{
               // A skipped Task cannot authorize a follow-up stage or
               // manufacture a successful result from an absent receipt.
-              if(taskStages.length&&child.id===children[2]!.id&&
+              if(legacyTaskShape&&child.id===children[2]!.id&&
                  localSteps[children[1]!.id]?.status!=='succeeded')
                 return {status:'skipped'};
               if(child.if!==undefined&&!evaluateCondition(child.if,localCtx))
@@ -160,7 +172,8 @@ async function runMultiForeach(
           // skipped emit may never trigger the external Task.
           const selected=await step.do('workflow-'+childId+'-selection',
             {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>({
-              selected:localSteps[children[0]!.id]?.status==='succeeded'&&
+              selected:(legacyTaskShape?
+                localSteps[children[0]!.id]?.status==='succeeded':earlierSucceeded)&&
                 (child.if===undefined||evaluateCondition(child.if,localCtx)),
             }));
           if(!selected.selected){
@@ -420,6 +433,136 @@ async function runForeachStep(
   }
 }
 
+/** A bounded time wait uses Cloudflare's native, replayable sleep checkpoint.
+ * No JS timer, external poller, D1 deadline table or second scheduler. The
+ * persisted waiting Step is readable while the Workflow instance is asleep.
+ */
+async function runDurableWait(
+  env:Env,s:Step,runId:string,step:WorkflowStep,
+  outcomes:Record<string,Outcome>,
+):Promise<Outcome>{
+  if(!dependenciesPermitRun(s,outcomes))return {status:'skipped'};
+  const duration=Number(s.with.duration_seconds);
+  if(!Number.isSafeInteger(duration)||duration<1||duration>300)
+    return {status:'failed',error_code:'invalid_wait_duration'};
+  try{
+    await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+      SELECT ?,?,'waiting',? WHERE EXISTS (
+        SELECT 1 FROM runs WHERE id=? AND outcome='running'
+      ) ON CONFLICT(run_id,step_id) DO NOTHING`)
+      .bind(runId,s.id,now(),runId).run();
+    const recorded=await env.DB.prepare(
+      'SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+      .bind(runId,s.id).first<{status:string}>();
+    if(recorded?.status==='succeeded')return {status:'succeeded',output:null};
+    if(recorded?.status!=='waiting')
+      return {status:'indeterminate',error_code:'wait_admission_unconfirmed'};
+    // The stable name and literal duration are pinned to this Published Plan.
+    // A replay resumes the existing native sleep rather than restarting a timer.
+    await step.sleep('workflow-'+s.id+'-wait',duration*1000);
+    const active=await env.DB.prepare('SELECT outcome FROM runs WHERE id=?')
+      .bind(runId).first<{outcome:string}>();
+    if(active?.outcome!=='running')
+      return {status:'indeterminate',error_code:'wait_owner_not_active'};
+    return {status:'succeeded',output:null};
+  }catch{
+    return {status:'indeterminate',error_code:'wait_resume_unconfirmed'};
+  }
+}
+
+/** One awaited, non-recursive child per parent, with its own Published Plan.
+ * D1 child lineage is durable before native create; all loop sleeps are
+ * Cloudflare-native, not a polling Worker or an external scheduler.
+ */
+async function runAwaitedChild(
+ env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
+ ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
+):Promise<Outcome>{
+ if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+ const target=s.with.workflow_id,version=s.with.version_id;
+ const approval=plan.child_approvals?.find(x=>x.workflow_id===target&&x.version_id===version);
+ if(!approval||typeof target!=='string'||typeof version!=='string')
+   return {status:'failed',error_code:'child_approval_required'};
+ let childId:string;
+ let frozen:{inputJson:string;digest:string};
+ try{
+   childId=await awaitedChildRunId(runId,s.id);
+   frozen=await step.do('workflow-'+s.id+'-child-inputs',
+     {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+       const inputs=evaluateArguments(s.with.inputs,ctx);
+       if(!inputs||typeof inputs!=='object'||Array.isArray(inputs)||hasUnresolvedArgument(inputs))
+         throw Error('invalid_child_inputs');
+       const inputJson=canonicalJsonString(limitResult(inputs));
+       const sha=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(inputJson));
+       return {inputJson,digest:[...new Uint8Array(sha)].map(x=>x.toString(16).padStart(2,'0')).join('')};
+     });
+   if(typeof frozen.inputJson!=='string'||typeof frozen.digest!=='string')
+     return {status:'failed',error_code:'invalid_child_snapshot'};
+ }catch{return {status:'failed',error_code:'invalid_child_inputs'};}
+ try{
+   const published=await env.DB.prepare(`SELECT v.digest,w.state,w.active_version_id
+     FROM workflow_versions v JOIN workflows w ON w.id=v.workflow_id
+     WHERE v.id=? AND w.id=?`)
+     .bind(version,target).first<{digest:string;state:string;active_version_id:string|null}>();
+   if(published?.digest!==approval.digest)
+     return {status:'failed',error_code:'child_approved_version_changed'};
+   // An explicitly paused (or republished) child is a known rejection,
+   // not an ambiguous D1/native admission. Keep the atomic reservation
+   // predicate as the final authority if this state races with a change.
+   if(published.state!=='active'||published.active_version_id!==version)
+     return {status:'failed',error_code:'child_target_unavailable'};
+   await transferAwaitedChildCapacity(env.DB,{
+     parentRunId:runId,parentStepId:s.id,childRunId:childId,
+     childWorkflowId:target,childVersionId:version,
+     admissionKey:'child-'+childId,requestDigest:frozen.digest,
+     inputJson:frozen.inputJson,timestamp:now(),
+   });
+ }catch{return {status:'indeterminate',error_code:'child_admission_unconfirmed'};}
+ // Child start and every observation use the SAME derived ID. If an ACK
+ // disappears, the helper only retries on a proven native not-found.
+ for(let i=0;i<120;i++){
+   try{
+     const start=await step.do('workflow-'+s.id+'-child-start-'+i,
+       {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+       async()=>startReservedAwaitedChild(env,{
+         parentRunId:runId,parentStepId:s.id,childRunId:childId,timestamp:now(),
+       }));
+     if(start.start_state==='indeterminate')
+       return {status:'indeterminate',error_code:'child_start_unconfirmed'};
+     const status=await step.do('workflow-'+s.id+'-child-status-'+i,
+       {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+         // Reconcile native child errors/termination without confusing a
+         // native complete ACK with a successful D1 business result.
+         await new WorkflowService(env).status(childId);
+         return env.DB.prepare('SELECT outcome,result FROM runs WHERE id=? AND parent_run_id=? AND parent_step_id=?')
+           .bind(childId,runId,s.id).first<{outcome:string;result:string|null}>();
+       });
+     if(!status)return {status:'indeterminate',error_code:'child_lineage_missing'};
+     if(status.outcome==='succeeded'){
+       // A child may finish after its native termination request lost an ACK.
+       // This read MUST be outside step.do: replay can return a cached successful
+       // status, but a subsequently committed cancellation still wins over
+       // parent dependency authorization. Preserve the child's real D1 result.
+       const cancelled=await env.DB.prepare(
+         'SELECT child_run_id FROM child_cancellations WHERE child_run_id=?')
+         .bind(childId).first<{child_run_id:string}>();
+       if(cancelled)return {status:'failed',error_code:'child_cancel_requested'};
+       try{return {status:'succeeded',output:limitResult(status.result===null?null:JSON.parse(status.result))};}
+       catch{return {status:'indeterminate',error_code:'child_result_unreadable'};}
+     }
+     if(status.outcome==='failed'||status.outcome==='cancelled')
+       return {status:'failed',error_code:'child_failed'};
+     if(status.outcome==='indeterminate')
+       return {status:'indeterminate',error_code:'child_outcome_unknown'};
+   }catch{
+     // D1 or native admission uncertainty is not a confirmed child failure.
+     return {status:'indeterminate',error_code:'child_observation_unconfirmed'};
+   }
+   if(i<119)await step.sleep('workflow-'+s.id+'-child-sleep-'+i,30_000);
+ }
+ return {status:'indeterminate',error_code:'child_wait_expired'};
+}
+
 export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -434,8 +577,24 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     const plan=JSON.parse(version.plan) as Plan;
     const ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}={inputs:JSON.parse(row.inputs),steps:{}};
     if(row.outcome==='queued'){
-      const transition=await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
-      if(!transition.meta.changes)return;
+      // A native child create can become visible AFTER a cancellation request
+      // (e.g. when create() loses its ACK). Fence the first business step with
+      // the durable child cancellation in the SAME atomic D1 transition.
+      const transition=await db.prepare(`UPDATE runs
+        SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'
+        AND NOT EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=runs.id)`)
+        .bind(now(),id).run();
+      if(!transition.meta.changes){
+        // Native execution was prevented before its first business step.
+        // Report a failed, side-effect-free admission, not a successful native
+        // termination (which was never independently observed).
+        await db.prepare(`UPDATE runs SET outcome='failed',
+          error_code='child_cancel_requested',updated_at=?
+          WHERE id=? AND outcome='queued' AND parent_run_id IS NOT NULL
+          AND EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=runs.id)`)
+          .bind(now(),id).run();
+        return;
+      }
     }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
     let emitted:unknown=null;
@@ -448,7 +607,11 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(s.uses==='flow.foreach'
+          const result=(s.uses==='flow.wait'
+            ? await runDurableWait(this.env,s,id,step,ctx.steps)
+            : s.uses==='flow.child'
+            ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
+            : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
             : s.uses==='github.run'
             ? await (async()=>{

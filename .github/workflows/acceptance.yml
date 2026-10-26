@@ -9,13 +9,27 @@ on:
         type: choice
         options:
           - production-native
+          - production-child
           - production-mcp
           - production-github
           - production-action-task
           - production-webhook
+          - production-session-data
           - portal-readonly
           - github-action-result-cloud
           - portal-register
+      session_run_id:
+        description: Existing temporary Spec 288 Windows Run ID; never contains sensitive values
+        type: string
+        required: false
+      expected_session_state:
+        description: Expected owner-only Session read status
+        type: choice
+        options:
+          - ready
+          - unavailable
+        default: ready
+        required: false
       confirm_portal_write:
         description: Explicitly authorize production Portal configuration changes (portal-register only)
         required: true
@@ -32,7 +46,7 @@ env:
 jobs:
   checks:
     name: Pre-acceptance checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-mcp","production-github","production-action-task","production-webhook","portal-register"]'), inputs.test_type) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-child","production-mcp","production-github","production-action-task","production-webhook","production-session-data","portal-register"]'), inputs.test_type) }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: workflow-mcp-worker
@@ -43,7 +57,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
-          contains(fromJSON('["production-native","production-mcp","production-github","production-action-task","production-webhook"]'), inputs.test_type) &&
+          contains(fromJSON('["production-native","production-child","production-mcp","production-github","production-action-task","production-webhook","production-session-data"]'), inputs.test_type) &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
@@ -57,10 +71,14 @@ jobs:
       MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      WORKFLOW_CHILD_SMOKE: ${{ inputs.test_type == 'production-child' }}
       WORKFLOW_MCP_SMOKE: ${{ inputs.test_type == 'production-mcp' }}
       WORKFLOW_GITHUB_SMOKE: ${{ inputs.test_type == 'production-github' }}
       WORKFLOW_ACTION_TASK_SMOKE: ${{ inputs.test_type == 'production-action-task' }}
       WORKFLOW_WEBHOOK_SMOKE: ${{ inputs.test_type == 'production-webhook' }}
+      WORKFLOW_SESSION_DATA_SMOKE: ${{ inputs.test_type == 'production-session-data' }}
+      WORKFLOW_SESSION_DATA_RUN_ID: ${{ inputs.session_run_id }}
+      WORKFLOW_SESSION_DATA_EXPECTED_STATUS: ${{ inputs.expected_session_state }}
       WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
       MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
       MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
@@ -77,7 +95,12 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify authenticated Workflow/MCP/GitHub production and remove randomized test records
-        run: node apps/workflow-mcp-worker/tests/production-smoke.mjs
+        run: |
+          if [[ "$WORKFLOW_CHILD_SMOKE" == "true" ]]; then
+            node apps/workflow-mcp-worker/tests/production-child-smoke.mjs
+          else
+            node apps/workflow-mcp-worker/tests/production-smoke.mjs
+          fi
 
   workflow-mcp-portal-probe:
     name: Authenticated MCP Portal read-only check (no deploy)

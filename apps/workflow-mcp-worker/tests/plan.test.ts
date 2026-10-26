@@ -487,3 +487,68 @@ test('multi-step foreach compiles only pinned read-only MCP and earlier item out
  await assert.rejects(()=>compilePlan(overflow),
    (e:unknown)=>e instanceof PlanError&&e.message==='invalid_step_count');
 });
+
+test('single awaited child compiles with pinned UUID, safe frozen inputs and stable digest',async()=>{
+  const child='11111111-1111-4111-8111-111111111111';
+  const version='22222222-2222-4222-8222-222222222222';
+  const source={version:1,name:'Call reviewed child',inputs:{value:'hello'},steps:[
+    {id:'start',uses:'result.emit',with:{data:{ref:'inputs.value'}}},
+    {id:'delegate',flow:'child',workflow_id:child,version_id:version,
+     needs:['start'],inputs:{value:{ref:'steps.start.output'}}},
+    {id:'done',uses:'result.emit',needs:['delegate'],
+      with:{data:{ref:'steps.delegate.output'}}},
+  ]};
+  const compiled=await compilePlan(source);
+  assert.equal(compiled.plan.steps.find(s=>s.id==='delegate')?.uses,'flow.child');
+  assert.deepEqual(compiled.plan.steps.find(s=>s.id==='delegate')?.with,
+    {workflow_id:child,version_id:version,inputs:{value:{ref:'steps.start.output'}}});
+  assert.equal(compiled.digest,(await compilePlan(source)).digest);
+});
+
+test('child source rejects unpinned, recursive syntax, extra effects and direct opcode spoof',async()=>{
+  const child='11111111-1111-4111-8111-111111111111';
+  const version='22222222-2222-4222-8222-222222222222';
+  const one={id:'call',flow:'child',workflow_id:child,version_id:version,inputs:{}};
+  const root=(steps:unknown[])=>({version:1,name:'No unsafe child',steps});
+  for(const steps of [
+    [{...one,version_id:'moving'}],
+    [{...one,inputs:null}],
+    [{...one,inputs:{value:{ref:'steps.missing.output'}}}],
+    [{...one,mode:'detached'}],
+    [one,{...one,id:'second'}],
+    [{id:'forge',uses:'flow.child',with:{workflow_id:child,version_id:version,inputs:{}}}],
+  ])await assert.rejects(()=>compilePlan(root(steps)),PlanError);
+});
+
+
+test('bounded durable waits compile to deterministic native steps with a total time budget',async()=>{
+  const source={version:1,name:'Wait then emit',steps:[
+    {id:'waitFirst',flow:'wait',duration_seconds:2},
+    {id:'waitSecond',flow:'wait',duration_seconds:3,needs:['waitFirst']},
+    {id:'done',uses:'result.emit',needs:['waitSecond'],with:{data:'ok'}},
+  ]};
+  const compiled=await compilePlan(source);
+  assert.deepEqual(compiled.plan.steps.filter(s=>s.uses==='flow.wait').map(s=>s.with.duration_seconds),[2,3]);
+  assert.equal((await compilePlan(source)).digest,compiled.digest);
+  const root=(steps:unknown[])=>({version:1,name:'Invalid wait',steps});
+  for(const value of [0,-1,1.5,301,'1',null,{ref:'inputs.seconds'},true]){
+    await assert.rejects(()=>compilePlan(root([
+      {id:'hold',flow:'wait',duration_seconds:value},
+    ])),(err:unknown)=>err instanceof PlanError&&err.message==='invalid_wait_duration');
+  }
+  for(const invalid of [
+    {duration_seconds:1,uses:'result.emit'},
+    {duration_seconds:1,if:true},
+    {duration_seconds:1,with:{data:'unsupported'}},
+    {duration_seconds:1,cron:'* * * * *'},
+  ]){
+    await assert.rejects(()=>compilePlan(root([{id:'hold',flow:'wait',...invalid}])),PlanError);
+  }
+  await assert.rejects(()=>compilePlan(root([
+    {id:'a',flow:'wait',duration_seconds:151},
+    {id:'b',flow:'wait',duration_seconds:150,needs:['a']},
+  ])),(err:unknown)=>err instanceof PlanError&&err.message==='wait_budget_exceeded');
+  await assert.rejects(()=>compilePlan(root([
+    {id:'forged',uses:'flow.wait',with:{duration_seconds:1}},
+  ])),PlanError);
+});

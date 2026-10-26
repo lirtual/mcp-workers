@@ -355,12 +355,17 @@ async function runActionTaskSmoke() {
     arguments:read.arguments,input_schema:read.input_schema,
     ...(read.output_schema?{output_schema:read.output_schema}:{}),
   }};
+  const mixed=await tool('workflow_capabilities',{id:'flow.foreach_mixed_task'});
+  assert.equal(mixed.availability,'publishable_after_owner_approval',
+    'The production compiler has not advertised approved mixed Task stages');
+  assert.equal(mixed.template_policy.github_task_count,1);
   const definition={version:1,name:'workflow-agent-first-'+label,
     inputs:{items:['success','success']},
     steps:[readStep,
       {id:'each',flow:'foreach',needs:['read'],items:{ref:'inputs.items'},max_items:2,
         template:{steps:[
           {id:'prepare',uses:'result.emit',with:{data:{ref:'item.value'}}},
+          {...readStep,id:'inspect'},
           {id:'verify',uses:'github.run',
             if:{ne:[{ref:'steps.prepare.output'},'skip']},
             with:{capability:'github.action',action}},
@@ -403,8 +408,9 @@ async function runActionTaskSmoke() {
   const planRows=sql('SELECT plan FROM workflow_versions WHERE id='+quotedId(published.published_version_id));
   const pinnedPlan=JSON.parse(planRows[0]?.plan ?? '{}');
   const templates=pinnedPlan.steps.find(s=>s.id==='each')?.with?.templates;
-  assert.deepEqual(templates?.map(s=>s.uses),['result.emit','github.run','result.emit']);
-  assert.deepEqual(templates[1].with.action.inputs,{outcome:'success'});
+  assert.deepEqual(templates?.map(s=>s.uses),['result.emit','mcp.call','github.run','result.emit']);
+  assert.equal(templates[1].with.scope,'read');
+  assert.deepEqual(templates[2].with.action.inputs,{outcome:'success'});
   const opts={workflow_id:workflowId,inputs:{items:['success','success']},
     idempotency_key:'action-task-smoke-'+label};
   const started=await tool('workflow_run',opts);
@@ -423,10 +429,11 @@ async function runActionTaskSmoke() {
     await new Promise(r=>setTimeout(r,1200));
   }
   assert.equal(outcome?.status,'succeeded','Pinned GitHub Action Task did not succeed');
-  assert.equal(outcome.steps.length,9);
+  assert.equal(outcome.steps.length,11);
   assert.ok(outcome.steps.every(step=>step.status==='succeeded'));
   assert.equal(outcome.result,'succeeded');
-  for(const id of ['read','each','each_0_prepare','each_0_verify','each_0_finish','each_1_prepare','each_1_verify','each_1_finish','out'])
+  for(const id of ['read','each','each_0_prepare','each_0_inspect','each_0_verify','each_0_finish',
+    'each_1_prepare','each_1_inspect','each_1_verify','each_1_finish','out'])
     assert.equal(outcome.steps.find(x=>x.step_id===id)?.status,'succeeded',id);
   const rows=sql('SELECT step_id,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,state FROM step_attempts WHERE run_id='+quotedId(runId)+' ORDER BY step_id');
   assert.equal(rows.length,2,'Expected exactly two bounded GitHub Task Attempts');
@@ -459,7 +466,7 @@ async function runActionTaskSmoke() {
     assert.equal(terminalPhysical,true,'One physical GitHub Task still running');
   }
   githubPhysicalCompleted=true;
-  console.log('FOREACH_EMIT_TASK_EMIT_PRODUCTION_OK: two reviewed literal Task children, native conditional selection, two physical terminal proofs, signed OIDC and item-local follow-up emit');
+  console.log('FOREACH_MCP_TASK_PRODUCTION_OK: approved per-item readonly MCP before two reviewed literal Tasks, native conditional selection, physical terminal proofs, signed OIDC and item-local follow-up emit');
   console.log('FOREACH_GITHUB_TASK_PRODUCTION_OK: pinned Task source, signed Claims, distinct physical GitHub terminal proofs, D1 Attempt identity, no duplicate Run');
 }
 
@@ -541,14 +548,53 @@ async function runWebhookSmoke() {
   console.log('WEBHOOK_PRODUCTION_SMOKE_OK: wrong-token denied, duplicate stable event deduplicated, two immutable-version Runs succeeded, pause protected');
 }
 
+async function runSessionDataReadAcceptance() {
+  // Read-only: never log the short-lived credentials returned by the owner API.
+  const id=process.env.WORKFLOW_SESSION_DATA_RUN_ID || '';
+  const expected=process.env.WORKFLOW_SESSION_DATA_EXPECTED_STATUS;
+  assert.match(id,uuid,'A valid Session Run ID is required');
+  assert.ok(['ready','unavailable'].includes(expected),'Invalid expectation');
+  const rows=sql("SELECT count(*) AS n FROM session_executions s " +
+    "JOIN runs r ON r.id=s.run_id JOIN workflows w ON w.id=r.workflow_id " +
+    "WHERE s.run_id=" + quotedId(id) + " AND s.step_id='windows_session' " +
+    "AND s.fixed_key IS NULL AND w.name='spec288-windows-runtime-acceptance'");
+  assert.equal(rows[0]?.n,1,'Only existing temporary Spec 288 Session can be probed');
+  await client.connect(transport);
+  const listed=await client.listTools();
+  assert.ok(listed.tools.some(t=>t.name==='workflow_session_data_get'),'Owner-read tool missing');
+  const response=await client.callTool({name:'workflow_session_data_get',arguments:{
+    run_id:id,step_id:'windows_session',key:'uu.credentials',
+  }});
+  assert.ok(response.isError!==true,'Owner-read rejected with MCP error');
+  let record;
+  try {record=JSON.parse(response.content?.[0]?.text||'');}
+  catch {throw Error('Invalid owner-read JSON');}
+  assert.equal(record?.status,expected,'Owner read status differs from expected');
+  if(expected==='ready'){
+    assert.ok(typeof record.data?.device_id==='string' &&
+      /^[0-9]{9}$/.test(record.data.device_id),'Invalid UU ID format');
+    assert.ok(typeof record.data?.verification_code==='string' &&
+      /^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{8}$/.test(record.data.verification_code),
+      'Invalid UU code format');
+    assert.ok(Date.parse(record.expires_at)>Date.now(),'Data expiry invalid');
+    console.log('SESSION_DATA_OWNER_READ_READY_OK: live data verified; values suppressed');
+  }else{
+    assert.equal(record.data,undefined,'Denied read must not expose values');
+    assert.ok(typeof record.reason==='string','Missing refusal reason');
+    console.log('SESSION_DATA_OWNER_READ_DENIED_OK: terminal data unavailable');
+  }
+}
+
 try {
-  await (process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
+  await (process.env.WORKFLOW_SESSION_DATA_SMOKE==='true'?runSessionDataReadAcceptance():
+    process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
     process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
     process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():
     process.env.WORKFLOW_WEBHOOK_SMOKE==='true'?runWebhookSmoke():runSmoke());
 } catch (e) {
   failure = e;
-  console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
+  if(process.env.WORKFLOW_SESSION_DATA_SMOKE==='true')console.error('SESSION_DATA_ACCEPTANCE_FAILED: no sensitive values logged');
+  else console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
 } finally {
   try { await client.close(); } catch { /* No successful state assumed from close */ }
   try { cleanup(); } catch (e) {
