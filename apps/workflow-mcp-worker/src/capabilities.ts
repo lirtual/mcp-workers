@@ -104,6 +104,13 @@ const branchJoin={version:1,name:'Conditional branch and join',inputs:{choice:'l
   {id:'join',needs:['left','right'],needs_policy:'allow_skipped',uses:'result.emit',
     with:{data:{left_status:{ref:'steps.left.status'},right_status:{ref:'steps.right.status'}}}},
 ]};
+const awaitedChildExample={version:1,name:'Pinned awaited child (illustrative)',steps:[
+  {id:'call',flow:'child',workflow_id:'11111111-1111-4111-8111-111111111111',
+   version_id:'22222222-2222-4222-8222-222222222222',inputs:{}},
+  {id:'forward',needs:['call'],uses:'result.emit',with:{data:{ref:'steps.call.output'}}},
+]};
+// Both UUIDs above are illustrative only. Actual workflow_validate checks a real
+// active child/version and workflow_publish requires exact approved_children.
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -230,7 +237,8 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
-  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','child_workflow','saga'],
+  supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',
+  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -366,7 +374,7 @@ const entries=[
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
-   description:'At most one awaited, non-recursive child per parent. Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
+   description:'At most one awaited, non-recursive child per parent (flow: child, not child_workflow). Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
    description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
 ] as const;
@@ -466,6 +474,12 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(branchJoin);
   if(id==='flow.repeat')
     detail.example=await compilingExample(literalRepeat);
+  if(id==='flow.child'){
+    detail.example=await compilingExample(awaitedChildExample);
+    detail.grant={required:['approved_children'],version:'active_immutable_child_version',
+      note:'Example UUIDs are illustrative, not deployed Workflows. First publish a real child, replace both identifiers with its real workflow_id and published_version_id, call workflow_validate for required_children and approve that exact list before workflow_publish. Compilation alone is not publication authority.',
+      limits:'One awaited non-recursive child per parent; parent reserves 2 of 8 Run units'};
+  }
   if(id==='flow.foreach_multi_emit'){
     detail.example=await compilingExample(foreachMultiEmit);
     detail.template_policy={allowed_action:'result.emit',min_steps:2,
