@@ -41,7 +41,7 @@ test('mail endpoint IPv4 filter rejects IANA reserved ranges without blocking un
   );
 });
 
-test('DNS resolution pins only verified public IPs, never the attacker-controlled hostname', async () => {
+test('DNS precheck returns only public IPs and rejects unsafe hostname results', async () => {
   const dns = (async (uri: string, init?: RequestInit) => {
     assert.equal(init?.redirect, 'manual', 'Workerd does not support redirect:error');
     return Response.json({
@@ -98,7 +98,7 @@ test('IMAP trash prefers special-use designation even for localized folder names
   assert.equal(findImapTrash([{ path: 'Archive', specialUse: '\\Archive' }]), undefined);
 });
 
-test('IMAP/SMTP pinned IP rejects the entire IANA protocol-assignments block', () => {
+test('IMAP/SMTP DNS precheck rejects the entire IANA protocol-assignments block', () => {
   for (const ip of ['192.0.0.0', '192.0.0.2', '192.0.0.9', '192.0.0.10', '192.0.0.170', '192.0.0.255']) {
     assert.equal(publicIp(ip), false, ip);
   }

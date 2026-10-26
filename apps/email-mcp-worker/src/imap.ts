@@ -1,4 +1,4 @@
-import { ImapFlow } from 'imapflow';
+import { ImapFlow, createSocketsTransport } from 'imapflow';
 import PostalMime from 'postal-mime';
 import { decrypt, base64url } from './crypto.ts';
 import { base64Data, MAX_ATTACHMENTS_TOTAL } from './attachments.ts';
@@ -35,8 +35,13 @@ export async function protocolCredentials(env: Env, account: MailAccount): Promi
 export async function withImap<T>(env: Env, account: MailAccount, work: (client: ImapFlow) => Promise<T>): Promise<T> {
   const cfg = await protocolCredentials(env, account);
   const target = await resolvePublicMailEndpoint(cfg.imap_host);
-  const client = new ImapFlow({ host: target.address, port: 993, secure: true,
-    tls: { servername: target.hostname, rejectUnauthorized: true, minVersion: 'TLSv1.2' },
+  const { connect } = await import('cloudflare:sockets');
+  // Workers blocks disallowed TCP targets; its native transport resolves the hostname
+  // independently of the public-DNS precheck, so this is NOT strict IP pinning.
+  const client = new ImapFlow({ host: target.hostname, port: 993, secure: true,
+    transport: createSocketsTransport((address, options) =>
+      connect(address, { ...options, allowHalfOpen: false })),
+    tls: { rejectUnauthorized: true },
     auth: { user: cfg.username, pass: cfg.password }, logger: false, socketTimeout: 15000 });
   // ImapFlow emits socket errors as EventEmitter events as well as rejected calls.
   client.on('error', () => { /* errors from operations are sanitized by the caller */ });
@@ -186,9 +191,12 @@ export async function verifyImapCredentials(input: ProtocolCredentials): Promise
   const [imapTarget] = await Promise.all([
     resolvePublicMailEndpoint(cfg.imap_host), resolvePublicMailEndpoint(cfg.smtp_host),
   ]);
+  const { connect } = await import('cloudflare:sockets');
   const client = new ImapFlow({
-    host: imapTarget.address, port: 993, secure: true,
-    tls: { servername: imapTarget.hostname, rejectUnauthorized: true, minVersion: 'TLSv1.2' },
+    host: imapTarget.hostname, port: 993, secure: true,
+    transport: createSocketsTransport((address, options) =>
+      connect(address, { ...options, allowHalfOpen: false })),
+    tls: { rejectUnauthorized: true },
     auth: { user: cfg.username, pass: cfg.password }, logger: false,
     socketTimeout: 15000, connectionTimeout: 10000,
   });

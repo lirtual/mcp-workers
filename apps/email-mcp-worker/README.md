@@ -96,22 +96,40 @@ or Email D1 database.
 | `smtp.qq.com:587` | Nodemailer pre-established Node TCP socket, mandatory STARTTLS | **Protocol verified, no AUTH** |
 | `smtp.163.com:587` | Same mandatory STARTTLS pre-socket approach | Greeting timed out |
 
-**Critical blocker:** the current production code in `imap.ts` / `smtp.ts`
-pre-resolves public DNS and connects to an IP literal in order to prevent DNS
-rebinding. In real Workers remote development, the numeric-IP connection was
-rejected even while connecting by hostname completed TLS. Nodemailer also
-resolves a hostname to IP internally, producing the same error. Passing an
-already connected hostname-based TLS socket to Nodemailer works for SMTP 465
-but **does not preserve the Spec's exact DNS-to-socket IP pinning guarantee**:
-Node `TLSSocket.remoteAddress` in Workers returned the hostname rather than a
-verifiable destination IP. Do not change the Worker to this workaround or
-weaken DNS-rebinding/SSRF checks without an explicit security-boundary decision.
-Cloudflare independently blocks private/Cloudflare targets, but that is not an
-exact substitute for application-level IP pinning.
+### Security boundary decision and implementation (accepted 2026-10-26)
 
-The experiment proves only network/protocol feasibility. It does **not**
-verify app passwords, IMAP `ImapFlow`, SMTP AUTH, mailbox reads or actual sends,
-nor does it certify a provider for production use. Keep the release gate closed.
+The owner approved replacing **strict DNS-to-connected-IP pinning**, which is
+incompatible with the observed Workers TCP proxy behavior, with the following
+explicitly narrower protections:
+
+- Restrict remote ports to IMAP 993 and SMTP 465/587. Reject IP-literal inputs,
+  local/test hostnames, and known native Google/Microsoft mail endpoints.
+- Pre-resolve both IPv4 and IPv6 records over Cloudflare DoH and reject any
+  non-public or unsafe result before initiating the mail connection.
+- Allow the Workers runtime to resolve the verified hostname independently at
+  connection time. Cloudflare's TCP runtime blocks private/loopback/Cloudflare
+  destinations; this also forbids port 25.
+- Verify TLS certificates against the requested hostname. IMAP uses ImapFlow's
+  existing `createSocketsTransport()` over `cloudflare:sockets`; SMTP 465 uses a
+  pre-established, hostname-verified Node TLS connection passed into Nodemailer
+  via `getSocket`. SMTP 587 uses a preconnected TCP socket and Nodemailer's
+  mandatory STARTTLS, with no authentication permitted before TLS.
+- Never use a generic proxy, arbitrary redirect or disable TLS validation.
+  Fail closed on DNS, TLS, socket, or login errors; avoid logging credentials.
+
+**Residual limitation:** DNS prevalidation and connection-time resolution are
+separate operations. Cloudflare's socket metadata does not expose a verifiable
+numeric peer IP, so this is **not** strict IP pinning or a proof that DNS was
+unchanged. Do not market it as such. TLS hostname validation and Cloudflare
+destination blocking are the remaining enforcement layers.
+
+The new ImapFlow native Cloudflare transport was also tested in a one-shot
+remote preview against `imap.163.com:993` and `imap.qq.com:993`: **both
+returned their authentic TLS-protected IMAP greeting** without credentials.
+This only verifies the transport, not LOGIN, IMAP operations or sending.
+The SMTP `getSocket` adapter has only been probed without authentication;
+real mailbox tests are still required. No production Worker, D1 or mailbox
+credential was deployed for these tests.
 
 Acceptance still requires supported-provider live IMAP/SMTP authentication,
 STARTTLS/hostname verification, read/search/attachments/UIDVALIDITY,

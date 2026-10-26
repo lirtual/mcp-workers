@@ -1,4 +1,6 @@
 import nodemailer from 'nodemailer';
+import { connect as tcpConnect } from 'node:net';
+import { connect as tlsConnect } from 'node:tls';
 import { resolvePublicMailEndpoint } from './mail-endpoints.ts';
 import { protocolCredentials } from './imap.ts';
 import type { ProtocolCredentials } from './imap.ts';
@@ -9,12 +11,41 @@ import type { AttachmentFile } from './attachments.ts';
 async function createVerifiedTransport(cfg: ProtocolCredentials) {
   const target = await resolvePublicMailEndpoint(cfg.smtp_host);
   return nodemailer.createTransport({
-    host: target.address, port: cfg.smtp_port, secure: cfg.smtp_port === 465,
+    host: target.hostname, port: cfg.smtp_port, secure: cfg.smtp_port === 465,
     requireTLS: cfg.smtp_port === 587, ignoreTLS: false,
     auth: { user: cfg.smtp_username ?? cfg.username, pass: cfg.smtp_password ?? cfg.password },
     tls: { servername: target.hostname, rejectUnauthorized: true, minVersion: 'TLSv1.2' },
     pool: false, logger: false, debug: false, connectionTimeout: 10000,
     greetingTimeout: 10000, socketTimeout: 15000, dnsTimeout: 5000,
+    // Nodemailer's own DNS lookup yields a numeric-IP TCP destination that
+    // Workers rejects. Preconnect by validated hostname, then hand the socket
+    // to Nodemailer. This is NOT a DNS-to-connected-IP pinning guarantee.
+    getSocket(_options, callback) {
+      const implicitTls = cfg.smtp_port === 465;
+      const socket = implicitTls
+        ? tlsConnect({ host: target.hostname, port: 465, servername: target.hostname,
+            rejectUnauthorized: true, minVersion: 'TLSv1.2', timeout: 10000 })
+        : tcpConnect({ host: target.hostname, port: 587, timeout: 10000 });
+      let done = false;
+      const finish = (error?: Error) => {
+        if (done) return;
+        done = true;
+        if (error) {
+          socket.destroy();
+          callback(error);
+        } else {
+          socket.setTimeout(0);
+          callback(null, { connection: socket, secured: implicitTls });
+        }
+      };
+      socket.once(implicitTls ? 'secureConnect' : 'connect', () => {
+        if (implicitTls && 'authorized' in socket && !socket.authorized)
+          return finish(new Error('SMTP TLS certificate validation failed'));
+        finish();
+      });
+      socket.once('error', (error) => finish(error));
+      socket.once('timeout', () => finish(new Error('SMTP connection timeout')));
+    },
   });
 }
 export async function verifySmtpCredentials(cfg: ProtocolCredentials): Promise<void> {
