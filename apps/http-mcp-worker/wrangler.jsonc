@@ -11,6 +11,7 @@
   "keep_vars": false,
   "observability": {
     "enabled": true,
+    "redact_query_string": true,
     "logs": {
       "invocation_logs": true,
       "head_sampling_rate": 1
