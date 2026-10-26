@@ -268,6 +268,10 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['items']},{required:['max_items']},
         ]}},
+        {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'}},not:{anyOf:[
+          {required:['uses']},{required:['with']},{required:['if']},{required:['times']},
+          {required:['items']},{required:['max_items']},{required:['template']},
+        ]}},
         {required:['flow','items','max_items','template'],properties:{flow:{const:'foreach'},
           template:{type:'object',required:['steps'],not:{required:['uses']}}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
@@ -278,7 +282,10 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach']},
+        flow:{enum:['repeat','foreach','child']},
+        workflow_id:{type:'string',format:'uuid'},
+        version_id:{type:'string',format:'uuid'},
+        inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
         items:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{type:'string'}}},
         max_items:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxForeachItems},
         times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
@@ -359,7 +366,7 @@ const entries=[
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'unsupported',
-   description:'Child workflows and durable wait are not supported in the current Published Plan schema.'},
+   description:'A single explicitly approved, version-pinned awaited child is being implemented. Until live E2E and cancellation tests pass it is not a released capability.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
    description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
 ] as const;
