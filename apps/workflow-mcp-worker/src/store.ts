@@ -376,15 +376,28 @@ export class WorkflowService {
       const waiting=published?.steps.find(s=>s.id===step_id&&s.uses==='flow.wait_event');
       if(waiting){
         if(force)throw new StateError('wait_event_force_not_supported');
-        const row=await this.db.prepare('SELECT instance_id,outcome FROM runs WHERE id=?')
-          .bind(run_id).first<{instance_id:string;outcome:string}>();
+        const row=await this.db.prepare('SELECT instance_id,outcome,error_code FROM runs WHERE id=?')
+          .bind(run_id).first<{instance_id:string;outcome:string;error_code:string|null}>();
         if(!row)throw new StateError('run_not_found');
-        const updated=await this.db.prepare(`UPDATE runs SET outcome='cancelled',
-          error_code='event_wait_cancel_requested',updated_at=?
-          WHERE id=? AND outcome IN ('queued','running')`)
-          .bind(now(),run_id).run();
-        if(!updated.meta.changes && row.outcome!=='cancelled')
-          throw new StateError('wait_event_not_cancellable');
+        // This entrypoint cancels *an actively waiting event Step*, not any
+        // Run which happens to contain one. Never terminate a Run after the
+        // event resumed or while another independent Step is still active.
+        if(row.outcome==='cancelled'){
+          if(row.error_code!=='event_wait_cancel_requested')
+            throw new StateError('wait_event_not_cancellable');
+        }else{
+          const updated=await this.db.prepare(`UPDATE runs SET outcome='cancelled',
+            error_code='event_wait_cancel_requested',updated_at=?
+            WHERE id=? AND outcome='running'
+            AND EXISTS (SELECT 1 FROM run_steps s
+              WHERE s.run_id=runs.id AND s.step_id=? AND s.status='waiting')
+            AND NOT EXISTS (SELECT 1 FROM run_steps s
+              WHERE s.run_id=runs.id AND s.step_id<>?
+                AND s.status IN ('running','waiting'))`)
+            .bind(now(),run_id,step_id,step_id).run();
+          if(!updated.meta.changes)
+            throw new StateError('wait_event_not_cancellable');
+        }
         await this.db.prepare(`UPDATE run_steps SET status='cancelled',
           error_code='event_wait_cancel_requested',updated_at=?
           WHERE run_id=? AND step_id=? AND status='waiting'`)
