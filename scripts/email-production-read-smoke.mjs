@@ -48,45 +48,52 @@ async function call(name,args={}){
 // Default release smoke remains metadata-only; this deeper check is manual.
 async function deepReadAcceptance(account){
   const aid=account.account_id;
-  const broad=await call('mail_search',{account_ids:[aid],query:'@'});
-  stage='positive_discovery';
-  assert.equal(broad.partial_failure,false,'email_smoke_positive_discovery_failed');
-  assert.equal(broad.accounts?.[0]?.status,'success','email_smoke_positive_discovery_status');
-  assert.ok(['envelope','full_text'].includes(broad.accounts?.[0]?.search_scope),
-    'email_smoke_positive_search_scope');
-  assert.ok(Array.isArray(broad.messages),'email_smoke_positive_result_shape');
-  // No content from unrelated mail is printed, stored in artifacts, or forwarded.
-  const sample=broad.messages.find(message=>
-    typeof message.from==='string'&&/^[^\s@]+@[^\s@]+$/.test(message.from)) ??
-    broad.messages.find(message=>
-      typeof message.to==='string'&&/^[^\s@]+@[^\s@]+$/.test(message.to));
-  if(!sample){
-    console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_NO_SAMPLE');
-    console.log('EMAIL_PRODUCTION_MAIL_GET_NOT_TESTED');
-    console.log('EMAIL_PRODUCTION_ATTACHMENT_NOT_TESTED');
-    return;
+  // Target only the owner's known test message; this avoids reading other
+  // correspondence while checking a real attachment. Never log subjects.
+  const subject=process.env.EMAIL_TEST_SUBJECT;
+  assert.equal(subject,'test','email_smoke_unapproved_subject');
+  function inboxUid(message){
+    try{
+      if(typeof message.id!=='string'||!/^[A-Za-z0-9_-]{1,750}$/.test(message.id))
+        return 0;
+      const ref=JSON.parse(Buffer.from(message.id,'base64url').toString('utf8'));
+      return ref?.folder==='INBOX'&&Number.isSafeInteger(ref.uid)&&ref.uid>0
+        ?ref.uid:0;
+    }catch{return 0;}
   }
-  const searchTerm=/^[^\s@]+@[^\s@]+$/.test(sample.from??'') ? sample.from : sample.to;
-  const result=await call('mail_search',{account_ids:[aid],query:searchTerm});
-  stage='positive_relevance';
-  assert.equal(result.partial_failure,false,'email_smoke_positive_search_failed');
-  assert.equal(result.accounts?.[0]?.status,'success','email_smoke_positive_search_status');
-  assert.ok(Array.isArray(result.messages)&&result.messages.some(message=>
-    message.id===sample.id&&message.account_id===aid),
-    'email_smoke_positive_missing_expected_message');
+  let cursor;
+  let searched=0;
+  const exact=[];
+  // Maximum three metadata-only search pages; read at most five exact-title
+  // messages, in newest-UID order. Do not scan Spam or other folders.
+  for(let page=0;page<3;page++){
+    const search=await call('mail_search',{
+      account_ids:[aid],query:subject,...(cursor?{cursor}:{})});
+    stage='target_search';
+    assert.equal(search.partial_failure,false,'email_smoke_target_search_failed');
+    assert.equal(search.accounts?.[0]?.status,'success','email_smoke_target_search_status');
+    assert.ok(Array.isArray(search.messages),'email_smoke_target_search_shape');
+    assert.equal(search.accounts?.[0]?.search_scope,'envelope',
+      'email_smoke_target_search_scope');
+    searched+=search.messages.length;
+    exact.push(...search.messages.filter(hit=>
+      hit.account_id===aid&&typeof hit.id==='string'&&
+      typeof hit.subject==='string'&&hit.subject.trim().toLowerCase()===subject));
+    if(exact.length>=5||!search.cursor)break;
+    assert.ok(typeof search.cursor==='string'&&search.cursor.length<=8000,
+      'email_smoke_invalid_cursor');
+    cursor=search.cursor;
+  }
+  const candidates=exact.sort((a,b)=>inboxUid(b)-inboxUid(a)).slice(0,5);
+  console.log('EMAIL_TARGET_SEARCH_COUNTS scanned='+searched+
+    ' exact='+exact.length+' inspected='+candidates.length);
+  assert.ok(candidates.length>0,'email_smoke_target_subject_not_found');
+  assert.ok(candidates.every(hit=>inboxUid(hit)>0),'email_smoke_target_uid_invalid');
   console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_OK');
-  // ImapFlow fetchOne({source:true}) uses BODY.PEEK[] and must not mark read.
-  // The sender-filtered positive result can exclude the newly received test
-  // message. Inspect only a few RECENT INBOX matches from the broader search.
-  const now=Date.now();
-  const recent=broad.messages.filter(message=>{
-    const received=Date.parse(message.date??'');
-    return Number.isFinite(received)&&received>=now-2*60*60*1000&&
-      received<=now+5*60*1000;
-  }).slice(0,5);
+  // ImapFlow source fetch uses BODY.PEEK[], leaving Seen/Unread unchanged.
   let gotMessage=false;
   let foundAttachment=false;
-  for(const hit of recent){
+  for(const hit of candidates){
     let item;
     try {item=await call('mail_get',{account_id:aid,message_id:hit.id});}
     catch(error){
@@ -96,8 +103,9 @@ async function deepReadAcceptance(account){
     stage='message_shape';
     assert.equal(item.account_id,aid,'email_smoke_mail_get_account_mismatch');
     assert.equal(item.id,hit.id,'email_smoke_mail_get_id_mismatch');
-    assert.ok(typeof item.subject==='string'&&typeof item.text==='string'&&
-      Array.isArray(item.attachments),'email_smoke_mail_get_invalid_shape');
+    assert.ok(typeof item.subject==='string'&&item.subject.trim().toLowerCase()===subject&&
+      typeof item.text==='string'&&Array.isArray(item.attachments),
+      'email_smoke_mail_get_invalid_shape');
     gotMessage=true;
     const attachment=item.attachments.find(part=>
       typeof part.id==='string'&&typeof part.filename==='string'&&
@@ -122,7 +130,7 @@ async function deepReadAcceptance(account){
   console.log(gotMessage?'EMAIL_PRODUCTION_MAIL_GET_OK':
     'EMAIL_PRODUCTION_MAIL_GET_NO_SAFE_SAMPLE');
   console.log(foundAttachment?'EMAIL_PRODUCTION_ATTACHMENT_GET_OK':
-    'EMAIL_PRODUCTION_ATTACHMENT_NO_RECENT_TXT_SAMPLE');
+    'EMAIL_PRODUCTION_ATTACHMENT_NO_EXACT_SUBJECT_TXT');
   if(process.env.EMAIL_REQUIRE_ATTACHMENT==='true')
     assert.ok(foundAttachment,'email_smoke_attachment_not_verified');
 }
