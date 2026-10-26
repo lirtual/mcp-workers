@@ -6,7 +6,7 @@ import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
-export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4});
+export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
 }
@@ -17,7 +17,7 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.foreach' | 'flow.child'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.foreach' | 'flow.child' | 'flow.wait'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown;
 };
@@ -266,6 +266,27 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       continue;
     }
     const path='/steps/'+i;
+    if(candidate.flow==='wait'){
+      // A source-level relative wait uses only literal integer seconds.
+      // Bound total delay across the whole Plan to protect the 8 Run slots.
+      keys(candidate,['id','flow','duration_seconds','needs'],path);
+      if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
+         OBJECT_PROTOTYPE_KEYS.has(candidate.id))
+        throw new PlanError('invalid_step_id',path+'/id');
+      if(!Number.isSafeInteger(candidate.duration_seconds)||
+         Number(candidate.duration_seconds)<1||
+         Number(candidate.duration_seconds)>PLAN_LIMITS.maxWaitSeconds)
+        throw new PlanError('invalid_wait_duration',path+'/duration_seconds');
+      const deps=candidate.needs??[];
+      if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||
+         new Set(deps).size!==deps.length)
+        throw new PlanError('invalid_dependencies',path+'/needs');
+      expanded.push({id:candidate.id,uses:'flow.wait',needs:deps,
+        with:{duration_seconds:candidate.duration_seconds}});
+      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
+      continue;
+    }
     if(candidate.flow==='child'){
       keys(candidate,['id','flow','workflow_id','version_id','inputs','needs'],path);
       if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||OBJECT_PROTOTYPE_KEYS.has(candidate.id))
@@ -459,6 +480,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   }
   if(expanded.filter(x=>(x as {uses?:unknown}).uses==='flow.child').length>1)
     throw new PlanError('multiple_child_steps_unsupported','/steps');
+  const totalWaitSeconds=expanded.reduce((sum,x)=>sum+(x as {uses?:unknown;with?:{duration_seconds?:number}}).uses==='flow.wait'?sum+Number((x as {with:{duration_seconds:number}}).with.duration_seconds):sum,0);
+  if(totalWaitSeconds>PLAN_LIMITS.maxWaitSeconds)
+    throw new PlanError('wait_budget_exceeded','/steps');
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of expanded){
@@ -467,7 +491,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(!['flow.foreach','flow.child'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
+    if(!['flow.foreach','flow.child','flow.wait'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     // Opt-in branch fan-in: completed/skipped dependencies may join, but a
@@ -481,6 +505,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['items','max_items','template','templates'],stepPath+'/with');
     }else if(s.uses==='flow.child'){
       keys(withData,['workflow_id','version_id','inputs'],stepPath+'/with');
+    }else if(s.uses==='flow.wait'){
+      keys(withData,['duration_seconds'],stepPath+'/with');
     }else if(s.uses==='github.run'){
       checkGitHubActionWith(withData,stepPath+'/with');
     }else if(s.uses==='mcp.call'){
@@ -503,7 +529,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   }
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
-    if(s.uses==='flow.child'){
+    if(s.uses==='flow.wait'){
+      if(!Number.isSafeInteger(s.with.duration_seconds)||Number(s.with.duration_seconds)<1||
+         Number(s.with.duration_seconds)>PLAN_LIMITS.maxWaitSeconds)
+        throw new PlanError('invalid_wait_duration','/steps/'+steps.indexOf(s)+'/duration_seconds');
+    }else if(s.uses==='flow.child'){
       try{expression(s.with.inputs,s,0,true);}catch(error){
         if(error instanceof PlanError)throw new PlanError(error.message,'/steps/'+steps.indexOf(s)+'/inputs');
         throw error;
