@@ -29,6 +29,7 @@ const workflowName=resource;
 const root='/accounts/'+account;
 const configName='.acceptance-child-'+suffix+'.json';
 const configPath=new URL('../'+configName,import.meta.url);
+const wrapperPath=new URL('../.acceptance-child-'+suffix+'.ts',import.meta.url);
 const secretPath=new URL('../.acceptance-child-'+suffix+'.secrets.json',import.meta.url);
 const workdir=fileURLToPath(new URL('..',import.meta.url));
 const ownerToken=randomBytes(32).toString('hex');
@@ -84,11 +85,12 @@ async function acceptance(){
   databaseId=created.uuid;
   assert.match(databaseId,/^[0-9a-f-]{36}$/i);
   const config={
-    name:workerName,main:'src/index.ts',compatibility_date:'2026-09-10',
+    name:workerName,main:'.acceptance-child-'+suffix+'.ts',compatibility_date:'2026-09-10',
     workers_dev:true,preview_urls:false,
     d1_databases:[{binding:'DB',database_name:dbName,database_id:databaseId,migrations_dir:'migrations'}],
-    workflows:[{name:workflowName,binding:'WORKFLOW',class_name:'WorkflowOrchestrator'}],
+    workflows:[{name:workflowName,binding:'WORKFLOW',class_name:'AcceptanceOrchestrator'}],
   };
+  writeFileSync(wrapperPath,`import app,{WorkflowOrchestrator} from './src/index.ts';\nexport default app;\nexport class AcceptanceOrchestrator extends WorkflowOrchestrator {\n  async run(event,step){\n    const row=await this.env.DB.prepare('SELECT parent_run_id,inputs FROM runs WHERE id=?').bind(event.payload.run_id).first();\n    if(row?.parent_run_id && JSON.parse(row.inputs).proof==='cancel-test')\n      await step.sleep('acceptance-child-hold',30000);\n    return super.run(event,step);\n  }\n}\n`,{mode:0o600});
   writeFileSync(configPath,JSON.stringify(config),{mode:0o600});
   writeFileSync(secretPath,JSON.stringify({MCP_ACCESS_TOKEN:ownerToken}),{mode:0o600});
   wrangler(['d1','migrations','apply',dbName,'--remote','--config',configName]);
@@ -124,7 +126,7 @@ async function acceptance(){
   });
   const parentDef={version:1,name:'isolated-parent-'+suffix,steps:[
     {id:'call',flow:'child',workflow_id:draftChild.workflow_id,
-      version_id:publishedChild.published_version_id,inputs:{proof:'fixture'}},
+      version_id:publishedChild.published_version_id,inputs:{proof:{ref:'inputs.proof'}}},
     {id:'forward',uses:'result.emit',needs:['call'],with:{data:{ref:'steps.call.output'}}},
   ]};
   const draftParent=await tool('workflow_create',{definition:JSON.stringify(parentDef)});
@@ -138,7 +140,7 @@ async function acceptance(){
     approved_children:validation.required_children,
   });
   assert.ok(parentPublished.published_version_id);
-  const opts={workflow_id:draftParent.workflow_id,
+  const opts={workflow_id:draftParent.workflow_id,inputs:{proof:'normal'},
     idempotency_key:'isolated-'+suffix};
   const started=await tool('workflow_run',opts);
   assert.equal((await tool('workflow_run',opts)).run_id,started.run_id);
@@ -155,6 +157,35 @@ async function acceptance(){
   assert.equal((await query(
     'SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?',[started.run_id])).results[0].n,1);
   console.log('CHILD_NATIVE_CLOUDFLARE_PARENT_RESULT_REPLAY_AND_LINEAGE_OK');
+  const delayed=await tool('workflow_run',{
+    workflow_id:draftParent.workflow_id,inputs:{proof:'cancel-test'},
+    idempotency_key:'native-cancel-'+suffix,
+  });
+  let delayedChild=null;
+  for(let i=0;i<100;i++){
+    delayedChild=(await query('SELECT id,start_state,outcome FROM runs WHERE parent_run_id=?',[delayed.run_id])).results[0]??null;
+    if(delayedChild?.start_state==='started'&&delayedChild.outcome==='running')break;
+    await new Promise(resolve=>setTimeout(resolve,200));
+  }
+  assert.equal(delayedChild?.start_state,'started','Child did not reach native dispatch before cancellation');
+  const cancelled=await tool('workflow_cancel',{run_id:delayed.run_id,step_id:'call'});
+  assert.ok(['requested_unverified','terminal_confirmed'].includes(cancelled.cancellation),
+    'Native child cancellation must be accepted');
+  let stopped=false;
+  for(let i=0;i<90;i++){
+    const row=(await query('SELECT outcome FROM runs WHERE id=?',[delayedChild.id])).results[0];
+    if(row?.outcome==='cancelled'){stopped=true;break;}
+    await tool('workflow_cancel',{run_id:delayed.run_id,step_id:'call'});
+    await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+  assert.ok(stopped,'Cloudflare native child termination was not confirmed');
+  const claimed=(await query('SELECT termination_attempted_at FROM child_cancellations WHERE child_run_id=?',[delayedChild.id])).results;
+  assert.ok(claimed[0]?.termination_attempted_at,'No one-shot termination fence was claimed');
+  const repeated=await tool('workflow_cancel',{run_id:delayed.run_id,step_id:'call'});
+  assert.equal(repeated.cancellation,'terminal_confirmed','Repeated cancellation must only observe');
+  const parentCancelled=await settle(delayed.run_id);
+  assert.notEqual(parentCancelled.status,'succeeded','Cancelled child must prevent parent success');
+  console.log('CHILD_NATIVE_TERMINATION_ONE_SHOT_AND_PARENT_FENCE_OK');
   await tool('workflow_pause',{workflow_id:draftChild.workflow_id});
   const denied=await tool('workflow_run',{
     workflow_id:draftParent.workflow_id,idempotency_key:'paused-'+suffix,
@@ -180,7 +211,7 @@ async function cleanup(){
     await api('DELETE',root+'/d1/database/'+databaseId);
     console.log('CHILD_ACCEPTANCE_D1_REMOVED');
   }catch(e){failed=true;errors.push('d1_cleanup:'+diagnostic(e));}
-  for(const f of [configPath,secretPath])try{unlinkSync(f);}catch{}
+  for(const f of [configPath,secretPath,wrapperPath])try{unlinkSync(f);}catch{}
 }
 try{await acceptance();}
 catch(e){failed=true;errors.push('acceptance:'+diagnostic(e));}
