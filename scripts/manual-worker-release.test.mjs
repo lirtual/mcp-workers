@@ -706,24 +706,35 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow native Workflow binding drift/);
 });
 
-test("Email production release must pin D1 and refuse plaintext or wrong Secrets", () => {
+test("Email production readback pins D1, two Secrets and Access Variables", () => {
   const worker = "email-mcp-worker";
-  const names = ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"];
-  const secrets = names.map(name => ({ name }));
-  const base = {
-    bindings: [...names.map(name => ({ name, type: "secret_text" })),
-      { name: "DB", type: "d1", id: "1fa50616-effb-458e-b798-b1ca1a0da24f" }],
+  const secretNames = ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"];
+  const secrets = secretNames.map(name => ({ name }));
+  const vars = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
+    ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
+    OWNER_EMAIL: "lirtual@outlook.com" };
+  const base = { bindings: [
+    ...secretNames.map(name => ({ name, type: "secret_text" })),
+    ...Object.entries(vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+    { name: "DB", type: "d1", id: "1fa50616-effb-458e-b798-b1ca1a0da24f" }],
     observability: { enabled: true, logs: { invocation_logs: false } },
   };
   assert.equal(verifyBindings(worker, base, secrets, { mode: "readback" }), true);
-  assert.throws(() => verifyBindings(worker, base, secrets.slice(0, -1),
-    { mode: "readback" }), /OWNER_EMAIL/);
+  assert.throws(() => verifyBindings(worker, base, secrets.slice(0, -1), { mode: "readback" }),
+    /MAIL_ENCRYPTION_KEY/);
   assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.map(x =>
     x.name === "DB" ? { ...x, id: "wrong-db" } : x) }, secrets, { mode: "readback" }),
-  /Email production D1/);
+    /Email production D1/);
+  for (const name of Object.keys(vars)) {
+    assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.filter(x => x.name !== name) },
+      secrets, { mode: "readback" }), new RegExp(name));
+    assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.map(x =>
+      x.name === name ? { ...x, text: "wrong" } : x) }, secrets, { mode: "readback" }), new RegExp(name));
+    assert.throws(() => verifyBindings(worker, base, [...secrets, {name}], { mode: "readback" }), new RegExp(name));
+  }
   assert.throws(() => verifyBindings(worker, { ...base, bindings: [
-    ...base.bindings, { name: "OWNER_EMAIL_COPY", type: "plain_text", text: "unsafe" },
-  ] }, secrets, { mode: "readback" }), /Email production credentials/);
+    ...base.bindings, { name: "UNEXPECTED", type: "plain_text", text: "unsafe" },
+  ] }, secrets, { mode: "readback" }), /unexpected plaintext/);
 });
 
 test("HTTP release only allows strict-public source and exact optional credential Secret inventory", () => {

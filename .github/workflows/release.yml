@@ -120,9 +120,6 @@ jobs:
           # Repository Secrets. Values are scoped to this one staging step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           MAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}
-          ACCESS_TEAM_DOMAIN: ${{ secrets.ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ secrets.ACCESS_AUD }}
-          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
@@ -140,6 +137,9 @@ jobs:
       - name: Stage approved Worker variables
         shell: bash
         env:
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}

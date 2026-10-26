@@ -20,7 +20,7 @@ export const WORKER_VARIABLES = Object.freeze({
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
     "MAX_WRITE_AFFECTED_ROWS",
   ],
-  "email-mcp-worker": [],
+  "email-mcp-worker": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
@@ -91,6 +91,12 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   for (const name of allowed) {
     const value = env[name];
+    if (worker === "email-mcp-worker") {
+      const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
+        ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
+        OWNER_EMAIL: "lirtual@outlook.com" };
+      if (value !== expected[name]) throw new Error("Email production Access Variable mismatch: " + name);
+    }
     if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: " + name);
