@@ -7,7 +7,11 @@ import { withImap, imapReplyContext, imapSearch, imapGet, imapFolders, imapAttac
 import { smtpSend } from './smtp.ts';
 import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
+// Opaque message IDs and attachment indexes remain printable ASCII.
 const id = z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/);
+// folder_list exposes provider-native IMAP paths, including Unicode and spaces.
+// Do not reuse the opaque-reference validator for these exact folder names.
+export const folderId = z.string().min(1).max(255).regex(/^[^\x00-\x1f\x7f]+$/);
 const accountId = z.string().uuid();
 const to = z.array(z.email().max(320)).min(1).max(20);
 const subject = z.string().max(500);
@@ -267,8 +271,8 @@ export function buildMcpServer(env: Env): McpServer {
     inputSchema: z.object({ account_id: accountId, message_id: id, is_read: z.boolean() }).strict(), annotations: write,
   }, async ({ account_id, message_id, is_read }) => safe(async () => imapMark(env, await getAccount(env, account_id), message_id, is_read)));
   server.registerTool('mail_move', {
-    description: 'Move an IMAP message to one explicitly selected native folder when MOVE is supported.',
-    inputSchema: z.object({ account_id: accountId, message_id: id, folder_id: id }).strict(), annotations: write,
+    description: 'Move one message to an exact provider-native folder path returned by folder_list (Unicode and spaces supported); requires MOVE.',
+    inputSchema: z.object({ account_id: accountId, message_id: id, folder_id: folderId }).strict(), annotations: write,
   }, async ({ account_id, message_id, folder_id }) => safe(async () => imapMove(env, await getAccount(env, account_id), message_id, folder_id)));
   server.registerTool('mail_trash', {
     description: 'Move exactly one message to Trash/Deleted Items, without permanent deletion.',
