@@ -5,12 +5,6 @@ name: Email Acceptance
 # extra Worker/service is needed. This replaces the obsolete Draft PR #284 gate.
 on:
   workflow_dispatch:
-    inputs:
-      confirm_smtp_self_send:
-        description: "Explicitly authorize exactly one QQ self-addressed SMTP test"
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -18,7 +12,7 @@ permissions:
 jobs:
   production-readonly:
     name: Production IMAP read-only acceptance
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_smtp_self_send != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     concurrency:
@@ -45,32 +39,3 @@ jobs:
           EMAIL_REQUIRE_ATTACHMENT: "true"
           EMAIL_TEST_SUBJECT: "test"
         run: node scripts/email-production-read-smoke.mjs
-
-  production-smtp-selfsend:
-    name: Owner-confirmed single QQ SMTP self-send
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main' &&
-          inputs.confirm_smtp_self_send == true }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 6
-    concurrency:
-      group: email-production-smtp-selfsend
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Verify protected main and approved test script
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_REF" == "refs/heads/main" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
-          node --check scripts/email-production-smtp-smoke.mjs
-      - name: Single self-addressed SMTP submission and same-ID replay
-        shell: bash
-        env:
-          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
-          EMAIL_SEND_CONFIRM: "true"
-        run: node scripts/email-production-smtp-smoke.mjs
