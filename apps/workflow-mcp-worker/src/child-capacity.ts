@@ -7,6 +7,24 @@ import {observeInstance} from './instance-observation.ts';
  * unsupported until target-pinned admission, native start reconciliation,
  * cancellation and real Cloudflare E2E are verified together.
  */
+/** Stable UUID for one awaited child path. Never derive from current time,
+ * mutable input values, retries or an untrusted external ID.
+ */
+export async function awaitedChildRunId(parentRunId:string,stepId:string):Promise<string>{
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parentRunId)||
+     !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(stepId))
+    throw Error('invalid_child_identity');
+  const key=new TextEncoder().encode('workflow-child:v1:'+parentRunId.toLowerCase()+':'+stepId);
+  const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',key)).slice(0,16);
+  // RFC UUID variant and hash-derived version-5 shape, without namespace
+  // confusion with randomly allocated top-level UUIDs.
+  bytes[6]=(bytes[6]!&15)|0x50;
+  bytes[8]=(bytes[8]!&63)|0x80;
+  const hex=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');
+  return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),
+    hex.slice(16,20),hex.slice(20)].join('-');
+}
+
 export const RUN_CAPACITY_LIMIT = 8;
 export const ACTIVE_CAPACITY_UNITS_SQL =
   "(SELECT COALESCE(SUM(capacity_weight),0) FROM runs WHERE outcome IN ('queued','running'))";
