@@ -119,7 +119,7 @@ export async function imapSearch(env: Env, account: MailAccount, query: string, 
       if (envelopeOnly) {
         // This is a complete scan or a visible failure: never silently return a
         // partial set of results for a large or changing mailbox.
-        const size = client.mailbox?.exists ?? 0;
+        const size = client.mailbox ? client.mailbox.exists : 0;
         if (size > 5000) fail('result_too_large');
         matched = [];
         if (size > 0) {
