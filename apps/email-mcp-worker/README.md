@@ -78,6 +78,41 @@ is universally unavailable or that actual mail auth or sends work.
 Cloudflare explicitly blocks outbound TCP 25 but does not blanket-block
 465/587: https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
 
+### 2026-10-26 direct Cloudflare network acceptance (no mail credentials)
+
+One-shot remote Wrangler development previews used fixed public endpoints, no
+mailbox authentication and no mail submission. All preview sessions exited;
+independent Cloudflare readback found **no** persisted probe Worker scripts
+or Email D1 database.
+
+| Target | Evidence | Status |
+| --- | --- | --- |
+| `imap.163.com:993`, `imap.qq.com:993`, `imap.mail.me.com:993` | Node `tls.connect` verified certificate handshake | All TLS OK |
+| `smtp.163.com:465`, `smtp.qq.com:465`, `smtp.mail.me.com:465` | Node `tls.connect` verified certificate handshake | All TLS OK |
+| `smtp.163.com:465` | Node TLS over hostname received SMTP `220` banner | OK |
+| `smtp.163.com:465` | TLS over manually DNS-resolved / pinned numeric IP | **Blocked by Workers TCP proxy** |
+| `smtp.163.com:465` | Unmodified Nodemailer transport, even with hostname | **ESOCKET: proxy request failed** |
+| `smtp.163.com:465` | Nodemailer `verify()` with pre-established, hostname-verified Node TLS socket injected via `getSocket` | **Protocol verified, no AUTH** |
+| `smtp.qq.com:587` | Nodemailer pre-established Node TCP socket, mandatory STARTTLS | **Protocol verified, no AUTH** |
+| `smtp.163.com:587` | Same mandatory STARTTLS pre-socket approach | Greeting timed out |
+
+**Critical blocker:** the current production code in `imap.ts` / `smtp.ts`
+pre-resolves public DNS and connects to an IP literal in order to prevent DNS
+rebinding. In real Workers remote development, the numeric-IP connection was
+rejected even while connecting by hostname completed TLS. Nodemailer also
+resolves a hostname to IP internally, producing the same error. Passing an
+already connected hostname-based TLS socket to Nodemailer works for SMTP 465
+but **does not preserve the Spec's exact DNS-to-socket IP pinning guarantee**:
+Node `TLSSocket.remoteAddress` in Workers returned the hostname rather than a
+verifiable destination IP. Do not change the Worker to this workaround or
+weaken DNS-rebinding/SSRF checks without an explicit security-boundary decision.
+Cloudflare independently blocks private/Cloudflare targets, but that is not an
+exact substitute for application-level IP pinning.
+
+The experiment proves only network/protocol feasibility. It does **not**
+verify app passwords, IMAP `ImapFlow`, SMTP AUTH, mailbox reads or actual sends,
+nor does it certify a provider for production use. Keep the release gate closed.
+
 Acceptance still requires supported-provider live IMAP/SMTP authentication,
 STARTTLS/hostname verification, read/search/attachments/UIDVALIDITY,
 draft/send/reply/forward, failure injection and duplicate-send checks,
