@@ -1702,6 +1702,53 @@ test('awaited child publish requires exact reviewed target; one native child and
   assert.equal(rows.every(x=>x.capacity_weight===1),true);
 });
 
+test('late child success after an uncertain native cancellation never authorizes parent output',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Child finishes late',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'late result'}}]}));
+  const published=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Parent must honor cancellation',
+    steps:[
+      {id:'delegate',flow:'child',workflow_id:child.workflow_id,
+        version_id:published.published_version_id,inputs:{}},
+      {id:'blocked',uses:'result.emit',needs:['delegate'],
+        with:{data:'must never be emitted'}},
+    ]}));
+  const checked=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await service.publish(parent.workflow_id,1,[],false,false,[],checked.required_children!);
+  const nativeStep={do:async(_n:unknown,_o:unknown,cb:()=>Promise<unknown>)=>cb(),
+    sleep:async()=>{}} as unknown as WorkflowStep;
+  let creates=0,terminateCalls=0,requested=false;
+  env.WORKFLOW.get=async()=>({
+    async status(){return {status:'running'};},
+    async terminate(){terminateCalls++;throw Error('lost_termination_ack');},
+  });
+  const started=await service.start(parent.workflow_id);
+  env.WORKFLOW.create=async({id})=>{
+    creates++;
+    // Native child create has committed its dispatch CAS. Cancellation gets
+    // a durable intent, but its terminate ACK is lost; execution finishes late.
+    const cancellation=await service.cancel(started.run_id,'delegate');
+    assert.equal(cancellation.cancellation,'requested_unverified');
+    requested=true;
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+      {payload:{run_id:id}} as WorkflowEvent<{run_id:string}>,nativeStep);
+  };
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,nativeStep);
+  const result=await service.result(started.run_id);
+  assert.equal(requested,true);
+  assert.equal(creates,1);
+  assert.equal(terminateCalls,1);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='delegate')?.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='blocked')?.status,'skipped');
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome='succeeded'").get()?.n,1,
+    'Child really completed, but its late success cannot unlock parent steps');
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM child_cancellations').get()?.n,1);
+});
+
 test('pinned child failure does not turn parent join into success',async t=>{
   const {service,env,sqlite}=setup(t);
   const child=await service.create(JSON.stringify({version:1,name:'Child missing runtime input',
