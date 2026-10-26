@@ -104,7 +104,7 @@ jobs:
       - name: Cloudflare release preflight (read-only)
         id: preflight
         env:
-          HTTP_CREDENTIALS_JSON: ${{ secrets.HTTP_CREDENTIALS_JSON }}
+          HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
@@ -122,7 +122,7 @@ jobs:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
-          HTTP_CREDENTIALS_JSON: ${{ secrets.HTTP_CREDENTIALS_JSON }}
+          HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           SESSION_RUNTIME_DATA_KEY: ${{ secrets.SESSION_RUNTIME_DATA_KEY }}
@@ -321,7 +321,7 @@ jobs:
 
       - name: Verify exact active version and required production bindings
         env:
-          HTTP_CREDENTIALS_JSON: ${{ secrets.HTTP_CREDENTIALS_JSON }}
+          HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
