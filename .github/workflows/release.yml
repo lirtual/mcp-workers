@@ -394,7 +394,7 @@ jobs:
             health_endpoint="https://workflow.lirtual.dpdns.org/health"
           fi
           max_attempts=1
-          if [[ ("$SELECTED_WORKER" == "workflow-mcp-worker" || "$SELECTED_WORKER" == "http-mcp-worker") && "$FIRST_DEPLOY" == "true" ]]; then
+          if [[ ("$SELECTED_WORKER" == "workflow-mcp-worker" || "$SELECTED_WORKER" == "http-mcp-worker" || "$SELECTED_WORKER" == "candybox-mcp-worker") && "$FIRST_DEPLOY" == "true" ]]; then
             max_attempts=12
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do

@@ -14,6 +14,7 @@ const INTEGER_LIMITS = Object.freeze({
 });
 
 export const WORKER_VARIABLES = Object.freeze({
+  "candybox-mcp-worker": [],
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
