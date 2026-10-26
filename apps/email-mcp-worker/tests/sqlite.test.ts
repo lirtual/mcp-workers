@@ -95,3 +95,69 @@ test('SQL-backed send fence preserves uncertain outcome and prevents dispatch re
   assert.equal(calls, 1);
   sqlite.close();
 });
+
+test('SQL-backed overlapping duplicate attempts dispatch exactly once and retain accepted outcome', async () => {
+  const { sqlite, env } = fixture();
+  await addAccount(sqlite, env);
+  const account = sqlite.prepare('SELECT * FROM mail_accounts').get() as any;
+  const payload = { op: 'send', to: ['recipient@example.test'], subject: 'CI-only' };
+  let dispatches = 0;
+  let release!: () => void;
+  let notifyStarted!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { notifyStarted = resolve; });
+  const dispatch = async () => {
+    dispatches++;
+    notifyStarted();
+    await hold;
+    return { status: 'accepted' as const, reference: 'opaque-test-reference' };
+  };
+  const pending = fencedSend(env, account, 'sql-race-12345', payload, dispatch);
+  await started;
+  // A second invocation reaches the same durable DB record before SMTP completes.
+  const concurrent = await fencedSend(env, account, 'sql-race-12345', payload, dispatch);
+  assert.equal(concurrent.duplicate, true);
+  assert.equal(concurrent.status, 'indeterminate');
+  assert.equal(dispatches, 1, 'an overlapping request must never send twice');
+
+  release();
+  const accepted = await pending;
+  assert.equal(accepted.status, 'accepted');
+  assert.equal(accepted.duplicate, false);
+  const after = await fencedSend(env, account, 'sql-race-12345', payload, dispatch);
+  assert.equal(after.status, 'accepted');
+  assert.equal(after.duplicate, true);
+  assert.equal(after.reference, 'opaque-test-reference');
+  assert.equal(dispatches, 1);
+  assert.equal((sqlite.prepare('SELECT count(*) AS n FROM send_attempts').get() as any).n, 1);
+  await assert.rejects(() => fencedSend(env, account, 'sql-race-12345',
+    { ...payload, subject: 'different' }, dispatch), /conflicting_send_request/);
+  sqlite.close();
+});
+
+test('SQL-backed partial SMTP acceptance cannot be re-dispatched after an ambiguous outcome', async () => {
+  const { sqlite, env } = fixture();
+  await addAccount(sqlite, env);
+  const account = sqlite.prepare('SELECT * FROM mail_accounts').get() as any;
+  const payload = { op: 'send', to: ['one@example.test', 'two@example.test'] };
+  let dispatches = 0;
+  const dispatch = async (): Promise<{ status: 'accepted' }> => {
+    dispatches++;
+    const { assertSmtpRecipientAcceptance } = await import('../src/smtp.ts');
+    assertSmtpRecipientAcceptance({
+      accepted: ['one@example.test'], rejected: ['two@example.test'],
+    }, payload.to);
+    return { status: 'accepted' };
+  };
+  const result = await fencedSend(env, account, 'sql-partial-123', payload, dispatch);
+  assert.equal(result.status, 'indeterminate');
+  assert.equal(result.error, 'smtp_partial_rejection');
+  const replay = await fencedSend(env, account, 'sql-partial-123', payload, dispatch);
+  assert.equal(replay.status, 'indeterminate');
+  assert.equal(replay.duplicate, true);
+  assert.equal(dispatches, 1);
+  const stored = sqlite.prepare('SELECT status FROM send_attempts WHERE account_id=? AND request_id=?')
+    .get(account.account_id, 'sql-partial-123') as any;
+  assert.equal(stored.status, 'indeterminate');
+  sqlite.close();
+});
