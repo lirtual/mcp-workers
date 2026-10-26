@@ -32,7 +32,7 @@ export function publicUrl(raw:string):URL {
  const host=url.hostname;
  if(!['https:','http:'].includes(url.protocol) || url.username || url.password ||
    host.length>253 || host.endsWith('.') || host.includes('..') || host.includes('%') ||
-   host.startsWith('[') || /^\d+(?:\.\d+)*$/.test(host) ||
+   host.startsWith('[') || url.port === '0' || /^\d+(?:\.\d+)*$/.test(host) ||
    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/i.test(host) ||
    /(?:^|\.)(?:localhost|local|internal|lan|home|home\.arpa|test|invalid|onion)$/i.test(host))
    fail('unsafe_target');
@@ -146,6 +146,7 @@ export async function executeHttp(input:Input,rules:Rule[],outbound:typeof fetch
    seen.add(url.href);
    const headers=requestHeaders(caller,url,rules);
    const response=await outbound(url.href,{method,headers,body,redirect:'manual',signal:controller.signal});
+   if(controller.signal.aborted) fail('timeout');
    const location=response.headers.get('location');
    if(mode==='same-origin'&&(method==='GET'||method==='HEAD')&&
      [301,302,303,307,308].includes(response.status)&&location) {
@@ -159,11 +160,20 @@ export async function executeHttp(input:Input,rules:Rule[],outbound:typeof fetch
      }
    }
    const {data,truncated}=await readLimited(response,method==='HEAD'?1:max,controller.signal);
+   if(controller.signal.aborted) fail('timeout');
    const contentType=response.headers.get('content-type')??'',safeHeaders:Record<string,string>={};
+   let totalHeaderBytes=0,headerCount=0,headersTruncated=false;
    response.headers.forEach((v,k)=>{
+     if(headerCount>=64 || totalHeaderBytes>=16384){headersTruncated=true;return;}
+     headerCount++;
+     totalHeaderBytes+=bytes(k+v);
      if(responseSecret.test(k)){safeHeaders[k]='[REDACTED]';return;}
      if(k==='location'){
-       try{safeHeaders[k]=safeUrl(new URL(v,url));}catch{safeHeaders[k]='[REDACTED]';}
+       try{
+         const target=new URL(v,url);
+         safeHeaders[k]=['http:','https:'].includes(target.protocol)
+           ? redact(safeUrl(target),secrets) : '[REDACTED]';
+       }catch{safeHeaders[k]='[REDACTED]';}
        return;
      }
      safeHeaders[k]=redact(v,secrets).slice(0,4096);
@@ -180,8 +190,10 @@ export async function executeHttp(input:Input,rules:Rule[],outbound:typeof fetch
    }else result.body=base64(data);
    const elapsed=Date.now()-start;
    console.log(JSON.stringify({request_id:requestId,method,host:url.hostname,status:response.status,elapsed_ms:elapsed,bytes:data.length}));
-   return {request_id:requestId,method,status:response.status,status_text:response.statusText,
-    ok:response.ok,final_url:safeUrl(url),headers:safeHeaders,encoding,bytes:data.length,
+   return {request_id:requestId,method,status:response.status,
+    status_text:redact(response.statusText,secrets).slice(0,128),
+    ok:response.ok,final_url:redact(safeUrl(url),secrets),headers:safeHeaders,
+    headers_truncated:headersTruncated,encoding,bytes:data.length,
     truncated,elapsed_ms:elapsed,redirect_count:redirects,...result};
   }
  }catch(e) {
