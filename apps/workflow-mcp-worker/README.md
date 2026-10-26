@@ -73,6 +73,33 @@ A fixed, reviewed number of iterations can be written as a single `flow: repeat`
 
 The template uses the same `uses`, `with` and optional `if` semantics as an ordinary Step; source-level `needs` apply to every iteration, and each later iteration additionally depends on the previous generated Step succeeding. A skipped/failed/indeterminate iteration does not automatically run later ones. Each iteration is a **real Action execution**: multiple GitHub Task or MCP calls are not coalesced; their ordinary Publish grants are still required. The compiler produces the same immutable Plan digest as an equivalent explicitly expanded DAG. No per-iteration index substitution, nested repeat, dynamic `times`, `foreach`, `while` or runtime result-driven expansion is supported.
 
+### Bounded durable wait
+
+Use an explicit `flow: wait` step when a Published Plan must delay its next
+dependency without using an HTTP request, a polling Worker, or an extra scheduler:
+
+```json
+{
+  "version": 1,
+  "name": "Pause before reporting",
+  "steps": [
+    {"id":"hold","flow":"wait","duration_seconds":2},
+    {"id":"done","uses":"result.emit","needs":["hold"],"with":{"data":"resumed"}}
+  ]
+}
+```
+
+The compiler accepts **literal integer seconds 1–300** and rejects a Plan
+whose combined wait durations exceed **300 seconds**. Waiting occupies the
+existing active Run quota slot. Cloudflare's native `step.sleep` checkpoint
+survives a Worker restart; the Step appears as `waiting` until its duration
+elapses, and dependencies cannot run before it completes.
+
+This is a relative delay, **not** a signal/event wait, human Approval Gate or
+an external wake-up endpoint. Paused workflows block new admission, not the
+already-running Run. Native instance termination and external resource
+cancellation are separate status checks; no compensation is promised.
+
 ### Bounded dynamic foreach (pure pipelines and reviewed single Actions)
 
 A `flow: foreach` entry reads a JSON array from declared `inputs` or a completed dependency Step output. The declared `max_items` must be a literal integer from **1 to 8**. Its `template.steps` accepts **one** `result.emit`, read-scoped `mcp.call` or approved `github.run` Task Action, **or 2–4 ordered `result.emit` and reviewed read-only `mcp.call` Steps**. Each child may have safe `if`. Multi-step GitHub Tasks, Session Actions, arbitrary Task input expressions and nested templates remain rejected. The template may reference `item.value`, `item.value.<field>`, `item.index`, normal declared inputs and its controller's dependencies. For example:
