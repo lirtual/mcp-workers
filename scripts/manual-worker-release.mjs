@@ -8,7 +8,7 @@ const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
+  "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -129,8 +129,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     const d1 = find("DB", "d1");
     invariant((d1?.id || d1?.database_id) === "1fa50616-effb-458e-b798-b1ca1a0da24f",
       "Email production D1 binding drift");
-    invariant(!bindings.some(b => b.type === "plain_text"),
-      "Email production credentials and Access configuration must be Secrets");
+    const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
+      ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
+      OWNER_EMAIL: "lirtual@outlook.com" };
+    for (const [name, value] of Object.entries(expected)) {
+      invariant(bindings.filter(b => b.name === name).length === 1 &&
+        find(name, "plain_text")?.text === value && !secretNames.has(name),
+        "Email production Access Variable drift: " + name);
+    }
+    invariant(!bindings.some(b => b.type === "plain_text" && !(b.name in expected)),
+      "Email has unexpected plaintext bindings");
   }
   if (worker === "database-mcp-worker") {
     const limiter = find("RATE_LIMITER", "ratelimit");
@@ -438,6 +446,8 @@ function readConfiguration(worker, content) {
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
   if (worker === "email-mcp-worker") {
+    invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"]),
+      "Email source Secret declaration drift");
     const routes = conf.routes ?? [];
     invariant(conf.workers_dev === false && conf.preview_urls === false &&
       routes.length === 2 && routes.every(x => x.custom_domain === true) &&

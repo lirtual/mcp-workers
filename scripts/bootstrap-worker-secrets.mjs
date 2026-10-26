@@ -10,7 +10,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
-  "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
+  "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -39,10 +39,6 @@ export function collectBootstrapSecrets(worker, env) {
         Buffer.from(key, "base64").length !== 32 ||
         Buffer.from(key, "base64").toString("base64") !== key)
       throw new Error("MAIL_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
-    if (payload.ACCESS_TEAM_DOMAIN !== "lirtualzero.cloudflareaccess.com" ||
-        payload.ACCESS_AUD !== "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b" ||
-        payload.OWNER_EMAIL !== "lirtual@outlook.com")
-      throw new Error("Email production Access owner, team or audience mismatch");
   }
   if (worker === "workflow-mcp-worker") {
     const key = payload.SESSION_RUNTIME_DATA_KEY;
