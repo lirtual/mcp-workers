@@ -178,7 +178,8 @@ export async function fencedSend(
       throw err;
     }
     return { account_id: account.account_id, request_id: requestId, status: 'indeterminate', duplicate: false,
-      error: 'unknown_send_outcome' };
+      error: err instanceof MailError && err.code === 'smtp_partial_rejection'
+        ? 'smtp_partial_rejection' : 'unknown_send_outcome' };
   }
 }
 export function buildMcpServer(env: Env): McpServer {
