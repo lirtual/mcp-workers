@@ -203,7 +203,7 @@ export async function imapMark(env: Env, account: MailAccount, identity: string,
 }
 export async function imapMove(env: Env, account: MailAccount, identity: string, folder: string) {
   const ref = decodeImapReference(identity);
-  if (!folder || folder.length > 255 || /[\r\n\x00-\x1f]/.test(folder)) fail('invalid_folder');
+  if (!folder || folder.length > 255 || /[\x00-\x1f\x7f]/.test(folder)) fail('invalid_folder');
   return withImap(env, account, async client => {
     if (!(await client.list()).some(f => f.path === folder)) fail('invalid_folder');
     return withSelected(client, ref, async () => {
