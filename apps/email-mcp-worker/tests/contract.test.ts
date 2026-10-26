@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMcpServer } from '../src/tools.ts';
+import { buildMcpServer, folderId } from '../src/tools.ts';
 import worker from '../src/index.ts';
 const expected = [
   'account_list', 'capabilities_get', 'mail_search', 'mail_get',
@@ -48,4 +48,30 @@ test('authenticated stateless MCP tools/list advertises the entire intended inve
   assert.deepEqual(payload.result.tools.map((tool: any) => tool.name), expected);
   const reply = payload.result.tools.find((tool: any) => tool.name === 'mail_reply');
   assert.ok(reply.inputSchema.required?.includes('to'), 'reply recipient confirmation must be mandatory');
+});
+
+test('mail_move accepts native Unicode and spaced folder IDs, but not unsafe paths', () => {
+  const valid = ['已删除邮件', '团队 文件夹', 'Archive 2026', 'Boîte de réception'];
+  for (const path of valid) assert.equal(folderId.safeParse(path).success, true, path);
+  for (const path of ['', 'folder\\r\\nBcc:evil', 'folder\\u0000name',
+    'folder\\u007f', 'x'.repeat(256)]) {
+    const actual = path.replaceAll('\\r', '\\r').replaceAll('\\n', '\\n')
+      .replaceAll('\\u0000', '\\u0000').replaceAll('\\u007f', '\\u007f');
+    assert.equal(folderId.safeParse(actual).success, false);
+  }
+
+  // Validate the actual MCP tool registration, not just the schema helper.
+  const registered = (buildMcpServer({} as any) as any)._registeredTools.mail_move;
+  assert.equal(registered.inputSchema.shape.folder_id, folderId);
+  const base = { account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    message_id: 'opaque-id' };
+  assert.equal(registered.inputSchema.safeParse({
+    ...base, folder_id: '已删除邮件',
+  }).success, true);
+  assert.equal(registered.inputSchema.safeParse({
+    ...base, folder_id: 'Archive 2026',
+  }).success, true);
+  assert.equal(registered.inputSchema.safeParse({
+    ...base, folder_id: 'bad\\nfolder',
+  }).success, false);
 });
