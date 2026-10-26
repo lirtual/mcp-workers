@@ -34,7 +34,7 @@ export function publicUrl(raw:string):URL {
    host.length>253 || host.endsWith('.') || host.includes('..') || host.includes('%') ||
    host.startsWith('[') || url.port === '0' || /^\d+(?:\.\d+)*$/.test(host) ||
    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/i.test(host) ||
-   /(?:^|\.)(?:localhost|local|internal|lan|home|home\.arpa|test|invalid|onion)$/i.test(host))
+   /(?:^|\.)(?:localhost|localdomain|local|internal|lan|corp|home|home\.arpa|test|invalid|onion)$/i.test(host))
    fail('unsafe_target');
  // Node URL normalizes unusual IPv4 spellings to IP literals. Cloudflare
  // strictly-public global fetch adds a platform boundary, not a DNS guarantee.
