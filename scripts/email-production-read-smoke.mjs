@@ -139,7 +139,7 @@ async function deepReadAcceptance(account){
 // prior self-sent test message. No message IDs or mailbox content are logged.
 async function mutationTargetPreflight(account){
   const aid=account.account_id;
-  assert.ok(typeof account.address==='string'&&/^[^\\s@]+@qq\\.com$/i.test(account.address),
+  assert.ok(typeof account.address==='string'&&/^[^\s@]+@qq\.com$/i.test(account.address),
     'email_preflight_qq_account_missing');
   const caps=await call('capabilities_get',{account_id:aid});
   assert.equal(caps.account_id,aid,'email_preflight_caps_identity');
@@ -235,7 +235,7 @@ async function main(){
   }
   if(process.env.EMAIL_MUTATION_PREFLIGHT==='true'){
     const qq=active.filter(x=>typeof x.address==='string'&&
-      /^[^\\s@]+@qq\\.com$/i.test(x.address));
+      /^[^\s@]+@qq\.com$/i.test(x.address));
     assert.equal(qq.length,1,'email_preflight_qq_not_unique');
     await mutationTargetPreflight(qq[0]);
   }
