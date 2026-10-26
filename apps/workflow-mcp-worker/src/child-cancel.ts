@@ -21,7 +21,7 @@ export async function cancelAwaitedChild(
  if(!Array.isArray(published.steps)||!published.steps.some((s:any)=>
    s.id===stepId&&s.uses==='flow.child'))return 'not_found';
  if(child.outcome==='cancelled')
-   return child.start_state==='reserved'?'cancelled_before_start':'terminal_confirmed';
+   return child.start_state==='cancelled_before_start'?'cancelled_before_start':'terminal_confirmed';
  if(!['queued','running'].includes(child.outcome))return 'already_terminal';
  if(child.instance_id!==child.id)return 'not_found';
 
@@ -30,7 +30,8 @@ export async function cancelAwaitedChild(
  // If cancellation wins, a later native create is impossible.
  if(child.start_state==='reserved'){
    const stopped=await db.prepare(`UPDATE runs
-     SET outcome='cancelled',error_code='cancelled_before_start',updated_at=?
+     SET outcome='cancelled',start_state='cancelled_before_start',
+       error_code='cancelled_before_start',updated_at=?
      WHERE id=? AND parent_run_id=? AND parent_step_id=?
        AND start_state='reserved' AND outcome='queued'`)
      .bind(Date.now(),child.id,parentRunId,stepId).run();
@@ -53,7 +54,7 @@ export async function cancelAwaitedChild(
  if(!intent){
    const current=await db.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
      .bind(child.id).first<{outcome:string;start_state:string}>();
-   if(current?.outcome==='cancelled'&&current.start_state==='reserved')
+   if(current?.outcome==='cancelled'&&current.start_state==='cancelled_before_start')
      return 'cancelled_before_start';
    return current&& !['queued','running'].includes(current.outcome)
      ?'already_terminal':'requested_unverified';
@@ -66,7 +67,7 @@ export async function cancelAwaitedChild(
    before=(await instance.status()).status;
  }catch{return 'requested_unverified';}
  if(before==='terminated'){
-   await db.prepare(`UPDATE runs SET outcome='cancelled',updated_at=?
+   await db.prepare(`UPDATE runs SET outcome='cancelled',start_state='cancelled',updated_at=?
      WHERE id=? AND outcome IN ('queued','running')
      AND EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=?)`)
      .bind(Date.now(),child.id,child.id).run();
@@ -91,7 +92,7 @@ export async function cancelAwaitedChild(
  try{
    const after=(await instance.status()).status;
    if(after==='terminated'){
-     await db.prepare(`UPDATE runs SET outcome='cancelled',updated_at=?
+     await db.prepare(`UPDATE runs SET outcome='cancelled',start_state='cancelled',updated_at=?
        WHERE id=? AND outcome IN ('queued','running')
        AND EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=?)`)
        .bind(Date.now(),child.id,child.id).run();
