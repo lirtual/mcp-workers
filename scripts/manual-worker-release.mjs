@@ -243,12 +243,23 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v8 === 1 && row?.migration_v9 === 0 &&
     row?.locator_column === 1 && row?.fixed_column === 0 && row?.fixed_index === 0 &&
     row?.session_table === 1 && row?.cancellation_table === 1;
-  const complete = row?.migration_count === 9 &&
+  // 0009 is the pre-migration state; an applied 0010 must have its complete
+  // reservation and one-shot cancellation schema before any code is released.
+  const oldComplete = row?.migration_count === 9 &&
     row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
+    row?.migration_v8 === 1 && row?.migration_v9 === 1 && row?.migration_v10 === 0 &&
     row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
-    row?.session_table === 1 && row?.cancellation_table === 1;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || complete)),
+    row?.session_table === 1 && row?.cancellation_table === 1 &&
+    row?.capacity_column === 0 && row?.parent_column === 0 && row?.parent_step_column === 0 &&
+    row?.child_index === 0 && row?.child_cancel_table === 0;
+  const complete = row?.migration_count === 10 &&
+    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
+    row?.migration_v8 === 1 && row?.migration_v9 === 1 && row?.migration_v10 === 1 &&
+    row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
+    row?.session_table === 1 && row?.cancellation_table === 1 &&
+    row?.capacity_column === 1 && row?.parent_column === 1 && row?.parent_step_column === 1 &&
+    row?.child_index === 1 && row?.child_cancel_table === 1;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -273,7 +284,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql',
    '0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
-   '0008_session_locator.sql','0009_fixed_sessions.sql')) AS expected_migrations,
+   '0008_session_locator.sql','0009_fixed_sessions.sql',
+   '0010_awaited_child_capacity.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -313,8 +325,8 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant(row.migration_count === 9 && row.expected_migrations === 9,
-    "Workflow migration requires the exact nine reviewed D1 migrations");
+  invariant(row.migration_count === 10 && row.expected_migrations === 10,
+    "Workflow migration requires the exact ten reviewed D1 migrations");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
@@ -347,7 +359,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===9 && row.expected_migrations===9,
+  invariant(row.migration_count===10 && row.expected_migrations===10,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
