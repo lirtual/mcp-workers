@@ -38,8 +38,11 @@ DO NOT deploy this candidate to production.
   credentials. Each connection resolves and validates public DNS addresses,
   connects to a pinned IP, and supplies the original host for TLS SNI/certificate
   verification. STARTTLS is mandatory on 587; insecure fallback is forbidden.
-- **IMAP/SMTP has not passed live Cloudflare/provider TLS verification.** The
-  adapter is included for review, not an assertion of production availability.
+- **Generic IMAP/SMTP remains unverified for production.** In actual
+  Cloudflare remote preview, a no-login IMAP TLS handshake to Gmail port 993
+  succeeded, but credential-free SMTP 465/587 probes failed against Gmail,
+  Microsoft and QQ. These observations do not prove all SMTP servers will fail
+  or that authenticated mail delivery works. The adapter stays a candidate.
 
 NOT SUPPORTED: Gmail label-based folder moves, provider-specific advanced mailbox
 administration, and verified cross-provider live integration.
@@ -59,6 +62,36 @@ MICROSOFT_CLIENT_SECRET for their corresponding providers. Generic IMAP/SMTP
 uses per-account encrypted app credentials (not additional Worker secrets).
 Optional MAIL_KEY_ID, MAIL_ENCRYPTION_PREVIOUS_KEY,
 MAIL_PREVIOUS_KEY_ID, MICROSOFT_TENANT. No credentials in Git/source/D1.
+
+## Verified acceptance and external OAuth prerequisites (2026-10-26)
+
+- Candidate CI `#40257839917` passed after replacing the seven
+  Workers-incompatible `fetch redirect: 'error'` settings with
+  `redirect: 'manual'`; all upstream 3xx responses remain rejected.
+- Local Workerd/D1/MCP acceptance `#40253525289` passed. Remote Cloudflare
+  preview/D1/MCP `#40256001876` passed on its pinned earlier candidate.
+  Latest remote TCP/TLS probe `#40258246368` failed overall because SMTP
+  465/587 was unsuccessful; Gmail IMAP 993 TLS succeeded. Both remote test
+  database migrations and disposable D1 cleanup succeeded, with no
+  production Worker deployed.
+- Cloudflare documents that outbound TCP port 25 is prohibited. It does
+  **not** declare every SMTP port 465/587 universally prohibited. Do not
+  infer production SMTP support from local tests or a TLS handshake.
+- For Gmail OAuth E2E, create an independent Google OAuth **Web application**
+  with the exact redirect URI
+  `https://email.lirtual.dpdns.org/oauth/callback`, enable Gmail API,
+  and request `https://www.googleapis.com/auth/gmail.modify`. This is a
+  **restricted** scope; a Google app in external Testing mode must include
+  the intended test account, and refresh tokens can expire under testing
+  limits. Do not use an existing personal mailbox as an implicit test.
+- For Microsoft Graph OAuth E2E, create a separate Microsoft identity
+  **Web application** with that exact redirect URI and **delegated**
+  `offline_access User.Read Mail.ReadWrite Mail.Send` permissions. Do not
+  replace delegated access with broad application-level permissions.
+- Set client IDs/secrets only as the respective Worker Secrets after the
+  Access-protected callback is deliberately provisioned. Nothing in this
+  README authorizes live account consent, email writes, a production route,
+  Portal registration, or merging the Draft PR.
 
 ## Rotation/recovery
 
