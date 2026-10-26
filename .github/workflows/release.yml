@@ -363,6 +363,13 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-email-portal.mjs
 
+      - name: Validate connected Email account via production read-only IMAP
+        if: inputs.worker == 'email-mcp-worker'
+        shell: bash
+        env:
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: node scripts/email-production-read-smoke.mjs
+
       - name: Check existing public health endpoint
         if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker' || inputs.worker == 'workflow-mcp-worker'
         shell: bash
