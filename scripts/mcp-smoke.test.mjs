@@ -62,3 +62,12 @@ test("tool arguments must be a JSON object", () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /must decode to a JSON object/);
 });
+
+test("exact tool inventory requires nonempty unique names", () => {
+  const base = ["--url", "https://example.invalid/mcp", "--tool", "safe_read_tool"];
+  for (const value of ["", "safe_tool,", "safe_tool,safe_tool", "bad-name"]) {
+    const result = run([...base, "--exact-tools", value]);
+    assert.equal(result.status, 2, value);
+    assert.match(result.stderr, /--exact-tools requires a value|--exact-tools must be/);
+  }
+});

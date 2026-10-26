@@ -14,6 +14,7 @@ Required:
 
 Options:
   --args-json <json>    JSON object passed as tool arguments. Default: {}.
+  --exact-tools <names> Comma-separated exact expected tools/list inventory.
   --token-env <name>    Environment variable holding the bearer token.
                         Default: ${DEFAULT_TOKEN_ENV}.
   --help                Show this help.
@@ -31,6 +32,7 @@ function parseArgs(argv) {
     tool: undefined,
     argsJson: "{}",
     tokenEnv: DEFAULT_TOKEN_ENV,
+    exactTools: undefined,
     help: false,
   };
 
@@ -39,6 +41,7 @@ function parseArgs(argv) {
     ["--tool", "tool"],
     ["--args-json", "argsJson"],
     ["--token-env", "tokenEnv"],
+    ["--exact-tools", "exactTools"],
   ]);
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -81,6 +84,16 @@ function parseArgs(argv) {
     throw new UsageError("--url must use http or https.");
   }
 
+  let expectedTools;
+  if (parsed.exactTools !== undefined) {
+    expectedTools = parsed.exactTools.split(",");
+    if (expectedTools.some((name) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) ||
+        new Set(expectedTools).size !== expectedTools.length) {
+      throw new UsageError("--exact-tools must be a nonempty comma-separated list of unique tool names.");
+    }
+    expectedTools.sort();
+  }
+
   let toolArguments;
   try {
     toolArguments = JSON.parse(parsed.argsJson);
@@ -99,6 +112,7 @@ function parseArgs(argv) {
     ...parsed,
     url,
     toolArguments,
+    expectedTools,
   };
 }
 
@@ -151,6 +165,13 @@ async function runSmoke(options) {
     await withTimeout(client.connect(transport), "MCP connect");
 
     const { tools } = await withTimeout(client.listTools(), "tools/list");
+    if (options.expectedTools) {
+      const actual = tools.map((tool) => tool.name).sort();
+      if (actual.length !== options.expectedTools.length ||
+          actual.some((name, index) => name !== options.expectedTools[index])) {
+        throw new Error("MCP tool inventory differs from the explicitly approved set.");
+      }
+    }
     const target = tools.find((tool) => tool.name === options.tool);
     if (!target) {
       throw new Error(

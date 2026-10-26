@@ -462,6 +462,20 @@ jobs:
             exit 1
           done
 
+      - name: Verify exact CandyBox read-only tool inventory (production)
+        if: inputs.worker == 'candybox-mcp-worker'
+        shell: bash
+        env:
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The strict list is a release gate, not an annotation-based approval.
+          # Never reveal or call any write tool during incomplete Q15 acceptance.
+          node scripts/mcp-smoke.mjs \
+            --url https://candybox-mcp-worker.aiyaya.workers.dev/mcp \
+            --tool candybox_capabilities \
+            --exact-tools candybox_capabilities
+
       - name: Register production HTTP MCP with existing One-MCP Portal
         if: inputs.worker == 'http-mcp-worker'
         shell: bash
