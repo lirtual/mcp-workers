@@ -37,4 +37,5 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           EMAIL_READONLY_ACCEPTANCE: "true"
           EMAIL_REQUIRE_ATTACHMENT: "true"
+          EMAIL_TEST_SUBJECT: "test"
         run: node scripts/email-production-read-smoke.mjs
