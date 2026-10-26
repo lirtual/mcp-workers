@@ -215,7 +215,9 @@ export function imapReplyHeaders(mail: {
   replyTo?: { address?: string }[];
   subject?: string; messageId?: string; references?: string;
 }, explicitTo: string) {
-  // An incoming Reply-To is untrusted; the Agent must specify the matching target.
+  // Incoming Reply-To is untrusted: do not silently select one recipient
+  // when the message actually requests a reply to multiple addresses.
+  if (mail.replyTo && mail.replyTo.length > 1) fail('unsupported');
   const expected = mail.replyTo?.[0]?.address ?? mail.from?.address;
   if (!expected || explicitTo.toLowerCase() !== expected.toLowerCase()) fail('reply_recipient_mismatch');
   const validId = (value: string) => /^<[^\s<>@]{1,150}@[a-zA-Z0-9.-]{3,120}>$/.test(value);
