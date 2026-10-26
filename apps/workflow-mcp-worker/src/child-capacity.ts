@@ -198,8 +198,19 @@ export async function startReservedAwaitedChild(
     const observed=await observeInstance(env.WORKFLOW,childRunId);
     if(observed.kind==='found')return markStarted();
     if(observed.kind==='unavailable')return {childRunId,start_state:'start_unknown'};
-    if(row.start_state==='creating')
+    if(row.start_state==='creating'){
+      // A lost worker between the D1 claim and Cloudflare create() must not
+      // consume one reservation indefinitely. Only a positive native
+      // not-found and the same ten-minute cutoff permit terminal uncertainty.
+      if(timestamp-row.created_at>=10*60_000){
+        await env.DB.prepare(`UPDATE runs SET outcome='indeterminate',
+          error_code='start_unconfirmed',updated_at=?
+          WHERE id=? AND start_state='creating' AND outcome='queued'`)
+          .bind(timestamp,childRunId).run();
+        return {childRunId,start_state:'indeterminate'};
+      }
       return {childRunId,start_state:'start_unknown'};
+    }
     // "start_unknown" is entered only after a native create attempt. Retry
     // the SAME ID on a proven native not-found, but never after cancellation.
     if(timestamp-row.created_at>=10*60_000){
