@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import test from "node:test";
 import worker, {V2OwnerCoordinator} from "../src/worker.ts";
-import {parseBrowserCall} from "../src/browser-tools.ts";
+import {BROWSER_TOOLS,parseBrowserCall} from "../src/browser-tools.ts";
 
 const device=randomUUID(),session=randomUUID();
 test("handoff MCP has exactly request/status/return, no freely supplied email, CLI or session on return",()=>{
@@ -15,6 +15,19 @@ test("handoff MCP has exactly request/status/return, no freely supplied email, C
     {device_id:device,session_id:session,duration:3600},{device_id:device,session_id:"invalid"}])
     assert.equal(parseBrowserCall("browser_handoff_request",args),null);
   assert.equal(parseBrowserCall("browser_handoff_return",{device_id:device,session_id:session}),null);
+});
+
+test("two-phase handoff remains the same single authenticated tool; status cannot deliver the URL",()=>{
+  const names=BROWSER_TOOLS.filter(t=>t.name.startsWith("browser_handoff_"));
+  assert.deepEqual(names.map(t=>t.name),["browser_handoff_request","browser_handoff_status","browser_handoff_return"]);
+  const request=names[0]!,status=names[1]!;
+  assert.match(request.description,/First call synchronously blocks/);
+  assert.match(request.description,/same session_id/i);
+  assert.match(request.description,/one-time URL/);
+  assert.match(status.description,/no page data or previous temporary link/i);
+  const first=parseBrowserCall("browser_handoff_request",{device_id:device,session_id:session});
+  const claim=parseBrowserCall("browser_handoff_request",{device_id:device,session_id:session});
+  assert.deepEqual(first,claim,"begin and claim must use the exact same owner-validated request shape");
 });
 
 test("authenticated MCP -> existing owner DO -> current signed WSS; other device and unauthenticated callers denied",async()=>{

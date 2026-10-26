@@ -18,7 +18,7 @@ function schema(properties: Record<string, unknown>, required: string[]) {
 export const BROWSER_TOOLS = [
   {
     name:"browser_handoff_request",title:"Request browser handoff",
-    description:"Pause ALL Remote Control tools on this device and prepare human control of its existing native Windows browser session. A failed preparation may remain blocked until explicit return. Link Ready never proves OTP or phone input succeeded. Temporary links may contain a one-time secret visible in this conversation.",
+    description:"Two-phase protected Windows browser handoff. First call synchronously blocks all device tools and quickly returns preparing; poll browser_handoff_status (never contains a URL). After link_ready, call browser_handoff_request again with the SAME session_id to claim a one-time URL from Agent memory. A failed or abandoned preparation remains blocked until explicit browser_handoff_return. Expiry/reconnect never automatically restores AI control. A claimed URL contains a secret visible to this conversation; Link Ready alone never proves OTP or human input succeeded.",
     inputSchema:schema({session_id:session},["session_id"]),
     annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},
   },
@@ -30,7 +30,7 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_handoff_return",title:"Explicitly return browser control",
-    description:"Explicit owner-directed return. Revoke human access and verify cleanup before admitting AI tools. Refresh tab identities and observe a new snapshot before continuing. Expiry, disconnect and restart never return control automatically.",
+    description:"Explicit owner-directed return. During preparing, first return cancels in-flight setup; remain blocked until cleanup completes and a subsequent explicit return confirms state ai. Revoke human access and verify cleanup before admitting AI tools. Refresh tab identities and observe a new snapshot before continuing. Expiry, disconnect and restart never return control automatically.",
     inputSchema:schema({},[]),
     annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},
   },
