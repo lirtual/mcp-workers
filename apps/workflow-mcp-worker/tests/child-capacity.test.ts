@@ -281,3 +281,23 @@ test('child UUID is stable across retries and distinct for another parent or Ste
   await assert.rejects(()=>awaitedChildRunId('not-a-uuid','launch_child'),/invalid_child_identity/);
   await assert.rejects(()=>awaitedChildRunId(parent,'../../not-safe'),/invalid_child_identity/);
 });
+
+test('claimed-but-unconfirmed native child expires without blind new create',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  f.sqlite.prepare("UPDATE runs SET start_state='creating' WHERE id='c1'").run();
+  let creates=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;},
+    async get(){throw Error('instance.not_found');},
+  }};
+  assert.deepEqual(await startReservedAwaitedChild(env as never,startArgs(3000)),
+    {childRunId:'c1',start_state:'start_unknown'});
+  assert.deepEqual(await startReservedAwaitedChild(env as never,
+    startArgs(2000+10*60_000)),
+    {childRunId:'c1',start_state:'indeterminate'});
+  assert.equal(creates,0);
+  assert.equal(f.count(),1);
+  assert.equal((f.sqlite.prepare("SELECT outcome FROM runs WHERE id='c1'").get() as
+    {outcome:string}).outcome,'indeterminate');
+});
