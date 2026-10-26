@@ -20,7 +20,7 @@ const definition=(token=TOKEN)=>({
 function setup(t:test.TestContext){
   const db=new DatabaseSync(':memory:');
   t.after(()=>db.close());
-  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql'])
+  for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0010_awaited_child_capacity.sql'])
     db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   let dispatches=0;
   const env={DB:{
