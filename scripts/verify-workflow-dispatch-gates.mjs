@@ -135,7 +135,7 @@ assert.match(emailAcceptance, /conclusion == "success"/);
 assert.match(emailAcceptance, /persist-credentials: false/);
 assert.match(emailAcceptance, /pnpm --filter email-mcp-worker check/);
 assert.match(emailAcceptance, /wrangler d1 migrations apply/);
-assert.match(emailAcceptance, /wrangler dev/);
+assert.match(emailAcceptance, /pnpm dlx wrangler@4\.152\.0 dev/);
 assert.match(emailAcceptance, /EMAIL_ISOLATED_LOCAL_WORKER_D1_AND_MCP_OK/);
 assert.doesNotMatch(emailAcceptance, /secrets\.|CLOUDFLARE_API_TOKEN|wrangler deploy|release\.yml|environment:/);
 
