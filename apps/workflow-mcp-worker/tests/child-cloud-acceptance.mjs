@@ -196,6 +196,31 @@ async function acceptance(){
     'SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?',[denied.run_id])).results[0].n;
   assert.equal(rejectedChildren,0,'Paused child must not reserve/start an instance');
   console.log('CHILD_NATIVE_PAUSED_TARGET_NO_DISPATCH_OK');
+  await tool('workflow_resume',{workflow_id:draftChild.workflow_id});
+  const revisedChild={...childDef,steps:[
+    {id:'emit',uses:'result.emit',with:{data:{receipt:'republished'}}},
+  ]};
+  const revised=await tool('workflow_update',{
+    workflow_id:draftChild.workflow_id,expected_revision:1,
+    definition:JSON.stringify(revisedChild),
+  });
+  assert.equal(revised.draft_revision,2);
+  const nextChild=await tool('workflow_publish',{
+    workflow_id:draftChild.workflow_id,expected_revision:2,
+  });
+  assert.notEqual(nextChild.published_version_id,publishedChild.published_version_id,
+    'A republish must create a new immutable child version');
+  const stale=await tool('workflow_run',{
+    workflow_id:draftParent.workflow_id,inputs:{proof:'normal'},
+    idempotency_key:'republished-'+suffix,
+  });
+  const staleResult=await settle(stale.run_id);
+  assert.notEqual(staleResult.status,'succeeded',
+    'Parent must not dispatch its no-longer-active pinned child version');
+  assert.equal((await query(
+    'SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?',[stale.run_id])).results[0].n,0,
+    'Republished target must not reserve a stale child');
+  console.log('CHILD_NATIVE_REPUBLISH_PINNED_VERSION_FAIL_CLOSED_OK');
 }
 async function cleanup(){
   if(client)try{await client.close();}catch{}
