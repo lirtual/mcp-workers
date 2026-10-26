@@ -209,7 +209,7 @@ test('writes never retry on a signal timeout; errors and responses disclose no h
  const old=console.log;
  console.log=(...items)=>logs.push(items.join(' '));
  try {
-   const result=await call({url:fixture,method:'PATCH',headers:{authorization:secret},text:'request-private-body'},
+   const result=await call({url:fixture,method:'PATCH',headers:{authorization:secret},text:'request-private-body',timeout_ms:25},
      mock(async (_url,init)=>{
        attempts++;
        await new Promise<void>(resolve=>{
