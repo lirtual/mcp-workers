@@ -1779,7 +1779,7 @@ test('awaited child cancellation is one-shot, terminal evidence required, and no
   assert.deepEqual(await startReservedAwaitedChild(env,{
     parentRunId:run.run_id,parentStepId:'delegate',
     childRunId:childId,timestamp:Date.now(),
-  }),{childRunId,start_state:'started'});
+  }),{childRunId:childId,start_state:'started'});
   assert.equal(terminations,1);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM child_cancellations').get() as {n:number}).n,1);
 });
