@@ -112,11 +112,29 @@ Do not re-create the isolated environment or re-test SMTP without a new need.
   SMTP self-send manual switch/script removed; the remaining
   `Email Acceptance` Action is read-only again.
 
-**Still not individually production-tested:** draft creation, reply, forward,
-read/unread marking, move and trash (capability-dependent); real fault
-injection for ambiguous SMTP outcomes; and other mailbox providers. Keep
-[Issue #279](https://github.com/lirtual/mcp-workers/issues/279) open until
-the remaining feature scope is explicitly resolved. Do not repeat the core QQ read/send test.
+- [Real QQ draft/mark/move/trash acceptance](https://github.com/lirtual/mcp-workers/issues/279#issuecomment-6414650563):
+  two owner-authorized unsent self-addressed drafts were created and read back;
+  both `mail_mark` directions returned success; `mail_move` and `mail_trash`
+  returned successful destinations in `Deleted Messages`, and the prior
+  Drafts UIDs became stale. This does **not** independently verify persisted
+  Seen flags or read back the destination folder.
+- [Real QQ reply and forward E2E acceptance](https://github.com/lirtual/mcp-workers/issues/279#issuecomment-6414814226):
+  one owner-authorized self-addressed `mail_reply` and one `mail_forward`
+  each returned SMTP `accepted`; replaying each identical `request_id`
+  returned `duplicate=true` without resending. Both newly delivered
+  messages were independently found and read back in QQ INBOX, with exact
+  subject, self sender/recipient and fixed test-body checks; forward included
+  the original message body. Independent production D1 readback recorded
+  one active account and three total `accepted` sends. No unrelated
+  messages were mutated or new Worker/Test Action added.
+
+**Remaining unverified boundaries:** actual raw RFC `In-Reply-To/References`
+headers of delivered replies (not exposed through `mail_get`), independent
+persisted Seen flag / Trash-folder content readback, real ambiguous-SMTP fault
+injection (offline SQLite fence regression passed), and other providers besides
+QQ. Keep [Issue #279](https://github.com/lirtual/mcp-workers/issues/279)
+open until these are explicitly accepted as limitations or scoped separately.
+Do not repeat the already-passed QQ core send, reply, or forward tests.
 
 ### Historical preproduction transport investigation
 
