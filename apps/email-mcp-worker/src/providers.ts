@@ -296,7 +296,14 @@ function header(headers: any[], name: string): string {
   return nonHeader(String(value), 1000);
 }
 function mailboxAddress(value: string): string {
-  const bracketed = value.match(/<([^<>]+)>$/)?.[1];
+  // A Reply-To address-list may contain multiple recipients. Never select its
+  // last angle-bracket address just because the Agent confirmed that one.
+  // Strip quoted display names before detecting list separators, so
+  // "Last, First" <single@example.com> remains a valid single target.
+  const outsideQuotedNames = value.replace(/"(?:\\.|[^"\\])*"/g, '');
+  const enclosed = [...outsideQuotedNames.matchAll(/<([^<>]+)>/g)];
+  if (outsideQuotedNames.includes(',') || enclosed.length > 1) fail('unsupported');
+  const bracketed = enclosed.length === 1 ? enclosed[0]![1] : undefined;
   return recipients([(bracketed ?? value).trim()])[0]!;
 }
 function messageId(value: string): string {
