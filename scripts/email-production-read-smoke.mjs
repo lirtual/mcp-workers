@@ -103,7 +103,7 @@ async function deepReadAcceptance(account){
     assert.equal(file.message_id,hit.id,'email_smoke_attachment_message_mismatch');
     assert.equal(file.attachment_id,attachment.id,'email_smoke_attachment_id_mismatch');
     assert.ok(typeof file.data_base64==='string'&&
-      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data_base64),
+      file.data_base64.length%4===0&&/^[A-Za-z0-9+/]*={0,2}$/.test(file.data_base64),
       'email_smoke_attachment_invalid_base64');
     const decoded=Buffer.from(file.data_base64,'base64');
     assert.equal(decoded.length,file.size,'email_smoke_attachment_size_mismatch');
