@@ -134,7 +134,7 @@ export async function startReservedAwaitedChild(
     .bind(childRunId,parentRunId,parentStepId)
     .first<{start_state:string;outcome:string;created_at:number;instance_id:string;
       capacity_weight:number;parent_outcome:string}>();
-  if(row?.outcome==='cancelled'&&row.start_state==='reserved')
+  if(row?.outcome==='cancelled'&&row.start_state==='cancelled_before_start')
     return {childRunId,start_state:'cancelled_before_start'};
   if(!row||row.parent_outcome!=='running'||row.capacity_weight!==1||
      row.instance_id!==childRunId||
@@ -182,7 +182,7 @@ export async function startReservedAwaitedChild(
       WHERE child_run_id=?`).bind(childRunId).first<{child_run_id:string}>();
     if(intent){
       await env.DB.prepare(`UPDATE runs SET outcome='cancelled',
-        start_state='reserved',error_code='cancelled_before_start',updated_at=?
+        start_state='cancelled_before_start',error_code='cancelled_before_start',updated_at=?
         WHERE id=? AND start_state='creating' AND outcome='queued'`)
         .bind(timestamp,childRunId).run();
       return {childRunId,start_state:'cancelled_before_start'};
