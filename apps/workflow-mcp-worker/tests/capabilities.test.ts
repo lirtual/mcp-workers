@@ -26,8 +26,8 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
   const childDetails=await workflowCapabilities(env,'flow.child');
   assert.equal(childDetails.availability,'supported_with_grant');
-  assert.match(childDetails.description,/approved_children/);
-  assert.match(childDetails.description,/non-recursive/);
+  assert.match(String(childDetails.description),/approved_children/);
+  assert.match(String(childDetails.description),/non-recursive/);
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
