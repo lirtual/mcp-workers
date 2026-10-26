@@ -48,6 +48,22 @@ test('real Worker ingress fail closed; only read-only capability is discoverable
     assert.equal(res.structuredContent?.duck_address, 'not_configured');
   } finally { await session.close(); }
 });
+test('direct calls to unreleased write tools are denied without any outbound fetch', async () => {
+  let outboundCalls = 0;
+  const session = await clientFor(env, mock(() => {
+    outboundCalls++;
+    throw Error('unexpected third-party request');
+  }));
+  try {
+    for (const name of ['candybox_shorten_url', 'candybox_share_text',
+      'candybox_upload_file', 'candybox_create_duck_address']) {
+      await assert.rejects(session.client.callTool({
+        name, arguments: { url: 'https://example.com', text: 'fixture' },
+      }), /not found|unknown tool/i);
+    }
+    assert.equal(outboundCalls, 0, 'unreleased calls must not reach any provider');
+  } finally { await session.close(); }
+});
 test('unreleased contract has four exact write tools, annotations, strict file metadata', async () => {
   const session = await clientFor(env, mock(() => { throw Error('no network'); }), true);
   try {
