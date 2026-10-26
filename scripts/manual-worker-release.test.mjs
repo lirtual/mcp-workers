@@ -413,6 +413,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
     migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,runtime_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
+    child_terminate_fence_column:0,
     locator_column:0,fixed_column:0,fixed_index:0,
     attempt_table:1,receipt_table:1,native_column:1,
     session_table:0,cancellation_table:0,
@@ -425,7 +426,8 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const oldComplete = {...completed,migration_count:9,migration_v9:1,fixed_column:1,fixed_index:1};
   const upgraded = {...oldComplete,migration_count:10,migration_v10:1,runtime_table:1};
   const latest = {...upgraded,migration_count:11,migration_v11:1,
-    capacity_column:1,parent_column:1,parent_step_column:1,child_index:1,child_cancel_table:1};
+    capacity_column:1,parent_column:1,parent_step_column:1,child_index:1,child_cancel_table:1,
+    child_terminate_fence_column:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
@@ -463,6 +465,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     {...latest,parent_step_column:0},
     {...latest,child_index:0},
     {...latest,child_cancel_table:0},
+    {...latest,child_terminate_fence_column:0},
     {...upgraded,fixed_index:0},
     {...upgraded,fixed_column:0},
     {...completed,native_column:0},
