@@ -1,0 +1,149 @@
+name: Email Acceptance
+
+# Deliberately independent of the production release workflow and its Secrets.
+# Manual entry points are only discoverable once this trusted file is on main.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character head SHA of Draft PR #284
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  email-local-runtime:
+    name: Email isolated Workers runtime (no Cloudflare credentials)
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    concurrency:
+      group: email-acceptance-local
+      cancel-in-progress: false
+    steps:
+      - name: Verify exact approved PR head and successful CI before checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          pr="repos/$GITHUB_REPOSITORY/pulls/284"
+          [[ "$(gh api "$pr" --jq '.head.sha')" == "$CANDIDATE_SHA" ]]
+          [[ "$(gh api "$pr" --jq '.head.repo.full_name')" == "$GITHUB_REPOSITORY" ]]
+          [[ "$(gh api "$pr" --jq '.base.ref')" == main ]]
+          [[ "$(gh api "$pr" --jq '.state')" == open ]]
+          successful="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/runs" \
+            -f head_sha="$CANDIDATE_SHA" -f event=pull_request \
+            --jq '[.workflow_runs[] | select(.name == "CI" and .status == "completed" and .conclusion == "success")] | length')"
+          [[ "$successful" =~ ^[0-9]+$ && "$successful" -ge 1 ]]
+          echo "Pinned PR #284 head and completed successful CI verified"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install pinned dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Recheck the candidate, then run existing Email application checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/284" --jq '.head.sha')" == "$CANDIDATE_SHA" ]]
+          pnpm --filter email-mcp-worker check
+
+      - name: Verify actual local Workers runtime and isolated D1
+        shell: bash
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          config=apps/email-mcp-worker/.acceptance-local.jsonc
+          worker_pid=''
+          cleanup() {
+            if [[ -n "$worker_pid" ]]; then
+              kill "$worker_pid" 2>/dev/null || true
+              wait "$worker_pid" 2>/dev/null || true
+            fi
+            rm -f "$config"
+          }
+          trap cleanup EXIT
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = 'apps/email-mcp-worker/';
+          const config = JSON.parse(readFileSync(path + 'wrangler.jsonc', 'utf8'));
+          config.name = 'email-acceptance-local';
+          config.workers_dev = false;
+          delete config.secrets;
+          config.d1_databases = [{
+            binding: 'DB', database_name: 'email-acceptance-local',
+            database_id: '00000000-0000-4000-8000-000000000000',
+            migrations_dir: 'migrations',
+          }];
+          writeFileSync(path + '.acceptance-local.jsonc', JSON.stringify(config));
+          NODE
+          pnpm --filter email-mcp-worker exec wrangler d1 migrations apply \
+            email-acceptance-local --config .acceptance-local.jsonc --local
+          export ACCEPTANCE_TOKEN="$(openssl rand -hex 24)"
+          export ACCEPTANCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+          pnpm --filter email-mcp-worker exec wrangler dev \
+            --config .acceptance-local.jsonc --local --port 8799 \
+            --var "MCP_ACCESS_TOKEN:$ACCEPTANCE_TOKEN" \
+            --var "MAIL_ENCRYPTION_KEY:$ACCEPTANCE_KEY" \
+            --var 'ACCESS_TEAM_DOMAIN:example.cloudflareaccess.com' \
+            --var 'ACCESS_AUD:local-acceptance' \
+            --var 'OWNER_EMAIL:owner@example.test' \
+            >"$RUNNER_TEMP/email-acceptance-workerd.log" 2>&1 &
+          worker_pid=$!
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          const base = 'http://127.0.0.1:8799';
+          let ready = false;
+          for (let attempt = 0; attempt < 45; attempt++) {
+            try {
+              const response = await fetch(base + '/mcp');
+              if (response.status === 401) { ready = true; break; }
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          assert.ok(ready, 'local Workers runtime failed to start or unauthorized MCP was not denied');
+          let response = await fetch(base + '/setup');
+          assert.equal(response.status, 404, 'alternate setup host must fail closed');
+          response = await fetch(base + '/mcp', {
+            method: 'POST',
+            headers: {
+              authorization: 'Bearer ' + process.env.ACCEPTANCE_TOKEN,
+              'content-type': 'application/json',
+              accept: 'application/json, text/event-stream',
+            },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+          });
+          assert.equal(response.status, 200, 'authenticated tools/list should run in Workerd');
+          const raw = await response.text();
+          const json = raw.match(/^data: (.+)$/m)?.[1] ?? raw;
+          const tools = JSON.parse(json).result?.tools;
+          assert.equal(tools?.length, 15, 'Worker must expose the 15 approved MCP tools');
+          console.log('EMAIL_ISOLATED_LOCAL_WORKER_D1_AND_MCP_OK');
+          NODE
