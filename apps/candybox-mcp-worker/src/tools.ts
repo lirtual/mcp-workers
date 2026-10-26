@@ -14,10 +14,10 @@ const textInput = z.object({
 }).strict();
 const fileInput = z.object({
   file: z.object({
-    download_url: z.string(),
-    file_id: z.string(),
-    mime_type: z.string().optional(),
-    file_name: z.string().optional(),
+    download_url: z.string().min(1).max(4096),
+    file_id: z.string().min(1).max(256),
+    mime_type: z.string().max(128).optional(),
+    file_name: z.string().max(255).optional(),
   }).strict(), expires_in: z.enum(['1h','12h','24h','72h']).default('24h'),
 }).strict();
 

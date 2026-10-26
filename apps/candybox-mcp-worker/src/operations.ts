@@ -20,7 +20,7 @@ const ADDRESSES_URL = 'https://quack.duckduckgo.com/api/email/addresses';
 const DASHBOARD_URL = 'https://quack.duckduckgo.com/api/email/dashboard';
 const LITTERBOX_URL = 'https://litterbox.catbox.moe/resources/internals/api.php';
 const DUB_URL = 'https://dub.co/api/links';
-const SHARE_URL = 'https://envshare.app/api/share';
+const SHARE_URL = 'https://envshare.dev/api/v1/store';
 
 function bad(code: ErrorCode): never { throw new CandyError(code); }
 function fixedUrl(value: string): URL {
@@ -72,6 +72,12 @@ async function json(response: Response): Promise<Record<string, unknown>> {
   } catch (e) { if (e instanceof CandyError) throw e; }
   return bad('upstream_error');
 }
+// A 2xx response may arrive after the provider created the resource even when
+// its body is invalid. Never misclassify it as a safely retryable rejection.
+async function createdJson(response: Response): Promise<Record<string, unknown>> {
+  try { return await json(response); }
+  catch { return bad('indeterminate'); }
+}
 function validLink(value: unknown, hosts: string[]): string {
   if (typeof value !== 'string' || value.length > 2048) bad('upstream_error');
   let u: URL;
@@ -93,7 +99,7 @@ export async function shortenUrl(
     body: JSON.stringify({ url: target.href, domain: 'dub.sh', publicStats: input.public_stats ?? false }),
   }, send);
   if (!res.ok) responseError(res);
-  const data = await json(res);
+  const data = await createdJson(res);
   const short_link = (() => {
     try {
       const link = validLink(data.shortLink, ['dub.sh']);
@@ -112,6 +118,25 @@ export function base58(bytes: Uint8Array): string {
   for (const b of bytes) { if (b !== 0) break; s = '1' + s; }
   return s || '1';
 }
+export function fromBase58(value: string): Uint8Array {
+  if (!value || value.length > 256) bad('upstream_error');
+  let number = 0n;
+  for (const character of value) {
+    const digit = B58.indexOf(character);
+    if (digit < 0) bad('upstream_error');
+    number = number * 58n + BigInt(digit);
+  }
+  const bytes: number[] = [];
+  while (number > 0n) {
+    bytes.unshift(Number(number % 256n));
+    number /= 256n;
+  }
+  for (const character of value) {
+    if (character !== '1') break;
+    bytes.unshift(0);
+  }
+  return new Uint8Array(bytes);
+}
 export async function shareText(
   input: { text: string; ttl_seconds?: number; max_reads?: number }, send: Sender = fetch,
 ) {
@@ -121,23 +146,28 @@ export async function shareText(
   if (![3600, 43200, 86400, 259200, 604800].includes(ttl_seconds) ||
       !Number.isInteger(max_reads) || max_reads < 1 || max_reads > 10) bad('invalid_input');
   const key = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
+  // chronark/envshare v2 uses a 16-byte IV, not the 12-byte variant of EnvShareApp.
+  const iv = crypto.getRandomValues(new Uint8Array(16));
   const aes = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
-  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aes, new TextEncoder().encode(input.text)));
-  const body = {
-    ciphertext: base58(encrypted), iv: base58(iv),
-    expires_at: new Date(Date.now() + ttl_seconds * 1000).toISOString(),
-    max_reads,
-  };
+  const encrypted = new Uint8Array(await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, aes, new TextEncoder().encode(input.text)));
+  // chronark/envshare API accepts only these four fields and never the key.
+  const body = { encrypted: base58(encrypted), iv: base58(iv),
+    ttl: ttl_seconds, reads: max_reads };
   const res = await request(SHARE_URL, { method: 'POST',
     headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, send);
   if (!res.ok) responseError(res);
-  const data = await json(res);
-  const id = data.id ?? data.share_id;
-  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{4,128}$/.test(id)) bad('indeterminate');
-  // Fragment stays client-side; decryption key is never transmitted to EnvShare.
+  const data = await createdJson(res);
+  const id = data.id;
+  if (typeof id !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{16,32}$/.test(id))
+    bad('indeterminate');
+  const rawId = fromBase58(id);
+  if (rawId.byteLength !== 16) bad('indeterminate');
+  // v2 link: Base58(version byte 0x02 + 16-byte random ID + 16-byte AES key).
+  // Only the fragment contains the encryption key; store sees an encrypted blob.
+  const composite = base58(new Uint8Array([2, ...rawId, ...key]));
   return { status: 'confirmed' as const,
-    share_url: 'https://envshare.app/s/' + encodeURIComponent(id) + '#' + base58(key),
+    share_url: 'https://envshare.dev/unseal#' + composite,
     ttl_seconds, max_reads };
 }
 
@@ -180,7 +210,7 @@ export async function uploadFile(
     }
   } catch (e) {
     if (e instanceof CandyError) throw e;
-    bad('indeterminate');
+    bad('upstream_error');
   } finally { reader.releaseLock(); }
   const bytes = new Uint8Array(total);
   let pos = 0;
@@ -225,7 +255,7 @@ export async function createDuckAddress(env: Env, send: Sender = fetch) {
       'content-type': 'application/json' }, body: '{}',
   }, send);
   if (!res.ok) responseError(res);
-  const data = await json(res);
+  const data = await createdJson(res);
   const address = data.address;
   if (typeof address !== 'string' || !/^[a-z0-9][a-z0-9._-]{1,63}@duck\.com$/i.test(address))
     bad('indeterminate');

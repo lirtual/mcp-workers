@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createDecipheriv } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import worker from '../src/index.ts';
 import { buildMcpServer, registerUnreleasedWriteContracts } from '../src/tools.ts';
-import { CandyError, shortenUrl, shareText, uploadFile, createDuckAddress, duckCapability,
+import { CandyError, shortenUrl, shareText, uploadFile, createDuckAddress, duckCapability, fromBase58, base58,
   type Env, type Sender } from '../src/operations.ts';
 
 const env: Env = { MCP_ACCESS_TOKEN: 'candybox-fixture-token' };
@@ -104,23 +105,44 @@ test('Dub rejects 429 and does not retry uncertain network failure', async () =>
   })), (e:any)=>e.code==='indeterminate');
   assert.equal(attempts,2);
 });
-test('EnvShare encrypts before network; key is absent from POST and is only URL fragment',async()=>{
-  const text='a private text that must not reach the store';
+test('chronark EnvShare v2 wire contract round-trips using independent Node AES-GCM',async()=>{
+  const text='a private text that must not reach the store 测试';
+  const id='1111111111111111'; // 16 known zero bytes, as in the upstream composite-key format.
   let captured: any;
   const result=await shareText({text},mock((url,init)=>{
-    assert.equal(url,'https://envshare.app/api/share');
+    assert.equal(url,'https://envshare.dev/api/v1/store');
     captured=JSON.parse(String(init.body));
+    assert.deepEqual(Object.keys(captured).sort(),['encrypted','iv','reads','ttl']);
     assert.ok(!String(init.body).includes(text));
-    assert.ok(!Object.keys(captured).some(k=>/key|plaintext/.test(k)));
-    return Response.json({id:'share_12345'});
+    assert.equal(captured.ttl,86400);
+    assert.equal(captured.reads,1);
+    return Response.json({id});
   }));
-  assert.ok(result.share_url.startsWith('https://envshare.app/s/share_12345#'));
-  assert.ok(result.share_url.split('#')[1].length>15);
-  assert.equal(result.ttl_seconds,86400);
-  assert.equal(result.max_reads,1);
+  assert.ok(result.share_url.startsWith('https://envshare.dev/unseal#'));
+  const composite = fromBase58(result.share_url.split('#')[1]);
+  assert.equal(composite.length,33);
+  assert.equal(composite[0],2);
+  assert.deepEqual(composite.slice(1,17),new Uint8Array(16));
+  const key=composite.slice(17,33);
+  const iv=fromBase58(captured.iv);
+  const encrypted=fromBase58(captured.encrypted);
+  assert.equal(iv.length,16);
+  // Independent AES-GCM implementation, not a call back into CandyBox decrypt.
+  const cipher=createDecipheriv('aes-128-gcm',key,iv);
+  cipher.setAuthTag(Buffer.from(encrypted.slice(-16)));
+  const decrypted=Buffer.concat([cipher.update(encrypted.slice(0,-16)),cipher.final()]);
+  assert.equal(decrypted.toString('utf8'),text);
+  const wrongKey=new Uint8Array(key);
+  wrongKey[0]^=1;
+  const wrong=createDecipheriv('aes-128-gcm',wrongKey,iv);
+  wrong.setAuthTag(Buffer.from(encrypted.slice(-16)));
+  assert.throws(()=>Buffer.concat([wrong.update(encrypted.slice(0,-16)),wrong.final()]));
+  assert.equal(base58(new TextEncoder().encode('hello world')),'StV1DL6CwTryKyV');
+  assert.equal(new TextDecoder().decode(fromBase58('StV1DL6CwTryKyV')),'hello world');
   await assert.rejects(shareText({text:'X'.repeat(16385)},mock(()=>{throw Error('no');})),
     (e:any)=>e.code==='size_exceeded');
 });
+
 test('Litterbox refuses arbitrary download links and streams over 10 MiB are rejected',async()=>{
   await assert.rejects(uploadFile({file:{
     file_id:'file_fake',download_url:'https://evil.example.com/secrets'}},mock(()=>{
@@ -175,4 +197,40 @@ test('Litterbox one bounded file, default 24h; DDG no token and generation priva
     return Response.json({status:'ok',owner:'private@example.com'});
   })), 'ready');
   assert.equal(probeCalls,1);
+});
+
+test('Dub public stats opt-in, uncertain 2xx and provider 401 are distinct',async()=>{
+  const opted=await shortenUrl({url:'https://example.com/?campaign=private',public_stats:true},mock((_url,init)=>{
+    assert.equal(JSON.parse(String(init.body)).publicStats,true);
+    return Response.json({shortLink:'https://dub.sh/safe12'});
+  }));
+  assert.equal(opted.public_stats,true);
+  let count=0;
+  await assert.rejects(shortenUrl({url:'https://example.com'},mock(()=>{
+    count++;return Response.json({unexpected:'created-but-no-link'});
+  })),(e:any)=>e.code==='indeterminate');
+  assert.equal(count,1);
+  await assert.rejects(shortenUrl({url:'https://example.com'},mock(()=>
+    new Response(null,{status:401}))), (e:any)=>e.code==='auth_failed');
+});
+test('EnvShare invalid post-create ID is indeterminate, never retryable',async()=>{
+  let calls=0;
+  await assert.rejects(shareText({text:'non-sensitive-fixture'},mock(()=>{
+    calls++;return Response.json({id:'not-a-valid-base58-id!!'});
+  })),(e:any)=>e.code==='indeterminate');
+  assert.equal(calls,1);
+});
+test('file origin validation and redirects fail before Litterbox dispatch',async()=>{
+  for(const url of ['http://trusted-files.example.com/file','https://127.0.0.1/secret',
+    'https://trusted-files.example.com:8443/file','https://attacker@trusted-files.example.com/file']) {
+    await assert.rejects(uploadFile({file:{file_id:'file_1',download_url:url}},
+      mock(()=>{throw Error('must not fetch');}),['trusted-files.example.com']),
+      (e:any)=>e.code==='unsafe_file_source');
+  }
+  let requests=0;
+  await assert.rejects(uploadFile({file:{file_id:'file_1',
+    download_url:'https://trusted-files.example.com/file'}},
+    mock(()=>{requests++;return new Response(null,{status:302,headers:{location:'https://attacker.example.com'}});}),
+    ['trusted-files.example.com']),(e:any)=>e.code==='unsafe_file_source');
+  assert.equal(requests,1);
 });

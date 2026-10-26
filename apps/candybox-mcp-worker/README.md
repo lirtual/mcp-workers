@@ -23,9 +23,10 @@ Separate release blockers include:
 
 - Verify that anonymous Dub creation still works with random `dub.sh` keys,
   full queries and public stats disabled by default.
-- Match EnvShare's **historical v2 encrypted link format** byte-for-byte,
-  including IV, tag, Base58 and fragment handling. The current outbound adapter
-  is *unverified* and must not be enabled based on mocked responses alone.
+- Verify the corrected chronark/envshare v2 request and composite-key format
+  with a real independently retrieved share. Offline unit testing verifies
+  Base58 encoding, 16-byte IV, AES-128-GCM and fragment composite layout,
+  but does not prove today's upstream service accepts the request.
 - Prove `_meta["openai/fileParams"]` survives One-MCP, observe the trusted
   ChatGPT temporary download origin, validate Workers multipart with Litterbox,
   and independently download a bounded test file. Production has **no trusted
