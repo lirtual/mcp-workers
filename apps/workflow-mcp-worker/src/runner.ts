@@ -495,6 +495,14 @@ async function runAwaitedChild(
        });
      if(!status)return {status:'indeterminate',error_code:'child_lineage_missing'};
      if(status.outcome==='succeeded'){
+       // A child may finish after its native termination request lost an ACK.
+       // This read MUST be outside step.do: replay can return a cached successful
+       // status, but a subsequently committed cancellation still wins over
+       // parent dependency authorization. Preserve the child's real D1 result.
+       const cancelled=await env.DB.prepare(
+         'SELECT child_run_id FROM child_cancellations WHERE child_run_id=?')
+         .bind(childId).first<{child_run_id:string}>();
+       if(cancelled)return {status:'failed',error_code:'child_cancel_requested'};
        try{return {status:'succeeded',output:limitResult(status.result===null?null:JSON.parse(status.result))};}
        catch{return {status:'indeterminate',error_code:'child_result_unreadable'};}
      }
