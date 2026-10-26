@@ -121,6 +121,7 @@ jobs:
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          SESSION_RUNTIME_DATA_KEY: ${{ secrets.SESSION_RUNTIME_DATA_KEY }}
         run: |
           set -euo pipefail
           umask 077
@@ -178,9 +179,11 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0007_session_executions.sql') AS migration_v7,
              (SELECT count(*) FROM d1_migrations WHERE name='0008_session_locator.sql') AS migration_v8,
               (SELECT count(*) FROM d1_migrations WHERE name='0009_fixed_sessions.sql') AS migration_v9,
+              (SELECT count(*) FROM d1_migrations WHERE name='0010_session_runtime_data.sql') AS migration_v10,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data') AS runtime_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_executions') AS session_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='github_action_cancellations') AS cancellation_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
@@ -218,9 +221,11 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0007_session_executions.sql') AS migration_v7,
              (SELECT count(*) FROM d1_migrations WHERE name='0008_session_locator.sql') AS migration_v8,
               (SELECT count(*) FROM d1_migrations WHERE name='0009_fixed_sessions.sql') AS migration_v9,
+              (SELECT count(*) FROM d1_migrations WHERE name='0010_session_runtime_data.sql') AS migration_v10,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data') AS runtime_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_executions') AS session_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='github_action_cancellations') AS cancellation_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,

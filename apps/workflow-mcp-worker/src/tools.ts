@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { workflowCapabilities } from './capabilities.ts';
+import {getSessionRuntimeData} from './session-runtime-data.ts';
 import { WorkflowService, cleanError } from './store.ts';
 import type { Env } from './store.ts';
 
@@ -39,6 +40,7 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_cancel',{description:'Request cancellation for one published GitHub Action Step by Workflow Run/Step ID; never treat GitHub 202 as physical terminal. An explicit force=true is accepted only after a prior normal cancellation and a verified still-running job has exceeded the guarded wait. Force may bypass cleanup. Repeated requests never re-POST an uncertain cancellation.',inputSchema:z.object({run_id:id,step_id:z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),force:z.literal(true).optional()}).strict(),annotations:externalWrite},async({run_id,step_id,force})=>safe(()=>service.cancel(run_id,step_id,force===true)));
  server.registerTool('workflow_status',{description:'Inspect durable Run and Step states; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id}).strict(),annotations:externalReconcile},async({run_id})=>safe(()=>service.status(run_id)));
  server.registerTool('workflow_result',{description:'Inspect safe Run result and errors; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id}).strict(),annotations:externalReconcile},async({run_id})=>safe(()=>service.result(run_id)));
+ server.registerTool('workflow_session_data_get',{description:'Explicitly read the current, short-lived UU connection code for one approved, physically running Windows Session. Sensitive values enter this conversation. Run and Step IDs are locators, not separate authorization credentials. Never call automatically as part of status/result.',inputSchema:z.object({run_id:id,step_id:z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),key:z.literal('uu.credentials')}).strict(),annotations:externalRead},async({run_id,step_id,key})=>success(await getSessionRuntimeData(env,run_id,step_id,key)));
  return server;
 }
 
