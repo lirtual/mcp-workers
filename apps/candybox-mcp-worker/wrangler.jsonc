@@ -2,7 +2,7 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "candybox-mcp-worker",
   "main": "src/index.ts",
-  "compatibility_date": "2026-10-20",
+  "compatibility_date": "2026-09-10",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
