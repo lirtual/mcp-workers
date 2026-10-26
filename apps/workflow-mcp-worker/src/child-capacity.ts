@@ -82,7 +82,7 @@ export async function transferAwaitedChildCapacity(
     .bind(args.parentRunId,args.parentStepId).first<ChildRow>();
   const parent=await db.prepare('SELECT outcome,capacity_weight FROM runs WHERE id=?')
     .bind(args.parentRunId).first<{outcome:string;capacity_weight:number}>();
-  if(!child||!parent||parent.capacity_weight!==1||
+  if(!child||!parent||parent.outcome!=='running'||parent.capacity_weight!==1||
      child.id!==args.childRunId||child.workflow_id!==args.childWorkflowId||
      child.version_id!==args.childVersionId||child.parent_run_id!==args.parentRunId||
      child.parent_step_id!==args.parentStepId||
