@@ -196,7 +196,7 @@ test('Agent-readable Action schemas document required executable parameters',()=
 
 test('awaited-child capability distinguishes valid flow syntax from legacy unsupported fields',async()=>{
   const detail=await workflowCapabilities(env,'flow.child');
-  const {definition}=detail.example as {definition:unknown};
+  const {definition}=detail.example as {definition:Record<string,unknown>};
   const compiled=await compilePlan(definition);
   assert.equal(compiled.plan.steps[0]?.uses,'flow.child');
   await assert.rejects(
