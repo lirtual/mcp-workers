@@ -116,7 +116,20 @@ export async function getMail(env: Env, account: MailAccount, id: string): Promi
     const msg = await json(env, account, '/messages/' + enc(id) + '?$select=id,conversationId,subject,from,replyTo,toRecipients,receivedDateTime,bodyPreview,body', {
       headers: { Prefer: 'IdType="ImmutableId", outlook.body-content-type="text"' },
     });
-    return graphMessage(account, msg);
+    // List metadata only; attachment bytes are read separately with attachment_get.
+    // Do not rely on hasAttachments: Graph excludes inline-only attachments from it.
+    const listing = await json(env, account, '/messages/' + enc(id) +
+      '/attachments?$select=id,name,size,isInline&$top=20', {
+        headers: { Prefer: 'IdType="ImmutableId"' },
+      });
+    const files = Array.isArray(listing.value) ? listing.value : [];
+    return { ...graphMessage(account, msg),
+      attachments: files.slice(0, 20).map((file: any) => ({
+        id: String(file.id ?? ''), filename: String(file.name ?? 'attachment').slice(0, 200),
+        size: Number(file.size) || 0,
+      })).filter((file: { id: string }) => Boolean(file.id)),
+      attachments_truncated: files.length > 20 || Boolean(listing['@odata.nextLink']),
+    };
   }
   return fail('unsupported');
 }
