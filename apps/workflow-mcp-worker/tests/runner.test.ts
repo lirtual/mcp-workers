@@ -1923,23 +1923,22 @@ test('cancel during pending native create survives a 404 and terminates exactly 
   assert.equal(typeof intent.termination_attempted_at,'number');
 });
 
-test('cancel after create CAS but before native dispatch never calls Cloudflare create',async t=>{
+test('cancel before the atomic dispatch fence forbids Cloudflare create',async t=>{
   const f=await reservedChildTestFixture(t);
   let starts=0,intercepted=false;
   f.env.WORKFLOW.create=async()=>{starts++;};
   f.env.WORKFLOW.get=async()=>{throw Error('instance.not_found');};
   const oldPrepare=f.env.DB.prepare.bind(f.env.DB);
-  // Fire cancellation at the exact post-CAS/pre-native-create read.
   f.env.DB.prepare=((sql:string)=>{
     const statement=oldPrepare(sql);
-    if(!intercepted&&sql.includes('SELECT child_run_id FROM child_cancellations')){
+    if(!intercepted&&sql.includes("SET start_state='dispatching'")){
       intercepted=true;
-      const oldFirst=statement.first.bind(statement);
-      statement.first=(async()=>{
+      const oldRun=statement.run.bind(statement);
+      statement.run=(async()=>{
         const cancelled=await f.service.cancel(f.runId,'delegate');
-        assert.equal(cancelled.cancellation,'requested_unverified');
-        return oldFirst();
-      }) as typeof statement.first;
+        assert.equal(cancelled.cancellation,'cancelled_before_start');
+        return oldRun();
+      }) as typeof statement.run;
     }
     return statement;
   }) as typeof f.env.DB.prepare;
@@ -1950,4 +1949,43 @@ test('cancel after create CAS but before native dispatch never calls Cloudflare 
     .get(f.childId) as {outcome:string;start_state:string};
   assert.deepEqual({...row},{outcome:'cancelled',start_state:'cancelled_before_start'});
   assert.equal((await f.service.cancel(f.runId,'delegate')).cancellation,'cancelled_before_start');
+});
+
+test('cancel after committed dispatch fence records one termination and no false pre-start cancel',async t=>{
+  const f=await reservedChildTestFixture(t);
+  let starts=0,terminates=0,intercepted=false,exists=false,native='running';
+  f.env.WORKFLOW.create=async({id})=>{
+    assert.equal(id,f.childId);
+    starts++;exists=true;
+  };
+  f.env.WORKFLOW.get=async()=>{
+    if(!exists)throw Error('instance.not_found');
+    return {async status(){return {status:native};},
+      async terminate(){terminates++;native='terminated';}};
+  };
+  const oldPrepare=f.env.DB.prepare.bind(f.env.DB);
+  f.env.DB.prepare=((sql:string)=>{
+    const statement=oldPrepare(sql);
+    if(!intercepted&&sql.includes("SET start_state='dispatching'")){
+      intercepted=true;
+      const oldRun=statement.run.bind(statement);
+      statement.run=(async()=>{
+        const claim=await oldRun();
+        assert.equal(claim.meta.changes,1);
+        const cancelled=await f.service.cancel(f.runId,'delegate');
+        assert.equal(cancelled.cancellation,'requested_unverified');
+        return claim;
+      }) as typeof statement.run;
+    }
+    return statement;
+  }) as typeof f.env.DB.prepare;
+  assert.deepEqual(await f.start(),{childRunId:f.childId,start_state:'started'});
+  assert.equal(intercepted,true);
+  assert.equal(starts,1);
+  assert.equal(terminates,1);
+  const row=f.sqlite.prepare('SELECT outcome FROM runs WHERE id=?')
+    .get(f.childId) as {outcome:string};
+  assert.equal(row.outcome,'cancelled');
+  assert.equal((await f.service.cancel(f.runId,'delegate')).cancellation,'terminal_confirmed');
+  assert.equal(terminates,1);
 });
