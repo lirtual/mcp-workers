@@ -1774,6 +1774,13 @@ test('awaited child cancellation is one-shot, terminal evidence required, and no
   assert.equal(terminations,1);
   const row=sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(childId) as {outcome:string};
   assert.equal(row.outcome,'cancelled');
+  // Parent recovery observes the child's terminal D1 outcome, not a new
+  // native create attempt and not an uncertain restart.
+  assert.deepEqual(await startReservedAwaitedChild(env,{
+    parentRunId:run.run_id,parentStepId:'delegate',
+    childRunId:childId,timestamp:Date.now(),
+  }),{childRunId,start_state:'started'});
+  assert.equal(terminations,1);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM child_cancellations').get() as {n:number}).n,1);
 });
 
