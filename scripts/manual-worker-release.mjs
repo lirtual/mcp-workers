@@ -600,6 +600,7 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
     catch (error) {
       const message = error instanceof Error ? error.message : "";
       const transient = /^Required (Secret binding|runtime Secret) missing: /.test(message) ||
+        message === "Optional HTTP_CREDENTIALS_JSON binding inventory drift" ||
         message === "Active Worker version does not match the Wrangler-published version";
       if (attempt === 5 || !transient) throw error;
       await pause(2000);
@@ -678,12 +679,12 @@ async function main() {
     });
     // Compare the active deployment inside the existing retry loop. Cloudflare
     // may briefly serve the previous version after Wrangler reports success.
-    if (mode === 'readback' && worker === 'workflow-mcp-worker')
+    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker'))
       verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     return observed;
   };
   const observed = !exists ? { mode: "bootstrap" }
-    : mode === "readback" && worker === "workflow-mcp-worker"
+    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker")
       ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
