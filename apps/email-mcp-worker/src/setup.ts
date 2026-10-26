@@ -28,10 +28,18 @@ function imapForm(csrf: string, id?: string, address?: string): string {
     '<label>App password <input type="password" name="password" autocomplete="off" required maxlength="512"></label>' +
     '<button type="submit">Verify IMAP and SMTP TLS</button></form>';
 }
+// Chromium/WebKit apply form-action to cross-origin redirects after a POST.
+// OAuth starts with a same-origin form POST, then redirects only to these
+// provider-owned sign-in origins (including personal Microsoft accounts).
+// Keep the explicit allowlist; never broaden this to https: or '*'.
+export const SETUP_CSP = "default-src 'none'; style-src 'unsafe-inline'; " +
+  "form-action 'self' https://accounts.google.com https://login.microsoftonline.com https://login.live.com; " +
+  "base-uri 'none'; frame-ancestors 'none'";
+
 function securedHtml(body: string, cookie?: string): Response {
   const headers = new Headers({
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
-    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'content-security-policy': SETUP_CSP,
     'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
   });
   if (cookie) headers.set('set-cookie', cookie);
