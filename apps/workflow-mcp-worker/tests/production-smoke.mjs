@@ -548,14 +548,53 @@ async function runWebhookSmoke() {
   console.log('WEBHOOK_PRODUCTION_SMOKE_OK: wrong-token denied, duplicate stable event deduplicated, two immutable-version Runs succeeded, pause protected');
 }
 
+async function runSessionDataReadAcceptance() {
+  // Read-only: never log the short-lived credentials returned by the owner API.
+  const id=process.env.WORKFLOW_SESSION_DATA_RUN_ID || '';
+  const expected=process.env.WORKFLOW_SESSION_DATA_EXPECTED_STATUS;
+  assert.match(id,uuid,'A valid Session Run ID is required');
+  assert.ok(['ready','unavailable'].includes(expected),'Invalid expectation');
+  const rows=sql("SELECT count(*) AS n FROM session_executions s " +
+    "JOIN runs r ON r.id=s.run_id JOIN workflows w ON w.id=r.workflow_id " +
+    "WHERE s.run_id=" + quotedId(id) + " AND s.step_id='windows_session' " +
+    "AND s.session_mode='temporary' AND w.name='spec288-windows-runtime-acceptance'");
+  assert.equal(rows[0]?.n,1,'Only existing temporary Spec 288 Session can be probed');
+  await client.connect(transport);
+  const listed=await client.listTools();
+  assert.ok(listed.tools.some(t=>t.name==='workflow_session_data_get'),'Owner-read tool missing');
+  const response=await client.callTool({name:'workflow_session_data_get',arguments:{
+    run_id:id,step_id:'windows_session',key:'uu.credentials',
+  }});
+  assert.ok(response.isError!==true,'Owner-read rejected with MCP error');
+  let record;
+  try {record=JSON.parse(response.content?.[0]?.text||'');}
+  catch {throw Error('Invalid owner-read JSON');}
+  assert.equal(record?.status,expected,'Owner read status differs from expected');
+  if(expected==='ready'){
+    assert.ok(typeof record.data?.device_id==='string' &&
+      /^[0-9]{9}$/.test(record.data.device_id),'Invalid UU ID format');
+    assert.ok(typeof record.data?.verification_code==='string' &&
+      /^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{8}$/.test(record.data.verification_code),
+      'Invalid UU code format');
+    assert.ok(Date.parse(record.expires_at)>Date.now(),'Data expiry invalid');
+    console.log('SESSION_DATA_OWNER_READ_READY_OK: live data verified; values suppressed');
+  }else{
+    assert.equal(record.data,undefined,'Denied read must not expose values');
+    assert.ok(typeof record.reason==='string','Missing refusal reason');
+    console.log('SESSION_DATA_OWNER_READ_DENIED_OK: terminal data unavailable');
+  }
+}
+
 try {
-  await (process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
+  await (process.env.WORKFLOW_SESSION_DATA_SMOKE==='true'?runSessionDataReadAcceptance():
+    process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
     process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
     process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():
     process.env.WORKFLOW_WEBHOOK_SMOKE==='true'?runWebhookSmoke():runSmoke());
 } catch (e) {
   failure = e;
-  console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
+  if(process.env.WORKFLOW_SESSION_DATA_SMOKE==='true')console.error('SESSION_DATA_ACCEPTANCE_FAILED: no sensitive values logged');
+  else console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
 } finally {
   try { await client.close(); } catch { /* No successful state assumed from close */ }
   try { cleanup(); } catch (e) {
