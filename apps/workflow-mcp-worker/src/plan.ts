@@ -497,7 +497,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }else keys(withData,['data'],stepPath+'/with');
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
-    steps.push({id:s.id,uses:s.uses,needs:needs as string[],
+    steps.push({id:s.id,uses:s.uses as Step['uses'],needs:needs as string[],
       ...(s.needs_policy==='allow_skipped'?{needs_policy:'allow_skipped' as const}:{}),
       with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
   }
