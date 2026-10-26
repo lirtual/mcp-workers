@@ -239,3 +239,17 @@ test('reject oversized upload and expose HTTP 500 as a normal result',async()=>{
  assert.equal(upstream.isError,undefined);
  assert.equal(data(upstream).headers['www-authenticate'],'[REDACTED]');
 });
+
+test('temporary query credentials directly echoed by public API are redacted best-effort',async()=>{
+ const privateQuery='SYNTHETIC_QUERY_SECRET';
+ const result=await call({url:fixture+'/v1?access_token='+privateQuery},mock((u)=>{
+   assert.equal(u.searchParams.get('access_token'),privateQuery);
+   return new Response(JSON.stringify({echo:privateQuery}),{
+     headers:{'content-type':'application/json','x-query-echo':privateQuery},
+   });
+ }));
+ assert.equal(data(result).status,200);
+ assert.doesNotMatch(JSON.stringify(result),new RegExp(privateQuery));
+ assert.equal(data(result).json.echo,'[REDACTED]');
+ assert.equal(data(result).headers['x-query-echo'],'[REDACTED]');
+});
