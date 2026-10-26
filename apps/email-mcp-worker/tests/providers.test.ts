@@ -100,6 +100,21 @@ test('Gmail reply preserves native thread and RFC Message-ID relations; forward 
     assert.equal(sent.length, 2, 'unconfirmed Reply-To must never dispatch a message');
     await replyGmail(env, account, 'source123', 'Thanks', 'untrusted@example.test');
     assert.match(sent[2].mime, /To: untrusted@example\.test/);
+    const replyToHeader = original.payload.headers.find(h => h.name === 'Reply-To')!;
+    replyToHeader.value = '"Last, First" <untrusted@example.test>';
+    await replyGmail(env, account, 'source123', 'Thanks', 'untrusted@example.test');
+    assert.match(sent[3].mime, /To: untrusted@example\.test/,
+      'comma inside a quoted display name is not a second recipient');
+    for (const ambiguous of [
+      'Alice <first@example.test>, Bob <untrusted@example.test>',
+      'first@example.test, Bob <untrusted@example.test>',
+      '<first@example.test><untrusted@example.test>',
+    ]) {
+      replyToHeader.value = ambiguous;
+      await assert.rejects(() => replyGmail(env, account, 'source123', 'Thanks',
+        'untrusted@example.test'), /unsupported/, 'multiple Reply-To targets must fail closed');
+    }
+    assert.equal(sent.length, 4, 'ambiguous Reply-To must never dispatch a message');
   } finally { globalThis.fetch = oldFetch; }
 });
 test('Graph thread_get filters native conversationId and marks truncation', async () => {
