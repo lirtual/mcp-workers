@@ -15,6 +15,11 @@ DNS prevalidation, fixed IMAP 993 / SMTP 465 or 587 ports, hostname-validated
 TLS, and Workers runtime destination blocking. DNS prevalidation and connection
 resolution are separate: numeric peer-IP pinning is not guaranteed, and the
 residual DNS-rebinding limitation is documented in the README and Spec #279.
-Provider acceptance remains blocked until live authenticated protocol tests pass.
+QQ production IMAP search/get/attachment and authenticated SMTP self-send, delivery and
+same-request-id D1 dedupe were verified on 2026-10-26. Other providers and
+capability-dependent mail mutations are not yet independently accepted. The
+one-time SMTP send harness has been removed. Legacy acceptance Worker, Access,
+D1 (one encrypted test account) and two custom domains are separate from
+production and await an explicit cleanup decision.
 
 Spec: https://github.com/lirtual/mcp-workers/issues/279

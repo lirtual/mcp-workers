@@ -5,12 +5,12 @@ IMAP/SMTP. Use the existing **ChatGPT Gmail** and **Outlook Email** plugins
 for Google and Microsoft mailboxes instead. Those ChatGPT plugin connections
 are independent of this Worker and are not credentials this Worker can invoke.
 
-**Production release preparation:** Worker publishes only via the existing manual
-GitHub Actions `Release Worker` gate on `main`; never deploy from a PR or an
-unreviewed Cloudflare dashboard. The owner must stage five scoped GitHub
-Environment Secrets for `email-mcp-worker` before the first release.
-Release readback and MCP negative-auth validation are mandatory.
-Mailbox read/send and Portal validation remain independent acceptance checks.
+**Production status (2026-10-26):** `email-mcp-worker` is deployed on Cloudflare
+using the existing main-only, selected-Worker GitHub Actions release. Its
+owner-only Setup page, One-MCP Portal registration and 13-tool inventory were
+verified. Production has one connected QQ IMAP/SMTP account. Future releases
+must continue through the reviewed Actions gate, with active-version,
+binding and negative-auth verification. Gmail/Outlook remain separate plugins.
 
 ## Scope
 
@@ -79,11 +79,41 @@ Production D1 `email-mcp-db` is bound as `DB` with exactly two tables
 (`mail_accounts` and `send_attempts`). Its reviewed migration is applied
 through the same GitHub Actions release job. Setup uses
 `email.lirtual.dpdns.org`; MCP uses `email-mcp.lirtual.dpdns.org`.
-The previous temporary acceptance database is separate and must not be copied
-without its encryption key; reconnect mailboxes in production, then securely
-delete the temporary Worker, Access application, domains and D1.
+The legacy isolated acceptance D1 is independent from production and still
+contains one encrypted test account; do **not** copy it into production. Cloudflare
+readback confirmed these candidates for a separately authorized cleanup:
+`spec279-email-acceptance` Worker; `spec279_email_otp_20261026` D1;
+`Spec279 Email MCP Isolated Acceptance` Access application; and its two
+custom domains `spec279-email-preview.lirtual.dpdns.org` and
+`spec279-email-mcp.lirtual.dpdns.org`. Do not remove
+`email-mcp-worker`, `email-mcp-db`, `Email MCP Setup`, or the two
+production `email*.lirtual.dpdns.org` hostnames. Verify all dependencies
+and obtain separate cleanup approval before destructive operations.
 
-## Release gate — not yet satisfied
+## Production acceptance — verified 2026-10-26
+
+- [Read-side production acceptance #40305273111](https://github.com/lirtual/mcp-workers/actions/runs/40305273111):
+  QQ IMAP authentication, native folders, bounded envelope search, message
+  fetch and small TXT `attachment_get` with Base64/length checks passed.
+- [Owner-confirmed self-send #40306873809](https://github.com/lirtual/mcp-workers/actions/runs/40306873809):
+  one real QQ SMTP self-send returned `accepted`; repeated identical
+  `request_id` returned `duplicate=true` without re-dispatch. Owner also
+  confirmed delivery in the QQ mailbox; no mailbox screenshot was published.
+- [SQLite concurrency/partial acceptance #40305740989](https://github.com/lirtual/mcp-workers/actions/runs/40305740989):
+  offline real-SQL tests proved overlap fencing, stored uncertain outcomes
+  and no replay after partial recipient acceptance. No forced production
+  SMTP failure was injected.
+- [One-time write-harness cleanup #330](https://github.com/lirtual/mcp-workers/pull/330):
+  SMTP self-send manual switch/script removed; the remaining
+  `Email Acceptance` Action is read-only again.
+
+**Still not individually production-tested:** draft creation, reply, forward,
+read/unread marking, move and trash (capability-dependent); real fault
+injection for ambiguous SMTP outcomes; and other mailbox providers. Keep
+[Issue #279](https://github.com/lirtual/mcp-workers/issues/279) open until
+scope/cleanup is explicitly resolved. Do not repeat the core QQ read/send test.
+
+### Historical preproduction transport investigation
 
 Earlier [Cloudflare remote preview #40256001876](https://github.com/lirtual/mcp-workers/actions/runs/40256001876)
 proved an earlier candidate's remote D1 migration/MCP auth/tool discovery,
@@ -143,17 +173,11 @@ The new ImapFlow native Cloudflare transport was also tested in a one-shot
 remote preview against `imap.163.com:993` and `imap.qq.com:993`: **both
 returned their authentic TLS-protected IMAP greeting** without credentials.
 This only verifies the transport, not LOGIN, IMAP operations or sending.
-The SMTP `getSocket` adapter has only been probed without authentication;
-real mailbox tests are still required. No production Worker, D1 or mailbox
-credential was deployed for these tests.
-
-Acceptance still requires supported-provider live IMAP/SMTP authentication,
-STARTTLS/hostname verification, read/search/attachments/UIDVALIDITY,
-draft/send/reply/forward, failure injection and duplicate-send checks,
-Access OTP, dedicated D1, Portal E2E, security review, and a separately
-authorized GitHub Actions production release. Keep PR #284 Draft and
-Issue #279 Open until those gates pass. Do not add extra proxies or workers
-just to bypass an unsupported SMTP route.
+At the time of these historical unauthenticated transport probes, no
+production Worker, D1 or mailbox credential was deployed **for those probes**.
+That state was superseded by the authenticated QQ production acceptance above.
+Keep remaining operations and providers clearly marked as unverified, and do
+not add proxies or workers to bypass unsupported SMTP routes.
 
 ## Production Portal registration
 The manual `Release Worker` job attaches the deployed Worker as the `email`
