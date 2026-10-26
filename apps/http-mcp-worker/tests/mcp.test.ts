@@ -255,7 +255,7 @@ test('temporary query credentials directly echoed by public API are redacted bes
  assert.equal(data(result).headers['x-query-echo'],'[REDACTED]');
 });
 
-test('never-resolving upstream stream cancellation does not stall truncation or redirects',async()=>{
+test('never-resolving upstream stream cancellation and reads respect timeouts',async()=>{
  let cancellations=0;
  const response=(status:number,headers:Record<string,string>={})=>new Response(
   new ReadableStream<Uint8Array>({
@@ -281,4 +281,17 @@ test('never-resolving upstream stream cancellation does not stall truncation or 
  assert.equal(data(followed).redirect_count,1);
  assert.equal(data(followed).status,200);
  assert.equal(cancellations,2);
+ // A response stream whose read() and cancel() both never settle must still
+ // respect the caller timeout; writes stay indeterminate and are not retried.
+ const stuck=()=>new Response(new ReadableStream<Uint8Array>({
+  pull(){return new Promise<void>(()=>{});},
+  cancel(){return new Promise<void>(()=>{});},
+ }),{headers:{'content-type':'text/plain'}});
+ const get=await finishes(call({url:fixture,timeout_ms:25},mock(()=>stuck())));
+ assert.match(JSON.stringify(get),/timeout/);
+ let attempts=0;
+ const write=await finishes(call({url:fixture,method:'POST',text:'synthetic-write',timeout_ms:25},
+  mock(()=>{attempts++;return stuck();})));
+ assert.match(JSON.stringify(write),/indeterminate/);
+ assert.equal(attempts,1);
 });
