@@ -114,7 +114,8 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
     ['uses','with'],['flow','times','template'],
-    ['flow','duration_seconds'],['flow','workflow_id','version_id','inputs'],
+    ['flow','duration_seconds'],['flow','token_sha256','timeout_seconds'],
+    ['flow','workflow_id','version_id','inputs'],
     ['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
