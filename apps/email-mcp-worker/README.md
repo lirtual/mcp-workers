@@ -3,8 +3,9 @@
 This independent Cloudflare Worker serves stateless Streamable HTTP at /mcp
 and an Access-protected owner-only setup at email.lirtual.dpdns.org.
 
-UNRELEASED candidate. No D1 binding, Cloudflare Access policy, OAuth client,
-mailbox credentials or production custom route has been provisioned here.
+UNRELEASED candidate. The owner-only Cloudflare Access policy was provisioned
+externally on 2026-10-26, but no Email Worker, D1 binding, OAuth test client,
+mailbox credentials, DNS route or production custom domain has been provisioned.
 DO NOT deploy this candidate to production.
 
 ## Current capabilities
@@ -51,9 +52,16 @@ Do not claim full Spec #279 acceptance from current code.
 ## Configuration and release gates
 
 Create email-mcp-db D1; apply migrations/0001_accounts.sql; supply Worker DB
-binding. Provision Cloudflare Access for all setup and OAuth callback paths
-with owner OTP. Configure the email.lirtual.dpdns.org custom domain and
-separate Portal registration. Neither is provided by this branch.
+binding. Cloudflare Access application **Email MCP OAuth Setup** now covers
+`email.lirtual.dpdns.org` (app ID `38d73b36-7256-42f2-9399-dd12abb2f9d3`,
+AUD `cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b`).
+Readback confirmed owner-only email OTP, a 15-minute session, and `SameSite=Lax`
+for the browser's cross-site OAuth callback. Worker verification must use
+`ACCESS_TEAM_DOMAIN=lirtualzero.cloudflareaccess.com` and this exact `ACCESS_AUD`;
+these public identifiers are not credentials. **Access policy presence alone is
+not an OTP or OAuth end-to-end test**: no DNS/Worker custom domain, provider test
+clients, or separate Portal registration exists yet. Do not expose the callback
+until the isolated Worker and its secrets are ready; no production release is authorized.
 
 Required Worker Secrets: MCP_ACCESS_TOKEN, MAIL_ENCRYPTION_KEY (random canonical
 base64 32-byte value), ACCESS_TEAM_DOMAIN, ACCESS_AUD, OWNER_EMAIL,
