@@ -294,7 +294,8 @@ test('external event wait has one bounded, digest-only compiler contract and mat
   const overview=await workflowCapabilities(env);
   const catalog=overview.capability_ids as Array<{id:string;availability:string}>;
   assert.equal(catalog.find(c=>c.id==='flow.wait_event')?.availability,'supported');
-  const detail=await workflowCapabilities(env,'flow.wait_event');
+  const detail=await workflowCapabilities(env,'flow.wait_event') as {availability:string;
+    event_policy:{native_checkpoint:string};example:{definition:unknown;digest:string}};
   assert.equal(detail.availability,'supported');
   assert.equal(detail.event_policy.native_checkpoint,'step.waitForEvent');
   assert.equal((await compilePlan(detail.example.definition)).digest,detail.example.digest);
