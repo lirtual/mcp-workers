@@ -73,6 +73,28 @@ test('existing 8 ordinary slots and 2-unit awaited parent reserve share one D1 b
   assert.equal(Number((sqlite.prepare('SELECT '+capacityAdmissionPredicate(2)+' AS ok').get() as {ok:number}).ok),0);
 });
 
+test('old count-based Cron/Webhook/GitHub ingress cannot exceed weighted eight-unit capacity',t=>{
+  const {sqlite,makeWorkflow,makeParent,count}=fixture(t);
+  makeWorkflow('parent');
+  for(let i=0;i<4;i++)makeParent('p'+i,'parent',2);
+  assert.equal(count(),8);
+  // Exact admission COUNT predicate from the deployed pre-0011 Worker.
+  // Its old SELECT sees only four rows, not eight reserved capacity units.
+  const oldIngress=(id:string)=>sqlite.prepare(`INSERT OR IGNORE INTO runs
+    (id,workflow_id,version_id,instance_id,request_digest,inputs,
+      start_state,outcome,created_at,updated_at)
+    SELECT ?,'parent','v-parent',?,'digest','{}','reserved','queued',2000,2000
+    WHERE (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < 8`)
+    .run(id,id);
+  for(const id of ['cron-old','webhook-old','github-old'])
+    assert.equal(oldIngress(id).changes,0,'D1 guard must reject old count-based admission');
+  assert.equal(count(),8);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get() as {n:number}).n,4);
+  sqlite.prepare("UPDATE runs SET outcome='succeeded' WHERE id='p3'").run();
+  assert.equal(oldIngress('cron-after-capacity-freed').changes,1);
+  assert.equal(count(),7,'Old ingress still works when truly below weighted capacity');
+});
+
 test('four fully reserved parents atomically transfer child slots at limit 8',async t=>{
   const {sqlite,db,makeWorkflow,makeParent,count}=fixture(t);
   makeWorkflow('parent');makeWorkflow('child');
