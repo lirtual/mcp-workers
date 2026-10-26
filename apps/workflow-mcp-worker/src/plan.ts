@@ -480,7 +480,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   }
   if(expanded.filter(x=>(x as {uses?:unknown}).uses==='flow.child').length>1)
     throw new PlanError('multiple_child_steps_unsupported','/steps');
-  const totalWaitSeconds=expanded.reduce((sum,x)=>{
+  const totalWaitSeconds=expanded.reduce<number>((sum,x)=>{
     const step=x as {uses?:unknown;with?:{duration_seconds?:number}};
     return sum+(step.uses==='flow.wait'?Number(step.with?.duration_seconds):0);
   },0);
