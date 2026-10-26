@@ -220,6 +220,15 @@ export class WorkflowService {
     try{childPlan=JSON.parse(row.plan) as Plan;}catch{throw new PlanError('invalid_child_publication','/steps');}
     if(!Array.isArray(childPlan.steps)||childPlan.steps.some(s=>s.uses==='flow.child'))
       throw new PlanError('child_nesting_unsupported','/steps');
+    // Until child cancellation/physical terminal propagation has independent
+    // evidence, a child must not launch a GitHub Task or Session whose
+    // physical lifecycle might outlast the child Workflow.
+    if(childPlan.steps.some(s=>s.uses==='github.run'||
+      (s.uses==='flow.foreach'&&
+        (Array.isArray(s.with.templates)?s.with.templates:[s.with.template])
+          .some((x:unknown)=>x!==null&&typeof x==='object'&&
+            (x as {uses?:unknown}).uses==='github.run'))))
+      throw new PlanError('child_external_action_unsupported','/steps');
     return [{workflow_id:id,version_id:version,digest:row.digest}];
   }
   async validate(workflow_id:string,revision:number){
