@@ -47,6 +47,13 @@ test('IMAP replies require a caller-confirmed Reply-To and a valid RFC message i
   assert.equal(relation.inReplyTo, '<original123@example.test>');
   assert.equal(relation.references, '<previous@example.test> <original123@example.test>');
   assert.throws(() => imapReplyHeaders(original, 'attacker@example.test'), /reply_recipient_mismatch/);
+  assert.throws(() => imapReplyHeaders({
+    ...original, replyTo: [{ address: 'reply@example.test' }, { address: 'other@example.test' }],
+  }, 'reply@example.test'), /unsupported/, 'must not silently ignore a second Reply-To target');
+  assert.throws(() => imapReplyHeaders({ ...original, replyTo: [{ address: 'reply@example.test' }, {}] },
+    'reply@example.test'), /unsupported/, 'malformed multi-target Reply-To must fail closed');
+  const fallback = imapReplyHeaders({ ...original, replyTo: [] }, 'sender@example.test');
+  assert.deepEqual(fallback.to, ['sender@example.test']);
   assert.throws(() => imapReplyHeaders({ ...original, messageId: 'bad\r\nBcc:someone@example.test' },
     'reply@example.test'), /unsupported/);
   assert.throws(() => imapReplyHeaders({ from: { address: 'sender@example.test' } },
