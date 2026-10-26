@@ -94,7 +94,7 @@ export async function searchAcross(env: Env, accounts: string[], query: string, 
   const ordered = [...accounts].sort();
   const digest = await sha256(JSON.stringify({ accounts: ordered, query }));
   const positions = await decodeCursor(env, cursor, digest);
-  const statuses: { account_id: string; status: string; error?: string; count: number }[] = [];
+  const statuses: { account_id: string; status: string; error?: string; count: number; search_scope?: string }[] = [];
   const messages: any[] = [];
   const next: Record<string, string | null> = {};
   // Bounded concurrency: at most three upstream accounts per batch.
@@ -118,7 +118,8 @@ export async function searchAcross(env: Env, accounts: string[], query: string, 
         continue;
       }
       messages.push(...item.result.messages);
-      statuses.push({ account_id: item.aid, status: 'success', count: item.result.messages.length });
+      statuses.push({ account_id: item.aid, status: 'success', count: item.result.messages.length,
+        search_scope: 'search_scope' in item.result ? item.result.search_scope : undefined });
       // Retain completed mailboxes in the cursor; otherwise later pages replay page one.
       next[item.aid] = item.result.next ?? null;
     }
@@ -185,7 +186,7 @@ export function buildMcpServer(env: Env): McpServer {
     inputSchema: z.object({ account_id: accountId }).strict(), annotations: read,
   }, async ({ account_id }) => safe(async () => capabilities(env, await getAccount(env, account_id))));
   server.registerTool('mail_search', {
-    description: 'Search 1-8 explicit mailboxes with bounded per-account results and partial failure reporting.',
+    description: 'Search 1-8 explicit mailboxes with bounded per-account results and partial failure reporting. QQ/163/126 use envelope-only search (subject and address headers), not body text.',
     inputSchema: z.object({
       account_ids: z.array(accountId).min(1).max(8),
       query: z.string().min(1).max(256), cursor: z.string().max(8000).optional(),
