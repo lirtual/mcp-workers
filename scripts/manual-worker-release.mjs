@@ -255,6 +255,7 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.capacity_column === 0 && row?.parent_column === 0 &&
     row?.parent_step_column === 0 && row?.child_index === 0 &&
     row?.child_cancel_table === 0 && row?.child_terminate_fence_column === 0 &&
+    row?.capacity_guard_trigger === 0 &&
     row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
     row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
     row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
@@ -264,6 +265,7 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.capacity_column === 1 && row?.parent_column === 1 &&
     row?.parent_step_column === 1 && row?.child_index === 1 &&
     row?.child_cancel_table === 1 && row?.child_terminate_fence_column === 1 &&
+    row?.capacity_guard_trigger === 1 &&
     row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
     row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
     row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
