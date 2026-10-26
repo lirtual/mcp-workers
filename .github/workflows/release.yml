@@ -191,6 +191,8 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0009_fixed_sessions.sql') AS migration_v9,
               (SELECT count(*) FROM d1_migrations WHERE name='0010_session_runtime_data.sql') AS migration_v10,
              (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
+             (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
@@ -264,6 +266,8 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0009_fixed_sessions.sql') AS migration_v9,
               (SELECT count(*) FROM d1_migrations WHERE name='0010_session_runtime_data.sql') AS migration_v10,
              (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
+             (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
@@ -363,6 +367,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-email-portal.mjs
+
+      - name: Validate connected Email account via production read-only IMAP
+        if: inputs.worker == 'email-mcp-worker'
+        shell: bash
+        env:
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: node scripts/email-production-read-smoke.mjs
 
       - name: Check existing public health endpoint
         if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'http-mcp-worker'
