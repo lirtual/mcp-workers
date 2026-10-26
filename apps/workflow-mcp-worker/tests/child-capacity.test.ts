@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {
   RUN_CAPACITY_LIMIT,ACTIVE_CAPACITY_UNITS_SQL,
-  capacityAdmissionPredicate,transferAwaitedChildCapacity,
+  capacityAdmissionPredicate,transferAwaitedChildCapacity,startReservedAwaitedChild,
 } from '../src/child-capacity.ts';
 
 function fixture(t:test.TestContext){
@@ -163,4 +163,110 @@ test('a D1 batch failure rolls back child insert and parent weight transfer toge
     .get('p1') as {capacity_weight:number}).capacity_weight,2);
   assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id IS NOT NULL')
     .get() as {n:number}).n,0);
+});
+
+function childStartFixture(t:test.TestContext){
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent');
+  return f;
+}
+const startArgs=(timestamp=2000)=>({
+  parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp,
+});
+
+test('an acknowledged child create replays without a second native dispatch',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  const created:string[]=[];
+  const env={DB:f.db,WORKFLOW:{
+    async create(o:{id:string}){created.push(o.id);},
+    async get(){return {async status(){return {status:'running'};}};},
+  }};
+  const first=await startReservedAwaitedChild(env as never,startArgs());
+  const replay=await startReservedAwaitedChild(env as never,startArgs(3000));
+  assert.deepEqual(first,{childRunId:'c1',start_state:'started'});
+  assert.deepEqual(replay,first);
+  assert.deepEqual(created,['c1']);
+});
+
+test('ambiguous create followed by unavailable lookup never redispatches',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  const attempts:string[]=[];
+  const env={DB:f.db,WORKFLOW:{
+    async create(o:{id:string}){attempts.push(o.id);throw Error('network_timeout');},
+    async get(){throw Error('transient_cloudflare_503');},
+  }};
+  assert.deepEqual(await startReservedAwaitedChild(env as never,startArgs()),
+    {childRunId:'c1',start_state:'start_unknown'});
+  assert.deepEqual(await startReservedAwaitedChild(env as never,startArgs(3000)),
+    {childRunId:'c1',start_state:'start_unknown'});
+  assert.deepEqual(attempts,['c1']);
+  assert.equal(f.count(),2);
+});
+
+test('a lost create ACK with confirmed native instance is repaired without duplicate',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  const attempts:string[]=[];
+  const env={DB:f.db,WORKFLOW:{
+    async create(o:{id:string}){attempts.push(o.id);throw Error('ack_lost');},
+    async get(id:string){
+      assert.equal(id,'c1');
+      return {async status(){return {status:'running'};}};
+    },
+  }};
+  assert.deepEqual(await startReservedAwaitedChild(env as never,startArgs()),
+    {childRunId:'c1',start_state:'started'});
+  assert.deepEqual(attempts,['c1']);
+});
+
+test('confirmed missing child retries only its original native instance ID',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  const attempts:string[]=[];
+  let missing=true;
+  const env={DB:f.db,WORKFLOW:{
+    async create(o:{id:string}){
+      attempts.push(o.id);
+      if(attempts.length===1)throw Error('ack_lost');
+      missing=false;
+    },
+    async get(){
+      if(missing)throw Error('instance.not_found');
+      return {async status(){return {status:'running'};}};
+    },
+  }};
+  assert.deepEqual(await startReservedAwaitedChild(env as never,startArgs()),
+    {childRunId:'c1',start_state:'start_unknown'});
+  assert.deepEqual(await startReservedAwaitedChild(env as never,startArgs(3000)),
+    {childRunId:'c1',start_state:'started'});
+  assert.deepEqual(attempts,['c1','c1']);
+});
+
+test('stale unknown child terminates uncertainty without creating a new instance',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  f.sqlite.prepare("UPDATE runs SET start_state='start_unknown' WHERE id='c1'").run();
+  let calls=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){calls++;},
+    async get(){throw Error('instance.not_found');},
+  }};
+  assert.deepEqual(await startReservedAwaitedChild(env as never,
+    startArgs(1000+10*60_000)),
+    {childRunId:'c1',start_state:'indeterminate'});
+  assert.equal(calls,0);
+  assert.equal((f.sqlite.prepare("SELECT outcome FROM runs WHERE id='c1'").get() as {outcome:string}).outcome,'indeterminate');
+});
+
+test('terminated parent cannot first-start even a reserved child',async t=>{
+  const f=childStartFixture(t);
+  await transferAwaitedChildCapacity(f.db as unknown as D1Database,request());
+  f.sqlite.prepare("UPDATE runs SET outcome='failed' WHERE id='p1'").run();
+  let calls=0;
+  await assert.rejects(()=>startReservedAwaitedChild({
+    DB:f.db,WORKFLOW:{async create(){calls++;},async get(){throw Error('instance.not_found');}},
+  } as never,startArgs()),/child_start_not_authorized/);
+  assert.equal(calls,0);
 });
