@@ -1830,3 +1830,117 @@ test('child publish refuses unmanaged physical GitHub actions until cancellation
   await assert.rejects(()=>service.publish(parent.workflow_id,1),
     /child_external_action_unsupported/);
 });
+
+async function reservedChildTestFixture(t:test.TestContext){
+  const f=setup(t);
+  const target=await f.service.create(JSON.stringify({version:1,name:'Cancel-race child',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]}));
+  const childVersion=await f.service.publish(target.workflow_id,1);
+  const parent=await f.service.create(JSON.stringify({version:1,name:'Cancel-race parent',
+    steps:[{id:'delegate',flow:'child',workflow_id:target.workflow_id,
+      version_id:childVersion.published_version_id,inputs:{}}]}));
+  const validation=await f.service.validateDefinition((await f.service.get(parent.workflow_id)).definition) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await f.service.publish(parent.workflow_id,1,[],false,false,[],validation.required_children!);
+  const run=await f.service.start(parent.workflow_id);
+  f.sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(run.run_id);
+  const childId=await awaitedChildRunId(run.run_id,'delegate');
+  const hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('{}'))).toString('hex');
+  await transferAwaitedChildCapacity(f.env.DB,{
+    parentRunId:run.run_id,parentStepId:'delegate',
+    childRunId:childId,childWorkflowId:target.workflow_id,
+    childVersionId:childVersion.published_version_id,
+    admissionKey:'child-'+childId,requestDigest:hash,
+    inputJson:'{}',timestamp:Date.now(),
+  });
+  return {...f,runId:run.run_id,childId,start:()=>startReservedAwaitedChild(f.env,{
+    parentRunId:run.run_id,parentStepId:'delegate',childRunId:childId,timestamp:Date.now(),
+  })};
+}
+
+test('cancel-before-native-start prevents any subsequent Cloudflare create, even on replay',async t=>{
+  const f=await reservedChildTestFixture(t);
+  let starts=0,ends=0;
+  f.env.WORKFLOW.create=async()=>{starts++;};
+  f.env.WORKFLOW.get=async()=>{
+    ends++;
+    throw Error('instance.not_found');
+  };
+  const first=await f.service.cancel(f.runId,'delegate');
+  assert.equal(first.cancellation,'cancelled_before_start');
+  assert.equal(first.native_workflow_terminated,false);
+  assert.equal(first.physical_terminated,false);
+  assert.deepEqual(await f.start(),{childRunId:f.childId,start_state:'cancelled_before_start'});
+  const replay=await f.service.cancel(f.runId,'delegate');
+  assert.equal(replay.cancellation,'cancelled_before_start');
+  assert.equal(starts,0);
+  assert.equal(ends,0);
+  const child=f.sqlite.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
+    .get(f.childId) as {outcome:string;start_state:string};
+  assert.deepEqual(child,{outcome:'cancelled',start_state:'reserved'});
+});
+
+test('cancel during pending native create survives a 404 and terminates exactly once after ACK',async t=>{
+  const f=await reservedChildTestFixture(t);
+  const entered=deferred(),resume=deferred();
+  let exists=false,native='running',starts=0,terminations=0;
+  f.env.WORKFLOW.create=async({id})=>{
+    assert.equal(id,f.childId);
+    starts++;
+    entered.resolve();
+    await resume.promise;
+    exists=true;
+  };
+  f.env.WORKFLOW.get=async()=>{
+    if(!exists)throw Error('instance.not_found');
+    return {async status(){return {status:native};},
+      async terminate(){terminations++;native='terminated';}};
+  };
+  const inflight=f.start();
+  await entered.promise;
+  const request=await f.service.cancel(f.runId,'delegate');
+  assert.equal(request.cancellation,'requested_unverified');
+  let intent=f.sqlite.prepare('SELECT termination_attempted_at FROM child_cancellations WHERE child_run_id=?')
+    .get(f.childId) as {termination_attempted_at:number|null};
+  assert.equal(intent.termination_attempted_at,null);
+  resume.resolve();
+  assert.deepEqual(await inflight,{childRunId:f.childId,start_state:'started'});
+  assert.equal(terminations,1);
+  assert.equal(starts,1);
+  assert.equal((f.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(f.childId) as
+    {outcome:string}).outcome,'cancelled');
+  assert.equal((await f.service.cancel(f.runId,'delegate')).cancellation,'terminal_confirmed');
+  assert.equal(terminations,1);
+  intent=f.sqlite.prepare('SELECT termination_attempted_at FROM child_cancellations WHERE child_run_id=?')
+    .get(f.childId) as {termination_attempted_at:number|null};
+  assert.equal(typeof intent.termination_attempted_at,'number');
+});
+
+test('cancel after create CAS but before native dispatch never calls Cloudflare create',async t=>{
+  const f=await reservedChildTestFixture(t);
+  let starts=0,intercepted=false;
+  f.env.WORKFLOW.create=async()=>{starts++;};
+  f.env.WORKFLOW.get=async()=>{throw Error('instance.not_found');};
+  const oldPrepare=f.env.DB.prepare.bind(f.env.DB);
+  // Fire cancellation at the exact post-CAS/pre-native-create read.
+  f.env.DB.prepare=((sql:string)=>{
+    const statement=oldPrepare(sql);
+    if(!intercepted&&sql.includes('SELECT child_run_id FROM child_cancellations')){
+      intercepted=true;
+      const oldFirst=statement.first.bind(statement);
+      statement.first=(async()=>{
+        const cancelled=await f.service.cancel(f.runId,'delegate');
+        assert.equal(cancelled.cancellation,'requested_unverified');
+        return oldFirst();
+      }) as typeof statement.first;
+    }
+    return statement;
+  }) as typeof f.env.DB.prepare;
+  assert.deepEqual(await f.start(),{childRunId:f.childId,start_state:'cancelled_before_start'});
+  assert.equal(starts,0);
+  assert.equal(intercepted,true);
+  const row=f.sqlite.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
+    .get(f.childId) as {outcome:string;start_state:string};
+  assert.deepEqual(row,{outcome:'cancelled',start_state:'reserved'});
+  assert.equal((await f.service.cancel(f.runId,'delegate')).cancellation,'cancelled_before_start');
+});
