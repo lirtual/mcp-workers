@@ -8,5 +8,5 @@ CREATE TABLE wait_event_receipts (
  created_at INTEGER NOT NULL,
  last_sent_at INTEGER,
  PRIMARY KEY(run_id,step_id),
- FOREIGN KEY(run_id) REFERENCES runs(id)
+ FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE
 );
