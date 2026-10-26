@@ -17,7 +17,7 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.foreach'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.foreach' | 'flow.child'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown;
 };
@@ -30,8 +30,9 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
 const RESERVED = new Set(['eval','javascript','script','code','shell','endpoint','url','command','function']);
 const KNOWN_UNSUPPORTED_FIELDS = new Set([
@@ -257,7 +258,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(!Object.hasOwn(candidate,'flow')){
       // Source callers cannot masquerade as an internal compiled Flow Step.
       // Only the validated flow:foreach branch below may produce this opcode.
-      if(candidate.uses==='flow.foreach')
+      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child')
         throw new PlanError('unsupported_capability','/steps/'+i+'/uses');
       expanded.push(candidate);
       if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
@@ -265,6 +266,25 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       continue;
     }
     const path='/steps/'+i;
+    if(candidate.flow==='child'){
+      keys(candidate,['id','flow','workflow_id','version_id','inputs','needs'],path);
+      if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||OBJECT_PROTOTYPE_KEYS.has(candidate.id))
+        throw new PlanError('invalid_step_id',path+'/id');
+      if(typeof candidate.workflow_id!=='string'||!UUID_RE.test(candidate.workflow_id)||
+         typeof candidate.version_id!=='string'||!UUID_RE.test(candidate.version_id))
+        throw new PlanError('invalid_child_identity',path+'/workflow_id');
+      const inputs=object(candidate.inputs,'invalid_child_inputs');
+      if(Object.keys(inputs).length>PLAN_LIMITS.maxInputs)
+        throw new PlanError('invalid_child_inputs',path+'/inputs');
+      const deps=candidate.needs??[];
+      if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||new Set(deps).size!==deps.length)
+        throw new PlanError('invalid_dependencies',path+'/needs');
+      expanded.push({id:candidate.id,uses:'flow.child',needs:deps,
+        with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs}});
+      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
+      continue;
+    }
     if(candidate.flow==='foreach'){
       keys(candidate,['id','flow','needs','items','max_items','template'],path);
       if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
@@ -437,6 +457,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(typeof id==='string'&&foreachChildren.has(id))
       throw new PlanError('invalid_step_id','/steps');
   }
+  if(expanded.filter(x=>(x as {uses?:unknown}).uses==='flow.child').length>1)
+    throw new PlanError('multiple_child_steps_unsupported','/steps');
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of expanded){
@@ -445,7 +467,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(s.uses!=='flow.foreach'&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
+    if(!['flow.foreach','flow.child'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     // Opt-in branch fan-in: completed/skipped dependencies may join, but a
@@ -457,6 +479,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     const withData=object(s.with,'invalid_step_arguments');
     if(s.uses==='flow.foreach'){
       keys(withData,['items','max_items','template','templates'],stepPath+'/with');
+    }else if(s.uses==='flow.child'){
+      keys(withData,['workflow_id','version_id','inputs'],stepPath+'/with');
     }else if(s.uses==='github.run'){
       checkGitHubActionWith(withData,stepPath+'/with');
     }else if(s.uses==='mcp.call'){
@@ -479,7 +503,12 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   }
   for(const s of steps){
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
-    if(s.uses==='flow.foreach'){
+    if(s.uses==='flow.child'){
+      try{expression(s.with.inputs,s,0,true);}catch(error){
+        if(error instanceof PlanError)throw new PlanError(error.message,'/steps/'+steps.indexOf(s)+'/inputs');
+        throw error;
+      }
+    }else if(s.uses==='flow.foreach'){
       const sourcePath='/steps/'+steps.indexOf(s);
       const check=(value:unknown,path:string,allowItem=false)=>{
         try{expression(value,s,0,false,allowItem);}
