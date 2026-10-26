@@ -41,6 +41,8 @@ export type Env = {
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
   GITHUB_ACTION_OIDC_AUDIENCE?: string;
+  // Canonical base64-encoded 256-bit AES-GCM key for short-lived Session data.
+  SESSION_RUNTIME_DATA_KEY?: string;
 
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
