@@ -30,7 +30,7 @@ export const BROWSER_TOOLS = [
   },
   {
     name:"browser_handoff_return",title:"Explicitly return browser control",
-    description:"Explicit owner-directed return. Revoke human access and verify cleanup before admitting AI tools. Refresh tab identities and observe a new snapshot before continuing. Expiry, disconnect and restart never return control automatically.",
+    description:"Explicit owner-directed return. During preparing, first return cancels in-flight setup; remain blocked until cleanup completes and a subsequent explicit return confirms state ai. Revoke human access and verify cleanup before admitting AI tools. Refresh tab identities and observe a new snapshot before continuing. Expiry, disconnect and restart never return control automatically.",
     inputSchema:schema({},[]),
     annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},
   },
