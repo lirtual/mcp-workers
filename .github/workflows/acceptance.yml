@@ -15,6 +15,7 @@ on:
           - production-webhook
           - portal-readonly
           - github-action-result-cloud
+          - isolated-child
           - portal-register
       confirm_portal_write:
         description: Explicitly authorize production Portal configuration changes (portal-register only)
@@ -140,6 +141,41 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify actual Task ingress with real GitHub JWT and disposable D1
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/github-action-result-cloud.mjs
+
+  workflow-child-isolated:
+    name: Disposable native parent-child Cloudflare acceptance
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/feat/176-child-capacity-foundation' &&
+          inputs.test_type == 'isolated-child' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-child-isolated-acceptance
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify native awaited child with disposable Worker, Workflow, and D1
+        run: node apps/workflow-mcp-worker/tests/child-cloud-acceptance.mjs
 
   workflow-portal-register:
     name: Register existing Workflow MCP in One-MCP Portal (no Worker deploy)
