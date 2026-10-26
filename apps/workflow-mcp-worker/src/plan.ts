@@ -258,7 +258,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(!Object.hasOwn(candidate,'flow')){
       // Source callers cannot masquerade as an internal compiled Flow Step.
       // Only the validated flow:foreach branch below may produce this opcode.
-      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child')
+      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait')
         throw new PlanError('unsupported_capability','/steps/'+i+'/uses');
       expanded.push(candidate);
       if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
