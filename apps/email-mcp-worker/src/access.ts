@@ -32,7 +32,7 @@ export async function verifyAccess(request: Request, env: Env, requestFetch: typ
     typeof payload.exp !== 'number' || payload.exp <= now ||
     (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || payload.nbf > now + 30)) ||
     !payload.sub || !payload.email || payload.email.toLowerCase() !== env.OWNER_EMAIL.toLowerCase()) fail('unauthorized');
-  const certs = await requestFetch('https://' + team + '/cdn-cgi/access/certs', { redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const certs = await requestFetch('https://' + team + '/cdn-cgi/access/certs', { redirect: 'manual', signal: AbortSignal.timeout(5000) });
   if (!certs.ok) fail('auth_unavailable');
   const body = await certs.json() as { keys?: (JsonWebKey & { kid?: string; alg?: string })[] };
   const jwk = body.keys?.find(key => key.kid === header.kid && key.kty === 'RSA' && key.alg === 'RS256');
