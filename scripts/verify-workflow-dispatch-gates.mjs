@@ -136,6 +136,8 @@ assert.match(emailAcceptance, /git ls-remote/);
 assert.match(emailAcceptance, /group: email-production-readonly-acceptance/);
 assert.match(emailAcceptance, /EMAIL_READONLY_ACCEPTANCE: "true"/);
 assert.match(emailAcceptance, /EMAIL_REQUIRE_ATTACHMENT: "true"/);
+assert.match(emailAcceptance, /EMAIL_TEST_SUBJECT: "test"/);
+assert.match(emailSmoke, /email_smoke_target_subject_not_found/);
 assert.match(emailSmoke, /email_smoke_attachment_not_verified/);
 
 assert.match(emailAcceptance, /node scripts\/email-production-read-smoke\.mjs/);
