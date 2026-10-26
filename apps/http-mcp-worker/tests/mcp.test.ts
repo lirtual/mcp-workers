@@ -254,3 +254,31 @@ test('temporary query credentials directly echoed by public API are redacted bes
  assert.equal(data(result).json.echo,'[REDACTED]');
  assert.equal(data(result).headers['x-query-echo'],'[REDACTED]');
 });
+
+test('never-resolving upstream stream cancellation does not stall truncation or redirects',async()=>{
+ let cancellations=0;
+ const response=(status:number,headers:Record<string,string>={})=>new Response(
+  new ReadableStream<Uint8Array>({
+   start(controller){controller.enqueue(new TextEncoder().encode('12345'));},
+   cancel(){cancellations++;return new Promise<void>(()=>{});}
+  }),{status,headers});
+ async function finishes<T>(task:Promise<T>):Promise<T> {
+  let timeout:ReturnType<typeof setTimeout>|undefined;
+  try {
+   return await Promise.race([task,new Promise<never>((_resolve,reject)=>{
+    timeout=setTimeout(()=>reject(new Error('upstream cancel stalled HTTP result')),2000);
+   })]);
+  } finally {if(timeout!==undefined)clearTimeout(timeout);}
+ }
+ const limited=await finishes(call({url:fixture,max_response_bytes:2},
+  mock(()=>response(200,{'content-type':'text/plain'}))));
+ assert.equal(data(limited).body,'12');
+ assert.equal(data(limited).truncated,true);
+ const followed=await finishes(call({url:fixture+'/old',redirect:'same-origin'},
+  mock(u=>u.pathname==='/old'
+   ?response(302,{location:'/next'})
+   :Response.json({ok:true}))));
+ assert.equal(data(followed).redirect_count,1);
+ assert.equal(data(followed).status,200);
+ assert.equal(cancellations,2);
+});
