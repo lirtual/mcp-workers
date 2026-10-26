@@ -480,7 +480,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   }
   if(expanded.filter(x=>(x as {uses?:unknown}).uses==='flow.child').length>1)
     throw new PlanError('multiple_child_steps_unsupported','/steps');
-  const totalWaitSeconds=expanded.reduce((sum,x)=>sum+(x as {uses?:unknown;with?:{duration_seconds?:number}}).uses==='flow.wait'?sum+Number((x as {with:{duration_seconds:number}}).with.duration_seconds):sum,0);
+  const totalWaitSeconds=expanded.reduce((sum,x)=>{
+    const step=x as {uses?:unknown;with?:{duration_seconds?:number}};
+    return sum+(step.uses==='flow.wait'?Number(step.with?.duration_seconds):0);
+  },0);
   if(totalWaitSeconds>PLAN_LIMITS.maxWaitSeconds)
     throw new PlanError('wait_budget_exceeded','/steps');
   const steps:Step[]=[];
