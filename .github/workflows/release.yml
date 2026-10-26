@@ -189,6 +189,8 @@ jobs:
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_run_id') AS parent_column,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_step_id') AS parent_step_column,
              (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step') AS child_index,
+             (SELECT count(*) FROM sqlite_master WHERE type='trigger'
+               AND name='runs_top_level_capacity_guard') AS capacity_guard_trigger,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='child_cancellations') AS child_cancel_table,
              (SELECT count(*) FROM pragma_table_info('child_cancellations') WHERE name='termination_attempted_at') AS child_terminate_fence_column,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_executions') AS session_table,
@@ -238,6 +240,8 @@ jobs:
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_run_id') AS parent_column,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_step_id') AS parent_step_column,
              (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step') AS child_index,
+             (SELECT count(*) FROM sqlite_master WHERE type='trigger'
+               AND name='runs_top_level_capacity_guard') AS capacity_guard_trigger,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='child_cancellations') AS child_cancel_table,
              (SELECT count(*) FROM pragma_table_info('child_cancellations') WHERE name='termination_attempted_at') AS child_terminate_fence_column,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_executions') AS session_table,
