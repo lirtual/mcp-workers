@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {
   RUN_CAPACITY_LIMIT,ACTIVE_CAPACITY_UNITS_SQL,
-  capacityAdmissionPredicate,transferAwaitedChildCapacity,startReservedAwaitedChild,
+  capacityAdmissionPredicate,transferAwaitedChildCapacity,startReservedAwaitedChild,awaitedChildRunId,
 } from '../src/child-capacity.ts';
 
 function fixture(t:test.TestContext){
@@ -269,4 +269,15 @@ test('terminated parent cannot first-start even a reserved child',async t=>{
     DB:f.db,WORKFLOW:{async create(){calls++;},async get(){throw Error('instance.not_found');}},
   } as never,startArgs()),/child_start_not_authorized/);
   assert.equal(calls,0);
+});
+
+test('child UUID is stable across retries and distinct for another parent or Step',async()=>{
+  const parent='48ba36ae-97ba-4a39-a839-03a2f8879b60';
+  const one=await awaitedChildRunId(parent,'launch_child');
+  assert.match(one,/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(one,await awaitedChildRunId(parent,'launch_child'));
+  assert.notEqual(one,await awaitedChildRunId(parent,'another'));
+  assert.notEqual(one,await awaitedChildRunId('58ba36ae-97ba-4a39-a839-03a2f8879b60','launch_child'));
+  await assert.rejects(()=>awaitedChildRunId('not-a-uuid','launch_child'),/invalid_child_identity/);
+  await assert.rejects(()=>awaitedChildRunId(parent,'../../not-safe'),/invalid_child_identity/);
 });
