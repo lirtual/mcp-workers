@@ -137,6 +137,10 @@ assert.match(emailAcceptance, /group: email-production-readonly-acceptance/);
 assert.match(emailAcceptance, /EMAIL_READONLY_ACCEPTANCE: "true"/);
 assert.match(emailAcceptance, /EMAIL_REQUIRE_ATTACHMENT: "true"/);
 assert.match(emailAcceptance, /EMAIL_TEST_SUBJECT: "test"/);
+assert.match(emailAcceptance, /EMAIL_MUTATION_PREFLIGHT: "true"/);
+assert.match(emailSmoke, /EMAIL_MUTATION_TARGET_READONLY_READY/);
+assert.match(emailSmoke, /email_preflight_target_not_unique/);
+assert.match(emailSmoke, /process\\.env\\.EMAIL_MUTATION_PREFLIGHT==='true'/);
 assert.match(emailSmoke, /email_smoke_target_subject_not_found/);
 assert.match(emailSmoke, /email_smoke_attachment_not_verified/);
 
