@@ -136,3 +136,16 @@ test('a child Run cannot reserve another child (depth-one capacity boundary)',as
   /child_capacity_transfer_rejected/);
   assert.equal(count(),2);
 });
+
+test('terminal parent cannot authorize replay of an already reserved child',async t=>{
+  const {sqlite,db,makeWorkflow,makeParent,count}=fixture(t);
+  makeWorkflow('parent');makeWorkflow('child');
+  makeParent('p1','parent');
+  await transferAwaitedChildCapacity(db as unknown as D1Database,request());
+  sqlite.prepare("UPDATE runs SET outcome='failed' WHERE id='p1'").run();
+  await assert.rejects(()=>transferAwaitedChildCapacity(
+    db as unknown as D1Database,request()),/child_capacity_transfer_rejected/);
+  assert.equal(count(),1);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE id='c1'")
+    .get() as {n:number}).n,1);
+});
