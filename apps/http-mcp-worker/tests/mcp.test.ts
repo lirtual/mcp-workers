@@ -177,3 +177,60 @@ test('credential reflections in URL path and response headers are filtered and p
    mock((u)=>{assert.equal(u.port,'8443');return Response.json({ok:true});}));
  assert.equal(data(customPort).status,200);
 });
+
+test('credential scope forbids ambiguous encoded path and redirect to another HTTPS port',async()=>{
+ const fake='synthetic-key';
+ const settings:Env={...env,HTTP_CREDENTIALS_JSON:JSON.stringify([
+   {origin:fixture,pathPrefix:'/v1',headers:{Authorization:fake}},
+ ])};
+ const blocked=await call({url:fixture+'/v1/%252e%252e/admin'},mock(()=>{
+   throw Error('No fetch permitted for double-encoded path');
+ }),settings);
+ assert.match(JSON.stringify(blocked),/unsafe_credential_path/);
+ const uncredentialed=await call({url:fixture+'/v1/%252e%252e/admin'},
+   mock(()=>Response.json({ok:true})));
+ assert.equal(data(uncredentialed).status,200);
+ let seen=0;
+ const crossPort=await call({url:fixture+'/v1/start',redirect:'same-origin'},
+   mock((u,init)=>{
+     seen++;
+     assert.equal(new Headers(init.headers).get('authorization'),fake);
+     return new Response(null,{status:302,headers:{
+       location:'https://api.example.org:8443/v1/finish',
+     }});
+   }),settings);
+ assert.equal(data(crossPort).redirect_count,0);
+ assert.equal(seen,1);
+});
+test('writes never retry on a signal timeout; errors and responses disclose no headers or bodies to logs',async()=>{
+ let attempts=0;
+ const secret='synthetic-private-bearer';
+ const logs:string[]=[];
+ const old=console.log;
+ console.log=(...items)=>logs.push(items.join(' '));
+ try {
+   const result=await call({url:fixture,method:'PATCH',headers:{authorization:secret},text:'request-private-body'},
+     mock(async (_url,init)=>{
+       attempts++;
+       await new Promise<void>(resolve=>{
+         if(init.signal?.aborted)resolve();
+         else init.signal?.addEventListener('abort',()=>resolve(),{once:true});
+       });
+       throw Error('transport interrupted');
+     }));
+   assert.match(JSON.stringify(result),/indeterminate/);
+   assert.equal(attempts,1);
+   assert.doesNotMatch(logs.join(' '),/synthetic-private-bearer|request-private-body/);
+ } finally {console.log=old;}
+});
+test('reject oversized upload and expose HTTP 500 as a normal result',async()=>{
+ const tooLarge=await call({url:fixture,method:'POST',text:'x'.repeat(1048577)},
+   mock(()=>{throw Error('Should not transmit oversized body');}));
+ assert.match(JSON.stringify(tooLarge),/request_too_large/);
+ const upstream=await call({url:fixture},mock(()=>new Response('maintenance',{
+   status:500,headers:{'content-type':'text/plain','www-authenticate':'private'},
+ })));
+ assert.equal(data(upstream).status,500);
+ assert.equal(upstream.isError,undefined);
+ assert.equal(data(upstream).headers['www-authenticate'],'[REDACTED]');
+});
