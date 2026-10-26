@@ -495,8 +495,9 @@ async function runWaitForEvent(
       return {status:'succeeded',output:recorded.output?JSON.parse(recorded.output):null};
     if(recorded?.status!=='waiting')
       return {status:'indeterminate',error_code:'event_wait_admission_unconfirmed'};
-    const event=await step.waitForEvent<{event_id:string;data:Record<string,unknown>}>(
+    const event=await step.waitForEvent(
       'workflow-'+s.id+'-event',{type:eventTypeForStep(s.id),timeout:timeout+' seconds'});
+    const payload=event.payload as {event_id?:unknown;data?:unknown}|null;
     const receipt=await env.DB.prepare(`SELECT event_id,payload_digest FROM wait_event_receipts
       WHERE run_id=? AND step_id=?`).bind(runId,s.id)
       .first<{event_id:string;payload_digest:string}>();
@@ -506,13 +507,13 @@ async function runWaitForEvent(
     // Run cancellation, and it must equal the D1-reserved event identity.
     if(active?.outcome!=='running')
       return {status:'indeterminate',error_code:'event_wait_owner_not_active'};
-    if(!receipt||typeof event?.payload?.event_id!=='string'||
-       event.payload.event_id!==receipt.event_id||
-       !event.payload.data||typeof event.payload.data!=='object'||
-       Array.isArray(event.payload.data)||
-       await payloadDigest(event.payload.data)!==receipt.payload_digest)
+    if(!receipt||typeof payload?.event_id!=='string'||
+       payload.event_id!==receipt.event_id||
+       !payload.data||typeof payload.data!=='object'||
+       Array.isArray(payload.data)||
+       await payloadDigest(payload.data)!==receipt.payload_digest)
       return {status:'indeterminate',error_code:'event_wait_receipt_mismatch'};
-    return {status:'succeeded',output:limitResult(event.payload.data)};
+    return {status:'succeeded',output:limitResult(payload!.data)};
   }catch(error){
     const message=error instanceof Error?error.message:'';
     if(/timed?\s*out|timeout/i.test(message))
