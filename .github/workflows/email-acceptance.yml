@@ -38,4 +38,5 @@ jobs:
           EMAIL_READONLY_ACCEPTANCE: "true"
           EMAIL_REQUIRE_ATTACHMENT: "true"
           EMAIL_TEST_SUBJECT: "test"
+          EMAIL_MUTATION_PREFLIGHT: "true"
         run: node scripts/email-production-read-smoke.mjs
