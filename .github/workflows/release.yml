@@ -355,6 +355,15 @@ jobs:
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
+      - name: Register production Email MCP with existing One-MCP Portal
+        if: inputs.worker == 'email-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: node scripts/register-email-portal.mjs
+
       - name: Check existing public health endpoint
         if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'http-mcp-worker'
         shell: bash

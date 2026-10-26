@@ -146,3 +146,10 @@ Access OTP, dedicated D1, Portal E2E, security review, and a separately
 authorized GitHub Actions production release. Keep PR #284 Draft and
 Issue #279 Open until those gates pass. Do not add extra proxies or workers
 just to bypass an unsupported SMTP route.
+
+## Production Portal registration
+The manual `Release Worker` job attaches the deployed Worker as the `email`
+upstream in the existing One-MCP Portal using the shared repository
+`MCP_ACCESS_TOKEN`. It verifies the live inventory of 13 approved tools before
+modifying the Portal. Existing Portal server mappings are preserved.
+No separate Worker, secret, GitHub workflow or orchestration service is added.

@@ -1,6 +1,7 @@
 import {watchPersistedSessions} from './github-action-session-watch.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
+import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -470,6 +471,57 @@ async function runDurableWait(
   }
 }
 
+/** One native event wait. The durable D1 receipt pre-dates the native
+ * signal and prevents distinct logical events from racing to this Step.
+ */
+async function runWaitForEvent(
+  env:Env,s:Step,runId:string,step:WorkflowStep,
+  outcomes:Record<string,Outcome>,
+):Promise<Outcome>{
+  if(!dependenciesPermitRun(s,outcomes))return {status:'skipped'};
+  const timeout=Number(s.with.timeout_seconds);
+  if(!Number.isSafeInteger(timeout)||timeout<1||timeout>3600)
+    return {status:'failed',error_code:'invalid_event_wait_timeout'};
+  try{
+    await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+      SELECT ?,?,'waiting',? WHERE EXISTS (
+        SELECT 1 FROM runs WHERE id=? AND outcome='running'
+      ) ON CONFLICT(run_id,step_id) DO NOTHING`)
+      .bind(runId,s.id,now(),runId).run();
+    const recorded=await env.DB.prepare(
+      'SELECT status,output FROM run_steps WHERE run_id=? AND step_id=?')
+      .bind(runId,s.id).first<{status:string;output:string|null}>();
+    if(recorded?.status==='succeeded')
+      return {status:'succeeded',output:recorded.output?JSON.parse(recorded.output):null};
+    if(recorded?.status!=='waiting')
+      return {status:'indeterminate',error_code:'event_wait_admission_unconfirmed'};
+    const event=await step.waitForEvent(
+      'workflow-'+s.id+'-event',{type:eventTypeForStep(s.id),timeout:`${timeout} seconds`});
+    const payload=event.payload as {event_id?:unknown;data?:unknown}|null;
+    const receipt=await env.DB.prepare(`SELECT event_id,payload_digest FROM wait_event_receipts
+      WHERE run_id=? AND step_id=?`).bind(runId,s.id)
+      .first<{event_id:string;payload_digest:string}>();
+    const active=await env.DB.prepare('SELECT outcome FROM runs WHERE id=?')
+      .bind(runId).first<{outcome:string}>();
+    // Even a natively delivered event cannot resume business effects after
+    // Run cancellation, and it must equal the D1-reserved event identity.
+    if(active?.outcome!=='running')
+      return {status:'indeterminate',error_code:'event_wait_owner_not_active'};
+    if(!receipt||typeof payload?.event_id!=='string'||
+       payload.event_id!==receipt.event_id||
+       !payload.data||typeof payload.data!=='object'||
+       Array.isArray(payload.data)||
+       await payloadDigest(payload.data)!==receipt.payload_digest)
+      return {status:'indeterminate',error_code:'event_wait_receipt_mismatch'};
+    return {status:'succeeded',output:limitResult(payload!.data)};
+  }catch(error){
+    const message=error instanceof Error?error.message:'';
+    if(/timed?\s*out|timeout/i.test(message))
+      return {status:'failed',error_code:'event_wait_timeout'};
+    return {status:'indeterminate',error_code:'event_wait_unconfirmed'};
+  }
+}
+
 /** One awaited, non-recursive child per parent, with its own Published Plan.
  * D1 child lineage is durable before native create; all loop sleeps are
  * Cloudflare-native, not a polling Worker or an external scheduler.
@@ -602,13 +654,37 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     let failed=false;
     let uncertain=false;
     let uncertainCode:string|null=null;
+    const hasEventWait=plan.steps.some(s=>s.uses==='flow.wait_event');
     try{
       while(pending.size){
+        // Cancellation can commit after the native event was received but
+        // before its dependent wave begins. Recheck the durable Run fence.
+        // Existing plans without external event waits retain their flow.
+        if(hasEventWait){
+          const owner=await db.prepare('SELECT outcome FROM runs WHERE id=?')
+            .bind(id).first<{outcome:string}>();
+          if(owner?.outcome==='cancelled'){
+            // Do not execute another wave after the cancellation fence.
+            // Persist pending Steps as skipped, not an unexplained unknown
+            // status; previously completed/failed Steps retain their result.
+            for(const pendingStep of pending.values()){
+              await db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+                VALUES(?,?,'skipped',?) ON CONFLICT(run_id,step_id)
+                DO UPDATE SET status='skipped',output=NULL,error_code=NULL,updated_at=excluded.updated_at
+                WHERE run_steps.status IN ('waiting','running')`)
+                .bind(id,pendingStep.id,now()).run();
+            }
+            return;
+          }
+          if(owner?.outcome!=='running')return;
+        }
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
           const result=(s.uses==='flow.wait'
             ? await runDurableWait(this.env,s,id,step,ctx.steps)
+            : s.uses==='flow.wait_event'
+            ? await runWaitForEvent(this.env,s,id,step,ctx.steps)
             : s.uses==='flow.child'
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'

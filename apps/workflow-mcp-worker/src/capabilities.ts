@@ -115,6 +115,11 @@ const boundedWait={version:1,name:'Bounded durable delay',steps:[
   {id:'hold',flow:'wait',duration_seconds:2},
   {id:'done',uses:'result.emit',needs:['hold'],with:{data:'resumed'}},
 ]};
+const eventWait={version:1,name:'Event wait (illustrative credential)',steps:[
+  {id:'signal',flow:'wait_event',timeout_seconds:60,token_sha256:'0'.repeat(64)},
+  {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output'}}},
+]};
+// Supply a 32-byte random external-event secret and publish only its digest.
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -242,6 +247,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   foreach_item_refs:['item.value[.<field>]','item.index'],
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
+  supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',
   unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
 });
@@ -286,6 +292,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
             {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
             {required:['times']},{required:['items']},{required:['max_items']},{required:['template']},
           ]}},
+        {required:['flow','token_sha256','timeout_seconds'],properties:{flow:{const:'wait_event'}},
+          not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
+            {required:['times']},{required:['items']},{required:['max_items']},{required:['template']}] }},
         {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['times']},
           {required:['items']},{required:['max_items']},{required:['template']},
@@ -300,8 +309,10 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach','child','wait']},
+        flow:{enum:['repeat','foreach','child','wait','wait_event']},
         duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
+        timeout_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxEventWaitSeconds},
+        token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
         workflow_id:{type:'string',format:'uuid'},
         version_id:{type:'string',format:'uuid'},
         inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
@@ -384,6 +395,8 @@ const entries=[
    description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
   {id:'flow.wait',kind:'flow',availability:'supported',
     description:'Durable relative time delay using Cloudflare step.sleep, 1–300 literal seconds per Step and at most 300 seconds total per Published Plan. Wait retains a Run capacity slot; downstream effects require completion. No external event receiver or Approval Gate.'},
+  {id:'flow.wait_event',kind:'flow',availability:'supported',
+    description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
@@ -493,6 +506,15 @@ export async function workflowCapabilities(env:Pick<Env,
       total_budget_seconds:PLAN_LIMITS.maxWaitSeconds,
       native_checkpoint:'step.sleep',run_capacity:'held while waiting',
       signal_events:'unsupported',cancellation:'native instance termination is separately observed'};
+  }
+  if(id==='flow.wait_event'){
+    detail.example=await compilingExample(eventWait);
+    detail.event_policy={native_checkpoint:'step.waitForEvent',delivery:'POST /events/{run_id}/{step_id}',
+      credential:'Independent 32-byte base64url Bearer; Plan stores token_sha256 only',
+      event_id:'X-Workflow-Event-Id required; replay requires same ID and body',
+      timeout_seconds:{min:1,max:PLAN_LIMITS.maxEventWaitSeconds},max_per_plan:1,
+      semantics:'Run and Step must be pinned and active; an ACK is not proof of resumed execution',
+      example_credentials:'Illustrative digest only; replace before publishing'};
   }
   if(id==='flow.child'){
     detail.example=await compilingExample(awaitedChildExample);

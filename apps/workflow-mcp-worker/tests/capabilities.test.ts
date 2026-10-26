@@ -114,7 +114,8 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
     ['uses','with'],['flow','times','template'],
-    ['flow','duration_seconds'],['flow','workflow_id','version_id','inputs'],
+    ['flow','duration_seconds'],['flow','token_sha256','timeout_seconds'],
+    ['flow','workflow_id','version_id','inputs'],
     ['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
@@ -274,4 +275,31 @@ test('ordered mixed Task discovery enforces one literal Task and read-only MCP',
  assert.ok(schema);
  assert.ok(schema.allOf.some(rule=>rule.if.minItems===2&&
   rule.then.anyOf[1]?.maxContains===1));
+});
+
+
+test('external event wait has one bounded, digest-only compiler contract and matching discovery',async()=>{
+  const d=(timeout_seconds=30)=>({version:1,name:'Event wait',steps:[
+    {id:'signal',flow:'wait_event',timeout_seconds,token_sha256:'a'.repeat(64)},
+    {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output'}}},
+  ]});
+  const compiled=await compilePlan(d());
+  assert.equal(compiled.plan.steps[0]?.uses,'flow.wait_event');
+  for(const invalid of [
+    {...d(),steps:[{id:'signal',flow:'wait_event',timeout_seconds:0,token_sha256:'a'.repeat(64)}]},
+    {...d(),steps:[{id:'signal',flow:'wait_event',timeout_seconds:3601,token_sha256:'a'.repeat(64)}]},
+    {...d(),steps:[{id:'signal',flow:'wait_event',timeout_seconds:30,token_sha256:'raw-secret'}]},
+    {...d(),steps:[d().steps[0],{id:'again',flow:'wait_event',timeout_seconds:30,token_sha256:'b'.repeat(64)}]},
+    {...d(),steps:[{id:'signal',uses:'flow.wait_event',with:{timeout_seconds:20,token_sha256:'a'.repeat(64)}}]},
+  ])await assert.rejects(()=>compilePlan(invalid),PlanError);
+  const overview=await workflowCapabilities(env);
+  const catalog=overview.capability_ids as Array<{id:string;availability:string}>;
+  assert.equal(catalog.find(c=>c.id==='flow.wait_event')?.availability,'supported');
+  const detail=await workflowCapabilities(env,'flow.wait_event') as {availability:string;
+    event_policy:{native_checkpoint:string};example:{definition:unknown;digest:string}};
+  assert.equal(detail.availability,'supported');
+  assert.equal(detail.event_policy.native_checkpoint,'step.waitForEvent');
+  assert.equal((await compilePlan(detail.example.definition)).digest,detail.example.digest);
+  assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.flow.enum,
+    ['repeat','foreach','child','wait','wait_event']);
 });
