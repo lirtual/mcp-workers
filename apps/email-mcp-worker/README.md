@@ -39,8 +39,15 @@ binding and negative-auth verification. Gmail/Outlook remain separate plugins.
 - Send attempts are D1-fenced by caller-supplied `request_id`; ambiguous
   submissions never automatically retry. Never promise exactly-once delivery.
 - Up to 5 MiB raw attachment bytes per request; no URL-based download.
+  **Outgoing attachment filenames are restricted to safe ASCII characters**;
+  Chinese and other non-ASCII attachment names are rejected. The 5 MiB send
+  limit has automated coverage, **not a verified 5 MiB provider E2E send**.
   IMAP Drafts requires Drafts folder/UIDPLUS; draft attachments and edits,
   and inferred conversation threads, are not supported.
+- `mail_move` and `mail_trash` return `new_reference: null`: a successful
+  MOVE command does not provide a stable destination UID for direct follow-up
+  retrieval. A destination-folder content readback has not been independently
+  verified in QQ production.
 
 ## Onboarding and provider exclusions
 
