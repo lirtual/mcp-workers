@@ -25,15 +25,15 @@ export async function cancelAwaitedChild(
  if(!['queued','running'].includes(child.outcome))return 'already_terminal';
  if(child.instance_id!==child.id)return 'not_found';
 
- // A reserved child has NOT claimed native creation. This conditional update
- // races atomically against its "reserved" -> "creating" compare-and-swap.
- // If cancellation wins, a later native create is impossible.
- if(child.start_state==='reserved'){
+ // Before the atomic native-dispatch fence, cancellation wins without an
+ // external request. 'creating' is only a local reservation claim; it does
+ // not grant permission to invoke Cloudflare until 'dispatching' is set.
+ if(child.start_state==='reserved'||child.start_state==='creating'){
    const stopped=await db.prepare(`UPDATE runs
      SET outcome='cancelled',start_state='cancelled_before_start',
        error_code='cancelled_before_start',updated_at=?
      WHERE id=? AND parent_run_id=? AND parent_step_id=?
-       AND start_state='reserved' AND outcome='queued'`)
+       AND start_state IN ('reserved','creating') AND outcome='queued'`)
      .bind(Date.now(),child.id,parentRunId,stepId).run();
    if(stopped.meta.changes===1)return 'cancelled_before_start';
  }
@@ -45,7 +45,7 @@ export async function cancelAwaitedChild(
    (parent_run_id,parent_step_id,child_run_id,requested_at)
    SELECT c.parent_run_id,c.parent_step_id,c.id,?
    FROM runs c WHERE c.id=? AND c.parent_run_id=? AND c.parent_step_id=?
-     AND c.start_state IN ('creating','start_unknown','started')
+     AND c.start_state IN ('dispatching','start_unknown','started')
      AND c.outcome IN ('queued','running')`)
    .bind(Date.now(),child.id,parentRunId,stepId).run();
  const intent=await db.prepare(`SELECT termination_attempted_at
