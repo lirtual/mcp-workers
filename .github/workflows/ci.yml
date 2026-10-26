@@ -44,6 +44,9 @@ jobs:
       - name: Verify Workflow Portal registration contract (offline)
         run: node --test scripts/register-workflow-portal.test.mjs
 
+      - name: Verify Email Portal registration contract (offline)
+        run: node --test scripts/register-email-portal.test.mjs
+
       - id: scope
         name: Select affected applications
         shell: bash
