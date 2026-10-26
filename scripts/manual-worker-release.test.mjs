@@ -411,7 +411,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,runtime_table:0,
     locator_column:0,fixed_column:0,fixed_index:0,
     attempt_table:1,receipt_table:1,native_column:1,
     session_table:0,cancellation_table:0,
@@ -421,14 +421,16 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const current = {...partial,migration_count:7,migration_v7:1,
     session_table:1,cancellation_table:1};
   const completed = {...current,migration_count:8,migration_v8:1,locator_column:1};
-  const upgraded = {...completed,migration_count:9,migration_v9:1,fixed_column:1,fixed_index:1};
+  const oldComplete = {...completed,migration_count:9,migration_v9:1,fixed_column:1,fixed_index:1};
+  const upgraded = {...oldComplete,migration_count:10,migration_v10:1,runtime_table:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(oldComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(upgraded),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(upgraded),false,true),true);
-  for(const row of [baseline,partial,current,completed]){
+  for(const row of [baseline,partial,current,completed,oldComplete]){
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
       /schema migrations/);
   }
@@ -446,6 +448,9 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     {...completed,receipt_table:0},
     {...completed,migration_count:9},
     {...completed,migration_v9:1},
+    {...oldComplete,migration_count:10},
+    {...upgraded,migration_v10:0},
+    {...upgraded,runtime_table:0},
     {...upgraded,fixed_index:0},
     {...upgraded,fixed_column:0},
     {...completed,native_column:0},
@@ -457,6 +462,8 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...oldComplete,active_sessions:1}),false),
+    /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
     /active physical Sessions/);
   assert.equal(verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false,true),true);
@@ -466,7 +473,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
 });
 test("Workflow migration preflight requires all independent physical states settled", () => {
   const ready = {
-    migration_count: 9, expected_migrations: 9,
+    migration_count: 10, expected_migrations: 10,
     workflow_count: 7, run_count: 58, session_count: 49,
     attempt_count: 31, callback_count: 4, cancellation_count: 31,
     nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0,
@@ -497,10 +504,10 @@ test("Workflow migration preflight requires all independent physical states sett
     assert.throws(() => verifyWorkflowMigrationReadiness(invalid),
       /readback unavailable/);
   }
-  for (const wrong of [{migration_count:8},{migration_count:10},
-    {expected_migrations:8}]) {
+  for (const wrong of [{migration_count:8},{migration_count:9},
+    {expected_migrations:9}]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,...wrong})), /exact nine reviewed/);
+      response({...ready,...wrong})), /exact ten reviewed/);
   }
   for (const invalid of [null,NaN,1.5,"0",true]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
@@ -528,7 +535,7 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:9,expected_migrations:9,
+    migration_count:10,expected_migrations:10,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
@@ -544,7 +551,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
   })),{confirmed_ready_sessions:0});
   for(const broken of [
-    {migration_count:8},{expected_migrations:10},
+    {migration_count:9},{expected_migrations:9},
     {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},
@@ -560,6 +567,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
@@ -567,7 +575,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
@@ -579,7 +587,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  for(const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]){
+  for(const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"]){
     assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/Secret missing/);
   }
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_CLIENT_ID" ?
@@ -624,6 +632,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
@@ -631,7 +640,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
@@ -647,12 +656,13 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const verify=list=>verifyBindings("workflow-mcp-worker",{...settings,bindings:list},secrets,{mode:"readback"});
   assert.equal(verify(bindings),true);
@@ -662,11 +672,12 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
 
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
   const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowOrchestrator"},

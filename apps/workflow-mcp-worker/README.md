@@ -23,6 +23,7 @@ Environment bindings and credentials:
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
+- `SESSION_RUNTIME_DATA_KEY` as a canonical Base64-encoded 32-byte random AES-GCM key, staged as a GitHub Environment Secret for `workflow-mcp-worker`. Key replacement intentionally invalidates previously stored ciphertext; active Runner observations must refresh it.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
 - `GITHUB_ACTION_APPROVED_REPOSITORIES` is a server-owned JSON list of `{repository,repositoryId}` identities. A previous `commitSha` entry is tolerated but ignored for discovery. The current default-branch SHA is read from GitHub and every YAML is fetched by that exact SHA; approval of any discovered revision remains bound to the immutable Published Plan. Changing the approved repository list still requires a controlled configuration deployment.
 
@@ -30,7 +31,7 @@ There are **no independent capability enable flags**. The documented per-operati
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause` and `workflow_resume`.
+`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause` and `workflow_resume`.
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress currently supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay. It does **not** support direct GitHub webhooks, pull requests or other GitHub event types, repeat/expand, child calls or Saga. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
@@ -188,3 +189,38 @@ GitHub Actions are dispatched only through the explicitly approved `github.actio
 The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicitly selected through `.github/workflows/acceptance.yml` and are separate from deployment; Portal registration requires a separate `confirm_portal_write` acknowledgment. A passing dry-run does not establish production acceptance.
 
 Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.
+
+### Short-lived Session Runtime Data (Spec #288)
+
+Windows UU Lite is the first and only admitted producer. The reviewed
+`lirtual/session-actions/.github/workflows/windows.yml` GitHub-hosted physical
+Session posts a bounded JSON observation to `POST /github/action/session-data`
+with a fresh GitHub OIDC token, its claimed `attemptId`, the explicitly
+allowlisted `uu.credentials` key and a strictly increasing per-Attempt sequence.
+The signed physical Action, immutable Published Plan and owned Ready Session
+must all agree. A successful UI observation is refreshed about every 30 seconds
+(including unchanged values). An observed failure reports a no-ciphertext
+`unavailable` tombstone; network failure cannot instantly revoke an observation
+but can never extend the 90-second server-side TTL.
+
+Use `workflow_session_data_get({run_id,step_id,key:'uu.credentials'})` **only when
+the owner explicitly asks for UU connection details**. It returns `ready` with
+`{device_id,verification_code}` and `expires_at`, otherwise `unavailable`
+with a safe reason code. Every successful read confirms a running GitHub physical
+Run and rechecks the current sequence and cancellation fence before returning.
+The existing MCP Portal Bearer remains a **single-owner shared credential**;
+Run/Step IDs are locators, not independent ACLs. These codes enter conversation
+history on an explicit read. Normal `workflow_status`, `workflow_result`, GitHub
+logs, Summary, and Artifacts never include the codes.
+
+The `0010_session_runtime_data.sql` migration uses only the existing D1; values
+are AES-256-GCM ciphertext with unique IV and Run/Step/Attempt/key/sequence AEAD
+binding. Supply `SESSION_RUNTIME_DATA_KEY` as a canonical Base64 32-byte Secret,
+not a Variable. Never commit this key, and never use a shared permanent password
+as its replacement. The existing GitHub Actions manual production release blocks
+on this Secret, migration readiness, no active physical Session during schema
+change, and ordinary approval gates. Worker CI and local D1 tests are necessary
+but **not production acceptance**: only a real, approved temporary Windows Session
+can prove UI collection, renewal, rotation, invalidation and normal cleanup. Keep
+the implementation PR Draft and leave the Spec open until that end-to-end evidence
+is collected. No extra Worker, cleanup Cron, queue, or auth service is introduced.
