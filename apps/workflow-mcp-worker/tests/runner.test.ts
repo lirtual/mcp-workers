@@ -1796,6 +1796,38 @@ test('cancel committed before native child entry prevents any business step afte
   assert.equal(terminates,1,'No duplicate termination attempt after lost native ACK');
 });
 
+test('paused pinned child is a definite failure without a child Run or native create',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Paused child admission',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'must not execute'}}]}));
+  const pub=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Parent blocked by paused child',
+    steps:[
+      {id:'delegate',flow:'child',workflow_id:child.workflow_id,
+        version_id:pub.published_version_id,inputs:{}},
+      {id:'blocked',uses:'result.emit',needs:['delegate'],with:{data:'not authorized'}},
+    ]}));
+  const review=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await service.publish(parent.workflow_id,1,[],false,false,[],review.required_children!);
+  await service.pause(child.workflow_id);
+  let nativeCreates=0;
+  env.WORKFLOW.create=async()=>{nativeCreates++;};
+  const started=await service.start(parent.workflow_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_name:unknown,_opt:unknown,cb:()=>Promise<unknown>)=>cb(),
+     sleep:async()=>{}} as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='delegate')?.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='delegate')?.error_code,'child_target_unavailable');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='blocked')?.status,'skipped');
+  assert.equal(nativeCreates,1,'Only the parent native instance should be created');
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?')
+    .get(started.run_id)?.n,0,'No child capacity or native instance was admitted');
+});
+
 test('pinned child failure does not turn parent join into success',async t=>{
   const {service,env,sqlite}=setup(t);
   const child=await service.create(JSON.stringify({version:1,name:'Child missing runtime input',
