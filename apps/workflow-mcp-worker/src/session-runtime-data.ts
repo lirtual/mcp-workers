@@ -83,14 +83,15 @@ const admission=`EXISTS (
   ON a.run_id=s.run_id AND a.step_id=s.step_id
  WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
   AND a.attempt_id=? AND a.capability_id='github.action' AND a.state='claimed'
-  AND a.repository=? AND a.workflow_ref LIKE ?
+  AND a.repository=? AND instr(a.workflow_ref, ?)=1
   AND a.owner_run_id=a.candidate_run_id
   AND a.owner_run_attempt=a.candidate_run_attempt
   AND a.owner_run_id IS NOT NULL AND a.owner_run_attempt IS NOT NULL
   AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
     WHERE c.attempt_id=a.attempt_id)
 )`;
-const pathPattern=ACTION_REPO+'/'+ACTION_PATH+'@%';
+// Cloudflare D1 rejects long LIKE patterns; use a literal, anchored prefix.
+const pathPrefix=ACTION_REPO+'/'+ACTION_PATH+'@';
 async function current(db:Db,runId:string,stepId:string,key:string):Promise<DataRow|null>{
  return db.prepare(`SELECT d.run_id,d.step_id,d.attempt_id,d.key,d.sequence,
    d.status,d.ciphertext,d.iv,d.expires_at
@@ -100,13 +101,13 @@ async function current(db:Db,runId:string,stepId:string,key:string):Promise<Data
   WHERE d.run_id=? AND d.step_id=? AND d.key=?
     AND s.state='ready' AND a.attempt_id=d.attempt_id
     AND a.capability_id='github.action' AND a.state='claimed'
-    AND a.repository=? AND a.workflow_ref LIKE ?
+    AND a.repository=? AND instr(a.workflow_ref, ?)=1
     AND a.owner_run_id=a.candidate_run_id
     AND a.owner_run_attempt=a.candidate_run_attempt
     AND a.owner_run_id IS NOT NULL AND a.owner_run_attempt IS NOT NULL
     AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
        WHERE c.attempt_id=a.attempt_id)`)
-  .bind(runId,stepId,key,ACTION_REPO,pathPattern).first<DataRow>();
+  .bind(runId,stepId,key,ACTION_REPO,pathPrefix).first<DataRow>();
 }
 async function record(db:Db,env:Env,report:Report,runId:string,stepId:string):Promise<'recorded'|'already_recorded'|'denied'>{
  const timestamp=Date.now();
@@ -127,8 +128,8 @@ async function record(db:Db,env:Env,report:Report,runId:string,stepId:string):Pr
      AND ${admission}`)
    .bind(runId,stepId,report.key,report.attemptId,report.sequence,
      report.status,next.ciphertext,next.iv,next.expires_at,timestamp,
-     runId,stepId,report.attemptId,ACTION_REPO,pathPattern,
-     runId,stepId,report.attemptId,ACTION_REPO,pathPattern).run();
+     runId,stepId,report.attemptId,ACTION_REPO,pathPrefix,
+     runId,stepId,report.attemptId,ACTION_REPO,pathPrefix).run();
  if(written.meta.changes===1)return 'recorded';
  // Only an exact replay of the current sequence/content is idempotent.
  // No TTL extension on replay and no resurrection after a tombstone.
