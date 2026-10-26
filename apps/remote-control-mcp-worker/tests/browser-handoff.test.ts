@@ -88,8 +88,11 @@ test("native setup and confirmed cleanup keep bounded response budgets beyond or
       const frame=new Promise<{request_id:string}>(resolve=>{delivered=resolve;});
       let settled=false;
       const pending=dispatch(tool,tool.endsWith("request")?{session_id:session}:{}).then(result=>{settled=true;return result;});
-      const request=await frame;t.mock.timers.tick(6000);await Promise.resolve();
-      assert.equal(settled,false,"read timeout must not discard the one-shot handoff reply");
+      const request=await frame;
+      // Handoff setup may take the full Agent drain + URL mint + 90s challenge.
+      // Ordinary return still retains its independent 30s budget.
+      t.mock.timers.tick(tool==="browser_handoff_request"?125_000:6000);await Promise.resolve();
+      assert.equal(settled,false,"handoff response budget must cover native protected setup");
       await owner.webSocketMessage(socket,JSON.stringify({kind:"read_result",request_id:request.request_id,status:"completed",text:'{"state":"link_ready"}'}));
       assert.equal((await pending).status,200);
     }

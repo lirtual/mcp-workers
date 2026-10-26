@@ -389,9 +389,10 @@ export class V2OwnerCoordinator {
         resolve(Response.json(isOperation
           ? { operation_id: operationId, status: "timeout_unknown" }
           : { error: "timeout" }, { status: 503 }));
-      // Native setup includes drain, capability checks and anonymous OTP proof.
-      // Keep the one-shot secret response alive; status/duplicates never replay URLs.
-      }, handoffRequest ? 120_000 : arg.tool === "browser_handoff_return" ? 30_000 : 5_000);
+      // Native setup may take 10s draining effects + 20s URL minting + 90s
+      // strict OTP proof, plus network and Worker response overhead.
+      // Keep only this one-shot secret response alive; status remains 5s, return 30s.
+      }, handoffRequest ? 150_000 : arg.tool === "browser_handoff_return" ? 30_000 : 5_000);
       this.pendingReads.set(requestId, {
         socket: selected, deviceId, epoch, generation,
         kind: isOperation ? "operation" : "read",
