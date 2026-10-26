@@ -27,3 +27,5 @@ Run `pnpm install --frozen-lockfile` then `pnpm --filter http-mcp-worker check`.
 CI and existing manual main-only release allowlist recognize this Worker. GitHub Environment `http-mcp-worker` needs `MCP_ACCESS_TOKEN`, and may supply `HTTP_CREDENTIALS_JSON`. Never set an empty placeholder for the optional Secret. Cloudflare preserves Secrets omitted from Wrangler `--secrets-file`; if GitHub removes the optional Secret but an old runtime binding remains, the release preflight blocks until the binding is separately removed under operational authorization.
 
 No production publish/Portal registration is part of this source implementation. First production release and safe, non-destructive real acceptance need separate authorization. Never use a user's destructive production business API for release smoke tests.
+
+Managed-credential requests reject percent-encoded URL paths to prevent upstream double-decoding from crossing the configured path scope; uncredentialed calls can use encoded paths.
