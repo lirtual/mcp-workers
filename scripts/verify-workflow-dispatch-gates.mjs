@@ -143,37 +143,13 @@ assert.match(emailSmoke, /email_smoke_attachment_not_verified/);
 assert.match(emailAcceptance, /node scripts\/email-production-read-smoke\.mjs/);
 assert.match(emailAcceptance, /secrets\.MCP_ACCESS_TOKEN/);
 const emailSecrets = [...emailAcceptance.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(m => m[1]);
-assert.equal(emailSecrets.length, 2, 'Read and SMTP jobs must each use the one existing bearer');
-assert.ok(emailSecrets.every(key => key === 'MCP_ACCESS_TOKEN'),
-  'Only shared MCP bearer is authorized for Email acceptance');
+assert.deepEqual(emailSecrets, ['MCP_ACCESS_TOKEN'], 'Only shared read-side MCP bearer allowed');
 assert.doesNotMatch(emailAcceptance, /CLOUDFLARE_API_TOKEN|wrangler|pnpm dlx|release\.yml|environment:/);
 assert.match(emailSmoke, /process\.env\.EMAIL_READONLY_ACCEPTANCE==='true'/);
 assert.match(emailSmoke, /call\('mail_search'/);
 assert.match(emailSmoke, /call\('mail_get'/);
 assert.match(emailSmoke, /call\('attachment_get'/);
 assert.doesNotMatch(emailSmoke, /call\(['"](?:mail_send|mail_reply|mail_forward|mail_mark|mail_move|mail_trash|draft_create)['"]/);
-
-// SMTP self-send is a separately confirmed write path, not part of the
-// automatically invoked release smoke or default manual read-only acceptance.
-const smtpSmoke = readFileSync(new URL('./email-production-smtp-smoke.mjs', import.meta.url), 'utf8');
-assert.match(emailAcceptance, /      confirm_smtp_self_send:/);
-assert.match(emailAcceptance, /        default: false/);
-assert.match(emailAcceptance, /        type: boolean/);
-assert.match(emailAcceptance, /inputs\.confirm_smtp_self_send != true/);
-assert.match(emailAcceptance, /inputs\.confirm_smtp_self_send == true/);
-assert.match(emailAcceptance, /group: email-production-smtp-selfsend/);
-assert.match(emailAcceptance, /EMAIL_SEND_CONFIRM: "true"/);
-assert.match(emailAcceptance, /node --check scripts\/email-production-smtp-smoke\.mjs/);
-assert.match(emailAcceptance, /run: node scripts\/email-production-smtp-smoke\.mjs/);
-assert.match(smtpSmoke, /EMAIL_SEND_CONFIRM/);
-assert.match(smtpSmoke, /GITHUB_RUN_ID/);
-assert.match(smtpSmoke, /GITHUB_REF/);
-assert.match(smtpSmoke, /to:\[account\.address\]/);
-assert.match(smtpSmoke, /const requestId='email-selftest-'\+runId/);
-assert.match(smtpSmoke, /const first=await call\('mail_send',params\)/);
-assert.match(smtpSmoke, /const again=await call\('mail_send',params\)/);
-assert.match(smtpSmoke, /again\.duplicate,true/);
-assert.doesNotMatch(smtpSmoke, /call\(['"](?:mail_reply|mail_forward|mail_mark|mail_move|mail_trash|draft_create)['"]/);
 
 // Cloud preview is a separate explicit approval path. It must never inherit
 // the production release token, deploy to a permanent Worker or omit cleanup.
