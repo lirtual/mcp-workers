@@ -60,8 +60,9 @@ The Worker must verify Access JWT signature/issuer/audience/owner and deny
 alternate setup hosts. MCP uses separate Portal bearer authentication; it
 must not rely on Access cookies. All setup mutations require same-origin CSRF.
 
-Required Worker Secrets: `MCP_ACCESS_TOKEN`, `MAIL_ENCRYPTION_KEY`
-(random 32-byte base64), `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`.
+Required Secrets: shared Repository `MCP_ACCESS_TOKEN` and Email Environment
+`MAIL_ENCRYPTION_KEY` (32-byte random Base64). Required Email Environment
+Variables: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`.
 Optional rotation: `MAIL_KEY_ID`, `MAIL_ENCRYPTION_PREVIOUS_KEY`,
 `MAIL_PREVIOUS_KEY_ID`. **No** `GOOGLE_CLIENT_*`, `MICROSOFT_CLIENT_*`,
 OAuth state storage, provider-scoped credentials or compatibility tables.

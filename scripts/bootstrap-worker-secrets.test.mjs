@@ -6,7 +6,7 @@ const fixtures = {
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
-  "email-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"), ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com", ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b", OWNER_EMAIL: "lirtual@outlook.com" },
+  "email-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
@@ -100,8 +100,6 @@ test("Email production Secrets enforce canonical encryption and owner-only Acces
   assert.deepEqual(collectBootstrapSecrets("email-mcp-worker", good), good);
   assert.throws(() => collectBootstrapSecrets("email-mcp-worker",
     { ...good, MAIL_ENCRYPTION_KEY: "not-base64" }), /MAIL_ENCRYPTION_KEY/);
-  assert.throws(() => collectBootstrapSecrets("email-mcp-worker",
-    { ...good, ACCESS_AUD: "temporary-aud" }), /Email production Access/);
-  assert.throws(() => collectBootstrapSecrets("email-mcp-worker",
-    { ...good, OWNER_EMAIL: "other@example.com" }), /Email production Access/);
+  assert.deepEqual(collectBootstrapSecrets("email-mcp-worker",
+    { ...good, ACCESS_AUD: "ignored", OWNER_EMAIL: "ignored" }), good);
 });
