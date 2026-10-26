@@ -23,6 +23,19 @@ export async function verifySmtpCredentials(cfg: ProtocolCredentials): Promise<v
   catch { fail('smtp_connection_failed'); }
   finally { client.close(); }
 }
+/**
+ * Nodemailer resolves sendMail when even one RCPT TO succeeds. Treat partial
+ * acceptance as an uncertain operation, never a fully accepted send; the D1
+ * request fence prevents replay to recipients who may already have received it.
+ */
+export function assertSmtpRecipientAcceptance(
+  result: { accepted?: string[]; rejected?: string[] }, requested: string[],
+): void {
+  if (!Array.isArray(result.accepted) || !Array.isArray(result.rejected) ||
+    result.rejected.length > 0 ||
+    requested.some(to => !result.accepted!.some(accepted => accepted.toLowerCase() === to.toLowerCase())))
+    fail('smtp_partial_rejection');
+}
 export async function smtpSend(env: Env, account: MailAccount, to: string[],
   subject: string, body: string, files: AttachmentFile[],
   relation?: { inReplyTo: string; references: string }) {
@@ -35,6 +48,7 @@ export async function smtpSend(env: Env, account: MailAccount, to: string[],
       attachments: files.map(f => ({ filename: f.filename, contentType: f.mimeType,
         content: Buffer.from(f.data) })),
     });
+    assertSmtpRecipientAcceptance(result, to);
     return { status: 'accepted' as const, reference: result.messageId ?? null };
   } catch (err) {
     if (err instanceof MailError) throw err;
