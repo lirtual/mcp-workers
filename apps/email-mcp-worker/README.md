@@ -1,12 +1,16 @@
-# Email MCP Worker — IMAP/SMTP only (unreleased)
+# Email MCP Worker — generic IMAP/SMTP
 
 This Worker connects **non-Gmail, non-Outlook** email accounts via standard
 IMAP/SMTP. Use the existing **ChatGPT Gmail** and **Outlook Email** plugins
 for Google and Microsoft mailboxes instead. Those ChatGPT plugin connections
 are independent of this Worker and are not credentials this Worker can invoke.
 
-**Draft PR #284 is not release-ready.** No Email Worker, production D1 binding,
-mailbox credential, public DNS route or Portal registration has been deployed.
+**Production release preparation:** Worker publishes only via the existing manual
+GitHub Actions `Release Worker` gate on `main`; never deploy from a PR or an
+unreviewed Cloudflare dashboard. The owner must stage five scoped GitHub
+Environment Secrets for `email-mcp-worker` before the first release.
+Release readback and MCP negative-auth validation are mandatory.
+Mailbox read/send and Portal validation remain independent acceptance checks.
 
 ## Scope
 
@@ -62,10 +66,13 @@ Optional rotation: `MAIL_KEY_ID`, `MAIL_ENCRYPTION_PREVIOUS_KEY`,
 `MAIL_PREVIOUS_KEY_ID`. **No** `GOOGLE_CLIENT_*`, `MICROSOFT_CLIENT_*`,
 OAuth state storage, provider-scoped credentials or compatibility tables.
 
-Create an isolated Email D1 database and apply `migrations/0001_accounts.sql`
-before any deployment; it has only `mail_accounts` and `send_attempts`.
-No live Email D1 has ever been deployed, so no schema compatibility migration
-or historical OAuth records are required.
+Production D1 `email-mcp-db` is bound as `DB` with exactly two tables
+(`mail_accounts` and `send_attempts`). Its reviewed migration is applied
+through the same GitHub Actions release job. Setup uses
+`email.lirtual.dpdns.org`; MCP uses `email-mcp.lirtual.dpdns.org`.
+The previous temporary acceptance database is separate and must not be copied
+without its encryption key; reconnect mailboxes in production, then securely
+delete the temporary Worker, Access application, domains and D1.
 
 ## Release gate — not yet satisfied
 

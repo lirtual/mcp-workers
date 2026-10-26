@@ -677,3 +677,23 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
   assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow native Workflow binding drift/);
 });
+
+test("Email production release must pin D1 and refuse plaintext or wrong Secrets", () => {
+  const worker = "email-mcp-worker";
+  const names = ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"];
+  const secrets = names.map(name => ({ name }));
+  const base = {
+    bindings: [...names.map(name => ({ name, type: "secret_text" })),
+      { name: "DB", type: "d1", id: "1fa50616-effb-458e-b798-b1ca1a0da24f" }],
+    observability: { enabled: true, logs: { invocation_logs: false } },
+  };
+  assert.equal(verifyBindings(worker, base, secrets, { mode: "readback" }), true);
+  assert.throws(() => verifyBindings(worker, base, secrets.slice(0, -1),
+    { mode: "readback" }), /OWNER_EMAIL/);
+  assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.map(x =>
+    x.name === "DB" ? { ...x, id: "wrong-db" } : x) }, secrets, { mode: "readback" }),
+  /Email production D1/);
+  assert.throws(() => verifyBindings(worker, { ...base, bindings: [
+    ...base.bindings, { name: "OWNER_EMAIL_COPY", type: "plain_text", text: "unsafe" },
+  ] }, secrets, { mode: "readback" }), /Email production credentials/);
+});

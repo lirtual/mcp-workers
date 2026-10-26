@@ -20,6 +20,7 @@ export const WORKER_VARIABLES = Object.freeze({
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
     "MAX_WRITE_AFFECTED_ROWS",
   ],
+  "email-mcp-worker": [],
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],

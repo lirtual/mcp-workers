@@ -3,14 +3,40 @@
   "name": "email-mcp-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-20",
-  "workers_dev": true,
+  "workers_dev": false,
   "preview_urls": false,
   "keep_vars": false,
   "observability": {
     "enabled": true,
-    "logs": { "invocation_logs": false }
+    "logs": {
+      "invocation_logs": false
+    }
   },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"]
-  }
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "MAIL_ENCRYPTION_KEY",
+      "ACCESS_TEAM_DOMAIN",
+      "ACCESS_AUD",
+      "OWNER_EMAIL"
+    ]
+  },
+  "routes": [
+    {
+      "pattern": "email.lirtual.dpdns.org",
+      "custom_domain": true
+    },
+    {
+      "pattern": "email-mcp.lirtual.dpdns.org",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "email-mcp-db",
+      "database_id": "1fa50616-effb-458e-b798-b1ca1a0da24f",
+      "migrations_dir": "migrations"
+    }
+  ]
 }

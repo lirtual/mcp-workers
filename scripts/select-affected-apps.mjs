@@ -15,7 +15,7 @@ export const APPLICATIONS = [
 ];
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
-const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'email-mcp-worker'); // Pending #279 acceptance
+const RELEASE_WORKERS = [...APPLICATIONS];
 
 function requiresAllApps(file) {
   return file === 'package.json'
