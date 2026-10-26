@@ -1,12 +1,12 @@
 import type {Env} from './store.ts';
 
-/** This is a one-shot *request*, not proof of external child side-effect rollback.
- * D1 intent is unique per parent Step and written BEFORE calling terminate().
- * Replays must inspect native state but must never call terminate() again.
+/** A durable cancellation intent, not proof of rollback of external effects.
+ * Reservation may be cancelled before a native create claim. Once creation
+ * is claimed, a distinct one-shot D1 fence controls native terminate().
  */
 export async function cancelAwaitedChild(
- env:Env,parentRunId:string,stepId:string,
-):Promise<'not_found'|'already_terminal'|'requested_unverified'|'terminal_confirmed'>{
+ env:Pick<Env,'DB'|'WORKFLOW'>,parentRunId:string,stepId:string,
+):Promise<'not_found'|'already_terminal'|'requested_unverified'|'terminal_confirmed'|'cancelled_before_start'>{
  const db=env.DB;
  const child=await db.prepare(`SELECT c.id,c.instance_id,c.start_state,c.outcome,
    v.plan AS parent_plan
@@ -20,11 +20,45 @@ export async function cancelAwaitedChild(
  try{published=JSON.parse(child.parent_plan);}catch{return 'not_found';}
  if(!Array.isArray(published.steps)||!published.steps.some((s:any)=>
    s.id===stepId&&s.uses==='flow.child'))return 'not_found';
- if(child.outcome==='cancelled')return 'terminal_confirmed';
+ if(child.outcome==='cancelled')
+   return child.start_state==='reserved'?'cancelled_before_start':'terminal_confirmed';
  if(!['queued','running'].includes(child.outcome))return 'already_terminal';
- if(child.start_state!=='started'||child.instance_id!==child.id)return 'not_found';
- // Only read the native instance before the durable request fence. This read
- // has no side effect, so generic transport failures can be safely retried.
+ if(child.instance_id!==child.id)return 'not_found';
+
+ // A reserved child has NOT claimed native creation. This conditional update
+ // races atomically against its "reserved" -> "creating" compare-and-swap.
+ // If cancellation wins, a later native create is impossible.
+ if(child.start_state==='reserved'){
+   const stopped=await db.prepare(`UPDATE runs
+     SET outcome='cancelled',error_code='cancelled_before_start',updated_at=?
+     WHERE id=? AND parent_run_id=? AND parent_step_id=?
+       AND start_state='reserved' AND outcome='queued'`)
+     .bind(Date.now(),child.id,parentRunId,stepId).run();
+   if(stopped.meta.changes===1)return 'cancelled_before_start';
+ }
+
+ // Creation was already claimed (or is being reconciled). Record intent
+ // BEFORE inspecting native state. A transient 404 is not proof that a
+ // preceding native create will never complete.
+ await db.prepare(`INSERT OR IGNORE INTO child_cancellations
+   (parent_run_id,parent_step_id,child_run_id,requested_at)
+   SELECT c.parent_run_id,c.parent_step_id,c.id,?
+   FROM runs c WHERE c.id=? AND c.parent_run_id=? AND c.parent_step_id=?
+     AND c.start_state IN ('creating','start_unknown','started')
+     AND c.outcome IN ('queued','running')`)
+   .bind(Date.now(),child.id,parentRunId,stepId).run();
+ const intent=await db.prepare(`SELECT termination_attempted_at
+   FROM child_cancellations WHERE child_run_id=?`)
+   .bind(child.id).first<{termination_attempted_at:number|null}>();
+ if(!intent){
+   const current=await db.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
+     .bind(child.id).first<{outcome:string;start_state:string}>();
+   if(current?.outcome==='cancelled'&&current.start_state==='reserved')
+     return 'cancelled_before_start';
+   return current&& !['queued','running'].includes(current.outcome)
+     ?'already_terminal':'requested_unverified';
+ }
+
  let instance:Awaited<ReturnType<Env['WORKFLOW']['get']>>;
  let before:string;
  try{
@@ -33,7 +67,7 @@ export async function cancelAwaitedChild(
  }catch{return 'requested_unverified';}
  if(before==='terminated'){
    await db.prepare(`UPDATE runs SET outcome='cancelled',updated_at=?
-     WHERE id=? AND start_state='started' AND outcome IN ('queued','running')
+     WHERE id=? AND outcome IN ('queued','running')
      AND EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=?)`)
      .bind(Date.now(),child.id,child.id).run();
    const saved=await db.prepare('SELECT outcome FROM runs WHERE id=?')
@@ -42,15 +76,16 @@ export async function cancelAwaitedChild(
  }
  if(['complete','errored'].includes(before))return 'already_terminal';
  if(!instance.terminate)return 'requested_unverified';
- const inserted=await db.prepare(`INSERT OR IGNORE INTO child_cancellations
-   (parent_run_id,parent_step_id,child_run_id,requested_at)
-   SELECT c.parent_run_id,c.parent_step_id,c.id,?
-   FROM runs c WHERE c.id=? AND c.parent_run_id=? AND c.parent_step_id=?
-   AND c.start_state='started' AND c.outcome IN ('queued','running')`)
-   .bind(Date.now(),child.id,parentRunId,stepId).run();
- if(inserted.meta.changes===1){
+
+ // The cancellation intent can be retried for observation, but only ONE
+ // contender gets permission to POST terminate, including after lost ACK.
+ const claim=await db.prepare(`UPDATE child_cancellations
+   SET termination_attempted_at=?
+   WHERE child_run_id=? AND termination_attempted_at IS NULL`)
+   .bind(Date.now(),child.id).run();
+ if(claim.meta.changes===1){
    try{await instance.terminate();}catch{
-     // Response loss does not permit a second termination request.
+     // Do not repeat an uncertain external side effect.
    }
  }
  try{
