@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
-import { limitResult } from './store.ts';
+import { limitResult,WorkflowService } from './store.ts';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
 
 type Outcome={status:'succeeded'|'failed'|'skipped'|'indeterminate';output?:any;error_code?:string};
@@ -487,6 +487,9 @@ async function runAwaitedChild(
        return {status:'indeterminate',error_code:'child_start_unconfirmed'};
      const status=await step.do('workflow-'+s.id+'-child-status-'+i,
        {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+         // Reconcile native child errors/termination without confusing a
+         // native complete ACK with a successful D1 business result.
+         await new WorkflowService(env).status(childId);
          return env.DB.prepare('SELECT outcome,result FROM runs WHERE id=? AND parent_run_id=? AND parent_step_id=?')
            .bind(childId,runId,s.id).first<{outcome:string;result:string|null}>();
        });
