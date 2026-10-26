@@ -1,6 +1,7 @@
 import {watchPersistedSessions} from './github-action-session-watch.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
+import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -470,6 +471,56 @@ async function runDurableWait(
   }
 }
 
+/** One native event wait. The durable D1 receipt pre-dates the native
+ * signal and prevents distinct logical events from racing to this Step.
+ */
+async function runWaitForEvent(
+  env:Env,s:Step,runId:string,step:WorkflowStep,
+  outcomes:Record<string,Outcome>,
+):Promise<Outcome>{
+  if(!dependenciesPermitRun(s,outcomes))return {status:'skipped'};
+  const timeout=Number(s.with.timeout_seconds);
+  if(!Number.isSafeInteger(timeout)||timeout<1||timeout>3600)
+    return {status:'failed',error_code:'invalid_event_wait_timeout'};
+  try{
+    await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+      SELECT ?,?,'waiting',? WHERE EXISTS (
+        SELECT 1 FROM runs WHERE id=? AND outcome='running'
+      ) ON CONFLICT(run_id,step_id) DO NOTHING`)
+      .bind(runId,s.id,now(),runId).run();
+    const recorded=await env.DB.prepare(
+      'SELECT status,output FROM run_steps WHERE run_id=? AND step_id=?')
+      .bind(runId,s.id).first<{status:string;output:string|null}>();
+    if(recorded?.status==='succeeded')
+      return {status:'succeeded',output:recorded.output?JSON.parse(recorded.output):null};
+    if(recorded?.status!=='waiting')
+      return {status:'indeterminate',error_code:'event_wait_admission_unconfirmed'};
+    const event=await step.waitForEvent<{event_id:string;data:Record<string,unknown>}>(
+      'workflow-'+s.id+'-event',{type:eventTypeForStep(s.id),timeout:timeout+' seconds'});
+    const receipt=await env.DB.prepare(`SELECT event_id,payload_digest FROM wait_event_receipts
+      WHERE run_id=? AND step_id=?`).bind(runId,s.id)
+      .first<{event_id:string;payload_digest:string}>();
+    const active=await env.DB.prepare('SELECT outcome FROM runs WHERE id=?')
+      .bind(runId).first<{outcome:string}>();
+    // Even a natively delivered event cannot resume business effects after
+    // Run cancellation, and it must equal the D1-reserved event identity.
+    if(active?.outcome!=='running')
+      return {status:'indeterminate',error_code:'event_wait_owner_not_active'};
+    if(!receipt||typeof event?.payload?.event_id!=='string'||
+       event.payload.event_id!==receipt.event_id||
+       !event.payload.data||typeof event.payload.data!=='object'||
+       Array.isArray(event.payload.data)||
+       await payloadDigest(event.payload.data)!==receipt.payload_digest)
+      return {status:'indeterminate',error_code:'event_wait_receipt_mismatch'};
+    return {status:'succeeded',output:limitResult(event.payload.data)};
+  }catch(error){
+    const message=error instanceof Error?error.message:'';
+    if(/timed?\s*out|timeout/i.test(message))
+      return {status:'failed',error_code:'event_wait_timeout'};
+    return {status:'indeterminate',error_code:'event_wait_unconfirmed'};
+  }
+}
+
 /** One awaited, non-recursive child per parent, with its own Published Plan.
  * D1 child lineage is durable before native create; all loop sleeps are
  * Cloudflare-native, not a polling Worker or an external scheduler.
@@ -609,6 +660,8 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
           const result=(s.uses==='flow.wait'
             ? await runDurableWait(this.env,s,id,step,ctx.steps)
+            : s.uses==='flow.wait_event'
+            ? await runWaitForEvent(this.env,s,id,step,ctx.steps)
             : s.uses==='flow.child'
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'
