@@ -463,10 +463,17 @@ async function runAwaitedChild(
      return {status:'failed',error_code:'invalid_child_snapshot'};
  }catch{return {status:'failed',error_code:'invalid_child_inputs'};}
  try{
-   const published=await env.DB.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?')
-     .bind(version,target).first<{digest:string}>();
+   const published=await env.DB.prepare(`SELECT v.digest,w.state,w.active_version_id
+     FROM workflow_versions v JOIN workflows w ON w.id=v.workflow_id
+     WHERE v.id=? AND w.id=?`)
+     .bind(version,target).first<{digest:string;state:string;active_version_id:string|null}>();
    if(published?.digest!==approval.digest)
      return {status:'failed',error_code:'child_approved_version_changed'};
+   // An explicitly paused (or republished) child is a known rejection,
+   // not an ambiguous D1/native admission. Keep the atomic reservation
+   // predicate as the final authority if this state races with a change.
+   if(published.state!=='active'||published.active_version_id!==version)
+     return {status:'failed',error_code:'child_target_unavailable'};
    await transferAwaitedChildCapacity(env.DB,{
      parentRunId:runId,parentStepId:s.id,childRunId:childId,
      childWorkflowId:target,childVersionId:version,
