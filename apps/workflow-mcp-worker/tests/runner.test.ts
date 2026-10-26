@@ -1670,9 +1670,9 @@ test('awaited child publish requires exact reviewed target; one native child and
     ]}));
   const validated=await service.validateDefinition((await service.get(parent.workflow_id)).definition);
   assert.equal(validated.valid,true);
-  assert.equal(validated.required_children?.length,1);
+  const reviewed=(validated as {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>}).required_children!;
+  assert.equal(reviewed.length,1);
   await assert.rejects(()=>service.publish(parent.workflow_id,1),/child_approval_required/);
-  const reviewed=validated.required_children!;
   await service.publish(parent.workflow_id,1,[],false,false,[],reviewed);
   const created:string[]=[];
   const nativeStep={do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
@@ -1712,7 +1712,8 @@ test('pinned child failure does not turn parent join into success',async t=>{
        version_id:pub.published_version_id,inputs:{}},
       {id:'blocked',uses:'result.emit',needs:['delegate'],with:{data:'not dispatched'}},
     ]}));
-  const approved=(await service.validateDefinition((await service.get(parent.workflow_id)).definition)).required_children!;
+  const checked=await service.validateDefinition((await service.get(parent.workflow_id)).definition);
+  const approved=(checked as {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>}).required_children!;
   await service.publish(parent.workflow_id,1,[],false,false,[],approved);
   let starts=0;
   env.WORKFLOW.create=async({id})=>{
