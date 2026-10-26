@@ -135,64 +135,6 @@ async function deepReadAcceptance(account){
     assert.ok(foundAttachment,'email_smoke_attachment_not_verified');
 }
 
-// Read-only gate for a future, separately approved mutation on the owner's
-// prior self-sent test message. No message IDs or mailbox content are logged.
-async function mutationTargetPreflight(account){
-  const aid=account.account_id;
-  assert.ok(typeof account.address==='string'&&/^[^\s@]+@qq\.com$/i.test(account.address),
-    'email_preflight_qq_account_missing');
-  const caps=await call('capabilities_get',{account_id:aid});
-  assert.equal(caps.account_id,aid,'email_preflight_caps_identity');
-  for(const field of ['draft_create','reply','forward','mark_read','move','trash'])
-    assert.equal(typeof caps[field],'boolean','email_preflight_caps_shape');
-  const folders=await call('folder_list',{account_id:aid});
-  assert.equal(folders.account_id,aid,'email_preflight_folders_identity');
-  assert.ok(Array.isArray(folders.folders)&&folders.folders.some(f=>f.id==='INBOX'),
-    'email_preflight_inbox_missing');
-  console.log('EMAIL_MUTATION_CAPABILITIES draft='+Number(caps.draft_create)+
-    ' reply='+Number(caps.reply)+' forward='+Number(caps.forward)+
-    ' mark='+Number(caps.mark_read)+' move='+Number(caps.move)+
-    ' trash='+Number(caps.trash));
-
-  // Match exact title, then require a single *self-addressed* message and
-  // the exact fixed body used in production SMTP acceptance #40306873809.
-  // Only up to three metadata pages and one matched message body are read.
-  const subject='MCP SMTP self-send acceptance';
-  const body='One-time owner-approved SMTP self-send test. No reply is needed.';
-  const addr=account.address.trim().toLowerCase();
-  const matched=[];
-  let cursor;
-  for(let page=0;page<3;page++){
-    const res=await call('mail_search',{
-      account_ids:[aid],query:subject,...(cursor?{cursor}:{})});
-    assert.equal(res.partial_failure,false,'email_preflight_search_failure');
-    assert.equal(res.accounts?.[0]?.status,'success','email_preflight_search_status');
-    assert.ok(Array.isArray(res.messages),'email_preflight_search_shape');
-    matched.push(...res.messages.filter(x=>
-      x.account_id===aid&&x.subject===subject&&
-      typeof x.from==='string'&&x.from.trim().toLowerCase()===addr&&
-      typeof x.to==='string'&&x.to.trim().toLowerCase()===addr&&
-      typeof x.id==='string'));
-    if(matched.length>1||!res.cursor)break;
-    assert.ok(typeof res.cursor==='string'&&res.cursor.length<=8000,
-      'email_preflight_invalid_cursor');
-    cursor=res.cursor;
-  }
-  const unique=[...new Map(matched.map(x=>[x.id,x])).values()];
-  if(unique.length!==1){
-    console.log('EMAIL_MUTATION_TARGET_'+(unique.length===0?'NOT_FOUND':'AMBIGUOUS'));
-    assert.fail('email_preflight_target_not_unique');
-  }
-  const item=await call('mail_get',{account_id:aid,message_id:unique[0].id});
-  assert.ok(item.id===unique[0].id&&item.account_id===aid&&
-    item.subject===subject&&
-    typeof item.from==='string'&&item.from.trim().toLowerCase()===addr&&
-    typeof item.to==='string'&&item.to.trim().toLowerCase()===addr&&
-    typeof item.text==='string'&&item.text.trim()===body,
-    'email_preflight_target_identity_mismatch');
-  console.log('EMAIL_MUTATION_TARGET_READONLY_READY');
-}
-
 async function main(){
   const accounts=await call('account_list');
   stage='accounts_shape';
@@ -232,12 +174,6 @@ async function main(){
   if(process.env.EMAIL_READONLY_ACCEPTANCE==='true'){
     const qq=active.find(x=>typeof x.address==='string'&&x.address.toLowerCase().endsWith('@qq.com'));
     await deepReadAcceptance(qq??active[0]);
-  }
-  if(process.env.EMAIL_MUTATION_PREFLIGHT==='true'){
-    const qq=active.filter(x=>typeof x.address==='string'&&
-      /^[^\s@]+@qq\.com$/i.test(x.address));
-    assert.equal(qq.length,1,'email_preflight_qq_not_unique');
-    await mutationTargetPreflight(qq[0]);
   }
   // No write tools, draft creation, mail sending, or flag updates.
   console.log('EMAIL_PRODUCTION_IMAP_READONLY_ACCEPTANCE_OK active_sample='+Math.min(active.length,3));
