@@ -244,7 +244,10 @@ export async function duckCapability(env: Env, send: Sender = fetch) {
   if (!res.ok) return 'upstream_unavailable' as const;
   try {
     const result = await json(res);
-    if (Object.keys(result).length > 0) return 'ready' as const;
+    // The DuckDuckGo dashboard returns an access_token for an authenticated
+    // account. A nonempty JSON error/message object must never imply readiness.
+    if (typeof result.access_token === 'string' && result.access_token.length > 0)
+      return 'ready' as const;
   } catch { /* Success without a valid API shape is not confirmed readiness. */ }
   return 'configured_unverified' as const;
 }

@@ -197,7 +197,7 @@ test('Litterbox one bounded file, default 24h; DDG no token and generation priva
   assert.equal(await duckCapability(tokenEnv,mock((url,init)=>{
     probeCalls++;assert.equal(url,'https://quack.duckduckgo.com/api/email/dashboard');
     assert.equal(init.method,'GET');
-    return Response.json({status:'ok',owner:'private@example.com'});
+    return Response.json({access_token:'opaque-valid-dashboard-token',owner:'private@example.com'});
   })), 'ready');
   assert.equal(probeCalls,1);
 });
@@ -236,4 +236,17 @@ test('file origin validation and redirects fail before Litterbox dispatch',async
     mock(()=>{requests++;return new Response(null,{status:302,headers:{location:'https://attacker.example.com'}});}),
     ['trusted-files.example.com']),(e:any)=>e.code==='unsafe_file_source');
   assert.equal(requests,1);
+});
+
+test('DDG dashboard only reports ready on a recognizable authenticated token payload',async()=>{
+  const tokenEnv={...env,CANDYBOX_DDG_TOKEN:'synthetic-dummy-bearer'};
+  for (const body of [{ error: 'invalid token' }, { message: 'unauthorized' },
+    { status: 'ok' }, { access_token: '' }, { access_token: 123 }]) {
+    const state=await duckCapability(tokenEnv,mock((_url,_init)=>Response.json(body)));
+    assert.equal(state,'configured_unverified','Unrecognized dashboard JSON cannot establish ready');
+  }
+  assert.equal(await duckCapability(tokenEnv,mock(()=>
+    new Response(JSON.stringify({message:'Unauthorized'}),{status:401}))), 'auth_failed');
+  assert.equal(await duckCapability(tokenEnv,mock(()=>
+    new Response('upstream error',{status:503}))), 'upstream_unavailable');
 });
