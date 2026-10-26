@@ -46,7 +46,7 @@ export async function resolvePublicMailEndpoint(host: string, requestFetch: type
     const endpoint = new URL('https://cloudflare-dns.com/dns-query');
     endpoint.search = new URLSearchParams({ name: safe, type: String(type) }).toString();
     const result = await requestFetch(endpoint.toString(), {
-      headers: { accept: 'application/dns-json' }, redirect: 'error',
+      headers: { accept: 'application/dns-json' }, redirect: 'manual',
       signal: AbortSignal.timeout(5000),
     });
     if (!result.ok) fail('dns_unavailable');
