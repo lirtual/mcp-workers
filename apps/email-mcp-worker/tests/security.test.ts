@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encrypt, decrypt } from '../src/crypto.ts';
 import { verifyAccess, validateCsrf } from '../src/access.ts';
+import { SETUP_CSP } from '../src/setup.ts';
 const env = {
   MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
   ACCESS_TEAM_DOMAIN: 'test.cloudflareaccess.com',
@@ -87,4 +88,16 @@ test('encryption key rotation preserves explicit key identity only with the prev
   });
   await assert.rejects(() => decrypt({ ...rotatedEnv, MAIL_ENCRYPTION_PREVIOUS_KEY: undefined },
     'account:unchanged:graph', original.ciphertext, original.keyId), /encryption_key_unavailable/);
+});
+
+test('OAuth onboarding CSP permits only known cross-origin IdP redirects', () => {
+  const action = SETUP_CSP.match(/(?:^|; )form-action ([^;]+);/)?.[1];
+  assert.equal(action,
+    "'self' https://accounts.google.com https://login.microsoftonline.com https://login.live.com",
+    'Google, Microsoft Entra and personal Outlook OAuth redirect chains must be permitted');
+  assert.match(SETUP_CSP, /default-src 'none'/);
+  assert.match(SETUP_CSP, /base-uri 'none'/);
+  assert.match(SETUP_CSP, /frame-ancestors 'none'/);
+  assert.doesNotMatch(SETUP_CSP, /https:\*|https:;|\*;/,
+    'Never allow arbitrary external form targets to solve OAuth redirects');
 });
