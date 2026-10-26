@@ -96,7 +96,10 @@ arrive before the Step starts; only the preauthorized logical event is accepted.
 Delivery response `acknowledged` is **not** proof that the Step resumed. Use
 `workflow_status` / `workflow_result` for the actual durable result. A 503
 `unconfirmed` delivery may be retried with the identical ID and payload;
-different signals are rejected. The independent bearer is not the Webhook
+different signals are rejected. To cancel a pending event wait, use
+`workflow_cancel({run_id,step_id:'signal'})`. This records the Run cancellation
+in D1 before attempting native termination, without claiming other external
+effects were physically stopped. The independent bearer is not the Webhook
 Trigger or Portal credential. No human approval or Saga semantics are implied.
 
 ### Bounded durable wait
