@@ -1,4 +1,5 @@
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
 import {releaseVerifiedSessionSlot} from './github-action-session.ts';
@@ -358,7 +359,7 @@ export class WorkflowService {
     for(const old of stale.results)await this.reconcileStart(old);
     // When all eight slots are occupied, bounded ingress repair also checks
     // started Workflows whose native engine completed but D1 never finalized.
-    const capacity=await this.db.prepare("SELECT COUNT(*) AS count FROM runs WHERE outcome IN ('queued','running')").first<{count:number}>();
+    const capacity=await this.db.prepare(`SELECT ${ACTIVE_CAPACITY_UNITS_SQL} AS count`).first<{count:number}>();
     if((capacity?.count??0)>=8){
       const active=await this.db.prepare("SELECT * FROM runs WHERE start_state='started' AND outcome IN ('queued','running') ORDER BY created_at ASC LIMIT 8").all<RunRow>();
       for(const run of active.results){
@@ -393,7 +394,7 @@ export class WorkflowService {
       throw new StateError('github_action_executor_not_configured');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
-      "INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) < 8"
+      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at,capacity_weight) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,?,1 WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND ${capacityAdmissionPredicate(1)}`
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
