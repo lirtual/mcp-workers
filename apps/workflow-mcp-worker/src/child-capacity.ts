@@ -136,6 +136,10 @@ export async function startReservedAwaitedChild(
       capacity_weight:number;parent_outcome:string}>();
   if(row?.outcome==='cancelled'&&row.start_state==='cancelled_before_start')
     return {childRunId,start_state:'cancelled_before_start'};
+  // A child may finish or be cancelled while the parent is durably asleep.
+  // Never recreate a terminal child; let the parent inspect its D1 result.
+  if(row&&['succeeded','failed','cancelled','indeterminate'].includes(row.outcome))
+    return {childRunId,start_state:'started'};
   if(!row||row.parent_outcome!=='running'||row.capacity_weight!==1||
      row.instance_id!==childRunId||
      !['reserved','creating','start_unknown','started'].includes(row.start_state)||
