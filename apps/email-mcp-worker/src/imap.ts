@@ -32,7 +32,7 @@ export async function protocolCredentials(env: Env, account: MailAccount): Promi
     'account:' + account.account_id + ':' + account.provider,
     account.credential_ciphertext, account.credential_key_id));
 }
-export async function withImap<T>(env: Env, account: MailAccount, work: (client: ImapFlow) => Promise<T>): Promise<T> {
+export async function withImap<T>(env: Env, account: MailAccount, work: (client: ImapFlow, cfg: ProtocolCredentials) => Promise<T>): Promise<T> {
   const cfg = await protocolCredentials(env, account);
   const target = await resolvePublicMailEndpoint(cfg.imap_host);
   const { connect } = await import('cloudflare:sockets');
@@ -47,7 +47,7 @@ export async function withImap<T>(env: Env, account: MailAccount, work: (client:
   client.on('error', () => { /* errors from operations are sanitized by the caller */ });
   try {
     await client.connect();
-    return await work(client);
+    return await work(client, cfg);
   } catch (err) {
     if (err instanceof MailError) throw err;
     return fail('imap_unavailable');
@@ -86,12 +86,57 @@ export async function imapFolders(env: Env, account: MailAccount) {
       truncated: all.length > 100 };
   });
 }
+// Some IMAP providers (notably QQ/163/126) return unrelated results for TEXT
+// searches. Scan only bounded INBOX envelope metadata there, never full bodies.
+export function requiresEnvelopeSearch(host: string): boolean {
+  return ['imap.qq.com', 'imap.163.com', 'imap.126.com'].includes(host.toLowerCase());
+}
+export function matchesEnvelopeQuery(envelope: unknown, query: string): boolean {
+  if (!envelope || typeof envelope !== 'object' || !query) return false;
+  const fields: string[] = [];
+  const item = envelope as Record<string, unknown>;
+  if (typeof item.subject === 'string') fields.push(item.subject);
+  for (const key of ['from', 'sender', 'to', 'cc', 'bcc', 'replyTo']) {
+    const addresses = item[key];
+    if (!Array.isArray(addresses)) continue;
+    for (const address of addresses) {
+      if (!address || typeof address !== 'object') continue;
+      for (const field of ['name', 'address']) {
+        const value = (address as Record<string, unknown>)[field];
+        if (typeof value === 'string') fields.push(value);
+      }
+    }
+  }
+  const needle = query.normalize('NFKC').toLowerCase();
+  return fields.some(value => value.normalize('NFKC').toLowerCase().includes(needle));
+}
 export async function imapSearch(env: Env, account: MailAccount, query: string, after?: string, limit = 10) {
-  return withImap(env, account, async client => {
+  return withImap(env, account, async (client, cfg) => {
     const lock = await client.getMailboxLock('INBOX');
     try {
-      const matched = await client.search({ text: query }, { uid: true });
-      if (!matched || matched.length > 5000) fail('result_too_large');
+      const envelopeOnly = requiresEnvelopeSearch(cfg.imap_host);
+      let matched: number[];
+      if (envelopeOnly) {
+        // This is a complete scan or a visible failure: never silently return a
+        // partial set of results for a large or changing mailbox.
+        const size = client.mailbox ? client.mailbox.exists : 0;
+        if (size > 5000) fail('result_too_large');
+        matched = [];
+        if (size > 0) {
+          let scanned = 0;
+          for await (const message of client.fetch('1:*',
+            { uid: true, envelope: true }, { uid: true })) {
+            if (++scanned > 5000) fail('result_too_large');
+            if (!Number.isSafeInteger(message.uid) || message.uid <= 0) fail('imap_unavailable');
+            if (matchesEnvelopeQuery(message.envelope, query)) matched.push(message.uid);
+          }
+        }
+      } else {
+        const result = await client.search({ text: query }, { uid: true });
+        if (!Array.isArray(result)) fail('imap_unavailable');
+        matched = result;
+      }
+      if (matched.length > 5000) fail('result_too_large');
       const offset = after ? Number(after) : 0;
       if (!Number.isSafeInteger(offset) || offset < 0 || offset > 5000) fail('invalid_cursor');
       const ordered = [...matched].reverse();
@@ -105,7 +150,7 @@ export async function imapSearch(env: Env, account: MailAccount, query: string, 
         to: msg.envelope?.to?.[0]?.address ?? '', date: msg.internalDate ? new Date(msg.internalDate).toISOString() : '',
         snippet: '',
       })), next: offset + limit < ordered.length ? String(offset + limit) : undefined,
-        scope: 'INBOX', consistent_snapshot: false };
+        scope: 'INBOX', search_scope: envelopeOnly ? 'envelope' : 'full_text', consistent_snapshot: false };
     } finally { lock.release(); }
   });
 }

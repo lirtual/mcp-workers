@@ -28,6 +28,14 @@ Mailbox read/send and Portal validation remain independent acceptance checks.
   `mail_move`, `mail_trash` (**13**).
 - Search up to 8 explicitly selected accounts, bounded fanout and explicit
   per-mailbox partial failures; read body safely as text.
+- For QQ, 163 and 126 IMAP hosts, server-side `SEARCH TEXT` may return unrelated
+  messages. Search instead scans at most 5,000 **INBOX envelope headers** and
+  matches subject/sender/recipient fields locally (never body or attachments).
+  The per-account `search_scope: envelope` identifies this limitation; body-only
+  matches are not supported on these hosts. A larger inbox fails with
+  `result_too_large` (visible partial failure), never silently returns incomplete
+  or unverified search hits. Other IMAP hosts use server-side TEXT and report
+  `search_scope: full_text`.
 - Send attempts are D1-fenced by caller-supplied `request_id`; ambiguous
   submissions never automatically retry. Never promise exactly-once delivery.
 - Up to 5 MiB raw attachment bytes per request; no URL-based download.

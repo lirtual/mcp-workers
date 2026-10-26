@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeImapReference, decodeImapReference, validateProtocolCredentials } from '../src/imap.ts';
+import { encodeImapReference, decodeImapReference, validateProtocolCredentials, requiresEnvelopeSearch, matchesEnvelopeQuery } from '../src/imap.ts';
 import { publicIp, resolvePublicMailEndpoint } from '../src/mail-endpoints.ts';
 test('IMAP reference binds mailbox, UIDVALIDITY and UID including Unicode folder', () => {
   const ref = { folder: '收件箱', uidvalidity: '92102026', uid: 1234 };
@@ -118,4 +118,27 @@ test('generic credential setup rejects native Google/Microsoft hosts and retains
   for (const host of ['smtp.gmail.com', 'smtp.office365.com', 'smtp-mail.outlook.com']) {
     assert.throws(() => validateProtocolCredentials({ ...config, smtp_host: host }), /unsupported_provider/);
   }
+});
+
+test('QQ/163/126 use bounded header search; unrelated text and body-only tokens cannot match', () => {
+  for (const host of ['imap.qq.com', 'IMAP.163.COM', 'imap.126.com']) {
+    assert.equal(requiresEnvelopeSearch(host), true, host);
+  }
+  assert.equal(requiresEnvelopeSearch('imap.example.org'), false);
+  const envelope = {
+    subject: '季度 报告',
+    from: [{ name: 'Alice Example', address: 'alice@example.org' }],
+    to: [{ name: '研发', address: 'owner@qq.com' }],
+    cc: [{ address: 'team@example.org' }],
+  };
+  for (const query of ['季度', '报告', 'ALICE', 'owner@QQ.COM', 'TEAM@EXAMPLE.ORG']) {
+    assert.equal(matchesEnvelopeQuery(envelope, query), true, query);
+  }
+  for (const query of ['mcp-readonly-health-0123456789abcdef0123456789abcdef', 'body-only-secret', 'nobody@other.example']) {
+    assert.equal(matchesEnvelopeQuery(envelope, query), false, query);
+  }
+  assert.equal(matchesEnvelopeQuery({ subject: 'HELLO', from: [{ address: 'x@y.test' }] }, 'hello'), true);
+  assert.equal(matchesEnvelopeQuery(null, 'hello'), false);
+  assert.equal(matchesEnvelopeQuery({}, 'hello'), false);
+  assert.equal(matchesEnvelopeQuery({ subject: 123, from: [null, {}, 'bad'] }, 'hello'), false);
 });
