@@ -111,6 +111,11 @@ test('manual redirects, cross-origin stop, same-origin follow, loops, and no bod
   status:302,headers:{location:'https://another.example.org/path'}
  })));
  assert.equal(data(cross).status,302);assert.equal(data(cross).redirect_count,0);
+ const privateRedirect=await call({url:fixture+'/old',redirect:'same-origin'},mock(()=>new Response(null,{
+   status:302,headers:{location:'http://127.0.0.1:9000/private?secret=hidden'}
+ })));
+ assert.equal(data(privateRedirect).status,302);
+ assert.equal(data(privateRedirect).headers.location,'http://127.0.0.1:9000/private');
  const loop=await call({url:fixture+'/loop',redirect:'same-origin'},mock(()=>new Response(null,{
   status:302,headers:{location:'/loop'}
  })));
