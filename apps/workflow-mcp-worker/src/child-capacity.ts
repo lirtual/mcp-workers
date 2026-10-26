@@ -142,7 +142,7 @@ export async function startReservedAwaitedChild(
     return {childRunId,start_state:'started'};
   if(!row||row.parent_outcome!=='running'||row.capacity_weight!==1||
      row.instance_id!==childRunId||
-     !['reserved','creating','start_unknown','started'].includes(row.start_state)||
+     !['reserved','creating','dispatching','start_unknown','started'].includes(row.start_state)||
      !['queued','running'].includes(row.outcome))
     throw Error('child_start_not_authorized');
   const reconcileCancellation=async()=>{
@@ -157,7 +157,7 @@ export async function startReservedAwaitedChild(
   const markStarted=async()=>{
     await env.DB.prepare(`UPDATE runs SET start_state='started',updated_at=?
       WHERE id=? AND parent_run_id=? AND parent_step_id=?
-      AND start_state IN ('creating','start_unknown') AND outcome IN ('queued','running')`)
+      AND start_state IN ('creating','dispatching','start_unknown') AND outcome IN ('queued','running')`)
       .bind(timestamp,childRunId,parentRunId,parentStepId).run();
     await reconcileCancellation();
     return {childRunId,start_state:'started' as const};
@@ -180,17 +180,6 @@ export async function startReservedAwaitedChild(
       if(stopped?.outcome==='cancelled')return {childRunId,start_state:'cancelled_before_start'};
       return {childRunId,start_state:'start_unknown'};
     }
-    // A request between the native-start claim and the actual create()
-    // is still honored: the claimant hasn't issued any native request.
-    const intent=await env.DB.prepare(`SELECT child_run_id FROM child_cancellations
-      WHERE child_run_id=?`).bind(childRunId).first<{child_run_id:string}>();
-    if(intent){
-      await env.DB.prepare(`UPDATE runs SET outcome='cancelled',
-        start_state='cancelled_before_start',error_code='cancelled_before_start',updated_at=?
-        WHERE id=? AND start_state='creating' AND outcome='queued'`)
-        .bind(timestamp,childRunId).run();
-      return {childRunId,start_state:'cancelled_before_start'};
-    }
     row={...row,start_state:'creating'};
   }else{
     // "creating" may have crashed after its claim or after a lost native ACK.
@@ -198,14 +187,14 @@ export async function startReservedAwaitedChild(
     const observed=await observeInstance(env.WORKFLOW,childRunId);
     if(observed.kind==='found')return markStarted();
     if(observed.kind==='unavailable')return {childRunId,start_state:'start_unknown'};
-    if(row.start_state==='creating'){
+    if(row.start_state==='creating'||row.start_state==='dispatching'){
       // A lost worker between the D1 claim and Cloudflare create() must not
       // consume one reservation indefinitely. Only a positive native
       // not-found and the same ten-minute cutoff permit terminal uncertainty.
       if(timestamp-row.created_at>=10*60_000){
         await env.DB.prepare(`UPDATE runs SET outcome='indeterminate',
           error_code='start_unconfirmed',updated_at=?
-          WHERE id=? AND start_state='creating' AND outcome='queued'`)
+          WHERE id=? AND start_state IN ('creating','dispatching') AND outcome='queued'`)
           .bind(timestamp,childRunId).run();
         return {childRunId,start_state:'indeterminate'};
       }
@@ -220,16 +209,42 @@ export async function startReservedAwaitedChild(
         .bind(timestamp,childRunId).run();
       return {childRunId,start_state:'indeterminate'};
     }
-    const intent=await env.DB.prepare(`SELECT child_run_id FROM child_cancellations
-      WHERE child_run_id=?`).bind(childRunId).first<{child_run_id:string}>();
-    if(intent)return {childRunId,start_state:'start_unknown'};
+  }
+  // Linearization point for dispatch: a cancellation before this atomic
+  // claim wins and prevents all future native creation. A cancellation after
+  // this point is a durable intent to terminate a possibly dispatched child.
+  // The old separate SELECT-cancellation / create() gap is not a safe fence.
+  const dispatch=await env.DB.prepare(`UPDATE runs
+    SET start_state='dispatching',updated_at=?
+    WHERE id=? AND parent_run_id=? AND parent_step_id=?
+      AND start_state IN ('creating','start_unknown') AND outcome='queued'
+      AND NOT EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=?)
+      AND EXISTS(SELECT 1 FROM runs p WHERE p.id=? AND p.outcome='running')`)
+    .bind(timestamp,childRunId,parentRunId,parentStepId,childRunId,parentRunId).run();
+  if(dispatch.meta.changes!==1){
+    const stopped=await env.DB.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
+      .bind(childRunId).first<{outcome:string;start_state:string}>();
+    if(stopped?.outcome==='cancelled'&&stopped.start_state==='cancelled_before_start')
+      return {childRunId,start_state:'cancelled_before_start'};
+    // If cancellation intent won in 'creating', convert it into a local
+    // terminal state without issuing a native create.
+    if(stopped?.start_state==='creating'){
+      const abandoned=await env.DB.prepare(`UPDATE runs SET outcome='cancelled',
+        start_state='cancelled_before_start',error_code='cancelled_before_start',updated_at=?
+        WHERE id=? AND start_state='creating' AND outcome='queued'
+          AND EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=?)`)
+        .bind(timestamp,childRunId,childRunId).run();
+      if(abandoned.meta.changes===1)
+        return {childRunId,start_state:'cancelled_before_start'};
+    }
+    return {childRunId,start_state:'start_unknown'};
   }
   try{
     await env.WORKFLOW.create({id:childRunId,params:{run_id:childRunId}});
     return markStarted();
   }catch{
     await env.DB.prepare(`UPDATE runs SET start_state='start_unknown',updated_at=?
-      WHERE id=? AND start_state='creating' AND outcome IN ('queued','running')`)
+      WHERE id=? AND start_state='dispatching' AND outcome IN ('queued','running')`)
       .bind(timestamp,childRunId).run();
     const observed=await observeInstance(env.WORKFLOW,childRunId);
     return observed.kind==='found'?markStarted():
