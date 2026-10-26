@@ -143,19 +143,19 @@ assert.doesNotMatch(emailAcceptance, /secrets\.|CLOUDFLARE_API_TOKEN|wrangler de
 // the production release token, deploy to a permanent Worker or omit cleanup.
 const emailCloud = read('email-cloud-acceptance');
 assert.match(emailCloud, /  workflow_dispatch:/);
-assert.doesNotMatch(emailCloud, /\\n  (?:push|pull_request|schedule):/);
+assert.doesNotMatch(emailCloud, /\n  (?:push|pull_request|schedule):/);
 assert.match(emailCloud, /confirm_cloud_preview:/);
 assert.match(emailCloud, /confirm_cloud_preview == true/);
-assert.match(emailCloud, /github\\.ref == 'refs\\/heads\\/main'/);
+assert.match(emailCloud, /github\.ref == 'refs\/heads\/main'/);
 assert.match(emailCloud, /persist-credentials: false/);
 assert.match(emailCloud, /name: email-mcp-acceptance/);
-assert.match(emailCloud, /secrets\\.EMAIL_ACCEPTANCE_CLOUDFLARE_API_TOKEN/);
+assert.match(emailCloud, /secrets\.EMAIL_ACCEPTANCE_CLOUDFLARE_API_TOKEN/);
 assert.match(emailCloud, /email-acc-/);
 assert.match(emailCloud, /d1 migrations apply/);
 assert.match(emailCloud, /dev --remote/);
 assert.match(emailCloud, /method:'DELETE'/);
 assert.match(emailCloud, /EMAIL_ACCEPTANCE_DISPOSABLE_D1_CLEANUP_OK/);
 assert.match(emailCloud, /EMAIL_CLOUDFLARE_PREVIEW_REAL_D1_AND_MCP_OK/);
-assert.doesNotMatch(emailCloud, /secrets\\.CLOUDFLARE_API_TOKEN|wrangler deploy|wrangler secret put|PORTAL_CLIENT_SECRET/);
+assert.doesNotMatch(emailCloud, /secrets\.CLOUDFLARE_API_TOKEN|wrangler deploy|wrangler secret put|PORTAL_CLIENT_SECRET/);
 
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');
