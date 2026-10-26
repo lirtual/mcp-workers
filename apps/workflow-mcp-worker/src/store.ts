@@ -3,13 +3,13 @@ import {cancelAwaitedChild} from './child-cancel.ts';
 import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
-import {releaseVerifiedSessionSlot} from './github-action-session.ts';
+import {releaseVerifiedSessionSlot,planHasGoOpenListDownload} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate} from './github-action-inputs.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
-import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
+import { compilePlan, PlanError, canonicalJsonString, publishedGitHubActionStep } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 function draftName(definition:string):string {
@@ -121,6 +121,15 @@ function reviewedGitHubSteps(plan:Plan):Array<{step:Step;path:string}>{
            path:'/steps/'+index+'/template/steps/'+stage+'/with/action'}]:[]);
   });
 }
+function reportedSessionMode(plan:Plan,stepId:string,fixedKey:string|null):'fixed'|'temporary'{
+ if(!fixedKey?.endsWith(':go-openlist'))return fixedKey?'fixed':'temporary';
+ // The fixed_key now also protects a shared *resource*; it does not mean the
+ // user's OpenList Session was requested as fixed. Re-read pinned Plan mode.
+ const action=publishedGitHubActionStep(plan,stepId)?.with.action as
+  {type?:unknown;inputs?:{session_mode?:unknown}}|undefined;
+ return action?.type==='session'&&action.inputs?.session_mode==='fixed'?'fixed':'temporary';
+}
+
 export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
@@ -132,14 +141,16 @@ export class WorkflowService {
     // enough to discover a held/uncertain slot and its server-pinned run_id;
     // no separate public Session enumeration capability is necessary.
     const held=await this.db.prepare(`SELECT s.slot,s.run_id,s.step_id,s.state,s.fixed_key,
-      s.updated_at,a.state AS attempt_state
+      s.updated_at,a.state AS attempt_state,v.plan
       FROM session_executions s
+      JOIN runs r ON r.id=s.run_id
+      JOIN workflow_versions v ON v.id=r.version_id
       LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
       WHERE s.state!='terminated' ORDER BY s.slot LIMIT 4`)
-      .all<{slot:number;run_id:string;step_id:string;state:string;fixed_key:string|null;updated_at:number;attempt_state:string|null}>();
+      .all<{slot:number;run_id:string;step_id:string;state:string;fixed_key:string|null;updated_at:number;attempt_state:string|null;plan:string}>();
     return {workflows:out.results.map(r=>({workflow_id:r.id,name:r.name,draft_revision:r.draft_revision,published_version_id:r.active_version_id,state:r.state})),
       active_sessions:held.results.map(x=>({slot:x.slot,run_id:x.run_id,
-        step_id:x.step_id,session_mode:x.fixed_key?'fixed':'temporary',
+        step_id:x.step_id,session_mode:reportedSessionMode(JSON.parse(x.plan) as Plan,x.step_id,x.fixed_key),
         recorded_state:x.state,recorded_at:x.updated_at,
         attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
   }
@@ -620,7 +631,7 @@ export class WorkflowService {
     const hasSessions=publishedPlan.steps.some(s=>
       s.uses==='github.run'&&s.with.capability==='github.action'&&
       (s.with.action as {type?:unknown}|undefined)?.type==='session');
-    if(hasSessions&&this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN){
+    if((hasSessions||planHasGoOpenListDownload(publishedPlan))&&this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN){
       // Status/Result are reconciliatory tools. A completed parent cannot
       // mask its still-running physical Session, and API outages cannot free
       // a slot. At most four active Sessions exist globally.
@@ -656,7 +667,7 @@ export class WorkflowService {
       LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
       WHERE s.run_id=? ORDER BY s.step_id`).bind(run_id)
       .all<{step_id:string;state:string;session_url:string|null;fixed_key:string|null;updated_at:number;candidate_run_id:number|null;candidate_run_attempt:number|null;attempt_state:string|null}>()).results
-      .map(record=>({step_id:record.step_id,session_mode:record.fixed_key?'fixed':'temporary',
+      .map(record=>({step_id:record.step_id,session_mode:reportedSessionMode(publishedPlan,record.step_id,record.fixed_key),
         recorded_state:record.state,
         recorded_at:record.updated_at,
         session_url:record.state==='ready'?record.session_url:null,

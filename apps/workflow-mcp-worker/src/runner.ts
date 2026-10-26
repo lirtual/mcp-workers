@@ -4,7 +4,7 @@ import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
-import { runPublishedGitHubActionSession } from './github-action-session.ts';
+import { runPublishedGitHubActionSession,planHasGoOpenListDownload } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
@@ -756,7 +756,8 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       // on a successful Ready. Expiry requests normal cancellation only.
       if(plan.steps.some(s=>s.uses==='github.run'&&
          s.with.capability==='github.action'&&
-         (s.with.action as {type?:unknown}|undefined)?.type==='session')){
+         (s.with.action as {type?:unknown}|undefined)?.type==='session')||
+         planHasGoOpenListDownload(plan)){
         try{await watchPersistedSessions(this.env,id,step);}
         catch{
           // The independent Session record still holds quota, and explicit

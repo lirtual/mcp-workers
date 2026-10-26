@@ -1,6 +1,6 @@
 import type {WorkflowStep} from 'cloudflare:workers';
 import type {Env} from './store.ts';
-import type {Step} from './plan.ts';
+import {publishedGitHubActionStep,publishedForeachTaskController,type Step} from './plan.ts';
 import {registerAndDispatchGitHubAction} from './github-action-orchestration.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
@@ -23,8 +23,34 @@ export type SessionRelease='released'|'already_released'|'held';
  * Reservation never follows a callback, an ACK, or parent Workflow success.
  * It must happen before the corresponding physical Session dispatch.
  */
+export function isGoOpenListDownloadAction(action:ReviewedGitHubAction):boolean{
+ return action.type==='task'&&action.repository==='lirtual/session-actions'&&
+  action.workflowPath==='.github/workflows/download.yml';
+}
+
+export function planHasGoOpenListDownload(plan:Plan):boolean{
+ return Array.isArray(plan.steps)&&plan.steps.some(step=>{
+  if(step.uses!=='flow.foreach'||step.with.max_items!==1)return false;
+  const template=step.with.template as {uses?:unknown;with?:{action?:ReviewedGitHubAction}}|undefined;
+  return template?.uses==='github.run'&&!!template.with?.action&&
+   isGoOpenListDownloadAction(template.with.action);
+ });
+}
+
 export async function reservePublishedSessionSlot(
  db:Db,runId:string,stepId:string,
+):Promise<SessionReservation>{
+ return reservePhysicalActionSlot(db,runId,stepId,'session');
+}
+
+export async function reserveGoOpenListDownloadSlot(
+ db:Db,runId:string,stepId:string,
+):Promise<SessionReservation>{
+ return reservePhysicalActionSlot(db,runId,stepId,'download');
+}
+
+async function reservePhysicalActionSlot(
+ db:Db,runId:string,stepId:string,kind:'session'|'download',
 ):Promise<SessionReservation>{
  if(!UUID.test(runId)||!STEP.test(stepId))return 'denied';
  const source=await db.prepare(`SELECT r.outcome,v.plan
@@ -35,22 +61,37 @@ export async function reservePublishedSessionSlot(
  try{plan=JSON.parse(source.plan) as Plan;}
  catch{return 'denied';}
  if(plan.github_execution_approved!==true||!Array.isArray(plan.steps))return 'denied';
- const step=plan.steps.find(x=>x.id===stepId);
- if(!step||step.uses!=='github.run'||step.with.capability!=='github.action')return 'denied';
+ const step=publishedGitHubActionStep(plan,stepId);
+ if(!step||step.with.capability!=='github.action')return 'denied';
  const raw=step.with.action as (ReviewedGitHubAction & {ref?:unknown;inputs?:unknown})|undefined;
- if(!raw||raw.type!=='session')return 'denied';
+ if(!raw||raw.type!==(kind==='session'?'session':'task'))return 'denied';
  const reviewed:ReviewedGitHubAction={
   repository:raw.repository,repositoryId:raw.repositoryId,workflowId:raw.workflowId,
   workflowPath:raw.workflowPath,commitSha:raw.commitSha,
   type:raw.type,contractDigest:raw.contractDigest,
  };
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,reviewed))return 'denied';
+ if(kind==='download'){
+  if(!isGoOpenListDownloadAction(reviewed))return 'denied';
+  const controller=publishedForeachTaskController(plan,stepId);
+  const spec=controller?.with.template as {with?:{action?:{inputs?:unknown}}}|undefined;
+  const fields=spec?.with?.action?.inputs;
+  if(!controller||controller.with.max_items!==1||!fields||typeof fields!=='object'||
+     Array.isArray(fields)||Object.keys(fields).length!==1||
+     (fields as {batch_json?:{ref?:unknown}}).batch_json?.ref!=='item.value')return 'denied';
+ }
+
  const declaredInputs=raw.inputs;
  const mode=declaredInputs&&typeof declaredInputs==='object'&&!Array.isArray(declaredInputs)
   ?(declaredInputs as Record<string,unknown>).session_mode:undefined;
- if(mode!==undefined&&mode!=='fixed'&&mode!=='temporary')return 'denied';
- // Key derived only from the reviewed GitHub Action, not client input.
- const fixedKey=mode==='fixed'?String(reviewed.repositoryId)+':'+reviewed.workflowPath:null;
+ if(kind==='session'&&mode!==undefined&&mode!=='fixed'&&mode!=='temporary')return 'denied';
+ // Shared Go OpenList resource is exclusive even for temporary Sessions.
+ // Unrelated fixed/temporary Sessions keep their original isolation rules.
+ const goResource=reviewed.repository==='lirtual/session-actions'&&(
+  (kind==='session'&&reviewed.workflowPath==='.github/workflows/openlist.yml')||
+  (kind==='download'&&isGoOpenListDownloadAction(reviewed)));
+ const fixedKey=goResource?String(reviewed.repositoryId)+':go-openlist':
+  mode==='fixed'?String(reviewed.repositoryId)+':'+reviewed.workflowPath:null;
  const created=await db.prepare(`INSERT OR IGNORE INTO session_executions
    (run_id,step_id,slot,fixed_key,state,created_at,updated_at)
    SELECT ?,?,free.slot,?,'queued',?,? FROM (
@@ -61,8 +102,21 @@ export async function reservePublishedSessionSlot(
       WHERE active.slot=free.slot AND active.state!='terminated'
    )
    AND EXISTS (SELECT 1 FROM runs WHERE id=? AND outcome IN ('queued','running'))
+   -- Old published Go Sessions may still hold a legacy fixed/null key.
+   -- Never admit the new resource while they have no verified termination.
+   AND (?=0 OR NOT EXISTS(
+     SELECT 1 FROM session_executions old
+     JOIN runs older_run ON older_run.id=old.run_id
+     JOIN workflow_versions older_version ON older_version.id=older_run.version_id
+     JOIN json_each(older_version.plan,'$.steps') AS old_step
+     WHERE old.state!='terminated'
+       AND json_extract(old_step.value,'$.id')=old.step_id
+       AND json_extract(old_step.value,'$.with.action.repositoryId')=?
+       AND json_extract(old_step.value,'$.with.action.workflowPath')='.github/workflows/openlist.yml'
+   ))
    ORDER BY free.slot LIMIT 1`)
-  .bind(runId,stepId,fixedKey,Date.now(),Date.now(),runId).run();
+  .bind(runId,stepId,fixedKey,Date.now(),Date.now(),runId,
+    goResource?1:0,reviewed.repositoryId).run();
  if(created.meta.changes===1)return 'reserved';
  const prior=await db.prepare(`SELECT state FROM session_executions
    WHERE run_id=? AND step_id=?`)
@@ -76,6 +130,18 @@ export async function reservePublishedSessionSlot(
    WHERE fixed_key=? AND state!='terminated' LIMIT 1`)
    .bind(fixedKey).first<{present:number}>();
   if(holder)return 'fixed_conflict';
+ }
+ if(goResource){
+  const legacy=await db.prepare(`SELECT 1 AS present FROM session_executions old
+   JOIN runs older_run ON older_run.id=old.run_id
+   JOIN workflow_versions older_version ON older_version.id=older_run.version_id
+   JOIN json_each(older_version.plan,'$.steps') AS old_step
+   WHERE old.state!='terminated'
+     AND json_extract(old_step.value,'$.id')=old.step_id
+     AND json_extract(old_step.value,'$.with.action.repositoryId')=?
+     AND json_extract(old_step.value,'$.with.action.workflowPath')='.github/workflows/openlist.yml'
+   LIMIT 1`).bind(reviewed.repositoryId).first<{present:number}>();
+  if(legacy)return 'fixed_conflict';
  }
  return 'full';
 }

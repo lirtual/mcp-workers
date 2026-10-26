@@ -2,15 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {reservePublishedSessionSlot,releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
+import {reservePublishedSessionSlot,reserveGoOpenListDownloadSlot,releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
  from '../src/github-action-session.ts';
 import {generateKeyPair,SignJWT} from 'jose';
 import {handleGithubActionClaimRequest} from '../src/github-action-ingress.ts';
 import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
 import type {WorkflowStep} from 'cloudflare:workers';
-import type {Plan} from '../src/plan.ts';
+import type {Plan,Step} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
 import {requestGitHubActionCancellation,FORCE_CANCEL_DELAY_MS} from '../src/github-action-cancel.ts';
+import {runPublishedGitHubActionTask} from '../src/github-action-task.ts';
 import {watchPersistedSessions,sessionCancellationDue,SESSION_READY_GRACE_MS} from '../src/github-action-session-watch.ts';
 import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attempt-reconcile.ts';
 import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
@@ -105,6 +106,109 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(2))?.fixed_key,'123:.github/workflows/ubuntu.yml');
  }finally{f.db.close();}
 });
+test('strict shared Go OpenList slot excludes temporary Sessions and dynamic download Tasks',async()=>{
+ const f=fixture();
+ try{
+  const goSession={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const sPlan={...plan,github_action_approvals:[goSession],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...goSession,ref:'refs/tags/v1',
+    inputs:{duration_minutes:300,session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(sPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(1))?.fixed_key,
+   '123:go-openlist','temporary OpenList still reserves the physical shared key');
+  const listedBefore=await new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env).list();
+  assert.equal(listedBefore.active_sessions[0]?.session_mode,'temporary');
+  const goTask={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const taskPlan={...plan,github_action_approvals:[goTask],steps:[{id:'batch',uses:'flow.foreach',needs:[],
+   with:{items:{ref:'inputs.download_batches'},max_items:1,template:{id:'download',uses:'github.run',
+    with:{capability:'github.action',action:{...goTask,ref:'refs/tags/v1',
+     inputs:{batch_json:{ref:'item.value'}}}}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(taskPlan),'v');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(2),'batch_0_download'),'fixed_conflict');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+  f.claim(1,'claimed',true);
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+  f.db.prepare("UPDATE step_attempts SET state='succeeded' WHERE run_id=?").run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(2),'batch_0_download'),'reserved');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(2),'batch_0_download'),'existing');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(3),'batch_0_download'),'fixed_conflict');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(sPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(3),'launch'),'fixed_conflict');
+ }finally{f.db.close();}
+});
+
+test('download Task returns RESOURCE_BUSY without any GitHub dispatch when Go Session is active',async()=>{
+ const f=fixture();
+ try{
+  const session={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const sPlan={...plan,github_action_approvals:[session],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...session,ref:'refs/tags/v1',inputs:{duration_minutes:5}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(sPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  const task={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const tPlan={...plan,github_action_approvals:[task],steps:[{id:'batch',uses:'flow.foreach',needs:[],
+   with:{items:{ref:'inputs.download_batches'},max_items:1,template:{id:'download',uses:'github.run',
+    with:{capability:'github.action',action:{...task,ref:'refs/tags/v1',
+     inputs:{batch_json:{ref:'item.value'}}}}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(tPlan),'v');
+  const child={id:'batch_0_download',uses:'github.run',needs:[],
+   with:{capability:'github.action',action:{...task,ref:'refs/tags/v1',inputs:{batch_json:'{}'}}}};
+  let posts=0;
+  const result=await runPublishedGitHubActionTask({DB:f.adapter,
+   WORKFLOW_GITHUB_DISPATCH_TOKEN:'not-used',GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-fixture'} as Env,
+   tPlan as unknown as Plan,child as unknown as Step,run(2),
+   {do:async (_name:unknown,_config:unknown,fn:()=>Promise<unknown>)=>fn()} as unknown as WorkflowStep,
+   async()=>{posts++;throw Error('dispatch must not run');});
+  assert.equal(result.status,'failed');
+  assert.equal(result.error_code,'RESOURCE_BUSY');
+  assert.equal(posts,0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM step_attempts').get()?.n,0);
+ }finally{f.db.close();}
+});
+
+test('Go Task admission rejects an unapproved or multi-item foreach',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(1),'launch'),'denied');
+  const goTask={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const taskPlan={...plan,github_action_approvals:[goTask],steps:[{id:'batch',uses:'flow.foreach',needs:[],
+   with:{items:{ref:'inputs.download_batches'},max_items:2,template:{id:'download',uses:'github.run',
+    with:{capability:'github.action',action:{...goTask,ref:'refs/tags/v1',
+     inputs:{batch_json:{ref:'item.value'}}}}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(taskPlan),'v');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(1),'batch_0_download'),'denied');
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,0);
+ }finally{f.db.close();}
+});
+
+test('legacy Go Session with old null fixed key blocks new Task across published versions',async()=>{
+ const f=fixture();
+ try{
+  const old={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const oldPlan={...plan,github_action_approvals:[old],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...old,ref:'refs/tags/v1',inputs:{session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(oldPlan),'v');
+  f.db.prepare(`INSERT INTO session_executions(run_id,step_id,slot,fixed_key,state,created_at,updated_at)
+   VALUES(?,'launch',1,NULL,'ready',1,1)`).run(run(1));
+  const task={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const taskPlan={...plan,github_action_approvals:[task],steps:[{id:'batch',uses:'flow.foreach',needs:[],
+   with:{items:{ref:'inputs.download_batches'},max_items:1,template:{id:'download',uses:'github.run',
+    with:{capability:'github.action',action:{...task,ref:'refs/tags/v1',
+     inputs:{batch_json:{ref:'item.value'}}}}}}}]};
+  f.db.prepare(`INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at)
+   VALUES('v-new','wf','x',?,1)`).run(JSON.stringify(taskPlan));
+  f.db.prepare("UPDATE runs SET version_id='v-new' WHERE id=?").run(run(2));
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(2),'batch_0_download'),'fixed_conflict');
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,1);
+  f.claim(1,'claimed',true);
+  f.db.prepare("UPDATE step_attempts SET state='cancelled' WHERE run_id=?").run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(2),'batch_0_download'),'reserved');
+ }finally{f.db.close();}
+});
+
 test('fixed Windows and Ubuntu provide stable MagicDNS locators only after Ready',async()=>{
  const f=fixture();
  try{

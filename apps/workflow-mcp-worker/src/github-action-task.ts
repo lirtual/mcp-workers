@@ -4,6 +4,7 @@ import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {registerAndDispatchGitHubAction} from './github-action-orchestration.ts';
+import {isGoOpenListDownloadAction,reserveGoOpenListDownloadSlot,releaseRejectedSessionSlot,releaseVerifiedSessionSlot} from './github-action-session.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
@@ -43,9 +44,16 @@ export async function runPublishedGitHubActionTask(
   inputs[key]=String(value);
  }
  const db=env.DB,token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+ const goDownload=isGoOpenListDownloadAction(identity);
  const dispatched=await step.do('github-action-dispatch-'+stepPlan.id,{
   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
  },async()=>{
+  if(goDownload){
+   const admission=await reserveGoOpenListDownloadSlot(db,runId,stepPlan.id);
+   if(admission==='fixed_conflict')return {status:'resource_busy'} as const;
+   if(admission==='full')return {status:'quota_full'} as const;
+   if(admission!=='reserved'&&admission!=='existing')return {status:'denied'} as const;
+  }
   const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
   const ack=await registerAndDispatchGitHubAction(db,{
    runId,stepId:stepPlan.id,attemptId,dispatchId,
@@ -53,7 +61,13 @@ export async function runPublishedGitHubActionTask(
   },http);
   return {attemptId,...ack};
  });
- if(dispatched.status==='rejected')return {status:'failed',error_code:'github_action_dispatch_rejected'};
+ if(dispatched.status==='resource_busy')return {status:'failed',error_code:'RESOURCE_BUSY'};
+ if(dispatched.status==='quota_full')return {status:'failed',error_code:'github_session_capacity_exceeded'};
+ if(dispatched.status==='denied')return {status:'failed',error_code:'github_action_admission_denied'};
+ if(dispatched.status==='rejected'){
+  if(goDownload)await releaseRejectedSessionSlot(db,runId,stepPlan.id);
+  return {status:'failed',error_code:'github_action_dispatch_rejected'};
+ }
  if(dispatched.status!=='confirmed')return {status:'indeterminate',error_code:'github_action_dispatch_unknown'};
  const attemptId=dispatched.attemptId;
  for(let i=0;i<MAX_TASK_POLLS;i++){
@@ -70,6 +84,7 @@ export async function runPublishedGitHubActionTask(
      FROM step_attempts a JOIN runs r ON r.id=a.run_id
      WHERE a.attempt_id=? AND a.capability_id='github.action'`)
      .bind(attemptId).first<{state:string;parent_outcome:string}>();
+   if(goDownload)await releaseVerifiedSessionSlot(db,runId,stepPlan.id);
    if(!settled||!['queued','running'].includes(settled.parent_outcome))
     return {status:'indeterminate',error_code:'github_action_parent_not_active'};
    if(settled.state==='succeeded'){
