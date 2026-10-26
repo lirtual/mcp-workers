@@ -182,7 +182,7 @@ export async function startReservedAwaitedChild(
       WHERE child_run_id=?`).bind(childRunId).first<{child_run_id:string}>();
     if(intent){
       await env.DB.prepare(`UPDATE runs SET outcome='cancelled',
-        error_code='cancelled_before_start',updated_at=?
+        start_state='reserved',error_code='cancelled_before_start',updated_at=?
         WHERE id=? AND start_state='creating' AND outcome='queued'`)
         .bind(timestamp,childRunId).run();
       return {childRunId,start_state:'cancelled_before_start'};
