@@ -29,6 +29,17 @@ test('CSRF cookie survives app-password setup without relaxing origin or token b
   assert.match(cookie, /SameSite=Lax/);
   assert.match(cookie, /Secure; HttpOnly/);
 });
+test('CSRF rejects opaque/null Origin even with browser same-origin metadata', () => {
+  const token = 'a'.repeat(43);
+  const sameOriginForm = {
+    'origin': 'null', 'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document',
+    'cookie': 'email_setup_csrf=' + token,
+  };
+  assert.throws(() => validateCsrf(new Request('https://email.lirtual.dpdns.org/setup/imap/add', {
+    method: 'POST', headers: sameOriginForm,
+  }), token), /csrf_rejected/);
+});
 test('CSRF rejects missing cookie, invalid origin and reused token mismatch', () => {
   const token = 'a'.repeat(43);
   assert.throws(() => validateCsrf(new Request('https://email.lirtual.dpdns.org/setup/remove', {
@@ -100,6 +111,9 @@ test('Access JWT requires a trusted RS256 signature, correct audience and owner 
   const db = { prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }) }) }) };
   const page = await handleSetup(createRequest(validJwt), { ...env, DB: db }, mockFetch as any);
   assert.equal(page.status, 200);
+  // no-referrer turns some same-origin HTML form POSTs into Origin: null.
+  // same-origin limits Referer exposure to this exact origin, preserving strict CSRF Origin checks.
+  assert.equal(page.headers.get('referrer-policy'), 'same-origin');
   const html = await page.text();
   assert.match(html, /name="viewport"/);
   assert.match(html, /form\{display:grid/);

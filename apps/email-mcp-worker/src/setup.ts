@@ -34,7 +34,7 @@ function securedHtml(body: string, cookie?: string): Response {
   const headers = new Headers({
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
     'content-security-policy': SETUP_CSP,
-    'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin',
   });
   if (cookie) headers.set('set-cookie', cookie);
   return new Response('<!doctype html><html lang="en"><meta charset="utf-8"><title>Email Accounts</title>' +
