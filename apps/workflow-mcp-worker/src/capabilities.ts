@@ -115,6 +115,11 @@ const boundedWait={version:1,name:'Bounded durable delay',steps:[
   {id:'hold',flow:'wait',duration_seconds:2},
   {id:'done',uses:'result.emit',needs:['hold'],with:{data:'resumed'}},
 ]};
+const eventWait={version:1,name:'Event wait (illustrative credential)',steps:[
+  {id:'signal',flow:'wait_event',timeout_seconds:60,token_sha256:'0'.repeat(64)},
+  {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output'}}},
+]};
+// Supply a 32-byte random external-event secret and publish only its digest.
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -242,6 +247,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   foreach_item_refs:['item.value[.<field>]','item.index'],
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
+  supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',
   unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
 });
@@ -286,6 +292,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
             {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
             {required:['times']},{required:['items']},{required:['max_items']},{required:['template']},
           ]}},
+        {required:['flow','token_sha256','timeout_seconds'],properties:{flow:{const:'wait_event'}},
+          not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
+            {required:['times']},{required:['items']},{required:['max_items']},{required:['template']}] }},
         {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['times']},
           {required:['items']},{required:['max_items']},{required:['template']},
@@ -300,8 +309,352 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach','child','wait']},
+        flow:{enum:['repeat','foreach','child','wait','wait_event']},
         duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
+        timeout_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxEventWaitSeconds},
+        token_sha256:{type:'string',pattern:'^[a-f0-9]{64}
+        workflow_id:{type:'string',format:'uuid'},
+        version_id:{type:'string',format:'uuid'},
+        inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
+        items:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{type:'string'}}},
+        max_items:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxForeachItems},
+        times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
+        template:{oneOf:[
+          {type:'object',additionalProperties:false,required:['uses','with'],
+            properties:{uses:{enum:[...SUPPORTED_STEP_USES]},with:{type:'object'},
+              if:{anyOf:[{type:'boolean'},{type:'object'}]}}},
+          {type:'object',additionalProperties:false,required:['steps'],
+            properties:{steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxForeachTemplateSteps,
+               description:'One reviewed Action per item, or 2-4 ordered emit/read-only MCP children with at most one owner-approved literal-input GitHub Task. Only earlier children in the same item can be referenced.',items:{
+              type:'object',additionalProperties:false,required:['id','uses','with'],
+              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','github.run']},
+                with:{type:'object'},
+                if:{anyOf:[{type:'boolean'},{type:'object'}]}},
+              allOf:[
+                {if:{required:['uses'],properties:{uses:{const:'result.emit'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
+                {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+                {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+              ]},allOf:[{if:{minItems:2},then:{anyOf:[
+                {items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}}},
+                {contains:{type:'object',required:['uses'],
+                  properties:{uses:{const:'github.run'}}},minContains:1,maxContains:1},
+              ]}}]}}},
+        ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 ordered emit/read-only MCP children with at most one reviewed literal-input GitHub Task; Sessions, multiple Tasks and nesting are unsupported.'},
+        needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
+        if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
+        with:{type:'object',description:'Must match the matching uses/action contract below.'},
+      },
+      allOf:[
+        {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
+        {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+        {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+      ],
+    }},
+  },
+});
+
+const entries=[
+  {id:'trigger.manual',kind:'trigger',availability:'supported',
+   description:'Manually admit the current Published Version with workflow_run; supply idempotency_key to deduplicate.'},
+  {id:'trigger.cron',kind:'trigger',availability:'supported',
+   description:'One five-field UTC Cron trigger per Published Plan; no timezone/DST, missed-minute backfill or capacity queue. Pausing blocks new admissions.'},
+  {id:'trigger.webhook',kind:'trigger',availability:'supported',
+   description:'Authenticated per-Workflow Bearer Webhook with a stored token digest, optional stable event ID, and immutable Published Version admission. Never uses the owner MCP token.'},
+  {id:'trigger.github_event',kind:'trigger',availability:'supported_with_relay',
+   description:'GitHub Actions OIDC-signed push event from an explicitly pinned repository, ref and forwarding workflow; no GitHub webhook secret or second business orchestrator.'},
+  {id:'action.result.emit',kind:'action',availability:'supported',
+   description:'Emit a bounded deterministic result; with={data:expression}.'},
+  {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
+   description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
+  {id:'action.github.run',kind:'action',availability:'supported_with_grant',
+   description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
+  {id:'flow.static_dag',kind:'flow',availability:'supported',
+   description:'Acyclic needs dependencies, bounded steps and parallel admission. Steps run under one Cloudflare Workflow instance.'},
+  {id:'flow.condition',kind:'flow',availability:'supported',
+   description:'Step if accepts safe ref/eq/ne/gt/lt/and/or/not expressions with compiler validation.'},
+  {id:'flow.branch_join',kind:'flow',availability:'supported',
+   description:'Explicit needs_policy=allow_skipped joins conditional branches only when at least one succeeded and all other dependencies succeeded or skipped; a wholly skipped branch set, failure or uncertainty blocks execution.'},
+  {id:'flow.repeat',kind:'flow',availability:'supported',
+   description:'Literal 1–8 repeat iterations flatten into sequential, pinned Steps before Publish. Max 32 expanded Steps; no runtime loops.'},
+  {id:'flow.foreach_emit',kind:'flow',availability:'supported',
+   description:'Dynamic array of at most 8 elements; one result.emit template with native snapshot checkpoints. Pure multi-step templates have a separate capability; external Actions need their own grant and replay constraints.'},
+  {id:'flow.foreach_multi_emit',kind:'flow',availability:'supported',
+    description:'2-4 ordered result.emit children per bounded item, referencing earlier children of the same item. Native checkpoints and D1 timeline; maximum 32 reserved Steps. No external Actions or nested loops.'},
+  {id:'flow.foreach_multi_mcp_read',kind:'flow',availability:'supported_with_grant',
+    description:'2-4 ordered emit and reviewed read-only MCP children per item, with item-local result refs, native arguments snapshots, D1 one-shot dispatch fences and fail-closed uncertainty; no writes, GitHub Tasks or nesting.'},
+  {id:'flow.foreach_mcp_read',kind:'flow',availability:'supported_with_grant',
+   description:'One reviewed read-only mcp.call per bounded item; all arguments and conditions are frozen before dispatch. Every child uses a durable D1 one-shot dispatch fence; an ambiguous response stays indeterminate, not retried.'},
+  {id:'flow.foreach_emit_task_emit',kind:'flow',availability:'supported_with_grant',
+    description:'Strict emit → one source-reviewed literal-input GitHub Task → emit per item. Durable Task Attempt, signed OIDC receipt and GitHub physical terminal proof; following emit receives completed item-local output.'},
+  {id:'flow.foreach_mixed_task',kind:'flow',availability:'supported_with_grant',
+    description:'2-4 ordered emit/read-only MCP steps with at most one source-reviewed literal-input GitHub Task. Each earlier child must succeed before downstream effects; reuse pinned grants, one-shot fences and physical Task proof.'},
+  {id:'flow.foreach_github_task',kind:'flow',availability:'supported_with_grant',
+   description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
+  {id:'flow.wait',kind:'flow',availability:'supported',
+    description:'Durable relative time delay using Cloudflare step.sleep, 1–300 literal seconds per Step and at most 300 seconds total per Published Plan. Wait retains a Run capacity slot; downstream effects require completion. No external event receiver or Approval Gate.'},
+  {id:'flow.wait_event',kind:'flow',availability:'supported',
+    description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
+  {id:'flow.loop',kind:'flow',availability:'unsupported',
+   description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
+  {id:'flow.child',kind:'flow',availability:'supported_with_grant',
+   description:'At most one awaited, non-recursive child per parent (flow: child, not child_workflow). Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
+  {id:'flow.saga',kind:'flow',availability:'unsupported',
+   description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
+] as const;
+type Entry=typeof entries[number];
+const byId=new Map<string,Entry>(entries.map(entry=>[entry.id,entry]));
+
+async function compilingExample(definition:unknown){
+  // Each published sample is checked against the exact active compiler.
+  // This is compile-only: tool availability and Publish authorization are
+  // separate gates, especially for the illustrative MCP tool identifier.
+  const {digest}=await compilePlan(definition);
+  return {definition,digest,validation:'compiler_valid_only' as const};
+}
+
+export async function workflowCapabilities(env:Pick<Env,
+ 'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'>,
+ id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
+  const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
+    !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
+  let githubReady=false;
+  try {
+    githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
+      !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+  }catch { githubReady=false; } // invalid scope is never treated as approved
+  const availability=(entry:Entry)=>
+    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
+    (entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
+    entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
+    entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
+    ['action.mcp.call','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+  if(id===undefined)return {
+    definition_schema:WORKFLOW_DEFINITION_SCHEMA,
+    action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
+    expression_rules:WORKFLOW_EXPRESSION_RULES,
+    limits:PLAN_LIMITS,
+    capability_ids:entries.map(entry=>({
+      id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
+    })),
+    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',availability:'configured_unverified'}}:{portal:{availability:'unavailable'}},
+    availability_note:'Configured means credentials exist, not verified access or publication permission.',
+    github_repository_scope:githubReady?'configured':'unavailable',
+    tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
+      create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
+      status:'workflow_status',result:'workflow_result'},
+    admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
+    note:'Discovery and inline validation never publish or grant execution.',
+  };
+  const entry=byId.get(id);
+  if(!entry)return {id,availability:'unknown',reason:'unknown_capability'};
+  const detail:Record<string,unknown>={...entry,availability:availability(entry),limits:PLAN_LIMITS,
+    ...(id==='flow.condition'?{expression_rules:WORKFLOW_EXPRESSION_RULES}:{}),
+    ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
+    ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
+    ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
+  };
+  if(id==='trigger.webhook'){
+    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
+    detail.example=await compilingExample({...emit,triggers:[{type:'webhook',token_sha256:'0'.repeat(64)}]});
+    detail.authentication={method:'Bearer',credential:'Independent 32-byte random base64url token; do not reuse MCP_ACCESS_TOKEN',
+      definition:'Store only SHA-256 hex of the token in triggers[0].token_sha256',
+      ingress:'POST /triggers/webhook/{workflow_id}',content_type:'application/json',
+      body:'JSON object with only declared Workflow input names (up to 8 KiB)',
+      event_id_header:'X-Workflow-Event-Id (optional; stable ID enables deduplication)',
+      semantics:'D1 admission is pinned to the current active Published Version; absent event ID has no deduplication guarantee',
+      warning:'The example contains a placeholder hash, not a usable credential. Never put the raw bearer token in a Draft or log.'};
+  }
+  if(id==='trigger.github_event'){
+    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
+    detail.example=await compilingExample({version:1,name:'Emit signed GitHub push',
+      inputs:{github:null},
+      steps:[{id:'out',uses:'result.emit',with:{data:{ref:'inputs.github'}}}],
+      triggers:[{type:'github_event',repository:'example/repo',repository_id:12345,
+        event:'push',ref:'refs/heads/main',workflow_path:'.github/workflows/forward.yml'}]});
+    detail.source={provider:'github_actions_oidc',event:'push_only',
+      endpoint:'POST /triggers/github/{workflow_id}',body:'none',
+      authentication:'GitHub Actions OIDC ID token with configured audience; never MCP owner token or arbitrary bearer',
+      identity:'signed repository, repository_id, event_name, ref, workflow_ref and run_id',
+      input:'inputs.github is populated solely from signed JWT claims',
+      admission:'idempotency by GitHub run_id, reruns replay; no delivery backfill',
+      setup:'Forwarder .github/workflows/forward.yml must be configured explicitly in the named GitHub repository',
+      scope:'Pin source repository, repository ID, branch and workflow path in the Published Plan',
+      warning:'This is not a direct GitHub webhook or automatic subscription. The GitHub Actions job forwards a signed event; all business steps still run in Cloudflare.'};
+  }
+  if(id==='trigger.cron'){
+    detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
+    detail.example=await compilingExample({...emit,triggers:[{type:'cron',schedule:'0 * * * *'}]});
+    detail.schedule_policy={timezone:'UTC',tick:'every minute',missed_ticks:'not_backfilled',
+      capacity_exhaustion:'skipped_without_queue',publication:'active_published_version_only',
+      manual_run:'still_supported'};
+  }
+  if(id==='action.result.emit'||id==='trigger.manual')
+    detail.example=await compilingExample(emit);
+  if(id==='flow.static_dag'||id==='flow.condition')
+    detail.example=await compilingExample(dag);
+  if(id==='flow.branch_join')
+    detail.example=await compilingExample(branchJoin);
+  if(id==='flow.repeat')
+    detail.example=await compilingExample(literalRepeat);
+  if(id==='flow.wait'){
+    detail.example=await compilingExample(boundedWait);
+    detail.wait_policy={duration_seconds:{min:1,max:PLAN_LIMITS.maxWaitSeconds,literal_only:true},
+      total_budget_seconds:PLAN_LIMITS.maxWaitSeconds,
+      native_checkpoint:'step.sleep',run_capacity:'held while waiting',
+      signal_events:'unsupported',cancellation:'native instance termination is separately observed'};
+  }
+  if(id==='flow.wait_event'){
+    detail.example=await compilingExample(eventWait);
+    detail.event_policy={native_checkpoint:'step.waitForEvent',delivery:'POST /events/{run_id}/{step_id}',
+      credential:'Independent 32-byte base64url Bearer; Plan stores token_sha256 only',
+      event_id:'X-Workflow-Event-Id required; replay requires same ID and body',
+      timeout_seconds:{min:1,max:PLAN_LIMITS.maxEventWaitSeconds},max_per_plan:1,
+      semantics:'Run and Step must be pinned and active; an ACK is not proof of resumed execution',
+      example_credentials:'Illustrative digest only; replace before publishing'};
+  }
+  if(id==='flow.child'){
+    detail.example=await compilingExample(awaitedChildExample);
+    detail.grant={required:['approved_children'],version:'active_immutable_child_version',
+      note:'Example UUIDs are illustrative, not deployed Workflows. First publish a real child, replace both identifiers with its real workflow_id and published_version_id, call workflow_validate for required_children and approve that exact list before workflow_publish. Compilation alone is not publication authority.',
+      limits:'One awaited non-recursive child per parent; parent reserves 2 of 8 Run units'};
+  }
+  if(id==='flow.foreach_multi_emit'){
+    detail.example=await compilingExample(foreachMultiEmit);
+    detail.template_policy={allowed_action:'result.emit',min_steps:2,
+      max_steps:PLAN_LIMITS.maxForeachTemplateSteps,
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      references:'Only earlier template steps in the same item, plus declared outer needs',
+      snapshot:'native item array snapshot, then unique per-child checkpoints',
+      external_actions:'unsupported',nested:'unsupported'};
+  }
+  if(id==='flow.foreach_emit'){
+    detail.example=await compilingExample(foreachEmit);
+    detail.template_policy={allowed_action:'result.emit',max_items:PLAN_LIMITS.maxForeachItems,
+      maximum_flattened_steps:PLAN_LIMITS.maxSteps,snapshot:'native step.do before first child',
+      empty_array:'skipped',external_actions:'unsupported'};
+  }
+  if(id==='flow.foreach_emit_task_emit'){
+    const discovered=githubReady?await listAvailableGitHubActions(env):{actions:[]};
+    const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
+      'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
+    detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
+    if(task&&'ref' in task&&typeof task.ref==='string')
+      detail.example=await compilingExample(foreachEmitTaskEmit({...task,ref:task.ref}));
+    detail.template_policy={stages:['result.emit','github.run','result.emit'],
+      github_task_count:1,github_inputs:'literal_only',task_type:'task',
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      required_publish_grants:['approved_actions','approve_heavy_execution'],
+      outcome:'Next stage only after signed receipt and independently verified physical Task success',
+      replay:'Native Task checkpoints plus UNIQUE D1 Attempt; no blind dispatch retries',
+      unsupported:['session','multiple_github_tasks','dynamic_task_inputs','nesting']};
+  }
+  if(id==='flow.foreach_mixed_task'){
+    const [discovered,portal]=await Promise.all([
+      githubReady?listAvailableGitHubActions(env):Promise.resolve({actions:[]}),
+      portalDiscovery(env),
+    ]);
+    const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
+      'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
+    detail.availability=task&&portal.tools.length?'publishable_after_owner_approval':
+      !task?'no_verified_published_task':portal.availability;
+    if(task&&'ref' in task&&typeof task.ref==='string'&&portal.tools.length)
+      detail.example=await compilingExample(foreachMixedMcpTask({...task,ref:task.ref},portal.tools[0]!));
+    detail.template_policy={allowed_actions:['result.emit','mcp.call','github.run'],
+      github_task_count:1,github_inputs:'literal_only',task_type:'task',mcp_scope:'read',
+      min_steps:2,max_steps:PLAN_LIMITS.maxForeachTemplateSteps,
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      required_publish_grants:['approved_operations','accept_target_risks','approved_actions','approve_heavy_execution'],
+      dependency:'Each earlier child must succeed before subsequent stages execute',
+      replay:'Native snapshots, D1 MCP fence and UNIQUE GitHub Attempt; unknown effects stop the pipeline',
+      unsupported:['session','multiple_github_tasks','dynamic_task_inputs','write-scope_tools','nesting']};
+  }
+  if(id==='flow.foreach_github_task'){
+    const discovered=githubReady?await listAvailableGitHubActions(env):{actions:[]};
+    const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
+      'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
+    detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
+    if(task&&'ref' in task&&typeof task.ref==='string'){
+      const sample=foreachGithubTask({...task,ref:task.ref});
+      detail.example=await compilingExample(sample);
+      // A second compiler-checked example demonstrates the exact syntax,
+      // selected from an actual verified input rather than inventing a field.
+      const candidate=Object.entries(task.inputs).find(([,field])=>field.default!==undefined);
+      if(candidate){
+        const [input,field]=candidate;
+        const dynamic=structuredClone(sample) as unknown as {
+          inputs:{items:unknown[]};
+          steps:Array<{template:{steps:Array<{with:{action:{inputs:Record<string,unknown>}}}>}}>;
+        };
+        dynamic.inputs.items=[field.default,field.default];
+        dynamic.steps[0]!.template.steps[0]!.with.action.inputs[input]={ref:'item.value'};
+        detail.dynamic_example=await compilingExample(dynamic);
+      }
+    }
+    detail.template_policy={allowed_action:'github.run',type:'task',
+      inputs:'literal or exact {ref:"item.value[.<field>]"} / {ref:"item.index"} only; typed by reviewed Action',
+      input_snapshot:'All selected values validated against pinned provider types and choices before first dispatch; each input map SHA-256 pinned to D1 before Attempt',
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      replay:'D1 UNIQUE(run_id,step_id) Attempt before single GitHub POST; no blind retries',
+      physical_state:'verified GitHub terminal plus signed OIDC Claim/receipt',
+      requires:['approved_actions','approve_heavy_execution'],
+      unsupported:['session','arbitrary dynamic input expressions','nested templates']};
+  }
+  if(id==='flow.foreach_multi_mcp_read'){
+    const discovered=await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length)
+      detail.example=await compilingExample(foreachMultiMcpRead(discovered.tools[0]));
+    detail.template_policy={allowed_actions:['result.emit','mcp.call'],scope:'read',
+      min_steps:2,max_steps:PLAN_LIMITS.maxForeachTemplateSteps,
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      args_snapshot:'Native checkpoint for each child, with references to earlier child outputs in the same item',
+      replay:'D1 child dispatch fence before tools/call; lost checkpoints stay indeterminate, never re-dispatched',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['github.run','nested templates','write-scope tools']};
+  }
+  if(id==='flow.foreach_mcp_read'){
+    const discovered=await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length)
+      detail.example=await compilingExample(foreachMcpRead(discovered.tools[0]));
+    detail.template_policy={allowed_action:'mcp.call',scope:'read',
+      max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      replay:'D1 child dispatch fence, no blind retries; ambiguous results are indeterminate',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['github.run','nested templates','write-scope tools']};
+  }
+  if(id==='action.mcp.call'){
+    const discovered=await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length){
+      detail.example=await compilingExample(mcpRead(discovered.tools[0]));
+      detail.example_validation='compiler_valid_and_live_contract_discovered; tools/call not performed';
+    }
+    detail.grant={scope:'read',...(portalReady?{pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT}:{}),
+      required:['approved_operations','accept_target_risks'],
+      warning:'Only source-reviewed, live-advertised read tools; exact schema is rechecked at execution. Discovery is not an execution or permission grant.'};
+  }
+  if(id==='action.github.run'){
+    const approved=githubReady?await listAvailableGitHubActions(env):{actions:[]};
+    detail.discovered_actions=approved.actions;
+    if(githubReady)detail.availability=approved.actions.some(x=>x.can_publish)?
+      'publishable_after_owner_approval':'no_verified_published_action';
+    detail.grant={required:['approved_actions','approve_heavy_execution'],
+      note:'Discovery is not approval; review exact SHA, immutable tag/ref, workflow and contract digest before Publish.'};
+  }
+  return detail;
+}
+},
         workflow_id:{type:'string',format:'uuid'},
         version_id:{type:'string',format:'uuid'},
         inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
