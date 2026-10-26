@@ -1767,7 +1767,8 @@ test('awaited child cancellation is one-shot, terminal evidence required, and no
     childRunId:childId,timestamp:Date.now()});
   const first=await service.cancel(run.run_id,'delegate');
   assert.equal(first.cancellation,'terminal_confirmed');
-  assert.equal(first.physical_terminated,true);
+  assert.equal(first.native_workflow_terminated,true);
+  assert.equal(first.physical_terminated,false);
   const replay=await service.cancel(run.run_id,'delegate');
   assert.equal(replay.cancellation,'terminal_confirmed');
   assert.equal(terminations,1);
