@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 export const APPLICATIONS = [
   'database-mcp-worker',
+  'email-mcp-worker',
   'github-actions-mcp-worker',
   'ima-mcp-worker',
   'raindrop-mcp-worker',
@@ -14,7 +15,7 @@ export const APPLICATIONS = [
 ];
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
-const RELEASE_WORKERS = APPLICATIONS;
+const RELEASE_WORKERS = [...APPLICATIONS];
 
 function requiresAllApps(file) {
   return file === 'package.json'

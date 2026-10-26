@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - database-mcp-worker
+          - email-mcp-worker
           - ima-mcp-worker
           - raindrop-mcp-worker
           - ssh-mcp-worker
@@ -48,6 +49,7 @@ jobs:
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
            inputs.worker == 'database-mcp-worker' ||
+           inputs.worker == 'email-mcp-worker' ||
            inputs.worker == 'ssh-mcp-worker' ||
            inputs.worker == 'remote-control-mcp-worker' ||
            inputs.worker == 'github-actions-mcp-worker' ||
@@ -114,6 +116,10 @@ jobs:
           # GitHub automatically uses same-name Environment Secrets over
           # Repository Secrets. Values are scoped to this one staging step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          MAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}
+          ACCESS_TEAM_DOMAIN: ${{ secrets.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ secrets.ACCESS_AUD }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
@@ -204,6 +210,28 @@ jobs:
              (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
+      - name: Apply isolated Email D1 schema from reviewed migration
+        if: inputs.worker == 'email-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd apps/email-mcp-worker && pnpm exec wrangler d1 migrations apply email-mcp-db --remote)
+          # Never query or log mailbox credentials; validate schema only.
+          output="$(cd apps/email-mcp-worker && pnpm exec wrangler d1 execute email-mcp-db --remote --json --command \
+            "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='mail_accounts') AS accounts_table, \
+                    (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='send_attempts') AS attempts_table")"
+          printf '%s' "$output" | node -e '
+            let raw="";process.stdin.on("data",c=>raw+=c).on("end",()=>{
+              const d=JSON.parse(raw);
+              if (!Array.isArray(d)||d.length!==1||!d[0].success||
+                  d[0].results?.[0]?.accounts_table!==1||d[0].results?.[0]?.attempts_table!==1)
+                process.exit(1);
+              console.log("Email production D1 schema verified; no mailbox rows read");
+            });'
+
       # Only the existing production release lock and GitHub Environment can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
@@ -277,7 +305,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|workflow-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|workflow-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -376,6 +404,8 @@ jobs:
           mcp_endpoint="https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp"
           if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]]; then
             mcp_endpoint="https://workflow.lirtual.dpdns.org/mcp"
+          elif [[ "$SELECTED_WORKER" == "email-mcp-worker" ]]; then
+            mcp_endpoint="https://email-mcp.lirtual.dpdns.org/mcp"
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do
             status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' \
