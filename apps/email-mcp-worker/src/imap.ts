@@ -193,11 +193,37 @@ export async function imapAttachment(env: Env, account: MailAccount, identity: s
       attachment_id: index, size: bytes.length, data_base64: base64Data(bytes) };
   }));
 }
+// A selected mailbox and UIDVALIDITY only prove the folder identity, not that
+// a particular UID still exists. A missing UID can otherwise make UID STORE
+// appear successful even when no message was changed.
+async function requireImapUid(client: ImapFlow, uid: number): Promise<void> {
+  const current = await client.fetchOne(uid, { uid: true }, { uid: true });
+  if (!current || current.uid !== uid) fail('stale_reference');
+}
+
+// Extract the selected-mailbox operations for network-free failure-path tests.
+export async function markSelectedImapMessage(client: ImapFlow, uid: number, read: boolean): Promise<void> {
+  await requireImapUid(client, uid);
+  const result = read
+    ? await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true })
+    : await client.messageFlagsRemove(uid, ['\\Seen'], { uid: true });
+  if (result !== true) fail('imap_mutation_failed');
+  // STORE success alone is not proof that the requested flag is now present.
+  const updated = await client.fetchOne(uid, { uid: true, flags: true }, { uid: true });
+  if (!updated || updated.uid !== uid) fail('stale_reference');
+  if (!updated.flags || updated.flags.has('\\Seen') !== read) fail('imap_mutation_failed');
+}
+
+export async function moveSelectedImapMessage(client: ImapFlow, uid: number, folder: string): Promise<void> {
+  await requireImapUid(client, uid);
+  const result = await client.messageMove(uid, folder, { uid: true });
+  if (!result || result.destination !== folder) fail('imap_mutation_failed');
+}
+
 export async function imapMark(env: Env, account: MailAccount, identity: string, read: boolean) {
   const ref = decodeImapReference(identity);
   return withImap(env, account, client => withSelected(client, ref, async () => {
-    if (read) await client.messageFlagsAdd(ref.uid, ['\\Seen'], { uid: true });
-    else await client.messageFlagsRemove(ref.uid, ['\\Seen'], { uid: true });
+    await markSelectedImapMessage(client, ref.uid, read);
     return { account_id: account.account_id, id: identity, is_read: read };
   }));
 }
@@ -208,7 +234,7 @@ export async function imapMove(env: Env, account: MailAccount, identity: string,
     if (!(await client.list()).some(f => f.path === folder)) fail('invalid_folder');
     return withSelected(client, ref, async () => {
       if (!client.capabilities.has('MOVE')) fail('unsupported');
-      await client.messageMove(ref.uid, folder, { uid: true });
+      await moveSelectedImapMessage(client, ref.uid, folder);
       return { account_id: account.account_id, old_id: identity,
         destination: folder, status: 'moved', new_reference: null };
     });
@@ -225,7 +251,7 @@ export async function imapTrash(env: Env, account: MailAccount, identity: string
     const ref = decodeImapReference(identity);
     return withSelected(client, ref, async () => {
       if (ref.folder === trash.path) fail('unsupported');
-      await client.messageMove(ref.uid, trash.path, { uid: true });
+      await moveSelectedImapMessage(client, ref.uid, trash.path);
       return { account_id: account.account_id, old_id: identity,
         destination: trash.path, status: 'trashed', new_reference: null };
     });
