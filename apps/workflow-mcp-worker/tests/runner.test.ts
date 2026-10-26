@@ -72,7 +72,11 @@ function setup(t:test.TestContext){
     MCP_PORTAL_ENDPOINT:'https://mcp.lirtual.dpdns.org/mcp',
     MCP_PORTAL_CLIENT_ID:'test-id',
     MCP_PORTAL_CLIENT_SECRET:'test-secret',
-    DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){return Promise.all(statements.map(s=>s.run()));}},
+    DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){
+      sqlite.exec('BEGIN IMMEDIATE');
+      try{const results=[];for(const stmt of statements)results.push(await stmt.run());sqlite.exec('COMMIT');return results;}
+      catch(e){sqlite.exec('ROLLBACK');throw e;}
+    }},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
   } as unknown as Env;
   const service=new WorkflowService(env);
@@ -1650,4 +1654,83 @@ test('mixed skipped MCP prerequisite never dispatches a reviewed GitHub Task',as
  assert.equal(result.steps.find(s=>s.step_id==='each_0_verify')?.status,'skipped');
  assert.equal(result.steps.find(s=>s.step_id==='each_0_finish')?.status,'skipped');
  assert.equal(calls,0,'neither MCP nor GitHub may be contacted');
+});
+
+test('awaited child publish requires exact reviewed target; one native child and parent output',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Child only owns its result',
+    steps:[{id:'echo',uses:'result.emit',with:{data:{ref:'inputs.value'}}}]}));
+  const published=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Parent invokes pinned child',
+    inputs:{value:null},steps:[
+      {id:'delegate',flow:'child',workflow_id:child.workflow_id,
+        version_id:published.published_version_id,inputs:{value:{ref:'inputs.value'}}},
+      {id:'finished',uses:'result.emit',needs:['delegate'],
+        with:{data:{ref:'steps.delegate.output'}}},
+    ]}));
+  const validated=await service.validateDefinition((await service.get(parent.workflow_id)).definition);
+  assert.equal(validated.valid,true);
+  assert.equal(validated.required_children?.length,1);
+  await assert.rejects(()=>service.publish(parent.workflow_id,1),/child_approval_required/);
+  const reviewed=validated.required_children!;
+  await service.publish(parent.workflow_id,1,[],false,false,[],reviewed);
+  const created:string[]=[];
+  const nativeStep={do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback(),
+    sleep:async()=>{}} as unknown as WorkflowStep;
+  env.WORKFLOW.create=async({id})=>{
+    created.push(id);
+    if(id===created[0])return;
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+      {payload:{run_id:id}} as WorkflowEvent<{run_id:string}>,nativeStep);
+  };
+  const started=await service.start(parent.workflow_id,{value:'hello from parent'});
+  const reserved=sqlite.prepare('SELECT capacity_weight FROM runs WHERE id=?')
+    .get(started.run_id) as {capacity_weight:number};
+  assert.equal(reserved.capacity_weight,2);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,nativeStep);
+  const final=await service.result(started.run_id);
+  assert.equal(final.status,'succeeded');
+  assert.equal(final.result,'hello from parent');
+  assert.equal(created.length,2);
+  const rows=sqlite.prepare('SELECT id,parent_run_id,outcome,capacity_weight FROM runs ORDER BY created_at,id')
+    .all() as Array<{id:string;parent_run_id:string|null;outcome:string;capacity_weight:number}>;
+  assert.equal(rows.length,2);
+  assert.equal(rows.filter(x=>x.parent_run_id===started.run_id).length,1);
+  assert.equal(rows.every(x=>x.outcome==='succeeded'),true);
+  assert.equal(rows.every(x=>x.capacity_weight===1),true);
+});
+
+test('pinned child failure does not turn parent join into success',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Child missing runtime input',
+    steps:[{id:'oops',uses:'result.emit',with:{data:{ref:'inputs.missing'}}}]}));
+  const pub=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Parent should fail',
+    steps:[
+      {id:'delegate',flow:'child',workflow_id:child.workflow_id,
+       version_id:pub.published_version_id,inputs:{}},
+      {id:'blocked',uses:'result.emit',needs:['delegate'],with:{data:'not dispatched'}},
+    ]}));
+  const approved=(await service.validateDefinition((await service.get(parent.workflow_id)).definition)).required_children!;
+  await service.publish(parent.workflow_id,1,[],false,false,[],approved);
+  let starts=0;
+  env.WORKFLOW.create=async({id})=>{
+    starts++;
+    if(starts===1)return;
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+      {payload:{run_id:id}} as WorkflowEvent<{run_id:string}>,
+      {do:async(_n:unknown,_o:unknown,cb:()=>Promise<unknown>)=>cb(),
+       sleep:async()=>{}} as unknown as WorkflowStep);
+  };
+  const started=await service.start(parent.workflow_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,cb:()=>Promise<unknown>)=>cb(),
+     sleep:async()=>{}} as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='delegate')?.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='blocked')?.status,'skipped');
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n,2);
 });
