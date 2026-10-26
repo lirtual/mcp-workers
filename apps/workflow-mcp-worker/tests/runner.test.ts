@@ -1884,7 +1884,7 @@ test('cancel-before-native-start prevents any subsequent Cloudflare create, even
   assert.equal(ends,0);
   const child=f.sqlite.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
     .get(f.childId) as {outcome:string;start_state:string};
-  assert.deepEqual(child,{outcome:'cancelled',start_state:'cancelled_before_start'});
+  assert.deepEqual({...child},{outcome:'cancelled',start_state:'cancelled_before_start'});
 });
 
 test('cancel during pending native create survives a 404 and terminates exactly once after ACK',async t=>{
@@ -1948,6 +1948,6 @@ test('cancel after create CAS but before native dispatch never calls Cloudflare 
   assert.equal(intercepted,true);
   const row=f.sqlite.prepare('SELECT outcome,start_state FROM runs WHERE id=?')
     .get(f.childId) as {outcome:string;start_state:string};
-  assert.deepEqual(row,{outcome:'cancelled',start_state:'cancelled_before_start'});
+  assert.deepEqual({...row},{outcome:'cancelled',start_state:'cancelled_before_start'});
   assert.equal((await f.service.cancel(f.runId,'delegate')).cancellation,'cancelled_before_start');
 });
