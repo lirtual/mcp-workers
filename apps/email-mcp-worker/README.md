@@ -79,16 +79,21 @@ Production D1 `email-mcp-db` is bound as `DB` with exactly two tables
 (`mail_accounts` and `send_attempts`). Its reviewed migration is applied
 through the same GitHub Actions release job. Setup uses
 `email.lirtual.dpdns.org`; MCP uses `email-mcp.lirtual.dpdns.org`.
-The legacy isolated acceptance D1 is independent from production and still
-contains one encrypted test account; do **not** copy it into production. Cloudflare
-readback confirmed these candidates for a separately authorized cleanup:
-`spec279-email-acceptance` Worker; `spec279_email_otp_20261026` D1;
-`Spec279 Email MCP Isolated Acceptance` Access application; and its two
-custom domains `spec279-email-preview.lirtual.dpdns.org` and
-`spec279-email-mcp.lirtual.dpdns.org`. Do not remove
-`email-mcp-worker`, `email-mcp-db`, `Email MCP Setup`, or the two
-production `email*.lirtual.dpdns.org` hostnames. Verify all dependencies
-and obtain separate cleanup approval before destructive operations.
+The owner-approved legacy acceptance environment was fully deleted on
+2026-10-26 after independent Cloudflare binding and account-scope review:
+`spec279-email-acceptance` Worker, `spec279_email_otp_20261026` D1
+(including its one encrypted test account), `Spec279 Email MCP Isolated
+Acceptance` Access application, and two legacy custom domains
+`spec279-email-preview.lirtual.dpdns.org` and
+`spec279-email-mcp.lirtual.dpdns.org`. Cloudflare also removed the two
+corresponding DNS records when their Worker domains were detached.
+An independent post-delete audit confirmed all five legacy resource classes
+absent, and verified `email-mcp-worker`, `email-mcp-db`,
+`Email MCP Setup`, the two production hostnames/DNS entries, the correct
+production D1 binding, one connected account and one prior send attempt
+were preserved. Unauthenticated production MCP still returned 401 and
+the unauthenticated Setup page redirected to Cloudflare Access login.
+Do not re-create the isolated environment or re-test SMTP without a new need.
 
 ## Production acceptance — verified 2026-10-26
 
@@ -111,7 +116,7 @@ and obtain separate cleanup approval before destructive operations.
 read/unread marking, move and trash (capability-dependent); real fault
 injection for ambiguous SMTP outcomes; and other mailbox providers. Keep
 [Issue #279](https://github.com/lirtual/mcp-workers/issues/279) open until
-scope/cleanup is explicitly resolved. Do not repeat the core QQ read/send test.
+the remaining feature scope is explicitly resolved. Do not repeat the core QQ read/send test.
 
 ### Historical preproduction transport investigation
 
