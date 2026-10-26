@@ -168,12 +168,13 @@ test('Litterbox one bounded file, default 24h; DDG no token and generation priva
     assert.ok(init.body instanceof FormData);
     assert.equal((init.body as FormData).get('time'),'24h');
     assert.equal((init.body as FormData).get('reqtype'),'fileupload');
-    return new Response('https://litter.catbox.moe/abc.txt');
+    return new Response('https://litterbox.catbox.moe/abc123/filename.txt');
   });
   const uploaded=await uploadFile({file:{file_id:'file_123',
     download_url:'https://trusted-files.example.com/file',
     file_name:'demo.txt',mime_type:'text/plain'}},send,['trusted-files.example.com']);
   assert.equal(uploaded.size_bytes,5);
+  assert.equal(uploaded.file_url, 'https://litterbox.catbox.moe/abc123/filename.txt');
   assert.equal(uploads,1);
   assert.equal(uploaded.expires_in,'24h');
   assert.equal(await duckCapability(env, mock(()=>{throw Error('not requested')})), 'not_configured');

@@ -226,7 +226,7 @@ export async function uploadFile(
   let link: string;
   try {
     link = validLink((await boundedText(res, 2048)).trim(),
-      ['litter.catbox.moe', 'files.catbox.moe']);
+      ['litterbox.catbox.moe', 'litter.catbox.moe', 'files.catbox.moe']);
   } catch { return bad('indeterminate'); }
   return { status: 'confirmed' as const, file_url: link,
     file_name: filename, size_bytes: total, expires_in };
