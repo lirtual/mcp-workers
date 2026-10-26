@@ -101,6 +101,20 @@ function inputBody(input:Input,method:string):{body?:string;contentType?:string}
  if(body!==undefined&&bytes(body)>1048576) fail('request_too_large');
  return {body,contentType};
 }
+// An upstream stream may never settle read() even after fetch is aborted.
+// Race each read against the existing request timeout without adding timers.
+async function readChunk(reader:ReadableStreamDefaultReader<Uint8Array>,signal:AbortSignal) {
+ if(signal.aborted) fail('timeout');
+ let onAbort!:()=>void;
+ const aborted=new Promise<never>((_resolve,reject)=>{
+  onAbort=()=>reject(new HttpError('timeout'));
+  signal.addEventListener('abort',onAbort,{once:true});
+ });
+ try {
+  if(signal.aborted) fail('timeout');
+  return await Promise.race([reader.read(),aborted]);
+ } finally { signal.removeEventListener('abort',onAbort); }
+}
 async function readLimited(response:Response,max:number,signal:AbortSignal):Promise<{data:Uint8Array;truncated:boolean}> {
  if(!response.body) return {data:new Uint8Array(),truncated:false};
  const reader=response.body.getReader(),parts:Uint8Array[]=[];
@@ -108,7 +122,7 @@ async function readLimited(response:Response,max:number,signal:AbortSignal):Prom
  try {
   while(true) {
    if(signal.aborted) fail('timeout');
-   const p=await reader.read();
+   const p=await readChunk(reader,signal);
    if(p.done) break;
    if(size+p.value.length>max) {
      parts.push(p.value.subarray(0,max-size));size=max;truncated=true;break;
