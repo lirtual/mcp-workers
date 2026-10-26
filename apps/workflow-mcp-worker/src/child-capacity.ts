@@ -16,9 +16,9 @@ export async function awaitedChildRunId(parentRunId:string,stepId:string):Promis
     throw Error('invalid_child_identity');
   const key=new TextEncoder().encode('workflow-child:v1:'+parentRunId.toLowerCase()+':'+stepId);
   const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',key)).slice(0,16);
-  // RFC UUID variant and hash-derived version-5 shape, without namespace
-  // confusion with randomly allocated top-level UUIDs.
-  bytes[6]=(bytes[6]!&15)|0x50;
+  // RFC UUID variant and version 8 (custom SHA-256-derived identity), distinct
+  // from ordinary random version-4 top-level Run IDs.
+  bytes[6]=(bytes[6]!&15)|0x80;
   bytes[8]=(bytes[8]!&63)|0x80;
   const hex=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');
   return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),
