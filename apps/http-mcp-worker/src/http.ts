@@ -154,9 +154,11 @@ export async function executeHttp(input:Input,rules:Rule[],outbound:typeof fetch
    if(mode==='same-origin'&&(method==='GET'||method==='HEAD')&&
      [301,302,303,307,308].includes(response.status)&&location) {
      let next:URL;
-     try { next=publicUrl(new URL(location,url).href); }
+     try { next=new URL(location,url); }
      catch { await response.body?.cancel().catch(()=>{});fail('unsafe_redirect'); }
      if(next.origin===url.origin) {
+       try { next=publicUrl(next.href); }
+       catch { await response.body?.cancel().catch(()=>{});fail('unsafe_redirect'); }
        if(redirects>=5){await response.body?.cancel().catch(()=>{});fail('too_many_redirects');}
        await response.body?.cancel().catch(()=>{});
        url=next;redirects++;continue;
