@@ -164,14 +164,20 @@ jobs:
               if (request.method !== 'POST' ||
                 request.headers.get('authorization') !== 'Bearer ' + env.MCP_ACCESS_TOKEN)
                 return new Response('Unauthorized', { status: 401 });
-              const results: {name: string; ok: boolean}[] = [];
+              const results: {name: string; ok: boolean; error?: string}[] = [];
               for (const [name, probe] of [
                 ['gmail-imap-993', () => imapTls('imap.gmail.com')],
                 ['gmail-smtp-465', () => smtpTls(465)],
                 ['gmail-smtp-starttls-587', () => smtpTls(587)],
               ] as const) {
                 try { await probe(); results.push({ name, ok: true }); }
-                catch { results.push({ name, ok: false }); }
+                catch (error) {
+                  // No credentials were supplied to the SMTP server. Emit only
+                  // bounded, redacted runtime diagnosis, never a stack trace.
+                  const detail = error instanceof Error ? error.message : 'unknown_failure';
+                  results.push({ name, ok: false,
+                    error: detail.replaceAll(env.MCP_ACCESS_TOKEN, '[redacted]').slice(0, 180) });
+                }
               }
               return Response.json({ results }, {
                 status: results.every(result => result.ok) ? 200 : 502,
@@ -240,7 +246,8 @@ jobs:
           });
           const report = await tls.json();
           for (const item of report.results ?? [])
-            console.log('Remote provider TLS handshake:', item.name, item.ok ? 'PASS' : 'FAIL');
+            console.log('Remote provider TLS handshake:', item.name, item.ok ? 'PASS' : 'FAIL',
+              item.ok ? '' : String(item.error ?? 'unknown_failure').slice(0, 180));
           assert.equal(tls.status, 200, 'Cloudflare outbound mail TLS probe failed');
           assert.deepEqual(report.results?.map(item => item.ok), [true,true,true]);
           console.log('EMAIL_CLOUDFLARE_IMAP_SMTP_TLS_HANDSHAKE_OK');
