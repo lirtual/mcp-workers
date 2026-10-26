@@ -72,12 +72,3 @@ export function base64Data(data: Uint8Array): string {
   for (const b of data) raw += String.fromCharCode(b);
   return btoa(raw);
 }
-export function validateGraphUploadUrl(value: string): string {
-  if (value.length > 4096) fail('invalid_upload_url');
-  let u: URL;
-  try { u = new URL(value); } catch { return fail('invalid_upload_url'); }
-  if (u.origin !== 'https://outlook.office.com' || u.port || u.username || u.password || u.hash ||
-    !/^\/api\/(?:v[12]\.0|gv1\.0)\/users\('[^/?#]{1,250}'\)\/messages\('[^/?#]{1,500}'\)\/attachmentsessions\('[^/?#]{1,500}'\)$/i.test(u.pathname) ||
-    !u.searchParams.has('authtoken') || !u.searchParams.get('authtoken')) fail('invalid_upload_url');
-  return value;
-}

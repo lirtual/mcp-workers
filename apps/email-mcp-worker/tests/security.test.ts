@@ -11,13 +11,13 @@ const env = {
 } as any;
 
 test('AES-GCM is non-deterministic and binds account identity', async () => {
-  const a = await encrypt(env, 'account:a:gmail', { access_token: 'secret' });
-  const b = await encrypt(env, 'account:a:gmail', { access_token: 'secret' });
+  const a = await encrypt(env, 'account:a:imap_smtp', { access_token: 'secret' });
+  const b = await encrypt(env, 'account:a:imap_smtp', { access_token: 'secret' });
   assert.notEqual(a.ciphertext, b.ciphertext);
-  assert.deepEqual(await decrypt(env, 'account:a:gmail', a.ciphertext, a.keyId), { access_token: 'secret' });
-  await assert.rejects(() => decrypt(env, 'account:b:gmail', a.ciphertext, a.keyId));
+  assert.deepEqual(await decrypt(env, 'account:a:imap_smtp', a.ciphertext, a.keyId), { access_token: 'secret' });
+  await assert.rejects(() => decrypt(env, 'account:b:imap_smtp', a.ciphertext, a.keyId));
   const corrupt = a.ciphertext.slice(0, -2) + 'AB';
-  await assert.rejects(() => decrypt(env, 'account:a:gmail', corrupt, a.keyId));
+  await assert.rejects(() => decrypt(env, 'account:a:imap_smtp', corrupt, a.keyId));
 });
 test('setup is forbidden on alternate host and rejects missing Access assertion', async () => {
   await assert.rejects(() => verifyAccess(new Request('https://email-mcp-worker.aiyaya.workers.dev/setup'), env), /not_found/);
@@ -75,7 +75,7 @@ test('Access JWT requires a trusted RS256 signature, correct audience and owner 
 });
 
 test('encryption key rotation preserves explicit key identity only with the previous secret', async () => {
-  const original = await encrypt(env, 'account:unchanged:graph', { token: 'rotation' });
+  const original = await encrypt(env, 'account:unchanged:imap_smtp', { token: 'rotation' });
   const rotatedEnv = {
     ...env,
     MAIL_KEY_ID: '2',
@@ -83,21 +83,18 @@ test('encryption key rotation preserves explicit key identity only with the prev
     MAIL_ENCRYPTION_PREVIOUS_KEY: env.MAIL_ENCRYPTION_KEY,
     MAIL_PREVIOUS_KEY_ID: original.keyId,
   };
-  assert.deepEqual(await decrypt(rotatedEnv, 'account:unchanged:graph', original.ciphertext, original.keyId), {
+  assert.deepEqual(await decrypt(rotatedEnv, 'account:unchanged:imap_smtp', original.ciphertext, original.keyId), {
     token: 'rotation',
   });
   await assert.rejects(() => decrypt({ ...rotatedEnv, MAIL_ENCRYPTION_PREVIOUS_KEY: undefined },
-    'account:unchanged:graph', original.ciphertext, original.keyId), /encryption_key_unavailable/);
+    'account:unchanged:imap_smtp', original.ciphertext, original.keyId), /encryption_key_unavailable/);
 });
 
-test('OAuth onboarding CSP permits only known cross-origin IdP redirects', () => {
+test('setup CSP permits only same-origin form posts, no OAuth destinations', () => {
   const action = SETUP_CSP.match(/(?:^|; )form-action ([^;]+);/)?.[1];
-  assert.equal(action,
-    "'self' https://accounts.google.com https://login.microsoftonline.com https://login.live.com",
-    'Google, Microsoft Entra and personal Outlook OAuth redirect chains must be permitted');
+  assert.equal(action, "'self'");
   assert.match(SETUP_CSP, /default-src 'none'/);
   assert.match(SETUP_CSP, /base-uri 'none'/);
   assert.match(SETUP_CSP, /frame-ancestors 'none'/);
-  assert.doesNotMatch(SETUP_CSP, /https:\*|https:;|\*;/,
-    'Never allow arbitrary external form targets to solve OAuth redirects');
+  assert.doesNotMatch(SETUP_CSP, /google|microsoft|live\.com|https:\*/i);
 });

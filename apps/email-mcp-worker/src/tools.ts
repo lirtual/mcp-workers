@@ -2,15 +2,11 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { decrypt, encrypt, sha256 } from './crypto.ts';
 import { validateAttachmentInputs, resolveAttachments } from './attachments.ts';
-import { withImap, imapReplyContext } from './imap.ts';
+import { withImap, imapReplyContext, imapSearch, imapGet, imapFolders, imapAttachment,
+  imapDraftCreate, imapMark, imapMove, imapTrash } from './imap.ts';
 import { smtpSend } from './smtp.ts';
 import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
-import {
-  attachmentGet, draftCreate, draftUpdate, getMail, listFolders, markMail, moveMail,
-  providerRequest, replyGmail, assertGraphReplyRecipient, forwardGmail, graphReplyForwardWithFiles, searchMail, sendMail, threadGet, trashMail,
-} from './providers.ts';
-
 const id = z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/);
 const accountId = z.string().uuid();
 const to = z.array(z.email().max(320)).min(1).max(20);
@@ -55,36 +51,26 @@ export async function listAccounts(env: Env) {
   return result.results;
 }
 async function capabilities(env: Env, account: MailAccount) {
-  const api = account.provider === 'gmail' || account.provider === 'graph';
-  const imap = account.provider === 'imap_smtp';
-  let hasMove = false, hasTrash = false, hasDrafts = false;
-  if (imap) {
-    const server = await withImap(env, account, async client => {
-      const folders = await client.list();
-      const canMove = client.capabilities.has('MOVE');
-      const canAppend = client.capabilities.has('UIDPLUS');
-      return {
-        move: canMove,
-        trash: canMove && folders.some(f => f.specialUse === '\\Trash' ||
-          /^(trash|deleted items|deleted)$/i.test(f.path)),
-        drafts: canAppend && folders.some(f => f.specialUse === '\\Drafts' || /^drafts$/i.test(f.path)),
-      };
-    });
-    hasMove = server.move;
-    hasTrash = server.trash;
-    hasDrafts = server.drafts;
-  }
+  const server = await withImap(env, account, async client => {
+    const folders = await client.list();
+    const canMove = client.capabilities.has('MOVE');
+    const canAppend = client.capabilities.has('UIDPLUS');
+    return {
+      move: canMove,
+      trash: canMove && folders.some(f => f.specialUse === '\\Trash' ||
+        /^(trash|deleted items|deleted)$/i.test(f.path)),
+      drafts: canAppend && folders.some(f => f.specialUse === '\\Drafts' || /^drafts$/i.test(f.path)),
+    };
+  });
   return {
     account_id: account.account_id, provider: account.provider, status: account.status,
-    search: api || imap, get: api || imap, thread: api, folders: api || imap,
-    attachment_get: api || imap, draft_create: api || hasDrafts, draft_update: api,
-    send: api || imap, send_attachments: api || imap,
-    reply: api || imap, forward: api || imap, mark_read: api || imap,
-    move: account.provider === 'graph' || hasMove, trash: api || hasTrash,
+    search: true, get: true, thread: false, folders: true,
+    attachment_get: true, draft_create: server.drafts, draft_update: false,
+    send: true, send_attachments: true, reply: true, forward: true,
+    mark_read: true, move: server.move, trash: server.trash,
     permanent_delete: false, bulk_write: false,
   };
 }
-
 type Cursor = {
   expiry: number; digest: string; next: Record<string, string | null>;
 };
@@ -117,7 +103,7 @@ export async function searchAcross(env: Env, accounts: string[], query: string, 
       try {
         if (positions[aid] === null) return { aid, ok: true as const, result: { messages: [], next: undefined } };
         const account = await getAccount(env, aid);
-        const result = await searchMail(env, account, query, positions[aid] ?? undefined, 10);
+        const result = await imapSearch(env, account, query, positions[aid] ?? undefined, 10);
         return { aid, ok: true as const, result };
       } catch (err) {
         return { aid, ok: false as const, error: err instanceof MailError ? err.code : 'upstream_unavailable' };
@@ -208,32 +194,22 @@ export function buildMcpServer(env: Env): McpServer {
   server.registerTool('mail_get', {
     description: 'Read a mailbox-native message ID; HTML is never returned as executable markup.',
     inputSchema: z.object({ account_id: accountId, message_id: id }).strict(), annotations: read,
-  }, async ({ account_id, message_id }) => safe(async () => getMail(env, await getAccount(env, account_id), message_id)));
-  server.registerTool('thread_get', {
-    description: 'Read native Gmail thread or Graph conversationId; never infer threads from subject.',
-    inputSchema: z.object({ account_id: accountId, thread_id: id }).strict(), annotations: read,
-  }, async ({ account_id, thread_id }) => safe(async () => threadGet(env, await getAccount(env, account_id), thread_id)));
+  }, async ({ account_id, message_id }) => safe(async () => imapGet(env, await getAccount(env, account_id), message_id)));
   server.registerTool('folder_list', {
-    description: 'List native labels or folders; these are not synthesized across providers.',
+    description: 'List native IMAP folders; no synthetic folder mapping.',
     inputSchema: z.object({ account_id: accountId }).strict(), annotations: read,
-  }, async ({ account_id }) => safe(async () => listFolders(env, await getAccount(env, account_id))));
+  }, async ({ account_id }) => safe(async () => imapFolders(env, await getAccount(env, account_id))));
   server.registerTool('attachment_get', {
     description: 'Read a native attachment from a known mailbox message; no external URL fetching.',
     inputSchema: z.object({ account_id: accountId, message_id: id, attachment_id: id }).strict(), annotations: read,
-  }, async ({ account_id, message_id, attachment_id }) => safe(async () => attachmentGet(env, await getAccount(env, account_id), message_id, attachment_id)));
+  }, async ({ account_id, message_id, attachment_id }) => safe(async () => imapAttachment(env, await getAccount(env, account_id), message_id, attachment_id)));
   server.registerTool('draft_create', {
-    description: 'Create a provider-native draft in a selected source account.',
+    description: 'Create an IMAP APPEND draft when UIDPLUS/Drafts are supported; attachments unsupported.',
     inputSchema: z.object({ account_id: accountId, to, subject, body, attachments: attachmentsSchema }).strict(), annotations: write,
   }, async ({ account_id, to, subject, body, attachments }) => safe(async () => {
     validateAttachmentInputs(attachments ?? []);
-    return draftCreate(env, await getAccount(env, account_id), to, subject, body, attachments ?? []);
-  }));
-  server.registerTool('draft_update', {
-    description: 'Update one provider-native draft by its stable reference; never creates an inferred draft.',
-    inputSchema: z.object({ account_id: accountId, draft_id: id, to, subject, body, attachments: attachmentsSchema }).strict(), annotations: write,
-  }, async ({ account_id, draft_id, to, subject, body, attachments }) => safe(async () => {
-    validateAttachmentInputs(attachments ?? []);
-    return draftUpdate(env, await getAccount(env, account_id), draft_id, to, subject, body, attachments ?? []);
+    if (attachments?.length) fail('unsupported');
+    return imapDraftCreate(env, await getAccount(env, account_id), to, subject, body);
   }));
   server.registerTool('mail_send', {
     description: 'Send one message with a durable request_id fence. Timeout may mean unknown delivery; never resend with a fresh ID.',
@@ -246,10 +222,11 @@ export function buildMcpServer(env: Env): McpServer {
     validateAttachmentInputs(files);
     const acc = await getAccount(env, account_id);
     return fencedSend(env, acc, request_id, { op: 'send', to, subject, body, attachments: files },
-      () => sendMail(env, acc, to, subject, body, files));
+      async () => smtpSend(env, acc, to, subject, body,
+        await resolveAttachments(files, (msg, part) => imapAttachment(env, acc, msg, part))));
   }));
   server.registerTool('mail_reply', {
-    description: 'Reply to one native message. Always confirm the single Reply-To recipient, including for Graph. Durable request_id fences all sends.',
+    description: 'Reply to one IMAP message with explicit confirmed recipient and durable send fence.',
     inputSchema: z.object({
       account_id: accountId, message_id: id, request_id: z.string().min(8).max(128), body,
       to: z.email().max(320), attachments: attachmentsSchema,
@@ -258,22 +235,10 @@ export function buildMcpServer(env: Env): McpServer {
     const items = attachments ?? [];
     validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
-    if (acc.provider !== 'graph' && acc.provider !== 'gmail' && acc.provider !== 'imap_smtp') fail('unsupported');
-    // Schema requires a confirmed outbound recipient for every provider.
     return fencedSend(env, acc, request_id, { op: 'reply', message_id, body, to, attachments: items }, async () => {
-      const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
-      if (acc.provider === 'imap_smtp') {
-        const relation = await imapReplyContext(env, acc, message_id, to!);
-        return smtpSend(env, acc, relation.to, relation.subject, body, files, relation);
-      }
-      if (acc.provider === 'gmail') return replyGmail(env, acc, message_id, body, to, files);
-      await assertGraphReplyRecipient(env, acc, message_id, to);
-      if (files.length) return graphReplyForwardWithFiles(env, acc, 'reply', message_id, body, files);
-      await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/reply', {
-        method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'IdType="ImmutableId"' },
-        body: JSON.stringify({ comment: body }),
-      });
-      return { status: 'accepted' };
+      const files = await resolveAttachments(items, (msg, part) => imapAttachment(env, acc, msg, part));
+      const relation = await imapReplyContext(env, acc, message_id, to);
+      return smtpSend(env, acc, relation.to, relation.subject, body, files, relation);
     });
   }));
   server.registerTool('mail_forward', {
@@ -286,40 +251,28 @@ export function buildMcpServer(env: Env): McpServer {
     const items = attachments ?? [];
     validateAttachmentInputs(items);
     const acc = await getAccount(env, account_id);
-    if (acc.provider !== 'graph' && acc.provider !== 'gmail' && acc.provider !== 'imap_smtp') fail('unsupported');
     return fencedSend(env, acc, request_id, { op: 'forward', message_id, to, body, attachments: items }, async () => {
-      const files = await resolveAttachments(items, (msg, attachment) => attachmentGet(env, acc, msg, attachment));
-      if (acc.provider === 'imap_smtp') {
-        const original = await getMail(env, acc, message_id);
-        const forwarded = body + '\n\n---------- Forwarded message ----------\n' +
-          'From: ' + original.from + '\nSubject: ' + original.subject +
-          '\n\n' + (original.text ?? original.snippet);
-        if (forwarded.length > 100000) fail('payload_too_large');
-        return smtpSend(env, acc, to, ('Fwd: ' + original.subject).slice(0, 500), forwarded, files);
-      }
-      if (acc.provider === 'gmail') return forwardGmail(env, acc, message_id, to, body, files);
-      if (files.length) return graphReplyForwardWithFiles(env, acc, 'forward', message_id, body, files, to);
-      await providerRequest(env, acc, '/messages/' + encodeURIComponent(message_id) + '/forward', {
-        method: 'POST', headers: { 'content-type': 'application/json', Prefer: 'IdType="ImmutableId"' },
-        body: JSON.stringify({
-          comment: body, toRecipients: to.map(address => ({ emailAddress: { address } })),
-        }),
-      });
-      return { status: 'accepted' };
+      const files = await resolveAttachments(items, (msg, part) => imapAttachment(env, acc, msg, part));
+      const original = await imapGet(env, acc, message_id);
+      const forwarded = body + '\n\n---------- Forwarded message ----------\n' +
+        'From: ' + original.from + '\nSubject: ' + original.subject +
+        '\n\n' + (original.text ?? original.snippet);
+      if (forwarded.length > 100000) fail('payload_too_large');
+      return smtpSend(env, acc, to, ('Fwd: ' + original.subject).slice(0, 500), forwarded, files);
     });
   }));
   server.registerTool('mail_mark', {
     description: 'Mark precisely one message as read or unread.',
     inputSchema: z.object({ account_id: accountId, message_id: id, is_read: z.boolean() }).strict(), annotations: write,
-  }, async ({ account_id, message_id, is_read }) => safe(async () => markMail(env, await getAccount(env, account_id), message_id, is_read)));
+  }, async ({ account_id, message_id, is_read }) => safe(async () => imapMark(env, await getAccount(env, account_id), message_id, is_read)));
   server.registerTool('mail_move', {
-    description: 'Move a Graph message to one explicitly selected native folder; Gmail labels are not modeled as moves.',
+    description: 'Move an IMAP message to one explicitly selected native folder when MOVE is supported.',
     inputSchema: z.object({ account_id: accountId, message_id: id, folder_id: id }).strict(), annotations: write,
-  }, async ({ account_id, message_id, folder_id }) => safe(async () => moveMail(env, await getAccount(env, account_id), message_id, folder_id)));
+  }, async ({ account_id, message_id, folder_id }) => safe(async () => imapMove(env, await getAccount(env, account_id), message_id, folder_id)));
   server.registerTool('mail_trash', {
     description: 'Move exactly one message to Trash/Deleted Items, without permanent deletion.',
     inputSchema: z.object({ account_id: accountId, message_id: id }).strict(),
     annotations: { ...write, destructiveHint: true },
-  }, async ({ account_id, message_id }) => safe(async () => trashMail(env, await getAccount(env, account_id), message_id)));
+  }, async ({ account_id, message_id }) => safe(async () => imapTrash(env, await getAccount(env, account_id), message_id)));
   return server;
 }

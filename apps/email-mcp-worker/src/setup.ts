@@ -3,10 +3,9 @@ import { encrypt, nonce } from './crypto.ts';
 import { validateProtocolCredentials, verifyImapCredentials } from './imap.ts';
 import { verifySmtpCredentials } from './smtp.ts';
 import { rotateCredentials } from './rotation.ts';
-import { beginOAuth, completeOAuth, revokeIfSupported } from './oauth.ts';
 import { listAccounts } from './tools.ts';
 import { fail, MailError, SETUP_HOST } from './types.ts';
-import type { Env, MailAccount, Provider } from './types.ts';
+import type { Env, MailAccount } from './types.ts';
 
 function escapeHtml(input: unknown): string {
   return String(input ?? '').replace(/[&<>"']/g, ch => ({
@@ -28,13 +27,8 @@ function imapForm(csrf: string, id?: string, address?: string): string {
     '<label>App password <input type="password" name="password" autocomplete="off" required maxlength="512"></label>' +
     '<button type="submit">Verify IMAP and SMTP TLS</button></form>';
 }
-// Chromium/WebKit apply form-action to cross-origin redirects after a POST.
-// OAuth starts with a same-origin form POST, then redirects only to these
-// provider-owned sign-in origins (including personal Microsoft accounts).
-// Keep the explicit allowlist; never broaden this to https: or '*'.
 export const SETUP_CSP = "default-src 'none'; style-src 'unsafe-inline'; " +
-  "form-action 'self' https://accounts.google.com https://login.microsoftonline.com https://login.live.com; " +
-  "base-uri 'none'; frame-ancestors 'none'";
+  "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 function securedHtml(body: string, cookie?: string): Response {
   const headers = new Headers({
@@ -59,7 +53,7 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
   try {
     const url = new URL(request.url);
     if (url.protocol !== 'https:' || url.hostname !== SETUP_HOST || url.port) return new Response('Not found', { status: 404 });
-    const owner = await verifyAccess(request, env, requestFetch);
+    await verifyAccess(request, env, requestFetch);
     if (url.pathname === '/setup' && request.method === 'GET') {
       const csrf = nonce();
       const accounts = await listAccounts(env);
@@ -70,13 +64,8 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
           '<form method="post" action="/setup/remove"><input type="hidden" name="csrf" value="' + csrf + '">' +
           '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
           '<button type="submit">Remove</button></form>' +
-          (item.provider === 'imap_smtp'
-            ? '<details><summary>Reconnect IMAP/SMTP</summary>' +
-              imapForm(csrf, item.account_id, item.address) + '</details>'
-            : '<form method="post" action="/setup/oauth/start"><input type="hidden" name="csrf" value="' + csrf + '">' +
-              '<input type="hidden" name="provider" value="' + escapeHtml(item.provider) + '">' +
-              '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
-              '<button type="submit">Reauthorize</button></form>') +
+          '<details><summary>Reconnect IMAP/SMTP</summary>' +
+          imapForm(csrf, item.account_id, item.address) + '</details>' +
           '<form method="post" action="/setup/alias"><input type="hidden" name="csrf" value="' + csrf + '">' +
           '<input type="hidden" name="account_id" value="' + escapeHtml(item.account_id) + '">' +
           '<label>Alias <input name="alias" maxlength="80" value="' + escapeHtml(item.alias ?? '') + '"></label>' +
@@ -84,38 +73,18 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       }).join('');
       return securedHtml('<h1>Mail accounts</h1><p>Only the Access-authorized owner can manage connected mailboxes.</p>' +
         '<ul>' + (rows || '<li>No accounts</li>') + '</ul>' +
-        '<fieldset><legend>Add OAuth mailbox</legend><form method="post" action="/setup/oauth/start">' +
-        '<input type="hidden" name="csrf" value="' + csrf + '">' +
-        '<select name="provider"><option value="gmail">Gmail</option><option value="graph">Microsoft Graph</option></select>' +
-        '<button type="submit">Authorize mailbox</button></form></fieldset>' +
         '<fieldset><legend>Add IMAP/SMTP account</legend>' + imapForm(csrf) + '</fieldset>' +
         '<fieldset><legend>Credential key rotation</legend><form method="post" action="/setup/rotate">' +
         '<input type="hidden" name="csrf" value="' + csrf + '">' +
         '<button type="submit">Re-encrypt with current key</button></form></fieldset>',
       csrfCookie(csrf));
     }
-    if (url.pathname === '/setup/oauth/start' && request.method === 'POST') {
-      const data = await formValues(request);
-      validateCsrf(request, data.get('csrf') ?? '');
-      const provider = data.get('provider') as Provider;
-      if (provider !== 'gmail' && provider !== 'graph') fail('unsupported');
-      const accountId = data.get('account_id') ?? undefined;
-      if (accountId && !/^[0-9a-f-]{36}$/i.test(accountId)) fail('invalid_account');
-      const redirect = await beginOAuth(env, provider, owner.sub, accountId);
-      return new Response(null, { status: 303, headers: { location: redirect, 'cache-control': 'no-store' } });
-    }
-    if (url.pathname === '/oauth/callback' && request.method === 'GET') {
-      if (url.searchParams.has('error')) fail('reauthorization_required');
-      const accountId = await completeOAuth(env, url.searchParams.get('state') ?? '',
-        url.searchParams.get('code') ?? '', owner.sub, requestFetch);
-      return securedHtml('<h1>Mailbox authorized</h1><p>Account ID: <code>' + escapeHtml(accountId) +
-        '</code></p><p><a href="/setup">Back to accounts</a></p>');
-    }
     if (url.pathname === '/setup/imap/add' && request.method === 'POST') {
       const data = await formValues(request);
       validateCsrf(request, data.get('csrf') ?? '');
       const address = (data.get('address') ?? '').trim().toLowerCase();
       if (!/^[^@\s,<>]{1,100}@[^@\s,<>]{3,200}$/.test(address)) fail('invalid_mail_identity');
+      if (/^(gmail\.com|googlemail\.com|outlook\.com|hotmail\.com|live\.com|msn\.com)$/i.test(address.split('@')[1] ?? '')) fail('unsupported_provider');
       const cfg = validateProtocolCredentials({
         imap_host: data.get('imap_host') ?? '', imap_port: 993,
         smtp_host: data.get('smtp_host') ?? '',
@@ -139,11 +108,11 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       const sealed = await encrypt(env, 'account:' + accountId + ':imap_smtp', cfg);
       if (requestedId) {
         const updated = await env.DB.prepare(
-          'UPDATE mail_accounts SET status=?,credential_ciphertext=?,credential_key_id=?,token_version=token_version+1,updated_at=? WHERE account_id=? AND provider=? AND lower(address)=? AND status!=?',
+          'UPDATE mail_accounts SET status=?,credential_ciphertext=?,credential_key_id=?,updated_at=? WHERE account_id=? AND provider=? AND lower(address)=? AND status!=?',
         ).bind('active', sealed.ciphertext, sealed.keyId, now, accountId, 'imap_smtp', address, 'disabled').run();
         if (updated.meta.changes !== 1) fail('reauthorization_identity_mismatch');
       } else {
-        await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,token_expires_at,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,NULL,?,?)')
+        await env.DB.prepare('INSERT INTO mail_accounts(account_id,provider,address,alias,status,credential_ciphertext,credential_key_id,created_at,updated_at) VALUES(?,?,?,NULL,?,?,?,?,?)')
           .bind(accountId, 'imap_smtp', address, 'active', sealed.ciphertext, sealed.keyId, now, now).run();
       }
       return new Response(null, { status: 303, headers: { location: '/setup', 'cache-control': 'no-store' } });
@@ -175,17 +144,15 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       validateCsrf(request, data.get('csrf') ?? '');
       const id = data.get('account_id') ?? '';
       if (!/^[0-9a-f-]{36}$/i.test(id)) fail('invalid_account');
-      const account = await env.DB.prepare('SELECT * FROM mail_accounts WHERE account_id=?').bind(id).first<MailAccount>();
+      const account = await env.DB.prepare('SELECT account_id FROM mail_accounts WHERE account_id=?').bind(id).first<{ account_id: string }>();
       if (!account) fail('account_not_found');
       // D1 batch runs transactionally; local authorization removal is not gated by upstream availability.
       await env.DB.batch([
         env.DB.prepare('DELETE FROM send_attempts WHERE account_id=?').bind(id),
         env.DB.prepare('DELETE FROM mail_accounts WHERE account_id=?').bind(id),
       ]);
-      const revoked = await revokeIfSupported(env, account, requestFetch);
-      return securedHtml('<h1>Local account removed</h1><p>Upstream revocation: ' +
-        (revoked ? 'confirmed' : 'not confirmed; revoke provider access manually if needed') +
-        '.</p><p><a href="/setup">Back to accounts</a></p>');
+      return securedHtml('<h1>Local account removed</h1><p>IMAP/SMTP credentials erased from the local registry.</p>' +
+        '<p><a href="/setup">Back to accounts</a></p>');
     }
     return new Response('Not found', { status: 404 });
   } catch (err) {

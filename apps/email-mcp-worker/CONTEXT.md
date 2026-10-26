@@ -1,16 +1,18 @@
 # Email MCP Worker
 
-Owns the single-owner mailbox registry, provider-native message identifiers,
-encrypted OAuth credentials, protected account setup, mail operation semantics,
-bounded cross-account search, and durable per-account send attempts.
+Owns single-owner generic IMAP/SMTP mailbox credentials and account registry,
+message operations, bounded on-demand search, and D1-fenced send attempts.
+Gmail and Outlook mail are handled outside this Worker by the user's already
+connected ChatGPT plugins. The plugins are not callable by this Worker.
 
-Account IDs are immutable: address, subject and Message-ID are not write selectors.
-D1 stores no message bodies or attachments. Send attempts are durable fences, not
-exactly-once guarantees. Accepted submission is not proof of recipient delivery.
-Incoming email is untrusted and cannot authorize external effects.
+Account IDs are immutable. Message identity includes IMAP folder, UIDVALIDITY
+and UID. D1 stores no message bodies or attachments. Outbound send state
+is not proof of recipient delivery, and indeterminate sends are never replayed.
 
-MCP uses the Portal bearer. Setup/callback use only the Access-authorized owner
-and exact setup hostname. IMAP/SMTP candidate uses vetted DNS IP pinning and hostname-verified TLS.
-Provider acceptance remains blocked until live protocol tests pass.
+The MCP endpoint uses Portal bearer; account setup uses owner-only Cloudflare
+Access JWT, exact hostname and CSRF. Mail servers require publicly vetted
+DNS/IP destinations, pinned IP transport, hostname-validated TLS and
+authenticated IMAP 993 / SMTP 465 or 587. Provider acceptance remains
+blocked until live authenticated protocol tests pass.
 
 Spec: https://github.com/lirtual/mcp-workers/issues/279

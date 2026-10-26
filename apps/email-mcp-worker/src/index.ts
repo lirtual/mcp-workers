@@ -14,7 +14,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.hostname === SETUP_HOST) {
-      if (url.pathname.startsWith('/setup') || url.pathname === '/oauth/callback')
+      if (url.pathname.startsWith('/setup'))
         return handleSetup(request, env);
       return new Response('Not found', { status: 404 });
     }

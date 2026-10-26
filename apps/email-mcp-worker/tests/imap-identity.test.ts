@@ -105,3 +105,17 @@ test('IMAP/SMTP pinned IP rejects the entire IANA protocol-assignments block', (
   assert.equal(publicIp('1.1.1.1'), true);
   assert.equal(publicIp('8.8.8.8'), true);
 });
+
+test('generic credential setup rejects native Google/Microsoft hosts and retains other mail hosts', async () => {
+  const { validateProtocolCredentials } = await import('../src/imap.ts');
+  const config = { imap_host: 'imap.qq.com', imap_port: 993 as const,
+    smtp_host: 'smtp.qq.com', smtp_port: 465 as const,
+    username: 'owner@qq.com', password: 'app-password' };
+  assert.equal(validateProtocolCredentials({ ...config }).imap_host, 'imap.qq.com');
+  for (const host of ['imap.gmail.com', 'outlook.office365.com', 'imap-mail.outlook.com']) {
+    assert.throws(() => validateProtocolCredentials({ ...config, imap_host: host }), /unsupported_provider/);
+  }
+  for (const host of ['smtp.gmail.com', 'smtp.office365.com', 'smtp-mail.outlook.com']) {
+    assert.throws(() => validateProtocolCredentials({ ...config, smtp_host: host }), /unsupported_provider/);
+  }
+});

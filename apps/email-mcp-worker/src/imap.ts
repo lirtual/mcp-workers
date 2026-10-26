@@ -2,7 +2,7 @@ import { ImapFlow } from 'imapflow';
 import PostalMime from 'postal-mime';
 import { decrypt, base64url } from './crypto.ts';
 import { base64Data, MAX_ATTACHMENTS_TOTAL } from './attachments.ts';
-import { assertPublicMailEndpoint, resolvePublicMailEndpoint, validateMailHost, validateMailPorts } from './mail-endpoints.ts';
+import { resolvePublicMailEndpoint, validateMailHost, validateMailPorts } from './mail-endpoints.ts';
 import { fail, MailError } from './types.ts';
 import type { Env, MailAccount } from './types.ts';
 export type ProtocolCredentials = {
@@ -13,6 +13,11 @@ export function validateProtocolCredentials(input: ProtocolCredentials): Protoco
   validateMailPorts(input.imap_port, input.smtp_port);
   input.imap_host = validateMailHost(input.imap_host);
   input.smtp_host = validateMailHost(input.smtp_host);
+  // Gmail/Outlook native accounts belong to their dedicated ChatGPT plugins.
+  const blocked = new Set(['imap.gmail.com','smtp.gmail.com','imap.googlemail.com',
+    'outlook.office365.com','smtp.office365.com','imap-mail.outlook.com',
+    'smtp-mail.outlook.com']);
+  if (blocked.has(input.imap_host) || blocked.has(input.smtp_host)) fail('unsupported_provider');
   for (const name of ['username','password','smtp_username','smtp_password'] as const) {
     const val = input[name];
     if (val != null && (typeof val !== 'string' || !val || val.length > 512 ||

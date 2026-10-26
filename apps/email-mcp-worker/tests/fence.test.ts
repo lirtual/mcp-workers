@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fencedSend } from '../src/tools.ts';
 import { MailError } from '../src/types.ts';
 import { assertSmtpRecipientAcceptance } from '../src/smtp.ts';
-const account = { account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', provider: 'gmail', status: 'active' } as any;
+const account = { account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', provider: 'imap_smtp', status: 'active' } as any;
 function database() {
   const records = new Map<string, { payload_digest: string; status: string; reference: string | null }>();
   return {

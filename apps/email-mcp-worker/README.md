@@ -1,121 +1,87 @@
-# Email MCP Worker — implementation under review
+# Email MCP Worker — IMAP/SMTP only (unreleased)
 
-This independent Cloudflare Worker serves stateless Streamable HTTP at /mcp
-and an Access-protected owner-only setup at email.lirtual.dpdns.org.
+This Worker connects **non-Gmail, non-Outlook** email accounts via standard
+IMAP/SMTP. Use the existing **ChatGPT Gmail** and **Outlook Email** plugins
+for Google and Microsoft mailboxes instead. Those ChatGPT plugin connections
+are independent of this Worker and are not credentials this Worker can invoke.
 
-UNRELEASED candidate. The owner-only Cloudflare Access policy was provisioned
-externally on 2026-10-26, but no Email Worker, D1 binding, OAuth test client,
-mailbox credentials, DNS route or production custom domain has been provisioned.
-DO NOT deploy this candidate to production.
+**Draft PR #284 is not release-ready.** No Email Worker, production D1 binding,
+mailbox credential, public DNS route or Portal registration has been deployed.
 
-## Current capabilities
+## Scope
 
-- Strict Portal bearer boundary for MCP; Access JWT signature, audience, issuer,
-  expiry and owner check for account setup; host and CSRF enforcement.
-- OAuth PKCE/hashed single-use state; Gmail and Graph authorization/reconnection; encrypted
-  on-demand token lifecycle and local account removal.
-- Gmail and Graph native search/read/folders/drafts/send/mark/trash, Gmail
-  native reply/forward and Graph native conversation lookup, reply/forward/move.
-- Bounded 5 MiB total per-operation attachments for send, drafts, reply and
-  forward: validated inline Base64 or stable same-mailbox references only.
-  Gmail uses safe multipart MIME; Graph uses direct file attachment below 3 MB
-  and trusted upload sessions for larger files; no arbitrary URL downloads.
-  Graph mail_get enumerates up to 20 attachment IDs (including inline-only files)
-  using metadata-only queries and reports attachments_truncated if more exist;
-  attachment_get fetches selected file bytes on demand.
-- Owner-only incremental credential key re-encryption with independently verified
-  decrypt/readback and concurrency-safe conditional updates.
-- Durable send fence; ambiguous sends never automatically replay. Bounded
-  per-mailbox search (3 concurrent, max 8 accounts) with failure indicators.
+- Single owner and multiple generic IMAP/SMTP accounts.
+- IMAP over port 993 and SMTP submission over TLS 465 or mandatory STARTTLS 587.
+  No port 25, insecure TLS fallback, arbitrary TCP proxy, OAuth client or second orchestrator.
+- Owner-only account setup at `https://email.lirtual.dpdns.org/setup` behind
+  Cloudflare Access email OTP. No OAuth browser redirects or callback route.
+- Credentials and account configuration stored in D1 under AES-GCM with a
+  Worker Secret encryption key; no stored message body or attachment copies.
+- Provider-native folder, UIDVALIDITY and UID message identity.
+- MCP tools: `account_list`, `capabilities_get`, `mail_search`,
+  `mail_get`, `folder_list`, `attachment_get`, `draft_create`,
+  `mail_send`, `mail_reply`, `mail_forward`, `mail_mark`,
+  `mail_move`, `mail_trash` (**13**).
+- Search up to 8 explicitly selected accounts, bounded fanout and explicit
+  per-mailbox partial failures; read body safely as text.
+- Send attempts are D1-fenced by caller-supplied `request_id`; ambiguous
+  submissions never automatically retry. Never promise exactly-once delivery.
+- Up to 5 MiB raw attachment bytes per request; no URL-based download.
+  IMAP Drafts requires Drafts folder/UIDPLUS; draft attachments and edits,
+  and inferred conversation threads, are not supported.
 
-- Generic IMAP 993 and SMTP 465/587 candidate adapter based on ImapFlow,
-  Nodemailer and postal-mime. Native IMAP references contain folder, UIDVALIDITY
-  and UID; operations cover search (INBOX), get, attachments, folders, mark,
-  conditional move/trash and APPEND draft (only where server capabilities permit).
-  IMAP reply/forward uses SMTP with an explicit recipient; replies validate the
-  source Reply-To and RFC Message-ID, without inferring native conversations.
-  SMTP supports text + attachments with a durable pre-dispatch fence.
-- IMAP/SMTP onboarding checks both protocol logins before storing any encrypted
-  credentials. Each connection resolves and validates public DNS addresses,
-  connects to a pinned IP, and supplies the original host for TLS SNI/certificate
-  verification. STARTTLS is mandatory on 587; insecure fallback is forbidden.
-- **Generic IMAP/SMTP remains unverified for production.** In actual
-  Cloudflare remote preview, a no-login IMAP TLS handshake to Gmail port 993
-  succeeded, but credential-free SMTP 465/587 probes failed against Gmail,
-  Microsoft and QQ. These observations do not prove all SMTP servers will fail
-  or that authenticated mail delivery works. The adapter stays a candidate.
+## Onboarding and provider exclusions
 
-NOT SUPPORTED: Gmail label-based folder moves, provider-specific advanced mailbox
-administration, and verified cross-provider live integration.
-Do not claim full Spec #279 acceptance from current code.
+The only account type is `imap_smtp`. The owner supplies mailbox address,
+IMAP host, SMTP host, username and app password; both protocol authentications
+must pass before storing encrypted credentials. Reconnection must preserve
+account identity and account ID. Built-in Google/Microsoft OAuth, Graph, Gmail
+API, tokens, sessions and tenant scopes have been removed. Known native
+Gmail/Outlook addresses and endpoints are rejected at setup.
 
-## Configuration and release gates
+Other domains (e.g. QQ, 163, 126, iCloud, custom mail) are **candidates**,
+not automatically verified working providers. App-password availability and
+IMAP/SMTP server capabilities differ.
 
-Create email-mcp-db D1; apply migrations/0001_accounts.sql; supply Worker DB
-binding. Cloudflare Access application **Email MCP OAuth Setup** now covers
-`email.lirtual.dpdns.org` (app ID `38d73b36-7256-42f2-9399-dd12abb2f9d3`,
-AUD `cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b`).
-Readback confirmed owner-only email OTP, a 15-minute session, and `SameSite=Lax`
-for the browser's cross-site OAuth callback. Worker verification must use
-`ACCESS_TEAM_DOMAIN=lirtualzero.cloudflareaccess.com` and this exact `ACCESS_AUD`;
-these public identifiers are not credentials. **Access policy presence alone is
-not an OTP or OAuth end-to-end test**: no DNS/Worker custom domain, provider test
-clients, or separate Portal registration exists yet. Do not expose the callback
-until the isolated Worker and its secrets are ready; no production release is authorized.
+## Security and configuration
 
-Required Worker Secrets: MCP_ACCESS_TOKEN, MAIL_ENCRYPTION_KEY (random canonical
-base64 32-byte value), ACCESS_TEAM_DOMAIN, ACCESS_AUD, OWNER_EMAIL,
-GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, MICROSOFT_CLIENT_ID,
-MICROSOFT_CLIENT_SECRET for their corresponding providers. Generic IMAP/SMTP
-uses per-account encrypted app credentials (not additional Worker secrets).
-Optional MAIL_KEY_ID, MAIL_ENCRYPTION_PREVIOUS_KEY,
-MAIL_PREVIOUS_KEY_ID, MICROSOFT_TENANT. No credentials in Git/source/D1.
+A Cloudflare Access Self-hosted app currently exists:
+- Name: `Email MCP Setup` (renamed and independently verified on Cloudflare)
+- Domain: `email.lirtual.dpdns.org`
+- Access AUD: `cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b`
+- Team domain: `lirtualzero.cloudflareaccess.com`
+- OTP owner-only: `lirtual@outlook.com`; 15-minute session.
 
-## Verified acceptance and external OAuth prerequisites (2026-10-26)
+The Worker must verify Access JWT signature/issuer/audience/owner and deny
+alternate setup hosts. MCP uses separate Portal bearer authentication; it
+must not rely on Access cookies. All setup mutations require same-origin CSRF.
 
-- Candidate CI `#40257839917` passed after replacing the seven
-  Workers-incompatible `fetch redirect: 'error'` settings with
-  `redirect: 'manual'`; all upstream 3xx responses remain rejected.
-- Local Workerd/D1/MCP acceptance `#40253525289` passed. Remote Cloudflare
-  preview/D1/MCP `#40256001876` passed on its pinned earlier candidate.
-  Latest remote TCP/TLS probe `#40258246368` failed overall because SMTP
-  465/587 was unsuccessful; Gmail IMAP 993 TLS succeeded. Both remote test
-  database migrations and disposable D1 cleanup succeeded, with no
-  production Worker deployed.
-- Cloudflare documents that outbound TCP port 25 is prohibited. It does
-  **not** declare every SMTP port 465/587 universally prohibited. Do not
-  infer production SMTP support from local tests or a TLS handshake.
-- For Gmail OAuth E2E, create an independent Google OAuth **Web application**
-  with the exact redirect URI
-  `https://email.lirtual.dpdns.org/oauth/callback`, enable Gmail API,
-  and request `https://www.googleapis.com/auth/gmail.modify`. This is a
-  **restricted** scope; a Google app in external Testing mode must include
-  the intended test account, and refresh tokens can expire under testing
-  limits. Do not use an existing personal mailbox as an implicit test.
-- For Microsoft Graph OAuth E2E, create a separate Microsoft identity
-  **Web application** with that exact redirect URI and **delegated**
-  `offline_access User.Read Mail.ReadWrite Mail.Send` permissions. Do not
-  replace delegated access with broad application-level permissions.
-- Set client IDs/secrets only as the respective Worker Secrets after the
-  Access-protected callback is deliberately provisioned. Nothing in this
-  README authorizes live account consent, email writes, a production route,
-  Portal registration, or merging the Draft PR.
+Required Worker Secrets: `MCP_ACCESS_TOKEN`, `MAIL_ENCRYPTION_KEY`
+(random 32-byte base64), `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`.
+Optional rotation: `MAIL_KEY_ID`, `MAIL_ENCRYPTION_PREVIOUS_KEY`,
+`MAIL_PREVIOUS_KEY_ID`. **No** `GOOGLE_CLIENT_*`, `MICROSOFT_CLIENT_*`,
+OAuth state storage, provider-scoped credentials or compatibility tables.
 
-## Rotation/recovery
+Create an isolated Email D1 database and apply `migrations/0001_accounts.sql`
+before any deployment; it has only `mail_accounts` and `send_attempts`.
+No live Email D1 has ever been deployed, so no schema compatibility migration
+or historical OAuth records are required.
 
-Keep former key in MAIL_ENCRYPTION_PREVIOUS_KEY and former key ID in
-MAIL_PREVIOUS_KEY_ID when replacing MAIL_ENCRYPTION_KEY and MAIL_KEY_ID.
-The owner setup includes bounded, resumable account/OAuth-session re-encryption
-and readback. NEVER retire the old key until all remaining records are migrated
-and verified in the target environment.
-If all copies of the key are lost, reauthorize accounts; no plaintext backup.
+## Release gate — not yet satisfied
 
-## Remaining release blockers
+Earlier [Cloudflare remote preview #40256001876](https://github.com/lirtual/mcp-workers/actions/runs/40256001876)
+proved an earlier candidate's remote D1 migration/MCP auth/tool discovery,
+not IMAP/SMTP operations. A subsequent [remote TLS probe #40258246368](https://github.com/lirtual/mcp-workers/actions/runs/40258246368)
+showed **Gmail IMAP 993 TLS handshake only**, while unauthenticated SMTP 465/587
+probes to Gmail, Microsoft and QQ failed. It did not prove generic SMTP
+is universally unavailable or that actual mail auth or sends work.
+Cloudflare explicitly blocks outbound TCP 25 but does not blanket-block
+465/587: https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
 
-Real Workers-native IMAP/SMTP TLS and DNS-pinned connection verification,
-including certificate/STARTTLS, UIDVALIDITY changes, server capability
-differences, and SMTP submission fault injection; real provider OAuth/refresh/
-revoke, Graph upload-session and MIME interoperability testing;
-dedicated mailbox end-to-end tests; D1 migrations and binding;
-non-bypassable Access setup/OTP; Portal discovery; independent security review.
-All deployment steps require separate release authorization.
+Acceptance still requires supported-provider live IMAP/SMTP authentication,
+STARTTLS/hostname verification, read/search/attachments/UIDVALIDITY,
+draft/send/reply/forward, failure injection and duplicate-send checks,
+Access OTP, dedicated D1, Portal E2E, security review, and a separately
+authorized GitHub Actions production release. Keep PR #284 Draft and
+Issue #279 Open until those gates pass. Do not add extra proxies or workers
+just to bypass an unsupported SMTP route.

@@ -1,4 +1,4 @@
-export type Provider = 'gmail' | 'graph' | 'imap_smtp';
+export type Provider = 'imap_smtp';
 export type Env = {
   DB: D1Database;
   MCP_ACCESS_TOKEN: string;
@@ -9,11 +9,6 @@ export type Env = {
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   OWNER_EMAIL: string;
-  GOOGLE_CLIENT_ID?: string;
-  GOOGLE_CLIENT_SECRET?: string;
-  MICROSOFT_CLIENT_ID?: string;
-  MICROSOFT_CLIENT_SECRET?: string;
-  MICROSOFT_TENANT?: string;
 };
 export type MailAccount = {
   account_id: string;
@@ -23,9 +18,6 @@ export type MailAccount = {
   status: 'active' | 'reauthorization_required' | 'disabled';
   credential_ciphertext: string;
   credential_key_id: string;
-  token_expires_at: number | null;
-  token_version: number;
-  refresh_lock_until: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -35,4 +27,3 @@ export class MailError extends Error {
 }
 export function fail(code: string): never { throw new MailError(code); }
 export const SETUP_HOST = 'email.lirtual.dpdns.org';
-export const SETUP_ORIGIN = 'https://' + SETUP_HOST;

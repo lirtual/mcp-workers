@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { buildMcpServer } from '../src/tools.ts';
 import worker from '../src/index.ts';
 const expected = [
-  'account_list', 'capabilities_get', 'mail_search', 'mail_get', 'thread_get',
-  'folder_list', 'attachment_get', 'draft_create', 'draft_update', 'mail_send',
+  'account_list', 'capabilities_get', 'mail_search', 'mail_get',
+  'folder_list', 'attachment_get', 'draft_create', 'mail_send',
   'mail_reply', 'mail_forward', 'mail_mark', 'mail_move', 'mail_trash',
 ];
 test('tool inventory is exact and account administration is never MCP-exposed', () => {
@@ -18,6 +18,7 @@ test('alternate-host setup and unknown paths are fail-closed', async () => {
     'https://email-mcp-worker.aiyaya.workers.dev/setup',
     'https://email-mcp-worker.aiyaya.workers.dev/oauth/callback',
     'https://email.lirtual.dpdns.org/mcp',
+    'https://email.lirtual.dpdns.org/oauth/callback',
   ]) {
     const response = await worker.fetch(new Request(url), env);
     assert.equal(response.status, 404, url);
