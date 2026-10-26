@@ -55,5 +55,5 @@ export function validateCsrf(request: Request, token: string): void {
     !/^[A-Za-z0-9_-]{40,64}$/.test(token) || setupCsrf(request) !== token) fail('csrf_rejected');
 }
 export function csrfCookie(token: string): string {
-  return COOKIE + '=' + token + '; Path=/; Max-Age=900; Secure; HttpOnly; SameSite=Strict';
+  return COOKIE + '=' + token + '; Path=/; Max-Age=3600; Secure; HttpOnly; SameSite=Lax';
 }

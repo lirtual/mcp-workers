@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encrypt, decrypt } from '../src/crypto.ts';
-import { verifyAccess, validateCsrf } from '../src/access.ts';
+import { verifyAccess, validateCsrf, csrfCookie } from '../src/access.ts';
 import { SETUP_CSP, handleSetup } from '../src/setup.ts';
 const env = {
   MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
@@ -22,6 +22,12 @@ test('AES-GCM is non-deterministic and binds account identity', async () => {
 test('setup is forbidden on alternate host and rejects missing Access assertion', async () => {
   await assert.rejects(() => verifyAccess(new Request('https://email-mcp-worker.aiyaya.workers.dev/setup'), env), /not_found/);
   await assert.rejects(() => verifyAccess(new Request('https://email.lirtual.dpdns.org/setup'), env), /unauthorized/);
+});
+test('CSRF cookie survives app-password setup without relaxing origin or token binding', () => {
+  const cookie = csrfCookie('a'.repeat(43));
+  assert.match(cookie, /Max-Age=3600/);
+  assert.match(cookie, /SameSite=Lax/);
+  assert.match(cookie, /Secure; HttpOnly/);
 });
 test('CSRF rejects missing cookie, invalid origin and reused token mismatch', () => {
   const token = 'a'.repeat(43);
@@ -91,6 +97,24 @@ test('Access JWT requires a trusted RS256 signature, correct audience and owner 
   ), env, mockFetch as any);
   assert.equal(invalidCsrf.status, 400);
   assert.match(await invalidCsrf.text(), /csrf_rejected/);
+  const db = { prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }) }) }) };
+  const page = await handleSetup(createRequest(validJwt), { ...env, DB: db }, mockFetch as any);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /name="viewport"/);
+  assert.match(html, /form\{display:grid/);
+  const formToken = html.match(/name="csrf" value="([^"]+)"/)?.[1];
+  const formCookie = page.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(formToken && formCookie);
+  assert.equal(formCookie, 'email_setup_csrf=' + formToken);
+  const paired = await handleSetup(new Request(url + '/imap/add', {
+    method: 'POST', headers: { 'cf-access-jwt-assertion': validJwt,
+      origin: 'https://email.lirtual.dpdns.org', cookie: formCookie,
+      'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ csrf: formToken, address: 'invalid' }),
+  }), { ...env, DB: db }, mockFetch as any);
+  assert.equal(paired.status, 400);
+  assert.match(await paired.text(), /invalid_mail_identity/);
   assert.ok(certFetches >= 1);
 });
 

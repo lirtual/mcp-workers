@@ -38,8 +38,14 @@ function securedHtml(body: string, cookie?: string): Response {
   });
   if (cookie) headers.set('set-cookie', cookie);
   return new Response('<!doctype html><html lang="en"><meta charset="utf-8"><title>Email Accounts</title>' +
-    '<style>body{max-width:720px;margin:40px auto;font:16px system-ui;line-height:1.5;padding:0 20px}' +
-    'fieldset{margin:20px 0;padding:16px}button{padding:8px 12px}</style><main>' + body + '</main></html>', { headers });
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<style>html{color-scheme:light dark}body{max-width:720px;margin:24px auto;' +
+    'font:16px/1.5 system-ui;padding:0 16px;overflow-wrap:anywhere}' +
+    'fieldset{min-width:0;margin:16px 0;padding:16px;border:1px solid #8888;border-radius:10px}' +
+    'form{display:grid;gap:12px;margin:12px 0}label{display:grid;gap:5px}' +
+    'input,select,button{box-sizing:border-box;font:inherit;max-width:100%;padding:9px 10px}' +
+    'input,select{width:100%}button{justify-self:start;cursor:pointer}' +
+    'details{margin:12px 0}li{margin-bottom:16px}</style><main>' + body + '</main></html>', { headers });
 }
 async function formValues(request: Request): Promise<URLSearchParams> {
   if (Number(request.headers.get('content-length') ?? 0) > 4096) fail('request_too_large');
@@ -158,7 +164,10 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
   } catch (err) {
     const code = err instanceof MailError ? err.code : 'setup_unavailable';
     const status = code === 'not_found' ? 404 : code === 'unauthorized' ? 403 : code === 'auth_misconfigured' ? 503 : 400;
-    return new Response('<!doctype html><html><h1>Request failed</h1><p>' + escapeHtml(code) + '</p></html>', {
+    const explanation = code === 'csrf_rejected'
+      ? '<p>The form session expired or the request was blocked. Reopen the page to get a fresh form, then try again.</p>' +
+        '<p><a href="/setup">Reload the account setup form</a></p>' : '';
+    return new Response('<!doctype html><html><h1>Request failed</h1><p>' + escapeHtml(code) + '</p>' + explanation + '</html>', {
       status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
         'content-security-policy': "default-src 'none'; frame-ancestors 'none'", 'x-content-type-options': 'nosniff' },
     });
