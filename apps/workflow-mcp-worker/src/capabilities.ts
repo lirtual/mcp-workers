@@ -365,8 +365,8 @@ const entries=[
    description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
-  {id:'flow.child',kind:'flow',availability:'unsupported',
-   description:'A single explicitly approved, version-pinned awaited child is being implemented. Until live E2E and cancellation tests pass it is not a released capability.'},
+  {id:'flow.child',kind:'flow',availability:'supported_with_grant',
+   description:'At most one awaited, non-recursive child per parent. Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
    description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
 ] as const;
