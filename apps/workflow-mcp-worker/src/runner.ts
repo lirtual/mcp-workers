@@ -663,6 +663,19 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         if(hasEventWait){
           const owner=await db.prepare('SELECT outcome FROM runs WHERE id=?')
             .bind(id).first<{outcome:string}>();
+          if(owner?.outcome==='cancelled'){
+            // Do not execute another wave after the cancellation fence.
+            // Persist pending Steps as skipped, not an unexplained unknown
+            // status; previously completed/failed Steps retain their result.
+            for(const pendingStep of pending.values()){
+              await db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+                VALUES(?,?,'skipped',?) ON CONFLICT(run_id,step_id)
+                DO UPDATE SET status='skipped',output=NULL,error_code=NULL,updated_at=excluded.updated_at
+                WHERE run_steps.status IN ('waiting','running')`)
+                .bind(id,pendingStep.id,now()).run();
+            }
+            return;
+          }
           if(owner?.outcome!=='running')return;
         }
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
