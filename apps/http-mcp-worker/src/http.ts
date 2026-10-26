@@ -116,7 +116,7 @@ async function readLimited(response:Response,max:number,signal:AbortSignal):Prom
    parts.push(p.value);size+=p.value.length;
   }
  } finally {
-  if(truncated||signal.aborted) await reader.cancel().catch(()=>{});
+  if(truncated||signal.aborted) void reader.cancel().catch(()=>{});
   else reader.releaseLock();
  }
  const data=new Uint8Array(size);let offset=0;
@@ -162,12 +162,12 @@ export async function executeHttp(input:Input,rules:Rule[],outbound:typeof fetch
      [301,302,303,307,308].includes(response.status)&&location) {
      let next:URL;
      try { next=new URL(location,url); }
-     catch { await response.body?.cancel().catch(()=>{});fail('unsafe_redirect'); }
+     catch { void response.body?.cancel().catch(()=>{});fail('unsafe_redirect'); }
      if(next.origin===url.origin) {
        try { next=publicUrl(next.href); }
-       catch { await response.body?.cancel().catch(()=>{});fail('unsafe_redirect'); }
-       if(redirects>=5){await response.body?.cancel().catch(()=>{});fail('too_many_redirects');}
-       await response.body?.cancel().catch(()=>{});
+       catch { void response.body?.cancel().catch(()=>{});fail('unsafe_redirect'); }
+       if(redirects>=5){void response.body?.cancel().catch(()=>{});fail('too_many_redirects');}
+       void response.body?.cancel().catch(()=>{});
        url=next;redirects++;continue;
      }
    }
