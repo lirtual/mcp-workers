@@ -8,3 +8,15 @@ ALTER TABLE runs ADD COLUMN parent_step_id TEXT;
 CREATE UNIQUE INDEX runs_one_awaited_child_per_step
   ON runs(parent_run_id, parent_step_id)
   WHERE parent_run_id IS NOT NULL;
+
+-- Durable one-shot cancellation request, separate from normal Step outcome.
+-- No second terminate() after a lost Cloudflare response.
+CREATE TABLE child_cancellations (
+ parent_run_id TEXT NOT NULL,
+ parent_step_id TEXT NOT NULL,
+ child_run_id TEXT NOT NULL UNIQUE,
+ requested_at INTEGER NOT NULL,
+ PRIMARY KEY(parent_run_id,parent_step_id),
+ FOREIGN KEY(parent_run_id) REFERENCES runs(id),
+ FOREIGN KEY(child_run_id) REFERENCES runs(id)
+);
