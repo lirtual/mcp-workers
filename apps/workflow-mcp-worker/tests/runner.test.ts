@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import {createHash} from 'node:crypto';
+import {handleWaitEvent} from '../src/wait-event-ingress.ts';
 import { WorkflowService, type Env } from '../src/store.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from '../src/child-capacity.ts';
 import { compilePlan,toolSchemaDigest, type ReadonlyOperation } from '../src/plan.ts';
@@ -58,7 +60,7 @@ function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql'])
+  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -2167,4 +2169,109 @@ test('cancel after committed dispatch fence records one termination and no false
   assert.equal(row.outcome,'cancelled');
   assert.equal((await f.service.cancel(f.runId,'delegate')).cancellation,'terminal_confirmed');
   assert.equal(terminates,1);
+});
+
+
+const EVENT_SECRET=Buffer.alloc(32,0x61).toString('base64url');
+const EVENT_SHA=createHash('sha256').update(EVENT_SECRET).digest('hex');
+const eventSteps=()=>[
+  {id:'signal',flow:'wait_event',timeout_seconds:30,token_sha256:EVENT_SHA},
+  {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output.value'}}},
+];
+const signalRequest=(runId:string,body:unknown={value:'resumed'},eventId='signal-one',secret=EVENT_SECRET)=>
+  new Request('https://workflow.example.org/events/'+runId+'/signal',{
+    method:'POST',headers:{authorization:'Bearer '+secret,'content-type':'application/json',
+      'x-workflow-event-id':eventId},body:JSON.stringify(body),
+  });
+
+test('event wait ingress authenticates Run/Step and only accepts one logical event',async t=>{
+  const {env,admit,sqlite}=setup(t);
+  const started=await admit(eventSteps());
+  let sendCount=0;
+  (env as any).WORKFLOW={create:async()=>{},get:async()=>({
+    status:async()=>({status:'running'}),sendEvent:async()=>{sendCount++;},
+  })};
+  const deliver=(req:Request)=>handleWaitEvent(req,env);
+  assert.equal((await deliver(signalRequest(started.run_id,{},'wrong',Buffer.alloc(32,0x42).toString('base64url')))).status,401);
+  assert.equal((await deliver(signalRequest(crypto.randomUUID()))).status,404);
+  assert.equal((await deliver(new Request('https://workflow.example.org/events/'+started.run_id+'/unknown',
+    {method:'POST'}))).status,404);
+  const a=await deliver(signalRequest(started.run_id,{value:'resumed'}));
+  assert.equal(a.status,202);
+  const b=await deliver(signalRequest(started.run_id,{value:'resumed'}));
+  assert.equal(b.status,200);
+  assert.equal((await deliver(signalRequest(started.run_id,{value:'different'}))).status,409);
+  assert.equal((await deliver(signalRequest(started.run_id,{value:'resumed'},'other-id'))).status,409);
+  assert.equal(sendCount,1);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM wait_event_receipts').get()?.n,1);
+});
+
+test('uncertain sendEvent can retry same signal without reserving a second logical event',async t=>{
+  const {env,admit,sqlite}=setup(t);
+  const started=await admit(eventSteps());
+  let attempts=0;
+  (env as any).WORKFLOW={create:async()=>{},get:async()=>({status:async()=>({status:'running'}),
+    sendEvent:async()=>{attempts++;if(attempts===1)throw Error('ack lost');},
+  })};
+  assert.equal((await handleWaitEvent(signalRequest(started.run_id),env)).status,503);
+  assert.equal((await handleWaitEvent(signalRequest(started.run_id,{value:'different'}),env)).status,409);
+  assert.equal((await handleWaitEvent(signalRequest(started.run_id),env)).status,202);
+  assert.equal(attempts,2);
+  assert.ok(sqlite.prepare('SELECT last_sent_at FROM wait_event_receipts').get()?.last_sent_at);
+});
+
+test('signal delivered before waitForEvent is buffered and resumes exactly one dependent Step',async t=>{
+  const {env,service,admit,sqlite}=setup(t);
+  const started=await admit(eventSteps());
+  let buffered:unknown=null;
+  let release:(event:unknown)=>void=()=>{};
+  let waiter:Promise<unknown>|null=null;
+  (env as any).WORKFLOW={create:async()=>{},get:async()=>({
+    status:async()=>({status:'running'}),
+    sendEvent:async(event:unknown)=>{buffered=event;release(event);},
+  })};
+  assert.equal((await handleWaitEvent(signalRequest(started.run_id),env)).status,202);
+  const orchestrator=new WorkflowOrchestrator({} as ExecutionContext,env);
+  await orchestrator.run({payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,{
+    do:async(_name:unknown,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+    waitForEvent:async(name:string,options:{type:string;timeout:string})=>{
+      assert.equal(name,'workflow-signal-event');
+      assert.equal(options.type,'wfe_signal');
+      assert.equal(options.timeout,'30 seconds');
+      if(buffered)return buffered;
+      waiter=new Promise(resolve=>{release=resolve;});return waiter;
+    },
+  } as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result,'resumed');
+  assert.equal(sqlite.prepare("SELECT status FROM run_steps WHERE step_id='signal'").get()?.status,'succeeded');
+});
+
+test('event wait timeout fails and nonrunning owner fences downstream',async t=>{
+  const {env,service,admit,sqlite}=setup(t);
+  const expired=await admit(eventSteps());
+  const step={do:async(_name:unknown,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
+    waitForEvent:async()=>{throw Error('workflow event timed out');}} as unknown as WorkflowStep;
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:expired.run_id}} as WorkflowEvent<{run_id:string}>,step);
+  const expiredResult=await service.result(expired.run_id);
+  assert.equal(expiredResult.status,'failed');
+  assert.equal(expiredResult.steps.find(x=>x.step_id==='done')?.status,'skipped');
+  assert.equal((await handleWaitEvent(signalRequest(expired.run_id),env)).status,409);
+  const cancelled=await admit(eventSteps());
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:cancelled.run_id}} as WorkflowEvent<{run_id:string}>,{
+      do:async(_name:unknown,_opt:unknown,cb:()=>Promise<unknown>)=>cb(),
+      waitForEvent:async()=>{
+        sqlite.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(cancelled.run_id);
+        sqlite.prepare("INSERT INTO wait_event_receipts (run_id,step_id,event_id,payload_digest,created_at) VALUES (?,?,?,?,?)")
+          .run(cancelled.run_id,'signal','a','a'.repeat(64),Date.now());
+        return {payload:{event_id:'a',data:{value:'bad'}}};
+      },
+    } as unknown as WorkflowStep);
+  const cancelledResult=await service.result(cancelled.run_id);
+  assert.equal(cancelledResult.status,'cancelled');
+  assert.equal(cancelledResult.steps.find(x=>x.step_id==='done')?.status,'skipped');
+  assert.equal((await handleWaitEvent(signalRequest(cancelled.run_id),env)).status,409);
 });
