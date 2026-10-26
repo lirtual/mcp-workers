@@ -70,7 +70,7 @@ test('Graph large file uses only trusted session URL and never sends OAuth beare
     globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
       const target = String(url), method = init?.method ?? 'GET';
       calls.push({ url: target, method, headers: new Headers(init?.headers) });
-      assert.equal(init?.redirect, 'error');
+      assert.equal(init?.redirect, 'manual');
       if (target === 'https://graph.microsoft.com/v1.0/me/messages' && method === 'POST')
         return Response.json({ id: 'draft123' });
       if (target.endsWith('/attachments/createUploadSession') && method === 'POST')
