@@ -156,6 +156,14 @@ assert.match(emailCloud, /dev --remote/);
 assert.match(emailCloud, /method:'DELETE'/);
 assert.match(emailCloud, /EMAIL_ACCEPTANCE_DISPOSABLE_D1_CLEANUP_OK/);
 assert.match(emailCloud, /EMAIL_CLOUDFLARE_PREVIEW_REAL_D1_AND_MCP_OK/);
+assert.match(emailCloud, /\.acceptance-tls\.ts/);
+assert.match(emailCloud, /node:tls/);
+assert.match(emailCloud, /smtp\.gmail\.com/);
+assert.match(emailCloud, /imap\.gmail\.com/);
+assert.match(emailCloud, /requireTLS: port === 587/);
+assert.match(emailCloud, /rejectUnauthorized: true/);
+assert.match(emailCloud, /EMAIL_CLOUDFLARE_IMAP_SMTP_TLS_HANDSHAKE_OK/);
+assert.doesNotMatch(emailCloud, /auth:.*password|mail_send|mail_reply|mail_forward/);
 assert.doesNotMatch(emailCloud, /secrets\.CLOUDFLARE_API_TOKEN|wrangler deploy|wrangler secret put|PORTAL_CLIENT_SECRET/);
 
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');
