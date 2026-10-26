@@ -18,8 +18,11 @@ residual DNS-rebinding limitation is documented in the README and Spec #279.
 QQ production IMAP search/get/attachment and authenticated SMTP self-send, delivery and
 same-request-id D1 dedupe were verified on 2026-10-26. Other providers and
 capability-dependent mail mutations are not yet independently accepted. The
-one-time SMTP send harness has been removed. Legacy acceptance Worker, Access,
-D1 (one encrypted test account) and two custom domains are separate from
-production and await an explicit cleanup decision.
+one-time SMTP send harness has been removed. The owner-approved legacy
+acceptance Worker, Access app, standalone D1 (including its one encrypted
+test account), two custom domains and the linked DNS records were deleted
+on 2026-10-26. Cloudflare and unauthenticated HTTPS readback independently
+verified the production Worker, Access login, domain bindings, D1 records
+and MCP unauthorized boundary remained intact.
 
 Spec: https://github.com/lirtual/mcp-workers/issues/279
