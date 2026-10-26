@@ -24,7 +24,7 @@ export async function providerRequest(
   const bearer = await accessToken(env, account, requestFetch);
   const url = (account.provider === 'gmail' ? gmail : graph) + path;
   const resp = await requestFetch(url, {
-    ...init, redirect: 'error', signal: AbortSignal.timeout(15000),
+    ...init, redirect: 'manual', signal: AbortSignal.timeout(15000),
     headers: { authorization: 'Bearer ' + bearer, ...init.headers },
   });
   if (resp.status === 401 || resp.status === 403) fail('reauthorization_required');
@@ -280,7 +280,7 @@ export async function graphAddAttachment(
     const endExclusive = Math.min(file.data.length, start + chunkSize);
     const chunk = new Uint8Array(file.data.slice(start, endExclusive)).buffer;
     const result = await sendFetch(uploadUrl, {
-      method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(20000),
+      method: 'PUT', redirect: 'manual', signal: AbortSignal.timeout(20000),
       headers: { 'content-type': 'application/octet-stream',
         'content-length': String(endExclusive - start),
         'content-range': 'bytes ' + start + '-' + (endExclusive - 1) + '/' + file.data.length },
