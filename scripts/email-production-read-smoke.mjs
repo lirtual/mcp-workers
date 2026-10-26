@@ -76,10 +76,17 @@ async function deepReadAcceptance(account){
     'email_smoke_positive_missing_expected_message');
   console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_OK');
   // ImapFlow fetchOne({source:true}) uses BODY.PEEK[] and must not mark read.
-  // Inspect a tiny sample, never log text, subjects, senders, or raw responses.
+  // The sender-filtered positive result can exclude the newly received test
+  // message. Inspect only a few RECENT INBOX matches from the broader search.
+  const now=Date.now();
+  const recent=broad.messages.filter(message=>{
+    const received=Date.parse(message.date??'');
+    return Number.isFinite(received)&&received>=now-2*60*60*1000&&
+      received<=now+5*60*1000;
+  }).slice(0,5);
   let gotMessage=false;
   let foundAttachment=false;
-  for(const hit of result.messages.slice(0,3)){
+  for(const hit of recent){
     let item;
     try {item=await call('mail_get',{account_id:aid,message_id:hit.id});}
     catch(error){
@@ -93,8 +100,9 @@ async function deepReadAcceptance(account){
       Array.isArray(item.attachments),'email_smoke_mail_get_invalid_shape');
     gotMessage=true;
     const attachment=item.attachments.find(part=>
-      typeof part.id==='string'&&Number.isSafeInteger(part.size)&&
-      part.size>=0&&part.size<=128*1024);
+      typeof part.id==='string'&&typeof part.filename==='string'&&
+      /\.txt$/i.test(part.filename)&&Number.isSafeInteger(part.size)&&
+      part.size>0&&part.size<=128*1024);
     if(!attachment)continue;
     const file=await call('attachment_get',{
       account_id:aid,message_id:hit.id,attachment_id:attachment.id});
@@ -114,7 +122,9 @@ async function deepReadAcceptance(account){
   console.log(gotMessage?'EMAIL_PRODUCTION_MAIL_GET_OK':
     'EMAIL_PRODUCTION_MAIL_GET_NO_SAFE_SAMPLE');
   console.log(foundAttachment?'EMAIL_PRODUCTION_ATTACHMENT_GET_OK':
-    'EMAIL_PRODUCTION_ATTACHMENT_NO_SMALL_SAMPLE');
+    'EMAIL_PRODUCTION_ATTACHMENT_NO_RECENT_TXT_SAMPLE');
+  if(process.env.EMAIL_REQUIRE_ATTACHMENT==='true')
+    assert.ok(foundAttachment,'email_smoke_attachment_not_verified');
 }
 
 async function main(){

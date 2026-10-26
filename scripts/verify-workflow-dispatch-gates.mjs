@@ -135,6 +135,9 @@ assert.match(emailAcceptance, /GITHUB_SHA/);
 assert.match(emailAcceptance, /git ls-remote/);
 assert.match(emailAcceptance, /group: email-production-readonly-acceptance/);
 assert.match(emailAcceptance, /EMAIL_READONLY_ACCEPTANCE: "true"/);
+assert.match(emailAcceptance, /EMAIL_REQUIRE_ATTACHMENT: "true"/);
+assert.match(emailSmoke, /email_smoke_attachment_not_verified/);
+
 assert.match(emailAcceptance, /node scripts\/email-production-read-smoke\.mjs/);
 assert.match(emailAcceptance, /secrets\.MCP_ACCESS_TOKEN/);
 const emailSecrets = [...emailAcceptance.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(m => m[1]);
