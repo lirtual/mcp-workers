@@ -38,8 +38,10 @@ function setup(t:test.TestContext){
    sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  let deliveries:Array<{type:string;payload:any}>=[];
  let failure=false;
+ let terminated=false;
  const instance={
-  async status(){return {status:'running'};},
+  async status(){return {status:terminated?'terminated':'running'};},
+  async terminate(){terminated=true;},
   async sendEvent(value:{type:string;payload:unknown}){
     if(failure)throw Error('ambiguous_network_response');
     deliveries.push(value);
@@ -163,4 +165,20 @@ test('a cancellation fence wins after native event receipt and blocks downstream
  assert.equal(final.status,'cancelled');
  assert.notEqual(final.steps.find(s=>s.step_id==='done')?.status,'succeeded');
  assert.equal((await x.send(started.run_id,{value:'do-not-run'})).status,409);
+});
+
+test('public cancellation fences the Run before native termination and never claims resource cleanup',async t=>{
+ const x=setup(t),wf=await x.service.create(JSON.stringify(definition(30)));
+ await x.service.publish(wf.workflow_id,1);
+ const started=await x.service.start(wf.workflow_id,{});
+ const cancel=await x.service.cancel(started.run_id,'signal');
+ assert.equal(cancel.cancellation,'terminal_confirmed');
+ assert.equal(cancel.native_workflow_terminated,true);
+ assert.equal(cancel.physical_terminated,false);
+ assert.equal((await x.service.status(started.run_id)).status,'cancelled');
+ assert.equal((await x.send(started.run_id,{value:'too-late'})).status,409);
+ const again=await x.service.cancel(started.run_id,'signal');
+ assert.equal(again.native_workflow_terminated,true);
+ await assert.rejects(()=>x.service.cancel(started.run_id,'signal',true),
+   (error:unknown)=>error instanceof Error&&error.message==='wait_event_force_not_supported');
 });
