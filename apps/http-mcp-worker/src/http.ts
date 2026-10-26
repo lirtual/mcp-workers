@@ -5,7 +5,7 @@ export type Input = {
  text?: string; redirect?: 'manual'|'same-origin'; timeout_ms?: number; max_response_bytes?: number;
 };
 type Rule = { origin:string; prefix:string; headers:Record<string,string> };
-export class HttpError extends Error { constructor(readonly code:string) { super(code); } }
+export class HttpError extends Error { readonly code:string; constructor(code:string) { super(code); this.code=code; } }
 const bytes = (s:string) => new TextEncoder().encode(s).length;
 const forbidden = /^(?:host|content-length|connection|transfer-encoding|keep-alive|proxy-.*|te|trailer|upgrade|expect|accept-encoding|forwarded|x-forwarded-.*|cf-.*|sec-.*|set-cookie)$/i;
 const credential = /^(?:authorization|proxy-authorization|cookie|x-api-key|api-key|x-auth-.*|x-.*-token)$/i;
