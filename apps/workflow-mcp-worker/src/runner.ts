@@ -533,8 +533,24 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     const plan=JSON.parse(version.plan) as Plan;
     const ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}={inputs:JSON.parse(row.inputs),steps:{}};
     if(row.outcome==='queued'){
-      const transition=await db.prepare("UPDATE runs SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'").bind(now(),id).run();
-      if(!transition.meta.changes)return;
+      // A native child create can become visible AFTER a cancellation request
+      // (e.g. when create() loses its ACK). Fence the first business step with
+      // the durable child cancellation in the SAME atomic D1 transition.
+      const transition=await db.prepare(`UPDATE runs
+        SET outcome='running',updated_at=? WHERE id=? AND outcome='queued'
+        AND NOT EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=runs.id)`)
+        .bind(now(),id).run();
+      if(!transition.meta.changes){
+        // Native execution was prevented before its first business step.
+        // Report a failed, side-effect-free admission, not a successful native
+        // termination (which was never independently observed).
+        await db.prepare(`UPDATE runs SET outcome='failed',
+          error_code='child_cancel_requested',updated_at=?
+          WHERE id=? AND outcome='queued' AND parent_run_id IS NOT NULL
+          AND EXISTS(SELECT 1 FROM child_cancellations WHERE child_run_id=runs.id)`)
+          .bind(now(),id).run();
+        return;
+      }
     }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
     let emitted:unknown=null;
