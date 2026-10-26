@@ -23,3 +23,17 @@ CREATE TABLE child_cancellations (
  FOREIGN KEY(parent_run_id) REFERENCES runs(id),
  FOREIGN KEY(child_run_id) REFERENCES runs(id)
 );
+
+-- Old Worker versions still use COUNT(*) during an in-flight code/schema
+-- cutover. Count-based ingress can admit an extra Run while a new parent
+-- occupies two units; preserve the eight-unit limit at the D1 boundary.
+-- Child INSERTs are exempt because their already-reserved parent atomically
+-- transfers one unit (weight 2 -> 1) in the same D1 batch.
+CREATE TRIGGER runs_top_level_capacity_guard
+BEFORE INSERT ON runs
+WHEN NEW.parent_run_id IS NULL AND NEW.outcome IN ('queued','running')
+ AND (SELECT COALESCE(SUM(capacity_weight),0) FROM runs
+      WHERE outcome IN ('queued','running')) + NEW.capacity_weight > 8
+BEGIN
+ SELECT RAISE(IGNORE);
+END;
