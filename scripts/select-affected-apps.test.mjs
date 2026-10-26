@@ -64,6 +64,20 @@ test('Workflow MCP Workflow is CI-checked and may only be manually released from
   assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
 });
 
+test('Email MCP is CI-checked but cannot be selected for production until Spec #279 acceptance', async () => {
+  assert.deepEqual(selectAffectedApps(['apps/email-mcp-worker/src/index.ts']), ['email-mcp-worker']);
+  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('email-mcp-worker'));
+  const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.equal(release.includes('\n          - email-mcp-worker\n'), true);
+  const run = (ref) => execFileSync(process.execPath, ['scripts/select-affected-apps.mjs'], {
+    cwd: new URL('../', import.meta.url),
+    env: { ...process.env, EVENT_NAME: 'workflow_dispatch', MANUAL_WORKER: 'email-mcp-worker', MANUAL_REF: ref },
+    encoding: 'utf8',
+  });
+  assert.match(run('refs/heads/main'), /email-mcp-worker/);
+  assert.throws(() => run('refs/heads/other'), /Unsupported manual Worker selection/);
+});
+
 test('HTTP MCP is CI-selected',()=>{
   assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);

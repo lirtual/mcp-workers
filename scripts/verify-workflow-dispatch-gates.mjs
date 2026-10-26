@@ -46,7 +46,7 @@ for (const clause of [
   "needs.checks.result == 'success'",
   "needs.checks.outputs.release_ready == 'true'",
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
-for (const name of ['raindrop', 'ima', 'database', 'ssh', 'remote-control', 'github-actions', 'workflow'])
+for (const name of ['raindrop', 'ima', 'database', 'email', 'ssh', 'remote-control', 'github-actions', 'workflow'])
   assert.ok(deploy.gate.includes("inputs.worker == '" + name + "-mcp-worker'"), 'Missing allowlisted Worker ' + name);
 assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');

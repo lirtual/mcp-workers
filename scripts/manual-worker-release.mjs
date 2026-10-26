@@ -3,11 +3,12 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
+  "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -18,6 +19,7 @@ const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
   "ima-mcp-worker": "src/index.ts",
   "database-mcp-worker": "src/index.ts",
+  "email-mcp-worker": "src/index.ts",
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
@@ -77,7 +79,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "SSH legacy broker binding or token remains");
     }
   } else {
-    const logs = worker === "remote-control-mcp-worker" ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
@@ -144,6 +146,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(settings.observability?.traces?.enabled === true, "IMA tracing drift");
     invariant(!bindings.some((x) => x.name === "R2_BUCKET"), "Legacy IMA R2 Worker binding remains");
   }
+  if (worker === "email-mcp-worker") {
+    const d1 = find("DB", "d1");
+    invariant((d1?.id || d1?.database_id) === "1fa50616-effb-458e-b798-b1ca1a0da24f",
+      "Email production D1 binding drift");
+    invariant(!bindings.some(b => b.type === "plain_text"),
+      "Email production credentials and Access configuration must be Secrets");
+  }
   if (worker === "database-mcp-worker") {
     const limiter = find("RATE_LIMITER", "ratelimit");
     invariant(limiter && String(limiter.namespace_id) === "1001" &&
@@ -188,6 +197,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   const allowed = new Set(worker === "workflow-mcp-worker"
     ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] : ["DB", "WORKFLOW"]) :
+    worker === "email-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
@@ -442,7 +452,7 @@ function readConfiguration(worker, content) {
       conf.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must stay enabled");
   } else {
-    const logs = worker === "remote-control-mcp-worker" ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
       "Source Invocation Logs setting differs from production");
   }
@@ -456,6 +466,24 @@ function readConfiguration(worker, content) {
       !conf.durable_objects?.bindings?.length && !conf.r2_buckets?.length &&
       !conf.ratelimits?.length && !conf.vars,
       "HTTP strict-public Worker source or binding drift");
+  }
+  if (worker === "email-mcp-worker") {
+    const routes = conf.routes ?? [];
+    invariant(conf.workers_dev === false && conf.preview_urls === false &&
+      routes.length === 2 && routes.every(x => x.custom_domain === true) &&
+      routes[0].pattern === "email.lirtual.dpdns.org" &&
+      routes[1].pattern === "email-mcp.lirtual.dpdns.org",
+      "Email production custom domains must keep Setup and MCP separate");
+    invariant(conf.observability?.logs?.invocation_logs === false,
+      "Email may not log mailbox operations");
+    invariant(conf.d1_databases?.length === 1 &&
+      conf.d1_databases[0].binding === "DB" &&
+      conf.d1_databases[0].database_name === "email-mcp-db" &&
+      conf.d1_databases[0].database_id === "1fa50616-effb-458e-b798-b1ca1a0da24f" &&
+      conf.d1_databases[0].migrations_dir === "migrations",
+      "Email production D1 source drift");
+    invariant(!conf.vars || Object.keys(conf.vars).length === 0,
+      "Email secrets must not be staged as plain-text vars");
   }
   if (worker === "ima-mcp-worker") {
     invariant(!conf.secrets?.required?.includes("IMA_CLIENT_ID"),
@@ -578,7 +606,7 @@ async function current(account, worker, token, options) {
   }
   if (worker !== "ssh-mcp-worker") {
     invariant(scriptSettings?.observability?.logs?.invocation_logs ===
-      (worker === "remote-control-mcp-worker" ? false : true),
+      (["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true),
       "Script-level Invocation Logs drift");
   }
   if (worker === "ima-mcp-worker") {
