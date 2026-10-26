@@ -140,11 +140,18 @@ export async function executeHttp(input:Input,rules:Rule[],outbound:typeof fetch
  if(contentType&&!caller.some(([k])=>k.toLowerCase()==='content-type'))caller.push(['content-type',contentType]);
  const secrets=[...new Set([...rules.flatMap(r=>Object.values(r.headers)),
    ...caller.filter(([k])=>credential.test(k)).map(([,v])=>v)].filter(s=>s.length>=3))];
+ const rememberQueryCredentials=(u:URL)=>{
+   for(const [name,value] of u.searchParams) {
+     if(/(?:token|secret|api[_-]?key|password|passwd|signature|credential|session|(?:^|[_-])auth(?:$|[_-]))/i.test(name)
+       && value.length>=3 && !secrets.includes(value)) secrets.push(value);
+   }
+ };
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
  const start=Date.now(),seen=new Set<string>();let redirects=0;
  try {
   while(true) {
    if(controller.signal.aborted) fail('timeout');
+   rememberQueryCredentials(url);
    if(seen.has(url.href))fail('redirect_loop');
    seen.add(url.href);
    const headers=requestHeaders(caller,url,rules);
