@@ -1,4 +1,5 @@
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import {cancelAwaitedChild} from './child-cancel.ts';
 import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
@@ -27,7 +28,7 @@ export type Env = {
   MCP_ACCESS_TOKEN: string;
   WORKFLOW: {
     create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
-    get(id:string):Promise<{status():Promise<{status:string}>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
+    get(id:string):Promise<{status():Promise<{status:string}>;terminate?():Promise<void>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
   };
   // Enabled only through the explicit selected-Worker production release.
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
@@ -352,6 +353,23 @@ export class WorkflowService {
    */
   async cancel(run_id:string,step_id:string,force=false){
     assertId(run_id);assertId(step_id);
+    // A reviewed child uses the same public cancel entrypoint, but it never
+    // inherits the GitHub executor token or permits force cancellation.
+    const planRow=await this.db.prepare(`SELECT v.plan FROM runs r
+      JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
+      .bind(run_id).first<{plan:string}>();
+    if(planRow){
+      let published:Plan|null=null;
+      try{published=JSON.parse(planRow.plan) as Plan;}catch{}
+      const child=published?.steps.find(s=>s.id===step_id&&s.uses==='flow.child');
+      if(child){
+        if(force)throw new StateError('child_force_not_supported');
+        const state=await cancelAwaitedChild(this.env,run_id,step_id);
+        if(state==='not_found')throw new StateError('child_not_cancellable');
+        return {run_id,step_id,cancellation:state,
+          physical_terminated:state==='terminal_confirmed'};
+      }
+    }
     if(!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN)
       throw new StateError('github_action_executor_not_configured');
     const cancellation=await requestGitHubActionCancellation(
