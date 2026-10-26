@@ -557,7 +557,7 @@ async function runSessionDataReadAcceptance() {
   const rows=sql("SELECT count(*) AS n FROM session_executions s " +
     "JOIN runs r ON r.id=s.run_id JOIN workflows w ON w.id=r.workflow_id " +
     "WHERE s.run_id=" + quotedId(id) + " AND s.step_id='windows_session' " +
-    "AND s.session_mode='temporary' AND w.name='spec288-windows-runtime-acceptance'");
+    "AND s.fixed_key IS NULL AND w.name='spec288-windows-runtime-acceptance'");
   assert.equal(rows[0]?.n,1,'Only existing temporary Spec 288 Session can be probed');
   await client.connect(transport);
   const listed=await client.listTools();
