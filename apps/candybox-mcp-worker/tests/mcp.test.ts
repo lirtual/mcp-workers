@@ -185,7 +185,9 @@ test('Litterbox one bounded file, default 24h; DDG no token and generation priva
     count++;
     assert.equal(url,'https://quack.duckduckgo.com/api/email/addresses');
     assert.equal(new Headers(init.headers).get('authorization'),'Bearer synthetic-dummy-bearer');
-    return Response.json({address:'private123@duck.com',address_owner:'private@example.com',token:'synthetic-dummy-bearer'});
+    assert.equal(init.body,undefined);
+    assert.equal(new Headers(init.headers).has('content-type'),false);
+    return Response.json({address:'private123',address_owner:'private@example.com',token:'synthetic-dummy-bearer'});
   });
   const result=await createDuckAddress(tokenEnv,sendDuck);
   assert.deepEqual(result,{status:'confirmed',address:'private123@duck.com'});

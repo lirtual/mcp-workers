@@ -251,13 +251,15 @@ export async function duckCapability(env: Env, send: Sender = fetch) {
 export async function createDuckAddress(env: Env, send: Sender = fetch) {
   if (!env.CANDYBOX_DDG_TOKEN?.trim()) bad('not_configured');
   const res = await request(ADDRESSES_URL, {
-    method: 'POST', headers: { authorization: 'Bearer ' + env.CANDYBOX_DDG_TOKEN,
-      'content-type': 'application/json' }, body: '{}',
+    method: 'POST', headers: { authorization: 'Bearer ' + env.CANDYBOX_DDG_TOKEN },
   }, send);
   if (!res.ok) responseError(res);
   const data = await createdJson(res);
-  const address = data.address;
-  if (typeof address !== 'string' || !/^[a-z0-9][a-z0-9._-]{1,63}@duck\.com$/i.test(address))
+  // DuckDuckGo's response commonly provides the alias localpart only.
+  const localOrFull = data.address;
+  if (typeof localOrFull !== 'string') bad('indeterminate');
+  const address = localOrFull.includes('@') ? localOrFull : localOrFull + '@duck.com';
+  if (!/^[a-z0-9][a-z0-9._-]{1,63}@duck\.com$/i.test(address))
     bad('indeterminate');
   return { status: 'confirmed' as const, address };
 }
