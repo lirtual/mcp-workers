@@ -71,6 +71,9 @@ function requestHeaders(caller:[string,string][],u:URL,rules:Rule[]):Headers {
  if(u.protocol==='http:'&&caller.some(([k])=>credential.test(k))) fail('insecure_credentials');
  const h=new Headers(caller);
  for(const rule of rules) if(rule.origin===u.origin&&inside(u.pathname,rule.prefix)) {
+   // Prevent upstream double-decoding from changing a credential's path scope.
+   // An encoded-path request can still run without managed credentials.
+   if(u.pathname.includes('%')) fail('unsafe_credential_path');
    for(const [k,v] of Object.entries(rule.headers)) {
      if(h.has(k)) fail('credential_conflict');
      h.set(k,v);
