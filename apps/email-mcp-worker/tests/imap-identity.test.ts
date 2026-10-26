@@ -23,14 +23,23 @@ test('generic mailbox credentials and ports reject control characters/insecure c
   assert.throws(() => validateProtocolCredentials({ ...good, password: 'abc\nbcc' }), /invalid_mail_credential/);
 });
 test('DNS resolution pins only verified public IPs, never the attacker-controlled hostname', async () => {
-  const dns = (async (uri: string) => Response.json({
-    Status: 0,
-    Answer: new URL(uri).searchParams.get('type') === '1' ? [{ type: 1, data: '1.1.1.1' }] : [],
-  })) as typeof fetch;
+  const dns = (async (uri: string, init?: RequestInit) => {
+    assert.equal(init?.redirect, 'manual', 'Workerd does not support redirect:error');
+    return Response.json({
+      Status: 0,
+      Answer: new URL(uri).searchParams.get('type') === '1' ? [{ type: 1, data: '1.1.1.1' }] : [],
+    });
+  }) as typeof fetch;
   assert.deepEqual(await resolvePublicMailEndpoint('IMAP.QQ.COM', dns),
     { hostname: 'imap.qq.com', address: '1.1.1.1' });
   const unsafe = (async () => Response.json({ Status: 0, Answer: [{ type: 1, data: '192.168.1.9' }] })) as typeof fetch;
   await assert.rejects(() => resolvePublicMailEndpoint('imap.qq.com', unsafe), /unsafe_mail_host/);
+  const redirected = (async (_uri: string, init?: RequestInit) => {
+    assert.equal(init?.redirect, 'manual');
+    return Response.redirect('https://attacker.example.test/dns-query', 302);
+  }) as typeof fetch;
+  await assert.rejects(() => resolvePublicMailEndpoint('imap.qq.com', redirected), /dns_unavailable/,
+    'Cloudflare-compatible manual redirects must not follow arbitrary DNS destinations');
 });
 test('IMAP replies require a caller-confirmed Reply-To and a valid RFC message identity', async () => {
   const { imapReplyHeaders } = await import('../src/imap.ts');
