@@ -78,24 +78,23 @@ async function deepReadAcceptance(account){
     'email_smoke_positive_missing_expected_message');
   console.log('EMAIL_PRODUCTION_POSITIVE_SEARCH_OK');
   // ImapFlow fetchOne({source:true}) uses BODY.PEEK[] and must not mark read.
-  // The sender-filtered positive result can exclude the owner's new test
-  // message. Date metadata may be missing or skewed on IMAP providers.
-  // Prefer recent matches, then fill up to five slots from the already-fetched
-  // first INBOX search page. Never search more mailboxes or print mail data.
-  const now=Date.now();
-  const recent=broad.messages.filter(message=>{
-    const received=Date.parse(message.date??'');
-    return Number.isFinite(received)&&received>=now-2*60*60*1000&&
-      received<=now+5*60*1000;
-  });
-  const seen=new Set(recent.map(message=>message.id));
-  const candidates=[
-    ...recent.slice(0,5),
-    ...broad.messages.filter(message=>!seen.has(message.id))
-      .slice(0,Math.max(0,5-recent.length)),
-  ];
+  // IMAP INTERNALDATE can be missing; mail_search may then re-sort a page
+  // lexicographically by encoded message id, so the first results are not
+  // necessarily the newest. UID is monotonic within this INBOX UIDVALIDITY.
+  // Only reorder the existing bounded first search page; never widen reads.
+  function inboxUid(message){
+    try{
+      if(typeof message.id!=='string'||!/^[A-Za-z0-9_-]{1,750}$/.test(message.id))
+        return 0;
+      const ref=JSON.parse(Buffer.from(message.id,'base64url').toString('utf8'));
+      return ref?.folder==='INBOX'&&Number.isSafeInteger(ref.uid)&&ref.uid>0
+        ? ref.uid : 0;
+    }catch{return 0;}
+  }
+  const candidates=[...broad.messages].sort((a,b)=>inboxUid(b)-inboxUid(a)).slice(0,5);
   console.log('EMAIL_ATTACHMENT_SAMPLE_COUNTS matched='+broad.messages.length+
-    ' recent='+recent.length+' inspected='+candidates.length);
+    ' inspected='+candidates.length+
+    ' valid_uid='+candidates.filter(hit=>inboxUid(hit)>0).length);
   let gotMessage=false;
   let foundAttachment=false;
   for(const hit of candidates){
