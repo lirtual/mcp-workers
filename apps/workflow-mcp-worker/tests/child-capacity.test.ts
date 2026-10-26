@@ -149,3 +149,18 @@ test('terminal parent cannot authorize replay of an already reserved child',asyn
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE id='c1'")
     .get() as {n:number}).n,1);
 });
+
+test('a D1 batch failure rolls back child insert and parent weight transfer together',async t=>{
+  const {sqlite,db,makeWorkflow,makeParent,count}=fixture(t);
+  makeWorkflow('parent');makeWorkflow('child');
+  makeParent('p1','parent');
+  sqlite.exec(`CREATE TRIGGER reject_child_transfer BEFORE UPDATE OF capacity_weight ON runs
+    BEGIN SELECT RAISE(ABORT,'forced-transfer-error'); END`);
+  await assert.rejects(()=>transferAwaitedChildCapacity(
+    db as unknown as D1Database,request()),/forced-transfer-error/);
+  assert.equal(count(),2);
+  assert.equal((sqlite.prepare('SELECT capacity_weight FROM runs WHERE id=?')
+    .get('p1') as {capacity_weight:number}).capacity_weight,2);
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id IS NOT NULL')
+    .get() as {n:number}).n,0);
+});
