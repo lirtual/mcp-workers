@@ -122,4 +122,21 @@ assert.ok(registration.content.includes('run: node scripts/register-workflow-por
 assert.ok(ci.includes('run: node --test scripts/register-workflow-portal.test.mjs'));
 for (const src of [ci, release, acceptance])
   assert.doesNotMatch(src, /wip\/workflow-mcp-public-readonly|wip\/workflow-github-executor/);
+// Email acceptance is a credential-free manual gate; never grant it release
+// authority or expose production secrets to the Draft PR being exercised.
+const emailAcceptance = read('email-acceptance');
+assert.match(emailAcceptance, /  workflow_dispatch:/);
+assert.doesNotMatch(emailAcceptance, /\n  (?:push|pull_request|schedule):/);
+assert.match(emailAcceptance, /github\.ref == 'refs\/heads\/main'/);
+assert.match(emailAcceptance, /candidate_sha:/);
+assert.match(emailAcceptance, /head\.sha/);
+assert.match(emailAcceptance, /head\.repo\.full_name/);
+assert.match(emailAcceptance, /conclusion == "success"/);
+assert.match(emailAcceptance, /persist-credentials: false/);
+assert.match(emailAcceptance, /pnpm --filter email-mcp-worker check/);
+assert.match(emailAcceptance, /wrangler d1 migrations apply/);
+assert.match(emailAcceptance, /wrangler dev/);
+assert.match(emailAcceptance, /EMAIL_ISOLATED_LOCAL_WORKER_D1_AND_MCP_OK/);
+assert.doesNotMatch(emailAcceptance, /secrets\.|CLOUDFLARE_API_TOKEN|wrangler deploy|release\.yml|environment:/);
+
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');
