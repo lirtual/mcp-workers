@@ -28,6 +28,16 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(childDetails.availability,'supported_with_grant');
   assert.match(String(childDetails.description),/approved_children/);
   assert.match(String(childDetails.description),/non-recursive/);
+  const rules=overview.expression_rules as {supported_child:string;unsupported:string[]};
+  assert.match(rules.supported_child,/flow: child/);
+  assert.match(rules.supported_child,/approved_children/);
+  assert.equal(rules.unsupported.includes('child_workflow'),false);
+  const childGrant=childDetails.grant as {required:string[];note:string};
+  assert.deepEqual(childGrant.required,['approved_children']);
+  assert.match(childGrant.note,/illustrative/);
+  const example=childDetails.example as {definition:unknown;digest:string;validation:string};
+  assert.equal(example.validation,'compiler_valid_only');
+  assert.equal((await compilePlan(example.definition)).digest,example.digest);
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
@@ -45,7 +55,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
     const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -182,6 +192,17 @@ test('Agent-readable Action schemas document required executable parameters',()=
     ['endpoint','tool','scope','arguments','input_schema']);
   assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].required,
     ['capability','action']);
+});
+
+test('awaited-child capability distinguishes valid flow syntax from legacy unsupported fields',async()=>{
+  const detail=await workflowCapabilities(env,'flow.child');
+  const {definition}=detail.example as {definition:unknown};
+  const compiled=await compilePlan(definition);
+  assert.equal(compiled.plan.steps[0]?.uses,'flow.child');
+  await assert.rejects(
+    compilePlan({...definition,child_workflow:'legacy'}),
+    (err:unknown)=>err instanceof PlanError && err.message.includes('unsupported_field:child_workflow'),
+  );
 });
 
 test('unsupported features are rejected by the same production compiler',async()=>{
