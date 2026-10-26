@@ -54,7 +54,7 @@ async function exchange(env: Env, provider: Provider, form: URLSearchParams, req
   form.set('client_secret', cfg.secret);
   form.set('redirect_uri', callback);
   const response = await requestFetch(cfg.token, {
-    method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form,
+    method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form,
     signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
@@ -75,7 +75,7 @@ async function exchange(env: Env, provider: Provider, form: URLSearchParams, req
 }
 async function identity(provider: Provider, token: string, requestFetch: typeof fetch): Promise<string> {
   const url = provider === 'gmail' ? 'https://gmail.googleapis.com/gmail/v1/users/me/profile' : 'https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName';
-  const resp = await requestFetch(url, { redirect: 'error', headers: { authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(10000) });
+  const resp = await requestFetch(url, { redirect: 'manual', headers: { authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(10000) });
   if (!resp.ok) fail('reauthorization_required');
   const data = await resp.json() as { emailAddress?: string; mail?: string; userPrincipalName?: string };
   const address = (data.emailAddress ?? data.mail ?? data.userPrincipalName ?? '').trim().toLowerCase();
@@ -153,7 +153,7 @@ export async function revokeIfSupported(env: Env, account: MailAccount, requestF
   try {
     const credentials = await decrypt<Credentials>(env, 'account:' + account.account_id + ':' + account.provider, account.credential_ciphertext, account.credential_key_id);
     const result = await requestFetch('https://oauth2.googleapis.com/revoke', {
-      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ token: credentials.refresh_token ?? credentials.access_token }),
       signal: AbortSignal.timeout(5000),
     });
