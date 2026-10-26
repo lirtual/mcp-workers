@@ -63,3 +63,8 @@ test('Workflow MCP Workflow is CI-checked and may only be manually released from
   const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
 });
+
+test('HTTP MCP is CI-selected',()=>{
+  assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
+  assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
+});

@@ -13,6 +13,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
+  "http-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 });
 
@@ -53,6 +54,16 @@ export function collectBootstrapSecrets(worker, env) {
       throw new Error("Invalid or duplicate GitHub PAT in ACTIONS_GITHUB_DISPATCH_TOKENS");
     }
     // Avoid copying older secondary Secret even when it remains in GitHub settings.
+  }
+  if (worker === "http-mcp-worker" && env.HTTP_CREDENTIALS_JSON) {
+    const raw = env.HTTP_CREDENTIALS_JSON;
+    if (Buffer.byteLength(raw, "utf8") > 5120) throw Error("HTTP_CREDENTIALS_JSON is too large");
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch { throw Error("Invalid HTTP_CREDENTIALS_JSON"); }
+    if (!Array.isArray(parsed) || parsed.length > 16)
+      throw Error("Invalid HTTP_CREDENTIALS_JSON");
+    payload.HTTP_CREDENTIALS_JSON = raw;
   }
   return payload;
 }

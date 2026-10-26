@@ -93,3 +93,13 @@ test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>
   assert.ok(names.includes("WORKFLOW_GITHUB_DISPATCH_TOKEN"));
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
 });
+
+test("HTTP optional managed credentials are staged only when configured",()=>{
+  const required={MCP_ACCESS_TOKEN:"synthetic-token"};
+  assert.deepEqual(collectBootstrapSecrets("http-mcp-worker",required),required);
+  const value="[]";
+  assert.deepEqual(collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:value}),
+    {...required,HTTP_CREDENTIALS_JSON:value});
+  assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"{invalid"}),/Invalid/);
+  assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"x".repeat(5200)}),/too large/);
+});

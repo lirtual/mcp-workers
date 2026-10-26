@@ -705,3 +705,28 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
   assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow native Workflow binding drift/);
 });
+
+test("HTTP release only allows strict-public source and exact optional credential Secret inventory", () => {
+  const base = {bindings:[{name:"MCP_ACCESS_TOKEN",type:"secret_text"}],
+    observability:{enabled:true,logs:{invocation_logs:true}}};
+  const required=[{name:"MCP_ACCESS_TOKEN"}];
+  assert.equal(verifyBindings("http-mcp-worker",base,required,
+    {mode:"preflight",expectedHttpCredentials:false}),true);
+  assert.equal(verifyBindings("http-mcp-worker",base,required,
+    {mode:"readback",expectedHttpCredentials:false}),true);
+  const withSecret={...base,bindings:[...base.bindings,{name:"HTTP_CREDENTIALS_JSON",type:"secret_text"}]};
+  assert.throws(()=>verifyBindings("http-mcp-worker",withSecret,
+    [...required,{name:"HTTP_CREDENTIALS_JSON"}],{mode:"preflight",expectedHttpCredentials:false}),
+    /Stale HTTP_CREDENTIALS_JSON/);
+  assert.equal(verifyBindings("http-mcp-worker",withSecret,
+    [...required,{name:"HTTP_CREDENTIALS_JSON"}],{mode:"readback",expectedHttpCredentials:true}),true);
+  assert.throws(()=>verifyBindings("http-mcp-worker",base,required,
+    {mode:"readback",expectedHttpCredentials:true}),/binding inventory drift/);
+  const cfg=JSON.parse(readFileSync(new URL("../apps/http-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
+  assert.deepEqual(cfg.compatibility_flags,["global_fetch_strictly_public"]);
+  assert.deepEqual(cfg.secrets.required,["MCP_ACCESS_TOKEN"]);
+  assert.equal(cfg.keep_vars,false);
+  const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+  assert.match(release,/http-mcp-worker/);
+  assert.match(release,/HTTP_CREDENTIALS_JSON/);
+});
