@@ -254,7 +254,7 @@ test('stale unknown child terminates uncertainty without creating a new instance
     async get(){throw Error('instance.not_found');},
   }};
   assert.deepEqual(await startReservedAwaitedChild(env as never,
-    startArgs(1000+10*60_000)),
+    startArgs(2000+10*60_000)),
     {childRunId:'c1',start_state:'indeterminate'});
   assert.equal(calls,0);
   assert.equal((f.sqlite.prepare("SELECT outcome FROM runs WHERE id='c1'").get() as {outcome:string}).outcome,'indeterminate');
