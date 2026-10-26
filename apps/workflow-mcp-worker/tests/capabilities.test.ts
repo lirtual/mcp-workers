@@ -92,7 +92,8 @@ test('advertised skip-tolerant join matches compiler and keeps fail-closed seman
 test('literal repeat discovery is compiler-backed and explicitly bounded',async()=>{
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
-    ['uses','with'],['flow','times','template'],['flow','items','max_items','template'],
+    ['uses','with'],['flow','times','template'],
+    ['flow','workflow_id','version_id','inputs'],['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
   assert.equal(schema.properties.max_items.maximum,PLAN_LIMITS.maxForeachItems);
