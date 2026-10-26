@@ -4,6 +4,7 @@ import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { WorkflowService, type Env } from '../src/store.ts';
+import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from '../src/child-capacity.ts';
 import { compilePlan,toolSchemaDigest, type ReadonlyOperation } from '../src/plan.ts';
 // Exact schema returned by the existing read-only echo MCP fixture.
 const PINNED_SCHEMA={type:'object',properties:{
@@ -1734,4 +1735,75 @@ test('pinned child failure does not turn parent join into success',async t=>{
   assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='delegate')?.status,'failed');
   assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='blocked')?.status,'skipped');
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n,2);
+});
+
+test('awaited child cancellation is one-shot, terminal evidence required, and no GitHub token needed',async t=>{
+  const {service,sqlite,env}=setup(t);
+  const target=await service.create(JSON.stringify({version:1,name:'Cancelable child',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]}));
+  const published=await service.publish(target.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Parent cancellation owner',
+    steps:[{id:'delegate',flow:'child',workflow_id:target.workflow_id,
+      version_id:published.published_version_id,inputs:{}}]}));
+  const reviewed=(await service.validateDefinition((await service.get(parent.workflow_id)).definition)) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await service.publish(parent.workflow_id,1,[],false,false,[],reviewed.required_children!);
+  const run=await service.start(parent.workflow_id);
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(run.run_id);
+  const childId=await awaitedChildRunId(run.run_id,'delegate');
+  const frozen='{}';
+  const digest=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(frozen))).toString('hex');
+  await transferAwaitedChildCapacity(env.DB,{parentRunId:run.run_id,parentStepId:'delegate',
+    childRunId:childId,childWorkflowId:target.workflow_id,childVersionId:published.published_version_id,
+    admissionKey:'child-'+childId,requestDigest:digest,inputJson:frozen,timestamp:Date.now()});
+  let native='running';
+  let terminations=0;
+  env.WORKFLOW.create=async()=>{};
+  env.WORKFLOW.get=async()=>({
+    async status(){return {status:native};},
+    async terminate(){terminations++;native='terminated';},
+  });
+  await startReservedAwaitedChild(env,{parentRunId:run.run_id,parentStepId:'delegate',
+    childRunId:childId,timestamp:Date.now()});
+  const first=await service.cancel(run.run_id,'delegate');
+  assert.equal(first.cancellation,'terminal_confirmed');
+  assert.equal(first.physical_terminated,true);
+  const replay=await service.cancel(run.run_id,'delegate');
+  assert.equal(replay.cancellation,'terminal_confirmed');
+  assert.equal(terminations,1);
+  const row=sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(childId) as {outcome:string};
+  assert.equal(row.outcome,'cancelled');
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM child_cancellations').get() as {n:number}).n,1);
+});
+
+test('unknown native termination response cannot POST terminate twice',async t=>{
+  const {service,sqlite,env}=setup(t);
+  const target=await service.create(JSON.stringify({version:1,name:'Uncertain child',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'ok'}}]}));
+  const published=await service.publish(target.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Uncertain parent',
+    steps:[{id:'delegate',flow:'child',workflow_id:target.workflow_id,
+      version_id:published.published_version_id,inputs:{}}]}));
+  const validation=await service.validateDefinition((await service.get(parent.workflow_id)).definition);
+  const approvals=(validation as {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>}).required_children!;
+  await service.publish(parent.workflow_id,1,[],false,false,[],approvals);
+  const run=await service.start(parent.workflow_id);
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(run.run_id);
+  const childId=await awaitedChildRunId(run.run_id,'delegate');
+  const hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('{}'))).toString('hex');
+  await transferAwaitedChildCapacity(env.DB,{parentRunId:run.run_id,parentStepId:'delegate',
+    childRunId:childId,childWorkflowId:target.workflow_id,childVersionId:published.published_version_id,
+    admissionKey:'child-'+childId,requestDigest:hash,inputJson:'{}',timestamp:Date.now()});
+  env.WORKFLOW.create=async()=>{};
+  let attempts=0;
+  env.WORKFLOW.get=async()=>({
+    async status(){return {status:'running'};},
+    async terminate(){attempts++;throw Error('lost_terminate_ack');},
+  });
+  await startReservedAwaitedChild(env,{parentRunId:run.run_id,parentStepId:'delegate',
+    childRunId:childId,timestamp:Date.now()});
+  assert.equal((await service.cancel(run.run_id,'delegate')).cancellation,'requested_unverified');
+  assert.equal((await service.cancel(run.run_id,'delegate')).cancellation,'requested_unverified');
+  assert.equal(attempts,1);
+  await assert.rejects(()=>service.cancel(run.run_id,'delegate',true),/child_force_not_supported/);
 });
