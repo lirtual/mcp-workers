@@ -102,5 +102,14 @@ test("HTTP optional managed credentials are staged only when configured",()=>{
   assert.deepEqual(collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:value}),
     {...required,HTTP_CREDENTIALS_JSON:value});
   assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"{invalid"}),/Invalid/);
-  assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"x".repeat(5200)}),/too large/);
+  assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"x".repeat(5200)}),/Invalid/);
+  const valid=JSON.stringify([{origin:"https://api.example.org",pathPrefix:"/v1",headers:{"X-API-Key":"fake"}}]);
+  assert.equal(collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:valid}).HTTP_CREDENTIALS_JSON,valid);
+  for(const invalid of [
+    JSON.stringify([{origin:"http://api.example.org",pathPrefix:"/v1",headers:{"X-API-Key":"fake"}}]),
+    JSON.stringify([{origin:"https://api.example.org",pathPrefix:"/v1",headers:{Host:"localhost"}}]),
+    JSON.stringify([{origin:"https://api.example.org",pathPrefix:"/v1",headers:{"X-API-Key":"a"}},
+      {origin:"https://api.example.org",pathPrefix:"/v1/items",headers:{"X-API-Key":"b"}}])
+  ]) assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",
+    {...required,HTTP_CREDENTIALS_JSON:invalid}),/Invalid/);
 });
