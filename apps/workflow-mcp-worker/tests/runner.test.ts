@@ -1704,7 +1704,7 @@ test('awaited child publish requires exact reviewed target; one native child and
 test('pinned child failure does not turn parent join into success',async t=>{
   const {service,env,sqlite}=setup(t);
   const child=await service.create(JSON.stringify({version:1,name:'Child missing runtime input',
-    steps:[{id:'oops',uses:'result.emit',with:{data:{ref:'inputs.missing'}}}]}));
+    steps:[{id:'oops',uses:'result.emit',if:{ref:'inputs.missing'},with:{data:'never'}}]}));
   const pub=await service.publish(child.workflow_id,1);
   const parent=await service.create(JSON.stringify({version:1,name:'Parent should fail',
     steps:[
