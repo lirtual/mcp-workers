@@ -135,12 +135,30 @@ Do not re-create the isolated environment or re-test SMTP without a new need.
   one active account and three total `accepted` sends. No unrelated
   messages were mutated or new Worker/Test Action added.
 
+**Final production fix and acceptance (2026-10-26):** [PR #340](https://github.com/lirtual/mcp-workers/pull/340)
+fixed IMAP mark/move/trash false-success reporting, with selected UID checks,
+STORE/MOVE return checks and same-connection flag readback. Final
+[CI #40325701895](https://github.com/lirtual/mcp-workers/actions/runs/40325701895)
+passed 43/43 Email tests, TypeScript, Wrangler packaging and security checks.
+[Release Worker #40325857677](https://github.com/lirtual/mcp-workers/actions/runs/40325857677)
+published production version `8123ca20-2696-4b9c-a6e4-39138b23b926`
+to 100% traffic; selected-Worker release, Portal registration, existing QQ
+read-only smoke, and unauthenticated MCP 401 all passed. Independent D1 readback
+showed 1 active QQ account and 3 existing accepted send records unchanged.
+No repeat SMTP sends or live mail mutations were performed for this fix.
+
+**Recorded owner acceptance exceptions:** independent final security review is
+**WAIVED / NOT INDEPENDENTLY REVIEWED** (not PASS). Deliberate live ambiguous
+or partial SMTP fault injection is **WAIVED / NOT PERFORMED** (not PASS); SQL
+backed offline replay fencing tests passed. See the
+[Issue #279 acceptance decision](https://github.com/lirtual/mcp-workers/issues/279#issuecomment-6416419542).
+
 **Remaining unverified boundaries:** actual raw RFC `In-Reply-To/References`
 headers of delivered replies (not exposed through `mail_get`), independent
-persisted Seen flag / Trash-folder content readback, real ambiguous-SMTP fault
-injection (offline SQLite fence regression passed), and other providers besides
-QQ. Keep [Issue #279](https://github.com/lirtual/mcp-workers/issues/279)
-open until these are explicitly accepted as limitations or scoped separately.
+persisted Seen flag / Trash-folder content readback, real ambiguous-SMTP
+conditions, other providers besides QQ, and large attachment provider E2E.
+Post-fix mutation correctness has automated test evidence but no new live
+mailbox-write acceptance. These limitations are not silently claimed as PASS.
 Do not repeat the already-passed QQ core send, reply, or forward tests.
 
 ### Historical preproduction transport investigation
