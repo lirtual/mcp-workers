@@ -367,7 +367,10 @@ export class WorkflowService {
         const state=await cancelAwaitedChild(this.env,run_id,step_id);
         if(state==='not_found')throw new StateError('child_not_cancellable');
         return {run_id,step_id,cancellation:state,
-          physical_terminated:state==='terminal_confirmed'};
+          native_workflow_terminated:state==='terminal_confirmed',
+          // Cloudflare termination is NOT proof that a GitHub Session or
+          // other external resource has physically stopped.
+          physical_terminated:false};
       }
     }
     if(!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN)
