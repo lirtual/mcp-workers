@@ -745,3 +745,39 @@ test("Email production readback pins D1, two Secrets and Access Variables", () =
     ...base.bindings, { name: "UNEXPECTED", type: "plain_text", text: "unsafe" },
   ] }, secrets, { mode: "readback" }), /unexpected plaintext/);
 });
+
+test("HTTP release only allows strict-public source and exact optional credential Secret inventory", () => {
+  const base = {bindings:[{name:"MCP_ACCESS_TOKEN",type:"secret_text"}],
+    observability:{enabled:true,logs:{invocation_logs:true}}};
+  const required=[{name:"MCP_ACCESS_TOKEN"}];
+  assert.equal(verifyBindings("http-mcp-worker",base,required,
+    {mode:"preflight",expectedHttpCredentials:false}),true);
+  assert.equal(verifyBindings("http-mcp-worker",base,required,
+    {mode:"readback",expectedHttpCredentials:false}),true);
+  const withSecret={...base,bindings:[...base.bindings,{name:"HTTP_CREDENTIALS_JSON",type:"secret_text"}]};
+  assert.throws(()=>verifyBindings("http-mcp-worker",withSecret,
+    [...required,{name:"HTTP_CREDENTIALS_JSON"}],{mode:"preflight",expectedHttpCredentials:false}),
+    /Stale HTTP_CREDENTIALS_JSON/);
+  assert.equal(verifyBindings("http-mcp-worker",withSecret,
+    [...required,{name:"HTTP_CREDENTIALS_JSON"}],{mode:"readback",expectedHttpCredentials:true}),true);
+  assert.throws(()=>verifyBindings("http-mcp-worker",base,required,
+    {mode:"readback",expectedHttpCredentials:true}),/binding inventory drift/);
+  const cfg=JSON.parse(readFileSync(new URL("../apps/http-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
+  assert.deepEqual(cfg.compatibility_flags,["global_fetch_strictly_public"]);
+  assert.deepEqual(cfg.secrets.required,["MCP_ACCESS_TOKEN"]);
+  assert.equal(cfg.keep_vars,false);
+  const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+  assert.match(release,/http-mcp-worker/);
+  assert.match(release,/HTTP_CREDENTIALS_JSON/);
+});
+
+test("HTTP readback tolerates only bounded optional Secret inventory propagation",async()=>{
+ let attempts=0;
+ const result=await retryReleaseReadback(async()=>{
+   attempts++;
+   if(attempts===1)throw Error("Optional HTTP_CREDENTIALS_JSON binding inventory drift");
+   return {version_id:"new-version"};
+ },async()=>{});
+ assert.equal(attempts,2);
+ assert.deepEqual(result,{version_id:"new-version"});
+});

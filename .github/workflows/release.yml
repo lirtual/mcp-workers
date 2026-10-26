@@ -15,6 +15,7 @@ on:
           - ssh-mcp-worker
           - remote-control-mcp-worker
           - github-actions-mcp-worker
+          - http-mcp-worker
           - workflow-mcp-worker
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
@@ -53,6 +54,7 @@ jobs:
            inputs.worker == 'ssh-mcp-worker' ||
            inputs.worker == 'remote-control-mcp-worker' ||
            inputs.worker == 'github-actions-mcp-worker' ||
+           inputs.worker == 'http-mcp-worker' ||
            inputs.worker == 'workflow-mcp-worker') }}
     runs-on: ubuntu-latest
     # A GitHub Environment is a Worker-scoped configuration namespace, not a
@@ -104,6 +106,7 @@ jobs:
       - name: Cloudflare release preflight (read-only)
         id: preflight
         env:
+          HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
@@ -122,6 +125,7 @@ jobs:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
+          HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
           MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           SESSION_RUNTIME_DATA_KEY: ${{ secrets.SESSION_RUNTIME_DATA_KEY }}
@@ -309,7 +313,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|workflow-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|workflow-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -349,6 +353,7 @@ jobs:
 
       - name: Verify exact active version and required production bindings
         env:
+          HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
@@ -371,7 +376,7 @@ jobs:
         run: node scripts/email-production-read-smoke.mjs
 
       - name: Check existing public health endpoint
-        if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker' || inputs.worker == 'workflow-mcp-worker'
+        if: inputs.worker == 'ima-mcp-worker' || inputs.worker == 'raindrop-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'http-mcp-worker'
         shell: bash
         env:
           FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
@@ -384,7 +389,7 @@ jobs:
             health_endpoint="https://workflow.lirtual.dpdns.org/health"
           fi
           max_attempts=1
-          if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
+          if [[ ("$SELECTED_WORKER" == "workflow-mcp-worker" || "$SELECTED_WORKER" == "http-mcp-worker") && "$FIRST_DEPLOY" == "true" ]]; then
             max_attempts=12
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do
@@ -400,7 +405,7 @@ jobs:
             const fs = require("node:fs");
             const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
             const worker = process.argv[2];
-            if (!body || (worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "workflow" || body.service !== "workflow-mcp-worker") : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
+            if (!body || (worker === "http-mcp-worker" ? (body.ok !== true || body.service !== "http-mcp-worker") : worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "workflow" || body.service !== "workflow-mcp-worker") : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
           ' "$response" "$SELECTED_WORKER" || { echo "Health check failed (invalid response)" >&2; exit 1; }
           echo "Existing health endpoint verified (HTTP 200)"
 
@@ -416,6 +421,9 @@ jobs:
           # Do not retry any non-404 status or hide a persistent routing failure.
           max_attempts=1
           if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
+            max_attempts=12
+          fi
+          if [[ "$SELECTED_WORKER" == "http-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
             max_attempts=12
           fi
           if [[ "$SELECTED_WORKER" == "github-actions-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then

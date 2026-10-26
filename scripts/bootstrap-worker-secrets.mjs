@@ -3,6 +3,7 @@
 // GitHub resolves an Environment secret over a same-name repository secret.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
 import { writeFile } from "node:fs/promises";
+import { parseCredentials } from "../apps/http-mcp-worker/src/http.ts";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -14,6 +15,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
+  "http-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 });
 
@@ -61,6 +63,12 @@ export function collectBootstrapSecrets(worker, env) {
       throw new Error("Invalid or duplicate GitHub PAT in ACTIONS_GITHUB_DISPATCH_TOKENS");
     }
     // Avoid copying older secondary Secret even when it remains in GitHub settings.
+  }
+  if (worker === "http-mcp-worker" && env.HTTP_CREDENTIALS_JSON) {
+    const raw = env.HTTP_CREDENTIALS_JSON;
+    try { parseCredentials(raw); }
+    catch { throw Error("Invalid HTTP_CREDENTIALS_JSON"); }
+    payload.HTTP_CREDENTIALS_JSON = raw;
   }
   return payload;
 }

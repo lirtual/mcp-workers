@@ -3,7 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
@@ -12,6 +12,7 @@ const REQUIRED_SECRETS = {
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
+  "http-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 };
 const WORKER_ENTRIES = {
@@ -22,6 +23,7 @@ const WORKER_ENTRIES = {
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
+  "http-mcp-worker": "src/index.ts",
   "workflow-mcp-worker": "src/index.ts",
 };
 
@@ -42,6 +44,25 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (options.mode !== "preflight") {
       invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
       invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
+    }
+  }
+  if (worker === "http-mcp-worker") {
+    const managed = secretNames.has("HTTP_CREDENTIALS_JSON") &&
+      !!find("HTTP_CREDENTIALS_JSON", "secret_text");
+    const configured = options.expectedHttpCredentials === true;
+    invariant(!find("HTTP_CREDENTIALS_JSON", "plain_text"),
+      "Managed HTTP credentials must be a Secret");
+    // --secrets-file preserves omitted Secrets. Block a stale credential when
+    // the selected GitHub Environment no longer supplies it.
+    if (options.mode === "preflight") {
+      invariant(configured || (!bindings.some(b => b.name === "HTTP_CREDENTIALS_JSON") &&
+        !secretNames.has("HTTP_CREDENTIALS_JSON")),
+        "Stale HTTP_CREDENTIALS_JSON must be removed before release");
+    } else {
+      invariant(managed === configured &&
+        secretNames.has("HTTP_CREDENTIALS_JSON") === configured &&
+        bindings.some(b => b.name === "HTTP_CREDENTIALS_JSON") === configured,
+        "Optional HTTP_CREDENTIALS_JSON binding inventory drift");
     }
   }
   if (worker === "ssh-mcp-worker") {
@@ -452,6 +473,15 @@ function readConfiguration(worker, content) {
   }
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
+  if (worker === "http-mcp-worker") {
+    invariant(conf.workers_dev === true && conf.preview_urls === false &&
+      JSON.stringify(conf.compatibility_flags) === JSON.stringify(["global_fetch_strictly_public"]) &&
+      JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]) &&
+      !conf.services?.length && !conf.vpc_services && !conf.d1_databases?.length &&
+      !conf.durable_objects?.bindings?.length && !conf.r2_buckets?.length &&
+      !conf.ratelimits?.length && !conf.vars,
+      "HTTP strict-public Worker source or binding drift");
+  }
   if (worker === "email-mcp-worker") {
     invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"]),
       "Email source Secret declaration drift");
@@ -615,6 +645,7 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
     catch (error) {
       const message = error instanceof Error ? error.message : "";
       const transient = /^Required (Secret binding|runtime Secret) missing: /.test(message) ||
+        message === "Optional HTTP_CREDENTIALS_JSON binding inventory drift" ||
         message === "Active Worker version does not match the Wrangler-published version";
       if (attempt === 5 || !transient) throw error;
       await pause(2000);
@@ -689,15 +720,16 @@ async function main() {
   const read = async () => {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+      expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
     });
     // Compare the active deployment inside the existing retry loop. Cloudflare
     // may briefly serve the previous version after Wrangler reports success.
-    if (mode === 'readback' && worker === 'workflow-mcp-worker')
+    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker'))
       verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     return observed;
   };
   const observed = !exists ? { mode: "bootstrap" }
-    : mode === "readback" && worker === "workflow-mcp-worker"
+    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker")
       ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });

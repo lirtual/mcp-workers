@@ -77,3 +77,8 @@ test('Email MCP is CI-checked but cannot be selected for production until Spec #
   assert.match(run('refs/heads/main'), /email-mcp-worker/);
   assert.throws(() => run('refs/heads/other'), /Unsupported manual Worker selection/);
 });
+
+test('HTTP MCP is CI-selected',()=>{
+  assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
+  assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
+});
