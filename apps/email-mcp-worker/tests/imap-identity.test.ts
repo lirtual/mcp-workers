@@ -22,6 +22,25 @@ test('generic mailbox credentials and ports reject control characters/insecure c
   assert.throws(() => validateProtocolCredentials({ ...good, smtp_port: 25 as 465 }), /unsupported_mail_port/);
   assert.throws(() => validateProtocolCredentials({ ...good, password: 'abc\nbcc' }), /invalid_mail_credential/);
 });
+test('mail endpoint IPv4 filter rejects IANA reserved ranges without blocking unrelated /16s', async () => {
+  for (const address of [
+    '0.1.2.3', '10.0.0.1', '127.0.0.1', '169.254.1.1',
+    '172.16.0.1', '192.0.0.1', '192.0.2.1', '192.88.99.1',
+    '192.168.1.1', '198.18.0.1', '198.51.100.1', '203.0.113.1',
+    '224.0.0.1', '255.255.255.255',
+  ]) assert.equal(publicIp(address), false, address + ' must be rejected');
+  for (const address of ['1.1.1.1', '8.8.8.8', '192.0.1.1', '198.20.0.1']) {
+    assert.equal(publicIp(address), true, address + ' is not within those reserved ranges');
+  }
+  const documentationDns = (async () => Response.json({
+    Status: 0, Answer: [{ type: 1, data: '192.0.2.44' }],
+  })) as typeof fetch;
+  await assert.rejects(
+    () => resolvePublicMailEndpoint('mail.example.org', documentationDns),
+    /unsafe_mail_host/,
+  );
+});
+
 test('DNS resolution pins only verified public IPs, never the attacker-controlled hostname', async () => {
   const dns = (async (uri: string, init?: RequestInit) => {
     assert.equal(init?.redirect, 'manual', 'Workerd does not support redirect:error');
