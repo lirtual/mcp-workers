@@ -20,9 +20,14 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
-  for(const id of ['flow.loop','flow.child','flow.saga']){
+  for(const id of ['flow.loop','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
+  assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
+  const childDetails=await workflowCapabilities(env,'flow.child');
+  assert.equal(childDetails.availability,'supported_with_grant');
+  assert.match(String(childDetails.description),/approved_children/);
+  assert.match(String(childDetails.description),/non-recursive/);
   assert.equal(catalog.get('flow.branch_join')?.availability,'supported');
   assert.equal(catalog.get('flow.repeat')?.availability,'supported');
   assert.equal(catalog.get('flow.foreach_emit')?.availability,'supported');
@@ -92,7 +97,8 @@ test('advertised skip-tolerant join matches compiler and keeps fail-closed seman
 test('literal repeat discovery is compiler-backed and explicitly bounded',async()=>{
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
-    ['uses','with'],['flow','times','template'],['flow','items','max_items','template'],
+    ['uses','with'],['flow','times','template'],
+    ['flow','workflow_id','version_id','inputs'],['flow','items','max_items','template'],
   ]);
   assert.equal(schema.properties.times.maximum,PLAN_LIMITS.maxRepeat);
   assert.equal(schema.properties.max_items.maximum,PLAN_LIMITS.maxForeachItems);
