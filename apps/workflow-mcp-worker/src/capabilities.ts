@@ -111,6 +111,10 @@ const awaitedChildExample={version:1,name:'Pinned awaited child (illustrative)',
 ]};
 // Both UUIDs above are illustrative only. Actual workflow_validate checks a real
 // active child/version and workflow_publish requires exact approved_children.
+const boundedWait={version:1,name:'Bounded durable delay',steps:[
+  {id:'hold',flow:'wait',duration_seconds:2},
+  {id:'done',uses:'result.emit',needs:['hold'],with:{data:'resumed'}},
+]};
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -237,6 +241,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
+  supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',
   unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
 });
@@ -276,6 +281,11 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['items']},{required:['max_items']},
         ]}},
+        {required:['flow','duration_seconds'],properties:{flow:{const:'wait'}},
+          not:{anyOf:[
+            {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
+            {required:['times']},{required:['items']},{required:['max_items']},{required:['template']},
+          ]}},
         {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['times']},
           {required:['items']},{required:['max_items']},{required:['template']},
@@ -290,7 +300,8 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach','child']},
+        flow:{enum:['repeat','foreach','child','wait']},
+        duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
         workflow_id:{type:'string',format:'uuid'},
         version_id:{type:'string',format:'uuid'},
         inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
@@ -371,6 +382,8 @@ const entries=[
     description:'2-4 ordered emit/read-only MCP steps with at most one source-reviewed literal-input GitHub Task. Each earlier child must succeed before downstream effects; reuse pinned grants, one-shot fences and physical Task proof.'},
   {id:'flow.foreach_github_task',kind:'flow',availability:'supported_with_grant',
    description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
+  {id:'flow.wait',kind:'flow',availability:'supported',
+    description:'Durable relative time delay using Cloudflare step.sleep, 1–300 literal seconds per Step and at most 300 seconds total per Published Plan. Wait retains a Run capacity slot; downstream effects require completion. No external event receiver or Approval Gate.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
@@ -474,6 +487,13 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(branchJoin);
   if(id==='flow.repeat')
     detail.example=await compilingExample(literalRepeat);
+  if(id==='flow.wait'){
+    detail.example=await compilingExample(boundedWait);
+    detail.wait_policy={duration_seconds:{min:1,max:PLAN_LIMITS.maxWaitSeconds,literal_only:true},
+      total_budget_seconds:PLAN_LIMITS.maxWaitSeconds,
+      native_checkpoint:'step.sleep',run_capacity:'held while waiting',
+      signal_events:'unsupported',cancellation:'native instance termination is separately observed'};
+  }
   if(id==='flow.child'){
     detail.example=await compilingExample(awaitedChildExample);
     detail.grant={required:['approved_children'],version:'active_immutable_child_version',
