@@ -65,9 +65,9 @@ function fixture(){
   Record<string,unknown>|undefined;
  return {db,env,stored};
 }
-async function sender(){
+async function sender(claimOverrides:Record<string,unknown>={}){
  const {privateKey,publicKey}=await generateKeyPair('RS256');
- const jwt=await new SignJWT(claims).setProtectedHeader({alg:'RS256'})
+ const jwt=await new SignJWT({...claims,...claimOverrides}).setProtectedHeader({alg:'RS256'})
   .setIssuer('https://token.actions.githubusercontent.com')
   .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
  const send=(env:Env,sequence:number,status:'ready'|'unavailable',data:unknown=value,
@@ -181,4 +181,32 @@ test('cancellation or rotation during physical REST check cannot reveal prior da
  assert.deepEqual(await getSessionRuntimeData(second.env,runId,stepId,key,rotateDuringRead),
   {status:'unavailable',reason:'not_ready'});
  second.db.close();
+});
+
+test('immutable GitHub OIDC owner and approved Windows Action are both mandatory',async()=>{
+ for(const wrong of [
+  {sha:'c'.repeat(40)}, {run_id:'43'}, {run_attempt:'2'},
+  {repository_id:'999'}, {ref:'refs/tags/another'},
+  {workflow_ref:repository+'/.github/workflows/ubuntu.yml@'+ref},
+  {event_name:'push'},
+ ]){
+  const {env,stored,db}=fixture();
+  const {send}=await sender(wrong);
+  assert.equal((await send(env,1,'ready')).status,403);
+  assert.equal(stored(),undefined);
+  db.close();
+ }
+ for(const mutate of [
+  (db:DatabaseSync)=>db.exec("UPDATE session_executions SET state='stopping'"),
+  (db:DatabaseSync)=>db.exec("UPDATE step_attempts SET state='confirmed'"),
+  (db:DatabaseSync)=>db.exec("UPDATE step_attempts SET repository='someone/other'"),
+  (db:DatabaseSync)=>db.exec("UPDATE step_attempts SET owner_run_attempt=2"),
+ ]){
+  const {env,stored,db}=fixture();
+  mutate(db);
+  const {send}=await sender();
+  assert.equal((await send(env,1,'ready')).status,403);
+  assert.equal(stored(),undefined);
+  db.close();
+ }
 });
