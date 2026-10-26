@@ -21,6 +21,8 @@ const claims={repository,repository_id:'123',workflow_ref:repository+'/'+workflo
  ref,sha,run_id:'42',run_attempt:'1',event_name:'workflow_dispatch'};
 const value={device_id:'123456789',verification_code:'AB12CD34'};
 const alternate={device_id:'123456789',verification_code:'CD34EF56'};
+const invite='https://uuyc.163.com/invite/'+'a4'.repeat(16);
+const withInvite={...value,share_url:invite};
 
 function fixture(){
  const db=new DatabaseSync(':memory:');
@@ -88,6 +90,16 @@ test('strict OIDC ingress ignores invalid payload and does not write sensitive d
  assert.equal((await send(env,1,'ready',value,{extra:true})).status,400);
  assert.equal((await send(env,1,'ready',{device_id:'123',verification_code:'AB12CD34'})).status,400);
  assert.equal((await send(env,1,'ready',{device_id:'123456789',verification_code:'12345678'})).status,400);
+ for(const invalid of [
+  'http://uuyc.163.com/invite/'+'a4'.repeat(16),
+  invite+'?next=https://example.com',
+  'https://uuyc.163.com.evil.com/invite/'+'a4'.repeat(16),
+  'https://uuyc.163.com/invite/'+'Z'.repeat(32),
+ ]){
+  assert.equal((await send(env,1,'ready',{...value,share_url:invalid})).status,400);
+ }
+ assert.equal((await send(env,1,'ready',{...value,share_url:null})).status,400);
+ assert.equal((await send(env,1,'ready',{...withInvite,extra:true})).status,400);
  assert.equal((await send(env,1,'ready',value,{key:'other'})).status,400);
  assert.equal((await send(env,0,'ready')).status,400);
  assert.equal((await send(env,1,'ready',value,{attemptId:['11111111-1111-4111-8111-111111111111']})).status,400);
@@ -128,6 +140,26 @@ test('parent Workflow succeeded: signed current Session can renew, rotate and to
  const rotated=await getSessionRuntimeData(env,runId,stepId,key,physicalRunning);
  if(rotated.status==='ready')assert.deepEqual(rotated.data,alternate);
  else assert.fail('current credentials must be readable');
+ db.close();
+});
+
+test('optional UU invite link is encrypted, TTL-gated, backward-compatible and owner-readable',async()=>{
+ const {env,db,stored}=fixture();
+ const {send}=await sender();
+ assert.equal((await send(env,1,'ready',withInvite)).status,200);
+ const encrypted=stored()!;
+ assert.equal(encrypted.ciphertext?.toString().includes(invite),false);
+ const result=await getSessionRuntimeData(env,runId,stepId,key,physicalRunning);
+ assert.equal(result.status,'ready');
+ if(result.status==='ready')assert.deepEqual(result.data,withInvite);
+ assert.equal((await send(env,1,'ready',withInvite)).status,200);
+ assert.equal((await send(env,1,'ready',value)).status,403);
+ assert.deepEqual(await getSessionRuntimeData(env,runId,stepId,key,physicalRunning,
+  ()=>Date.now()+91_000),{status:'unavailable',reason:'expired'});
+ assert.equal((await send(env,2,'ready',value)).status,200);
+ const without=await getSessionRuntimeData(env,runId,stepId,key,physicalRunning);
+ if(without.status==='ready')assert.deepEqual(without.data,value);
+ else assert.fail('legacy reports must still be accepted');
  db.close();
 });
 
