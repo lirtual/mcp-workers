@@ -53,11 +53,10 @@ test('authenticated stateless MCP tools/list advertises the entire intended inve
 test('mail_move accepts native Unicode and spaced folder IDs, but not unsafe paths', () => {
   const valid = ['已删除邮件', '团队 文件夹', 'Archive 2026', 'Boîte de réception'];
   for (const path of valid) assert.equal(folderId.safeParse(path).success, true, path);
-  for (const path of ['', 'folder\\r\\nBcc:evil', 'folder\\u0000name',
-    'folder\\u007f', 'x'.repeat(256)]) {
-    const actual = path.replaceAll('\\r', '\\r').replaceAll('\\n', '\\n')
-      .replaceAll('\\u0000', '\\u0000').replaceAll('\\u007f', '\\u007f');
-    assert.equal(folderId.safeParse(actual).success, false);
+  for (const path of ['', 'folder' + String.fromCharCode(13, 10) + 'Bcc:evil',
+    'folder' + String.fromCharCode(0) + 'name',
+    'folder' + String.fromCharCode(127), 'x'.repeat(256)]) {
+    assert.equal(folderId.safeParse(path).success, false);
   }
 
   // Validate the actual MCP tool registration, not just the schema helper.
@@ -72,6 +71,6 @@ test('mail_move accepts native Unicode and spaced folder IDs, but not unsafe pat
     ...base, folder_id: 'Archive 2026',
   }).success, true);
   assert.equal(registered.inputSchema.safeParse({
-    ...base, folder_id: 'bad\\nfolder',
+    ...base, folder_id: 'bad' + String.fromCharCode(10) + 'folder',
   }).success, false);
 });
