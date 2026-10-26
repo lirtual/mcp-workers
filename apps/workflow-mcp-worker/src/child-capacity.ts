@@ -1,3 +1,5 @@
+import {observeInstance} from './instance-observation.ts';
+
 /**
  * One-Cloudflare-Workflow awaited-child capacity primitive.
  *
@@ -91,4 +93,70 @@ export async function transferAwaitedChildCapacity(
      child.capacity_weight!==1)
     throw Error('child_capacity_transfer_rejected');
   return {childRunId:child.id,alreadyReserved:!inserted[0]?.meta?.changes};
+}
+
+/** Native start for an already-reserved child, never an independent admission.
+ * A failed create() response does not prove the instance is absent. Recover
+ * only by reading the SAME pinned ID; an unavailable lookup never authorizes
+ * another create. This mirrors the existing top-level admission semantics.
+ */
+export async function startReservedAwaitedChild(
+  env:{
+    DB:Pick<D1Database,'prepare'>;
+    WORKFLOW:{
+      create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
+      get(id:string):Promise<{status():Promise<{status:string}>}>;
+    };
+  },args:{parentRunId:string;parentStepId:string;childRunId:string;timestamp:number},
+):Promise<{childRunId:string;start_state:'started'|'start_unknown'|'indeterminate'}>{
+  const {parentRunId,parentStepId,childRunId,timestamp}=args;
+  if(!parentRunId||!parentStepId||!childRunId||!Number.isSafeInteger(timestamp))
+    throw Error('invalid_child_start_request');
+  const row=await env.DB.prepare(`SELECT c.start_state,c.outcome,c.created_at,
+    c.instance_id,c.capacity_weight,p.outcome AS parent_outcome
+    FROM runs c JOIN runs p ON p.id=c.parent_run_id
+    WHERE c.id=? AND c.parent_run_id=? AND c.parent_step_id=?`)
+    .bind(childRunId,parentRunId,parentStepId)
+    .first<{start_state:string;outcome:string;created_at:number;instance_id:string;
+      capacity_weight:number;parent_outcome:string}>();
+  if(!row||row.parent_outcome!=='running'||row.capacity_weight!==1||
+     row.instance_id!==childRunId||
+     !['reserved','start_unknown','started'].includes(row.start_state)||
+     !['queued','running'].includes(row.outcome))
+    throw Error('child_start_not_authorized');
+  const markStarted=async()=>{
+    await env.DB.prepare(`UPDATE runs SET start_state='started',updated_at=?
+      WHERE id=? AND parent_run_id=? AND parent_step_id=?
+      AND start_state IN ('reserved','start_unknown')`)
+      .bind(timestamp,childRunId,parentRunId,parentStepId).run();
+    return {childRunId,start_state:'started' as const};
+  };
+  if(row.start_state==='started')return {childRunId,start_state:'started'};
+  if(row.start_state==='start_unknown'){
+    const observed=await observeInstance(env.WORKFLOW,childRunId);
+    if(observed.kind==='found')return markStarted();
+    if(observed.kind==='unavailable')return {childRunId,start_state:'start_unknown'};
+    // Only a positive native not-found marker allows reuse of the ORIGINAL
+    // instance ID. Do not create a new ID, and never retry stale reservations.
+    if(timestamp-row.created_at>=10*60_000){
+      await env.DB.prepare(`UPDATE runs
+        SET outcome='indeterminate',error_code='start_unconfirmed',updated_at=?
+        WHERE id=? AND start_state='start_unknown' AND outcome='queued'`)
+        .bind(timestamp,childRunId).run();
+      return {childRunId,start_state:'indeterminate'};
+    }
+  }
+  // Reserve/unknown are durable D1 records BEFORE this native create.
+  // Concurrent creates share the same ID; Cloudflare rejects duplicate IDs.
+  try{
+    await env.WORKFLOW.create({id:childRunId,params:{run_id:childRunId}});
+    return markStarted();
+  }catch{
+    await env.DB.prepare(`UPDATE runs SET start_state='start_unknown',updated_at=?
+      WHERE id=? AND start_state='reserved'`)
+      .bind(timestamp,childRunId).run();
+    const observed=await observeInstance(env.WORKFLOW,childRunId);
+    return observed.kind==='found'?markStarted():
+      {childRunId,start_state:'start_unknown'};
+  }
 }
