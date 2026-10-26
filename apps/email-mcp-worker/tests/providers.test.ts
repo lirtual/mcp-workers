@@ -210,6 +210,7 @@ test('Graph reply requires a single confirmed native Reply-To before sending', a
       if (init?.method === 'POST') sent++;
       assert.equal(init?.method, undefined, 'recipient preflight must never send');
       assert.equal(url.origin, 'https://graph.microsoft.com');
+      if (url.pathname === '/v1.0/me/messages/source-id/attachments') return Response.json({ value: [] });
       assert.equal(url.pathname, '/v1.0/me/messages/source-id');
       assert.match(url.search, /replyTo/);
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer graph-token');
@@ -380,6 +381,7 @@ test('Graph mail text falls back to preview without exposing HTML', async () => 
       if (url.pathname === '/v1.0/me/messages')
         return Response.json({ value: [{ id: 'search-only', bodyPreview: 'Plain search preview',
           receivedDateTime: '2026-10-25T00:00:00Z' }] });
+      if (url.pathname === '/v1.0/me/messages/source/attachments') return Response.json({ value: [] });
       assert.equal(url.pathname, '/v1.0/me/messages/source');
       return Response.json({ id: 'source', bodyPreview: 'Safe preview', ...requestedBody });
     }) as typeof fetch;
@@ -396,4 +398,51 @@ test('Graph mail text falls back to preview without exposing HTML', async () => 
     const missing = await getMail(env, account, 'source');
     assert.equal(missing.text, 'Safe preview');
   } finally { globalThis.fetch = previous; }
+});
+
+test('Graph mail_get discovers bounded attachment IDs including inline-only attachments', async () => {
+  const { getMail, attachmentGet } = await import('../src/providers.ts');
+  const env = { MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 24).toString('base64') } as any;
+  const accountId = crypto.randomUUID();
+  const sealed = await encrypt(env, 'account:' + accountId + ':graph', { access_token: 'graph-token' });
+  const account = { account_id: accountId, provider: 'graph', address: 'owner@example.test',
+    status: 'active', credential_ciphertext: sealed.ciphertext, credential_key_id: sealed.keyId,
+    token_expires_at: Math.floor(Date.now() / 1000) + 3600 } as any;
+  const originalFetch = globalThis.fetch;
+  let many = false, metadataCalls = 0;
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      assert.equal(url.origin, 'https://graph.microsoft.com');
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer graph-token');
+      if (url.pathname === '/v1.0/me/messages/msg') {
+        return Response.json({ id: 'msg', bodyPreview: 'Safe message', hasAttachments: false });
+      }
+      if (url.pathname === '/v1.0/me/messages/msg/attachments') {
+        metadataCalls++;
+        assert.equal(url.searchParams.get('$top'), '20');
+        assert.equal(url.searchParams.get('$select'), 'id,name,size,isInline');
+        const value = many ? Array.from({ length: 20 }, (_, i) =>
+          ({ id: 'part-' + i, name: 'item-' + i + '.txt', size: i + 1 })) :
+          [{ id: 'inline-1', name: 'inline.png', size: 3, isInline: true }];
+        return Response.json(many
+          ? { value, '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/messages/msg/attachments?$skip=20' }
+          : { value });
+      }
+      if (url.pathname === '/v1.0/me/messages/msg/attachments/inline-1') {
+        return Response.json({ size: 3, contentBytes: Buffer.from('abc').toString('base64') });
+      }
+      throw new Error('unexpected Graph request ' + url);
+    }) as typeof fetch;
+    const inline = await getMail(env, account, 'msg');
+    assert.deepEqual(inline.attachments, [{ id: 'inline-1', filename: 'inline.png', size: 3 }]);
+    assert.equal(inline.attachments_truncated, false);
+    const bytes = await attachmentGet(env, account, 'msg', inline.attachments[0].id);
+    assert.equal(Buffer.from(bytes.data_base64, 'base64').toString(), 'abc');
+    many = true;
+    const page = await getMail(env, account, 'msg');
+    assert.equal(page.attachments.length, 20);
+    assert.equal(page.attachments_truncated, true);
+    assert.equal(metadataCalls, 2);
+  } finally { globalThis.fetch = originalFetch; }
 });
