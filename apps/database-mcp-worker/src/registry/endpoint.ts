@@ -24,11 +24,22 @@ function publicIPv6(ip: string): boolean {
   let value: string;
   try { value = new URL(`http://[${ip}]/`).hostname.slice(1, -1); }
   catch { return false; }
-  // Only global unicast 2000::/3; exclude documented/special-purpose prefixes.
+  // 2000::/3 is global-unicast space, but includes IANA special-use ranges.
   if (!/^[23][0-9a-f]{0,3}:/.test(value)) return false;
-  return !value.startsWith('2001:db8:') && !value.startsWith('2001::') &&
-    !value.startsWith('2001:0:') && !value.startsWith('2001:10:') &&
-    !value.startsWith('2001:20:');
+  const parts = value.split(':');
+  const first = Number.parseInt(parts[0]!, 16);
+  const second = Number.parseInt(parts[1] || '0', 16);
+  const third = Number.parseInt(parts[2] || '0', 16);
+  // 3fff::/20 is documentation-only; 2002::/16 is 6to4, not a
+  // demonstrably globally reachable direct database endpoint.
+  if ((first === 0x3fff && second < 0x1000) || first === 0x2002) return false;
+  if (first === 0x2001 && (
+    second === 0 || // IETF/Teredo; do not accept special-purpose 2001:0::/32
+    (second === 2 && third === 0) || // 2001:2::/48 benchmarking
+    (second >= 0x10 && second <= 0x2f) || // legacy ORCHID and ORCHIDv2 ranges
+    second === 0xdb8 // 2001:db8::/32 documentation
+  )) return false;
+  return true;
 }
 function publicAddress(ip: string): boolean {
   return isIP(ip) === 4 ? publicIPv4(ip) : isIP(ip) === 6 ? publicIPv6(ip) : false;
