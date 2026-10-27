@@ -46,11 +46,11 @@ misordered policies and failed Access API reads are **release blockers**,
 not an acceptable partial success. Do not print selector email addresses,
 service tokens, or any upstream credentials.
 
-The shared `register-mcp-portal-server.mjs` helper (currently used by
-OpenList and HTTP) checks this invariant **before** Portal attachment.
-Other independently implemented registration scripts must gain an equivalent
-gate before their next onboarding; successful legacy operations are not proof
-that those scripts already include this guard. The guard does **not** add or
+The shared `register-mcp-portal-server.mjs` helper (used by OpenList
+and HTTP) checks this invariant **before** Portal attachment. The existing
+separate registration scripts for Workflow and Email also invoke the same
+read-only verifier before their respective Portal attachment steps. Other
+new registration scripts must adopt this gate before their first onboarding. The guard does **not** add or
 modify policies automatically, because changes to Access grants require a
 separate reviewed authorization. Re-run registration only after the
 missing policies are explicitly configured and the exact gate passes.
