@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { verifyOpenListUpstream } from './openlist-upstream-integrity.mjs';
+import { verifyOpenListUpstream, verifyOpenListPublic } from './openlist-upstream-integrity.mjs';
 
 const VERSION = 'a4b63f6e-3ae6-4bca-9fef-441a89cb1e7d';
 const KV_ID = '298dbc9310f948c796522911d0405379';
@@ -109,7 +109,24 @@ test('rejects invalid credentials and bounded/malformed JSON without leaking res
   }
 });
 
-test('scheduled-only upstream health reuses existing read probe and cannot dispatch writes', async () => {
+test('public health check sends one anonymous GET without any Cloudflare credentials', async () => {
+  const urls = [];
+  assert.equal(await verifyOpenListPublic(async req => {
+    urls.push(req.url);
+    assert.equal(req.method, 'GET');
+    assert.equal(req.headers.has('authorization'), false);
+    return new Response(JSON.stringify(good().publicSettings), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  }), true);
+  assert.deepEqual(urls, ['https://openlist.lirtual.dpdns.org/api/public/settings']);
+  await assert.rejects(verifyOpenListPublic(async () =>
+    new Response(JSON.stringify({ code: 503, message: 'NO_STORAGE' }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })), /openlist_upstream_storage_unavailable/);
+});
+
+test('scheduled-only public health has no secrets, while pre-release checks live KV identity', async () => {
   const { readFile } = await import('node:fs/promises');
   const workflow = await readFile(new URL('../.github/workflows/openlist-acceptance.yml', import.meta.url), 'utf8');
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
@@ -122,12 +139,13 @@ test('scheduled-only upstream health reuses existing read probe and cannot dispa
   for (const required of [
     "github.event_name == 'schedule'",
     "github.ref == 'refs/heads/main'",
-    'run: node scripts/openlist-upstream-integrity.mjs',
-    'run: node scripts/openlist-production-read-smoke.mjs',
+    'run: node scripts/openlist-upstream-integrity.mjs public',
   ]) assert.ok(scheduledJob.includes(required), 'Missing scheduled check: ' + required);
   for (const forbidden of [
-    'OPENLIST_API_TOKEN', 'confirm_disposable_write',
-    'wrangler deploy', 'register-openlist-portal',
+    'environment:', 'secrets.', 'vars.', 'CLOUDFLARE_API_TOKEN',
+    'MCP_ACCESS_TOKEN', 'OPENLIST_API_TOKEN',
+    'confirm_disposable_write', 'wrangler deploy',
+    'register-openlist-portal', 'openlist-production-read-smoke',
   ]) assert.ok(!scheduledJob.includes(forbidden), 'Unexpected scheduled capability: ' + forbidden);
   const gate = release.indexOf('- name: Verify OpenList upstream KV and storage before release');
   const deploy = release.indexOf('- name: Publish exactly selected Worker');
