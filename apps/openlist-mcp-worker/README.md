@@ -46,19 +46,11 @@ Any upstream publishing changes require separate authorization and an
 upstream-approved configuration strategy; this project must not modify or
 privately patch its Fork.
 
-This project's `scripts/openlist-upstream-integrity.mjs` performs read-only
-checks of the actual Cloudflare active deployment, expected KV binding,
-`DB_DRIVER=auto` and public settings endpoint. It fails an OpenList MCP
-release **before publication** on drift. Once the independent scheduled job
-is merged into `main`, GitHub Actions will also attempt an hourly
-**anonymous public storage health check**, without GitHub Environment access
-or any Cloudflare/MCP Secret. The stronger active-version KV identity check
-and authenticated MCP listing remain protected by the explicitly authorized
-manual release process. Public-only monitoring detects observed `NO_STORAGE`
-outages, but cannot detect a wrong KV namespace that still serves a healthy
-public settings endpoint. Monitoring does not prevent independent upstream
-deployments or repair storage; schedule execution and notification delivery
-need verification after merge.
+The manual OpenList MCP release checks the active Cloudflare Worker version,
+existing `KV` namespace identity, `DB_DRIVER=auto`, and public storage status
+immediately before Wrangler publication. Production functionality is verified
+directly through the existing ChatGPT OpenList MCP; no scheduled acceptance
+or automatic storage repair is configured.
 
 ## Exposed tools
 
