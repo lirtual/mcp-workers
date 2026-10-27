@@ -795,6 +795,32 @@ test("HTTP readback tolerates only bounded optional Secret inventory propagation
  assert.deepEqual(result,{version_id:"new-version"});
 });
 
+test("OpenList release retries version propagation but never tolerates unrelated drift", async () => {
+  const source = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
+  assert.match(source, /worker === 'openlist-mcp-worker'\)\)\s*verifyPublishedVersion/);
+  assert.match(source, /worker === "openlist-mcp-worker"\)\s*\? await retryReleaseReadback\(read\)/);
+  const expected = "11111111-1111-4111-8111-111111111111";
+  const previous = {mode:"update",version_id:"00000000-0000-4000-8000-000000000000",
+    deployment_id:"before"};
+  let count=0;
+  const actual=await retryReleaseReadback(async()=>{
+    count++;
+    const observed=count===1
+      ? {version_id:previous.version_id,deployment_id:"before"}
+      : {version_id:expected,deployment_id:"after"};
+    verifyPublishedVersion(previous,observed,expected);
+    return observed;
+  },async()=>{});
+  assert.equal(count,2);
+  assert.equal(actual.version_id,expected);
+  let attempts=0;
+  await assert.rejects(retryReleaseReadback(async()=>{
+    attempts++;
+    throw Error("OpenList upstream KV binding drift");
+  },async()=>{throw Error("unrelated drift must not retry");}),/KV binding drift/);
+  assert.equal(attempts,1);
+});
+
 test('OpenList release readback rejects roots that the runtime cannot accept', () => {
   const secrets = ['MCP_ACCESS_TOKEN','OPENLIST_API_TOKEN'].map(name => ({name}));
   const base = [
