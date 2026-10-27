@@ -2,26 +2,21 @@
 
 ## Implementation status (2026-10-27)
 
-The first six OpenList MCP tools have passed historical production and ChatGPT
-acceptance (see Issue #309 for release evidence). **This does not mean the entire
-18-tool candidate Spec has passed**. This revision registers `openlist_share_get`
-as a seventh, read-only tool in source; its real-upstream and ChatGPT acceptance
-are separate gates. Check the live `openlist_capabilities` result and production
-release records for the actual deployed inventory, which may lag behind source.
-The other 10 candidates remain unregistered and gated. The eighth registered
-operation is a **one-shot, owner-approved, non-general acceptance share** of a
-pinned 50-byte synthetic file. It cannot accept arbitrary paths or passwords,
-uses a hidden 256-bit random password, one-hour expiry and one access, and its
-creation capability sunsets on 2026-11-04. This Worker does not provide a
-general-purpose OpenList API proxy.
+Seven tools are registered in source: the initial six operations plus the
+read-only explicit-ID `openlist_share_get`, which passed real production
+acceptance after the controlled share test recorded in
+[Issue #309](https://github.com/lirtual/mcp-workers/issues/309).
+The one-time `openlist_share_create` used for that test was **retired from
+the Worker, Portal inventory, and manual acceptance entrypoint** after
+successful controlled production testing ([PR #369](https://github.com/lirtual/mcp-workers/pull/369)).
+It must not be callable in future releases. The other eleven candidates
+remain unregistered and gated; this adapter is not a general-purpose OpenList
+API proxy. Verify the deployed inventory separately from this source document.
 
-The existing disposable Koofr E2E folder and tiny synthetic file were
-intentionally retained for human inspection. Cleanup remains outstanding
-and requires separate authorization; never delete them as part of CI.
-Automatic production publication is disabled while the trusted `main` branch
-protection and all conditional release gates are not satisfied. Releases
-must not be enabled merely because CI is green.
-
+The original Koofr disposable E2E folders, synthetic test file, and expired
+share metadata were **not deleted** by this code-only cleanup. Those require
+separate authorization. Automatic production publication remains disabled;
+only the existing manually authorized GitHub Actions production release is used.
 
 An independent, fail-closed MCP adapter to the existing OpenList-Worker using a Cloudflare **Service Binding**. This adapter does not change the upstream deployment, drivers, mounts, UI or public route.
 
@@ -62,31 +57,33 @@ or automatic storage repair is configured.
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
-`openlist_share_create`, `openlist_create_folder` (**eight registered in
-source; actual deployment and Portal availability require separate verification**).
+`openlist_create_folder` (**seven registered tools in source**).
 
-`openlist_share_get` requests one explicit share ID, rejects records with any
-out-of-scope file path, and returns only allowlisted non-secret metadata. It
-never enumerates all shares, creates an arbitrary share, returns a password/raw link, or
-mutates share state. Existing unit and MCP contract tests cover its restricted
-surface. **Real upstream compatibility and ChatGPT Portal discovery remain
-unverified for this candidate**, so no claim of production acceptance is made.
-The remaining 10 candidates are **not registered** pending driver conflict
-behavior, disposable E2E, authenticated client approval, scoped share
-concurrency safety, or finite-lived link verification. Do not infer from an
-admin-equivalent token that physical storage is confined to these roots.
-Any future release requires its own authorized production checks.
+`openlist_share_get` accepts one explicit ID and requires **every** file
+in the share to remain within allowed roots before returning only allowlisted,
+non-secret metadata. It never enumerates all shares, creates a share, exposes
+a password/raw download link, or mutates a share. Both its direct production
+lookup of the controlled synthetic share and the no-secret response contract
+were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/runs/40507586080).
 
-The exceptionally narrow `openlist_share_create` creates **at most one fixed-ID test record** for `/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt`. It first rechecks the exact 50-byte fixture content, fixed root and record absence. It constructs its own share ID, 256-bit random password, one-hour expiration and one-access limit; it never returns the password or any public URL. Duplicate IDs fail without writing, and dispatched-but-unconfirmed outcomes are `unknown` and **must not be retried**. A fixed ID is not an atomic exactly-once guarantee; upstream shared-record concurrency remains an accepted residual risk for this single, time-limited synthetic proof. It rejects further creation after 2026-11-04 and **must not** be treated as approval for general-purpose sharing. The existing manual OpenList acceptance workflow has an additional opt-in one-shot share test; no new workflow, database or scheduler was introduced.
+`openlist_share_create` was enabled only temporarily to create one preapproved
+50-byte synthetic share with a random hidden password, one-hour expiration
+and one access. The live create/get proof succeeded; the tool and temporary
+acceptance code have since been removed. The previously created share record
+may remain expired upstream, but cleanup is out of scope. The eleven remaining
+candidates stay disabled pending real driver/conflict, scope, approval, and
+share-lifecycle safety evidence. Do not infer physical storage confinement from
+the admin-equivalent upstream token. Every future production release requires
+its own authorized checks.
 
 Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. Pagination returns `total` (the **unfiltered upstream** count), `page`, `per_page`, and `has_more` (based on upstream total); after path/scope filtering, `entries.length` may be smaller than the upstream count. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
 
 ## P1 write candidates: upstream overwrite gate (2026-10-27)
 
-The scoped Koofr acceptance mount was reported by the real upstream as a
-WebDAV provider, and the connected ChatGPT OpenList client still confirms
-only the six existing tools are enabled. The retained disposable fixture is
-present; **no collision or mutation test was run during this audit**.
+The scoped Koofr acceptance mount was previously reported by the real upstream as a
+WebDAV provider. Its prior upload/overwrite audit did not run a collision or
+mutation test. That historical audit does not change the current seven-tool
+inventory or the remaining write-operation restrictions.
 
 In OpenList-Worker upstream source at
 [`29b7a8eb`](https://github.com/OpenListTeam/OpenList-Worker/tree/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f),
