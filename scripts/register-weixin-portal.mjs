@@ -9,9 +9,9 @@ async function verifyWeixinAccess(env, transport) {
   const apps = [];
   for (const id of ACCESS_APPS) {
     const res = await transport(new Request('https://api.cloudflare.com/client/v4/accounts/' + env.CLOUDFLARE_ACCOUNT_ID + '/access/apps/' + id, {headers:{authorization:'Bearer ' + env.CLOUDFLARE_API_TOKEN,accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(15000)}));
-    if (!res.ok || res.redirected) throw Error('portal_access_read_unavailable');
+    if (!res.ok || res.redirected) throw Error('portal_access_read_http_'+res.status);
     const body = await res.json();
-    if(body.success!==true || !body.result) throw Error('portal_access_read_unavailable');
+    if(body.success!==true || !body.result) throw Error('portal_access_read_invalid_response');
     apps.push(body.result);
   }
   assert.equal(apps[0].name,'One-MCP','portal_access_identity_drift');
