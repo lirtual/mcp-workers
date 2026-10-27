@@ -108,6 +108,14 @@ test('workerd runs MCP ingress and private Service Binding to an isolated upstre
     const hits = await search.text();
     assert.match(hits,/found\.txt/);
     assert.match(hits,/nested\.txt/);
+    const searchPage = JSON.parse(JSON.parse(hits).result.content[0].text).observed_state;
+    assert.deepEqual(searchPage, {
+      entries: [
+        {name:'found.txt',path:'/Koofr/safe/found.txt',size:7,is_dir:false},
+        {name:'nested.txt',path:'/Koofr/safe/docs/nested.txt',size:2,is_dir:false},
+      ],
+      total:3,page:1,per_page:10,has_more:false,
+    });
     assert.doesNotMatch(hits,/neighbor\.txt|secret\.example/);
     const reject = await invoke(mf,'tools/call',{name:'openlist_list_files',
       arguments:{path:'/Koofr/other',page:1,per_page:10}},portal);
