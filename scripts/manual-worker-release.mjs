@@ -606,10 +606,10 @@ async function cfGet(account, worker, token, endpoint) {
   return document.result;
 }
 
-async function scriptExists(account, worker, token) {
+export async function scriptExists(account, worker, token, transport = fetch) {
   const url = "https://api.cloudflare.com/client/v4/accounts/" +
     encodeURIComponent(account) + "/workers/scripts?per_page=100";
-  const response = await fetch(url, {
+  const response = await transport(url, {
     headers: { Authorization: "Bearer " + token, Accept: "application/json" },
     signal: AbortSignal.timeout(15_000),
   });
@@ -747,6 +747,10 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
+  if (mode === "preflight" && worker === "openlist-mcp-worker") {
+    invariant(await scriptExists(account, "openlist-tsworkers", token),
+      "Required OpenList upstream Worker is not deployed");
+  }
   const read = async () => {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,

@@ -26,6 +26,13 @@ Folder creation first checks a complete bounded parent listing for collisions, t
 
 ## Required read-only verification on a separately authorized production release
 
+A separately authorized first release uses the existing manual Workflow
+`bootstrap` route when `openlist-mcp-worker` is absent. Before staging or
+publishing, OpenList-only read-only Cloudflare inventory checks require the
+**existing** `openlist-tsworkers` Service Binding target to be deployed.
+Missing or incomplete upstream inventory stops the release; no new upstream
+Worker is created, and no test changes any production resource.
+
 The existing release-time `OPENLIST_ALLOWED_ROOTS` validation reuses the
 Worker runtime canonical path parser, including Unicode normalization, reserved
 segments and segment-length rules; invalid roots fail before Wrangler deploy.

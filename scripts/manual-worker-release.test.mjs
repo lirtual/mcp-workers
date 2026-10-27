@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -800,4 +800,44 @@ test('OpenList release readback rejects roots that the runtime cannot accept', (
     assert.throws(() => verifyBindings('openlist-mcp-worker',config(bindings),secrets),
       /OpenList allowed roots|OPENLIST_ALLOWED_ROOTS/);
   }
+});
+
+
+test("OpenList first-release preflight checks existing upstream Worker without any writes", async () => {
+  let requests = 0;
+  const token = "test-cloudflare-token";
+  const transport = async (url, options) => {
+    requests++;
+    assert.equal(new URL(url).pathname,
+      "/client/v4/accounts/" + "a".repeat(32) + "/workers/scripts");
+    assert.equal(options.headers.Authorization,"Bearer "+token);
+    assert.equal(options.headers.Accept,"application/json");
+    assert.equal(options.method,undefined);
+    return Response.json({success:true,result:[
+      {id:"openlist-tsworkers"}, {id:"another-mcp-worker"},
+    ],result_info:{total_count:2}});
+  };
+  assert.equal(await scriptExists("a".repeat(32),"openlist-tsworkers",token,transport),true);
+  assert.equal(await scriptExists("a".repeat(32),"openlist-mcp-worker",token,transport),false);
+  assert.equal(requests,2);
+  const source = await import("node:fs/promises").then(fs =>
+    fs.readFile(new URL("./manual-worker-release.mjs",import.meta.url),"utf8"));
+  assert.match(source,/mode === "preflight" && worker === "openlist-mcp-worker"/);
+  assert.match(source,/scriptExists\(account, "openlist-tsworkers", token\)/);
+  assert.match(source,/Required OpenList upstream Worker is not deployed/);
+});
+
+test("upstream existence check fails on incomplete or unavailable inventory", async () => {
+  const account="a".repeat(32);
+  const missing=async () => Response.json({success:true,result:[],
+    result_info:{total_count:0}});
+  assert.equal(await scriptExists(account,"openlist-tsworkers","token",missing),false);
+  const incomplete=async () => Response.json({success:true,result:[
+    {id:"openlist-tsworkers"},
+  ],result_info:{total_count:4}});
+  await assert.rejects(scriptExists(account,"openlist-tsworkers","token",incomplete),
+    /inventory incomplete/);
+  const unavailable=async () => Response.json({success:false,result:null},{status:403});
+  await assert.rejects(scriptExists(account,"openlist-tsworkers","token",unavailable),
+    /inventory HTTP 403/);
 });
