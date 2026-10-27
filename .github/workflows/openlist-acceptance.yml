@@ -10,11 +10,6 @@ on:
         required: true
         type: boolean
         default: false
-      confirm_one_shot_share:
-        description: One owner-approved synthetic, password-protected share only; no other file or Portal changes
-        required: false
-        type: boolean
-        default: false
       confirm_portal_registration:
         description: Separately approve registering existing OpenList MCP in One-MCP (no Worker release)
         required: false
@@ -27,7 +22,7 @@ permissions:
 jobs:
   driver-e2e:
     name: Live OpenList MCP / Koofr driver E2E (no deploy)
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true && inputs.confirm_one_shot_share != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true }}
     runs-on: ubuntu-latest
     environment:
       name: openlist-mcp-worker
@@ -62,7 +57,7 @@ jobs:
 
   portal-checks:
     name: Required checks before OpenList Portal registration
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_portal_registration == true && inputs.confirm_disposable_write != true && inputs.confirm_one_shot_share != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_portal_registration == true && inputs.confirm_disposable_write != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: openlist-mcp-worker
@@ -75,7 +70,6 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.confirm_portal_registration == true &&
           inputs.confirm_disposable_write != true &&
-          inputs.confirm_one_shot_share != true &&
           needs.portal-checks.result == 'success' &&
           needs.portal-checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
@@ -117,52 +111,3 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-openlist-portal.mjs
-
-  share-checks:
-    name: Existing CI before one-shot OpenList share acceptance
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_one_shot_share == true && inputs.confirm_disposable_write != true && inputs.confirm_portal_registration != true }}
-    uses: ./.github/workflows/ci.yml
-    with:
-      worker: openlist-mcp-worker
-
-  share-accept:
-    name: Single synthetic share create/get via production MCP (no deploy)
-    needs: share-checks
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main' &&
-          inputs.confirm_one_shot_share == true &&
-          inputs.confirm_disposable_write != true &&
-          inputs.confirm_portal_registration != true &&
-          needs.share-checks.result == 'success' &&
-          needs.share-checks.outputs.release_ready == 'true' }}
-    runs-on: ubuntu-latest
-    environment:
-      name: openlist-mcp-worker
-    timeout-minutes: 8
-    concurrency:
-      group: worker-release-openlist-mcp-worker
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Verify unchanged trusted main and share test contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
-          node --check scripts/openlist-share-acceptance.mjs
-          node --test scripts/openlist-share-acceptance.test.mjs
-      - name: Create one predefined short-lived share and query sanitized metadata
-        shell: bash
-        env:
-          OPENLIST_SHARE_ACCEPTANCE_APPROVED: ${{ inputs.confirm_one_shot_share }}
-          OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
-          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
-        run: node scripts/openlist-share-acceptance.mjs
