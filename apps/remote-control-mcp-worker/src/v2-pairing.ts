@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { presentWindowsUpgrade, confirmWindowsUpgrade } from "./upgrade-approval.ts";
+import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -668,6 +668,57 @@ export class V2OwnerCoordinator {
       try { return await this.readFile(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
+    // The only route that can create an owner upgrade intent. The public MCP
+    // layer must supply a SERVER-PINNED target, never caller-provided commit/
+    // hash/URL. A live signed WSS epoch is mandatory even to prepare.
+    if (path === "/upgrade/prepare") {
+      try {
+        const input = await limitedJson(request, 2048) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).sort().join("|") !== "device_id|operation_id|target" ||
+            typeof input.device_id !== "string" ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.device_id) ||
+            typeof input.operation_id !== "string" ||
+            !/^(?!\\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(input.operation_id) ||
+            !input.target || typeof input.target !== "object" ||
+            Array.isArray(input.target)) {
+          return Response.json({error:"invalid_request"},{status:400});
+        }
+        const id = input.device_id;
+        const target = input.target as Record<string, unknown>;
+        if (Object.keys(target).sort().join("|") !== "commit|tag|windows_asset_sha256" ||
+            typeof target.tag !== "string" ||
+            typeof target.commit !== "string" ||
+            typeof target.windows_asset_sha256 !== "string") {
+          return Response.json({error:"invalid_request"},{status:400});
+        }
+        const epoch = await this.state.storage.get<string>("session:epoch:" + id);
+        const now = Date.now();
+        if (!epoch) return Response.json({error:"offline"},{status:503});
+        let authenticated = false;
+        for (const socket of this.state.getWebSockets("device:" + id)) {
+          try {
+            const attached = socket.deserializeAttachment() as {
+              device_id?:unknown; epoch?:unknown; last_auth_check_at?:unknown;
+            } | null;
+            const last = attached?.last_auth_check_at;
+            if (socket.readyState === WebSocket.OPEN && attached?.device_id === id &&
+                attached.epoch === epoch && typeof last === "number" &&
+                last <= now && now - last < 16 * 60_000) {
+              authenticated = true; break;
+            }
+          } catch { /* malformed WSS incarnation cannot prepare an upgrade */ }
+        }
+        if (!authenticated) return Response.json({error:"offline"},{status:503});
+        const result = await prepareWindowsUpgrade(this.state.storage,
+          input.operation_id, id, target as unknown as ReviewedUpgradePin, now);
+        return Response.json(result, {status:result.status === "prepared" ? 200 : 409,
+          headers:{"cache-control":"no-store"}});
+      } catch {
+        return Response.json({error:"unavailable"},{status:503});
+      }
+    }
+
     // Internal-only routes; the public Worker MUST validate signed Access
     // owner identity, host, Origin and CSRF before forwarding either call.
     // Neither route dispatches an Agent operation or changes a Windows Task.
