@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, markWindowsUpgradeCompleted, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -708,10 +708,54 @@ export class V2OwnerCoordinator {
         if (!record || record.preview.device_id !== input.device_id) {
           return Response.json({error:"not_found"},{status:404});
         }
+        let status = record.state;
+        // A signed WSS receipt from a new runtime, not an old ACK or
+        // persisted device version alone, is required for final completion.
+        if (status === "claimed" || status === "needs_attention") {
+          const device = await this.state.storage.get<V2Device>("device:"+input.device_id);
+          const epoch = await this.state.storage.get<string>("session:epoch:"+input.device_id);
+          let reported = false;
+          if (device && epoch && device.fingerprint === record.preview.fingerprint &&
+              device.device_info?.agent_version === record.preview.target.tag) {
+            for (const ws of this.state.getWebSockets("device:"+input.device_id)) {
+              try {
+                const a = ws.deserializeAttachment() as {device_id?:unknown;
+                  epoch?:unknown;device_info_reported?:unknown} | null;
+                if (ws.readyState === WebSocket.OPEN && a?.device_id === input.device_id &&
+                    a.epoch === epoch && a.device_info_reported === true) {
+                  reported = true; break;
+                }
+              } catch { /* An unreported or stale socket never verifies completion. */ }
+            }
+          }
+          if (reported) {
+            try {
+              const result = await this.readFile(new Request("https://v2.internal/operation",{
+                method:"POST",headers:{"content-type":"application/json"},
+                body:JSON.stringify({
+                  device_id:input.device_id,tool:"get_operation_status",
+                  operation_id:input.operation_id,
+                  arguments:{operation_id:input.operation_id},
+                }),
+              }),true);
+              if (result.ok) {
+                const answer=await result.json() as {
+                  status?:unknown;receipt?:{tool_name?:unknown;state?:unknown;operation_id?:unknown};
+                };
+                if (answer.status === "completed" &&
+                    answer.receipt?.operation_id === input.operation_id &&
+                    answer.receipt.tool_name === "upgrade_agent" &&
+                    answer.receipt.state === "completed" &&
+                    await markWindowsUpgradeCompleted(this.state.storage,
+                      input.operation_id,input.device_id)) status = "completed";
+              }
+            } catch { /* Uncertain upgrade remains guarded and queryable. */ }
+          }
+        }
         return Response.json({
           operation_id:record.preview.operation_id,
           device_id:record.preview.device_id,
-          status:record.state,
+          status,
           target_version:record.preview.target.tag,
         },{headers:{"cache-control":"no-store"}});
       } catch {
