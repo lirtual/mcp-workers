@@ -110,16 +110,6 @@ jobs:
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      # OpenList upstream's reviewed Wrangler config comments out the KV
-      # binding. A past upstream Wrangler deploy removed the live binding.
-      # Detect drift in the active Cloudflare version; do not modify the Fork.
-      - name: Verify OpenList upstream KV and storage before release
-        if: inputs.worker == 'openlist-mcp-worker'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/openlist-upstream-integrity.mjs
-
       - name: Cloudflare release preflight (read-only)
         id: preflight
         env:
@@ -322,6 +312,16 @@ jobs:
           (cd apps/workflow-mcp-worker &&
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
             node scripts/manual-worker-release.mjs code-release-check workflow-mcp-worker
+
+      # OpenList upstream's reviewed Wrangler config comments out the KV
+      # binding. A past upstream Wrangler deploy removed the live binding.
+      # Detect drift in the active Cloudflare version; do not modify the Fork.
+      - name: Verify OpenList upstream KV and storage before release
+        if: inputs.worker == 'openlist-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/openlist-upstream-integrity.mjs
 
       - name: Publish exactly selected Worker
         id: publish
