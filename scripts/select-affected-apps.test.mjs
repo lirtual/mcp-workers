@@ -64,7 +64,7 @@ test('Workflow MCP Workflow is CI-checked and may only be manually released from
   assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
 });
 
-test('Email MCP is CI-checked but cannot be selected for production until Spec #279 acceptance', async () => {
+test('Email MCP is CI-checked and only manually releasable from main', async () => {
   assert.deepEqual(selectAffectedApps(['apps/email-mcp-worker/src/index.ts']), ['email-mcp-worker']);
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('email-mcp-worker'));
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
