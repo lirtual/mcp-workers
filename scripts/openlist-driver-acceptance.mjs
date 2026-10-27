@@ -101,7 +101,7 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
   // Retained prior disposable runs are allowed, but ordinary user files,
   // incomplete pagination, forged children, and a reused run ID all block writes.
   // Nothing under an existing fixture is read, modified, or deleted.
-  const fixtureName = /^mcp-spec309-e2e-\\d{5,18}-[1-9]\\d{0,2}$/;
+  const fixtureName = /^mcp-spec309-e2e-\d{5,18}-[1-9]\d{0,2}$/;
   check(initial && Number.isSafeInteger(initial.total) && initial.total >= 0 &&
     initial.total <= 100 && Array.isArray(initial.entries) &&
     initial.entries.length === initial.total &&
