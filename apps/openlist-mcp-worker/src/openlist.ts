@@ -255,6 +255,65 @@ export class OpenListApi {
     }
     return result;
   }
+  // Single owner-authorized production acceptance fixture, NOT general share creation.
+  // The fixed identity prevents creating multiple shares, but is not an atomic lock.
+  async createAcceptanceShare(): Promise<OperationResult> {
+    const id = 'mcp_spec309_40493124967_1';
+    const target = '/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt';
+    const expectedText = 'OpenList MCP Spec309 disposable E2E 40493124967-1\n';
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      if (Date.now() >= Date.parse('2026-11-04T00:00:00Z') ||
+          this.config.roots.length !== 1 || this.config.roots[0] !== '/Koofr/Downloads')
+        throw new OpenListError('NOT_SUPPORTED');
+      this.check(target, true);
+      const meta = await this.get(target);
+      if (meta.path !== target || meta.is_dir !== false ||
+          meta.size !== new TextEncoder().encode(expectedText).byteLength)
+        throw new OpenListError('NOT_SUPPORTED');
+      const content = await this.readText(target);
+      if (content.path !== target || content.text !== expectedText)
+        throw new OpenListError('NOT_SUPPORTED');
+      try {
+        await this.getShare(id);
+        throw new OpenListError('CONFLICT');
+      } catch (e) {
+        if (!(e instanceof OpenListError) || e.code !== 'NOT_FOUND') throw e;
+      }
+      // Exact preapproved target, no caller-controlled file/ID/creator/expiry.
+      // Password is generated but NEVER returned, logged, or exposed by this MCP.
+      const pwd = Array.from(crypto.getRandomValues(new Uint8Array(32)),
+        v => v.toString(16).padStart(2, '0')).join('');
+      const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      dispatched = true;
+      const created = (await this.request('POST', '/api/share/create',
+        { id, files: [target], pwd, expires, max_accessed: 1, disabled: false },
+        undefined, true)).data;
+      if (!isObject(created) || created.id !== id || created.pwd !== pwd ||
+          !Array.isArray(created.files) || created.files.length !== 1 ||
+          created.files[0] !== target || created.expires !== expires ||
+          created.max_accessed !== 1 || created.disabled !== false)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      const verified = await this.getShare(id);
+      if (verified.id !== id || verified.disabled !== false ||
+          verified.expires !== expires || verified.max_accessed !== 1 ||
+          !Array.isArray(verified.files) ||
+          verified.files.length !== 1 || verified.files[0] !== target)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_create', status: 'succeeded', code: 'OK',
+        message: 'Single password-protected, expiring synthetic share verified; do not retry.',
+        request_id, target: id, observed_state: verified };
+    } catch (error) {
+      const code = error instanceof OpenListError ? error.code :
+        dispatched ? 'UPSTREAM_UNCERTAIN' : 'UPSTREAM_UNAVAILABLE';
+      return { operation: 'openlist_share_create',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' : code,
+        message: dispatched ? 'Mutation dispatched; outcome uncertain. Never retry.' :
+          'No share mutation dispatched.', request_id, target: id };
+    }
+  }
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);
     const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;
