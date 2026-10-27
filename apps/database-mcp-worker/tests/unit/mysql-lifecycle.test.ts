@@ -16,14 +16,13 @@ import { mysqlHealthCheck } from '../../src/db/mysql.js';
 const connection: EffectiveConnection = {
   config: {
     id: 'test-mysql',
-    transport: 'hyperdrive',
-    dialect: 'mysql',
-    binding: 'READ_DB',
+    transport: 'direct',
+    url: 'mysql://reader:redacted@db.example.test/test'
   },
-  transport: 'hyperdrive',
+  transport: 'direct',
   dialect: 'mysql',
   connectionString: 'mysql://redacted',
-  host: '127.0.0.1',
+  host: 'db.example.test',
   user: 'reader',
   password: 'redacted',
   database: 'test',
