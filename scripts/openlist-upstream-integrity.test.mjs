@@ -151,4 +151,6 @@ test('scheduled-only public health has no secrets, while pre-release checks live
   const deploy = release.indexOf('- name: Publish exactly selected Worker');
   assert.ok(gate > 0 && deploy > gate, 'Upstream check must precede publication');
   assert.ok(release.slice(gate, deploy).includes('run: node scripts/openlist-upstream-integrity.mjs'));
+  assert.equal(release.slice(0, deploy).lastIndexOf('      - name: '), gate - 6,
+    'Upstream KV check must be the final step before Wrangler publication');
 });
