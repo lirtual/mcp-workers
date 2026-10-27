@@ -73,15 +73,27 @@ test('mkdir rejects the configured root and malformed child before dispatch', as
   assert.equal(calls, 0);
 });
 
-test('search filters out-of-scope results even when backend misbehaves', async () => {
-  const api = new OpenListApi(createConfig(env(async () => ok({
-    content: [
-      { name: 'inside.txt', path: '/drive/safe/inside.txt', size: 4, is_dir: false },
-      { name: 'secret.txt', path: '/drive/another/secret.txt', raw_url: 'token' },
-    ], total: 2,
-  }))));
+test('search follows actual upstream parent + name schema and filters malicious ancestors', async () => {
+  const api = new OpenListApi(createConfig(env(async request => {
+    assert.equal(new URL(request.url).pathname, '/api/fs/search');
+    assert.deepEqual(await request.json(), {
+      parent: '/drive/safe', keywords: 'txt', scope: 0, page: 1, per_page: 10,
+    });
+    return ok({content: [
+      { name: 'inside.txt', parent: '/drive/safe', size: 4, is_dir: false, raw_url:'https://secret.example/token' },
+      { name: 'nested.txt', parent: '/drive/safe/docs', size: 5, is_dir: false },
+      { name: 'secret.txt', parent: '/drive/another', raw_url: 'secret' },
+      { name: 'neighbor.txt', parent: '/drive/safe2' },
+      { name: '../bypass.txt', parent: '/drive/safe' },
+      { name: 'forged.txt', parent: '/drive/safe', path: '/drive/elsewhere/forged.txt' },
+      { name: 'missingparent.txt' },
+    ], total: 7});
+  })));
   const result = await api.search('/drive/safe', 'txt', 1, 10);
-  assert.deepEqual(result.entries, [{ name: 'inside.txt', path: '/drive/safe/inside.txt', size: 4, is_dir: false }]);
+  assert.deepEqual(result.entries, [
+    { name: 'inside.txt', path: '/drive/safe/inside.txt', size: 4, is_dir: false },
+    { name: 'nested.txt', path: '/drive/safe/docs/nested.txt', size: 5, is_dir: false },
+  ]);
 });
 
 test('upstream 501 and 400 are classified, while transport timeout after write remains unknown', async () => {
@@ -186,4 +198,15 @@ test('mkdir post-write failed readback is unknown and never retries', async () =
   assert.equal(result.status,'unknown');
   assert.equal(calls,3);
   assert.doesNotMatch(JSON.stringify(result),/secret data/);
+});
+
+test('readText does not report a truncated upstream 200 body as a successful file read', async () => {
+  const api = new OpenListApi(createConfig(env(async request => {
+    if (new URL(request.url).pathname === '/api/fs/get') {
+      return ok({name:'notes.txt',is_dir:false,size:11,sign:'abc'});
+    }
+    return new Response('short', {headers:{'content-type':'text/plain'}});
+  })));
+  await assert.rejects(api.readText('/drive/safe/notes.txt'),
+    (e: unknown) => e instanceof OpenListError && e.code === 'UPSTREAM_UNAVAILABLE');
 });

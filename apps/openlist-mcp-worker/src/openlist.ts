@@ -187,12 +187,23 @@ export class OpenListApi {
       throw new OpenListError('LIMIT_EXCEEDED');
     const { content } = collectEntries((await this.request('POST', '/api/fs/search',
       { parent: dir, keywords, scope: 0, page, per_page: perPage })).data);
-    // Unknown or out-of-root hits are NOT published: upstream search scope may be broader.
-    return { entries: content.map(item => {
-      try { return safeMetadata(item); } catch { return null; }
-    }).filter((entry): entry is Record<string, unknown> =>
-      entry !== null && typeof entry.name === 'string' &&
-      typeof entry.path === 'string' && entry.path.startsWith(dir + '/')) };
+    // Upstream SearchResultItem contains `parent` + `name`, not `path`.
+    // Derive the canonical child path ourselves; never trust caller-supplied paths.
+    const entries: Record<string, unknown>[] = [];
+    for (const item of content) {
+      try {
+        if (!isObject(item)) continue;
+        const actualParent = canonicalPath(item.parent);
+        const name = canonicalName(item.name);
+        const child = canonicalPath(actualParent + '/' + name);
+        if (!child.startsWith(dir + '/') || !inScope(child, this.config.roots))
+          continue;
+        // If a provider also supplies path, refuse a conflicting identity.
+        if (item.path !== undefined && item.path !== child) continue;
+        entries.push(safeMetadata({ ...item, path: child }));
+      } catch { /* untrusted or out-of-scope upstream result */ }
+    }
+    return { entries };
   }
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);
@@ -222,6 +233,10 @@ export class OpenListApi {
       'application/xml','text/xml','application/yaml','text/yaml'].includes(contentType))
       throw new OpenListError('NOT_SUPPORTED');
     const bytes = await limitedBody(response, MAX_TEXT_BYTES);
+    // A valid 200 can still be a partial upstream body. Never report it as a
+    // complete text read without matching the independently returned file size.
+    if (bytes.byteLength !== meta.size)
+      throw new OpenListError('UPSTREAM_UNAVAILABLE');
     let text: string;
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
     catch { throw new OpenListError('NOT_SUPPORTED'); }

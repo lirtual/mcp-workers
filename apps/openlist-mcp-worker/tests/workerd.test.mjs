@@ -11,12 +11,24 @@ const upstream = `
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    if (url.host !== 'openlist.internal' || url.pathname !== '/api/fs/list' ||
+    if (url.host !== 'openlist.internal' ||
+        !['/api/fs/list','/api/fs/search'].includes(url.pathname) ||
         request.method !== 'POST' || request.headers.get('authorization') !== 'synthetic-openlist-admin' ||
         request.headers.has('cookie')) {
       return Response.json({code:403,message:'wrong service binding request',data:null},{status:403});
     }
     const body = await request.json();
+    if (url.pathname === '/api/fs/search') {
+      if (body.parent !== '/Koofr/safe' || body.keywords !== 'txt' ||
+          body.page !== 1 || body.per_page !== 10)
+        return Response.json({code:400,message:'bad search scope',data:null},{status:400});
+      return Response.json({code:200,message:'success',data:{total:3,content:[
+        {parent:'/Koofr/safe',name:'found.txt',size:7,is_dir:false,
+          raw_url:'https://secret.example/signature'},
+        {parent:'/Koofr/safe/docs',name:'nested.txt',size:2,is_dir:false},
+        {parent:'/Koofr/safe2',name:'neighbor.txt',size:999}
+      ]}});
+    }
     if (body.path !== '/Koofr/safe' || body.page !== 1 || body.per_page !== 10) {
       return Response.json({code:400,message:'bad scope',data:null},{status:400});
     }
@@ -70,6 +82,13 @@ test('workerd runs MCP ingress and private Service Binding to an isolated upstre
     const body = await call.text();
     assert.match(body,/notes\.txt/);
     assert.doesNotMatch(body,/provider\.example|forbidden/);
+    const search = await invoke(mf,'tools/call',{name:'openlist_search_files',
+      arguments:{parent:'/Koofr/safe',keywords:'txt',page:1,per_page:10}},portal);
+    assert.equal(search.status,200);
+    const hits = await search.text();
+    assert.match(hits,/found\.txt/);
+    assert.match(hits,/nested\.txt/);
+    assert.doesNotMatch(hits,/neighbor\.txt|secret\.example/);
     const reject = await invoke(mf,'tools/call',{name:'openlist_list_files',
       arguments:{path:'/Koofr/other',page:1,per_page:10}},portal);
     assert.equal(reject.status,200);
