@@ -50,7 +50,19 @@ test('never accepts a renamed/replaced Portal or incomplete inventory',()=>{
     assert.throws(()=>buildPortalUpdate(p),/portal_/);
   }
 });
-function fake(expectedToken=env.MCP_ACCESS_TOKEN){
+function accessApplications(name, withPolicies=true){
+  const policies=()=>[
+    {id:'11111111-1111-4111-8111-111111111111',name:'WORKFLOWS',
+      decision:'non_identity',precedence:1,reusable:true,
+      include:[{service_token:{token_id:'fixture'}}]},
+    {id:'22222222-2222-4222-8222-222222222222',name:'Default Allow Rule',
+      decision:'allow',precedence:2,reusable:true,
+      include:[{email:{email:'fixture@example.invalid'}}]},
+  ];
+  return [{name:'One-MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies:policies()},
+    {name, type:'mcp',policies:withPolicies?policies():[]}];
+}
+function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true){
   let current=portal();
   let upstream;
   const requests=[];
@@ -59,6 +71,12 @@ function fake(expectedToken=env.MCP_ACCESS_TOKEN){
   const send=async request=>{
     const tail=new URL(request.url).pathname.split('/access/ai-controls/mcp')[1];
     requests.push({method:request.method,tail});
+    if(request.method==='GET' &&
+       new URL(request.url).pathname.endsWith('/access/apps'))
+      return Response.json({success:true,
+        result:accessApplications('Workflow',withPolicies),
+        result_info:{total_pages:1}});
+
     if(request.method==='GET'&&tail==='/portals/one-mcp')return res(200,current);
     if(request.method==='GET'&&tail==='/servers')
       return res(200,[...oldServers.map(id=>({id})),...(upstream?[upstream]:[])]);
@@ -123,5 +141,14 @@ test('denied Cloudflare access fails closed without changing Portal',async()=>{
   const api=fake();
   await assert.rejects(attachWorkflowPortal(env,async request=>
     new Response('blocked',{status:403})),/portal_get_http_403/);
+  assert.equal(api.getPortal().servers.length,9);
+});
+
+test('Workflow Portal attachment fails before PUT when Access policies are missing',async()=>{
+  const api=fake(env.MCP_ACCESS_TOKEN,false);
+  await assert.rejects(
+    ()=>attachWorkflowPortal(env,api.send),
+    /portal_access_policy_missing/);
+  assert.equal(api.requests.filter(x=>x.method==='PUT').length,0);
   assert.equal(api.getPortal().servers.length,9);
 });
