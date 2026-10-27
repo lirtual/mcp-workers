@@ -44,8 +44,8 @@ const key = (operationId: string) => "upgrade:operation:" + operationId;
 const lock = (deviceId: string) => "upgrade:device:" + deviceId;
 
 /** The installed Windows Scheduled Task switch compares base major/minor/patch,
- * rejecting same-base prerelease replacements as well as downgrades. */
-function newerWindowsVersion(target: string, current: string): boolean {
+ * rejecting same-base prerelease replacements as well as downgrades.\n * Linux stable versions also advance by this identical numeric base order. */
+function newerBaseVersion(target: string, current: string): boolean {
   const parse = (version: string) => {
     if (version.length > 64 || !RELEASE.test(version)) return null;
     const groups = /^v([0-9]+)\.([0-9]+)\.([0-9]+)/.exec(version);
@@ -68,7 +68,7 @@ function validTarget(pin: ReviewedUpgradePin, current: string): boolean {
     return "windows_asset_sha256" in pin &&
       typeof pin.windows_asset_sha256==="string" &&
       SHA.test(pin.windows_asset_sha256) &&
-      newerWindowsVersion(pin.tag,current);
+      newerBaseVersion(pin.tag,current);
   }
   if(keys!=="commit|linux_arch|linux_asset_sha256|tag"||
      !("linux_asset_sha256" in pin)||
@@ -77,7 +77,7 @@ function validTarget(pin: ReviewedUpgradePin, current: string): boolean {
      !("linux_arch" in pin)||
      !["x64","arm64"].includes(pin.linux_arch as string)||
      !STABLE.test(pin.tag)||!STABLE.test(current))return false;
-  return newerWindowsVersion(pin.tag,current);
+  return newerBaseVersion(pin.tag,current);
 }
 function secret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
