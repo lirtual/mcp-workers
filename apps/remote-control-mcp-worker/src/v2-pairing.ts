@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain, markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted, readOwnerUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, cancelPreparedOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain, markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted, readOwnerUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import {inspectReviewedLinuxUpgradeAsset,type ReviewedLinuxUpgradePin} from "./linux-upgrade-pin.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
@@ -853,7 +853,7 @@ export class V2OwnerCoordinator {
     // Internal-only routes; the public Worker MUST validate signed Access
     // owner identity, host, Origin and CSRF before forwarding either call.
     // Neither route dispatches an Agent operation or changes a Windows Task.
-    if (path === "/upgrade/preview" || path === "/upgrade/confirm") {
+    if (path === "/upgrade/preview" || path === "/upgrade/confirm" || path === "/upgrade/cancel") {
       try {
         const body = await limitedJson(request, 2048) as Record<string, unknown>;
         if (!body || typeof body !== "object" || Array.isArray(body) ||
@@ -870,6 +870,12 @@ export class V2OwnerCoordinator {
           return result
             ? Response.json(result, { headers: { "cache-control": "no-store" } })
             : Response.json({ error: "not_found" }, { status: 404 });
+        }
+        if (path === "/upgrade/cancel") {
+          const cancelled = await cancelPreparedOwnerUpgrade(this.state.storage,
+            body.operation_id, body.confirmation, body.form_token as string);
+          return Response.json({cancelled},{status:cancelled?200:409,
+            headers:{"cache-control":"no-store"}});
         }
         const approved = await confirmOwnerUpgrade(this.state.storage,
           body.operation_id, body.confirmation, body.form_token as string);
