@@ -136,12 +136,16 @@ One-MCP, or enable any unregistered tools. It only runs from the current
 `main` with `confirm_disposable_write=true` and environment
 `openlist-mcp-worker` using existing scoped credentials.
 
-Acceptance is intentionally constrained to the exact single configured
-`/Koofr/Downloads` root **when it is empty**. If configuration differs or
-any entry exists, it fails *before writing*. Each authorized execution uses a
-fresh `mcp-spec309-e2e-<run-id>-<attempt>` subfolder created through the
-**deployed** `openlist_create_folder` tool, verifies its metadata and
-emptiness, then creates **one** small synthetic text file through the reviewed
+Acceptance is constrained to the exact single configured
+`/Koofr/Downloads` root. Its bounded first-page listing must be complete
+(`total === entries.length <= 100`) and contain **only directories named
+`mcp-spec309-e2e-<run-id>-<attempt>` from previous disposable runs**;
+ordinary user files, other directories, malformed entries, duplicates,
+missing pages and a reused current run name all stop *before writing*.
+Retained artifacts are never read, modified or deleted. Each separately
+authorized execution creates a fresh unique subfolder through the **deployed**
+`openlist_create_folder` tool, verifies its metadata and emptiness, then
+creates **one** small synthetic text file through the reviewed
 upstream `/api/fs/put` endpoint using the separately scoped admin-equivalent
 environment Secret. This upstream upload is only disposable test data setup:
 it is **not** evidence that the gated public `openlist_upload_small` MCP
