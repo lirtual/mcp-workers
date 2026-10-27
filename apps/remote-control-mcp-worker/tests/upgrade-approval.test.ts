@@ -110,6 +110,7 @@ test("same operation ID never reveals original secret; concurrent preparations n
 test("permanent Windows only, known target only, no wrong-device or arbitrary input", async () => {
   for (const changes of [
     { grant_type: "temporary" }, { revoked: true },
+    { device_info: { os: "windows", arch: "x64", environment:"native", agent_version:"v0.1.31-rc.1" } },
     { device_info: { os: "linux", arch: "x64", environment: "wsl2", agent_version: "v0.1.31-rc.1" } },
     { device_info: { os: "windows", arch: "arm64", environment: "native", agent_version: "v0.1.31-rc.1" } },
     { fingerprint: "wrong" },
