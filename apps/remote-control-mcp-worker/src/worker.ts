@@ -309,6 +309,24 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
   if (!operationId) return toolError(id, "A valid operation_id is required.");
   const owner = pendingOwner(env);
   if (!owner) return toolError(id, "The requested v2 device is unavailable.");
+  // Owner-upgrade status comes from the durable approval record, not an
+  // unavailable WSS after Task restart. Ordinary operation status falls back
+  // to its existing Agent receipt query without changing the tool contract.
+  if (parsed.tool === "get_operation_status") {
+    try {
+      const upgrade = await owner.fetch("https://v2.internal/upgrade/status", {
+        method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({device_id,operation_id:operationId}),
+      });
+      if (upgrade.ok) {
+        const body = await upgrade.json() as Record<string,unknown>;
+        if (body.operation_id === operationId && body.device_id === device_id &&
+            typeof body.status === "string") {
+          return toolText(id,JSON.stringify(body));
+        }
+      }
+    } catch { /* Ordinary device receipt status remains available. */ }
+  }
   try {
     const response = await owner.fetch("https://v2.internal/operation", {
       method: "POST", headers: { "content-type": "application/json" },
