@@ -363,7 +363,7 @@ test("Weixin manual release probes its configured custom-domain MCP ingress", ()
   assert.ok(start >= 0 && end > start);
   const check = workflow.slice(start, end);
   assert.equal(config.workers_dev, false);
-  assert.match(check, /elif \[\[ "\\$SELECTED_WORKER" == "weixin-mcp-worker" \]\]; then/);
+  assert.ok(check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
   assert.ok(check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
   assert.match(check, /401\|403\)/, "unauthenticated requests must remain denied");
 });
