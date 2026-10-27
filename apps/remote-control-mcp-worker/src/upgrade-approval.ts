@@ -30,7 +30,7 @@ export interface UpgradeApprovalPreview {
   target: ReviewedUpgradePin;
   expires_at: number;
 }
-export type UpgradeApprovalState = "prepared" | "approved" | "claimed" | "completed" | "needs_attention";
+export type UpgradeApprovalState = "prepared" | "approved" | "cancelled" | "claimed" | "completed" | "needs_attention";
 interface StoredUpgrade extends UpgradeApprovalPreview {
   state: UpgradeApprovalState;
   confirmation_digest: string;
@@ -141,7 +141,7 @@ export async function prepareOwnerUpgrade(
           ((previous.state === "prepared" || previous.state === "approved") && now < previous.expires_at)) {
         return { status: "refused" };
       }
-      if (!["completed", "prepared", "approved"].includes(previous.state)) return { status: "refused" };
+      if (!["completed", "cancelled", "prepared", "approved"].includes(previous.state)) return { status: "refused" };
     }
     const token = secret();
     const preview: UpgradeApprovalPreview = {
@@ -190,6 +190,28 @@ export async function confirmOwnerUpgrade(
         !matchesLiveDevice(record, await tx.get<V2Device>("device:" + record.device_id)) ||
         await tx.get<string>(lock(record.device_id)) !== operationId) return false;
     await tx.put(key(operationId), { ...record, state: "approved", approved_at: now,
+      form_digest: undefined, confirmation_digest: "" } satisfies StoredUpgrade);
+    return true;
+  });
+}
+
+/** Refuse the exact prepared intent before owner confirmation and WSS dispatch.
+ * A browser cancellation is never an abort of an already claimed upgrade.
+ * Retain the terminal record for audit; the next intent can acquire its lock.
+ */
+export async function cancelPreparedOwnerUpgrade(
+  store: Store, operationId: string, confirmation: string, formToken: string,
+  now = Date.now(),
+): Promise<boolean> {
+  if (!OPERATION.test(operationId) || !SHA.test(confirmation) ||
+      !SHA.test(formToken) || !Number.isSafeInteger(now)) return false;
+  return store.transaction(async tx => {
+    const record = await tx.get<StoredUpgrade>(key(operationId));
+    if (!record || record.state !== "prepared" || now >= record.expires_at ||
+        record.confirmation_digest !== await digest(confirmation) ||
+        !record.form_digest || record.form_digest !== await digest(formToken) ||
+        await tx.get<string>(lock(record.device_id)) !== operationId) return false;
+    await tx.put(key(operationId), { ...record, state: "cancelled",
       form_digest: undefined, confirmation_digest: "" } satisfies StoredUpgrade);
     return true;
   });
