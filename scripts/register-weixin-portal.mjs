@@ -70,7 +70,11 @@ export async function attachWeixinPortal(env, transport=fetch) {
     if(json?.success!==true||json.result==null)throw Error('portal_api_unavailable');
     return json.result;
   };
-  // Validate Access policy permissions and identity before any Portal POST/PUT.\n  // A GitHub Environment token lacking Access: Apps read must fail without mutation.\n  await verifyWeixinAccess(env,transport);\n  console.log('WEIXIN_ACCESS_POLICIES_VERIFIED');\n  const before=portalPlan(await request('GET','/portals/one-mcp'));
+  // Validate Access policy permissions and identity before any Portal POST/PUT.
+  // A GitHub Environment token lacking Access: Apps read must fail without mutation.
+  await verifyWeixinAccess(env,transport);
+  console.log('WEIXIN_ACCESS_POLICIES_VERIFIED');
+  const before=portalPlan(await request('GET','/portals/one-mcp'));
   assert.ok(!before.servers.some(x=>x.server_id==='weixin') ||
     before.servers.filter(x=>x.server_id==='weixin').length===1,'portal_duplicate_weixin');
   const existing=await request('GET','/servers');

@@ -16,8 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Validate registration script
-        run: node --check scripts/register-weixin-portal.mjs
+      - name: Validate registration script and offline contract
+        run: |
+          node --check scripts/register-weixin-portal.mjs
+          node --test scripts/register-weixin-portal.test.mjs
       - name: Attach Weixin to the existing production portal
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
