@@ -83,7 +83,7 @@ test('valid signed Access identity sees sanitized state; CSRF and explicit confi
   assert.equal(get.status,200);
   const page=await get.text();
   assert.match(page,/Current state.*unbound/);
-  assert.match(page,/QR pairing is not yet enabled/);
+  assert.match(page,/Pair \/ rebind/);
   assert.doesNotMatch(page,/portal-secret|super-secret-token|OWNER_EMAIL/);
   assert.equal(get.headers.get('cache-control'),'no-store');
   assert.match(get.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
