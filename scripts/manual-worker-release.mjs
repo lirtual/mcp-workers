@@ -4,12 +4,13 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker", "weixin-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
   "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
+  "weixin-mcp-worker": ["MCP_ACCESS_TOKEN", "WEIXIN_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -22,6 +23,7 @@ const WORKER_ENTRIES = {
   "ima-mcp-worker": "src/index.ts",
   "database-mcp-worker": "src/index.ts",
   "email-mcp-worker": "src/index.ts",
+  "weixin-mcp-worker": "src/index.ts",
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
@@ -99,7 +101,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "SSH legacy broker binding or token remains");
     }
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "weixin-mcp-worker"].includes(worker) ? false : true;
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
@@ -181,6 +183,25 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!bindings.some(b => b.type === "plain_text" && !(b.name in expected)),
       "Email has unexpected plaintext bindings");
   }
+  if (worker === "weixin-mcp-worker") {
+    const d1 = find("DB", "d1");
+    invariant((d1?.id || d1?.database_id) === "051c3b6d-e3bc-4d69-907f-37e8ab00618f",
+      "Weixin production D1 binding drift");
+    const expected = {
+      MCP_HOST: "weixin-mcp.lirtual.dpdns.org",
+      ADMIN_HOST: "weixin.lirtual.dpdns.org",
+      ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
+      ACCESS_AUD: "398bab25cfa47038a9c4a6c736f839dedaa7787d6a28f22b5a249c6d255e1102",
+      OWNER_EMAIL: "lirtual@outlook.com"
+    };
+    for (const [name, value] of Object.entries(expected)) {
+      invariant(bindings.filter(b=>b.name===name).length===1 &&
+        find(name,"plain_text")?.text===value && !secretNames.has(name),
+        "Weixin production owner or domain Variable drift: " + name);
+    }
+    invariant(!bindings.some(b => b.type==="plain_text" && !(b.name in expected)),
+      "Weixin has unexpected plaintext bindings");
+  }
   if (worker === "database-mcp-worker") {
     const limiter = find("RATE_LIMITER", "ratelimit");
     invariant(limiter && String(limiter.namespace_id) === "1001" &&
@@ -227,6 +248,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] : ["DB", "WORKFLOW"]) :
     worker === "openlist-mcp-worker" ? ["OPENLIST"] :
     worker === "email-mcp-worker" ? ["DB"] :
+    worker === "weixin-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
@@ -532,6 +554,35 @@ function readConfiguration(worker, content) {
     invariant(!conf.vars || Object.keys(conf.vars).length === 0,
       "Email secrets must not be staged as plain-text vars");
   }
+  if (worker === "weixin-mcp-worker") {
+    invariant(conf.workers_dev===false && conf.preview_urls===false,
+      "Weixin public worker.dev or preview routes are forbidden");
+    invariant(JSON.stringify(conf.secrets?.required)===
+      JSON.stringify(["MCP_ACCESS_TOKEN","WEIXIN_ENCRYPTION_KEY"]),
+      "Weixin approved Secret set drift");
+    const domains=["weixin.lirtual.dpdns.org","weixin-mcp.lirtual.dpdns.org"];
+    invariant(conf.routes?.length===2 &&
+      conf.routes.every((r,i)=>r?.pattern===domains[i] && r.custom_domain===true),
+      "Weixin production domain config drift");
+    invariant(conf.d1_databases?.length===1 &&
+      conf.d1_databases[0]?.binding==="DB" &&
+      conf.d1_databases[0]?.database_name==="weixin-mcp-db" &&
+      conf.d1_databases[0]?.database_id==="051c3b6d-e3bc-4d69-907f-37e8ab00618f" &&
+      conf.d1_databases[0]?.migrations_dir==="migrations",
+      "Weixin approved production D1 drift");
+    const expected={
+      MCP_HOST:"weixin-mcp.lirtual.dpdns.org",
+      ADMIN_HOST:"weixin.lirtual.dpdns.org",
+      ACCESS_TEAM_DOMAIN:"lirtualzero.cloudflareaccess.com",
+      ACCESS_AUD:"398bab25cfa47038a9c4a6c736f839dedaa7787d6a28f22b5a249c6d255e1102",
+      OWNER_EMAIL:"lirtual@outlook.com"
+    };
+    invariant(JSON.stringify(conf.vars)===JSON.stringify(expected),
+      "Weixin owner Access and ingress configuration drift");
+    invariant(!conf.services?.length && !conf.vpc_services &&
+      !conf.r2_buckets?.length && !conf.durable_objects?.bindings?.length,
+      "Weixin production source includes unapproved bindings");
+  }
   if (worker === "ima-mcp-worker") {
     invariant(!conf.secrets?.required?.includes("IMA_CLIENT_ID"),
       "IMA IMA_CLIENT_ID must be provided as a Variable, not a Secret");
@@ -653,7 +704,7 @@ async function current(account, worker, token, options) {
   }
   if (worker !== "ssh-mcp-worker") {
     invariant(scriptSettings?.observability?.logs?.invocation_logs ===
-      (["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true),
+      (["remote-control-mcp-worker", "email-mcp-worker", "weixin-mcp-worker"].includes(worker) ? false : true),
       "Script-level Invocation Logs drift");
   }
   if (worker === "ima-mcp-worker") {

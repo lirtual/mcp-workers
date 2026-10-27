@@ -22,6 +22,7 @@ export const WORKER_VARIABLES = Object.freeze({
     "MAX_WRITE_AFFECTED_ROWS",
   ],
   "email-mcp-worker": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
+  "weixin-mcp-worker": [], // Exact public origins and owner Access tags are pinned in Wrangler.
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],

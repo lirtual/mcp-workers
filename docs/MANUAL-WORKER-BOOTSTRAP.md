@@ -26,6 +26,7 @@
 | --- | --- | --- |
 | `database-mcp-worker` | `DATABASE_CONFIG` | `MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
 | `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
+| `weixin-mcp-worker` | `WEIXIN_ENCRYPTION_KEY` | 无（Access 与双域名由 Wrangler 固定） |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
@@ -46,6 +47,8 @@
 ```
 
 不需要 `*_SECRETS_JSON`、不需要套一层 JSON、也不需要手动转义双引号。
+
+Weixin 的 `WEIXIN_ENCRYPTION_KEY` 必须是规范的 **32 字节 Base64**，只能保存在该 Worker 同名 GitHub Environment Secret；不可复用 Email、SSH 或其他加密密钥。`weixin-mcp-db` 为独立正式 D1，管理入口 `weixin.lirtual.dpdns.org` 需要 Owner-only Cloudflare Access，MCP 入口 `weixin-mcp.lirtual.dpdns.org` 使用 Bearer。仅完成配置不代表扫码或发送验收通过。
 
 当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
 

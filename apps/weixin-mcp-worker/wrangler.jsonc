@@ -1,0 +1,46 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "weixin-mcp-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-27",
+  "workers_dev": false,
+  "preview_urls": false,
+  "keep_vars": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "secrets": {
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "WEIXIN_ENCRYPTION_KEY"
+    ]
+  },
+  "vars": {
+    "MCP_HOST": "weixin-mcp.lirtual.dpdns.org",
+    "ADMIN_HOST": "weixin.lirtual.dpdns.org",
+    "ACCESS_TEAM_DOMAIN": "lirtualzero.cloudflareaccess.com",
+    "ACCESS_AUD": "398bab25cfa47038a9c4a6c736f839dedaa7787d6a28f22b5a249c6d255e1102",
+    "OWNER_EMAIL": "lirtual@outlook.com"
+  },
+  "routes": [
+    {
+      "pattern": "weixin.lirtual.dpdns.org",
+      "custom_domain": true
+    },
+    {
+      "pattern": "weixin-mcp.lirtual.dpdns.org",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "weixin-mcp-db",
+      "database_id": "051c3b6d-e3bc-4d69-907f-37e8ab00618f",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

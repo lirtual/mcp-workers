@@ -6,9 +6,9 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 
 - All maintained Workers use runtime Secret name `MCP_ACCESS_TOKEN` for MCP entry authentication. Upstream credentials remain separate.
 - All have `preview_urls: false`.
-- `workers_dev` is **not uniform**: Email and Workflow have `workers_dev: false`; Remote Control declares both `workers_dev: true` and the `rca.lirtual.dpdns.org` custom domain.
+- `workers_dev` is **not uniform**: Email, Workflow and Weixin have `workers_dev: false`; Remote Control declares both `workers_dev: true` and the `rca.lirtual.dpdns.org` custom domain.
 - The `workers.dev` subdomain is `aiyaya.workers.dev` for Workers where enabled.
-- Email's separate `email.lirtual.dpdns.org` custom domain is for the Access-protected owner Setup page, not its MCP URL.
+- Email's separate `email.lirtual.dpdns.org` custom domain is for the Access-protected owner Setup page, not its MCP URL. Weixin likewise separates the Access owner Setup custom domain `weixin.lirtual.dpdns.org` from Bearer-protected MCP ingress `weixin-mcp.lirtual.dpdns.org`; both disable workers.dev.
 
 ## Configured MCP ingress endpoints
 
@@ -24,6 +24,7 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 | Remote Control | `remote-control-mcp-worker` | workers.dev + custom domain | `https://rca.lirtual.dpdns.org/mcp` |
 | Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
 | Email | `email-mcp-worker` | custom domains only | `https://email-mcp.lirtual.dpdns.org/mcp` |
+| Weixin | `weixin-mcp-worker` | custom domains only | `https://weixin-mcp.lirtual.dpdns.org/mcp` |
 
 These are configured ingress addresses, not evidence of a successful production release, a live Portal mapping or an authenticated ChatGPT tool call. Verify every release and actual Portal target independently.
 
