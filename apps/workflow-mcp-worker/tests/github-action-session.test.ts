@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {reservePublishedSessionSlot,reserveGoOpenListDownloadSlot,releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
+import {reservePublishedSessionSlot,reserveGoOpenListDownloadSlot,releaseVerifiedSessionSlot,releaseRejectedSessionSlot,releaseNeverDispatchedSessionSlot,recordSignedSessionReady,runPublishedGitHubActionSession}
  from '../src/github-action-session.ts';
 import {generateKeyPair,SignJWT} from 'jose';
 import {handleGithubActionClaimRequest} from '../src/github-action-ingress.ts';
@@ -206,6 +206,53 @@ test('legacy Go Session with old null fixed key blocks new Task across published
   f.db.prepare("UPDATE step_attempts SET state='cancelled' WHERE run_id=?").run(run(1));
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
   assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(2),'batch_0_download'),'reserved');
+ }finally{f.db.close();}
+});
+
+test('Go download dispatch-unknown holds the shared lock until physical terminal',async()=>{
+ const f=fixture();
+ try{
+  const task={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const taskPlan={...plan,github_action_approvals:[task],steps:[{
+   id:'batch',uses:'flow.foreach',needs:[],with:{
+    items:{ref:'inputs.download_batches'},max_items:1,template:{
+     id:'download',uses:'github.run',with:{
+      capability:'github.action',
+      action:{...task,ref:'refs/tags/v1',inputs:{batch_json:{ref:'item.value'}}}
+     }
+    }
+   }
+  }]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(taskPlan),'v');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(1),'batch_0_download'),'reserved');
+  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?')
+   .get(run(1))?.fixed_key,'123:go-openlist');
+  f.db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,created_at,updated_at) VALUES(?,?,'batch_0_download','github.action',?,'dispatch_unknown','lirtual/session-actions','123','lirtual/session-actions/.github/workflows/download.yml@refs/tags/v1','refs/tags/v1',1,1)")
+   .run(run(5),run(1),'dispatch-unknown-1');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'batch_0_download'),'held');
+  assert.equal(await releaseRejectedSessionSlot(f.adapter,run(1),'batch_0_download'),false);
+  f.db.prepare("UPDATE runs SET outcome='indeterminate' WHERE id=?").run(run(1));
+  assert.equal(await releaseNeverDispatchedSessionSlot(f.adapter,run(1),'batch_0_download',Date.now()),false);
+  const session={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const sPlan={...plan,github_action_approvals:[session],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...session,ref:'refs/tags/v1',
+    inputs:{duration_minutes:300,session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(sPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  f.db.prepare("UPDATE step_attempts SET state='confirmed',candidate_run_id=42,candidate_run_attempt=1 WHERE run_id=?")
+   .run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'batch_0_download'),'held');
+  f.db.prepare("UPDATE step_attempts SET state='claimed',owner_run_id=42,owner_run_attempt=1 WHERE run_id=?")
+   .run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'batch_0_download'),'held');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
+  // Simulates the inspector's persisted GitHub physical-terminal proof,
+  // NOT a cancel request, claim, dispatch ACK or parent Workflow terminal.
+  f.db.prepare("UPDATE step_attempts SET state='cancelled' WHERE run_id=?").run(run(1));
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'batch_0_download'),'released');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
  }finally{f.db.close();}
 });
 
