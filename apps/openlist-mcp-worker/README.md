@@ -18,8 +18,8 @@ No public OpenList base URL, separate database, Cron, or generic HTTP proxy.
 
 Remaining 12 candidates from the 18-tool Spec are **not registered** pending confirmed driver conflict behavior, disposable E2E, authenticated client approval, scoped share concurrency safety, or finite-lived link verification. In particular, **do not infer from a configured admin token that physical storage is confined to these roots**. Even listed tools still require production read-only verification before launch.
 
-Mutations are non-atomic. Once dispatched, failures can be indeterminate; there is no automatic retry. UTF-8 file reads disallow redirects, are bound to supported text types and 256 KiB maximum.
+Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, are bound to supported text types and 256 KiB maximum.
 
 ## Verification
 
-`pnpm --filter openlist-mcp-worker check` runs typecheck, boundary tests, and Wrangler dry run. Real binding, portal discovery and disposable live tests are separate blocking gates. **No production deployment or automatic release is authorized by this code.**
+`pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **No production deployment or automatic release is authorized by this code.**

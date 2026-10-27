@@ -52,14 +52,16 @@ test('out-of-scope requests never invoke Service Binding', async () => {
 
 test('non-success JSON code is not success; written 500 outcome unknown, without retry', async () => {
   let calls = 0;
-  const api = new OpenListApi(createConfig(env(async () => {
+  const api = new OpenListApi(createConfig(env(async request => {
     ++calls;
+    if (new URL(request.url).pathname === '/api/fs/list')
+      return ok({content:[],total:0});
     return Response.json({ code: 500, message: 'sensitive-provider-details', data: null }, { status: 500 });
   })));
   const result = await api.mkdir('/drive/safe/new-folder');
   assert.equal(result.status, 'unknown');
   assert.equal(result.code, 'UPSTREAM_UNCERTAIN');
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   assert.equal(JSON.stringify(result).includes('sensitive'), false);
 });
 
@@ -87,17 +89,19 @@ test('upstream 501 and 400 are classified, while transport timeout after write r
     Response.json({ code: 501, message: 'not implemented', data: null }, { status: 501 }))));
   await assert.rejects(unsupported.list('/drive/safe', 1, 10),
     (e: unknown) => e instanceof OpenListError && e.code === 'NOT_SUPPORTED');
-  const invalid = new OpenListApi(createConfig(env(async () =>
+  const invalid = new OpenListApi(createConfig(env(async request =>
+    new URL(request.url).pathname === '/api/fs/list' ? ok({content:[],total:0}) :
     Response.json({ code: 400, message: 'request invalid', data: null }, { status: 400 }))));
   assert.equal((await invalid.mkdir('/drive/safe/created')).status, 'failed');
   let count = 0;
-  const lost = new OpenListApi(createConfig(env(async () => {
+  const lost = new OpenListApi(createConfig(env(async request => {
     count++;
+    if (new URL(request.url).pathname === '/api/fs/list') return ok({content:[],total:0});
     throw Error('timeout upstream credentials-in-error');
   })));
   const result = await lost.mkdir('/drive/safe/created');
   assert.equal(result.status, 'unknown');
-  assert.equal(count, 1);
+  assert.equal(count, 2);
   assert.doesNotMatch(JSON.stringify(result), /credentials-in-error/);
 });
 
@@ -129,4 +133,57 @@ test('oversized internal text responses fail closed even when Content-Length is 
   })));
   await assert.rejects(api.readText('/drive/safe/notes.txt'),
     (e: unknown) => e instanceof OpenListError && e.code === 'LIMIT_EXCEEDED');
+});
+
+test('mkdir verifies empty parent, single mutation, and observed directory', async () => {
+  const dispatched: string[] = [];
+  const api = new OpenListApi(createConfig(env(async request => {
+    const route = new URL(request.url).pathname;
+    dispatched.push(route);
+    if (route === '/api/fs/list') {
+      assert.equal((await request.json() as {path:string}).path, '/drive/safe');
+      return ok({ content: [], total: 0 });
+    }
+    if (route === '/api/fs/mkdir') {
+      assert.deepEqual(await request.json(), {path:'/drive/safe/new-folder'});
+      return ok(null);
+    }
+    if (route === '/api/fs/get')
+      return ok({name:'new-folder', is_dir:true, size:0});
+    throw Error('wrong operation');
+  })));
+  const result = await api.mkdir('/drive/safe/new-folder');
+  assert.equal(result.status,'succeeded');
+  assert.deepEqual(result.observed_state,{is_dir:true});
+  assert.deepEqual(dispatched,['/api/fs/list','/api/fs/mkdir','/api/fs/get']);
+});
+test('mkdir existing target or incomplete listing blocks mutation before dispatch', async () => {
+  for (const listing of [
+    {content:[{name:'new-folder',is_dir:true}],total:1},
+    {content:[],total:101},
+  ]) {
+    let calls = 0;
+    const api = new OpenListApi(createConfig(env(async request => {
+      calls++;
+      assert.equal(new URL(request.url).pathname, '/api/fs/list');
+      return ok(listing);
+    })));
+    const result = await api.mkdir('/drive/safe/new-folder');
+    assert.equal(result.status,'not_executed');
+    assert.equal(calls,1);
+  }
+});
+test('mkdir post-write failed readback is unknown and never retries', async () => {
+  let calls = 0;
+  const api = new OpenListApi(createConfig(env(async request => {
+    calls++;
+    const route = new URL(request.url).pathname;
+    if (route === '/api/fs/list') return ok({content:[],total:0});
+    if (route === '/api/fs/mkdir') return ok(null);
+    return Response.json({code:500,message:'secret data',data:null},{status:500});
+  })));
+  const result = await api.mkdir('/drive/safe/new-folder');
+  assert.equal(result.status,'unknown');
+  assert.equal(calls,3);
+  assert.doesNotMatch(JSON.stringify(result),/secret data/);
 });

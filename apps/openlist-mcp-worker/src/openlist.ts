@@ -229,19 +229,37 @@ export class OpenListApi {
   }
   async mkdir(path: string): Promise<OperationResult> {
     const target = this.check(path, true);
+    const parent = target.slice(0, target.lastIndexOf('/'));
+    const name = target.slice(target.lastIndexOf('/') + 1);
+    this.check(parent);
     const request_id = crypto.randomUUID();
+    let dispatched = false;
     try {
+      // A partial page or an invalid listing cannot prove a target is absent.
+      // This is only a collision preflight, NOT an atomic no-overwrite guarantee.
+      const listing = await this.list(parent, 1, 100);
+      if (listing.total !== listing.entries.length) throw new OpenListError('NOT_SUPPORTED');
+      if (listing.entries.some(entry => entry.name === name))
+        throw new OpenListError('CONFLICT');
+      dispatched = true;
       const response = await this.request('POST', '/api/fs/mkdir', { path: target }, undefined, true);
+      let observed: Record<string, unknown> | undefined;
+      try { observed = await this.get(target); } catch { /* unverified post-dispatch */ }
+      if (!observed || observed.name !== name || observed.is_dir !== true)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
       return { operation: 'openlist_create_folder', status: 'succeeded', code: 'OK',
-        message: 'Upstream reported success; operation is not atomic.', request_id, target,
-        evidence: { business_code: response.code } };
+        message: 'Upstream accepted and directory was independently observed; not atomic.',
+        request_id, target, evidence: { business_code: response.code },
+        observed_state: { is_dir: true } };
     } catch (error) {
-      const code = error instanceof OpenListError ? error.code : 'UPSTREAM_UNCERTAIN';
-      return { operation: 'openlist_create_folder',
-        status: code === 'UPSTREAM_UNCERTAIN' ? 'unknown' : 'failed',
-        code, message: code === 'UPSTREAM_UNCERTAIN' ?
-          'Dispatch outcome cannot be determined; do not retry automatically.' : 'Upstream rejected operation.',
+      const code = error instanceof OpenListError ? error.code :
+        dispatched ? 'UPSTREAM_UNCERTAIN' : 'UPSTREAM_UNAVAILABLE';
+      const status = !dispatched ? 'not_executed' :
+        code === 'UPSTREAM_UNCERTAIN' ? 'unknown' : 'failed';
+      return { operation: 'openlist_create_folder', status, code,
+        message: status === 'unknown' ?
+          'Dispatch outcome cannot be determined; do not retry automatically.' :
+          status === 'not_executed' ? 'No upstream mutation dispatched.' : 'Upstream rejected operation.',
         request_id, target };
     }
-  }
-}
+  }}
