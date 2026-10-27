@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { V2OwnerCoordinator } from "../src/v2-pairing.ts";
-import { presentWindowsUpgrade, readWindowsUpgrade } from "../src/upgrade-approval.ts";
+import { presentWindowsUpgrade, readWindowsUpgrade, UPGRADE_UNCONFIRMED_ATTENTION_MS } from "../src/upgrade-approval.ts";
 import { REVIEWED_WINDOWS_UPGRADE_PIN } from "../src/install-bootstrap.ts";
 
 const DEVICE="2a83dae6-600c-49cc-b643-ab0d5ec7e0c8";
@@ -188,4 +188,32 @@ test("signed restored old version reports guarded failure without releasing appr
     target:REVIEWED_WINDOWS_UPGRADE_PIN,
   });
   assert.equal(replay.status,409,"confirmed failure must retain the guarded one-shot lock");
+});
+
+test("read-only owner status ages an unresponsive one-shot into guarded attention",async()=>{
+  const f=fixture();
+  const {confirmation,form}=await f.prepared();
+  const approved=await f.post("/upgrade/confirm",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.deepEqual(await approved.json(),{approved:true,status:"admitted"});
+  const key="upgrade:operation:full-chain-operation";
+  const claimed=f.data.get(key) as Record<string,unknown>;
+  assert.equal(claimed.state,"claimed");
+  f.data.set(key,{...claimed,approved_at:Date.now()-UPGRADE_UNCONFIRMED_ATTENTION_MS-1000});
+  const device=f.data.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+  f.data.set("device:"+DEVICE,{...device,
+    device_info:{...device.device_info,agent_version:"v0.1.30-rc.1"}});
+  const sentBefore=f.counts();
+  const response=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal(response.status,200);
+  assert.equal((await response.json() as {status:string}).status,"needs_attention");
+  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"needs_attention");
+  assert.equal(f.counts(),sentBefore,"offline reconciliation does not dispatch or query WSS");
+  const repeat=await f.post("/upgrade/prepare",{
+    device_id:DEVICE,operation_id:"unsafe-stale-retry",target:REVIEWED_WINDOWS_UPGRADE_PIN,
+  });
+  assert.equal(repeat.status,409,"stale one-shot receipt retains the owner device lock");
 });
