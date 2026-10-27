@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -322,6 +322,27 @@ export class V2OwnerCoordinator {
     };
     const operationId = isOperation ? arg.operation_id : undefined;
     const mutationParsers: Record<string, (input: unknown) => unknown> = {
+      // Accepted on signed WSS only after the owner DO consumes its grant.
+      // Public MCP /operation cannot nominate this private Agent tool.
+      upgrade_agent: args => {
+        if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+        const p = args as Record<string,unknown>;
+        const t = p.target;
+        if (Object.keys(p).sort().join("|") !==
+            "approved_at|current_version|device_id|expires_at|fingerprint|operation_id|target" ||
+            typeof p.operation_id !== "string" || typeof p.device_id !== "string" ||
+            typeof p.fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(p.fingerprint) ||
+            typeof p.current_version !== "string" || p.current_version.length > 64 ||
+            typeof p.approved_at !== "number" || !Number.isSafeInteger(p.approved_at) ||
+            typeof p.expires_at !== "number" || !Number.isSafeInteger(p.expires_at) ||
+            !t || typeof t !== "object" || Array.isArray(t)) return null;
+        const pin = t as Record<string, unknown>;
+        return Object.keys(pin).sort().join("|") === "commit|tag|windows_asset_sha256" &&
+          typeof pin.tag === "string" && typeof pin.commit === "string" &&
+          typeof pin.windows_asset_sha256 === "string" &&
+          /^[a-f0-9]{40}$/.test(pin.commit) &&
+          /^[a-f0-9]{64}$/.test(pin.windows_asset_sha256) ? p : null;
+      },
       write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
       edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
       delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
@@ -742,8 +763,31 @@ export class V2OwnerCoordinator {
         }
         const approved = await confirmWindowsUpgrade(this.state.storage,
           body.operation_id, body.confirmation, body.form_token as string);
-        return Response.json({ approved }, { status: approved ? 200 : 409,
-          headers: { "cache-control": "no-store" } });
+        if (!approved) return Response.json({approved:false},{status:409,
+          headers:{"cache-control":"no-store"}});
+        // The single Access owner POST consumes the grant before attempting
+        // one signed WSS admission. The current Agent handler only fsyncs its
+        // receipt; no installer download or Task switch exists on this branch.
+        const dispatch = await claimWindowsUpgradeDispatch(this.state.storage,body.operation_id);
+        if (!dispatch) return Response.json({approved:true,status:"needs_attention"},{
+          headers:{"cache-control":"no-store"}});
+        const pending = await this.readFile(new Request("https://v2.internal/operation",{
+          method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({
+            device_id:dispatch.device_id, tool:"upgrade_agent",
+            operation_id:dispatch.operation_id, arguments:dispatch,
+          }),
+        }),true);
+        let status:unknown;
+        try { status=(await pending.json() as {status?:unknown}).status; }
+        catch { /* Unknown WSS response remains guarded. */ }
+        if (pending.ok && status === "admitted")
+          return Response.json({approved:true,status:"admitted"},{
+            headers:{"cache-control":"no-store"}});
+        await markUpgradeDispatchUncertain(this.state.storage,body.operation_id);
+        return Response.json({approved:true,status:"needs_attention"},{
+          headers:{"cache-control":"no-store"}});
+
       } catch {
         return Response.json({ error: "unavailable" }, { status: 503 });
       }
