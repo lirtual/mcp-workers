@@ -510,7 +510,7 @@ function readConfiguration(worker, content) {
       conf.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must stay enabled");
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "weixin-mcp-worker"].includes(worker) ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
       "Source Invocation Logs setting differs from production");
   }
