@@ -1303,7 +1303,7 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
         "</dd><dt>" + e(assetLabel) + " asset SHA-256</dt><dd>" + e(assetHash) +
         "</dd><dt>Operation ID</dt><dd>" + e(operationId) +
         "</dd></dl><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"" +
-        e(result.form_token!) + "\"><button type=\"submit\">Approve this one upgrade</button>" +
+        e(result.form_token!) + "\"><button type=\"submit\" name=\"action\" value=\"approve\">Approve this one upgrade</button><button type=\"submit\" name=\"action\" value=\"cancel\">Cancel without dispatch</button>" +
         "</form></main></body></html>";
       return new Response(html, { status: 200, headers: {
         ...UPGRADE_PAGE_HEADERS, "content-type": "text/html; charset=utf-8",
@@ -1315,18 +1315,24 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
   const raw = await readBounded(request, 2048);
   if (raw === null) return deny();
   const form = new URLSearchParams(raw);
-  if ([...form.keys()].length !== 1 || !form.has("csrf")) return deny();
+  if ([...form.keys()].length !== 2 || !form.has("csrf") ||
+      !["approve","cancel"].includes(form.get("action") ?? "") ||
+      form.getAll("csrf").length !== 1 || form.getAll("action").length !== 1) return deny();
   const token = form.get("csrf") ?? "";
   if (!validUpgradeFormOrigin(request, token)) return deny();
   try {
-    const response = await owner.fetch("https://v2.internal/upgrade/confirm", {
+    const cancelling = form.get("action") === "cancel";
+    const response = await owner.fetch(cancelling
+      ? "https://v2.internal/upgrade/cancel" : "https://v2.internal/upgrade/confirm", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ operation_id: operationId, confirmation, form_token: token }),
     });
     if (!response.ok) return deny(409);
-    const result = await response.json() as {approved?:boolean;status?:unknown};
-    if (result.approved !== true) return deny(409);
-    const message = result.status === "admitted"
+    const result = await response.json() as {approved?:boolean;cancelled?:boolean;status?:unknown};
+    if (cancelling ? result.cancelled !== true : result.approved !== true) return deny(409);
+    const message = cancelling
+      ? "Prepared upgrade cancelled before any device dispatch. An already claimed upgrade cannot be cancelled.\\n"
+      : result.status === "admitted"
       ? "Approval accepted; upgrade requested. Verify the operation status after the Agent reconnects. This is not a completion confirmation.\n"
       : "Approval consumed, but Agent admission is uncertain. Do not repeat; inspect this operation ID.\n";
     return new Response(message, {
