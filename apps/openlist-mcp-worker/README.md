@@ -8,8 +8,12 @@ acceptance (see Issue #309 for release evidence). **This does not mean the entir
 as a seventh, read-only tool in source; its real-upstream and ChatGPT acceptance
 are separate gates. Check the live `openlist_capabilities` result and production
 release records for the actual deployed inventory, which may lag behind source.
-The other 11 candidates remain unregistered and gated. This Worker does not
-provide a general-purpose OpenList API proxy.
+The other 10 candidates remain unregistered and gated. The eighth registered
+operation is a **one-shot, owner-approved, non-general acceptance share** of a
+pinned 50-byte synthetic file. It cannot accept arbitrary paths or passwords,
+uses a hidden 256-bit random password, one-hour expiry and one access, and its
+creation capability sunsets on 2026-11-04. This Worker does not provide a
+general-purpose OpenList API proxy.
 
 The existing disposable Koofr E2E folder and tiny synthetic file were
 intentionally retained for human inspection. Cleanup remains outstanding
@@ -58,20 +62,22 @@ or automatic storage repair is configured.
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
-`openlist_create_folder` (**seven registered in source; actual deployment and
-Portal availability must be verified independently**).
+`openlist_share_create`, `openlist_create_folder` (**eight registered in
+source; actual deployment and Portal availability require separate verification**).
 
 `openlist_share_get` requests one explicit share ID, rejects records with any
 out-of-scope file path, and returns only allowlisted non-secret metadata. It
-never enumerates all shares, creates a share, returns a password/raw link, or
+never enumerates all shares, creates an arbitrary share, returns a password/raw link, or
 mutates share state. Existing unit and MCP contract tests cover its restricted
 surface. **Real upstream compatibility and ChatGPT Portal discovery remain
 unverified for this candidate**, so no claim of production acceptance is made.
-The remaining 11 candidates are **not registered** pending driver conflict
+The remaining 10 candidates are **not registered** pending driver conflict
 behavior, disposable E2E, authenticated client approval, scoped share
 concurrency safety, or finite-lived link verification. Do not infer from an
 admin-equivalent token that physical storage is confined to these roots.
 Any future release requires its own authorized production checks.
+
+The exceptionally narrow `openlist_share_create` creates **at most one fixed-ID test record** for `/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt`. It first rechecks the exact 50-byte fixture content, fixed root and record absence. It constructs its own share ID, 256-bit random password, one-hour expiration and one-access limit; it never returns the password or any public URL. Duplicate IDs fail without writing, and dispatched-but-unconfirmed outcomes are `unknown` and **must not be retried**. A fixed ID is not an atomic exactly-once guarantee; upstream shared-record concurrency remains an accepted residual risk for this single, time-limited synthetic proof. It rejects further creation after 2026-11-04 and **must not** be treated as approval for general-purpose sharing. The existing manual OpenList acceptance workflow has an additional opt-in one-shot share test; no new workflow, database or scheduler was introduced.
 
 Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. Pagination returns `total` (the **unfiltered upstream** count), `page`, `per_page`, and `has_more` (based on upstream total); after path/scope filtering, `entries.length` may be smaller than the upstream count. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
 
