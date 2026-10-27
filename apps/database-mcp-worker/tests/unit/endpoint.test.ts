@@ -30,7 +30,13 @@ describe('eligible public database endpoints', () => {
           ? [{ type: 28, data: address }]
           : [{ type: 1, data: '1.1.1.1' }]
       })) as unknown as typeof fetch;
-    for (const address of ['2001:0db8::1', '2001:0000::1', '2001:0010::1', '2001:0020::1']) {
+    for (const address of [
+      '2001:0db8::1', '2001:0000::1', '2001:0010::1', '2001:0020::1',
+      '2001:2::1', '2001:0002:0:1234::1', // benchmarking /48
+      '2001:11::1', '2001:2f::1', // ORCHID /28 ranges
+      '3fff::1', '3fff:0fff::1', // IANA documentation /20
+      '2002::1' // 6to4 special-purpose prefix
+    ]) {
       await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one', resolver6(address)))
         .rejects.toMatchObject({ code: 'INVALID_INPUT' });
     }
