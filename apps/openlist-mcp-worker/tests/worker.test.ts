@@ -315,3 +315,16 @@ test('MCP native small upload respects scope and emits actual raw bytes with nat
     assert.equal(writes,1);
   }finally {await client.close();}
 });
+test('all dangerous unregistered share/delete tools cannot be called through MCP',async()=>{
+  // API adapters exist in source, but no tool entrypoint bypasses client approval.
+  let calls=0;
+  const client=await clientFor(settings(async()=>{calls++;return Response.json({code:200,data:null})}));
+  try {
+    for(const name of ['openlist_share_create','openlist_share_update',
+      'openlist_share_enable','openlist_share_revoke','openlist_delete']) {
+      await assert.rejects(()=>client.callTool({name,arguments:{id:'abc',path:'/Koofr/safe/x'}}),
+        /not found/);
+    }
+    assert.equal(calls,0);
+  }finally {await client.close();}
+});

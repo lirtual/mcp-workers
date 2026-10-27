@@ -258,6 +258,195 @@ export class OpenListApi {
     return result;
   }
 
+
+  // Non-public adapters for Spec #309: existing upstream APIs only.
+  // External exposure and irreversible revocation require trusted user approval
+  // before corresponding MCP tools can be registered.
+  async createShare(files: string[], expiresHours: number, maxAccessed: number): Promise<OperationResult> {
+    if (!Array.isArray(files) || files.length < 1 || files.length > 8 ||
+        !Number.isInteger(expiresHours) || expiresHours < 1 || expiresHours > 168 ||
+        !Number.isInteger(maxAccessed) || maxAccessed < 1 || maxAccessed > 100)
+      throw new OpenListError('INVALID_INPUT');
+    const checked = files.map(f => this.check(f));
+    if (new Set(checked).size !== checked.length) throw new OpenListError('INVALID_INPUT');
+    const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    const pwd = Array.from(crypto.getRandomValues(new Uint8Array(24)),
+      n => n.toString(16).padStart(2, '0')).join('');
+    const expires = new Date(Date.now() + expiresHours * 3600 * 1000).toISOString();
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      for (const f of checked) {
+        const meta = await this.get(f);
+        if (typeof meta.is_dir !== 'boolean') throw new OpenListError('UPSTREAM_UNAVAILABLE');
+      }
+      try {
+        await this.getShare(id);
+        throw new OpenListError('CONFLICT');
+      } catch (error) {
+        if (!(error instanceof OpenListError) || error.code !== 'NOT_FOUND') throw error;
+      }
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/create',
+        { id, files: checked, pwd, expires, max_accessed: maxAccessed, disabled: false },
+        undefined, true);
+      const after = await this.getShare(id);
+      if (after.disabled !== false || after.expires !== expires ||
+          after.max_accessed !== maxAccessed ||
+          JSON.stringify(after.files) !== JSON.stringify(checked))
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      // The creator receives the generated password once. No other share query
+      // returns credentials; do not log this result or publish without consent.
+      return { operation: 'openlist_share_create', status: 'succeeded', code: 'OK',
+        message: 'Password-protected share created using native non-atomic API. Credentials are one-time secrets.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: { ...after, password_once: pwd,
+          share_url: 'https://openlist.lirtual.dpdns.org/@s/' + encodeURIComponent(id) } };
+    } catch (error) {
+      return { operation: 'openlist_share_create',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Share creation uncertain; never retry automatically.' :
+          'No external share created.', request_id, target: id };
+    }
+  }
+
+  async updateShare(id: string, expiresHours?: number, maxAccessed?: number): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id) ||
+        (expiresHours === undefined && maxAccessed === undefined) ||
+        (expiresHours !== undefined &&
+          (!Number.isInteger(expiresHours) || expiresHours < 1 || expiresHours > 168)) ||
+        (maxAccessed !== undefined &&
+          (!Number.isInteger(maxAccessed) || maxAccessed < 1 || maxAccessed > 100)))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.getShare(id);
+      const changes: Record<string, unknown> = { id };
+      if (expiresHours !== undefined)
+        changes.expires = new Date(Date.now() + expiresHours * 3600 * 1000).toISOString();
+      if (maxAccessed !== undefined) changes.max_accessed = maxAccessed;
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/update', changes, undefined, true);
+      const after = await this.getShare(id);
+      if (JSON.stringify(after.files) !== JSON.stringify(before.files) ||
+          after.disabled !== before.disabled ||
+          (changes.expires !== undefined && after.expires !== changes.expires) ||
+          (changes.max_accessed !== undefined && after.max_accessed !== changes.max_accessed))
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_update', status: 'succeeded', code: 'OK',
+        message: 'Share policy observed after non-atomic native update.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: after };
+    } catch (error) {
+      return { operation: 'openlist_share_update',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Update uncertain; never retry automatically.' :
+          'No share update dispatched.', request_id, target: id };
+    }
+  }
+
+  async enableShare(id: string): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.getShare(id);
+      if (before.disabled === false)
+        return { operation: 'openlist_share_enable', status: 'not_executed',
+          code: 'ALREADY_ENABLED', message: 'No mutation dispatched.',
+          request_id, target: id, observed_state: { disabled: false } };
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/enable?id=' +
+        encodeURIComponent(id), undefined, undefined, true);
+      const after = await this.getShare(id);
+      if (after.disabled !== false || JSON.stringify(after.files) !== JSON.stringify(before.files) ||
+          after.expires !== before.expires || after.max_accessed !== before.max_accessed)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_enable', status: 'succeeded', code: 'OK',
+        message: 'Share observed enabled after non-atomic native operation.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: { disabled: false } };
+    } catch (error) {
+      return { operation: 'openlist_share_enable',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Enable uncertain; never retry automatically.' :
+          'No share enable dispatched.', request_id, target: id };
+    }
+  }
+
+  async revokeShare(id: string): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      await this.getShare(id);
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/delete?id=' +
+        encodeURIComponent(id), undefined, undefined, true);
+      try {
+        await this.getShare(id);
+      } catch (error) {
+        if (error instanceof OpenListError && error.code === 'NOT_FOUND')
+          return { operation: 'openlist_share_revoke', status: 'succeeded', code: 'OK',
+            message: 'Share ID absent after native revoke; source files are not deleted.',
+            request_id, target: id, evidence: { business_code: reply.code },
+            observed_state: { revoked: true } };
+        throw error;
+      }
+      throw new OpenListError('UPSTREAM_UNCERTAIN');
+    } catch (error) {
+      return { operation: 'openlist_share_revoke',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Revoke uncertain; never retry automatically.' :
+          'No share revoke dispatched.', request_id, target: id };
+    }
+  }
+
+  async deleteFile(path: string): Promise<OperationResult> {
+    const target = this.check(path, true);
+    const dir = target.slice(0, target.lastIndexOf('/'));
+    const name = target.slice(target.lastIndexOf('/') + 1);
+    this.check(dir);
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.get(target);
+      if (before.is_dir !== false) throw new OpenListError('NOT_SUPPORTED');
+      dispatched = true;
+      const reply = await this.request('POST', '/api/fs/remove',
+        { dir, names: [name] }, undefined, true);
+      try {
+        await this.get(target);
+      } catch (error) {
+        if (error instanceof OpenListError && error.code === 'NOT_FOUND')
+          return { operation: 'openlist_delete', status: 'succeeded', code: 'OK',
+            message: 'One file absent after native non-atomic delete.',
+            request_id, target, evidence: { business_code: reply.code },
+            observed_state: { deleted: true } };
+        throw error;
+      }
+      throw new OpenListError('UPSTREAM_UNCERTAIN');
+    } catch (error) {
+      return { operation: 'openlist_delete',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Delete outcome uncertain; never retry automatically.' :
+          'No deletion dispatched.', request_id, target };
+    }
+  }
+
   // Uses only existing non-atomic upstream Share API semantics, as approved by
   // Spec #309 Owner. Scope is an MCP preflight, not an atomic upstream guarantee.
   async disableShare(id: string): Promise<OperationResult> {

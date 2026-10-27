@@ -266,3 +266,20 @@ A passing workflow establishes driver E2E evidence only. Independent
 approval and ChatGPT Portal acceptance are still required before linking the
 Worker to One-MCP; a green acceptance run does not automatically release,
 register, enable gated tools or close Issue #309.
+
+## Remaining five native API adapters (unregistered)
+
+The Draft also implements internal `createShare`, `updateShare`, `enableShare`,
+`revokeShare` and `deleteFile` methods against existing OpenList REST APIs.
+A bounded create operation generates one random ID and one one-time share password,
+limits expiry/accesses, validates every scoped file and checks the newly created
+record. Updates allow only expiry and access limits. Enable/revoke require an
+exact scoped share ID; revoke deletes only share metadata. Delete accepts one
+in-scope **file**, never a directory. Post-write outcomes are independently
+observed; uncertain effects are **never retried**.
+
+**None of these five are registered as MCP tools** in this Draft: the spec requires
+trusted client human approval for external sharing and irreversible deletion,
+not a model-supplied boolean. CI tests the internal adapters and confirms forged
+MCP `tools/call` messages cannot dispatch these actions. No real share or file
+is mutated in offline acceptance. This does not require modifying the Fork.

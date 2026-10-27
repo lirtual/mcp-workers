@@ -566,3 +566,120 @@ test('native upload does not replay an uncertain upstream write', async () => {
   assert.equal(result.code,'UPSTREAM_UNCERTAIN');
   assert.equal(writes,1);
 });
+
+test('gated createShare accepts only scoped files, uses native API, and returns password only once', async () => {
+  let made: Record<string,unknown>|undefined;
+  let writes=0;
+  const routes: string[]=[];
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const url=new URL(req.url);
+    routes.push(req.method+' '+url.pathname);
+    assert.equal(req.headers.get('authorization'),'admin-token');
+    if(url.pathname==='/api/fs/get') return ok({
+      name:'test.txt',path:'/drive/safe/test.txt',is_dir:false});
+    if(url.pathname==='/api/share/get') {
+      if(!made)return Response.json({code:404,data:null});
+      return ok({...made,creator:'private-creator'});
+    }
+    if(url.pathname==='/api/share/create'){
+      writes++;
+      made=await req.json() as Record<string,unknown>;
+      assert.deepEqual(Object.keys(made).sort(),
+        ['id','files','pwd','expires','max_accessed','disabled'].sort());
+      assert.equal(made.disabled,false);
+      assert.deepEqual(made.files,['/drive/safe/test.txt']);
+      assert.match(String(made.pwd),/^[a-f0-9]{48}$/);
+      return ok({...made,raw_url:'https://private.invalid/secret'});
+    }
+    throw new Error('Unexpected route');
+  })));
+  const result=await api.createShare(['/drive/safe/test.txt'],1,2);
+  assert.equal(result.status,'succeeded');
+  assert.equal(writes,1);
+  assert.match(String((result.observed_state as Record<string,unknown>).password_once),/^[a-f0-9]{48}$/);
+  assert.equal((result.observed_state as Record<string,unknown>).max_accessed,2);
+  assert.doesNotMatch(JSON.stringify(result),/private-creator|private.invalid|admin-token/);
+  assert.deepEqual(routes.map(x=>x.split(' ')[1]),
+    ['/api/fs/get','/api/share/get','/api/share/create','/api/share/get']);
+});
+
+test('gated createShare rejects out-of-scope records before any upstream call',async()=>{
+  let calls=0;
+  const api=new OpenListApi(createConfig(env(async()=>{calls++;return ok(null)})));
+  await assert.rejects(api.createShare(['/drive/outside/file.txt'],1,1),
+    (e:unknown)=>e instanceof OpenListError&&e.code==='OUT_OF_SCOPE');
+  await assert.rejects(api.createShare(['/drive/safe/a','/drive/safe/a'],1,1),
+    (e:unknown)=>e instanceof OpenListError&&e.code==='INVALID_INPUT');
+  await assert.rejects(api.createShare(['/drive/safe/a'],0,1),
+    (e:unknown)=>e instanceof OpenListError&&e.code==='INVALID_INPUT');
+  assert.equal(calls,0);
+});
+
+test('gated updateShare modifies only expiry and access cap via native API',async()=>{
+  const calls:string[]=[];
+  let expires='2026-12-01T00:00:00.000Z',max=5;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const url=new URL(req.url);
+    calls.push(req.method+' '+url.pathname);
+    if(url.pathname==='/api/share/get') return ok({
+      id:'share_1',files:['/drive/safe/x.txt'],disabled:false,
+      expires,max_accessed:max,pwd:'hidden'});
+    const body=await req.json() as Record<string,unknown>;
+    assert.deepEqual(Object.keys(body).sort(),['expires','id','max_accessed']);
+    assert.equal(body.id,'share_1');
+    expires=String(body.expires);max=Number(body.max_accessed);
+    return ok(null);
+  })));
+  const result=await api.updateShare('share_1',3,2);
+  assert.equal(result.status,'succeeded');
+  assert.equal((result.observed_state as Record<string,unknown>).max_accessed,2);
+  assert.deepEqual(calls,['GET /api/share/get','POST /api/share/update','GET /api/share/get']);
+  assert.doesNotMatch(JSON.stringify(result),/hidden/);
+});
+
+test('gated enable/revoke use only scoped explicit IDs and independent readback',async()=>{
+  let disabled=true,deleted=false,writes=0;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const url=new URL(req.url);
+    assert.equal(url.searchParams.get('id'),'abc');
+    if(req.method==='GET')return deleted?
+      Response.json({code:404,data:null}):
+      ok({id:'abc',files:['/drive/safe/f.txt'],disabled,max_accessed:1});
+    writes++;
+    if(url.pathname==='/api/share/enable')disabled=false;
+    else if(url.pathname==='/api/share/delete')deleted=true;
+    else throw Error('unexpected write');
+    return ok(null);
+  })));
+  const enable=await api.enableShare('abc');
+  assert.equal(enable.status,'succeeded');
+  const again=await api.enableShare('abc');
+  assert.equal(again.status,'not_executed');
+  assert.equal(again.code,'ALREADY_ENABLED');
+  const revoked=await api.revokeShare('abc');
+  assert.equal(revoked.status,'succeeded');
+  assert.deepEqual(revoked.observed_state,{revoked:true});
+  assert.equal(writes,2);
+});
+
+test('gated delete refuses folders and removes only one file with proof of absence',async()=>{
+  let deleted=false,writes=0;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const route=new URL(req.url).pathname;
+    if(route==='/api/fs/get')return deleted?Response.json({code:404,data:null}):
+      ok({name:'x.txt',path:'/drive/safe/x.txt',is_dir:false});
+    assert.equal(route,'/api/fs/remove');
+    assert.deepEqual(await req.json(),{dir:'/drive/safe',names:['x.txt']});
+    writes++;deleted=true;return ok(null);
+  })));
+  const result=await api.deleteFile('/drive/safe/x.txt');
+  assert.equal(result.status,'succeeded');
+  assert.equal(writes,1);
+  assert.deepEqual(result.observed_state,{deleted:true});
+  const dirApi=new OpenListApi(createConfig(env(async req=>{
+    assert.equal(new URL(req.url).pathname,'/api/fs/get');
+    return ok({name:'folder',path:'/drive/safe/folder',is_dir:true});
+  })));
+  assert.equal((await dirApi.deleteFile('/drive/safe/folder')).code,'NOT_SUPPORTED');
+});
+
