@@ -173,3 +173,11 @@ test('OpenList roots must exactly satisfy the Worker runtime canonical path rule
     }), /OPENLIST_ALLOWED_ROOTS/, invalid);
   }
 });
+
+test("Weixin production owner Access metadata comes solely from reviewed Wrangler config",()=>{
+  assert.deepEqual(WORKER_VARIABLES["weixin-mcp-worker"],[]);
+  assert.deepEqual(collectWorkerVars("weixin-mcp-worker",{
+    MCP_HOST:"evil.invalid",OWNER_EMAIL:"attacker@example.org",
+    ACCESS_AUD:"forged",WEIXIN_ENCRYPTION_KEY:"must-not-log"
+  }),[]);
+});
