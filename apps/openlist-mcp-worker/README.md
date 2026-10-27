@@ -24,6 +24,21 @@ Folder creation first checks a complete bounded parent listing for collisions, t
 
 `pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **No production deployment or automatic release is authorized by this code.**
 
+## Required read-only verification on a separately authorized production release
+
+The existing single-Worker manual release runs `scripts/openlist-production-read-smoke.mjs`
+**after** Cloudflare version/Service Binding readback and anonymous MCP denial, but
+**before** registering OpenList in One-MCP. It invokes only
+`openlist_list_files` with a page size of one against **each configured**
+allowed root through the actual authenticated MCP endpoint. A missing/invalid
+upstream token, unusable Service Binding, inaccessible root, malformed or
+unsuccessful MCP result blocks Portal registration. It does not log file
+names, paths, credentials, raw responses or read file contents. Because the
+check runs after deploy, it **cannot prevent the Worker code from being
+published**; it fails release acceptance and blocks Portal onboarding.
+This is not a substitute for real disposable driver-write acceptance, nor
+does it authorize initial deployment.
+
 ## Portal registration after an authorized first release
 
 The existing manual single-Worker GitHub Actions release registers this Worker into One-MCP only **after** Cloudflare deployment, exact version/binding readback, public-health check and an unauthenticated MCP rejection test. Registration checks the real server `tools/list` inventory against the six known tools and preserves all existing One-MCP Portal mappings. Any mismatch fails the release job; this step does **not** authorize deployment or enable auto-release.

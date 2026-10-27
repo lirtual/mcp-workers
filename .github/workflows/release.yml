@@ -470,6 +470,14 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-http-portal.mjs
 
+      - name: Verify OpenList production Service Binding via read-only MCP
+        if: inputs.worker == 'openlist-mcp-worker'
+        shell: bash
+        env:
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
+        run: node scripts/openlist-production-read-smoke.mjs
+
       - name: Register production OpenList MCP with existing One-MCP Portal
         if: inputs.worker == 'openlist-mcp-worker'
         shell: bash
