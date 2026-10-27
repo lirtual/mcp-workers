@@ -27,3 +27,35 @@ An endpoint listed here is not evidence of a successful production deployment. D
 ## Cutover rule
 
 When replacing another publisher, deploy, verify health and fail-closed MCP authorization, update MCP Portal, verify a safe call and logs, then retire the previous publisher. Do not keep two active production publishers for the same Worker.
+
+## One-MCP Access policy gate (MCP server registration)
+
+A successful MCP server `sync`, `ready` status, and Portal attachment do
+**not** prove that ChatGPT can securely authenticate to the server. Cloudflare
+also creates an Access application (`type=mcp`) for each MCP server. Before
+attaching a server to One-MCP, verify that its Access application has the same
+two **reusable** policies, in the same order, as the trusted One-MCP
+(`type=mcp_portal`) application:
+
+1. `WORKFLOWS`: `non_identity` service-token selector (precedence 1).
+2. `Default Allow Rule`: `allow` for the approved email selectors (precedence 2).
+
+Verify reusable **policy IDs**, not just display names. Never add an
+`Everyone`, bypass, or unrestricted Allow rule. Missing, ambiguous or
+misordered policies and failed Access API reads are **release blockers**,
+not an acceptable partial success. Do not print selector email addresses,
+service tokens, or any upstream credentials.
+
+The shared `register-mcp-portal-server.mjs` helper (currently used by
+OpenList and HTTP) checks this invariant **before** Portal attachment.
+Other independently implemented registration scripts must gain an equivalent
+gate before their next onboarding; successful legacy operations are not proof
+that those scripts already include this guard. The guard does **not** add or
+modify policies automatically, because changes to Access grants require a
+separate reviewed authorization. Re-run registration only after the
+missing policies are explicitly configured and the exact gate passes.
+
+After Portal and Access checks pass, perform actual ChatGPT tool discovery
+and representative scoped read + out-of-scope denial tests. Log and report
+each gate separately; do not call a service production-ready based on
+Portal sync alone.
