@@ -16,6 +16,11 @@ export interface RateLimitBinding {
 
 export interface Env {
   DATABASE_CONFIG?: string;
+  DB?: D1Database;
+  DATABASE_ENCRYPTION_KEY?: string;
+  DATABASE_KEY_ID?: string;
+  DATABASE_ENCRYPTION_PREVIOUS_KEY?: string;
+  DATABASE_PREVIOUS_KEY_ID?: string;
   MCP_ACCESS_TOKEN?: string;
   MAX_ROWS?: string;
   MAX_RESULT_BYTES?: string;

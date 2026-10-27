@@ -1,0 +1,83 @@
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import { describe, it, expect, afterEach } from 'vitest';
+import { createRegistryConnection, listRegistryConnections, updateRegistryConnection,
+  setRegistryConnectionStatus, deleteRegistryConnection } from '../../src/registry/store.js';
+import type { D1Database } from '@cloudflare/workers-types';
+import { admitConnection, catalogMetadata } from "../../src/registry/admission.js";
+
+function fixture() {
+  const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
+  function statement(sql: string, args: unknown[] = []) {
+    const prepared = sqlite.prepare(sql);
+    return {
+      bind(...next: unknown[]) { return statement(sql, next); },
+      async run() { const result = prepared.run(...args as []); return { meta: { changes: result.changes } }; },
+      async first<T>() { return (prepared.get(...args as []) as T) ?? null; },
+      async all<T>() { return { results: prepared.all(...args as []) as T[] }; }
+    };
+  }
+  const db = { prepare: (sql: string) => statement(sql) } as unknown as D1Database;
+  return { sqlite, db };
+}
+const ciphertext = 'opaque.encrypted.value';
+const input = (id: string) => ({ id, dialect: 'postgres' as const, ciphertext, keyId: 'key1' });
+const all: DatabaseSync[] = [];
+afterEach(() => { all.splice(0).forEach(db => db.close()); });
+
+describe('actual D1 registry SQL', () => {
+  it('permits zero records; inserts only up to 50 even on concurrent last-slot admissions', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    expect(await listRegistryConnections(f.db)).toEqual([]);
+    await Promise.all(Array.from({ length: 50 }, (_, i) => createRegistryConnection(f.db, input('db' + i))));
+    expect((await listRegistryConnections(f.db)).length).toBe(50);
+    const results = await Promise.allSettled([createRegistryConnection(f.db, input('slotA')), createRegistryConnection(f.db, input('slotB'))]);
+    expect(results.every(r => r.status === 'rejected')).toBe(true);
+    expect((await listRegistryConnections(f.db)).length).toBe(50);
+  });
+  it('enforces immutable dialect and revision CAS on edit, disable, enable, delete', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    await createRegistryConnection(f.db, input('primary'));
+    const [row] = await listRegistryConnections(f.db);
+    expect(row).toMatchObject({ id: 'primary', status: 'disabled', revision: 1, dialect: 'postgres' });
+    expect(JSON.stringify(row)).not.toContain(ciphertext);
+    await expect(updateRegistryConnection(f.db, 'primary', 1, { dialect: 'mysql', ciphertext: 'new', keyId: 'key2' }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await updateRegistryConnection(f.db, 'primary', 1, { dialect: 'postgres', ciphertext: 'new', keyId: 'key2' });
+    await expect(setRegistryConnectionStatus(f.db, 'primary', 1, 'active')).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    await setRegistryConnectionStatus(f.db, 'primary', 2, 'active');
+    await expect(deleteRegistryConnection(f.db, 'primary', 3, 'primary')).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await setRegistryConnectionStatus(f.db, 'primary', 3, 'disabled');
+    await expect(deleteRegistryConnection(f.db, 'primary', 3, 'primary')).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    await expect(deleteRegistryConnection(f.db, 'primary', 4, 'wrong')).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await deleteRegistryConnection(f.db, 'primary', 4, 'primary');
+    expect(await listRegistryConnections(f.db)).toEqual([]);
+  });
+  it('rejects simultaneous updates on the same revision; does not clobber newer ciphertext', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    await createRegistryConnection(f.db, input('primary'));
+    const results = await Promise.allSettled([
+      updateRegistryConnection(f.db, 'primary', 1, { dialect: 'postgres', ciphertext: 'valueA', keyId: 'key2' }),
+      updateRegistryConnection(f.db, 'primary', 1, { dialect: 'postgres', ciphertext: 'valueB', keyId: 'key2' })
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+    expect((await listRegistryConnections(f.db))[0]?.revision).toBe(2);
+  });
+});
+
+describe('connection admission from D1', () => {
+  it('empty catalog is valid; an SQL admission must fail explicitly', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    const env = { DB: f.db } as Parameters<typeof admitConnection>[0];
+    expect(await catalogMetadata(env)).toEqual([]);
+    await expect(admitConnection(env)).rejects.toMatchObject({ code: 'CONNECTION_NOT_FOUND' });
+  });
+  it('rejects disabled connections before attempting to decrypt', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    await createRegistryConnection(f.db, input('primary'));
+    await expect(admitConnection({ DB: f.db } as Parameters<typeof admitConnection>[0], 'primary'))
+      .rejects.toMatchObject({ code: 'CONNECTION_DISABLED' });
+  });
+});
