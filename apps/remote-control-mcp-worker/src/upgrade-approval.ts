@@ -14,6 +14,9 @@ const SHA = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELEASE = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9a-z][0-9a-z.-]*))?$/;
 export const UPGRADE_APPROVAL_TTL_MS = 5 * 60_000;
+// StageOnly (180s) + bounded native watchdog (90s) + transport margin.
+// A missing result is attention-required, NEVER safe to retry automatically.
+export const UPGRADE_UNCONFIRMED_ATTENTION_MS = 10 * 60_000;
 
 export interface ReviewedUpgradePin {
   tag: string;
@@ -220,6 +223,26 @@ export async function markUpgradeDispatchUncertain(
     const record = await tx.get<StoredUpgrade>(key(operationId));
     if (!record || record.state !== "claimed") return false;
     await tx.put(key(operationId), { ...record, state: "needs_attention" });
+    return true;
+  });
+}
+
+/** Timerless status reconciliation for an unresponsive Agent. There is no
+ * scheduled retry or second dispatch. The exact claimed approval remains
+ * guarded and a later genuine signed success may still complete it.
+ */
+export async function markStaleWindowsUpgradeAttention(
+  store: Store, operationId: string, now = Date.now(),
+): Promise<boolean> {
+  if (!OPERATION.test(operationId) || !Number.isSafeInteger(now)) return false;
+  return store.transaction(async tx => {
+    const record = await tx.get<StoredUpgrade>(key(operationId));
+    if (!record || record.state !== "claimed" ||
+        typeof record.approved_at !== "number" ||
+        !Number.isSafeInteger(record.approved_at) ||
+        now < record.approved_at + UPGRADE_UNCONFIRMED_ATTENTION_MS ||
+        await tx.get<string>(lock(record.device_id)) !== operationId) return false;
+    await tx.put(key(operationId), {...record,state:"needs_attention"});
     return true;
   });
 }
