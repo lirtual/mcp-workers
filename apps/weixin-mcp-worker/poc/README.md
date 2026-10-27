@@ -29,3 +29,12 @@ Open `http://127.0.0.1:45346/` by typing it in the Windows browser address bar, 
 Safety: do not copy credentials or QR data into chat, logs, issues, screenshots, shell history or filenames. Verify no other consumer owns the bot session before using this experiment. QR states requiring a verify code or an unreviewed redirect intentionally stop in the prototype (they do not trigger fallback). Any loss of the terminal or session state voids the test; fresh scan is required. No credential remains valid for use by this application after process termination, though Weixin upstream revocation is **not** asserted.
 
 **Manual acceptance evidence currently not satisfied:** browser visibility, scan confirmation, proof inbound, upstream send and handset receipt are separate gates. Document only sanitized status and timing after actual observation.
+
+
+## Investigating live `getUpdates` rejection (2026-10-27)
+
+Owner QR scan was confirmed (local status `bound_unverified`). A user-initiated `Verify incoming owner message` returned `UPSTREAM_REJECTED` **before** the identity was verified; no `sendmessage` dispatch and no claim of handset delivery occurred. It is **not yet known** whether this is an account/session ownership error, a protocol compatibility error, or an omitted/invalid `ret`. Do not infer success from the QR status alone and do not introduce background polling/retries.
+
+The adapter now attaches only bounded integer `ret` and `errcode` diagnostics to business rejections. The local page may show `UPSTREAM_REJECTED (ret=..., errcode=...)`; `absent` means no bounded integer was present. These fields are safe to report, but **never** copy an `errmsg`, raw JSON, QR, token, proof, messages, or cursor to chat or GitHub. This change only affects new local process sessions, because the QR and bot credential remain intentionally memory-only. Do not restart or replay a verified send operation to diagnose an ambiguous send result.
+
+If the numeric error recurs, check for a second OpenClaw/iLink consumer owning the same session, the actual upstream response handling contract, and strict fail-closed termination for ret -14. Treat authenticated inbound monitoring as a separate NO-GO gate until a real owner-proof message is read.

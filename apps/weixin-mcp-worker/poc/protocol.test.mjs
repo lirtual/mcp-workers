@@ -178,3 +178,20 @@ test('refuses non-Weixin or non-HTTPS QR payloads before displaying to owner', a
   const good = mock([{ qrcode: 'opaque-token', qrcode_img_content: 'https://liteapp.weixin.qq.com/some-path?opaque=abc' }]);
   assert.equal((await createIlinkClient({ fetchImpl: good.fetchImpl }).getQr()).qrcode, 'opaque-token');
 });
+
+test('getUpdates business rejection exposes only bounded numeric status, never errmsg or raw payload', async () => {
+  for (const answer of [
+    { ret: 1001, errcode: 2002, errmsg: 'SENSITIVE_TOKEN_INTERNAL' },
+    { ret: 0, errcode: 2403, errmsg: 'SENSITIVE_TOKEN_INTERNAL' },
+    { errcode: 3, errmsg: 'SENSITIVE_TOKEN_INTERNAL' },
+    { ret: 'do not expose this', errcode: 0, errmsg: 'SENSITIVE_TOKEN_INTERNAL' },
+  ]) {
+    const fake = mock([answer]);
+    await assert.rejects(() => createIlinkClient({ fetchImpl: fake.fetchImpl }).getUpdates('token', ''),
+      e => e instanceof IlinkError && e.code === 'UPSTREAM_REJECTED' &&
+        e.diagnostic?.ret === (Number.isSafeInteger(answer.ret) ? answer.ret : null) &&
+        e.diagnostic?.errcode === (Number.isSafeInteger(answer.errcode) ? answer.errcode : null) &&
+        !JSON.stringify({message:e.message,diagnostic:e.diagnostic}).includes('SENSITIVE_TOKEN_INTERNAL'));
+    assert.equal(fake.calls.length, 1, 'never silently repeat polling');
+  }
+});

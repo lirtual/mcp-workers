@@ -7,10 +7,12 @@ const encoder = new TextEncoder();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class IlinkError extends Error {
-  constructor(code) {
+  constructor(code, diagnostic = null) {
     super(code);
     this.name = 'IlinkError';
     this.code = code;
+    // Only bounded integer business status codes; never errmsg or raw JSON.
+    this.diagnostic = diagnostic;
   }
 }
 function safeString(value, max = 4096) {
@@ -57,7 +59,13 @@ function validateRet(payload, isSync = false) {
     throw new IlinkError('STALE_SESSION');
   }
   if (payload.ret !== 0 || (payload.errcode !== undefined && payload.errcode !== 0)) {
-    throw new IlinkError('UPSTREAM_REJECTED');
+    // Do not include upstream-provided errmsg, tokens, message objects or cursor.
+    // Numeric statuses are enough to distinguish session and protocol errors.
+    const bounded = value => Number.isSafeInteger(value) && Math.abs(value) <= 999999999
+      ? value : null;
+    throw new IlinkError('UPSTREAM_REJECTED', {
+      ret: bounded(payload.ret), errcode: bounded(payload.errcode),
+    });
   }
 }
 function randomUin() {

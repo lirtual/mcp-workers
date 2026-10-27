@@ -33,6 +33,12 @@ function safe(err) {
     'UPSTREAM_HTTP_FAILURE','UNSAFE_REDIRECT','STALE_SESSION','IDENTITY_UNVERIFIED',
     'UNKNOWN_SEND',
   ]);
+  if (err?.code === 'UPSTREAM_REJECTED') {
+    const code = n => Number.isSafeInteger(n) && Math.abs(n) <= 999999999
+      ? String(n) : 'absent';
+    return 'UPSTREAM_REJECTED (ret=' + code(err.diagnostic?.ret) +
+      ', errcode=' + code(err.diagnostic?.errcode) + ')';
+  }
   return allowed.has(err?.code) ? err.code : 'POC_OPERATION_FAILED';
 }
 function htmlEscape(value) {
