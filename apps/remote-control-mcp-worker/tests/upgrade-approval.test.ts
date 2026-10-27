@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade,
   claimWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain,
+  markWindowsUpgradeCompleted,
   readWindowsUpgrade, UPGRADE_APPROVAL_TTL_MS,
   type ReviewedUpgradePin, type UpgradeApprovalPreview,
 } from "../src/upgrade-approval.ts";
@@ -232,4 +233,42 @@ test("post-confirm key rotation/revocation/expiry forbids dispatch without consu
     shown!.form_token,NOW+2),true);
   assert.equal(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,
     NOW+UPGRADE_APPROVAL_TTL_MS),null);
+});
+
+test("only exactly reported signed new target permits terminal completion and future intents",async()=>{
+  const f=fixture(),p=await start(f,"once-native-reconnect");
+  const shown=await presentWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+  assert.ok(shown);
+  assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
+    shown!.form_token,NOW+2),true);
+  assert.ok(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+3));
+  assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),false,
+    "an admitted operation is not an upgrade");
+  const current=f.rows.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+  f.modifyDevice({device_info:{...current.device_info,agent_version:PIN.tag}});
+  assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),true,
+    "signed Agent receipt validation is a separate mandatory caller gate");
+  assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"completed");
+  assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),false,
+    "terminal outcome must never be applied twice");
+  assert.equal((await prepareWindowsUpgrade(f.store,"after-success",DEVICE,
+    {...PIN,tag:"v0.1.33-rc.1"},NOW+UPGRADE_APPROVAL_TTL_MS+1)).status,"prepared");
+});
+test("terminal ledger refuses re-pair, revocation, target mismatch or missing runtime capability",async()=>{
+  for(const change of [
+    {revoked:true},{fingerprint:"aaaaaaaaaaaaaaaaaaaaaaaa"},
+    {device_info:{os:"windows",arch:"x64",environment:"native",agent_version:PIN.tag}},
+    {device_info:{os:"windows",arch:"x64",environment:"native",
+      upgrade_protocol:"owner-one-shot-v1",agent_version:"v0.1.34"}},
+  ]){
+    const f=fixture(),p=await start(f,"not-final");
+    const shown=await presentWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+    assert.ok(shown);
+    assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
+      shown!.form_token,NOW+2),true);
+    assert.ok(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+3));
+    f.modifyDevice(change);
+    assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),false);
+    assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"claimed");
+  }
 });
