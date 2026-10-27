@@ -47,3 +47,12 @@ Observed live `getUpdates` failure reported `UPSTREAM_REJECTED (ret=absent, errc
 Corrected behavior: for `getUpdates` (read-only), reject explicit nonzero `ret` or `errcode`, and stop on `-14`; missing status fields are acceptable only if the full expected `msgs: []` array and string `get_updates_buf` cursor are structurally valid. Unexpected nonempty error text with both status fields missing is rejected as `INVALID_RESPONSE`. Bad/unknown status *types* are rejected, never silently coerced. `sendmessage` acceptance semantics are **unchanged**; no outbound retry.
 
 The optional UI diagnostics include only status field types (e.g. `missing`, `number`, `string`) and response-shape flags, never response text, messages, cursor, QR or authorization headers. The current bound PoC process cannot hot reload the changed adapter; any new manual verification requires a fresh process/QR and owner proof. A valid response alone does not establish identity: exact owner challenge matching is still mandatory.
+
+
+## Actual handset delivery and ambiguous send receipt (2026-10-27)
+
+The owner completed the supervised live sequence: QR scan, single-use challenge inbound verification (`ready`), and **one** outbound text attempt. Immediately after dispatch the local UI showed `sent` / `rejected` with `ret=absent, errcode=absent, types=missing/missing`; initially the owner saw no message. **The same owner subsequently confirmed the exact test message appeared on their phone**: `Weixin MCP Spec #346 · controlled one-time test message`. Thus this is verified real handset receipt after an unknown delay, not a failed delivery. No second send was issued.
+
+The old send acknowledgement check incorrectly treated missing `ret` as `UPSTREAM_REJECTED`. On the outbound `sendmessage` path, only an explicit clean success status now yields `accepted`; an explicit nonzero numeric business error yields `rejected`; all absent, malformed, or transport-ambiguous acknowledgements yield `UNKNOWN_SEND` / `unknown`. The result remains terminal: **never auto-retry, refresh, or replay a potentially accepted write**. An API `accepted` is not proof of handset receipt, and `unknown` is not proof of failure. Document the independent handset evidence separately.
+
+This demonstrates one complete owner-supervised PoC roundtrip only. The production Cloudflare Worker, durable D1 receipt fence, Access/Portal/ChatGPT MCP tools, replay-safety after process restarts, and long-lived iLink protocol stability are not implemented/verified by this PoC.

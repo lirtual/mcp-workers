@@ -233,3 +233,36 @@ test('getUpdates permits absent status only for a fully valid message/cursor env
     assert.equal(fake.calls.length, 1);
   }
 });
+
+test('sendText treats an absent or malformed business receipt as unknown, never rejected or auto-retried', async () => {
+  const input = { botToken: 't', recipientId: 'owner', contextToken: 'ctx',
+    requestId: 'd6d361d3-39cf-45a2-b2f0-cccb4e0b61ba', text: 'one controlled text' };
+  for (const reply of [
+    {}, { errcode: 0 }, { errmsg: 'delivered eventually but no ret' },
+    { ret: null }, { ret: '0' }, { ret: 0, errcode: null },
+  ]) {
+    const fake = mock([reply]);
+    await assert.rejects(
+      () => createIlinkClient({ fetchImpl: fake.fetchImpl }).sendText(input),
+      err => err instanceof IlinkError && err.code === 'UNKNOWN_SEND' &&
+        err.message === 'UNKNOWN_SEND',
+    );
+    assert.equal(fake.calls.length, 1, 'unknown is final; do not retry a write');
+  }
+  for (const reply of [{ ret: -3 }, { ret: 0, errcode: 3 }, { errcode: 3 }]) {
+    const fake = mock([reply]);
+    await assert.rejects(
+      () => createIlinkClient({ fetchImpl: fake.fetchImpl }).sendText(input),
+      err => err instanceof IlinkError && err.code === 'UPSTREAM_REJECTED',
+    );
+    assert.equal(fake.calls.length, 1);
+  }
+  for (const reply of [{ ret: 0 }, { ret: 0, errcode: 0 }]) {
+    const fake = mock([reply]);
+    assert.deepEqual(
+      await createIlinkClient({ fetchImpl: fake.fetchImpl }).sendText(input),
+      { status: 'accepted' }, 'only an explicit success is API-accepted',
+    );
+    assert.equal(fake.calls.length, 1);
+  }
+});

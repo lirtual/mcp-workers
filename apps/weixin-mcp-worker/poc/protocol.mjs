@@ -196,8 +196,17 @@ export function createIlinkClient({ fetchImpl = fetch, apiOrigin = API_ORIGIN } 
           base_info: baseInfo
         }
       });
-      validateRet(response);
-      return { status: 'accepted' }; // never say delivered; no retry attempted here.
+      // A completed HTTP request is not proof the message was rejected or accepted.
+      // Upstream may omit ret while still delivering asynchronously. Keep the
+      // outcome UNKNOWN and never replay the same outbound operation.
+      if (response.ret === 0 && (response.errcode === undefined || response.errcode === 0)) {
+        return { status: 'accepted' }; // API acknowledgement, NOT handset delivery.
+      }
+      if ((Number.isSafeInteger(response.ret) && response.ret !== 0) ||
+          (Number.isSafeInteger(response.errcode) && response.errcode !== 0)) {
+        validateRet(response);
+      }
+      throw new IlinkError('UNKNOWN_SEND'); // no definite acknowledgement or rejection.
     }
   };
 }
