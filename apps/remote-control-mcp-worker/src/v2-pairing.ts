@@ -11,6 +11,7 @@ const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
 import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, markStaleWindowsUpgradeAttention, markWindowsUpgradeCompleted, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import {inspectReviewedLinuxUpgradeAsset,type ReviewedLinuxUpgradePin} from "./linux-upgrade-pin.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -795,12 +796,16 @@ export class V2OwnerCoordinator {
         }
         const id = input.device_id;
         const target = input.target as Record<string, unknown>;
-        if (Object.keys(target).sort().join("|") !== "commit|tag|windows_asset_sha256" ||
+        const shape=Object.keys(target).sort().join("|");
+        if ((shape!=="commit|tag|windows_asset_sha256" &&
+             shape!=="commit|linux_arm64_asset_sha256|linux_x64_asset_sha256|protocol|tag") ||
             typeof target.tag !== "string" ||
-            typeof target.commit !== "string" ||
-            typeof target.windows_asset_sha256 !== "string") {
+            typeof target.commit !== "string") {
           return Response.json({error:"invalid_request"},{status:400});
         }
+        if(shape==="commit|tag|windows_asset_sha256" &&
+           typeof target.windows_asset_sha256!=="string")
+          return Response.json({error:"invalid_request"},{status:400});
         const epoch = await this.state.storage.get<string>("session:epoch:" + id);
         const now = Date.now();
         if (!epoch) return Response.json({error:"offline"},{status:503});
@@ -822,8 +827,22 @@ export class V2OwnerCoordinator {
           } catch { /* malformed WSS incarnation cannot prepare an upgrade */ }
         }
         if (!authenticated) return Response.json({error:"offline"},{status:503});
+        // Only the server-owned, independently reviewed immutable dual-arch
+        // Linux pin may select an asset. Signed WSS metadata selects exactly
+        // ONE architecture; client-supplied SHA, URL or OS cannot choose it.
+        let approvedTarget:ReviewedUpgradePin;
+        if(shape==="commit|tag|windows_asset_sha256"){
+          approvedTarget=target as unknown as ReviewedUpgradePin;
+        }else{
+          const device=await this.state.storage.get<V2Device>("device:"+id);
+          const reviewed=inspectReviewedLinuxUpgradeAsset(device,
+            target as unknown as ReviewedLinuxUpgradePin);
+          if(!reviewed)return Response.json({error:"not_reviewed"},{status:409});
+          approvedTarget={tag:reviewed.tag,commit:reviewed.commit,
+            linux_arch:reviewed.arch,linux_asset_sha256:reviewed.asset_sha256};
+        }
         const result = await prepareWindowsUpgrade(this.state.storage,
-          input.operation_id, id, target as unknown as ReviewedUpgradePin, now);
+          input.operation_id, id, approvedTarget, now);
         return Response.json(result, {status:result.status === "prepared" ? 200 : 409,
           headers:{"cache-control":"no-store"}});
       } catch {
