@@ -318,18 +318,30 @@ jobs:
 
       # Strictly read-only. A selected Database release cannot proceed if the
       # approved D1 schema is missing; migration/import are separate actions.
-      - name: Verify Database D1 schema before publication (read-only)
+      - name: Verify Database D1 schema and legacy IDs before publication (read-only)
         if: inputs.worker == 'database-mcp-worker'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_CUTOVER_EXPECTED_IDS: ${{ vars.DATABASE_CUTOVER_EXPECTED_IDS }}
         run: |
           set -euo pipefail
           query="$(node scripts/manual-worker-release.mjs database-d1-sql database-mcp-worker)"
           (cd apps/database-mcp-worker &&
             pnpm exec wrangler d1 execute database-mcp-db --remote --json --command "$query") |
             node scripts/manual-worker-release.mjs database-d1-check database-mcp-worker
+
+      # Read-only Access inventory. Do not publish an Owner configuration page
+      # unless Cloudflare already enforces the exact-domain, exact-email policy.
+      - name: Verify Database Owner Access policy before publication (read-only)
+        if: inputs.worker == 'database-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
+        run: node scripts/database-owner-access.mjs
 
       - name: Publish exactly selected Worker
         id: publish

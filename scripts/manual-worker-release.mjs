@@ -34,31 +34,58 @@ function invariant(value, message) {
   if (!value) throw new Error(message);
 }
 
-/** Read-only D1 release gate: only aggregate schema/key-shape evidence.
- * A zero-record registry is legitimate after cutover; completeness of the
- * one-time legacy migration is an independently reviewed cutover gate. */
-export const DATABASE_D1_READINESS_SQL = [
-  "SELECT",
-  "  (SELECT COUNT(*) FROM d1_migrations WHERE name='0001_connections.sql') AS migration_count,",
-  "  (SELECT COUNT(*) FROM database_connections) AS record_count,",
-  "  (SELECT COUNT(*) FROM database_connections WHERE",
-  "    key_id = '' OR LENGTH(ciphertext) < 40 OR",
-  "    revision < 1 OR status NOT IN ('active','disabled') OR",
-  "    dialect NOT IN ('mysql','postgres')) AS malformed_count"
-].join("\n") + ";";
+/** Cutover must preserve the explicitly reviewed logical connection IDs.
+ * Never query the upstream databases or expose decrypted URLs/CA material. */
+export function parseDatabaseCutoverIds(raw) {
+  invariant(typeof raw === "string" && raw.length >= 3 && raw.length <= 4096,
+    "Database migration expected IDs must be explicitly configured");
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { throw Error("Database migration expected IDs JSON invalid"); }
+  invariant(Array.isArray(parsed) && parsed.length >= 1 && parsed.length <= 50 &&
+    parsed.every(x => typeof x === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(x)) &&
+    new Set(parsed).size === parsed.length,
+    "Database migration expected IDs invalid or duplicate");
+  return parsed;
+}
 
-export function verifyDatabaseD1Readiness(response) {
+/** Read-only D1 release gate. Counts IDs only; no upstream SQL or secrets. */
+export function databaseD1ReadinessSql(expectedIds) {
+  invariant(Array.isArray(expectedIds) && expectedIds.length >= 1 && expectedIds.length <= 50 &&
+    expectedIds.every(x => typeof x === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(x)) &&
+    new Set(expectedIds).size === expectedIds.length,
+    "Database migration expected IDs invalid or duplicate");
+  const idList = expectedIds.map(id => "'" + id + "'").join(",");
+  return [
+    "SELECT",
+    "  (SELECT COUNT(*) FROM d1_migrations WHERE name='0001_connections.sql') AS migration_count,",
+    "  (SELECT COUNT(*) FROM database_connections) AS record_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE",
+    "    key_id = '' OR LENGTH(ciphertext) < 40 OR",
+    "    revision < 1 OR status NOT IN ('active','disabled') OR",
+    "    dialect NOT IN ('mysql','postgres')) AS malformed_count"
+  ].join("\n") + ";";
+}
+
+export function verifyDatabaseD1Readiness(response, expectedCount) {
+  invariant(Number.isSafeInteger(expectedCount) && expectedCount >= 1 && expectedCount <= 50,
+    "Database migration expected ID count missing");
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
   const row = response[0].results[0];
-  for (const name of ["migration_count", "record_count", "malformed_count"])
+  for (const name of ["migration_count", "record_count", "preserved_count", "malformed_count"])
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
   invariant(row.migration_count === 1, "Database D1 initial migration not applied");
   invariant(row.record_count <= 50 && row.malformed_count === 0,
     "Database D1 record inventory invalid");
-  return { record_count: row.record_count };
+  invariant(row.record_count >= expectedCount && row.preserved_count === expectedCount,
+    "Database D1 missing reviewed legacy logical connection IDs");
+  return { record_count: row.record_count, preserved_count: row.preserved_count };
 }
 
 /** #344: checked from reviewed source *before* any production publish step.
@@ -774,12 +801,14 @@ async function main() {
   invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check", "database-d1-sql", "database-d1-check"].includes(mode), "Unknown release validation mode");
   if (mode === "database-d1-sql") {
     invariant(worker === "database-mcp-worker", "Database SQL readiness target mismatch");
-    console.log(DATABASE_D1_READINESS_SQL);
+    console.log(databaseD1ReadinessSql(parseDatabaseCutoverIds(process.env.DATABASE_CUTOVER_EXPECTED_IDS)));
     return;
   }
   if (mode === "database-d1-check") {
     invariant(worker === "database-mcp-worker", "Database D1 readiness target mismatch");
-    const counts = verifyDatabaseD1Readiness(JSON.parse(await readFile("/dev/stdin", "utf8")));
+    const expected = parseDatabaseCutoverIds(process.env.DATABASE_CUTOVER_EXPECTED_IDS);
+    const counts = verifyDatabaseD1Readiness(JSON.parse(await readFile("/dev/stdin", "utf8")),
+      expected.length);
     console.log("Database production D1 schema and encrypted-row shape: PASS; records=" +
       counts.record_count + "; legacy migration integrity and live TLS require separate evidence");
     return;

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, DATABASE_D1_READINESS_SQL, verifyDatabaseD1Readiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, parseDatabaseCutoverIds, databaseD1ReadinessSql, verifyDatabaseD1Readiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -109,28 +109,61 @@ test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable 
 
 test("Database production release verifies D1 before the first Wrangler deploy", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const a = workflow.indexOf("Verify Database D1 schema before publication (read-only)");
+  const a = workflow.indexOf("Verify Database D1 schema and legacy IDs before publication (read-only)");
   const b = workflow.indexOf("Publish exactly selected Worker", a);
   assert.ok(a > 0 && b > a, "Database D1 guard must run before publish");
   const step = workflow.slice(a, b);
   assert.match(step, /if: inputs\.worker == 'database-mcp-worker'/);
   assert.match(step, /database-d1-sql database-mcp-worker/);
   assert.match(step, /database-d1-check database-mcp-worker/);
+  assert.match(step, /DATABASE_CUTOVER_EXPECTED_IDS: .*vars\.DATABASE_CUTOVER_EXPECTED_IDS/);
   assert.match(step, /wrangler d1 execute database-mcp-db --remote --json/);
   assert.doesNotMatch(step, /\bmigrations apply\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b/i);
 });
 
-test("Database D1 read-only schema gate never enumerates plaintext credentials", () => {
-  assert.match(DATABASE_D1_READINESS_SQL, /d1_migrations/);
-  assert.doesNotMatch(DATABASE_D1_READINESS_SQL, /SELECT\s+\*/);
+test("Database release must inspect an exact-email Cloudflare Access policy before publish", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const d1 = workflow.indexOf("Verify Database D1 schema and legacy IDs before publication");
+  const access = workflow.indexOf("Verify Database Owner Access policy before publication");
+  const publish = workflow.indexOf("Publish exactly selected Worker");
+  assert.ok(d1 > 0 && access > d1 && publish > access);
+  const block = workflow.slice(access, publish);
+  assert.match(block, /if: inputs\.worker == 'database-mcp-worker'/);
+  assert.match(block, /run: node scripts\/database-owner-access\.mjs/);
+  assert.match(block, /vars\.ACCESS_AUD/);
+  assert.match(block, /vars\.OWNER_EMAIL/);
+  assert.doesNotMatch(block, /\bPOST\b|\bPUT\b|\bPATCH\b|\bDELETE\b/);
+});
+
+test("Database D1 cutover rejects missing reviewed IDs without querying upstream", () => {
+  const legacy = ["old_mysql", "old_pg"];
+  assert.deepEqual(parseDatabaseCutoverIds(JSON.stringify(legacy)), legacy);
+  const sql = databaseD1ReadinessSql(legacy);
+  assert.match(sql, /d1_migrations/);
+  assert.match(sql, /preserved_count/);
+  assert.match(sql, /id IN \('old_mysql','old_pg'\)/);
+  assert.doesNotMatch(sql, /SELECT\s+\*|\bpassword\b|\bplaintext\b|\burl\b/i);
+  for (const invalid of [undefined, "", "[]", "{}", '["a","a"]',
+    JSON.stringify(["ok", "bad' OR 1=1"]), JSON.stringify(["ok", null])]) {
+    assert.throws(() => parseDatabaseCutoverIds(invalid), /expected IDs|JSON invalid/);
+  }
   const result = counts => [{ success: true, results: [counts] }];
-  const valid = { migration_count: 1, record_count: 2, malformed_count: 0 };
-  assert.deepEqual(verifyDatabaseD1Readiness(result(valid)), { record_count: 2 });
-  assert.deepEqual(verifyDatabaseD1Readiness(result({ ...valid, record_count: 0 })), { record_count: 0 });
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 })), /migration not applied/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 51 })), /inventory invalid/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, malformed_count: 1 })), /inventory invalid/);
-  assert.throws(() => verifyDatabaseD1Readiness([{ success: false, results: [valid] }]), /unavailable/);
+  const valid = { migration_count: 1, record_count: 2, preserved_count: 2, malformed_count: 0 };
+  assert.deepEqual(verifyDatabaseD1Readiness(result(valid), 2),
+    { record_count: 2, preserved_count: 2 });
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 0, preserved_count: 0 }), 2),
+    /missing reviewed legacy/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, preserved_count: 1 }), 2),
+    /missing reviewed legacy/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 }), 2),
+    /migration not applied/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 51 }), 2),
+    /inventory invalid/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, malformed_count: 1 }), 2),
+    /inventory invalid/);
+  assert.throws(() => verifyDatabaseD1Readiness([{ success: false, results: [valid] }], 2),
+    /unavailable/);
+  assert.throws(() => verifyDatabaseD1Readiness(result(valid), 0), /expected ID count missing/);
 });
 
 test("Database transition validates reviewed D1, Owner route and two throttles before release", () => {
