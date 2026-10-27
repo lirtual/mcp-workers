@@ -771,13 +771,16 @@ export class V2OwnerCoordinator {
                     status = "completed";
                   } else if (version === record.preview.current_version &&
                       answer.status === "failed" && answer.receipt.state === "failed") {
-                    const verifiedLinuxRollback =
-                      device?.device_info?.os === "linux" &&
-                      answer.receipt.safe_result_summary ===
-                        "Original Linux unit and identity restored; signed owner reconciliation required." &&
+                    const verifiedRollback =
+                      ((device?.device_info?.os === "linux" &&
+                        answer.receipt.safe_result_summary ===
+                          "Original Linux unit and identity restored; signed owner reconciliation required.") ||
+                       (device?.device_info?.os === "windows" &&
+                        answer.receipt.safe_result_summary ===
+                          "Watchdog restored original native user Task; owner review required.")) &&
                       await markOwnerUpgradeRolledBack(this.state.storage,
                         input.operation_id,input.device_id,epoch!);
-                    if (verifiedLinuxRollback)status = "rolled_back";
+                    if (verifiedRollback)status = "rolled_back";
                     else if (await markUpgradeDispatchUncertain(
                       this.state.storage,input.operation_id))status = "needs_attention";
                   }
