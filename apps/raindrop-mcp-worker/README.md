@@ -89,7 +89,7 @@ Optional tests that require a real `RAINDROP_ACCESS_TOKEN` remain outside the de
 
 ## Deployment and Portal
 
-The source configuration is in `wrangler.jsonc`. Production publishing is expected to use the monorepo as the single Cloudflare Workers Builds source.
+The source configuration is in `wrangler.jsonc`. Production publishing uses the monorepo's main-only GitHub Actions **Release Worker** selected-Worker workflow with explicit confirmation; Cloudflare Workers Builds is not the supported production publishing path.
 
 Portal upstream target:
 

@@ -15,22 +15,18 @@ pnpm --filter ima-mcp-worker run check
 
 Deploy only through the separately authorized manual Worker release workflow.
 
-Required Worker Secrets:
+Required Worker Secrets: `IMA_API_KEY`, `MCP_ACCESS_TOKEN`.
 
-```text
-IMA_CLIENT_ID
-IMA_API_KEY
-MCP_ACCESS_TOKEN
-```
+Required non-secret Worker Variable: `IMA_CLIENT_ID` (`plain_text`, provided through the `ima-mcp-worker` GitHub Environment Variables).
 
 No R2 storage binding, Litterbox configuration, public download domain, or other export credential is required. Do not delete the old R2 bucket/domain/objects or the historical Durable Object in this change.
 
 ## Verify
 
 - `GET /health` returns `ok: true`.
-- `GET /ready` returns `ready: true` when the three required secrets are set.
+- `GET /ready` returns `ready: true` when both required Secrets and the required `IMA_CLIENT_ID` Variable are set.
 - Unauthenticated `POST /mcp` returns 401.
 - Portal `tools/list` no longer advertises `export_file` or an `export_to_temporary` argument.
 - `get_note` and `read_knowledge_source` still return bounded data, and importing files into IMA remains available.
 - The Worker has no code path for Litterbox uploads, note export, knowledge-file export, or image-refresh RPC.
-- Required Secrets, observability, and the inert Durable Object binding remain unchanged.
+- Required Secrets, the required `IMA_CLIENT_ID` Variable, observability, and the inert Durable Object binding remain valid.
