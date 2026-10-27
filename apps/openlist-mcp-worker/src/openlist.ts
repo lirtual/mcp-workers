@@ -300,6 +300,52 @@ export class OpenListApi {
         request_id, target: id };
     }
   }
+  async uploadSmall(path: string, content: string, encoding: 'utf8' | 'base64'): Promise<OperationResult> {
+    const target = this.check(path, true);
+    const parent = target.slice(0, target.lastIndexOf('/'));
+    this.check(parent);
+    if (typeof content !== 'string' || !['utf8','base64'].includes(encoding))
+      throw new OpenListError('INVALID_INPUT');
+    const MAX_UPLOAD_BYTES = 1024 * 1024;
+    let bytes: Uint8Array;
+    if (encoding === 'utf8') {
+      bytes = new TextEncoder().encode(content);
+    } else {
+      // Strict canonical Base64 avoids multiple textual forms of the same payload.
+      if (content.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(content))
+        throw new OpenListError('INVALID_INPUT');
+      let binary: string;
+      try { binary = atob(content); }
+      catch { throw new OpenListError('INVALID_INPUT'); }
+      bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+      if (btoa(binary) !== content) throw new OpenListError('INVALID_INPUT');
+    }
+    if (bytes.byteLength > MAX_UPLOAD_BYTES)
+      throw new OpenListError('LIMIT_EXCEEDED');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      // OpenList PUT has native overwrite behavior. Do not promise no-overwrite.
+      dispatched = true;
+      const reply = await this.request('PUT', '/api/fs/put', bytes,
+        { 'File-Path': encodeURIComponent(target), 'Content-Type': 'application/octet-stream' }, true);
+      const after = await this.get(target);
+      if (after.is_dir !== false || after.size !== bytes.byteLength)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_upload_small', status: 'succeeded', code: 'OK',
+        message: 'Native OpenList PUT accepted; destination observed with matching size. May overwrite, not atomic.',
+        request_id, target, evidence: { business_code: reply.code },
+        observed_state: { size: bytes.byteLength, native_may_overwrite: true } };
+    } catch (error) {
+      const code = dispatched ? 'UPSTREAM_UNCERTAIN' :
+        error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      return { operation: 'openlist_upload_small',
+        status: dispatched ? 'unknown' : 'not_executed', code,
+        message: dispatched ? 'Upload outcome uncertain; do not retry automatically.' :
+          'No upload dispatched.', request_id, target };
+    }
+  }
   // The native OpenList file APIs may overwrite existing destinations. This
   // MCP adapter never asserts an atomic no-overwrite or durable transaction.
   private async performFileMutation(kind: 'rename' | 'copy' | 'move',

@@ -514,3 +514,55 @@ test('native file mutations block out-of-scope paths and preserve unknown after 
   assert.equal(writes,1);
   assert.equal(calls,2);
 });
+
+test('native small upload uses File-Path header, raw bytes and exact readback', async () => {
+  for(const encoding of ['utf8','base64'] as const) {
+    let received:Uint8Array|undefined;
+    const requests:string[]=[];
+    const api=new OpenListApi(createConfig(env(async request=>{
+      const route=new URL(request.url).pathname;
+      requests.push(request.method+' '+route);
+      if(route==='/api/fs/put') {
+        assert.equal(request.method,'PUT');
+        assert.equal(request.headers.get('file-path'),encodeURIComponent('/drive/safe/hello.txt'));
+        assert.equal(request.headers.get('authorization'),'admin-token');
+        received=new Uint8Array(await request.arrayBuffer());
+        return ok(null);
+      }
+      assert.equal(route,'/api/fs/get');
+      return ok({name:'hello.txt',path:'/drive/safe/hello.txt',
+        is_dir:false,size:received?.byteLength});
+    })));
+    const result=await api.uploadSmall('/drive/safe/hello.txt',
+      encoding==='utf8'?'hello 世界':btoa('hello!'),encoding);
+    assert.equal(result.status,'succeeded');
+    assert.deepEqual(Array.from(received!),
+      Array.from(new TextEncoder().encode(encoding==='utf8'?'hello 世界':'hello!')));
+    assert.deepEqual(requests,['PUT /api/fs/put','POST /api/fs/get']);
+    assert.equal((result.observed_state as {native_may_overwrite:boolean}).native_may_overwrite,true);
+  }
+});
+
+test('native small upload refuses scope, malformed base64 and over-limit text before dispatch', async () => {
+  let calls=0;
+  const api=new OpenListApi(createConfig(env(async()=>{calls++;return ok(null)})));
+  await assert.rejects(api.uploadSmall('/drive/outside/x.txt','x','utf8'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='OUT_OF_SCOPE');
+  await assert.rejects(api.uploadSmall('/drive/safe/x.txt','**','base64'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='INVALID_INPUT');
+  await assert.rejects(api.uploadSmall('/drive/safe/x.txt','a'.repeat(1024*1024+1),'utf8'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='LIMIT_EXCEEDED');
+  assert.equal(calls,0);
+});
+
+test('native upload does not replay an uncertain upstream write', async () => {
+  let writes=0;
+  const api=new OpenListApi(createConfig(env(async request=>{
+    if(request.method==='PUT') {writes++;throw new Error('after dispatch');}
+    throw new Error('unexpected post-write read');
+  })));
+  const result=await api.uploadSmall('/drive/safe/x.txt','a','utf8');
+  assert.equal(result.status,'unknown');
+  assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+  assert.equal(writes,1);
+});

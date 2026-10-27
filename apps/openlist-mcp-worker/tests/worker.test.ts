@@ -49,7 +49,8 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
       'openlist_capabilities','openlist_list_files','openlist_get_file',
       'openlist_search_files','openlist_read_text','openlist_share_get',
       'openlist_download_link','openlist_share_disable',
-      'openlist_rename','openlist_copy','openlist_move','openlist_create_folder',
+      'openlist_upload_small','openlist_rename','openlist_copy',
+      'openlist_move','openlist_create_folder',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
@@ -62,10 +63,10 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), true);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_disable'), false);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_download_link'), false);
-    for(const name of ['openlist_rename','openlist_copy','openlist_move'])
+    for(const name of ['openlist_upload_small','openlist_rename','openlist_copy','openlist_move'])
       assert.equal(inventory.disabled_pending_acceptance.includes(name), false);
     assert.equal(tools.find(t => t.name === 'openlist_share_disable')?.annotations?.destructiveHint, true);
-    assert.equal(inventory.disabled_pending_acceptance.length, 6);
+    assert.equal(inventory.disabled_pending_acceptance.length, 5);
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
@@ -140,26 +141,6 @@ test('share_get refuses out-of-scope share records without exposing their conten
   } finally { await client.close(); }
 });
 
-test('gated upload is not invokable through the native file-adapter tools', async () => {
-  let upstreamCalls = 0;
-  const client = await clientFor(settings(async () => {
-    upstreamCalls++;
-    return Response.json({ code: 200, data: null });
-  }));
-  try {
-    // A forged tools/call must not bypass the disabled tools/list inventory.
-    // Upload is not implemented yet; no unregistered tool may dispatch.
-    for (const name of ['openlist_upload_small']) {
-      await assert.rejects(() => client.callTool({
-        name, arguments: { path: '/Koofr/safe/item.txt', name: 'renamed.txt',
-          src_dir: '/Koofr/safe', dst_dir: '/Koofr/safe/other',
-          names: ['item.txt'], content: 'synthetic' },
-      }), (error: unknown) => error instanceof Error &&
-        error.message.includes('Tool ' + name + ' not found'));
-    }
-    assert.equal(upstreamCalls, 0);
-  } finally { await client.close(); }
-});
 test('tool call on a forbidden path is denied with no upstream fetch', async () => {
   let calls = 0;
   const client = await clientFor(settings(async () => { calls++; return Response.json({ code: 200, data: {} }); }));
@@ -302,4 +283,35 @@ test('native MCP rename exposes overwrite semantics and gates cross-root writes'
     assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
     assert.equal(writes,1);
   } finally {await client.close();}
+});
+
+test('MCP native small upload respects scope and emits actual raw bytes with native warning', async () => {
+  let writes=0;
+  const client=await clientFor(settings(async request=>{
+    const url=new URL(request.url);
+    if(request.method==='PUT'){
+      writes++;
+      assert.equal(url.pathname,'/api/fs/put');
+      assert.equal(request.headers.get('file-path'),encodeURIComponent('/Koofr/safe/sample.txt'));
+      assert.equal(await request.text(),'hello');
+      return Response.json({code:200,data:null});
+    }
+    assert.equal(url.pathname,'/api/fs/get');
+    return Response.json({code:200,data:{
+      name:'sample.txt',path:'/Koofr/safe/sample.txt',is_dir:false,size:5}});
+  }));
+  try {
+    const denied=await client.callTool({name:'openlist_upload_small',
+      arguments:{path:'/Koofr/outside/sample.txt',content:'never'}});
+    assert.equal(denied.isError,true);
+    assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
+    assert.equal(writes,0);
+    const result=await client.callTool({name:'openlist_upload_small',
+      arguments:{path:'/Koofr/safe/sample.txt',content:'hello'}});
+    assert.notEqual(result.isError,true);
+    const json=JSON.parse((result.content[0] as {text:string}).text);
+    assert.equal(json.status,'succeeded');
+    assert.equal(json.observed_state.native_may_overwrite,true);
+    assert.equal(writes,1);
+  }finally {await client.close();}
 });

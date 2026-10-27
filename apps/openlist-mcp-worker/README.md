@@ -2,9 +2,9 @@
 
 ## Implementation status (2026-10-27)
 
-Twelve tools are registered on this Draft branch: the seven previously deployed
+Thirteen tools are registered on this Draft branch: the seven previously deployed
 operations plus `openlist_share_disable`, `openlist_download_link`,
-`openlist_rename`, `openlist_copy`, and `openlist_move` using the existing OpenList REST
+`openlist_upload_small`, `openlist_rename`, `openlist_copy`, and `openlist_move` using the existing OpenList REST
 endpoint. **Production continues to expose seven tools** until separately
 authorized merge, manual release and real acceptance. The original
 read-only explicit-ID `openlist_share_get` passed real production
@@ -13,7 +13,7 @@ acceptance after the controlled share test recorded in
 The one-time `openlist_share_create` used for that test was **retired from
 the Worker, Portal inventory, and manual acceptance entrypoint** after
 successful controlled production testing ([PR #369](https://github.com/lirtual/mcp-workers/pull/369)).
-It must not be callable in future releases. The other six candidates
+It must not be callable in future releases. The other five candidates
 remain unregistered and gated on this Draft branch; this adapter is not a general-purpose OpenList
 API proxy. Verify the deployed inventory separately from this source document.
 
@@ -62,8 +62,8 @@ or automatic storage repair is configured.
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
 `openlist_download_link`, `openlist_share_disable`, `openlist_rename`,
-`openlist_copy`, `openlist_move`, `openlist_create_folder`
-(**twelve registered tools on this Draft; seven deployed**).
+`openlist_copy`, `openlist_move`, `openlist_upload_small`,
+`openlist_create_folder` (**thirteen on this Draft; seven deployed**).
 
 `openlist_share_get` accepts one explicit ID and requires **every** file
 in the share to remain within allowed roots before returning only allowlisted,
@@ -76,7 +76,7 @@ were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/r
 50-byte synthetic share with a random hidden password, one-hour expiration
 and one access. The live create/get proof succeeded; the tool and temporary
 acceptance code have since been removed. The previously created share record
-may remain expired upstream, but cleanup is out of scope. The six remaining
+may remain expired upstream, but cleanup is out of scope. The five remaining
 candidates stay disabled on this Draft branch pending real driver/conflict, scope, approval, and
 share-lifecycle safety evidence. Do not infer physical storage confinement from
 the admin-equivalent upstream token. Every future production release requires
@@ -108,7 +108,7 @@ conditional request.
 **Updated Owner decision (Spec #309):** implement all candidate MCP tools
 against the upstream API as actually provided; accept its possible overwrite,
 non-atomic and backend-driver differences instead of waiting for an upstream
-conditional/no-overwrite feature. Upload remains unregistered; rename, copy and move are now registered in this
+conditional/no-overwrite feature. Upload, rename, copy and move are now registered in this
 unmerged Draft against their native REST routes, with input/scope and unknown
 write checks. Production stays unchanged until separately authorized.
 The driver-specific real acceptance remains outstanding, but an upstream change
@@ -159,7 +159,11 @@ map to `POST /api/fs/copy` and `POST /api/fs/move`, passing exactly one
 name and a scoped source/destination folder. They do not introduce a new
 conditional API, attempt silent rollback, or require a Fork patch.
 
-The existing driver can overwrite an existing destination. The returned
+`openlist_upload_small` uses the existing `PUT /api/fs/put` with a strict
+`File-Path` header, UTF-8 or canonical Base64 bytes, and a 1 MiB cap.
+It verifies the destination's file identity and size afterward but never
+claims byte identity or atomic no-overwrite. The existing driver can
+overwrite an existing destination. The returned
 `native_may_overwrite:true` and warnings are intentional. A successful
 readback only proves that the destination was observed; it does not prove
 transactional integrity or the absence of a concurrent change. After a
