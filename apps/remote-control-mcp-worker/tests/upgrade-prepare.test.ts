@@ -139,9 +139,10 @@ test("owner DO rejects Linux unreviewed pins, unsupported architecture and stale
   ]){
     const f=fixture(true);
     const device=f.storageValues.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
-    f.storageValues.set("device:"+DEVICE,{...device,
-      device_info:{os:"linux",arch:"x64",environment:"native",
-        agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1",...change}});
+    const info:Record<string,unknown>={os:"linux",arch:"x64",environment:"native",
+      agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"};
+    Object.assign(info,change);
+    f.storageValues.set("device:"+DEVICE,{...device,device_info:info});
     const response=await f.request({device_id:DEVICE,
       operation_id:"linux-reject",target:pin});
     assert.equal(response.status,409,JSON.stringify(change));
