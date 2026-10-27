@@ -74,16 +74,16 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 5. 若 Worker 已存在，GitHub 的必需 Secret 值会覆盖 Cloudflare 对应值。Remote Control 也使用同一套密钥同步规则，但其 `DEVICE_COORDINATOR` Durable Object、配对、Agent 身份及回执均不应因 Secret 同步被重置或迁移。
 6. 部署后核对 Cloudflare 100% 活跃版本、所需绑定与安全设置。最后通过原 Portal 做一次认证读取验收。不得误将未认证 401/403 当作已通过端到端验收。
 
-**重要迁移提示**：现网某些 Secret 曾在 Cloudflare Dashboard 直接修改（尤其 IMA）。在第一次使用新版发布流程前，请确保 GitHub 对应 Secret 已更新为当前有效值，否则新的 GitHub 值会覆盖 Cloudflare 中已修复的值。Cloudflare API 无法读取 Secret 明文，发布前只能校验存在性、格式，不能核对两边是否相等。本次将 `IMA_CLIENT_ID` 改为 GitHub Environment Variable，并通过 `wrangler deploy --var IMA_CLIENT_ID:...` 同步为 Cloudflare 普通 Variable。当前 `CLIENT_ID` 是普通 Variable；新名字不同，发布后应确认不再残留旧 Variable。Workflow 的 `MCP_PORTAL_CLIENT_ID` 同名 Secret→Variable 切换必须先通过 #199 隔离验证，旧 Secret 可能与新绑定发生冲突，发布后会严格校验 `IMA_CLIENT_ID` 已为非空 `plain_text` 且没有旧 Secret；若冲突导致失败，不能把发布失败当成已迁移，须核对 Wrangler 报错后再采取一次性迁移措施。
+**每次发布前的凭据核对**：GitHub Secret 是本次发布的值来源；Cloudflare API 无法读回 Secret 明文，因而不能证明 GitHub 当前值与既有运行时值相同。发布会覆盖同名 Secret，尤其要先核对 IMA API Key、SSH 加密密钥等与现网一致。IMA 的 `IMA_CLIENT_ID` 和 Workflow 的 `MCP_PORTAL_CLIENT_ID` 必须为 GitHub Environment Variables，发布后由 Cloudflare 绑定读回验证为唯一的 `plain_text`。对确实仍保留旧 `CLIENT_ID` 或旧同名 Secret 的**遗留部署**，先按历史迁移记录核对并受控迁移；不要把已完成的一次性迁移当作每次日常发布的必经操作。
 
 如果一次部署因缺少密钥/变量而失败，仅修复选中 GitHub Environment，然后重新手动发起任务；不要在失败后自动清空 DO 或重建其他 Worker。修改 GitHub 本身不会在后台自动同步：只有手动触发该 Worker 发布时才执行。
 
-## 5. IMA Client ID 的 Variable 更名（一次性）
+## 5. 仅适用于遗留部署的 IMA Client ID 更名
 
-1. 在 `ima-mcp-worker` 的 GitHub Environment Variables 中添加 `IMA_CLIENT_ID`，填写现有有效 `CLIENT_ID` 的**相同值**。`IMA_API_KEY` 始终是 Secret，不能误写入 Variable。
+1. 若 Cloudflare 仍存在旧名 `CLIENT_ID` Variable，先在 `ima-mcp-worker` GitHub Environment Variables 中配置相同值的 `IMA_CLIENT_ID`；`IMA_API_KEY` 始终是 Secret。已完成更名的现网不要重复执行。
 2. 核验 GitHub 中 `IMA_API_KEY`、`MCP_ACCESS_TOKEN` 的有效来源。发布需走受控的单 Worker GitHub Actions；仅修改配置不自动发布。
 3. 发布前确认新变量非空，发布后回读 `IMA_CLIENT_ID` 是唯一 `plain_text` 绑定，旧 `CLIENT_ID` Variable 已消失；完成 IMA 功能验收后精确清理 GitHub 的旧 `CLIENT_ID` Variable。
-4. Workflow 的 `MCP_PORTAL_CLIENT_ID` 则是**同名 Secret 改 Variable**，不能套用 IMA 的不同名字更换程序。必须先按 #199 在隔离环境验证实际 Wrangler 的同名类型替换与失败恢复，再得到生产凭据和发布的独立授权。
+4. Workflow 的 `MCP_PORTAL_CLIENT_ID` 是另一种**同名 Secret → Variable**历史迁移，与 IMA 的不同名字更名不是同一操作。只有旧绑定确实存在时才参考历史 #199 隔离验证记录评估迁移；日常发布直接要求唯一 `plain_text` 绑定和有效 Portal 客户端身份。
 
 以上更名不改变 Client ID 值、IMA API 协议或其他 Worker 的权限。
 
