@@ -23,17 +23,18 @@ function fixture() {
       agent_version: "v0.1.31-rc.1", hostname: "RAY-WORKSPACE", os_version: "10.0.26200" },
   });
   let tail = Promise.resolve();
-  const store = {
+  let store: Pick<DurableObjectStorage, "get" | "put" | "transaction">;
+  store = {
     get: async <T>(key: string) => structuredClone(rows.get(key)) as T | undefined,
     put: async (key: string, value: unknown) => { rows.set(key, structuredClone(value)); },
-    transaction: async <T>(fn: (transaction: typeof store) => Promise<T>) => {
+    transaction: async <T>(fn: (transaction: DurableObjectTransaction) => Promise<T>) => {
       const prior = tail;
       let release!: () => void;
       tail = new Promise<void>(resolve => { release = resolve; });
       await prior;
-      try { return await fn(store); } finally { release(); }
+      try { return await fn(store as unknown as DurableObjectTransaction); } finally { release(); }
     },
-  } as unknown as Pick<DurableObjectStorage, "get" | "put" | "transaction">;
+  };
   return { store, rows,
     modifyDevice: (changes: Record<string, unknown>) => {
       rows.set("device:" + DEVICE, { ...(rows.get("device:" + DEVICE) as object), ...changes });
