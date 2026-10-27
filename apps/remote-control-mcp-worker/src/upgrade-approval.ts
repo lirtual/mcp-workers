@@ -39,39 +39,26 @@ type Store = Pick<DurableObjectStorage, "get" | "put" | "transaction">;
 const key = (operationId: string) => "upgrade:operation:" + operationId;
 const lock = (deviceId: string) => "upgrade:device:" + deviceId;
 
-function parseVersion(input: string): { core: number[]; pre: string[] } {
-  // Metadata originates with a bounded signed device report or a reviewed pin.
-  // Still cap cost before parsing numeric prerelease components as BigInt.
-  if (input.length > 64) throw new Error("Unbounded Agent version.");
-  const match = RELEASE.exec(input);
-  if (!match) throw new Error("Unsupported Agent version.");
-  const core = [match[1]!, match[2]!, match[3]!].map(Number);
-  if (core.some(n => !Number.isSafeInteger(n))) throw new Error("Invalid Agent version.");
-  return { core, pre: match[4]?.split(".") ?? [] };
-}
-function compareVersions(a: string, b: string): number {
-  const x = parseVersion(a), y = parseVersion(b);
-  for (let i = 0; i < 3; i++) if (x.core[i] !== y.core[i]) return x.core[i]! > y.core[i]! ? 1 : -1;
-  if (!x.pre.length) return y.pre.length ? 1 : 0;
-  if (!y.pre.length) return -1;
-  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
-    if (x.pre[i] === undefined) return -1;
-    if (y.pre[i] === undefined) return 1;
-    const numericA = /^(0|[1-9][0-9]*)$/.test(x.pre[i]!);
-    const numericB = /^(0|[1-9][0-9]*)$/.test(y.pre[i]!);
-    if (numericA && numericB) {
-      const na = BigInt(x.pre[i]!), nb = BigInt(y.pre[i]!);
-      if (na !== nb) return na > nb ? 1 : -1;
-    } else if (numericA !== numericB) return numericA ? -1 : 1;
-    else if (x.pre[i] !== y.pre[i]) return x.pre[i]! > y.pre[i]! ? 1 : -1;
-  }
-  return 0;
+/** The installed Windows Scheduled Task switch compares base major/minor/patch,
+ * rejecting same-base prerelease replacements as well as downgrades. */
+function newerWindowsVersion(target: string, current: string): boolean {
+  const parse = (version: string) => {
+    if (version.length > 64 || !RELEASE.test(version)) return null;
+    const groups = /^v([0-9]+)\\.([0-9]+)\\.([0-9]+)/.exec(version);
+    if (!groups) return null;
+    const parts = groups.slice(1).map(Number);
+    return parts.every(Number.isSafeInteger) ? parts : null;
+  };
+  const a = parse(target), b = parse(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
+  return false;
 }
 function validTarget(pin: ReviewedUpgradePin, current: string): boolean {
   return Boolean(pin && typeof pin.tag === "string" && typeof pin.commit === "string" &&
     typeof pin.windows_asset_sha256 === "string" &&
     COMMIT.test(pin.commit) && SHA.test(pin.windows_asset_sha256) &&
-    compareVersions(pin.tag, current) > 0);
+    newerWindowsVersion(pin.tag, current));
 }
 function secret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
