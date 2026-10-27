@@ -308,7 +308,7 @@ export class OpenListApi {
     const meta = targetMetadata(raw, file);
     if (meta.is_dir !== false || !isObject(raw) || typeof raw.sign !== 'string')
       throw new OpenListError('NOT_SUPPORTED');
-    const match = /^(0|[1-9][0-9]{1,12})\\.[a-f0-9]{64}$/.exec(raw.sign);
+    const match = /^(0|[1-9][0-9]{1,12})\.[a-f0-9]{64}$/.exec(raw.sign);
     if (!match) throw new OpenListError('NOT_SUPPORTED');
     const expires = Number(match[1]);
     if (!Number.isSafeInteger(expires) || (expires !== 0 &&
