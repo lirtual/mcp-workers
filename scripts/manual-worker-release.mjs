@@ -498,7 +498,7 @@ export function verifyPublishedVersion(previous, observed, expected) {
   return true;
 }
 
-function readConfiguration(worker, content) {
+export function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
