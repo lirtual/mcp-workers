@@ -89,6 +89,19 @@ test("owner POST atomically claims approved intent and sends exactly one immutab
   assert.equal(args.fingerprint,"0123456789abcdef01234567");
   assert.ok(Number.isSafeInteger(args.approved_at));
   assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"claimed");
+  const status = await f.post("/upgrade/status",{operation_id:"full-chain-operation",device_id:DEVICE});
+  assert.equal(status.status,200);
+  const safe = await status.json() as Record<string,unknown>;
+  assert.deepEqual(safe,{
+    operation_id:"full-chain-operation",device_id:DEVICE,
+    status:"claimed",target_version:REVIEWED_WINDOWS_UPGRADE_PIN.tag,
+  });
+  assert.ok(!JSON.stringify(safe).includes(confirmation));
+  assert.ok(!JSON.stringify(safe).includes(form));
+  assert.ok(!JSON.stringify(safe).includes("0123456789abcdef01234567"));
+  const wrongDevice = await f.post("/upgrade/status",{operation_id:"full-chain-operation",
+    device_id:"11111111-1111-4111-8111-111111111111"});
+  assert.equal(wrongDevice.status,404);
   const replay=await f.post("/upgrade/confirm",{
     operation_id:"full-chain-operation",confirmation,form_token:form,
   });
