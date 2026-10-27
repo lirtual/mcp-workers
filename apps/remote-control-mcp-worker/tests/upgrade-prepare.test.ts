@@ -4,7 +4,7 @@ import { V2OwnerCoordinator } from "../src/v2-pairing.ts";
 import { REVIEWED_WINDOWS_UPGRADE_PIN, reviewedWindowsUpgradeTarget } from "../src/install-bootstrap.ts";
 
 const DEVICE = "2a83dae6-600c-49cc-b643-ab0d5ec7e0c8";
-function fixture(online: boolean) {
+function fixture(online: boolean, reported = true) {
   const storageValues = new Map<string, unknown>([
     ["device:"+DEVICE, {device_id:DEVICE,name:"RAY-WORKSPACE",
       public_key:"signed-fixture",fingerprint:"0123456789abcdef01234567",
@@ -31,7 +31,7 @@ function fixture(online: boolean) {
       readyState:WebSocket.OPEN,
       deserializeAttachment:()=>({
         device_id:DEVICE,epoch:"signed-session-epoch",
-        last_auth_check_at:Date.now()-1000,device_info_reported:true,
+        last_auth_check_at:Date.now()-1000,device_info_reported:reported,
       }),
     }] : [],
   } as unknown as DurableObjectState;
@@ -84,5 +84,14 @@ test("internal payload rejects command and arbitrary unknown keys",async()=>{
     const result=await f.request(data);
     assert.equal(result.status,400);
   }
+  assert.equal(f.storageValues.has("upgrade:operation:owner-upgrade-39"),false);
+});
+
+
+test("new signed WSS epoch cannot borrow old persisted upgrade capability before fresh runtime report",async()=>{
+  const f=fixture(true,false);
+  const response=await f.request(f.intent());
+  assert.equal(response.status,503);
+  assert.deepEqual(await response.json(),{error:"offline"});
   assert.equal(f.storageValues.has("upgrade:operation:owner-upgrade-39"),false);
 });
