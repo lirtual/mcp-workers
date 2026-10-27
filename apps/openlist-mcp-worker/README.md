@@ -327,3 +327,12 @@ with native adapter tests) **or** Portal-only registration. Missing approval,
 conflicting choices, or selection of native tests without fixture-write
 approval **fails the workflow**, rather than silently skipping every job
 and producing a misleading green result. This does not deploy or publish.
+
+## Native rename and move readback improvement
+
+A destination path may already exist, so verifying its presence after a nominal
+upstream success does not prove that a rename or move occurred. The MCP adapter
+now additionally observes **absence of the old source path** for rename/move;
+if either check cannot be established the result is `unknown`, never a false
+success and never an automatic retry. Copy intentionally keeps its source.
+This is an MCP post-condition check, **not** a new upstream atomic primitive.

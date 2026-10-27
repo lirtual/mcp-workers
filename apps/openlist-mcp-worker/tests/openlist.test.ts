@@ -464,6 +464,7 @@ test('native rename/copy/move adapt exactly one scoped target and observe destin
   ] as const;
   for (const c of cases) {
     const routes:string[]=[];
+    let mutated=false;
     const api=new OpenListApi(createConfig(env(async request=>{
       const route=new URL(request.url).pathname;
       routes.push(request.method+' '+route);
@@ -473,11 +474,14 @@ test('native rename/copy/move adapt exactly one scoped target and observe destin
         const file=body.path;
         const expected=file===c.dest?c.dest:'/drive/safe/file.txt';
         assert.equal(file,expected);
+        if (mutated && c.kind !== 'copy' && file === '/drive/safe/file.txt')
+          return Response.json({code:404,data:null});
         return ok({name:expected.slice(expected.lastIndexOf('/')+1),path:expected,
           is_dir:false,size:3,pwd:'secret'});
       }
       assert.equal(route,'/api/fs/'+c.kind);
       assert.deepEqual(body,c.data);
+      mutated=true;
       return ok(null);
     })));
     const result=c.kind==='rename'?
@@ -487,7 +491,8 @@ test('native rename/copy/move adapt exactly one scoped target and observe destin
     assert.equal(result.status,'succeeded',c.kind);
     assert.deepEqual(result.observed_state,{
       destination:c.dest,is_dir:false,native_may_overwrite:true});
-    assert.deepEqual(routes,['POST /api/fs/get','POST /api/fs/'+c.kind,'POST /api/fs/get']);
+    assert.deepEqual(routes,['POST /api/fs/get','POST /api/fs/'+c.kind,'POST /api/fs/get',
+      ...(c.kind==='copy'?[]:['POST /api/fs/get'])]);
     assert.doesNotMatch(JSON.stringify(result),/secret|admin-token/);
   }
 });
@@ -683,3 +688,35 @@ test('gated delete refuses folders and removes only one file with proof of absen
   assert.equal((await dirApi.deleteFile('/drive/safe/folder')).code,'NOT_SUPPORTED');
 });
 
+
+test('native rename and move report unknown when source still exists after a nominal success',async()=>{
+  for(const kind of ['rename','move'] as const) {
+    let writes=0;
+    const api=new OpenListApi(createConfig(env(async request=>{
+      const path=new URL(request.url).pathname;
+      if (path==='/api/fs/'+kind) {writes++;return ok(null);}
+      assert.equal(path,'/api/fs/get');
+      const file=(await request.json() as {path:string}).path;
+      return ok({name:file.split('/').at(-1),path:file,is_dir:false,size:7});
+    })));
+    const result=kind==='rename' ?
+      await api.renameFile('/drive/safe/test.txt','renamed.txt') :
+      await api.moveFile('/drive/safe/test.txt','/drive/safe/dest');
+    assert.equal(result.status,'unknown',kind);
+    assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+    assert.equal(writes,1);
+    assert.doesNotMatch(JSON.stringify(result),/renamed.txt|dest.*secret/);
+  }
+});
+
+test('native copy does not require source absence',async()=>{
+  const api=new OpenListApi(createConfig(env(async request=>{
+    const path=new URL(request.url).pathname;
+    if (path==='/api/fs/copy') return ok(null);
+    assert.equal(path,'/api/fs/get');
+    const file=(await request.json() as {path:string}).path;
+    return ok({name:file.split('/').at(-1),path:file,is_dir:false,size:7});
+  })));
+  const result=await api.copyFile('/drive/safe/test.txt','/drive/safe/dest');
+  assert.equal(result.status,'succeeded');
+});

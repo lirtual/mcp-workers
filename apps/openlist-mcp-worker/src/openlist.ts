@@ -570,6 +570,18 @@ export class OpenListApi {
       const after = await this.get(dest);
       if (after.path !== dest || after.is_dir !== before.is_dir)
         throw new OpenListError('UPSTREAM_UNCERTAIN');
+      // For move/rename, a preexisting destination can make a false success
+      // appear if the upstream operation did nothing. Check source absence too.
+      if (kind !== 'copy') {
+        let sourceAbsent = false;
+        try { await this.get(source); }
+        catch (error) {
+          if (error instanceof OpenListError && error.code === 'NOT_FOUND')
+            sourceAbsent = true;
+          else throw error;
+        }
+        if (!sourceAbsent) throw new OpenListError('UPSTREAM_UNCERTAIN');
+      }
       return { operation, status: 'succeeded', code: 'OK',
         message: 'Destination was observed after the native OpenList operation; upstream may overwrite and is not atomic.',
         request_id, target: source, evidence: { business_code: reply.code },

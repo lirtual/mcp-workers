@@ -267,6 +267,8 @@ test('native MCP rename exposes overwrite semantics and gates cross-root writes'
     }
     assert.equal(url.pathname,'/api/fs/get');
     const pathname=payload.path as string;
+    if(mutated && pathname==='/Koofr/safe/file.txt')
+      return Response.json({code:404,data:null});
     assert.equal(pathname,mutated?'/Koofr/safe/updated.txt':'/Koofr/safe/file.txt');
     return Response.json({code:200,data:{name:mutated?'updated.txt':'file.txt',path:pathname,is_dir:false}});
   }));
