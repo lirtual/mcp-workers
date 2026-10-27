@@ -3,8 +3,8 @@ import { test } from "node:test";
 import {
   prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade,
   claimWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain,
-  markWindowsUpgradeCompleted,
-  readWindowsUpgrade, UPGRADE_APPROVAL_TTL_MS,
+  markStaleWindowsUpgradeAttention, markWindowsUpgradeCompleted,
+  readWindowsUpgrade, UPGRADE_APPROVAL_TTL_MS, UPGRADE_UNCONFIRMED_ATTENTION_MS,
   type ReviewedUpgradePin, type UpgradeApprovalPreview,
 } from "../src/upgrade-approval.ts";
 
@@ -212,6 +212,28 @@ test("confirmed owner intent dispatches exactly once with authoritative timestam
   assert.equal((await prepareWindowsUpgrade(f.store,"new-after-unknown",DEVICE,PIN,
     NOW+UPGRADE_APPROVAL_TTL_MS+50)).status,"refused");
 });
+test("offline claimed upgrade becomes guarded needs_attention after bounded settlement window",async()=>{
+  const f=fixture(),p=await start(f,"no-reconnect-timeout");
+  const shown=await presentWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+  assert.ok(shown);
+  assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
+    shown!.form_token,NOW+2),true);
+  assert.ok(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+3));
+  assert.equal(await markStaleWindowsUpgradeAttention(f.store,p.preview.operation_id,
+    NOW+2+UPGRADE_UNCONFIRMED_ATTENTION_MS-1),false,
+    "an in-flight native stage or watchdog must not time out early");
+  assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"claimed");
+  assert.equal(await markStaleWindowsUpgradeAttention(f.store,p.preview.operation_id,
+    NOW+2+UPGRADE_UNCONFIRMED_ATTENTION_MS),true);
+  assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"needs_attention");
+  assert.equal(await markStaleWindowsUpgradeAttention(f.store,p.preview.operation_id,
+    NOW+3+UPGRADE_UNCONFIRMED_ATTENTION_MS),false,
+    "a completed timerless reconciliation is not repeated");
+  assert.equal((await prepareWindowsUpgrade(f.store,"unsafe-retry",DEVICE,PIN,
+    NOW+UPGRADE_UNCONFIRMED_ATTENTION_MS+10)).status,"refused",
+    "unresponsive state must retain the device lock and prevent automatic retry");
+});
+
 test("post-confirm key rotation/revocation/expiry forbids dispatch without consuming approval",async()=>{
   for(const change of [
     {revoked:true},{fingerprint:"aaaaaaaaaaaaaaaaaaaaaaaa"},
