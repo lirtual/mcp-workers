@@ -34,9 +34,9 @@ const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices"
 function upgradeAgentAvailable(env: Env): boolean {
   const e = env as V2Env;
   return Boolean(e.DEVICE_COORDINATOR && !e.V2_OWNER &&
-    /^[a-z0-9-]+\\.cloudflareaccess\\.com$/.test(e.REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN ?? "") &&
+    /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(e.REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN ?? "") &&
     /^[a-f0-9]{64}$/.test(e.REMOTE_CONTROL_UPGRADE_ACCESS_AUD ?? "") &&
-    /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(e.REMOTE_CONTROL_UPGRADE_OWNER_EMAIL ?? ""));
+    /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e.REMOTE_CONTROL_UPGRADE_OWNER_EMAIL ?? ""));
 }
 
 function pendingOwner(env: Env): DurableObjectStub | null {
@@ -185,7 +185,7 @@ async function preparePairedUpgrade(env: Env, id: unknown, input: unknown): Prom
       typeof p.device_id !== "string" ||
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(p.device_id) ||
       typeof p.operation_id !== "string" ||
-      !/^(?!\\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(p.operation_id)) {
+      !/^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(p.operation_id)) {
     return toolError(id,"Invalid upgrade intent.");
   }
   const target = reviewedWindowsUpgradeTarget(p.target_version);
