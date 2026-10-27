@@ -52,7 +52,7 @@ test("one trusted reviewed MCP upgrade request prepares approval only, never dis
   const result=await f.rpc("tools/call",{name:"upgrade_agent",arguments:{
     device_id:ID,operation_id:"upgrade-test-39",target_version:REVIEWED_WINDOWS_UPGRADE_PIN.tag,
   }});
-  assert.equal(result.result?.isError,undefined);
+  assert.equal(result.result?.isError,false);
   const payload=JSON.parse(result.result!.content![0]!.text) as {
     status:string;confirmation_url:string;current_version:string;
   };
