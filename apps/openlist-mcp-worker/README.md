@@ -37,6 +37,37 @@ Remaining 12 candidates from the 18-tool Spec are **not registered** pending con
 
 Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. Pagination returns `total` (the **unfiltered upstream** count), `page`, `per_page`, and `has_more` (based on upstream total); after path/scope filtering, `entries.length` may be smaller than the upstream count. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
 
+## P1 write candidates: upstream overwrite gate (2026-10-27)
+
+The scoped Koofr acceptance mount was reported by the real upstream as a
+WebDAV provider, and the connected ChatGPT OpenList client still confirms
+only the six existing tools are enabled. The retained disposable fixture is
+present; **no collision or mutation test was run during this audit**.
+
+In OpenList-Worker upstream source at
+[`29b7a8eb`](https://github.com/OpenListTeam/OpenList-Worker/tree/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f),
+the [WebDAV driver](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/drivers/webdav/driver.ts)
+calls MOVE/COPY with `overwrite=true` for rename, move, and copy; the
+[WebDAV client](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/drivers/webdav/util.ts)
+sends `Overwrite: T` by default. Its PUT lacks an `If-None-Match: *`
+condition. The fixed
+[upstream file routes](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/server/fs.ts)
+do not provide a no-overwrite input for these four operations. A separate
+`list/get` preflight would remain racy, and a successful prior fixture upload
+does not establish safe conflict behavior. This source audit is not evidence
+that every deployed driver revision or Koofr backend honors a proposed
+conditional request.
+
+**Decision:** keep `openlist_upload_small`, `openlist_rename`,
+`openlist_copy`, and `openlist_move` unregistered. To reconsider them,
+first obtain a verified driver-enforced no-overwrite contract (including
+real Koofr collision and concurrency tests and appropriate conditional
+semantics) or explicitly revise Spec #309's trusted-human-overwrite policy.
+Retain scope, single-target, cross-storage, uncertain-dispatch and no-retry
+gates. Do not add a proxy, database or broad REST escape hatch to bypass this
+restriction. The contract test also checks that direct invocation of these
+unregistered tools does not dispatch a Service Binding request.
+
 ## Verification
 
 `pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **Code and CI success do not independently authorize another production deployment or automatic release.**
