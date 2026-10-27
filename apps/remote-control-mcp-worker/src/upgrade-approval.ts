@@ -238,9 +238,10 @@ export async function readWindowsUpgrade(
  * upgrade later; an ACK or a version string alone never grants completion.
  */
 export async function markWindowsUpgradeCompleted(
-  store: Store, operationId: string, deviceId: string,
+  store: Store, operationId: string, deviceId: string, observedEpoch: string,
 ): Promise<boolean> {
-  if (!OPERATION.test(operationId) || !UUID.test(deviceId)) return false;
+  if (!OPERATION.test(operationId) || !UUID.test(deviceId) ||
+      typeof observedEpoch !== "string" || observedEpoch.length === 0) return false;
   return store.transaction(async tx => {
     const previous = await tx.get<StoredUpgrade>(key(operationId));
     if (!previous || !["claimed","needs_attention"].includes(previous.state) ||
@@ -249,7 +250,11 @@ export async function markWindowsUpgradeCompleted(
     // A version/report on the original WSS socket is not a NEW authenticated
     // post-switch incarnation, even if its local receipt claims completion.
     const signedEpoch = await tx.get<string>("session:epoch:" + deviceId);
-    if (!previous.claimed_epoch || !signedEpoch || signedEpoch === previous.claimed_epoch) return false;
+    // Fence the exact signed socket whose completed receipt was inspected.
+    // Any reconnect between receipt verification and this DO transaction must
+    // fail closed; "not the original epoch" alone permits stale evidence.
+    if (!previous.claimed_epoch || signedEpoch !== observedEpoch ||
+        observedEpoch === previous.claimed_epoch) return false;
     const device = await tx.get<V2Device>("device:"+deviceId);
     if (!deviceIsAuthorized(device) || device.grant_type === "temporary" ||
         device.device_id !== previous.device_id ||
