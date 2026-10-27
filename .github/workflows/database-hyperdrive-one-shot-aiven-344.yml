@@ -13,6 +13,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       AIVEN_PG_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
       AIVEN_MYSQL_PASSWORD: ${{ secrets.DATABASE_TEST_MYSQL_PASSWORD }}
+    steps:
       - name: Compare effective token identity and CA access without revealing credentials
         shell: bash
         run: |
@@ -43,6 +44,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       AIVEN_PG_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
       AIVEN_MYSQL_PASSWORD: ${{ secrets.DATABASE_TEST_MYSQL_PASSWORD }}
+    steps:
       - name: Compare effective token identity and CA access without revealing credentials
         shell: bash
         run: |
