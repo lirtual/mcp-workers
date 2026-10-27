@@ -56,7 +56,7 @@ export function verifyPublicStorageSettings(publicSettings) {
   return true;
 }
 
-// Public-only scheduled health check: no Cloudflare or MCP credentials.
+// Public settings probe used by the manual release safety check.
 export async function verifyOpenListPublic(transport = fetch) {
   return verifyPublicStorageSettings(await getJson(PUBLIC_SETTINGS, null, transport));
 }

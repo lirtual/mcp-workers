@@ -126,31 +126,18 @@ test('public health check sends one anonymous GET without any Cloudflare credent
     })), /openlist_upstream_storage_unavailable/);
 });
 
-test('scheduled-only public health has no secrets, while pre-release checks live KV identity', async () => {
+test('OpenList production uses no scheduled acceptance; KV gate remains just before publishing', async () => {
   const { readFile } = await import('node:fs/promises');
   const workflow = await readFile(new URL('../.github/workflows/openlist-acceptance.yml', import.meta.url), 'utf8');
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.ok(workflow.includes('  schedule:'));
-  assert.ok(workflow.includes("    - cron: '17 * * * *'"));
-  const start = workflow.indexOf('  upstream-integrity:');
-  const end = workflow.indexOf('  driver-e2e:', start);
-  assert.ok(start > 0 && end > start);
-  const scheduledJob = workflow.slice(start, end);
-  for (const required of [
-    "github.event_name == 'schedule'",
-    "github.ref == 'refs/heads/main'",
-    'run: node scripts/openlist-upstream-integrity.mjs public',
-  ]) assert.ok(scheduledJob.includes(required), 'Missing scheduled check: ' + required);
-  for (const forbidden of [
-    'environment:', 'secrets.', 'vars.', 'CLOUDFLARE_API_TOKEN',
-    'MCP_ACCESS_TOKEN', 'OPENLIST_API_TOKEN',
-    'confirm_disposable_write', 'wrangler deploy',
-    'register-openlist-portal', 'openlist-production-read-smoke',
-  ]) assert.ok(!scheduledJob.includes(forbidden), 'Unexpected scheduled capability: ' + forbidden);
+  assert.ok(workflow.includes('  workflow_dispatch:'));
+  assert.ok(!workflow.includes('  schedule:'));
+  assert.ok(!workflow.includes('  upstream-integrity:'));
+  assert.ok(workflow.includes('  driver-e2e:'));
+  assert.ok(workflow.includes('  portal-register:'));
   const gate = release.indexOf('- name: Verify OpenList upstream KV and storage before release');
   const deploy = release.indexOf('- name: Publish exactly selected Worker');
-  assert.ok(gate > 0 && deploy > gate, 'Upstream check must precede publication');
+  assert.ok(gate > 0 && deploy > gate);
   assert.ok(release.slice(gate, deploy).includes('run: node scripts/openlist-upstream-integrity.mjs'));
-  assert.equal(release.slice(0, deploy).lastIndexOf('      - name: '), gate - 6,
-    'Upstream KV check must be the final step before Wrangler publication');
+  assert.equal(release.slice(0, deploy).lastIndexOf('      - name: '), gate - 6);
 });
