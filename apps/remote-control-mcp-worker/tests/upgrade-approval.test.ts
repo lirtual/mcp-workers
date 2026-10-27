@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, cancelPreparedOwnerUpgrade,
   claimOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain,
-  markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted,
+  markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted, markOwnerUpgradeRolledBack,
   readOwnerUpgrade, UPGRADE_APPROVAL_TTL_MS, UPGRADE_UNCONFIRMED_ATTENTION_MS,
   type ReviewedUpgradePin, type UpgradeApprovalPreview,
 } from "../src/upgrade-approval.ts";
@@ -354,6 +354,28 @@ test("terminal ledger refuses re-pair, revocation, target mismatch or missing ru
   }
 });
 
+
+test("Linux restored old Agent needs a fresh signed epoch and keeps the one-shot lock",async()=>{
+  const f=fixture(),id="signed-linux-rollback";
+  const pin:ReviewedUpgradePin={tag:"v0.1.33",commit:"a".repeat(40),
+    linux_arch:"x64",linux_asset_sha256:"b".repeat(64)};
+  f.modifyDevice({device_info:{os:"linux",arch:"x64",environment:"wsl2",
+    agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"}});
+  const p=await prepareOwnerUpgrade(f.store,id,DEVICE,pin,NOW);
+  assert.equal(p.status,"prepared");
+  if(p.status!=="prepared")return;
+  const shown=await presentOwnerUpgrade(f.store,id,p.confirmation,NOW+1);
+  assert.ok(shown);
+  assert.equal(await confirmOwnerUpgrade(f.store,id,p.confirmation,shown!.form_token,NOW+2),true);
+  assert.ok(await claimOwnerUpgradeDispatch(f.store,id,NOW+3));
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"signed-before-switch"),false);
+  f.rows.set("session:epoch:"+DEVICE,"signed-old-restored");
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"other-socket"),false);
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"signed-old-restored"),true);
+  assert.equal((await readOwnerUpgrade(f.store,id))?.state,"rolled_back");
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"signed-old-restored"),false);
+  assert.equal((await prepareOwnerUpgrade(f.store,"unsafe-retry",DEVICE,pin,NOW+10)).status,"refused");
+});
 
 test("Linux x64/ARM64 use the existing one-use owner approval and fresh WSS epoch ledger",async()=>{
   for(const arch of ["x64","arm64"] as const){
