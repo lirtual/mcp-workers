@@ -34,7 +34,7 @@ function fixture(reply: "admitted" | "silent" = "admitted") {
   let live = true;
   const ws = {
     readyState:WebSocket.OPEN,
-    deserializeAttachment:()=>({device_id:DEVICE,epoch,last_auth_check_at:Date.now()-100}),
+    deserializeAttachment:()=>({device_id:DEVICE,epoch,last_auth_check_at:Date.now()-100,device_info_reported:true}),
     send(frame:string) {
       const request=JSON.parse(frame) as Record<string,unknown>;
       frames.push(request);
