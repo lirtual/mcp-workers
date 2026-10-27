@@ -10,6 +10,14 @@ import {acquireLease,releaseLease,unbindLocal} from '../src/lease.ts';
 // Every token, account and receipt here is synthetic. No Tencent call is made.
 const scriptPath=fileURLToPath(new URL('../.build/weixin/index.js',import.meta.url));
 const migration=readFileSync(new URL('../migrations/0001_owner.sql',import.meta.url),'utf8');
+async function applyMigration(db){
+  // D1.exec treats each *line* as an SQL command; this reviewed migration
+  // contains multiline CREATE statements. Use D1's transactional batch API.
+  const statements=migration.replace(/^\s*--[^\n]*$/gm,'')
+    .split(';').map(sql=>sql.trim()).filter(Boolean);
+  await db.batch(statements.map(sql=>db.prepare(sql)));
+}
+
 const mcpHost='weixin-mcp.example.org';
 const adminHost='weixin-owner.example.org';
 const portal='test-only-portal-bearer';
@@ -52,7 +60,7 @@ test('actual workerd D1 migration, ingress authorization, CAS lease and receipt 
   const mf=runtime();
   try{
     const db=await mf.getD1Database('DB');
-    await db.exec(migration);
+    await applyMigration(db);
     assert.equal((await db.prepare('SELECT state FROM weixin_binding WHERE id=1')
       .first()).state,'unbound');
 
@@ -134,7 +142,7 @@ test('real workerd D1 drives the application QR proof and generation CAS without
   const mf=runtime();
   try{
     const db=await mf.getD1Database('DB');
-    await db.exec(migration);
+    await applyMigration(db);
     const env={DB:db,WEIXIN_ENCRYPTION_KEY:Buffer.alloc(32,17).toString('base64')};
     const owner='signed-access-test-sub';
     let incoming=[];
