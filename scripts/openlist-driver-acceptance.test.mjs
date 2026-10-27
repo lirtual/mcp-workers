@@ -16,9 +16,10 @@ const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
-  authEnv = env,nativeMoveError} = {}) {
+  authEnv = env,nativeMoveError,staleUploadedListingReads = 0} = {}) {
   const requests = [];
   let made = false, uploaded = false;
+  let staleReads = staleUploadedListingReads;
   const nativeSource = `${folder}/native-${env.GITHUB_RUN_ID}-1.txt`;
   const nativeDir = `${folder}/native-copies`;
   const nativeDest = `${nativeDir}/native-${env.GITHUB_RUN_ID}-1.txt`;
@@ -68,9 +69,15 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
           .map(path=>({name:path.slice(nativeDir.length+1),is_dir:false}));
         return response(name,args.path,{total:entries.length,page:1,entries});
       }
-      if(args.path===folder) return response(name,args.path,{
+      if(args.path===folder) {
+        if(uploaded && staleReads > 0) {
+          staleReads--;
+          return response(name,args.path,{total:0,page:1,entries:[]});
+        }
+        return response(name,args.path,{
         total:uploaded?1:0,page:1,
         entries:uploaded?[{name:file.split('/').at(-1),is_dir:false,size:new TextEncoder().encode(fixture).length}]:[]});
+      }
       throw Error('unexpected_list_path');
     }
     if (name==='openlist_create_folder') {
@@ -163,6 +170,15 @@ test('isolated E2E verifies all six operations with only one fixture PUT',async(
   assert.equal(requests.filter(x=>x==='upload').length,1);
   assert.equal(requests.filter(x=>x==='openlist_create_folder').length,2);
 });
+test('fresh fixture tolerates one stale empty read without retrying uploads',async()=>{
+  const {transport,requests}=fakeTransport({staleUploadedListingReads:1});
+  const result=await runOpenListDriverAcceptance(env,transport);
+  assert.equal(result.folder,folder.split('/').at(-1));
+  assert.equal(requests.filter(x=>x==='upload').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_list_files').length,4);
+  assert.equal(requests.filter(x=>x==='openlist_create_folder').length,2);
+});
+
 test('missing approval and non-reviewed roots refuse every request',async()=>{
   const {transport,requests}=fakeTransport();
   await assert.rejects(()=>runOpenListDriverAcceptance({...env,OPENLIST_DRIVER_E2E_APPROVED:'false'},transport),/not_approved/);
