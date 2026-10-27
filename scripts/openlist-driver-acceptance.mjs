@@ -10,6 +10,22 @@ const UPSTREAM = 'https://openlist.lirtual.dpdns.org/api/fs/put';
 function stop(code) { throw Error('openlist_driver_e2e_' + code); }
 function check(condition, code) { if (!condition) stop(code); }
 
+// Only constant classifications reach CI output. Tool messages, file paths,
+// opaque identifiers and upstream bodies must never be interpolated into logs.
+const SAFE_TOOL_ERROR_CODES = new Set([
+  'OUT_OF_SCOPE', 'INVALID_PATH', 'INVALID_INPUT', 'UNAUTHORIZED',
+  'NOT_FOUND', 'NOT_SUPPORTED', 'CONFLICT', 'UPSTREAM_REJECTED',
+  'UPSTREAM_UNAVAILABLE', 'UPSTREAM_UNCERTAIN', 'CONFIGURATION_ERROR',
+  'LIMIT_EXCEEDED',
+]);
+function stopToolFailure(name, body) {
+  const status = ['not_executed', 'unknown', 'failed'].includes(body.status)
+    ? body.status : 'unclassified';
+  const code = SAFE_TOOL_ERROR_CODES.has(body.code)
+    ? body.code.toLowerCase() : 'unclassified';
+  stop(`${name}_${status}_${code}`);
+}
+
 async function boundedJson(response, cap = 32768) {
   const rawSize = response.headers.get('content-length');
   if (rawSize !== null) check(/^\d+$/.test(rawSize) && Number(rawSize) <= cap, 'response_limit');
@@ -90,13 +106,19 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     const rpc = await boundedJson(response);
     check(rpc?.jsonrpc === '2.0' && rpc.id === 1 &&
       !rpc.error && rpc.result &&
-      (rpc.result.isError === true) === expectsError &&
+      (rpc.result.isError === undefined || typeof rpc.result.isError === 'boolean') &&
       Array.isArray(rpc.result.content) && rpc.result.content.length === 1 &&
       rpc.result.content[0]?.type === 'text', 'mcp_contract');
     let body;
     try { body = JSON.parse(rpc.result.content[0].text); }
     catch { stop('mcp_invalid_result'); }
-    check(body.operation === name, 'mcp_wrong_operation');
+    check(body && typeof body === 'object' && !Array.isArray(body) &&
+      body.operation === name, 'mcp_wrong_operation');
+    // Classify an unexpected MCP tool error before the expected-success
+    // isError check. The previous ordering hid native write failures as
+    // a generic mcp_contract error. Never retry an unknown write.
+    if (!expectsError && rpc.result.isError === true) stopToolFailure(name, body);
+    check((rpc.result.isError === true) === expectsError, 'mcp_contract');
     if (!expectsError) check(body.status === 'succeeded' && body.code === 'OK', 'mcp_tool_failed');
     return body;
   }
