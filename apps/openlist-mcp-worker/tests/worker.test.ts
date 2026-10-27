@@ -71,7 +71,8 @@ test('disabled P1 writes cannot be invoked directly or dispatch upstream operati
         name, arguments: { path: '/Koofr/safe/item.txt', name: 'renamed.txt',
           src_dir: '/Koofr/safe', dst_dir: '/Koofr/safe/other',
           names: ['item.txt'], content: 'synthetic' },
-      }), { name: 'McpError' });
+      }), (error: unknown) => error instanceof Error &&
+        error.message.includes('Tool ' + name + ' not found'));
     }
     assert.equal(upstreamCalls, 0);
   } finally { await client.close(); }
