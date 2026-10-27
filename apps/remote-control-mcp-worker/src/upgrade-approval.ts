@@ -289,9 +289,9 @@ export async function markStaleOwnerUpgradeAttention(
   });
 }
 
-/** The OLD Linux Agent can report a verified local service rollback only
- * after a fresh signed WSS incarnation and a narrowly classified SQLite
- * receipt. Keep the one-shot device guard even after terminal restoration.
+/** The restored original Agent can report a watchdog-verified Task or
+ * service rollback only after a fresh signed WSS incarnation and a narrowly
+ * classified SQLite receipt. Keep the device lock after restoration: no retry.
  */
 export async function markOwnerUpgradeRolledBack(
   store: Store, operationId: string, deviceId: string, observedEpoch: string,
@@ -301,7 +301,6 @@ export async function markOwnerUpgradeRolledBack(
   return store.transaction(async tx => {
     const previous = await tx.get<StoredUpgrade>(key(operationId));
     if (!previous || !["claimed","needs_attention"].includes(previous.state) ||
-        !("linux_asset_sha256" in previous.target) ||
         previous.device_id !== deviceId ||
         await tx.get<string>(lock(deviceId)) !== operationId)return false;
     const epoch=await tx.get<string>("session:epoch:"+deviceId);
