@@ -265,7 +265,8 @@ test('native move error is classified without leaking payloads or replaying the 
       ()=>runOpenListDriverAcceptance({...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport),
       error=>{
         assert.equal(error.message,c.expected);
-        assert.doesNotMatch(error.message,/synthetic-|Koofr|Never print|SECRET_|\\/api\\//);
+        assert.doesNotMatch(error.message,/synthetic-|Koofr|Never print|SECRET_/);
+        assert.equal(error.message.includes('/api/'),false);
         return true;
       },
     );
