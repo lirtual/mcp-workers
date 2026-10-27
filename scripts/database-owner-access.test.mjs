@@ -9,7 +9,7 @@ const ownerEmail = "owner@example.net";
 const otpId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const app = { id: "app-one", name: "Database Owner Setup", type: "self_hosted",
   domain: host, self_hosted_domains: [host], aud: audience, session_duration: "15m",
-  auto_redirect_to_identity: true, allowed_idps: [otpId] };
+  auto_redirect_to_identity: true, same_site_cookie_attribute: "lax", allowed_idps: [otpId] };
 const allowed = { decision: "allow", include: [{ email: { email: ownerEmail } }],
   exclude: [], require: [] };
 const params = { host, audience, ownerEmail, otpId };
@@ -25,6 +25,8 @@ test("Owner Access allows only a matching app and exactly one email policy", () 
     { ...app, type: "mcp" },
     { ...app, session_duration: "24h" },
     { ...app, auto_redirect_to_identity: false },
+    { ...app, same_site_cookie_attribute: "strict" },
+    { ...app, same_site_cookie_attribute: undefined },
     { ...app, allowed_idps: undefined },
     { ...app, allowed_idps: [] },
     { ...app, allowed_idps: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] },
