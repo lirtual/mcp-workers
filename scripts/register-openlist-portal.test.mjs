@@ -28,11 +28,11 @@ const env = {
   CLOUDFLARE_API_TOKEN:'synthetic-cloudflare-token',
   MCP_ACCESS_TOKEN:'synthetic-worker-bearer',
 };
-test('OpenList Portal is attached only after verified exact 8-tool inventory and preserves mappings', async () => {
+test('OpenList Portal is attached only after verified exact 7-tool inventory and preserves mappings', async () => {
   assert.deepEqual(OPENLIST_TOOLS, [
     'openlist_capabilities', 'openlist_create_folder', 'openlist_get_file',
     'openlist_list_files', 'openlist_read_text', 'openlist_search_files',
-    'openlist_share_create', 'openlist_share_get',
+    'openlist_share_get',
   ]);
   const state = portal(), originally = structuredClone(state.servers);
   let server = null, created = 0, synced = 0, puts = 0;
