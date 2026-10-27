@@ -3,6 +3,7 @@ import { verifyUpgradeOwnerAccess, validUpgradeFormOrigin, upgradeFormCookie, UP
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 /** Browser tools use the existing authenticated MCP + signed paired-device grant. */
 import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, reviewedWindowsUpgradeTarget } from "./install-bootstrap.ts";
+import {REVIEWED_LINUX_UPGRADE_PIN} from "./linux-upgrade-pin.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -160,12 +161,12 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
 
 const UPGRADE_AGENT_TOOL = {
   name: "upgrade_agent",
-  title: "Request a one-time Windows Agent upgrade",
-  description: "Prepare one immutable pinned Windows Agent upgrade on the exact paired device. Preparation NEVER switches versions. Return a short-lived link requiring a separate verified Cloudflare Access owner confirmation; no remembered MCP tool approval is sufficient. Only after the independent confirmation and signed Agent execution are both operational can a switch take place. Never reuse an uncertain operation ID as a new intent.",
+  title: "Request a one-time Agent upgrade",
+  description: "Prepare one immutable pinned Windows or Linux Agent upgrade on the exact paired device. Preparation NEVER switches versions. Return a short-lived link requiring a separate verified Cloudflare Access owner confirmation; no remembered MCP tool approval is sufficient. Only after the independent confirmation and signed Agent execution are both operational can a switch take place. Never reuse an uncertain operation ID as a new intent.",
   inputSchema: {
     type: "object",
     properties: {
-      device_id: {type:"string",description:"Full, explicitly selected permanently paired Windows device UUID."},
+      device_id: {type:"string",description:"Full, explicitly selected permanently paired Windows or Linux device UUID."},
       operation_id: {type:"string",description:"Stable unique ID for exactly this upgrade request."},
       target_version: {type:"string",description:"A reviewed immutable Agent release; no custom URLs or checksums."},
     },
@@ -188,7 +189,9 @@ async function preparePairedUpgrade(env: Env, id: unknown, input: unknown): Prom
       !/^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(p.operation_id)) {
     return toolError(id,"Invalid upgrade intent.");
   }
-  const target = reviewedWindowsUpgradeTarget(p.target_version);
+  const target = reviewedWindowsUpgradeTarget(p.target_version) ??
+    (REVIEWED_LINUX_UPGRADE_PIN?.tag === p.target_version
+      ? REVIEWED_LINUX_UPGRADE_PIN : null);
   if (!target) return toolError(id,"The requested immutable release has not been reviewed.");
   try {
     const response = await pendingOwner(env)!.fetch("https://v2.internal/upgrade/prepare", {
