@@ -83,7 +83,7 @@ test('HTTP MCP is CI-selected',()=>{
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
 });
 
-test('Weixin production release remains main-only and explicitly selected', () => {
+test('Weixin production release remains main-only and explicitly selected', async () => {
   assert.deepEqual(selectAffectedApps(['apps/weixin-mcp-worker/poc/protocol.mjs']), ['weixin-mcp-worker']);
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('weixin-mcp-worker'));
   const run=(ref)=>execFileSync(process.execPath, ['scripts/select-affected-apps.mjs'], {
@@ -91,7 +91,7 @@ test('Weixin production release remains main-only and explicitly selected', () =
     env: { ...process.env, EVENT_NAME: 'workflow_dispatch', MANUAL_WORKER: 'weixin-mcp-worker', MANUAL_REF: ref },
     encoding: 'utf8'
   });
-  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  const release=await readFile(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   assert.ok(release.includes('\n          - weixin-mcp-worker\n'));
   assert.match(run('refs/heads/main'),/Selected applications: weixin-mcp-worker/);
   assert.throws(()=>run('refs/heads/draft'),/Unsupported manual Worker selection/);
