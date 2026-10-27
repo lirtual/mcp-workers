@@ -1,7 +1,8 @@
-import { getRuntimeLimits, getMaxWriteAffectedRows, parseDirectDatabaseUrl } from '../config.js';
+import { getRuntimeLimits, getMaxWriteAffectedRows } from '../config.js';
 import { PublicError } from '../errors.js';
 import type { EffectiveConnection, EffectiveWriteConnection, Env } from '../types.js';
 import { openConnectionConfig } from './crypto.js';
+import { validatePublicEndpoint } from './endpoint.js';
 import { getRegistryConnection, listRegistryConnections } from './store.js';
 
 function boundDb(env: Env): D1Database {
@@ -31,7 +32,7 @@ export async function admitConnection(env: Env, requestedId?: string): Promise<E
   const payload = await openConnectionConfig(env, row.id, row.dialect, {
     keyId: row.key_id, ciphertext: row.ciphertext
   });
-  const parsed = parseDirectDatabaseUrl(payload.url, row.id);
+  const parsed = await validatePublicEndpoint(payload.url, row.id);
   if (row.dialect !== parsed.dialect) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Connection dialect does not match stored configuration.');
   return { config: { id: row.id, transport: 'direct', url: payload.url }, transport: 'direct',
     ...parsed, limits: getRuntimeLimits(env) };

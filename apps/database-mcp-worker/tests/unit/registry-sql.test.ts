@@ -5,6 +5,7 @@ import { createRegistryConnection, listRegistryConnections, updateRegistryConnec
   setRegistryConnectionStatus, deleteRegistryConnection } from '../../src/registry/store.js';
 import type { D1Database } from '@cloudflare/workers-types';
 import { admitConnection, catalogMetadata } from "../../src/registry/admission.js";
+import { sealConnectionConfig } from "../../src/registry/crypto.js";
 
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
@@ -30,7 +31,9 @@ describe('actual D1 registry SQL', () => {
   it('permits zero records; inserts only up to 50 even on concurrent last-slot admissions', async () => {
     const f = fixture(); all.push(f.sqlite);
     expect(await listRegistryConnections(f.db)).toEqual([]);
-    await Promise.all(Array.from({ length: 50 }, (_, i) => createRegistryConnection(f.db, input('db' + i))));
+    await Promise.all(Array.from({ length: 49 }, (_, i) => createRegistryConnection(f.db, input('db' + i))));
+    const contenders = await Promise.allSettled([createRegistryConnection(f.db, input('db49')), createRegistryConnection(f.db, input('db50'))]);
+    expect(contenders.filter(x => x.status === 'fulfilled')).toHaveLength(1);
     expect((await listRegistryConnections(f.db)).length).toBe(50);
     const results = await Promise.allSettled([createRegistryConnection(f.db, input('slotA')), createRegistryConnection(f.db, input('slotB'))]);
     expect(results.every(r => r.status === 'rejected')).toBe(true);
@@ -79,5 +82,24 @@ describe('connection admission from D1', () => {
     await createRegistryConnection(f.db, input('primary'));
     await expect(admitConnection({ DB: f.db } as Parameters<typeof admitConnection>[0], 'primary'))
       .rejects.toMatchObject({ code: 'CONNECTION_DISABLED' });
+  });
+});
+
+describe('fresh admission of a validated connection', () => {
+  it('re-reads D1 status and decrypts only a currently active row', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    const env = { DB: f.db, DATABASE_ENCRYPTION_KEY: btoa('q'.repeat(32)), DATABASE_KEY_ID: 'key1',
+      RATE_LIMITER: { async limit() { return { success: true }; } } };
+    const sealed = await sealConnectionConfig(env, 'main', 'postgres', { url: 'postgres://u@db.example.net/catalog' });
+    await createRegistryConnection(f.db, { id: 'main', dialect: 'postgres', ciphertext: sealed.ciphertext, keyId: sealed.keyId });
+    await setRegistryConnectionStatus(f.db, 'main', 1, 'active');
+    const previous = globalThis.fetch;
+    globalThis.fetch = async () => Response.json({ Status: 0, Answer: [{ type: 1, data: '1.1.1.1' }] });
+    try {
+      const admitted = await admitConnection(env, 'main');
+      expect(admitted).toMatchObject({ dialect: 'postgres', host: 'db.example.net', transport: 'direct' });
+      await setRegistryConnectionStatus(f.db, 'main', 2, 'disabled');
+      await expect(admitConnection(env, 'main')).rejects.toMatchObject({ code: 'CONNECTION_DISABLED' });
+    } finally { globalThis.fetch = previous; }
   });
 });
