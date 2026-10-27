@@ -34,7 +34,7 @@ function fixture() {
       await prior;
       try { return await fn(store as unknown as DurableObjectTransaction); } finally { release(); }
     },
-  };
+  } as unknown as Pick<DurableObjectStorage, "get" | "put" | "transaction">;
   return { store, rows,
     modifyDevice: (changes: Record<string, unknown>) => {
       rows.set("device:" + DEVICE, { ...(rows.get("device:" + DEVICE) as object), ...changes });
