@@ -50,6 +50,14 @@ async function current(env:Env,row:PairRow):Promise<void>{
   if(!binding||binding.generation!==row.generation||row.expires_at<=now())
     fail('pairing_expired');
 }
+async function assertPairSession(env:Env,row:PairRow,expectedPhase:Phase):Promise<void>{
+  const current=await env.DB.prepare(
+    'SELECT generation,session_id,owner_digest,phase,expires_at FROM weixin_pairing WHERE id=1'
+  ).first<Pick<PairRow,'generation'|'session_id'|'owner_digest'|'phase'|'expires_at'>>();
+  if(!current||current.generation!==row.generation||current.session_id!==row.session_id||
+    current.owner_digest!==row.owner_digest||current.phase!==expectedPhase||
+    current.expires_at<=now())fail('pairing_changed');
+}
 export async function pairingView(env:Env,sub:string):Promise<
   {phase:'none'|'qr_pending'|'bound_unverified'|'expired';qrUrl?:string;proof?:string}
 >{
@@ -169,6 +177,7 @@ export async function verifyPairing(
     ['unbound','ready','bound_unverified','needs_interaction','reauth_required','temporarily_unavailable']);
   try{
     const binding=await readUnderLease(env,lease);
+    await assertPairSession(env,row,'bound_unverified');
     const value=await secret(env,row);
     if(!value.botToken||!value.botId||!value.ownerId||!value.proof||
        typeof value.cursor!=='string')fail('pairing_invalid');
@@ -207,9 +216,12 @@ export async function verifyPairing(
       "session_key_id=?,last_verified_context_at=?,last_sync_at=?,updated_at=?,"+
       "lease_holder=NULL,lease_until=NULL "+
       "WHERE id=1 AND generation=? AND state=? AND lease_holder=? AND lease_until>? "+
-      "AND session_ciphertext IS ?"
+      "AND session_ciphertext IS ? AND EXISTS ("+
+      "SELECT 1 FROM weixin_pairing WHERE id=1 AND generation=? AND session_id=? "+
+      "AND owner_digest=? AND phase='bound_unverified' AND expires_at>?)"
     ).bind(next,encrypted.ciphertext,encrypted.keyId,now(),now(),now(),
-      row.generation,binding.state,lease.owner,now(),binding.session_ciphertext).run();
+      row.generation,binding.state,lease.owner,now(),binding.session_ciphertext,
+      row.generation,row.session_id,row.owner_digest,now()).run();
     if(saved.meta.changes!==1)fail('binding_changed');
     // If this cleanup fails, the generation fence still makes the old QR inert.
     await env.DB.prepare("UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL "+
