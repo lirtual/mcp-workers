@@ -79,6 +79,20 @@ describe('Cloudflare Access signed JWT enforcement', () => {
       body: 'csrf=' + csrf }), validEnv, mock);
     expect(oversized.status).toBe(413);
 
+    // Content-Length may be absent (chunked requests) or smaller than the real
+    // stream. The 40 KB cap must reject before attempting to parse the form.
+    for (const payload of ['padding=' + 'x'.repeat(40_000),
+      'padding=' + '界'.repeat(14_000)]) {
+      const request = new Request(url + '/add', { method: 'POST',
+        headers: { 'cf-access-jwt-assertion': valid,
+          origin: 'https://db-owner.example.org', cookie: cookie!,
+          'content-type': 'application/x-www-form-urlencoded' },
+        body: payload });
+      expect(request.headers.has('content-length')).toBe(false);
+      const response = await handleSetup(request, validEnv, mock);
+      expect(response.status).toBe(413);
+    }
+
     for (const invalid of [
       await token('another@example.org', 'test-aud', now + 120),
       await token('owner@example.org', 'wrong-audience', now + 120),
