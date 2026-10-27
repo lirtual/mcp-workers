@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import type { D1Database } from '@cloudflare/workers-types';
-import { prepareLegacyCatalog, insertLegacyCatalogAtomically } from '../../src/registry/import.js';
+import { prepareLegacyCatalog, insertLegacyCatalogAtomically, verifyLegacyCatalogReadback } from '../../src/registry/import.js';
 import { openConnectionConfig } from '../../src/registry/crypto.js';
 
 const keys = { DATABASE_ENCRYPTION_KEY: btoa('q'.repeat(32)), DATABASE_KEY_ID: 'migration_v1' };
@@ -17,7 +17,8 @@ function localDb() {
   sql.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
   const prepare = (text: string, args: unknown[] = []) => ({
     bind(...next: unknown[]) { return prepare(text, next); },
-    async run() { const result = sql.prepare(text).run(...args as []); return { meta: { changes: result.changes } }; }
+    async run() { const result = sql.prepare(text).run(...args as []); return { meta: { changes: result.changes } }; },
+    async first<T>() { return (sql.prepare(text).get(...args as []) as T) ?? null; }
   });
   return { sql, db: { prepare: (text: string) => prepare(text) } as unknown as D1Database };
 }
@@ -62,6 +63,53 @@ describe('offline atomic legacy migration', () => {
     expect((sql.prepare('SELECT COUNT(*) AS n FROM database_connections').get() as {n: number}).n).toBe(50);
   });
 
+
+  it('authenticates each imported D1 row against the frozen catalog without upstream calls', async () => {
+    const { sql, db } = localDb();
+    const ids = ['source_mysql', 'source_pg'];
+    const rows = await prepareLegacyCatalog(keys, catalog, ids);
+    await insertLegacyCatalogAtomically(db, rows);
+    expect(await verifyLegacyCatalogReadback(db, keys, catalog, ids)).toEqual({ verified: 2 });
+    sql.prepare("UPDATE database_connections SET status='active' WHERE id='source_pg'").run();
+    expect(await verifyLegacyCatalogReadback(db, keys, catalog, ids)).toEqual({ verified: 2 });
+  });
+  it('rejects missing rows, swapped encrypted records and invalid credentials without disclosure', async () => {
+    const ids = ['source_mysql', 'source_pg'];
+    const { sql, db } = localDb();
+    const rows = await prepareLegacyCatalog(keys, catalog, ids);
+    const verify = () => verifyLegacyCatalogReadback(db, keys, catalog, ids);
+    await expect(verify()).rejects.toMatchObject({
+      code: 'CONFIGURATION_UNAVAILABLE', message: 'Migration readback verification failed.'
+    });
+    await insertLegacyCatalogAtomically(db, rows);
+    const a = sql.prepare('SELECT ciphertext FROM database_connections WHERE id=?').get('source_mysql') as { ciphertext: string };
+    const b = sql.prepare('SELECT ciphertext FROM database_connections WHERE id=?').get('source_pg') as { ciphertext: string };
+    sql.prepare('UPDATE database_connections SET ciphertext=? WHERE id=?').run(b.ciphertext, 'source_mysql');
+    sql.prepare('UPDATE database_connections SET ciphertext=? WHERE id=?').run(a.ciphertext, 'source_pg');
+    await expect(verify()).rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    sql.prepare('UPDATE database_connections SET ciphertext=? WHERE id=?').run(a.ciphertext, 'source_mysql');
+    sql.prepare('UPDATE database_connections SET ciphertext=? WHERE id=?').run(b.ciphertext, 'source_pg');
+    sql.prepare("UPDATE database_connections SET ciphertext='invalid' WHERE id='source_pg'").run();
+    await expect(verify()).rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    sql.prepare('UPDATE database_connections SET ciphertext=? WHERE id=?').run(b.ciphertext, 'source_pg');
+    await expect(verifyLegacyCatalogReadback(db, {
+      DATABASE_ENCRYPTION_KEY: btoa('z'.repeat(32)), DATABASE_KEY_ID: 'migration_v1'
+    }, catalog, ids)).rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    expect(await verify()).toEqual({ verified: 2 });
+  });
+  it('rejects changed URLs even when D1 ciphertext remains authentically encrypted', async () => {
+    const { sql, db } = localDb();
+    const ids = ['source_mysql', 'source_pg'];
+    const rows = await prepareLegacyCatalog(keys, catalog, ids);
+    await insertLegacyCatalogAtomically(db, rows);
+    const different = await prepareLegacyCatalog(keys, JSON.stringify({
+      source_mysql: 'mysql://fixture:other@mysql.example.org:3306/acceptance', source_pg: pg
+    }), ids);
+    sql.prepare('UPDATE database_connections SET ciphertext=? WHERE id=?')
+      .run(different[0]!.ciphertext, 'source_mysql');
+    await expect(verifyLegacyCatalogReadback(db, keys, catalog, ids))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+  });
   it('rejects incomplete approval and obsolete transport before any insertion', async () => {
     await expect(prepareLegacyCatalog(keys, catalog, ['source_mysql']))
       .rejects.toMatchObject({ code: 'INVALID_INPUT' });

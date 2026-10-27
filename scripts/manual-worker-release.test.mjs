@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,6 +168,32 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
   assert.throws(() => verifyDatabaseD1Readiness([{ success: false, results: [valid] }], 2),
     /unavailable/);
   assert.throws(() => verifyDatabaseD1Readiness(result(valid), 0), /expected ID count missing/);
+});
+
+
+test("generated Database D1 release SQL executes against actual SQLite schema", () => {
+  const sql = new DatabaseSync(":memory:");
+  try {
+    sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0001_connections.sql",
+      import.meta.url), "utf8"));
+    sql.exec("CREATE TABLE d1_migrations (name TEXT NOT NULL)");
+    sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0001_connections.sql");
+    const add = sql.prepare("INSERT INTO database_connections VALUES (?,? ,? ,? ,?,1,1,1)");
+    add.run("source_mysql", "mysql", "active", "x".repeat(48), "key_v1");
+    add.run("source_pg", "postgres", "disabled", "y".repeat(48), "key_v1");
+    const query = databaseD1ReadinessSql(["source_mysql", "source_pg"]);
+    const execute = () => [{ success: true, results: [sql.prepare(query).get()] }];
+    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /not yet TLS-validated and active/);
+    sql.prepare("UPDATE database_connections SET status='active' WHERE id=?").run("source_pg");
+    assert.deepEqual(verifyDatabaseD1Readiness(execute(), 2),
+      { record_count: 2, preserved_count: 2 });
+    sql.prepare("UPDATE database_connections SET ciphertext='invalid' WHERE id=?").run("source_mysql");
+    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /inventory invalid/);
+    sql.prepare("DELETE FROM database_connections WHERE id=?").run("source_mysql");
+    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /missing reviewed legacy/);
+  } finally {
+    sql.close();
+  }
 });
 
 test("Database transition validates reviewed D1, Owner route and two throttles before release", () => {

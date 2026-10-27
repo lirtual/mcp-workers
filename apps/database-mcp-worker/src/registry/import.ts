@@ -3,6 +3,7 @@ import { PublicError } from '../errors.js';
 import type { Dialect } from '../types.js';
 import { openConnectionConfig, sealConnectionConfig } from './crypto.js';
 import type { EncryptionKeys } from './crypto.js';
+import { getRegistryConnection } from './store.js';
 
 /** Offline-only cutover primitive; source Secret stays in memory. No DB probe.
  * Not exposed via deployed MCP, HTTP setup or release workflow.
@@ -38,6 +39,40 @@ export async function prepareLegacyCatalog(
     encrypted.push({ id: config.id, dialect, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
   }
   return encrypted;
+}
+
+
+/**
+ * Read-only, offline source-to-D1 attestation. Compare every frozen legacy URL
+ * to authenticated AES-GCM data under its immutable ID and dialect.
+ * No upstream socket, credential output, log or network probe is performed.
+ * This is not a release approval and never activates imported connections.
+ */
+export async function verifyLegacyCatalogReadback(
+  db: D1Database, keys: EncryptionKeys, rawCatalog: string, approvedIds: readonly string[]
+): Promise<{ verified: number }> {
+  // This also validates the frozen inventory and rejects unsupported transports
+  // before making any D1 reads; each sealed candidate stays memory-only.
+  const prepared = await prepareLegacyCatalog(keys, rawCatalog, approvedIds);
+  const originals = parseDatabaseConfig(rawCatalog);
+  if (!db) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Migration readback unavailable.');
+  try {
+    for (const original of originals) {
+      if (original.transport !== 'direct') throw Error('unsupported');
+      const row = await getRegistryConnection(db, original.id);
+      const expected = prepared.find(item => item.id === original.id);
+      if (!row || !expected || row.dialect !== expected.dialect ||
+          (row.status !== 'disabled' && row.status !== 'active') ||
+          row.revision < 1) throw Error('mismatch');
+      const opened = await openConnectionConfig(keys, row.id, row.dialect,
+        { keyId: row.key_id, ciphertext: row.ciphertext });
+      if (opened.url !== original.url || opened.ca !== undefined) throw Error('mismatch');
+    }
+  } catch {
+    // Do not leak D1 diagnostics, ciphertext, database endpoints or passwords.
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Migration readback verification failed.');
+  }
+  return { verified: originals.length };
 }
 
 /** One atomic SQLite statement, without UPSERT, replace or secret logging.

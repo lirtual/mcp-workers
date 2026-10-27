@@ -21,6 +21,10 @@ owner-provisioned disposable Aiven MySQL/PostgreSQL for feature acceptance.
    The offline-only source helper in src/registry/import.ts prepares and inserts
    a single SQLite statement; it imports disabled and DOES NOT run in any
    deployed route or CI migration workflow. Repeated imports/collisions fail.
+   The offline verifyLegacyCatalogReadback helper independently opens every
+   stored D1 ciphertext using authenticated AES-GCM and checks the original
+   ID, dialect, URL and absence of unapproved custom CA. A row count or status
+   is NOT equivalent to this cryptographic source-to-D1 verification.
 5. Existing migrated IDs cannot become active until individually verified with
    real TLS and health evidence. The owner disallows testing the two current
    business databases; their individual validation must stay BLOCKED and
