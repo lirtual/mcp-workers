@@ -44,8 +44,8 @@ export function buildMcpServer(env:Env,dispatch:Dispatcher=sendToWeixin):McpServ
     // Refresh the verified owner's context before claiming a new send receipt.
     // A failed poll must not cause a send with a known potentially stale token.
     // This is bounded on-demand, not a scheduler or a new MCP tool.
-    await syncCursorOnce(env,session=>createIlinkClient().getUpdates(session.botToken,session.cursor));
-    return sendOnce(env,body,request_id,dispatch);
+    return sendOnce(env,body,request_id,dispatch,()=>
+      syncCursorOnce(env,session=>createIlinkClient().getUpdates(session.botToken,session.cursor)).then(()=>{}));
   }));
   return server;
 }
