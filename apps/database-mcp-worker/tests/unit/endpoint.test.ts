@@ -22,6 +22,21 @@ describe('eligible public database endpoints', () => {
         .rejects.toMatchObject({ code: 'INVALID_INPUT' });
     }
   });
+  it('normalizes IPv6 DNS answers before checking reserved and documentation networks', async () => {
+    const resolver6 = (address: string): typeof fetch =>
+      vi.fn(async (url: RequestInfo | URL) => Response.json({
+        Status: 0,
+        Answer: String(url).includes('type=AAAA')
+          ? [{ type: 28, data: address }]
+          : [{ type: 1, data: '1.1.1.1' }]
+      })) as unknown as typeof fetch;
+    for (const address of ['2001:0db8::1', '2001:0000::1', '2001:0010::1', '2001:0020::1']) {
+      await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one', resolver6(address)))
+        .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    }
+    await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one',
+      resolver6('2606:4700::1111'))).resolves.toMatchObject({ host: 'db.example.org' });
+  });
   it('fails closed when public DNS validation fails', async () => {
     await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one',
       vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch))
