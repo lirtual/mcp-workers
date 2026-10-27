@@ -70,7 +70,7 @@ describeReadIntegration('real database read-only integration', () => {
   });
 
   it('database-native PostgreSQL reader permissions reject writes and side-effecting function execution', async () => {
-    const client = new PgClient({ connectionString: pgReadUrl!, ssl: false });
+    const client = new PgClient({ connectionString: pgReadUrl!, ssl: { rejectUnauthorized: true } });
     await client.connect();
     try {
       await expect(client.query("UPDATE public.users SET email = 'changed' WHERE id = 1")).rejects.toBeTruthy();
@@ -88,7 +88,8 @@ describeReadIntegration('real database read-only integration', () => {
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
       database: decodeURIComponent(url.pathname.slice(1)),
-      disableEval: true
+      disableEval: true,
+      ssl: { rejectUnauthorized: true, verifyIdentity: true }
     });
     try {
       await expect(client.query("UPDATE users SET email = 'changed' WHERE id = 1")).rejects.toBeTruthy();
@@ -192,7 +193,8 @@ describeWriteIntegration('real database safe write integration', () => {
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
       database: decodeURIComponent(url.pathname.slice(1)),
-      disableEval: true
+      disableEval: true,
+      ssl: { rejectUnauthorized: true, verifyIdentity: true }
     });
     try {
       await expect(mysqlClient.query('CREATE TABLE forbidden_writer_table (id INT)')).rejects.toBeTruthy();

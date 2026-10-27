@@ -202,6 +202,12 @@ jobs:
       - name: Prepare integration databases
         run: pnpm --filter database-mcp-worker exec node scripts/setup-integration.mjs
 
+      - name: Enforce certificate-verified TLS for database integration fixtures
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
+          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
+        run: bash apps/database-mcp-worker/scripts/configure-ci-tls.sh
+
       - name: Run database integration tests
         run: pnpm --filter database-mcp-worker run test:integration
 

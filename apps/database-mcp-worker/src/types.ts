@@ -17,6 +17,11 @@ export interface RateLimitBinding {
 export interface Env {
   DATABASE_CONFIG?: string;
   DB?: D1Database;
+  DATABASE_SETUP_HOST?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
+  OWNER_EMAIL?: string;
+  SETUP_RATE_LIMITER?: RateLimitBinding;
   DATABASE_ENCRYPTION_KEY?: string;
   DATABASE_KEY_ID?: string;
   DATABASE_ENCRYPTION_PREVIOUS_KEY?: string;
