@@ -10,6 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
+import { presentWindowsUpgrade, confirmWindowsUpgrade } from "./upgrade-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -666,6 +667,35 @@ export class V2OwnerCoordinator {
     if (path === "/read") {
       try { return await this.readFile(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
+    // Internal-only routes; the public Worker MUST validate signed Access
+    // owner identity, host, Origin and CSRF before forwarding either call.
+    // Neither route dispatches an Agent operation or changes a Windows Task.
+    if (path === "/upgrade/preview" || path === "/upgrade/confirm") {
+      try {
+        const body = await limitedJson(request, 2048) as Record<string, unknown>;
+        if (!body || typeof body !== "object" || Array.isArray(body) ||
+            typeof body.operation_id !== "string" ||
+            typeof body.confirmation !== "string" ||
+            (path === "/upgrade/preview"
+              ? Object.keys(body).length !== 2
+              : Object.keys(body).length !== 3 || typeof body.form_token !== "string")) {
+          return Response.json({ error: "invalid_request" }, { status: 400 });
+        }
+        if (path === "/upgrade/preview") {
+          const result = await presentWindowsUpgrade(this.state.storage,
+            body.operation_id, body.confirmation);
+          return result
+            ? Response.json(result, { headers: { "cache-control": "no-store" } })
+            : Response.json({ error: "not_found" }, { status: 404 });
+        }
+        const approved = await confirmWindowsUpgrade(this.state.storage,
+          body.operation_id, body.confirmation, body.form_token as string);
+        return Response.json({ approved }, { status: approved ? 200 : 409,
+          headers: { "cache-control": "no-store" } });
+      } catch {
+        return Response.json({ error: "unavailable" }, { status: 503 });
+      }
     }
     if (path === "/devices") {
       try {
