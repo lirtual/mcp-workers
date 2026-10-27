@@ -22,15 +22,20 @@
 
 打开 [Settings → Environments](https://github.com/lirtual/mcp-workers/settings/environments)，建立下表所列的**环境名称**（名称只是配置作用域，不代表 staging/production）。Actions 根据 `inputs.worker` 自动选择同名 Environment，无须配置 `WORKER_CONFIG_SCOPE` 或其他环境名称标记。请注意：GitHub 可能自动创建尚不存在的空 Environment，因此应在首次手动发布前配置专属 Secrets 和必要的审批/分支保护规则。**任何手动发布**缺少必需密钥都会在上传代码前终止。
 
-| Environment 名称 | 所需 Environment Secrets | 可选 Environment Variables |
+| Environment 名称 | Environment Secrets（不含继承的 `MCP_ACCESS_TOKEN`） | Environment Variables |
 | --- | --- | --- |
-| `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
-| `ima-mcp-worker` | `IMA_API_KEY` | **`IMA_CLIENT_ID`（必填）**、`IMA_BASE_URL`（可选） |
 | `database-mcp-worker` | `DATABASE_CONFIG` | `MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
-| `ssh-mcp-worker` | `SSH_BROKER_TOKEN` | 暂无 |
-| `remote-control-mcp-worker` | 无新增必需密钥（正常发布保留 Cloudflare 现有 Secret） | 暂无 |
-| `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS`（1–8 个换行分隔 PAT） | 暂无 |
-| `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` | **`MCP_PORTAL_CLIENT_ID`（必填）** |
+| `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
+| `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
+| `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
+| `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
+| `remote-control-mcp-worker` | 无 | 无 |
+| `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
+| `http-mcp-worker` | `HTTP_CREDENTIALS_JSON`（可选） | 无 |
+| `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
+| `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
+
+表中 Email 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、OpenList 的 `OPENLIST_ALLOWED_ROOTS`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；其余列出的 Variables 为可选。HTTP 的 `HTTP_CREDENTIALS_JSON` 是可选 Secret，未配置时不要提交空占位值。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
@@ -42,7 +47,7 @@
 
 不需要 `*_SECRETS_JSON`、不需要套一层 JSON、也不需要手动转义双引号。
 
-SSH 的 `SSH_BROKER_TOKEN` 在 `ssh-mcp-worker` 与 EdgeSSH（`edgessh`）两端必须使用相同的现有值（至少 32 字符），重命名不轮换 Token。旧部署可能仍有 `MCP_BROKER_TOKEN`；先将同一值配置为两端的 `SSH_BROKER_TOKEN`，发布并验收两端后，再显式清理旧 Secret。Cloudflare 不提供 Secret 明文读回；若原值不可取得，必须协调两端轮换，不能只改一侧。本仓库只管理 `ssh-mcp-worker`，不会自动更新 `edgessh`。保留 `edgessh` 的 `MCP_BROKER_HOST_IDS` 白名单。正式 SSH Worker 使用私有 `EDGE_SSH_BROKER` Service Binding，不复制 `ENCRYPTION_KEY` 或 `EDGE_SSH_DB`；默认受限，不启用 `MCP_BROKER_FULL_ACCESS`。
+当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
 
 GitHub 的 Environment 如果配置了所需审批/分支保护，请为每个 Worker 的 Environment **重新设置同等保护**；原 `production` 的保护规则不会继承。Repository 级密钥对拥有工作流修改/运行权限的人仍可见于任务运行上下文，请限制主分支修改权限与发布权限。
 
@@ -53,7 +58,10 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 - Raindrop：`RAINDROP_RATE_LIMIT_MAX_RETRIES`（0–10）。
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
 - Database：`MAX_ROWS`（1–5000）、`MAX_RESULT_BYTES`（1–8388608）、`MAX_SCHEMA_BYTES`（1–4194304）、`QUERY_TIMEOUT_MS`（1–60000）、`MAX_WRITE_AFFECTED_ROWS`（1–100）。
-- SSH、Remote Control：本次不允许附加运行时变量，保留源码安全配置。
+- Email：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（三者必填，必须是已批准的 Access 生产身份值）。
+- OpenList：`OPENLIST_ALLOWED_ROOTS`（必填，1–16 个经运行时路径解析器验证的绝对路径 JSON 数组）。
+- Workflow：`MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `GITHUB_ACTION_APPROVED_REPOSITORIES`）。
+- SSH、Remote Control、GitHub Actions、HTTP：没有额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导。
 
 未填写可选 Variable 时仍采用 `wrangler.jsonc` 中的默认值；GitHub 中填写时会由 `wrangler deploy --var` 传入**当前选中的 Worker**，并在发布前进行类型/范围验证。受管 Worker 使用 `keep_vars: false`，所以旧 Cloudflare Dashboard 中**没有在源码或当前 GitHub Variables 明确声明的普通 Variable 会在下次手动部署后被清理**。不要把数据库密码或访问 Token 当作 Variable；Durable Object、Service Binding 和 Secret 不属于这些可选纯文本 Variable。
 
@@ -61,7 +69,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 
 1. 完成上述全局配置和对应 Worker 的配置空间迁移；不用删除旧 `production` 环境。
 2. 打开 [GitHub Actions → Release Worker](https://github.com/lirtual/mcp-workers/actions/workflows/release.yml)，选择 `main`，每次只选择一个 Worker，并显式勾选 `deploy_to_production`。
-3. GitHub 自动选择与所选 Worker 同名的 Environment；**每次发布**必须找到该 Worker 所有必需 Secrets，以及 IMA / Workflow 各自的必填 Client ID Environment Variable，缺一即中止，绝不静默沿用 Cloudflare 上的旧值。
+3. GitHub 自动选择与所选 Worker 同名的 Environment；**每次发布**必须找到该 Worker 所有必需 Secrets，以及 Email、IMA、OpenList、Workflow 各自的必填 Environment Variables，缺一即中止，绝不静默沿用 Cloudflare 上的旧值。
 4. Preflight 检查 Cloudflare 账户与 Worker 是否存在。随后无论是首次部署还是更新，都仅将**选中 Worker** 的全部必需非空 Secrets 写入权限 0600 的 runner 临时文件，执行 `wrangler deploy --secrets-file`；未列出的现有 Secret 不会因本次上传而自动删除。
 5. 若 Worker 已存在，GitHub 的必需 Secret 值会覆盖 Cloudflare 对应值。Remote Control 也使用同一套密钥同步规则，但其 `DEVICE_COORDINATOR` Durable Object、配对、Agent 身份及回执均不应因 Secret 同步被重置或迁移。
 6. 部署后核对 Cloudflare 100% 活跃版本、所需绑定与安全设置。最后通过原 Portal 做一次认证读取验收。不得误将未认证 401/403 当作已通过端到端验收。

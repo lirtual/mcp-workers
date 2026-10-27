@@ -9,7 +9,7 @@ MCP client
   -> Cloudflare MCP Portal
   -> Authorization: Bearer <MCP_ACCESS_TOKEN>
   -> ima-mcp-worker Worker /mcp
-  -> Worker Secrets IMA_CLIENT_ID + IMA_API_KEY
+  -> Worker Variable IMA_CLIENT_ID + Worker Secret IMA_API_KEY
   -> IMA OpenAPI
 
 ```
@@ -28,13 +28,9 @@ Do not reuse any credential across these layers or between Workers.
 
 ## Configure the Worker
 
-Required Worker Secrets:
+Required Worker Secrets: `IMA_API_KEY`, `MCP_ACCESS_TOKEN`.
 
-```text
-IMA_CLIENT_ID
-IMA_API_KEY
-MCP_ACCESS_TOKEN
-```
+Required Worker Variable: `IMA_CLIENT_ID` (`plain_text` in Cloudflare, configured under the `ima-mcp-worker` GitHub Environment Variables).
 
 No R2 binding or public export domain is required. The Worker does not provide file-export tools or public Litterbox uploads.
 

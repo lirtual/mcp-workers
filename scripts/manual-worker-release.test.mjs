@@ -841,3 +841,45 @@ test("upstream existence check fails on incomplete or unavailable inventory", as
   await assert.rejects(scriptExists(account,"openlist-tsworkers","token",unavailable),
     /inventory HTTP 403/);
 });
+
+
+test("worker release documentation stays aligned with the selected-Worker contract", async () => {
+  const { BOOTSTRAP_SECRETS } = await import("./bootstrap-worker-secrets.mjs");
+  const { WORKER_VARIABLES } = await import("./worker-release-variables.mjs");
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+openlist_portal_registration:/);
+  assert.ok(options, "missing worker release choice options");
+  const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-mcp-worker)$/gm)].map(m => m[1]).sort();
+  assert.deepEqual(selected, Object.keys(BOOTSTRAP_SECRETS).sort());
+  assert.deepEqual(selected, Object.keys(WORKER_VARIABLES).sort());
+
+  for (const path of ["../docs/MANUAL-WORKER-BOOTSTRAP.md",
+    "../docs/runtime-configuration.md", "../docs/mcp-shared-token-runbook.md",
+    "../docs/ingress-policy.md"]) {
+    const doc = readFileSync(new URL(path, import.meta.url), "utf8");
+    for (const worker of selected) assert.ok(doc.includes("`" + worker + "`"), path + " omits " + worker);
+  }
+  const bootstrap = readFileSync(new URL("../docs/MANUAL-WORKER-BOOTSTRAP.md", import.meta.url), "utf8");
+  for (const [worker, secrets] of Object.entries(BOOTSTRAP_SECRETS)) {
+    const row = bootstrap.split("\n").find(line => line.startsWith("| `" + worker + "` |"));
+    assert.ok(row, "missing Worker Environment row for " + worker);
+    for (const secret of secrets.filter(x => x !== "MCP_ACCESS_TOKEN"))
+      assert.ok(row.includes("`" + secret + "`"), worker + " docs omit " + secret);
+  }
+  const actions = readFileSync(new URL("../apps/github-actions-mcp-worker/README.md", import.meta.url), "utf8");
+  assert.match(actions, /"worker":"github-actions-mcp-worker","deploy_to_production":"true"/);
+  assert.doesNotMatch(actions, /"worker":"remote-control-mcp-worker"/);
+  const imaConfig = JSON.parse(readFileSync(new URL("../apps/ima-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  assert.ok(!imaConfig.secrets.required.includes("IMA_CLIENT_ID"));
+  for (const path of ["../apps/ima-mcp-worker/README.md",
+    "../apps/ima-mcp-worker/DEPLOY_CLOUDFLARE.md", "../apps/ima-mcp-worker/docs/mcp-portal.md"]) {
+    const doc = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.match(doc, /IMA_CLIENT_ID/);
+    assert.match(doc, /Variable/);
+    assert.doesNotMatch(doc, /Worker Secrets:.*IMA_CLIENT_ID/);
+  }
+  const ingress = readFileSync(new URL("../docs/ingress-policy.md", import.meta.url), "utf8");
+  for (const worker of ["email-mcp-worker", "workflow-mcp-worker"])
+    assert.match(ingress, new RegExp(worker));
+  assert.match(ingress, /workers_dev: false/);
+});
