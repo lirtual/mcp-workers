@@ -173,8 +173,20 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'POST' || !['start','refresh','scan','verify','send'].includes(url.pathname.slice(1))) {
     reply(res, 404, 'not found'); return;
   }
-  if (!['application/x-www-form-urlencoded'].includes((req.headers['content-type'] ?? '').split(';')[0]) ||
-      (req.headers.origin && req.headers.origin !== ORIGIN && req.headers.origin !== `http://127.0.0.1:${PORT}`)) {
+  // Some Windows Edge configurations report an opaque Origin for a
+  // user-activated, same-origin form navigation. Only accept that narrow case:
+  // protected Fetch Metadata + fresh CSRF + loopback Host + allowed state.
+  const opaqueLocalNavigation = req.headers.origin === 'null' &&
+    req.headers['sec-fetch-site'] === 'same-origin' &&
+    req.headers['sec-fetch-mode'] === 'navigate' &&
+    req.headers['sec-fetch-dest'] === 'document' &&
+    req.headers['sec-fetch-user'] === '?1';
+  const allowedOrigin = !req.headers.origin ||
+    req.headers.origin === ORIGIN ||
+    req.headers.origin === `http://127.0.0.1:${PORT}` ||
+    opaqueLocalNavigation;
+  if ((req.headers['content-type'] ?? '').split(';')[0] !== 'application/x-www-form-urlencoded' ||
+      !allowedOrigin) {
     reply(res, 403, '<!doctype html><meta charset="utf-8"><h2>Blocked unsafe form request</h2><p>Open the local pairing page directly, without an external proxy or embedded browser.</p><a href="/">Back to pairing page</a>'); return;
   }
   const data = await readForm(req).catch(() => null);

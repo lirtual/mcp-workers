@@ -37,6 +37,35 @@ test('localhost PoC refuses pre-verification sends, cross-site and malformed req
     headers:{'content-type':'application/x-www-form-urlencoded',origin:'https://evil.example'},body:form});
   assert.equal(badOrigin.status, 403);
   assert.match(await badOrigin.text(), /Blocked unsafe form request/);
+  const opaqueHeaders = {
+    'content-type': 'application/x-www-form-urlencoded',
+    origin: 'null',
+    'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-user': '?1',
+  };
+  // Exact browser headers observed on the Windows device: accepted only
+  // with fresh CSRF, strict Fetch Metadata, and an allowed state.
+  // Node fetch rewrites browser-only Sec-Fetch-Mode; send exact HTTP bytes.
+  const postRaw = (headers, body=form) => new Promise((resolve, reject) => {
+    const req = httpRequest(base + '/verify', {
+      method:'POST', headers: { ...headers, 'content-length':Buffer.byteLength(body) },
+    }, res => { res.resume(); res.on('end',()=>resolve(res.statusCode)); });
+    req.on('error',reject); req.end(body);
+  });
+  assert.equal(await postRaw(opaqueHeaders), 409,
+    'valid opaque local form reaches stage guard');
+  for (const headers of [
+    { ...opaqueHeaders, 'sec-fetch-site':'cross-site' },
+    { ...opaqueHeaders, 'sec-fetch-mode':'cors' },
+    { ...opaqueHeaders, 'sec-fetch-user':'' },
+    { ...opaqueHeaders, 'sec-fetch-dest':'empty' },
+    { 'content-type':'application/x-www-form-urlencoded', origin:'null' },
+  ]) {
+    assert.equal(await postRaw(headers),403);
+  }
+  assert.equal(await postRaw(opaqueHeaders, 'csrf=invalid'),403);
   const staleForm = await fetch(base + '/start', {method:'POST',
     headers:{'content-type':'application/x-www-form-urlencoded',origin},body:'csrf=invalid'});
   assert.equal(staleForm.status, 403);
