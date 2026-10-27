@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade,
+  claimWindowsUpgrade, readWindowsUpgrade, UPGRADE_APPROVAL_TTL_MS,
+  type ReviewedUpgradePin, type UpgradeApprovalPreview,
+} from "../src/upgrade-approval.ts";
+
+const DEVICE = "2a83dae6-600c-49cc-b643-ab0d5ec7e0c8";
+const PIN: ReviewedUpgradePin = {
+  tag: "v0.1.32-rc.1",
+  commit: "8b9eb25aadeb06b7c59b102d75a749ac8fa0c54e",
+  windows_asset_sha256: "7b7bb8331caed2a84a32437e700ec6f8341de9e90aae949e38f1581bf7545ad2",
+};
+const NOW = 1793100000000;
+function fixture() {
+  const rows = new Map<string, unknown>();
+  rows.set("device:" + DEVICE, {
+    device_id: DEVICE, name: "RAY-WORKSPACE", public_key: "fixed-key",
+    fingerprint: "1234567890abcdef12345678", revoked: false, grant_type: "permanent",
+    approved_at: NOW - 60_000,
+    device_info: { os: "windows", arch: "x64", environment: "native",
+      agent_version: "v0.1.31-rc.1", hostname: "RAY-WORKSPACE", os_version: "10.0.26200" },
+  });
+  let tail = Promise.resolve();
+  const store = {
+    get: async <T>(key: string) => structuredClone(rows.get(key)) as T | undefined,
+    put: async (key: string, value: unknown) => { rows.set(key, structuredClone(value)); },
+    transaction: async <T>(fn: (transaction: typeof store) => Promise<T>) => {
+      const prior = tail;
+      let release!: () => void;
+      tail = new Promise<void>(resolve => { release = resolve; });
+      await prior;
+      try { return await fn(store); } finally { release(); }
+    },
+  } as unknown as Pick<DurableObjectStorage, "get" | "put" | "transaction">;
+  return { store, rows,
+    modifyDevice: (changes: Record<string, unknown>) => {
+      rows.set("device:" + DEVICE, { ...(rows.get("device:" + DEVICE) as object), ...changes });
+    } };
+}
+async function start(f: ReturnType<typeof fixture>, id = "one-upgrade") {
+  const result = await prepareWindowsUpgrade(f.store, id, DEVICE, PIN, NOW);
+  assert.equal(result.status, "prepared");
+  if (result.status !== "prepared") throw Error("Test fixture did not prepare upgrade");
+  return result;
+}
+test("Issue #39 prepared upgrade is inert; GET preview is not approval; one-use POST and one-use claim", async () => {
+  const f = fixture();
+  const { confirmation, preview } = await start(f);
+  assert.equal((await readWindowsUpgrade(f.store, preview.operation_id))?.state, "prepared");
+  assert.equal(await claimWindowsUpgrade(f.store, preview, NOW + 5), false,
+    "MCP admission by itself must never dispatch an upgrade");
+  const presented = await presentWindowsUpgrade(f.store, preview.operation_id, confirmation, NOW + 10);
+  assert.deepEqual(presented?.preview, preview);
+  assert.ok(presented?.form_token);
+  assert.equal((await readWindowsUpgrade(f.store, preview.operation_id))?.state, "prepared");
+  assert.equal(await confirmWindowsUpgrade(f.store, preview.operation_id, confirmation,
+    "0".repeat(64), NOW + 20), false);
+  assert.equal(await confirmWindowsUpgrade(f.store, preview.operation_id, confirmation,
+    presented!.form_token, NOW + 20), true);
+  assert.equal(await confirmWindowsUpgrade(f.store, preview.operation_id, confirmation,
+    presented!.form_token, NOW + 21), false, "POST replay must not reapprove");
+  assert.equal(await presentWindowsUpgrade(f.store, preview.operation_id, confirmation, NOW + 22), null);
+  assert.equal(await claimWindowsUpgrade(f.store, preview, NOW + 23), true);
+  assert.equal(await claimWindowsUpgrade(f.store, preview, NOW + 24), false,
+    "the same operation ID can never be redispatched");
+  const read = await readWindowsUpgrade(f.store, preview.operation_id);
+  assert.equal(read?.state, "claimed");
+  assert.ok(!JSON.stringify(read).includes(confirmation));
+  assert.ok(!JSON.stringify(read).includes(presented!.form_token));
+  assert.equal((await prepareWindowsUpgrade(f.store, preview.operation_id, DEVICE, PIN, NOW + 50)).status, "existing");
+  assert.equal((await prepareWindowsUpgrade(f.store, "different-operation", DEVICE, PIN, NOW + 50)).status, "refused",
+    "a claimed unknown outcome guards the entire device");
+});
+
+test("no owner POST, expired or mismatching GET tokens and CSRF cannot approve", async () => {
+  const f = fixture();
+  const { preview, confirmation } = await start(f);
+  const wrong = "0".repeat(64);
+  assert.equal(await presentWindowsUpgrade(f.store, preview.operation_id, wrong, NOW + 1), null);
+  assert.equal(await confirmWindowsUpgrade(f.store, preview.operation_id, wrong, wrong, NOW + 1), false);
+  const form = await presentWindowsUpgrade(f.store, preview.operation_id, confirmation, NOW + 2);
+  assert.ok(form);
+  assert.equal(await claimWindowsUpgrade(f.store, preview, NOW + 3), false);
+  assert.equal(await confirmWindowsUpgrade(f.store, preview.operation_id, confirmation, form!.form_token,
+    NOW + UPGRADE_APPROVAL_TTL_MS), false);
+  assert.equal(await claimWindowsUpgrade(f.store, preview, NOW + UPGRADE_APPROVAL_TTL_MS), false);
+  assert.equal((await readWindowsUpgrade(f.store, preview.operation_id))?.state, "prepared");
+  assert.equal((await prepareWindowsUpgrade(f.store, "another-after-expiry", DEVICE, PIN,
+    NOW + UPGRADE_APPROVAL_TTL_MS + 1)).status, "prepared");
+  assert.equal((await prepareWindowsUpgrade(f.store, preview.operation_id, DEVICE, PIN,
+    NOW + UPGRADE_APPROVAL_TTL_MS + 2)).status, "existing", "old nonce must not be recreated");
+});
+
+test("same operation ID never reveals original secret; concurrent preparations never both reserve device", async () => {
+  const f = fixture();
+  const results = await Promise.all([
+    prepareWindowsUpgrade(f.store, "race-a", DEVICE, PIN, NOW),
+    prepareWindowsUpgrade(f.store, "race-b", DEVICE, PIN, NOW),
+  ]);
+  assert.deepEqual(results.map(x => x.status).sort(), ["prepared", "refused"]);
+  const winning = results.find(x => x.status === "prepared");
+  assert.ok(winning && winning.status === "prepared");
+  const repeat = await prepareWindowsUpgrade(f.store, winning.preview.operation_id, DEVICE, PIN, NOW);
+  assert.deepEqual(repeat, { status: "existing" });
+});
+
+test("permanent Windows only, known target only, no wrong-device or arbitrary input", async () => {
+  for (const changes of [
+    { grant_type: "temporary" }, { revoked: true },
+    { device_info: { os: "linux", arch: "x64", environment: "wsl2", agent_version: "v0.1.31-rc.1" } },
+    { device_info: { os: "windows", arch: "arm64", environment: "native", agent_version: "v0.1.31-rc.1" } },
+    { fingerprint: "wrong" },
+  ]) {
+    const f = fixture(); f.modifyDevice(changes);
+    assert.equal((await prepareWindowsUpgrade(f.store, "blocked", DEVICE, PIN, NOW)).status, "refused");
+  }
+  for (const pin of [
+    { ...PIN, tag: "v0.1.31-rc.1" }, { ...PIN, tag: "v0.1.30-rc.1" },
+    { ...PIN, tag: "../evil" }, { ...PIN, commit: "a".repeat(39) },
+    { ...PIN, windows_asset_sha256: "not-a-digest" },
+  ]) {
+    const f = fixture();
+    assert.equal((await prepareWindowsUpgrade(f.store, "blocked", DEVICE, pin, NOW)).status, "refused");
+  }
+  const f = fixture();
+  assert.equal((await prepareWindowsUpgrade(f.store, "../unsafe", DEVICE, PIN, NOW)).status, "refused");
+  assert.equal((await prepareWindowsUpgrade(f.store, "wrong-device", "bad", PIN, NOW)).status, "refused");
+});
+
+test("revoked/repaired/version-drifted device loses approval both before confirm and before claim", async () => {
+  for (const changes of [
+    { revoked: true },
+    { fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaa" },
+    { device_info: { os: "windows", arch: "x64", environment: "native", agent_version: "v0.1.32-rc.1" } },
+  ]) {
+    const f = fixture();
+    const prepared = await start(f);
+    const presented = await presentWindowsUpgrade(f.store, prepared.preview.operation_id, prepared.confirmation, NOW + 1);
+    assert.ok(presented);
+    f.modifyDevice(changes);
+    assert.equal(await confirmWindowsUpgrade(f.store, prepared.preview.operation_id, prepared.confirmation,
+      presented!.form_token, NOW + 2), false);
+  }
+  const f = fixture();
+  const prepared = await start(f);
+  const shown = await presentWindowsUpgrade(f.store, prepared.preview.operation_id, prepared.confirmation, NOW + 1);
+  assert.ok(shown);
+  assert.equal(await confirmWindowsUpgrade(f.store, prepared.preview.operation_id, prepared.confirmation,
+    shown!.form_token, NOW + 2), true);
+  f.modifyDevice({ fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaa" });
+  assert.equal(await claimWindowsUpgrade(f.store, prepared.preview, NOW + 3), false);
+});
+
+test("exact immutable target and identity remain bound across approved claim", async () => {
+  const f = fixture(), p = await start(f);
+  const presented = await presentWindowsUpgrade(f.store, p.preview.operation_id, p.confirmation, NOW + 1);
+  assert.ok(presented);
+  assert.equal(await confirmWindowsUpgrade(f.store, p.preview.operation_id, p.confirmation,
+    presented!.form_token, NOW + 2), true);
+  const edits: UpgradeApprovalPreview[] = [
+    { ...p.preview, device_id: "11111111-1111-4111-8111-111111111111" },
+    { ...p.preview, fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaa" },
+    { ...p.preview, current_version: "v0.1.30-rc.1" },
+    { ...p.preview, target: { ...PIN, commit: "a".repeat(40) } },
+    { ...p.preview, target: { ...PIN, windows_asset_sha256: "a".repeat(64) } },
+    { ...p.preview, target: { ...PIN, tag: "v0.1.33-rc.1" } },
+  ];
+  for (const edit of edits) assert.equal(await claimWindowsUpgrade(f.store, edit, NOW + 3), false);
+  assert.equal(await claimWindowsUpgrade(f.store, p.preview, NOW + 4), true);
+});
