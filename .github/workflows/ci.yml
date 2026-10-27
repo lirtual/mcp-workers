@@ -41,6 +41,9 @@ jobs:
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs
 
+      - name: Verify static workflow references and release Worker fixtures
+        run: node --test scripts/verify-workflow-dispatch-gates.test.mjs
+
       - name: Verify Workflow Portal registration contract (offline)
         run: node --test scripts/register-workflow-portal.test.mjs
 
