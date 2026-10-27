@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade,
-  claimWindowsUpgrade, readWindowsUpgrade, UPGRADE_APPROVAL_TTL_MS,
+  claimWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain,
+  readWindowsUpgrade, UPGRADE_APPROVAL_TTL_MS,
   type ReviewedUpgradePin, type UpgradeApprovalPreview,
 } from "../src/upgrade-approval.ts";
 
@@ -189,4 +190,46 @@ test("expired approved but never claimed operation can release reservation witho
     NOW + UPGRADE_APPROVAL_TTL_MS + 2), false);
   assert.equal((await readWindowsUpgrade(f.store, p.preview.operation_id))?.state, "approved",
     "expired old approval remains auditable and cannot claim or mutate a new operation");
+});
+
+test("confirmed owner intent dispatches exactly once with authoritative timestamp",async()=>{
+  const f=fixture(), p=await start(f,"dispatch-once");
+  assert.equal(await claimWindowsUpgradeDispatch(f.store,"dispatch-once",NOW+5),null,
+    "preparation alone never authorizes a device command");
+  const shown=await presentWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+10);
+  assert.ok(shown);
+  assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
+    shown!.form_token,NOW+20),true);
+  const accepted=await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+23);
+  assert.deepEqual(accepted,{...p.preview,approved_at:NOW+20});
+  assert.equal(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+24),null);
+  assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"claimed");
+  assert.equal(await markUpgradeDispatchUncertain(f.store,p.preview.operation_id),true);
+  assert.equal(await markUpgradeDispatchUncertain(f.store,p.preview.operation_id),false);
+  assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"needs_attention");
+  assert.equal((await prepareWindowsUpgrade(f.store,"new-after-unknown",DEVICE,PIN,
+    NOW+UPGRADE_APPROVAL_TTL_MS+50)).status,"refused");
+});
+test("post-confirm key rotation/revocation/expiry forbids dispatch without consuming approval",async()=>{
+  for(const change of [
+    {revoked:true},{fingerprint:"aaaaaaaaaaaaaaaaaaaaaaaa"},
+    {device_info:{os:"windows",arch:"x64",environment:"native",agent_version:"v0.1.33",
+      upgrade_protocol:"owner-one-shot-v1"}},
+  ]){
+    const f=fixture(),p=await start(f);
+    const shown=await presentWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+    assert.ok(shown);
+    assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
+      shown!.form_token,NOW+2),true);
+    f.modifyDevice(change);
+    assert.equal(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+3),null);
+    assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"approved");
+  }
+  const f=fixture(),p=await start(f);
+  const shown=await presentWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+  assert.ok(shown);
+  assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
+    shown!.form_token,NOW+2),true);
+  assert.equal(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,
+    NOW+UPGRADE_APPROVAL_TTL_MS),null);
 });
