@@ -232,6 +232,14 @@ test("offline claimed upgrade becomes guarded needs_attention after bounded sett
   assert.equal((await prepareWindowsUpgrade(f.store,"unsafe-retry",DEVICE,PIN,
     NOW+UPGRADE_UNCONFIRMED_ATTENTION_MS+10)).status,"refused",
     "unresponsive state must retain the device lock and prevent automatic retry");
+  // A genuinely completed result can still settle after the conservative
+  // timeout; the timeout never becomes authorization for a second dispatch.
+  const old=f.rows.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+  f.modifyDevice({device_info:{...old.device_info,agent_version:PIN.tag}});
+  f.rows.set("session:epoch:"+DEVICE,"signed-late-success");
+  assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE,
+    "signed-late-success"),true);
+  assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"completed");
 });
 
 test("post-confirm key rotation/revocation/expiry forbids dispatch without consuming approval",async()=>{
