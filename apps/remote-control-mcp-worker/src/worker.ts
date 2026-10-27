@@ -1240,7 +1240,8 @@ function escapeUpgradeHtml(value: string): string {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
 }
 /** Deliberately unreachable without an independent Access application and a
- * prepared owner-DO operation. The page can only approve, never dispatch.
+ * prepared owner-DO operation. POST may dispatch once through the owner DO;
+ * it must never assert success before signed reconnect and receipt validation.
  */
 async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -1314,7 +1315,7 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
     const result = await response.json() as {approved?:boolean;status?:unknown};
     if (result.approved !== true) return deny(409);
     const message = result.status === "admitted"
-      ? "Approval consumed; Agent durably recorded the upgrade intent. The version has NOT been switched.\n"
+      ? "Approval accepted; upgrade requested. Verify the operation status after the Agent reconnects. This is not a completion confirmation.\n"
       : "Approval consumed, but Agent admission is uncertain. Do not repeat; inspect this operation ID.\n";
     return new Response(message, {
       status: 200, headers: { ...UPGRADE_PAGE_HEADERS, "content-type": "text/plain; charset=utf-8",
