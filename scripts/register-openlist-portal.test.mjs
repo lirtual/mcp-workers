@@ -28,7 +28,12 @@ const env = {
   CLOUDFLARE_API_TOKEN:'synthetic-cloudflare-token',
   MCP_ACCESS_TOKEN:'synthetic-worker-bearer',
 };
-test('OpenList Portal is attached only after verified exact 6-tool inventory and preserves mappings', async () => {
+test('OpenList Portal is attached only after verified exact 7-tool inventory and preserves mappings', async () => {
+  assert.deepEqual(OPENLIST_TOOLS, [
+    'openlist_capabilities', 'openlist_create_folder', 'openlist_get_file',
+    'openlist_list_files', 'openlist_read_text', 'openlist_search_files',
+    'openlist_share_get',
+  ]);
   const state = portal(), originally = structuredClone(state.servers);
   let server = null, created = 0, synced = 0, puts = 0;
   const transport = async request => {
@@ -107,8 +112,8 @@ test('manual-release registration happens after deployed version readback and is
   const deny = release.indexOf('name: Check unauthenticated MCP surface without credentials');
   const attach = release.indexOf('name: Register production OpenList MCP with existing One-MCP Portal');
   assert.ok(verify >= 0 && deny > verify && attach > deny);
-  // The first deployment can verify binding/read scope without publishing six
-  // unaccepted tools to Portal. Human approval after live driver E2E is separate.
+  // A deployment can verify binding/read scope before separately approving
+  // an expanded tool inventory in Portal. Human approval after live driver E2E is separate.
   assert.match(release,/openlist_portal_registration:\s*\n\s*description:.*live driver E2E/);
   assert.match(release,/openlist_portal_registration:[\s\S]*?type: boolean\s*\n\s*default: false/);
   assert.match(release.slice(attach,attach+400),

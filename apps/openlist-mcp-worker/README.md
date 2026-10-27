@@ -2,12 +2,14 @@
 
 ## Implementation status (2026-10-27)
 
-OpenList MCP is implemented in `main` and its first six tools have been
-deployed and exercised through a real ChatGPT client (see Issue #309 for
-release and acceptance evidence). **This does not mean the entire 18-tool
-candidate Spec has passed**. The other 12 tools remain unregistered until
-their own upstream driver, authorization, client-confirmation and safety gates
-pass. This Worker does not provide a general-purpose OpenList API proxy.
+The first six OpenList MCP tools have passed historical production and ChatGPT
+acceptance (see Issue #309 for release evidence). **This does not mean the entire
+18-tool candidate Spec has passed**. This revision registers `openlist_share_get`
+as a seventh, read-only tool in source; its real-upstream and ChatGPT acceptance
+are separate gates. Check the live `openlist_capabilities` result and production
+release records for the actual deployed inventory, which may lag behind source.
+The other 11 candidates remain unregistered and gated. This Worker does not
+provide a general-purpose OpenList API proxy.
 
 The existing disposable Koofr E2E folder and tiny synthetic file were
 intentionally retained for human inspection. Cleanup remains outstanding
@@ -55,9 +57,21 @@ or automatic storage repair is configured.
 ## Exposed tools
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
-`openlist_search_files`, `openlist_read_text`, `openlist_create_folder`.
+`openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
+`openlist_create_folder` (**seven registered in source; actual deployment and
+Portal availability must be verified independently**).
 
-Remaining 12 candidates from the 18-tool Spec are **not registered** pending confirmed driver conflict behavior, disposable E2E, authenticated client approval, scoped share concurrency safety, or finite-lived link verification. A narrow `openlist_share_get` read-only adapter now exists for **internal tests only**: it requests one explicit share ID, validates every referenced file path against allowed roots, and returns only allowlisted non-secret metadata. It is **not** published as an MCP tool; no global share list or share mutation was added. In particular, **do not infer from a configured admin token that physical storage is confined to these roots**. Any subsequent release still requires the applicable independent production checks.
+`openlist_share_get` requests one explicit share ID, rejects records with any
+out-of-scope file path, and returns only allowlisted non-secret metadata. It
+never enumerates all shares, creates a share, returns a password/raw link, or
+mutates share state. Existing unit and MCP contract tests cover its restricted
+surface. **Real upstream compatibility and ChatGPT Portal discovery remain
+unverified for this candidate**, so no claim of production acceptance is made.
+The remaining 11 candidates are **not registered** pending driver conflict
+behavior, disposable E2E, authenticated client approval, scoped share
+concurrency safety, or finite-lived link verification. Do not infer from an
+admin-equivalent token that physical storage is confined to these roots.
+Any future release requires its own authorized production checks.
 
 Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. Pagination returns `total` (the **unfiltered upstream** count), `page`, `per_page`, and `has_more` (based on upstream total); after path/scope filtering, `entries.length` may be smaller than the upstream count. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
 
@@ -127,7 +141,7 @@ does it authorize initial deployment.
 
 ## Portal registration after an authorized first release
 
-The existing manual selected-Worker release now defaults `openlist_portal_registration=false`. A first, separately approved publication may deploy the Worker and run read-only/scope verification **without** registering it into One-MCP. Only after the real disposable-driver E2E (including file metadata/search/text and controlled folder creation) is recorded and explicitly accepted may a **separate manual** release set `openlist_portal_registration=true`. This flag is an operator approval, not proof supplied by CI; do not set it on the first publication before actual E2E evidence. Registration still follows exact Cloudflare version/binding readback, public health, anonymous rejection and production read-only checks; it validates the six-tool `tools/list` inventory and preserves all existing Portal mappings. The added input neither authorizes deployment by itself nor enables automatic releases.
+The existing manual selected-Worker release now defaults `openlist_portal_registration=false`. A first, separately approved publication may deploy the Worker and run read-only/scope verification **without** registering it into One-MCP. Only after the real disposable-driver E2E (including file metadata/search/text and controlled folder creation) is recorded and explicitly accepted may a **separate manual** release set `openlist_portal_registration=true`. This flag is an operator approval, not proof supplied by CI; do not set it on the first publication before actual E2E evidence. Registration still follows exact Cloudflare version/binding readback, public health, anonymous rejection and production read-only checks; it validates the authorized `tools/list` inventory and preserves all existing Portal mappings. The added input neither authorizes deployment by itself nor enables automatic releases.
 
 ## Failure state and controlled recovery
 

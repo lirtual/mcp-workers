@@ -47,15 +47,78 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(t => t.name), [
       'openlist_capabilities','openlist_list_files','openlist_get_file',
-      'openlist_search_files','openlist_read_text','openlist_create_folder',
+      'openlist_search_files','openlist_read_text','openlist_share_get',
+      'openlist_create_folder',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
+    assert.equal(tools.find(t => t.name === 'openlist_share_get')?.annotations?.readOnlyHint, true);
     const capabilities = await client.callTool({ name: 'openlist_capabilities', arguments: {} });
     assert.match(JSON.stringify(capabilities), /disabled_pending_acceptance/);
+    const inventory = JSON.parse((capabilities.content[0] as {text:string}).text).observed_state;
+    assert.deepEqual(inventory.active_tools, tools.map(t => t.name));
+    assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_get'), false);
+    assert.equal(inventory.disabled_pending_acceptance.length, 11);
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
+test('share_get accepts an explicit ID, reads only that record, and strips secrets', async () => {
+  const requests: string[] = [];
+  const client = await clientFor(settings(async req => {
+    const route = new URL(req.url);
+    requests.push(route.pathname);
+    assert.equal(req.method, 'GET');
+    assert.equal(route.origin, 'https://openlist.internal');
+    assert.equal(route.pathname, '/api/share/get');
+    assert.equal(route.searchParams.get('id'), 'share_Ab-09');
+    assert.equal(req.headers.get('authorization'), 'upstream-fixture');
+    return Response.json({ code: 200, data: {
+      id: 'share_Ab-09', files: ['/Koofr/safe/readme.md'],
+      disabled: false, expires: '2026-12-31T00:00:00Z', max_accessed: 4,
+      pwd: 'private-password', creator: 'private-creator',
+      raw_url: 'https://private.example/signature', remark: 'private-remark',
+    } });
+  }));
+  try {
+    const response = await client.callTool({
+      name: 'openlist_share_get', arguments: { id: 'share_Ab-09' },
+    });
+    assert.notEqual(response.isError, true);
+    const data = JSON.parse((response.content[0] as {text:string}).text);
+    assert.equal(data.operation, 'openlist_share_get');
+    assert.equal(data.status, 'succeeded');
+    assert.equal(data.target, 'share_Ab-09');
+    assert.deepEqual(data.observed_state, {
+      id: 'share_Ab-09', files: ['/Koofr/safe/readme.md'],
+      disabled: false, expires: '2026-12-31T00:00:00Z', max_accessed: 4,
+    });
+    assert.deepEqual(requests, ['/api/share/get']);
+    assert.doesNotMatch(JSON.stringify(response),
+      /private-password|private-creator|private-remark|private\.example|upstream-fixture|portal-fixture/);
+  } finally { await client.close(); }
+});
+
+test('share_get refuses out-of-scope share records without exposing their contents', async () => {
+  let calls = 0;
+  const client = await clientFor(settings(async req => {
+    calls++;
+    assert.equal(new URL(req.url).pathname, '/api/share/get');
+    return Response.json({ code: 200, data: {
+      id: 'outside-share', files: ['/Koofr/other/private.txt'],
+      disabled: false, pwd: 'secret-share-password',
+    } });
+  }));
+  try {
+    const response = await client.callTool({
+      name: 'openlist_share_get', arguments: { id: 'outside-share' },
+    });
+    assert.equal(response.isError, true);
+    assert.match(JSON.stringify(response), /OUT_OF_SCOPE/);
+    assert.doesNotMatch(JSON.stringify(response), /private\.txt|secret-share-password/);
+    assert.equal(calls, 1);
+  } finally { await client.close(); }
+});
+
 test('disabled P1 writes cannot be invoked directly or dispatch upstream operations', async () => {
   let upstreamCalls = 0;
   const client = await clientFor(settings(async () => {
