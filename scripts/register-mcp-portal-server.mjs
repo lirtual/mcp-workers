@@ -2,6 +2,7 @@
 // Never log Cloudflare bearer, upstream secret, or sensitive tools payloads.
 import assert from 'node:assert/strict';
 import { portalServerMapping, assertSamePortalMappings } from './register-workflow-portal.mjs';
+import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
 
 export function portalPlan(portal) {
   assert.equal(portal?.id, 'one-mcp', 'portal_identity_drift');
@@ -77,6 +78,12 @@ export async function attachFixedPortalServer(env, target, transport = fetch) {
   assert.equal(detail.auth_type, 'bearer', 'portal_' + id + '_auth_drift');
   assert.deepEqual((detail.tools ?? []).map(x => x.name).sort(), [...tools].sort(),
     'portal_' + id + '_tool_inventory_drift');
+  // Access policies are a separate Cloudflare resource from MCP server tools.
+  // Never attach a new server to One-MCP when its Access application lacks
+  // the same reusable service-token and owner policies as One-MCP itself.
+  // This check is read-only and deliberately fails closed; no broad grant.
+  await verifyMcpAccessPolicies(env, { id, name }, transport);
+  console.log(id.toUpperCase() + '_ACCESS_POLICIES_VERIFIED');
   console.log(id.toUpperCase() + '_PORTAL_TOOLS_SYNCED');
   const fresh = portalPlan(await request('GET', '/portals/one-mcp'));
   assertSamePortalMappings(before.servers, fresh.servers);

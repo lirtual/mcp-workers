@@ -1,5 +1,22 @@
 # OpenList MCP Worker · Spec #309
 
+## Implementation status (2026-10-27)
+
+OpenList MCP is implemented in `main` and its first six tools have been
+deployed and exercised through a real ChatGPT client (see Issue #309 for
+release and acceptance evidence). **This does not mean the entire 18-tool
+candidate Spec has passed**. The other 12 tools remain unregistered until
+their own upstream driver, authorization, client-confirmation and safety gates
+pass. This Worker does not provide a general-purpose OpenList API proxy.
+
+The existing disposable Koofr E2E folder and tiny synthetic file were
+intentionally retained for human inspection. Cleanup remains outstanding
+and requires separate authorization; never delete them as part of CI.
+Automatic production publication is disabled while the trusted `main` branch
+protection and all conditional release gates are not satisfied. Releases
+must not be enabled merely because CI is green.
+
+
 An independent, fail-closed MCP adapter to the existing OpenList-Worker using a Cloudflare **Service Binding**. This adapter does not change the upstream deployment, drivers, mounts, UI or public route.
 
 ## Configuration
@@ -16,13 +33,13 @@ No public OpenList base URL, separate database, Cron, or generic HTTP proxy.
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_create_folder`.
 
-Remaining 12 candidates from the 18-tool Spec are **not registered** pending confirmed driver conflict behavior, disposable E2E, authenticated client approval, scoped share concurrency safety, or finite-lived link verification. A narrow `openlist_share_get` read-only adapter now exists for **internal tests only**: it requests one explicit share ID, validates every referenced file path against allowed roots, and returns only allowlisted non-secret metadata. It is **not** published as an MCP tool; no global share list or share mutation was added. In particular, **do not infer from a configured admin token that physical storage is confined to these roots**. Even listed tools still require production read-only verification before launch.
+Remaining 12 candidates from the 18-tool Spec are **not registered** pending confirmed driver conflict behavior, disposable E2E, authenticated client approval, scoped share concurrency safety, or finite-lived link verification. A narrow `openlist_share_get` read-only adapter now exists for **internal tests only**: it requests one explicit share ID, validates every referenced file path against allowed roots, and returns only allowlisted non-secret metadata. It is **not** published as an MCP tool; no global share list or share mutation was added. In particular, **do not infer from a configured admin token that physical storage is confined to these roots**. Any subsequent release still requires the applicable independent production checks.
 
-Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
+Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. Pagination returns `total` (the **unfiltered upstream** count), `page`, `per_page`, and `has_more` (based on upstream total); after path/scope filtering, `entries.length` may be smaller than the upstream count. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
 
 ## Verification
 
-`pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **No production deployment or automatic release is authorized by this code.**
+`pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **Code and CI success do not independently authorize another production deployment or automatic release.**
 
 ## Required read-only verification on a separately authorized production release
 
@@ -78,3 +95,36 @@ particular:
   checks; a previous partial release and green CI are not production
   acceptance. Never auto-roll back, auto-enable candidate tools or enable
   automatic publishing to recover.
+
+
+## Disposable real-driver E2E (independent of Worker release)
+
+The manual `OpenList Driver Acceptance` GitHub Actions workflow verifies the
+existing deployed Worker; it does **not** publish or configure a Worker, change
+One-MCP, or enable any unregistered tools. It only runs from the current
+`main` with `confirm_disposable_write=true` and environment
+`openlist-mcp-worker` using existing scoped credentials.
+
+Acceptance is intentionally constrained to the exact single configured
+`/Koofr/Downloads` root **when it is empty**. If configuration differs or
+any entry exists, it fails *before writing*. Each authorized execution uses a
+fresh `mcp-spec309-e2e-<run-id>-<attempt>` subfolder created through the
+**deployed** `openlist_create_folder` tool, verifies its metadata and
+emptiness, then creates **one** small synthetic text file through the reviewed
+upstream `/api/fs/put` endpoint using the separately scoped admin-equivalent
+environment Secret. This upstream upload is only disposable test data setup:
+it is **not** evidence that the gated public `openlist_upload_small` MCP
+tool works or is safe. There are no overwrite claims or effectful retries.
+
+The script then uses MCP tools to verify file metadata, list, search, exact
+UTF-8 text retrieval and out-of-scope **write** refusal. Logs include only
+stable result/error codes and synthetic run-specific folder names; no
+tokens, upstream response bodies or actual file content are logged. Failed
+or uncertain writes are not retried. The test leaves the tiny synthetic
+file and folder for explicit review and *manual* cleanup rather than using
+an unaccepted destructive API.
+
+A passing workflow establishes driver E2E evidence only. Independent
+approval and ChatGPT Portal acceptance are still required before linking the
+Worker to One-MCP; a green acceptance run does not automatically release,
+register, enable gated tools or close Issue #309.

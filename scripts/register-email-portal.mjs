@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
 import { portalServerMapping, assertSamePortalMappings } from './register-workflow-portal.mjs';
 
 const ORIGIN = 'https://email-mcp.lirtual.dpdns.org/mcp';
@@ -79,6 +80,8 @@ export async function attachEmailPortal(env, transport=fetch) {
   assert.equal(detail.auth_type,'bearer','portal_email_auth_drift');
   assert.deepEqual((detail.tools??[]).map(x=>x.name).sort(),EMAIL_TOOLS,
     'portal_email_tool_inventory_drift');
+  await verifyMcpAccessPolicies(env,{id:'email',name:'Email'},transport);
+  console.log('EMAIL_ACCESS_POLICIES_VERIFIED');
   console.log('EMAIL_PORTAL_TOOLS_SYNCED');
   const fresh=portalPlan(await request('GET','/portals/one-mcp'));
   assertSamePortalMappings(before.servers,fresh.servers);

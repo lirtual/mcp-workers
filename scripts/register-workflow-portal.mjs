@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
 
 const ROOT='https://api.cloudflare.com/client/v4/accounts/';
 const BASE='/access/ai-controls/mcp';
@@ -132,6 +133,11 @@ export async function attachWorkflowPortal(env,transport=fetch){
   assert.equal(details.status,'ready','portal_server_not_ready');
   assert.deepEqual((details.tools||[]).map(x=>x.name).sort(),EXPECTED_TOOLS,
     'portal_server_tool_inventory_drift');
+  // A synced/ready MCP server is not proof of Cloudflare Access policy
+  // attachment. Never modify One-MCP unless the target shares the exact
+  // reusable service-token and owner-identity policy set with One-MCP.
+  await verifyMcpAccessPolicies(env, { id: 'workflow', name: 'Workflow' }, transport);
+  console.log('WORKFLOW_ACCESS_POLICIES_VERIFIED');
   console.log('WORKFLOW_PORTAL_TOOLS_SYNCED');
   // Re-read just before updating to guard against concurrent Portal edits.
   const fresh=await request('GET','/portals/one-mcp');

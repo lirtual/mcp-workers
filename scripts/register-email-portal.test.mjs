@@ -7,6 +7,20 @@ const initial=()=>({id:'one-mcp',name:'One-MCP',hostname:'mcp.lirtual.dpdns.org'
   code_mode:'opt_in',secure_web_gateway:false,
   servers:ids.map(server_id=>({server_id,updated_tools:[{name:'example',enabled:true}]}))});
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-secret',MCP_ACCESS_TOKEN:'shared-secret'};
+const accessApps=(withPolicies=true)=>{
+  const policies=()=>[
+    {id:'11111111-1111-4111-8111-111111111111',name:'WORKFLOWS',
+      decision:'non_identity',reusable:true,precedence:1,
+      include:[{service_token:{token_id:'fake'}}]},
+    {id:'22222222-2222-4222-8222-222222222222',name:'Default Allow Rule',
+      decision:'allow',reusable:true,precedence:2,
+      include:[{email:{email:'example@invalid.test'}}]},
+  ];
+  return [{name:'One-MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',
+    policies:policies()},
+    {name:'Email',type:'mcp',policies:withPolicies?policies():[]}];
+};
+
 
 test('Portal preparation preserves every existing mapping and refuses a wrong Portal',()=>{
   const p=initial();
@@ -22,6 +36,9 @@ test('Email registration syncs live 13 tools and preserves Portal, including rep
     assert.equal(request.headers.get('authorization'),'Bearer cloudflare-secret');
     const path=new URL(request.url).pathname.split('/access/ai-controls/mcp')[1];
     const method=request.method;
+    if(method==='GET'&&new URL(request.url).pathname.endsWith('/access/apps'))
+      return Response.json({success:true,result:accessApps(),
+        result_info:{total_pages:1}});
     let result;
     if(method==='GET'&&path==='/portals/one-mcp')result=structuredClone(portal);
     else if(method==='GET'&&path==='/servers')result=server?[...ids.map(id=>({id})),server]:ids.map(id=>({id}));
@@ -64,4 +81,35 @@ test('Unauthorized server, changed tool inventory, or missing token fails closed
   };
   await assert.rejects(()=>attachEmailPortal(env,transport),/portal_email_tool_inventory_drift/);
   assert.equal(mutated,false);
+});
+
+test('missing Access policies block attaching synced Email server to One-MCP',async()=>{
+  const portal=initial();let server=null,puts=0;
+  const transport=async req=>{
+    const path=new URL(req.url).pathname;
+    if(req.method==='GET'&&path.endsWith('/access/apps'))
+      return Response.json({success:true,result:accessApps(false),
+        result_info:{total_pages:1}});
+    const tail=path.split('/access/ai-controls/mcp')[1];
+    if(req.method==='GET'&&tail==='/portals/one-mcp')
+      return Response.json({success:true,result:portal});
+    if(req.method==='GET'&&tail==='/servers')
+      return Response.json({success:true,result:server?[...ids.map(id=>({id})),server]:
+        ids.map(id=>({id}))});
+    if(req.method==='POST'&&tail==='/servers'){
+      server={id:'email',hostname:'https://email-mcp.lirtual.dpdns.org/mcp',
+        auth_type:'bearer',status:'ready',tools:EMAIL_TOOLS.map(name=>({name}))};
+      return Response.json({success:true,result:{id:'email'}});
+    }
+    if(req.method==='POST'&&tail==='/servers/email/sync')
+      return Response.json({success:true,result:{status:'ready'}});
+    if(req.method==='GET'&&tail==='/servers/email')
+      return Response.json({success:true,result:server});
+    if(req.method==='PUT'){puts++;throw Error('unexpected Portal write');}
+    throw Error('unexpected API route');
+  };
+  await assert.rejects(()=>attachEmailPortal(env,transport),
+    /portal_access_policy_missing/);
+  assert.equal(puts,0);
+  assert.deepEqual(portal.servers,initial().servers);
 });
