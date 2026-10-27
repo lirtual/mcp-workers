@@ -26,8 +26,10 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
       !label(v.arch, 16) ||
       (v.agent_version !== undefined && !label(v.agent_version, 48)) ||
       (v.upgrade_protocol !== undefined &&
-        (v.upgrade_protocol !== "owner-one-shot-v1" || v.os !== "windows" ||
-         v.arch !== "x64" || v.environment !== "native")) ||
+        (v.upgrade_protocol !== "owner-one-shot-v1" ||
+         !((v.os === "windows" && v.arch === "x64" && v.environment === "native") ||
+           (v.os === "linux" && ["x64", "arm64"].includes(String(v.arch)) &&
+            ["native", "wsl2"].includes(String(v.environment)))))) ||
       !["linux", "windows", "darwin"].includes(String(v.os)) ||
       !["native", "wsl2", "container"].includes(String(v.environment)) ||
       // Deployed Agents still report this legacy field. Validate and discard it.
