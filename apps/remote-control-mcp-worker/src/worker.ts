@@ -1331,7 +1331,7 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
     const result = await response.json() as {approved?:boolean;cancelled?:boolean;status?:unknown};
     if (cancelling ? result.cancelled !== true : result.approved !== true) return deny(409);
     const message = cancelling
-      ? "Prepared upgrade cancelled before any device dispatch. An already claimed upgrade cannot be cancelled.\\n"
+      ? "Prepared upgrade cancelled before any device dispatch. An already claimed upgrade cannot be cancelled.\n"
       : result.status === "admitted"
       ? "Approval accepted; upgrade requested. Verify the operation status after the Agent reconnects. This is not a completion confirmation.\n"
       : "Approval consumed, but Agent admission is uncertain. Do not repeat; inspect this operation ID.\n";
