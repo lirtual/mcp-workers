@@ -274,6 +274,108 @@ test('readText never downloads when GET metadata name or path disagrees with tar
   }
 });
 
+const ONE_SHOT_FILE = '/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt';
+const ONE_SHOT_ID = 'mcp_spec309_40493124967_1';
+const ONE_SHOT_CONTENT = 'OpenList MCP Spec309 disposable E2E 40493124967-1\n';
+const ONE_SHOT_ROOTS = '["/Koofr/Downloads"]';
+
+test('one-shot share creation has a pinned synthetic identity, expiry and hidden random password', async () => {
+  let created: Record<string, unknown> | null = null;
+  let createdCount=0, preflight=0, readback=0;
+  const api=new OpenListApi(createConfig(env(async request => {
+    const route=new URL(request.url);
+    assert.equal(route.origin,'https://openlist.internal');
+    assert.equal(request.headers.get('authorization'),'admin-token');
+    if (route.pathname==='/api/fs/get')
+      return ok({name:'sample-40493124967-1.txt',path:ONE_SHOT_FILE,is_dir:false,
+        size:new TextEncoder().encode(ONE_SHOT_CONTENT).byteLength,sign:'test-signed'});
+    if (route.pathname==='/d/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt') {
+      assert.equal(request.headers.get('authorization'),null);
+      return new Response(ONE_SHOT_CONTENT,{status:200,headers:{'content-type':'text/plain'}});
+    }
+    if (route.pathname==='/api/share/get') {
+      assert.equal(route.searchParams.get('id'),ONE_SHOT_ID);
+      if (!created) {preflight++;return Response.json({code:404,data:null});}
+      readback++;
+      return ok({...created,creator:'secret-owner',raw_url:'https://private.test'});
+    }
+    if (route.pathname==='/api/share/create') {
+      createdCount++;
+      assert.equal(request.method,'POST');
+      const body=await request.json() as Record<string,unknown>;
+      assert.deepEqual(Object.keys(body).sort(),
+        ['disabled','expires','files','id','max_accessed','pwd'].sort());
+      assert.equal(body.id,ONE_SHOT_ID);
+      assert.deepEqual(body.files,[ONE_SHOT_FILE]);
+      assert.equal(body.disabled,false);
+      assert.equal(body.max_accessed,1);
+      assert.match(String(body.pwd),/^[a-f0-9]{64}$/);
+      assert.equal(Date.parse(String(body.expires))>Date.now()+55*60*1000,true);
+      assert.equal(Date.parse(String(body.expires))<Date.now()+65*60*1000,true);
+      created=body;
+      return ok({...created,creator:'never-expose',remark:'private-metadata'});
+    }
+    throw Error('unexpected route: '+route.pathname);
+  },ONE_SHOT_ROOTS)));
+  const result=await api.createAcceptanceShare();
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.target,ONE_SHOT_ID);
+  assert.equal(createdCount,1);
+  assert.equal(preflight,1);
+  assert.equal(readback,1);
+  assert.deepEqual(result.observed_state,{
+    id:ONE_SHOT_ID,files:[ONE_SHOT_FILE],disabled:false,
+    expires:created!.expires,max_accessed:1,
+  });
+  assert.doesNotMatch(JSON.stringify(result),/pwd|secret-owner|never-expose|private-metadata|private\.test/);
+  // A repeated request must not create a second share.
+  const repeated=await api.createAcceptanceShare();
+  assert.equal(repeated.status,'not_executed');
+  assert.equal(repeated.code,'CONFLICT');
+  assert.equal(createdCount,1);
+});
+
+test('one-shot share fails closed on unexpected fixture bytes before share lookup or write',async()=>{
+  let writes=0,shareReads=0;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const route=new URL(req.url).pathname;
+    if(route==='/api/fs/get')
+      return ok({name:'sample-40493124967-1.txt',path:ONE_SHOT_FILE,
+        is_dir:false,size:new TextEncoder().encode(ONE_SHOT_CONTENT).byteLength,
+        sign:'valid-sign'});
+    if(route.startsWith('/d/'))return new Response('x'.repeat(ONE_SHOT_CONTENT.length),{
+      status:200,headers:{'content-type':'text/plain'}});
+    if(route==='/api/share/create')writes++;
+    if(route==='/api/share/get')shareReads++;
+    return ok({});
+  },ONE_SHOT_ROOTS)));
+  const result=await api.createAcceptanceShare();
+  assert.equal(result.status,'not_executed');
+  assert.equal(result.code,'NOT_SUPPORTED');
+  assert.equal(writes,0);
+  assert.equal(shareReads,0);
+});
+
+test('one-shot uncertain share write returns unknown without dispatch retry',async()=>{
+  let writes=0;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const path=new URL(req.url).pathname;
+    if(path==='/api/fs/get')
+      return ok({name:'sample-40493124967-1.txt',path:ONE_SHOT_FILE,
+        is_dir:false,size:new TextEncoder().encode(ONE_SHOT_CONTENT).byteLength,sign:'s'});
+    if(path.startsWith('/d/'))return new Response(ONE_SHOT_CONTENT,{status:200,
+      headers:{'content-type':'text/plain'}});
+    if(path==='/api/share/get')return Response.json({code:404,data:null});
+    if(path==='/api/share/create'){writes++;throw Error('connection dropped');}
+    throw Error('unexpected path');
+  },ONE_SHOT_ROOTS)));
+  const result=await api.createAcceptanceShare();
+  assert.equal(result.status,'unknown');
+  assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+  assert.equal(writes,1);
+  assert.doesNotMatch(JSON.stringify(result),/connection dropped/);
+});
+
 test('gated getShare uses only explicit share ID and returns a strictly scoped safe projection', async () => {
   let sent: Request | undefined;
   const api = new OpenListApi(createConfig(env(async request => {
