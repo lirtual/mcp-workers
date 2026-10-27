@@ -8,6 +8,22 @@
 - Bounded *local workerd* probe (`wrangler 4.130.0`, compatibility date `2026-09-12`) upgraded `node:net` TCP to `node:tls` against `www.google.com:443`, verified the public certificate and returned `{ "result": "verified" }`. Temporary probe file and running Worker were removed. This probes Node TLS socket wrapping only, **not mysql2/MySQL negotiation, PostgreSQL negotiation or actual Cloudflare deployment**.
 - Official Cloudflare MySQL Workers tutorial (updated 2026-10-12) reports current MySQL drivers depend on unsupported Node.js secure-connection APIs for Direct connections: https://developers.cloudflare.com/workers/tutorials/mysql/ . The local socket wrapping result cannot override the upstream warning.
 
+## 2026-10-27 — verified release-blocker status
+
+The latest **unmerged Draft PR #345** revision `43320c7` passed [GitHub CI #40469802259](https://github.com/lirtual/mcp-workers/actions/runs/40469802259): application checks, disposable MySQL/PostgreSQL integration, required gate and GitGuardian. This establishes only Node.js/CI compatibility; **no deployed Cloudflare Worker has completed the required database TLS handshake**.
+
+The current official [Cloudflare MySQL tutorial](https://developers.cloudflare.com/workers/tutorials/mysql/) (last updated October 12, 2026) explicitly warns that **direct MySQL driver TLS uses unsupported Node.js APIs that prevent secure connections without Hyperdrive**. Cloudflare separately [documents supported Node TLS functions](https://developers.cloudflare.com/workers/runtime-apis/nodejs/tls/), but support for standalone `node:tls` does not prove that mysql2's mid-stream MySQL TLS upgrade works. Treat MySQL Direct TLS as a **specific unresolved P0 compatibility risk**, not as proven impossible or already successful. Do not switch the project to Hyperdrive, a proxy, a new Worker, plaintext or a custom wire-protocol implementation without a new architecture decision.
+
+Read-only current account inventory and MCP connection metadata show:
+
+- No dedicated disposable Aiven MySQL or PostgreSQL connection is available for the acceptance workflow; the existing Database MCP connection list contains **only the two forbidden-to-test legacy business IDs**. Their credentials and endpoints were not read, tested or probed.
+- Cloudflare lists eight D1 databases, but no approved `database-mcp-db`. The existing "Database" Access application is an MCP app rather than the separate self-hosted Owner Setup OTP app; no Database Owner custom domain is present.
+- None of the required dedicated D1, Owner Access, or production cutover resources has been provisioned as part of #344.
+
+**Next valid proof step:** Provision **two newly named disposable Aiven fixtures** (one MySQL, one PostgreSQL), with independent least-privilege test users, TLS-only endpoints and approved CA/hostnames. Put their credentials in an approved secret store, not a PR, issue, workflow log or chat. Only after separately authorizing the testing deployment, run bounded read, health, Safe Write, structured DDL, certificate/hostname-negative and no-plaintext-downgrade acceptance against *those fixtures from a real deployed Cloudflare Workers runtime*. Keep the production Database Worker and its old `DATABASE_CONFIG` unchanged.
+
+If a dialect cannot satisfy certificate-verified Direct TLS with the existing driver or a **small, demonstrably correct** adaptation, capture the redacted failing runtime stage and stop for a new architecture decision. A green CI result, a local workerd socket smoke, or fixture success for the other dialect cannot replace this P0 gate. Even success for both new fixtures does **not** authorize migration or TLS probing of the old business databases, which remain explicitly prohibited.
+
 ## Unmet mandatory P0 gate
 
 Against **TLS-only nonproduction MySQL and PostgreSQL fixtures in the actual deployed Cloudflare Workers runtime**, separately demonstrate trusted CA, hostname checks, expired/mismatched/untrusted certificate rejection, no plaintext downgrade, plus read, health, structured write and structured DDL end to end for each driver. Record versions, reproducible steps and redacted evidence. Failure of either dialect means stop and revisit architecture; no proxy or Hyperdrive fallback under this Spec.
