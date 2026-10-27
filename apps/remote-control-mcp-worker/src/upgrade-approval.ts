@@ -187,6 +187,37 @@ export async function claimWindowsUpgrade(
   });
 }
 
+/** Consume one confirmed owner approval and bind the exact immutable
+ * payload to a single authenticated Agent WSS dispatch. Never replay after
+ * losing the WSS response: the DO record stays claimed/guarded.
+ */
+export async function claimWindowsUpgradeDispatch(
+  store: Store, operationId: string, now = Date.now(),
+): Promise<(UpgradeApprovalPreview & { approved_at: number }) | null> {
+  if (!OPERATION.test(operationId)) return null;
+  return store.transaction(async tx => {
+    const record = await tx.get<StoredUpgrade>(key(operationId));
+    if (!record || record.state !== "approved" ||
+        typeof record.approved_at !== "number" ||
+        record.approved_at > now || now >= record.expires_at ||
+        await tx.get<string>(lock(record.device_id)) !== operationId ||
+        !matchesLiveDevice(record, await tx.get<V2Device>("device:" + record.device_id))) return null;
+    await tx.put(key(operationId), { ...record, state: "claimed" });
+    return { ...publicPreview(record), approved_at: record.approved_at };
+  });
+}
+export async function markUpgradeDispatchUncertain(
+  store: Store, operationId: string,
+): Promise<boolean> {
+  if (!OPERATION.test(operationId)) return false;
+  return store.transaction(async tx => {
+    const record = await tx.get<StoredUpgrade>(key(operationId));
+    if (!record || record.state !== "claimed") return false;
+    await tx.put(key(operationId), { ...record, state: "needs_attention" });
+    return true;
+  });
+}
+
 /** Read-only status: never returns the nonce or CSRF token. */
 export async function readWindowsUpgrade(
   store: Store, operationId: string,
