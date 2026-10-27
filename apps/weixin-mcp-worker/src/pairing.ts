@@ -126,7 +126,7 @@ export async function pollPairing(
       const changed=await env.DB.prepare(
         "UPDATE weixin_pairing SET phase='bound_unverified',ciphertext=?,key_id=?,poll_after=? "+
         "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' AND expires_at>?"
-      ).bind(sealed.ciphertext,sealed.keyId,t+3,row.generation,row.session_id,t).run();
+      ).bind(sealed.ciphertext,sealed.keyId,0,row.generation,row.session_id,t).run();
       if(changed.meta.changes!==1)fail('pairing_changed');
       return 'confirmed';
     }
