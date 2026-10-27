@@ -12,26 +12,60 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Check repository-scope Cloudflare Hyperdrive authorization without Environment
+      - name: Verify global token identity and scoped test Hyperdrive create
         shell: bash
         run: |
           set -euo pipefail
           [[ -n "$CLOUDFLARE_API_TOKEN" ]]
           node --input-type=module <<'NODE'
-          const api='https://api.cloudflare.com/client/v4';
-          const headers={Authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN,'Content-Type':'application/json'};
-          const account='8bb496011403552e785ea1b834daffdf';
-          for(const [kind,url,opt] of [
-            ['read',api+'/accounts/'+account+'/hyperdrive/configs',{method:'GET'}],
-            ['create_validation',api+'/accounts/'+account+'/hyperdrive/configs',{method:'POST',body:JSON.stringify({name:'db344-auth-validate-only',origin:{}})}]
-          ]){
-            const r=await fetch(url,{...opt,headers,signal:AbortSignal.timeout(15000)});
-            const data=await r.json().catch(()=>({}));
-            console.log(kind,JSON.stringify({http:r.status,success:data.success===true,codes:(data.errors||[]).map(e=>String(e.code).slice(0,10)).slice(0,3)}));
-            if(kind==='create_validation' && r.ok && data.result?.id) {
-              const d=await fetch(api+'/accounts/'+account+'/hyperdrive/configs/'+data.result.id,{method:'DELETE',headers,signal:AbortSignal.timeout(15000)});
-              console.log('unexpected_created_config_cleanup',d.status);
-              if(!d.ok) process.exitCode=1;
+          import {createHash} from 'node:crypto';
+          const base='https://api.cloudflare.com/client/v4';
+          const auth={authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN,'content-type':'application/json'};
+          const acct='8bb496011403552e785ea1b834daffdf';
+          const verify=await fetch(base+'/user/tokens/verify',{headers:auth,signal:AbortSignal.timeout(15000)});
+          const identity=await verify.json().catch(()=>({}));
+          const id=String(identity.result?.id||'unavailable');
+          console.log('repo_global_token',JSON.stringify({http:verify.status,tokenIdHash:createHash('sha256').update(id).digest('hex').slice(0,16)}));
+          let newId;
+          try{
+            const body={name:'db344-repo-scope-only-'+process.env.GITHUB_RUN_ID,
+              origin:{scheme:'postgres',database:'db344_no_connect',host:'example.com',
+                port:5432,user:'db344_unused',password:'TEST_ONLY_INVALID_PASSWORD'},
+              caching:{disabled:true},origin_connection_limit:5};
+            const res=await fetch(base+'/accounts/'+acct+'/hyperdrive/configs',{
+              method:'POST',headers:auth,body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+            const data=await res.json().catch(()=>({}));
+            newId=data.result?.id;
+            console.log('repo_global_create',JSON.stringify({http:res.status,success:data.success===true,
+              codes:(data.errors||[]).map(x=>x.code).slice(0,3)}));
+          }finally{
+            if(newId){
+              const res=await fetch(base+'/accounts/'+acct+'/hyperdrive/configs/'+newId,{
+                method:'DELETE',headers:auth,signal:AbortSignal.timeout(15000)});
+              console.log('repo_global_cleanup',res.status);
+              if(!res.ok) process.exitCode=1;
             }
           }
+          NODE
+  check-environment-token:
+    runs-on: ubuntu-latest
+    environment: database-mcp-worker
+    timeout-minutes: 3
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Verify Environment effective token fingerprint without disclosing the token
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]]
+          node --input-type=module <<'NODE'
+          import {createHash} from 'node:crypto';
+          const response=await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify',{
+            headers:{authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN},
+            signal:AbortSignal.timeout(15000)});
+          const data=await response.json().catch(()=>({}));
+          const id=String(data.result?.id||'unavailable');
+          console.log('environment_effective_token',JSON.stringify({http:response.status,
+            tokenIdHash:createHash('sha256').update(id).digest('hex').slice(0,16)}));
           NODE
