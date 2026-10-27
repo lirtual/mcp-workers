@@ -11,6 +11,10 @@ This directory contains a **non-production first implementation slice** plus an 
 - Manual iLink PoC in `poc/` has previously demonstrated one owner-confirmed full handset delivery. Production lifetime or idle reliability is **not** established.
 
 ## Verification (no provider writes)
+The Draft check pipeline now includes `tests/workerd.test.mjs` after the Wrangler dry-run bundle. It uses the same pinned Miniflare already used by OpenList: a fully local Workerd process and disposable D1 database execute the actual migration, MCP ingress, durable lease/receipt operations, and application QR→owner-proof→generation-switch logic with injected **synthetic** Tencent responses. It cannot create Cloudflare resources, call the real Tencent API, or replace an actual account-owner acceptance.
+
+**Verification status:** these new runtime tests have been committed but have **not yet completed a CI run at the current HEAD**. Earlier 49/49 Weixin application/PoC checks and whole-repository CI Success apply only to commit `1620e2d1`. Do not promote this added coverage to Pass until a matching-SHA runner finishes.
+
 Run `corepack pnpm --filter weixin-mcp-worker check`. The local tests cover authenticated MCP `tools/list`, denied ingress, status and nonready send, D1 SQLite constraints, encryption, duplicate send IDs, unknown outcomes and concurrent same-ID calls, plus PoC mocks.
 
 The integration tests use SQLite as a local adapter to exercise the D1-compatible statements. The Wrangler **local dry-run bundle** passed, with no deployment or bindings; actual Cloudflare D1 semantics and Access/Portal tool calls still need independent verification. No live send is made by tests.
@@ -25,7 +29,7 @@ The integration tests use SQLite as a local adapter to exercise the D1-compatibl
 - Real Cloudflare D1/workerd validation of multi-request CAS and Access-protected QR web flow is pending. An SQLite fixture plus dry-run bundle does not establish production D1 semantics.
 - Independent review of QR-code generation dependency and exact Tencent QR expiry/verification behavior; tests are mocked and MUST be run and checked before claiming this stage verified.
 - Durable ciphertext key rotation orchestration, anti-enumeration/rate limiting under multi-region concurrent requests.
-- Actual Wrangler D1 database ID/routing, owner Access policy, production secrets, Portal registration, ChatGPT tool invocation, workerd tests, idle/reactivation checks.
+- Actual Wrangler D1 database ID/routing, owner Access policy, production secrets, Portal registration, ChatGPT tool invocation, real Cloudflare D1/Access acceptance, idle/reactivation checks.
 - Main-only authorized release gate remains deliberately closed; CI success is not deploy approval.
 
 Do **not** introduce a placeholder production database ID or default route just to make a dry run pass. The deployment wiring requires separate authorization and owned Cloudflare resources. Keep PR #348 Draft, Issue #346 open.
