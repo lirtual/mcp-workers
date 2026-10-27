@@ -171,3 +171,19 @@ test("exact immutable target and identity remain bound across approved claim", a
   for (const edit of edits) assert.equal(await claimWindowsUpgrade(f.store, edit, NOW + 3), false);
   assert.equal(await claimWindowsUpgrade(f.store, p.preview, NOW + 4), true);
 });
+
+test("expired approved but never claimed operation can release reservation without replay", async () => {
+  const f = fixture(), p = await start(f);
+  const shown = await presentWindowsUpgrade(f.store, p.preview.operation_id, p.confirmation, NOW + 10);
+  assert.ok(shown);
+  assert.equal(await confirmWindowsUpgrade(f.store, p.preview.operation_id,
+    p.confirmation, shown!.form_token, NOW + 20), true);
+  assert.equal((await prepareWindowsUpgrade(f.store, "premature", DEVICE, PIN,
+    NOW + 50)).status, "refused");
+  assert.equal((await prepareWindowsUpgrade(f.store, "new-after-expiry", DEVICE, PIN,
+    NOW + UPGRADE_APPROVAL_TTL_MS + 1)).status, "prepared");
+  assert.equal(await claimWindowsUpgrade(f.store, p.preview,
+    NOW + UPGRADE_APPROVAL_TTL_MS + 2), false);
+  assert.equal((await readWindowsUpgrade(f.store, p.preview.operation_id))?.state, "approved",
+    "expired old approval remains auditable and cannot claim or mutate a new operation");
+});
