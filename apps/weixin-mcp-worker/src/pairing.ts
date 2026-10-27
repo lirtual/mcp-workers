@@ -52,7 +52,15 @@ export async function pairingView(env:Env,sub:string):Promise<
 >{
   const row=await rowForOwner(env,sub);
   if(!row||row.phase==='expired'||row.phase==='issuing')return {phase:'none'};
-  try{await current(env,row);}catch{return {phase:'expired'};}
+  try{await current(env,row);}catch{
+    // Expiry or replaced generation cannot be used again. Scrub on the next
+    // owner read rather than introducing a persistent background cleanup job.
+    await env.DB.prepare(
+      "UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL "+
+      "WHERE id=1 AND generation=? AND session_id=?"
+    ).bind(row.generation,row.session_id).run().catch(()=>{});
+    return {phase:'expired'};
+  }
   const value=await secret(env,row);
   if(row.phase==='qr_pending')return {phase:'qr_pending',qrUrl:value.qrUrl};
   return {phase:'bound_unverified',proof:value.proof};
