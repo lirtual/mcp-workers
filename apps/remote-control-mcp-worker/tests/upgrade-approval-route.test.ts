@@ -42,7 +42,7 @@ test("forged owner JWT, arbitrary target and wrong route cannot approve", async 
   const badPaths = [
     "https://evil.example/upgrade-approve/op-123/" + "a".repeat(64),
     "https://rca.lirtual.dpdns.org/upgrade-approve/op-123/" + "a".repeat(64) + "?extra=true",
-    "https://rca.lirtual.dpdns.org/upgrade-approve/op-123/../../../",
+    "https://rca.lirtual.dpdns.org/upgrade-approve/op-123/" + "a".repeat(64) + "/extra",
     "https://rca.lirtual.dpdns.org/upgrade-approve/op-123/invalid",
   ];
   for (const url of badPaths) {
