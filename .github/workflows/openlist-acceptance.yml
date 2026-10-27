@@ -10,6 +10,11 @@ on:
         required: true
         type: boolean
         default: false
+      confirm_portal_registration:
+        description: Separately approve registering existing OpenList MCP in One-MCP (no Worker release)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,7 +22,7 @@ permissions:
 jobs:
   driver-e2e:
     name: Live OpenList MCP / Koofr driver E2E (no deploy)
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true }}
     runs-on: ubuntu-latest
     environment:
       name: openlist-mcp-worker
@@ -49,3 +54,60 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           OPENLIST_API_TOKEN: ${{ secrets.OPENLIST_API_TOKEN }}
         run: node scripts/openlist-driver-acceptance.mjs
+
+  portal-checks:
+    name: Required checks before OpenList Portal registration
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_portal_registration == true && inputs.confirm_disposable_write != true }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      worker: openlist-mcp-worker
+
+  portal-register:
+    name: Register existing OpenList MCP in One-MCP (no Worker deploy)
+    needs: portal-checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.confirm_portal_registration == true &&
+          inputs.confirm_disposable_write != true &&
+          needs.portal-checks.result == 'success' &&
+          needs.portal-checks.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: openlist-mcp-worker
+    concurrency:
+      group: worker-release-openlist-mcp-worker
+      cancel-in-progress: false
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify unchanged current main and offline registration contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
+          node --check scripts/register-openlist-portal.mjs
+          node --test scripts/register-openlist-portal.test.mjs
+          node --test scripts/openlist-production-read-smoke.test.mjs
+      - name: Recheck live deployed OpenList binding and scope before Portal mutation
+        shell: bash
+        env:
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
+        run: node scripts/openlist-production-read-smoke.mjs
+      - name: Register only the existing OpenList MCP server in One-MCP
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+        run: node scripts/register-openlist-portal.mjs
