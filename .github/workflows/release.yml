@@ -18,6 +18,11 @@ on:
           - http-mcp-worker
           - openlist-mcp-worker
           - workflow-mcp-worker
+      openlist_portal_registration:
+        description: 'OpenList only: separately accept live driver E2E before attaching Portal'
+        required: false
+        type: boolean
+        default: false
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -479,7 +484,7 @@ jobs:
         run: node scripts/openlist-production-read-smoke.mjs
 
       - name: Register production OpenList MCP with existing One-MCP Portal
-        if: inputs.worker == 'openlist-mcp-worker'
+        if: inputs.worker == 'openlist-mcp-worker' && inputs.openlist_portal_registration == true
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
