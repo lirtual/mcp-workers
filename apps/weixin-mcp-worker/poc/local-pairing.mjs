@@ -175,10 +175,12 @@ const server = http.createServer(async (req, res) => {
   }
   if (!['application/x-www-form-urlencoded'].includes((req.headers['content-type'] ?? '').split(';')[0]) ||
       (req.headers.origin && req.headers.origin !== ORIGIN && req.headers.origin !== `http://127.0.0.1:${PORT}`)) {
-    reply(res, 403, 'forbidden'); return;
+    reply(res, 403, '<!doctype html><meta charset="utf-8"><h2>Blocked unsafe form request</h2><p>Open the local pairing page directly, without an external proxy or embedded browser.</p><a href="/">Back to pairing page</a>'); return;
   }
   const data = await readForm(req).catch(() => null);
-  if (!data || !checkCsrf(data.get('csrf'))) { reply(res, 403, 'forbidden'); return; }
+  if (!data || !checkCsrf(data.get('csrf'))) {
+    reply(res, 403, '<!doctype html><meta charset="utf-8"><h2>Pairing form expired</h2><p>This page may be from an earlier server session. Open a fresh page and generate a new QR. Old form submissions are not accepted.</p><a href="/">Reload pairing page</a>'); return;
+  }
   // An out-of-order POST must not appear successful or dispatch any message.
   const action = url.pathname.slice(1);
   const expectedStage = { start:'unbound', refresh:'qr_pending', scan:'qr_pending',

@@ -33,10 +33,14 @@ test('localhost PoC refuses pre-verification sends, cross-site and malformed req
   for (const endpoint of ['/send','/scan','/verify','/refresh']) {
     assert.equal((await fetch(base + endpoint, options)).status, 409, endpoint + ' must not dispatch');
   }
-  assert.equal((await fetch(base + '/start', {method:'POST',
-    headers:{'content-type':'application/x-www-form-urlencoded',origin:'https://evil.example'},body:form})).status, 403);
-  assert.equal((await fetch(base + '/start', {method:'POST',
-    headers:{'content-type':'application/x-www-form-urlencoded',origin},body:'csrf=invalid'})).status, 403);
+  const badOrigin = await fetch(base + '/start', {method:'POST',
+    headers:{'content-type':'application/x-www-form-urlencoded',origin:'https://evil.example'},body:form});
+  assert.equal(badOrigin.status, 403);
+  assert.match(await badOrigin.text(), /Blocked unsafe form request/);
+  const staleForm = await fetch(base + '/start', {method:'POST',
+    headers:{'content-type':'application/x-www-form-urlencoded',origin},body:'csrf=invalid'});
+  assert.equal(staleForm.status, 403);
+  assert.match(await staleForm.text(), /Pairing form expired/);
   assert.equal((await fetch(base + '/send', {method:'POST',body:form})).status, 403);
   const fakeHost = await new Promise((resolve,reject) => {
     const req = httpRequest(base + '/', {headers:{Host:'attacker.invalid'}}, res => {
