@@ -1,5 +1,6 @@
 import { PublicError } from '../errors.js';
 import type { Dialect } from '../types.js';
+import { MAX_CONNECTION_CIPHERTEXT_LENGTH } from './crypto.js';
 
 type Db = D1Database;
 export type RegistryStatus = 'active' | 'disabled';
@@ -30,7 +31,7 @@ function assertId(id: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) invalid('Invalid connection id.');
 }
 function assertEncrypted(ciphertext: string, keyId: string): void {
-  if (typeof ciphertext !== 'string' || ciphertext.length > 32768 || ciphertext.length === 0 ||
+  if (typeof ciphertext !== 'string' || ciphertext.length > MAX_CONNECTION_CIPHERTEXT_LENGTH || ciphertext.length === 0 ||
     typeof keyId !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(keyId)) invalid('Invalid encrypted configuration.');
 }
 async function dbCall<T>(operation: () => Promise<T>): Promise<T> {

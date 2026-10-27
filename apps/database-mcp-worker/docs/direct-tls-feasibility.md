@@ -21,7 +21,9 @@ Under Q20=B this is a **release-blocking** feasibility result. Keep the current 
 - Bounded *local workerd* probe (`wrangler 4.130.0`, compatibility date `2026-09-12`) upgraded `node:net` TCP to `node:tls` against `www.google.com:443`, verified the public certificate and returned `{ "result": "verified" }`. Temporary probe file and running Worker were removed. This probes Node TLS socket wrapping only, **not mysql2/MySQL negotiation, PostgreSQL negotiation or actual Cloudflare deployment**.
 - Official Cloudflare MySQL Workers tutorial (updated 2026-10-12) reports current MySQL drivers depend on unsupported Node.js secure-connection APIs for Direct connections: https://developers.cloudflare.com/workers/tutorials/mysql/ . The local socket wrapping result cannot override the upstream warning.
 
-## 2026-10-27 — verified release-blocker status
+## 2026-10-27 — historical pre-provisioning inventory (superseded)
+
+**Historical snapshot only.** The inventory below predates dedicated D1 provisioning and the real Workers TLS tests described above. Do not use it as current status.
 
 The latest **unmerged Draft PR #345** revision `43320c7` passed [GitHub CI #40469802259](https://github.com/lirtual/mcp-workers/actions/runs/40469802259): application checks, disposable MySQL/PostgreSQL integration, required gate and GitGuardian. This establishes only Node.js/CI compatibility; **no deployed Cloudflare Worker has completed the required database TLS handshake**.
 
@@ -41,7 +43,7 @@ If a dialect cannot satisfy certificate-verified Direct TLS with the existing dr
 
 Against **TLS-only nonproduction MySQL and PostgreSQL fixtures in the actual deployed Cloudflare Workers runtime**, separately demonstrate trusted CA, hostname checks, expired/mismatched/untrusted certificate rejection, no plaintext downgrade, plus read, health, structured write and structured DDL end to end for each driver. Record versions, reproducible steps and redacted evidence. Failure of either dialect means stop and revisit architecture; no proxy or Hyperdrive fallback under this Spec.
 
-No Cloudflare test Worker/D1 resource was provisioned and no production resources, credentials, migrations or Secrets were modified. Do not stage or release this incomplete Draft branch: mandatory real Workers P0 TLS acceptance, D1 binding, release gates, controlled migration and final management acceptance remain outstanding.
+**Current 2026-10-27 status:** Dedicated `database-mcp-db` exists with registered `0001_connections.sql` and an empty registry. Both disposable Workers probes ran, failed the mandatory Direct TLS gate and were removed. The production Worker retains `DATABASE_CONFIG` and still has no D1 `DB` binding. Do not merge or release this Draft before verified Workers TLS, Owner browser acceptance, authorized migration and safe cutover.
 
 ## D1 branch-only implementation (not a cutover)
 

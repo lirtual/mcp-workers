@@ -17,6 +17,19 @@ describe('per-record D1 connection encryption', () => {
       await expect(openConnectionConfig(keys, id, dialect, a)).rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
     }
   });
+  it('accepts the largest storable encrypted payload and rejects the next UTF-8 byte', async () => {
+    const prefix = 'postgres://u:pw@db.example.com/';
+    const url = prefix + 'a'.repeat(8192 - prefix.length);
+    const jsonOverhead = new TextEncoder().encode(JSON.stringify({ url, ca: '' })).byteLength;
+    const ca = 'A'.repeat(24_545 - jsonOverhead);
+    const sealed = await sealConnectionConfig(keys, 'limit', 'postgres', { url, ca });
+    expect(sealed.ciphertext.length).toBeLessThanOrEqual(32_768);
+    expect(await openConnectionConfig(keys, 'limit', 'postgres', sealed)).toEqual({ url, ca });
+    await expect(sealConnectionConfig(keys, 'limit', 'postgres', { url, ca: ca + 'A' }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(sealConnectionConfig(keys, 'limit', 'postgres', { url, ca: '界'.repeat(8_000) }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
   it('requires the historical recovery key when opening historical ciphertext', async () => {
     const historic = await sealConnectionConfig(keys, 'prod', 'postgres', config);
     await expect(openConnectionConfig({ DATABASE_ENCRYPTION_KEY: next, DATABASE_KEY_ID: 'key-b' }, 'prod', 'postgres', historic))

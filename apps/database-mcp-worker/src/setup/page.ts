@@ -38,6 +38,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if the candidate is unreachable</label>' : '') +
     '<button type="submit">Test and save edit</button></form></details></li>').join('');
   return htmlResponse('<h1>Database connections</h1><p>Access-authorized Owner only. Passwords, complete URLs and CA PEM contents are never displayed. Copy the Aiven service URI without URL query options: verified TLS is enforced by the Worker.</p>' +
+    '<p>URL and CA have separate input limits and a combined UTF-8 encrypted-storage limit. Shorten the URL or CA if the combined configuration is too large.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Immutable ID<input name="id" maxlength="64" required></label>' +

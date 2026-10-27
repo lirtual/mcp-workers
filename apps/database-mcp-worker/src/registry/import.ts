@@ -1,7 +1,7 @@
 import { parseDatabaseConfig, parseDirectDatabaseUrl } from '../config.js';
 import { PublicError } from '../errors.js';
 import type { Dialect } from '../types.js';
-import { openConnectionConfig, sealConnectionConfig } from './crypto.js';
+import { MAX_CONNECTION_CIPHERTEXT_LENGTH, openConnectionConfig, sealConnectionConfig } from './crypto.js';
 import type { EncryptionKeys } from './crypto.js';
 import { getRegistryConnection } from './store.js';
 
@@ -82,7 +82,7 @@ export async function insertLegacyCatalogAtomically(
       rows.some(r => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(r.id) ||
         !['mysql', 'postgres'].includes(r.dialect) ||
         typeof r.ciphertext !== 'string' || r.ciphertext.length < 40 ||
-        r.ciphertext.length > 32768 || !/^[A-Za-z0-9_-]{1,32}$/.test(r.keyId))) {
+        r.ciphertext.length > MAX_CONNECTION_CIPHERTEXT_LENGTH || !/^[A-Za-z0-9_-]{1,32}$/.test(r.keyId))) {
     throw new PublicError('INVALID_INPUT', 'Invalid prepared migration batch.');
   }
   const now = Date.now();

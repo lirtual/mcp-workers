@@ -12,6 +12,9 @@ export interface EncryptedConfig { keyId: string; ciphertext: string }
 export interface PrivateConnectionConfig { url: string; ca?: string }
 
 const utf8 = new TextEncoder();
+// AES-GCM has 12-byte IV, 16-byte tag, plus a separator between Base64 segments.
+export const MAX_CONNECTION_CIPHERTEXT_LENGTH = 32_768;
+const MAX_CONNECTION_PLAINTEXT_BYTES = 24_545;
 const idPattern = /^[A-Za-z0-9_-]{1,32}$/;
 function unavailable(message: string): never { throw new PublicError('CONFIGURATION_UNAVAILABLE', message); }
 function decodeCanonicalBase64(value: string): Uint8Array {
@@ -56,14 +59,23 @@ export async function sealConnectionConfig(
   keys: EncryptionKeys, id: string, dialect: Dialect, payload: PrivateConnectionConfig
 ): Promise<EncryptedConfig> {
   if (!validPayload(payload)) unavailable('The database configuration is invalid.');
+  const plaintext = utf8.encode(JSON.stringify(payload));
+  // Limit actual serialized UTF-8 bytes before encryption; JS .length is insufficient.
+  if (plaintext.byteLength > MAX_CONNECTION_PLAINTEXT_BYTES) {
+    throw new PublicError('INVALID_INPUT', 'The database URL and CA exceed the combined storage size limit.');
+  }
   const key = await importEncryptionKey(keys.DATABASE_ENCRYPTION_KEY);
   const keyId = currentId(keys);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = new Uint8Array(await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: new Uint8Array(iv).buffer, additionalData: aad(id, dialect).buffer as ArrayBuffer },
-    key, utf8.encode(JSON.stringify(payload))
+    key, plaintext
   ));
-  return { keyId, ciphertext: encodeBase64(iv) + '.' + encodeBase64(encrypted) };
+  const ciphertext = encodeBase64(iv) + '.' + encodeBase64(encrypted);
+  if (ciphertext.length > MAX_CONNECTION_CIPHERTEXT_LENGTH) {
+    unavailable('The encrypted database configuration exceeds the storage limit.');
+  }
+  return { keyId, ciphertext };
 }
 
 export async function openConnectionConfig(
