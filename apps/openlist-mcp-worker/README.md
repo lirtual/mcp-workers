@@ -28,6 +28,38 @@ An independent, fail-closed MCP adapter to the existing OpenList-Worker using a 
 
 No public OpenList base URL, separate database, Cron, or generic HTTP proxy.
 
+## Upstream KV deployment safety
+
+The upstream `openlist-tsworkers` is a separate, existing production Worker.
+Its KV binding is **not** managed by the MCP adapter. As verified in October
+2026, both the official `OpenListTeam/OpenList-Worker` and the exact-sync
+read-only Fork `lirtual/OpenList-Worker` leave the example
+`kv_namespaces` setting **commented out** in `wrangler.jsonc`. A Wrangler
+deployment using that effective config can remove an existing production
+KV binding even though the KV namespace itself still exists.
+
+Do **not** deploy the upstream with an unchecked configuration or assume a
+dashboard binding survives a Wrangler upload. Preserve the **existing** `KV`
+namespace, `openlist-tsworkers-kv` (`298dbc9310f948c796522911d0405379`);
+never create a replacement empty namespace as an automatic recovery step.
+Any upstream publishing changes require separate authorization and an
+upstream-approved configuration strategy; this project must not modify or
+privately patch its Fork.
+
+This project's `scripts/openlist-upstream-integrity.mjs` performs read-only
+checks of the actual Cloudflare active deployment, expected KV binding,
+`DB_DRIVER=auto` and public settings endpoint. It fails an OpenList MCP
+release **before publication** on drift. Once the independent scheduled job
+is merged into `main`, GitHub Actions will also attempt an hourly
+**anonymous public storage health check**, without GitHub Environment access
+or any Cloudflare/MCP Secret. The stronger active-version KV identity check
+and authenticated MCP listing remain protected by the explicitly authorized
+manual release process. Public-only monitoring detects observed `NO_STORAGE`
+outages, but cannot detect a wrong KV namespace that still serves a healthy
+public settings endpoint. Monitoring does not prevent independent upstream
+deployments or repair storage; schedule execution and notification delivery
+need verification after merge.
+
 ## Exposed tools
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
