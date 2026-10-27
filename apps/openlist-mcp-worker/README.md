@@ -109,6 +109,18 @@ gates. Do not add a proxy, database or broad REST escape hatch to bypass this
 restriction. The contract test also checks that direct invocation of these
 unregistered tools does not dispatch a Service Binding request.
 
+
+A scoped `disableShare(id)` adapter is now implemented internally as a
+**non-public candidate**: it looks up the exact ID, verifies every referenced
+file is within scope, skips already-disabled shares, dispatches at most one
+fixed upstream disable request, and independently verifies the disabled state
+and unchanged sanitized identity. A missing or changed post-write record is
+`unknown`, never automatic success or a reason to retry. This is **not**
+atomic protection against concurrent upstream share edits. No MCP
+`openlist_share_disable` tool is registered until separate real backend
+concurrency/scope and owner acceptance is explicitly approved. No live share
+was mutated by this change.
+
 ## Verification
 
 `pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **Code and CI success do not independently authorize another production deployment or automatic release.**

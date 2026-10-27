@@ -255,6 +255,49 @@ export class OpenListApi {
     }
     return result;
   }
+
+  // Prepared for separate backend/owner acceptance only; do not register as
+  // an MCP tool until the non-atomic share lifecycle gate has been verified.
+  async disableShare(id: string): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      // getShare verifies the exact ID and every referenced path before a write.
+      const before = await this.getShare(id);
+      if (before.disabled === true)
+        return { operation: 'openlist_share_disable', status: 'not_executed',
+          code: 'ALREADY_DISABLED', message: 'No mutation dispatched.',
+          request_id, target: id, observed_state: { disabled: true } };
+
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/disable?id=' +
+        encodeURIComponent(id), undefined, undefined, true);
+      // Upstream reports code:200 even when the share no longer exists.
+      // Require an independent scoped readback with unchanged share identity.
+      const after = await this.getShare(id);
+      if (after.disabled !== true ||
+          JSON.stringify(after.files) !== JSON.stringify(before.files) ||
+          after.expires !== before.expires ||
+          after.max_accessed !== before.max_accessed)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_disable', status: 'succeeded',
+        code: 'OK', message: 'Share observed disabled; upstream mutation is not atomic.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: { disabled: true } };
+    } catch (error) {
+      // After dispatch, even an HTTP 200 or 404 cannot prove an exact outcome.
+      // Never replay a potentially effected mutation.
+      const code = dispatched ? 'UPSTREAM_UNCERTAIN' :
+        error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      return { operation: 'openlist_share_disable',
+        status: dispatched ? 'unknown' : 'not_executed', code,
+        message: dispatched ? 'Outcome uncertain; do not retry automatically.' :
+          'No upstream mutation dispatched.',
+        request_id, target: id };
+    }
+  }
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);
     const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;

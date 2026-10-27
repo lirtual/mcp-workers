@@ -187,3 +187,17 @@ test('text read refuses unsigned redirect or non-text download', async () => {
     assert.equal(calls, 2);
   } finally { await client.close(); }
 });
+
+test('unaccepted share-disable tool is not callable and never reaches upstream', async () => {
+  let calls = 0;
+  const client = await clientFor(settings(async () => {
+    calls++;
+    return Response.json({code:200,data:null});
+  }));
+  try {
+    await assert.rejects(() => client.callTool({
+      name:'openlist_share_disable', arguments:{id:'share_1'},
+    }), /not found/);
+    assert.equal(calls, 0);
+  } finally { await client.close(); }
+});

@@ -338,3 +338,77 @@ test('gated getShare distinguishes absent ID from upstream malformed responses',
   await assert.rejects(malformed.getShare('share'),
     (e: unknown) => e instanceof OpenListError && e.code === 'UPSTREAM_UNAVAILABLE');
 });
+
+test('share disable gates exact scoped ID and independently verifies state without disclosing secrets', async () => {
+  const routes: string[] = [];
+  let disabled = false;
+  const api = new OpenListApi(createConfig(env(async request => {
+    const url = new URL(request.url);
+    routes.push(request.method + ' ' + url.pathname);
+    assert.equal(url.searchParams.get('id'), 'share_1');
+    assert.equal(request.headers.get('authorization'), 'admin-token');
+    if (request.method === 'GET' && url.pathname === '/api/share/get')
+      return ok({ id: 'share_1', files: ['/drive/safe/note.txt'],
+        disabled, expires: null, max_accessed: 1, pwd: 'secret-value',
+        creator: 'hidden-admin' });
+    if (request.method === 'POST' && url.pathname === '/api/share/disable') {
+      disabled = true;
+      return ok(null);
+    }
+    throw Error('unexpected route');
+  })));
+  const result = await api.disableShare('share_1');
+  assert.equal(result.status, 'succeeded');
+  assert.equal(result.code, 'OK');
+  assert.deepEqual(result.observed_state, { disabled: true });
+  assert.deepEqual(routes, ['GET /api/share/get', 'POST /api/share/disable',
+    'GET /api/share/get']);
+  assert.doesNotMatch(JSON.stringify(result), /secret-value|hidden-admin|note\.txt/);
+  const repeated = await api.disableShare('share_1');
+  assert.equal(repeated.status, 'not_executed');
+  assert.equal(repeated.code, 'ALREADY_DISABLED');
+  assert.deepEqual(routes.slice(3), ['GET /api/share/get']);
+});
+
+test('share disable refuses malformed or out-of-scope IDs before any write', async () => {
+  let writes = 0;
+  let reads = 0;
+  const api = new OpenListApi(createConfig(env(async request => {
+    if (request.method === 'POST') writes++;
+    else reads++;
+    return ok({ id:'share_1', files:['/drive/outside/secret'], disabled:false });
+  })));
+  await assert.rejects(api.disableShare('../share'), (error: unknown) =>
+    error instanceof OpenListError && error.code === 'INVALID_INPUT');
+  const result = await api.disableShare('share_1');
+  assert.equal(result.status, 'not_executed');
+  assert.equal(result.code, 'OUT_OF_SCOPE');
+  assert.equal(writes, 0);
+  assert.equal(reads, 1);
+  assert.doesNotMatch(JSON.stringify(result), /secret/);
+});
+
+test('share disable never repeats a dispatched unknown write or trusts a success body alone', async () => {
+  for (const variant of ['missing','unchanged','changed-files','timeout'] as const) {
+    let reads = 0;
+    let writes = 0;
+    const api = new OpenListApi(createConfig(env(async request => {
+      if (request.method === 'POST') {
+        writes++;
+        if (variant === 'timeout') throw Error('upstream timeout with secret');
+        return ok(null);
+      }
+      reads++;
+      if (reads === 2 && variant === 'missing')
+        return Response.json({code:404, message:'missing', data:null});
+      const files = reads === 2 && variant === 'changed-files' ?
+        ['/drive/safe/other.txt'] : ['/drive/safe/note.txt'];
+      return ok({id:'share_1',files,disabled:reads === 2 && variant !== 'unchanged'});
+    })));
+    const result = await api.disableShare('share_1');
+    assert.equal(result.status, 'unknown', variant);
+    assert.equal(result.code, 'UPSTREAM_UNCERTAIN', variant);
+    assert.equal(writes, 1, variant);
+    assert.doesNotMatch(JSON.stringify(result), /secret|other\.txt/);
+  }
+});
