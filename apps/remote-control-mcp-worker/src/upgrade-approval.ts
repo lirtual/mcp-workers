@@ -40,6 +40,9 @@ const key = (operationId: string) => "upgrade:operation:" + operationId;
 const lock = (deviceId: string) => "upgrade:device:" + deviceId;
 
 function parseVersion(input: string): { core: number[]; pre: string[] } {
+  // Metadata originates with a bounded signed device report or a reviewed pin.
+  // Still cap cost before parsing numeric prerelease components as BigInt.
+  if (input.length > 64) throw new Error("Unbounded Agent version.");
   const match = RELEASE.exec(input);
   if (!match) throw new Error("Unsupported Agent version.");
   const core = [match[1]!, match[2]!, match[3]!].map(Number);
