@@ -317,3 +317,13 @@ sensitive signed URL. This step **does not** create, disable or revoke
 shares, or delete files: those operations require separate authorization.
 Driver acceptance cannot run against an unmerged PR without production
 publication; it must not be marked Pass based on offline tests alone.
+
+## Manual acceptance approval-combination gate
+
+The existing OpenList acceptance workflow now runs a small, **secret-free**
+`selection-gate` before its driver or Portal jobs. It requires trusted
+`main` and exactly one authorized mode: disposable fixture write (optionally
+with native adapter tests) **or** Portal-only registration. Missing approval,
+conflicting choices, or selection of native tests without fixture-write
+approval **fails the workflow**, rather than silently skipping every job
+and producing a misleading green result. This does not deploy or publish.

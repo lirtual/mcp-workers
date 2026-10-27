@@ -249,3 +249,21 @@ test('native approval alone never authorizes a live write without the existing f
   },transport),/not_approved/);
   assert.deepEqual(requests,[]);
 });
+
+test('manual acceptance selection gate rejects empty, conflicting and non-main approvals before secrets',async()=>{
+  const {readFile} = await import('node:fs/promises');
+  const path = new URL('../.github/workflows/openlist-acceptance.yml',import.meta.url);
+  const workflow=await readFile(path,'utf8');
+  assert.match(workflow,/\n  selection-gate:\s*\n/);
+  assert.match(workflow,/name: Validate exact manual approval selection \(no secrets\)/);
+  assert.match(workflow,/CURRENT_REF: \$\{\{ github\.ref \}\}/);
+  assert.match(workflow,/APPROVE_FIXTURE_WRITE: \$\{\{ inputs\.confirm_disposable_write \}\}/);
+  assert.match(workflow,/APPROVE_NATIVE: \$\{\{ inputs\.confirm_native_tool_tests \}\}/);
+  assert.match(workflow,/APPROVE_PORTAL: \$\{\{ inputs\.confirm_portal_registration \}\}/);
+  assert.match(workflow,/\[\[ "\$CURRENT_REF" == "refs\/heads\/main" \]\] \|\| exit 1/);
+  assert.match(workflow,/\[\[ "\$APPROVE_FIXTURE_WRITE" == "false" &&\s*"\$APPROVE_NATIVE" == "false" \]\] \|\| exit 1/);
+  assert.match(workflow,/\[\[ "\$APPROVE_FIXTURE_WRITE" == "true" \]\] \|\| exit 1/);
+  assert.match(workflow,/name: Live OpenList MCP \/ Koofr driver E2E \(no deploy\)\s*\n\s*needs: selection-gate/);
+  assert.match(workflow,/name: Required checks before OpenList Portal registration\s*\n\s*needs: selection-gate/);
+  assert.match(workflow,/name: Deny unapproved, conflicting or non-main dispatches/);
+});

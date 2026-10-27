@@ -25,8 +25,34 @@ permissions:
   contents: read
 
 jobs:
+  selection-gate:
+    name: Validate exact manual approval selection (no secrets)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Deny unapproved, conflicting or non-main dispatches
+        shell: bash
+        env:
+          CURRENT_REF: ${{ github.ref }}
+          APPROVE_FIXTURE_WRITE: ${{ inputs.confirm_disposable_write }}
+          APPROVE_NATIVE: ${{ inputs.confirm_native_tool_tests }}
+          APPROVE_PORTAL: ${{ inputs.confirm_portal_registration }}
+        run: |
+          set -euo pipefail
+          [[ "$CURRENT_REF" == "refs/heads/main" ]] || exit 1
+          if [[ "$APPROVE_PORTAL" == "true" ]]; then
+            [[ "$APPROVE_FIXTURE_WRITE" == "false" &&
+               "$APPROVE_NATIVE" == "false" ]] || exit 1
+          else
+            [[ "$APPROVE_FIXTURE_WRITE" == "true" ]] || exit 1
+            [[ "$APPROVE_NATIVE" == "true" || "$APPROVE_NATIVE" == "false" ]] || exit 1
+          fi
+          echo "OPENLIST_ACCEPTANCE_SELECTION_VALID"
+
   driver-e2e:
     name: Live OpenList MCP / Koofr driver E2E (no deploy)
+    needs: selection-gate
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true }}
     runs-on: ubuntu-latest
     environment:
@@ -63,6 +89,7 @@ jobs:
 
   portal-checks:
     name: Required checks before OpenList Portal registration
+    needs: selection-gate
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_portal_registration == true && inputs.confirm_disposable_write != true && inputs.confirm_native_tool_tests != true }}
     uses: ./.github/workflows/ci.yml
     with:
