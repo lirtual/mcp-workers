@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {handleAdmin} from '../src/admin.ts';
 import {acquireLease,releaseLease} from '../src/lease.ts';
+import {startPairing,pairingView} from '../src/pairing.ts';
 import worker from '../src/index.ts';
 import type {Env} from '../src/types.ts';
 
@@ -198,4 +199,54 @@ test('full Access browser QR flow enforces CSRF, renders private QR and activate
   assert.equal(active.state,'ready');
   assert.doesNotMatch(JSON.stringify(db.sql.prepare('SELECT * FROM weixin_binding').get()),
     /new-bot-token|verified-context/);
+});
+
+test('local unbind cleanup cannot scrub a new QR created after generation advance',async()=>{
+  const {env,db}=setup();
+  const {jwt,certs}=await issuer();
+  const token=await jwt();
+  const first=await handleAdmin(request(ownerUrl,token),env,certs);
+  assert.equal(first.status,200);
+  const cookie=first.headers.get('set-cookie')!.split(';')[0]!;
+  const csrf=cookie.split('=')[1]!;
+  const submit=request(ownerUrl+'/unbind',token,{method:'POST',headers:{
+    origin:'https://'+HOST,cookie,'content-type':'application/x-www-form-urlencoded',
+  },body:new URLSearchParams({csrf,confirm:'local_unbind'}).toString()});
+
+  // Pause between the successful binding-generation increment and its QR
+  // ciphertext cleanup. A second request legitimately acquires the now-free
+  // binding lease and begins a new QR in that window.
+  let entered!:()=>void,release!:()=>void;
+  const atCleanup=new Promise<void>(resolve=>{entered=resolve;});
+  const cleanupGate=new Promise<void>(resolve=>{release=resolve;});
+  const dbBefore=env.DB;
+  env.DB={prepare(sql:string){
+    const statement=dbBefore.prepare(sql);
+    if(sql.includes("UPDATE weixin_pairing SET phase='expired'")&&
+       sql.includes('WHERE id=1 AND generation<?')){
+      return {...statement,bind(...args:unknown[]){
+        const bound=statement.bind(...args);
+        return {...bound,run:async()=>{entered();await cleanupGate;return bound.run();}};
+      }};
+    }
+    return statement;
+  }} as unknown as D1Database;
+
+  const unbind=handleAdmin(submit,env,certs);
+  await atCleanup;
+  assert.equal(db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,1);
+  const upstream={
+    getQr:async()=>({qrcode:'synthetic-qr',
+      qrcode_img_content:'https://liteapp.weixin.qq.com/synthetic-qr'}),
+    pollQr:async()=>({status:'wait'}),
+    getUpdates:async()=>({msgs:[],get_updates_buf:''}),
+  };
+  await startPairing(env,'user-1',upstream);
+  assert.equal((await pairingView(env,'user-1')).phase,'qr_pending');
+  release();
+  assert.equal((await unbind).status,200);
+  const pending=db.sql.prepare('SELECT generation,phase,ciphertext FROM weixin_pairing').get()!;
+  assert.equal(pending.generation,1);
+  assert.equal(pending.phase,'qr_pending');
+  assert.ok(pending.ciphertext,'a post-unbind QR must remain encrypted and available');
 });
