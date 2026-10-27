@@ -61,11 +61,12 @@ function qrSvg(url:string):string{
   qr.make();
   return qr.createSvgTag({cellSize:5,margin:3,scalable:true});
 }
-async function setupPage(env:Env,sub:string):Promise<Response>{
+async function setupPage(env:Env,sub:string,notice=''):Promise<Response>{
   const state=await bindingStatus(env);
   const pair=await pairingView(env,sub);
   const csrf=nonce();
-  let body='<h1>Weixin owner management</h1>'+
+  let body='<h1>Weixin owner management</h1>'+ 
+    (notice?'<p role="status">'+escape(notice)+'</p>':'')+
     '<p>Current active state: <strong>'+escape(state.binding_state)+'</strong></p>'+
     '<p>Last verified context (Unix seconds): '+escape(state.last_verified_context_at)+'</p>'+
     '<p>Starting a replacement QR never switches the active account. The new session activates only after a unique owner message is verified.</p>';
@@ -117,7 +118,7 @@ export async function handleAdmin(
       if(data.get('confirm')!=='local_unbind')fail('confirmation_required');
       await unbindLocal(env);
       // Failed cleanup cannot reactivate an old pairing: generation has changed.
-      await env.DB.prepare('DELETE FROM weixin_pairing WHERE id=1').run().catch(()=>{});
+      await env.DB.prepare("UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL WHERE id=1").run().catch(()=>{});
       return html('<h1>Local unbind completed</h1><p>No upstream Tencent revocation was attempted.</p>'+
         '<a href="/setup">Back to owner management</a>');
     }
@@ -133,9 +134,7 @@ export async function handleAdmin(
         result==='expired'?'QR expired; request another after the rate limit allows.':
         result==='need_verifycode'?'Verification code required. Enter the code above.':
         'No confirmed QR yet; try again after a few seconds.';
-      const page=await setupPage(env,owner.sub);
-      return html('<p>'+escape(message)+'</p><p><a href="/setup">Refresh owner management</a></p>',undefined,
-        page.status);
+      return setupPage(env,owner.sub,message);
     }
     if(url.pathname==='/setup/verify'){
       const result=await verifyPairing(env,owner.sub,pairClient);
