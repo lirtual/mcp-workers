@@ -168,13 +168,24 @@ export function createIlinkClient({ fetchImpl = fetch, apiOrigin = API_ORIGIN } 
     }
   };
 }
-export function bindVerifiedContext(scan, updates, botId) {
-  if (scan?.status !== 'confirmed' || !safeString(scan.ilink_user_id) || !safeString(botId) || !Array.isArray(updates?.msgs)) {
+// Generate this only for an actively supervised QR session. The owner must
+// independently type it into the scanned ClawBot chat; do not log the proof.
+export function createOwnershipProof() {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return 'WX346-' + Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+export function bindVerifiedContext(scan, updates, botId, expectedProof) {
+  if (scan?.status !== 'confirmed' || !safeString(scan.ilink_user_id) || !safeString(botId) ||
+      !/^WX346-[0-9A-F]{24}$/.test(expectedProof ?? '') || !Array.isArray(updates?.msgs)) {
     throw new IlinkError('IDENTITY_UNVERIFIED');
   }
-  const eligible = updates.msgs.filter(m =>
-    m && m.from_user_id === scan.ilink_user_id && m.to_user_id === botId &&
-    !m.group_id && safeString(m.context_token)
+  const eligible = updates.msgs.filter(message =>
+    message && message.from_user_id === scan.ilink_user_id &&
+    message.to_user_id === botId && message.message_type === 1 &&
+    !message.group_id && safeString(message.context_token) &&
+    Array.isArray(message.item_list) && message.item_list.length === 1 &&
+    message.item_list[0]?.type === 1 &&
+    message.item_list[0]?.text_item?.text === expectedProof
   );
   if (eligible.length !== 1) throw new IlinkError('IDENTITY_UNVERIFIED');
   return { recipientId: scan.ilink_user_id, contextToken: eligible[0].context_token };

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createIlinkClient, IlinkError, bindVerifiedContext } from './protocol.mjs';
+import { createIlinkClient, IlinkError, bindVerifiedContext, createOwnershipProof } from './protocol.mjs';
 
+const knownProof = 'WX346-A1B2C3D4E5F60718293A4B5C';
 const account = { botToken: 'secret-test-token', scannedUserId: 'owner-A', botId: 'bot-A' };
 function mock(responses) {
   const calls = [];
@@ -18,7 +19,7 @@ test('mock iLink QR -> verified owner inbound -> text send; upstream acceptance 
     { qrcode: 'QR-1', qrcode_img_content: 'mock QR' },
     { status: 'confirmed', bot_token: account.botToken, ilink_bot_id: account.botId, ilink_user_id: account.scannedUserId },
     { ret: 0, get_updates_buf: 'cursor-secret', msgs: [
-      { from_user_id: 'owner-A', to_user_id: 'bot-A', context_token: 'ctx-private', item_list: [{ type: 1, text_item: { text: 'hello secret' } }] }
+      { from_user_id: 'owner-A', to_user_id: 'bot-A', message_type: 1, context_token: 'ctx-private', item_list: [{ type: 1, text_item: { text: knownProof } }] }
     ] },
     { ret: 0 }
   ]);
@@ -28,7 +29,7 @@ test('mock iLink QR -> verified owner inbound -> text send; upstream acceptance 
   assert.equal(scanned.status, 'confirmed');
   assert.equal(scanned.ilink_user_id, 'owner-A');
   const updates = await api.getUpdates(account.botToken, '');
-  const verified = bindVerifiedContext(scanned, updates, account.botId);
+  const verified = bindVerifiedContext(scanned, updates, account.botId, knownProof);
   assert.equal(verified.recipientId, 'owner-A');
   const result = await api.sendText({
     botToken: account.botToken, recipientId: verified.recipientId,
@@ -57,7 +58,7 @@ test('does not activate binding from another sender, a group, or missing context
     { from_user_id: 'owner-A', context_token: 'ctx', group_id: 'group' },
     { from_user_id: 'owner-A', context_token: '' }
   ]) {
-    assert.throws(() => bindVerifiedContext(scanned, { msgs: [message] }, 'bot-A'), e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
+    assert.throws(() => bindVerifiedContext(scanned, { msgs: [message] }, 'bot-A', knownProof), e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
   }
 });
 test('fails closed on hostile protocol hosts, redirects, oversized and malformed replies', async () => {
@@ -131,4 +132,29 @@ test('a redirected or throttled write is uncertain after dispatch, never auto-fo
     await assert.rejects(() => api.sendText(input), e => e instanceof IlinkError && e.code === 'UNKNOWN_SEND');
     assert.equal(count, 1);
   }
+});
+
+test('QR owner verification requires a fresh one-time challenge in an inbound user message', () => {
+  const proof = createOwnershipProof();
+  assert.match(proof, /^WX346-[0-9A-F]{24}$/);
+  assert.notEqual(proof, createOwnershipProof());
+  const scan = { status: 'confirmed', ilink_user_id: 'owner-A' };
+  const message = { from_user_id: 'owner-A', to_user_id: 'bot-A', message_type: 1,
+    context_token: 'ctx', item_list: [{ type: 1, text_item: { text: proof } }] };
+  assert.deepEqual(bindVerifiedContext(scan, { msgs: [message] }, 'bot-A', proof),
+    { recipientId: 'owner-A', contextToken: 'ctx' });
+  for (const incorrect of [undefined, '', 'bad', 'WX346-FFFFFFFFFFFFFFFFFFFFFFFF']) {
+    assert.throws(() => bindVerifiedContext(scan, { msgs: [message] }, 'bot-A', incorrect),
+      e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
+  }
+  for (const payload of [
+    { ...message, message_type: 2 },
+    { ...message, group_id: 'group' },
+    { ...message, item_list: [{ type: 1, text_item: { text: 'wrong' } }] }
+  ]) {
+    assert.throws(() => bindVerifiedContext(scan, { msgs: [payload] }, 'bot-A', proof),
+      e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
+  }
+  assert.throws(() => bindVerifiedContext(scan, { msgs: [message, message] }, 'bot-A', proof),
+    e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
 });
