@@ -762,15 +762,16 @@ export class V2OwnerCoordinator {
                         input.operation_id,input.device_id,epoch!)) {
                     status = "completed";
                   } else if (version === record.preview.current_version &&
-                      answer.status === "failed" && answer.receipt.state === "failed" &&
-                      (device?.device_info?.os === "linux" &&
-                       answer.receipt.safe_result_summary ===
-                         "Original Linux unit and identity restored; signed owner reconciliation required." &&
-                       await markOwnerUpgradeRolledBack(this.state.storage,
-                         input.operation_id,input.device_id,epoch!)
-                       ? (status = "rolled_back", false)
-                       : await markUpgradeDispatchUncertain(this.state.storage,input.operation_id))) {
-                    status = status === "rolled_back" ? "rolled_back" : "needs_attention";
+                      answer.status === "failed" && answer.receipt.state === "failed") {
+                    const verifiedLinuxRollback =
+                      device?.device_info?.os === "linux" &&
+                      answer.receipt.safe_result_summary ===
+                        "Original Linux unit and identity restored; signed owner reconciliation required." &&
+                      await markOwnerUpgradeRolledBack(this.state.storage,
+                        input.operation_id,input.device_id,epoch!);
+                    if (verifiedLinuxRollback)status = "rolled_back";
+                    else if (await markUpgradeDispatchUncertain(
+                      this.state.storage,input.operation_id))status = "needs_attention";
                   }
                 }
               }
