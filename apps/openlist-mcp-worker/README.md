@@ -2,12 +2,12 @@
 
 ## Implementation status (2026-10-27)
 
-OpenList MCP's first six tools have been deployed and exercised through a real
-ChatGPT client (see Issue #309 for release and acceptance evidence). **This does
-not mean the entire 18-tool candidate Spec has passed**. This change proposes
-registering `openlist_share_get` as a seventh, read-only tool. That source-code
-registration is **not a production deployment or real-client acceptance**; the
-production MCP still has six tools until separately authorized publication.
+The first six OpenList MCP tools have passed historical production and ChatGPT
+acceptance (see Issue #309 for release evidence). **This does not mean the entire
+18-tool candidate Spec has passed**. This revision registers `openlist_share_get`
+as a seventh, read-only tool in source; its real-upstream and ChatGPT acceptance
+are separate gates. Check the live `openlist_capabilities` result and production
+release records for the actual deployed inventory, which may lag behind source.
 The other 11 candidates remain unregistered and gated. This Worker does not
 provide a general-purpose OpenList API proxy.
 
@@ -58,8 +58,8 @@ or automatic storage repair is configured.
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
-`openlist_create_folder` (**seven registered in this proposed source change;
-only six currently deployed**).
+`openlist_create_folder` (**seven registered in source; actual deployment and
+Portal availability must be verified independently**).
 
 `openlist_share_get` requests one explicit share ID, rejects records with any
 out-of-scope file path, and returns only allowlisted non-secret metadata. It
