@@ -679,7 +679,7 @@ export class V2OwnerCoordinator {
             typeof input.device_id !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.device_id) ||
             typeof input.operation_id !== "string" ||
-            !/^(?!\\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(input.operation_id) ||
+            !/^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(input.operation_id) ||
             !input.target || typeof input.target !== "object" ||
             Array.isArray(input.target)) {
           return Response.json({error:"invalid_request"},{status:400});
