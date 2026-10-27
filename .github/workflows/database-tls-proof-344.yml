@@ -1,0 +1,118 @@
+name: Database #344 disposable Workers TLS proof
+
+on:
+  push:
+    branches:
+      - feat/database-spec-344
+    paths:
+      - .github/workflows/database-tls-proof-344.yml
+
+permissions:
+  contents: read
+
+jobs:
+  aiven-direct-tls:
+    name: Aiven-only real Workers Direct TLS proof
+    runs-on: ubuntu-latest
+    environment: database-mcp-worker
+    timeout-minutes: 12
+    concurrency:
+      group: database-344-disposable-tls
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      PG_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
+      MYSQL_PASSWORD: ${{ secrets.DATABASE_TEST_MYSQL_PASSWORD }}
+      PG_CA: ${{ secrets.DATABASE_TEST_POSTGRES_CA_PEM }}
+      MYSQL_CA: ${{ secrets.DATABASE_TEST_MYSQL_CA_PEM }}
+      PROBE_WORKER_NAME: database-mcp-tls-proof-344
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate isolated test authorization and required Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/feat/database-spec-344" ]]
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]
+          [[ -n "$PG_PASSWORD" && -n "$MYSQL_PASSWORD" ]]
+          [[ "$PROBE_WORKER_NAME" != "database-mcp-worker" ]]
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Deploy disposable Workers proof without production bindings
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/database-mcp-worker
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          import { randomBytes } from 'node:crypto';
+          const token = randomBytes(32).toString('hex');
+          writeFileSync(process.env.RUNNER_TEMP + '/db344-probe-token', token, {mode:0o600});
+          writeFileSync('.wrangler-tls-acceptance.json', JSON.stringify({
+            name:process.env.PROBE_WORKER_NAME, main:'src/tls-acceptance.ts',
+            compatibility_date:'2026-09-12', compatibility_flags:['nodejs_compat'],
+            workers_dev:true, preview_urls:false
+          }), {mode:0o600});
+          writeFileSync(process.env.RUNNER_TEMP + '/db344-secrets.json', JSON.stringify({
+            PROBE_TOKEN:token, PG_PASSWORD:process.env.PG_PASSWORD,
+            MYSQL_PASSWORD:process.env.MYSQL_PASSWORD,
+            ...(process.env.PG_CA ? {PG_CA:process.env.PG_CA} : {}),
+            ...(process.env.MYSQL_CA ? {MYSQL_CA:process.env.MYSQL_CA} : {})
+          }), {mode:0o600});
+          NODE
+          pnpm exec wrangler deploy --config .wrangler-tls-acceptance.json \
+            --secrets-file "$RUNNER_TEMP/db344-secrets.json" \
+            > "$RUNNER_TEMP/db344-deploy-log" 2>&1 || {
+              echo "Disposable Worker deploy failed (details withheld to prevent leaks)"
+              exit 1
+            }
+          node --input-type=module <<'NODE'
+          import {readFileSync,appendFileSync} from 'node:fs';
+          const log=readFileSync(process.env.RUNNER_TEMP+'/db344-deploy-log','utf8');
+          const url=log.match(/https:\/\/[a-zA-Z0-9.-]+\.workers\.dev\b/)?.[0];
+          if (!url) throw Error('Disposable Workers URL was not discovered');
+          appendFileSync(process.env.GITHUB_OUTPUT, 'url='+url+'\n');
+          NODE
+      - name: Real Cloudflare Workers SQL and TLS proof
+        shell: bash
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          const token=readFileSync(process.env.RUNNER_TEMP+'/db344-probe-token','utf8');
+          const response=await fetch(process.env.PROBE_URL+'/run',{
+            method:'POST', headers:{authorization:'Bearer '+token},
+            signal:AbortSignal.timeout(80000)
+          });
+          if (!response.ok) throw Error('Proof endpoint rejected request');
+          const body=await response.json();
+          for(const dialect of ['postgres','mysql']){
+            const result=body.results?.find(r=>r.dialect===dialect);
+            console.log(dialect,JSON.stringify(result));
+            if(!result || result.ok===false || !result.tls || !result.read || !result.write || !result.ddl)
+              process.exitCode=1;
+          }
+          NODE
+      - name: Always remove disposable Worker and runner-only Secret files
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd apps/database-mcp-worker
+          if [[ -f .wrangler-tls-acceptance.json ]]; then
+            pnpm exec wrangler delete --config .wrangler-tls-acceptance.json --name "$PROBE_WORKER_NAME" --force               >/dev/null 2>&1 || echo "WARNING: Disposable Worker deletion was not confirmed"
+          fi
+          rm -f .wrangler-tls-acceptance.json "$RUNNER_TEMP/db344-secrets.json"             "$RUNNER_TEMP/db344-probe-token" "$RUNNER_TEMP/db344-deploy-log"
