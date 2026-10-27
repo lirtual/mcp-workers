@@ -39,9 +39,12 @@ describe('Direct transport TLS invariant', () => {
   it('rejects every non-Direct transport before either driver can open a socket', async () => {
     mysqlConnect.mockClear();
     postgresConstruct.mockClear();
-    await expect(mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' }))
+    // Simulate a malformed runtime object at the driver boundary despite the
+    // compile-time Direct-only type; no SQL socket may be opened.
+    const forbidden = 'hyperdrive' as unknown as EffectiveConnection['transport'];
+    await expect(mysqlHealthCheck({ ...direct('mysql'), transport: forbidden }))
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
-    await expect(postgresHealthCheck({ ...direct('postgres'), transport: 'hyperdrive' }))
+    await expect(postgresHealthCheck({ ...direct('postgres'), transport: forbidden }))
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
     expect(mysqlConnect).not.toHaveBeenCalled();
     expect(postgresConstruct).not.toHaveBeenCalled();
