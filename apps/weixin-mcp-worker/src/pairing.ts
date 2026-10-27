@@ -119,6 +119,16 @@ export async function pollPairing(
     await readUnderLease(env,lease);
     const value=await secret(env,row);
     if(!value.qrcode)fail('pairing_invalid');
+    // Consume polling and optional verify-code budget BEFORE the upstream call.
+    // A timeout, error or unknown reply cannot bypass these durable limits.
+    const admitted=await env.DB.prepare(
+      "UPDATE weixin_pairing SET poll_after=?,verify_count=verify_count+? "+
+      "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' "+
+      "AND poll_after<=? AND expires_at>? AND verify_count<?"+fence
+    ).bind(now()+4,verifyCode===undefined?0:1,row.generation,row.session_id,
+      now(),now(),verifyCode===undefined?100000:3,
+      lease.generation,lease.owner,now()).run();
+    if(admitted.meta.changes!==1)fail('pairing_poll_throttled');
     const scan=await client.pollQr(value.qrcode,verifyCode);
     await current(env,row);
     const t=now();
@@ -144,12 +154,6 @@ export async function pollPairing(
       return 'confirmed';
     }
     if(!['wait','scaned','need_verifycode'].includes(scan.status))fail('pairing_unsupported');
-    const changed=await env.DB.prepare(
-      "UPDATE weixin_pairing SET poll_after=?,verify_count=verify_count+? "+
-      "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' AND expires_at>?"+fence
-    ).bind(t+4,verifyCode===undefined?0:1,row.generation,row.session_id,t,
-      lease.generation,lease.owner,now()).run();
-    if(changed.meta.changes!==1)fail('pairing_changed');
     return scan.status as 'wait'|'scaned'|'need_verifycode';
   }finally{await releaseLease(env,lease);}
 }
