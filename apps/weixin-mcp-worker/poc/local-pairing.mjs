@@ -165,13 +165,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'POST' || !['start','scan','verify','send'].includes(url.pathname.slice(1))) {
     reply(res, 404, 'not found'); return;
   }
-  if (state.busy) { reply(res, 409); return; }
   if (!['application/x-www-form-urlencoded'].includes((req.headers['content-type'] ?? '').split(';')[0]) ||
       (req.headers.origin && req.headers.origin !== ORIGIN && req.headers.origin !== `http://127.0.0.1:${PORT}`)) {
     reply(res, 403, 'forbidden'); return;
   }
   const data = await readForm(req).catch(() => null);
   if (!data || !checkCsrf(data.get('csrf'))) { reply(res, 403, 'forbidden'); return; }
+  // Only one QR or poll operation can proceed, even if bodies arrive together.
+  if (state.busy) { reply(res, 409); return; }
   state.busy = true;
   try { await perform(url.pathname.slice(1)); }
   finally { state.busy = false; }
