@@ -20,7 +20,7 @@ Each app owns its upstream domain, credentials, runtime, tests, and deployment. 
 
 ## Ingress policy
 
-The maintained Workers do **not** share a universal hostname: Email and Workflow use custom domains with `workers_dev: false`; Remote Control has `workers_dev: true` plus a custom domain; other Workers use `workers.dev`. All disable preview URLs. Obtain the actual Portal target from the Worker's configuration, not from its name.
+The maintained Workers do **not** share a universal hostname: Email, Workflow, and Weixin use custom domains with `workers_dev: false`; Remote Control uses both `workers.dev` and a custom domain; other maintained Workers use `workers.dev`. All disable preview URLs. Obtain the actual Portal target from the Worker's configuration, not from its name.
 
 Each Worker requires runtime Secret `MCP_ACCESS_TOKEN`. The GitHub Repository Secret supplies a release-time default; a same-name Worker Environment Secret may override it. Matching Secret names never prove matching deployed values. See [ingress policy](docs/ingress-policy.md), [runtime configuration](docs/runtime-configuration.md), [manual bootstrap](docs/MANUAL-WORKER-BOOTSTRAP.md) and [token runbook](docs/mcp-shared-token-runbook.md).
 
