@@ -18,11 +18,10 @@ export const UPGRADE_APPROVAL_TTL_MS = 5 * 60_000;
 // A missing result is attention-required, NEVER safe to retry automatically.
 export const UPGRADE_UNCONFIRMED_ATTENTION_MS = 10 * 60_000;
 
-export interface ReviewedUpgradePin {
-  tag: string;
-  commit: string;
-  windows_asset_sha256: string;
-}
+export type ReviewedUpgradePin = Readonly<{tag:string;commit:string} & (
+  | {windows_asset_sha256:string}
+  | {linux_asset_sha256:string;linux_arch:"x64"|"arm64"}
+)>;
 export interface UpgradeApprovalPreview {
   operation_id: string;
   device_id: string;
@@ -59,11 +58,26 @@ function newerWindowsVersion(target: string, current: string): boolean {
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
   return false;
 }
+const STABLE = /^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
 function validTarget(pin: ReviewedUpgradePin, current: string): boolean {
-  return Boolean(pin && typeof pin.tag === "string" && typeof pin.commit === "string" &&
-    typeof pin.windows_asset_sha256 === "string" &&
-    COMMIT.test(pin.commit) && SHA.test(pin.windows_asset_sha256) &&
-    newerWindowsVersion(pin.tag, current));
+  if(!pin||typeof pin!=="object"||Array.isArray(pin)||
+     typeof pin.tag!=="string"||typeof pin.commit!=="string"||
+     !COMMIT.test(pin.commit))return false;
+  const keys=Object.keys(pin).sort().join("|");
+  if(keys==="commit|tag|windows_asset_sha256") {
+    return "windows_asset_sha256" in pin &&
+      typeof pin.windows_asset_sha256==="string" &&
+      SHA.test(pin.windows_asset_sha256) &&
+      newerWindowsVersion(pin.tag,current);
+  }
+  if(keys!=="commit|linux_arch|linux_asset_sha256|tag"||
+     !("linux_asset_sha256" in pin)||
+     typeof pin.linux_asset_sha256!=="string"||
+     !SHA.test(pin.linux_asset_sha256)||
+     !("linux_arch" in pin)||
+     !["x64","arm64"].includes(pin.linux_arch as string)||
+     !STABLE.test(pin.tag)||!STABLE.test(current))return false;
+  return newerWindowsVersion(pin.tag,current);
 }
 function secret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -76,21 +90,29 @@ async function digest(value: string): Promise<string> {
 function samePreview(a: UpgradeApprovalPreview, b: UpgradeApprovalPreview): boolean {
   return a.operation_id === b.operation_id && a.device_id === b.device_id &&
     a.fingerprint === b.fingerprint && a.current_version === b.current_version &&
-    a.target.tag === b.target.tag && a.target.commit === b.target.commit &&
-    a.target.windows_asset_sha256 === b.target.windows_asset_sha256;
+    JSON.stringify(a.target)===JSON.stringify(b.target);
 }
 function publicPreview(row: StoredUpgrade): UpgradeApprovalPreview {
   return { operation_id: row.operation_id, device_id: row.device_id,
     fingerprint: row.fingerprint, current_version: row.current_version,
     target: row.target, expires_at: row.expires_at };
 }
+function matchingPlatform(pin:ReviewedUpgradePin,device:V2Device|undefined):boolean {
+  if(!device?.device_info||device.device_info.upgrade_protocol!=="owner-one-shot-v1")
+    return false;
+  if("windows_asset_sha256" in pin)
+    return device.device_info.os==="windows" &&
+      device.device_info.arch==="x64" &&
+      device.device_info.environment==="native";
+  return device.device_info.os==="linux" &&
+    device.device_info.arch===pin.linux_arch &&
+    ["native","wsl2"].includes(device.device_info.environment);
+}
 function matchesLiveDevice(row: UpgradeApprovalPreview, device: V2Device | undefined): boolean {
   return deviceIsAuthorized(device) && device.grant_type !== "temporary" &&
     device.device_id === row.device_id && device.fingerprint === row.fingerprint &&
-    device.device_info?.os === "windows" && device.device_info?.arch === "x64" &&
-    device.device_info?.environment === "native" &&
-    device.device_info?.agent_version === row.current_version &&
-    device.device_info?.upgrade_protocol === "owner-one-shot-v1";
+    matchingPlatform(row.target,device) &&
+    device.device_info?.agent_version === row.current_version;
 }
 
 /** Caller MUST obtain reviewedPin from a server-owned allowlist, never MCP arguments. */
@@ -103,9 +125,7 @@ export async function prepareWindowsUpgrade(
     if (await tx.get<StoredUpgrade>(key(operationId))) return { status: "existing" };
     const device = await tx.get<V2Device>("device:" + deviceId);
     if (!deviceIsAuthorized(device) || device.grant_type === "temporary" ||
-        device.device_id !== deviceId || device.device_info?.os !== "windows" ||
-        device.device_info?.arch !== "x64" || device.device_info?.environment !== "native" ||
-        device.device_info?.upgrade_protocol !== "owner-one-shot-v1" ||
+        device.device_id !== deviceId || !matchingPlatform(reviewedPin,device) ||
         typeof device.device_info?.agent_version !== "string" ||
         typeof device.fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(device.fingerprint)) {
       return { status: "refused" };
@@ -282,11 +302,8 @@ export async function markWindowsUpgradeCompleted(
     if (!deviceIsAuthorized(device) || device.grant_type === "temporary" ||
         device.device_id !== previous.device_id ||
         device.fingerprint !== previous.fingerprint ||
-        device.device_info?.os !== "windows" ||
-        device.device_info?.arch !== "x64" ||
-        device.device_info?.environment !== "native" ||
-        device.device_info?.agent_version !== previous.target.tag ||
-        device.device_info?.upgrade_protocol !== "owner-one-shot-v1") return false;
+        !matchingPlatform(previous.target,device) ||
+        device.device_info?.agent_version !== previous.target.tag) return false;
     await tx.put(key(operationId),{...previous,state:"completed"});
     return true;
   });
