@@ -48,7 +48,7 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.deepEqual(tools.map(t => t.name), [
       'openlist_capabilities','openlist_list_files','openlist_get_file',
       'openlist_search_files','openlist_read_text','openlist_share_get',
-      'openlist_create_folder',
+      'openlist_share_disable','openlist_create_folder',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
@@ -59,7 +59,9 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.deepEqual(inventory.active_tools, tools.map(t => t.name));
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_get'), false);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), true);
-    assert.equal(inventory.disabled_pending_acceptance.length, 11);
+    assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_disable'), false);
+    assert.equal(tools.find(t => t.name === 'openlist_share_disable')?.annotations?.destructiveHint, true);
+    assert.equal(inventory.disabled_pending_acceptance.length, 10);
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
@@ -188,16 +190,56 @@ test('text read refuses unsigned redirect or non-text download', async () => {
   } finally { await client.close(); }
 });
 
-test('unaccepted share-disable tool is not callable and never reaches upstream', async () => {
-  let calls = 0;
-  const client = await clientFor(settings(async () => {
-    calls++;
+test('scoped share disable uses one existing OpenList write and verifies it by exact ID', async () => {
+  let disabled = false;
+  const routes: string[] = [];
+  const client = await clientFor(settings(async request => {
+    const url = new URL(request.url);
+    routes.push(request.method + ' ' + url.pathname);
+    assert.equal(url.origin, 'https://openlist.internal');
+    assert.equal(url.searchParams.get('id'), 'share_1');
+    assert.equal(request.headers.get('authorization'), 'upstream-fixture');
+    if (request.method === 'GET' && url.pathname === '/api/share/get')
+      return Response.json({code:200,data:{id:'share_1',files:['/Koofr/safe/f.txt'],
+        disabled,pwd:'supersecret',creator:'private-creator'}});
+    assert.equal(request.method, 'POST');
+    assert.equal(url.pathname, '/api/share/disable');
+    disabled = true;
     return Response.json({code:200,data:null});
   }));
   try {
-    await assert.rejects(() => client.callTool({
-      name:'openlist_share_disable', arguments:{id:'share_1'},
-    }), /not found/);
-    assert.equal(calls, 0);
-  } finally { await client.close(); }
+    const response = await client.callTool({name:'openlist_share_disable',arguments:{id:'share_1'}});
+    assert.notEqual(response.isError, true);
+    const body=JSON.parse((response.content[0] as {text:string}).text);
+    assert.equal(body.status,'succeeded');
+    assert.equal(body.observed_state.disabled,true);
+    assert.deepEqual(routes,['GET /api/share/get','POST /api/share/disable','GET /api/share/get']);
+    assert.doesNotMatch(JSON.stringify(response),/supersecret|private-creator|upstream-fixture/);
+    const again=await client.callTool({name:'openlist_share_disable',arguments:{id:'share_1'}});
+    assert.notEqual(again.isError,true);
+    assert.equal(JSON.parse((again.content[0] as {text:string}).text).code,'ALREADY_DISABLED');
+    assert.equal(routes.length,4);
+  } finally {await client.close();}
+});
+
+test('share disable refuses out-of-scope share without dispatch and returns unknown after lost write response', async () => {
+  let writes=0;
+  const client=await clientFor(settings(async req => {
+    const url=new URL(req.url);
+    if(req.method==='POST') {writes++;throw new Error('timeout after dispatch');}
+    return Response.json({code:200,data:{id:url.searchParams.get('id'),
+      files:[url.searchParams.get('id')==='outside'?'/Koofr/other/f.txt':'/Koofr/safe/f.txt'],
+      disabled:false,pwd:'private-value'}});
+  }));
+  try {
+    const denied=await client.callTool({name:'openlist_share_disable',arguments:{id:'outside'}});
+    assert.equal(denied.isError,true);
+    assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
+    assert.equal(writes,0);
+    const unknown=await client.callTool({name:'openlist_share_disable',arguments:{id:'inside'}});
+    assert.equal(unknown.isError,true);
+    assert.equal(JSON.parse((unknown.content[0] as {text:string}).text).status,'unknown');
+    assert.equal(writes,1);
+    assert.doesNotMatch(JSON.stringify(unknown),/private-value|timeout after dispatch/);
+  } finally {await client.close();}
 });

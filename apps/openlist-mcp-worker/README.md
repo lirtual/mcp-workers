@@ -2,15 +2,18 @@
 
 ## Implementation status (2026-10-27)
 
-Seven tools are registered in source: the initial six operations plus the
-read-only explicit-ID `openlist_share_get`, which passed real production
+Eight tools are registered on this Draft branch: the seven previously deployed
+operations plus `openlist_share_disable` using the existing OpenList REST
+endpoint. **Production continues to expose seven tools** until separately
+authorized merge, manual release and real acceptance. The original
+read-only explicit-ID `openlist_share_get` passed real production
 acceptance after the controlled share test recorded in
 [Issue #309](https://github.com/lirtual/mcp-workers/issues/309).
 The one-time `openlist_share_create` used for that test was **retired from
 the Worker, Portal inventory, and manual acceptance entrypoint** after
 successful controlled production testing ([PR #369](https://github.com/lirtual/mcp-workers/pull/369)).
-It must not be callable in future releases. The other eleven candidates
-remain unregistered and gated; this adapter is not a general-purpose OpenList
+It must not be callable in future releases. The other ten candidates
+remain unregistered and gated on this Draft branch; this adapter is not a general-purpose OpenList
 API proxy. Verify the deployed inventory separately from this source document.
 
 The original Koofr disposable E2E folders, synthetic test file, and expired
@@ -57,7 +60,7 @@ or automatic storage repair is configured.
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
-`openlist_create_folder` (**seven registered tools in source**).
+`openlist_share_disable`, `openlist_create_folder` (**eight registered tools on this Draft; seven deployed**).
 
 `openlist_share_get` accepts one explicit ID and requires **every** file
 in the share to remain within allowed roots before returning only allowlisted,
@@ -70,8 +73,8 @@ were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/r
 50-byte synthetic share with a random hidden password, one-hour expiration
 and one access. The live create/get proof succeeded; the tool and temporary
 acceptance code have since been removed. The previously created share record
-may remain expired upstream, but cleanup is out of scope. The eleven remaining
-candidates stay disabled pending real driver/conflict, scope, approval, and
+may remain expired upstream, but cleanup is out of scope. The ten remaining
+candidates stay disabled on this Draft branch pending real driver/conflict, scope, approval, and
 share-lifecycle safety evidence. Do not infer physical storage confinement from
 the admin-equivalent upstream token. Every future production release requires
 its own authorized checks.
@@ -99,27 +102,27 @@ does not establish safe conflict behavior. This source audit is not evidence
 that every deployed driver revision or Koofr backend honors a proposed
 conditional request.
 
-**Decision:** keep `openlist_upload_small`, `openlist_rename`,
-`openlist_copy`, and `openlist_move` unregistered. To reconsider them,
-first obtain a verified driver-enforced no-overwrite contract (including
-real Koofr collision and concurrency tests and appropriate conditional
-semantics) or explicitly revise Spec #309's trusted-human-overwrite policy.
-Retain scope, single-target, cross-storage, uncertain-dispatch and no-retry
-gates. Do not add a proxy, database or broad REST escape hatch to bypass this
-restriction. The contract test also checks that direct invocation of these
-unregistered tools does not dispatch a Service Binding request.
+**Updated Owner decision (Spec #309):** implement all candidate MCP tools
+against the upstream API as actually provided; accept its possible overwrite,
+non-atomic and backend-driver differences instead of waiting for an upstream
+conditional/no-overwrite feature. These four tools remain unregistered only
+until the MCP input/scope contracts and real driver behavior are implemented
+and verified, not because the upstream must be modified. Preserve single-target,
+fixed upstream route, explicit overwrite disclosure, unknown-write/no-retry and
+basic authorization gates. Never add a second data store or patch the Fork.
 
 
-A scoped `disableShare(id)` adapter is now implemented internally as a
-**non-public candidate**: it looks up the exact ID, verifies every referenced
+A scoped `disableShare(id)` adapter is implemented and registered on this
+**unmerged Draft branch**: it looks up the exact ID, verifies every referenced
 file is within scope, skips already-disabled shares, dispatches at most one
 fixed upstream disable request, and independently verifies the disabled state
 and unchanged sanitized identity. A missing or changed post-write record is
 `unknown`, never automatic success or a reason to retry. This is **not**
-atomic protection against concurrent upstream share edits. No MCP
-`openlist_share_disable` tool is registered until separate real backend
-concurrency/scope and owner acceptance is explicitly approved. No live share
-was mutated by this change.
+atomic protection against concurrent upstream share edits. The Owner has
+accepted using the existing upstream behavior without an atomic update gate.
+Before separately authorized production release, verify the current driver,
+MCP inventory and share status using a separately approved test share. No live
+share was mutated by this code-only Draft.
 
 ## Verification
 

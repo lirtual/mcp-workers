@@ -256,8 +256,8 @@ export class OpenListApi {
     return result;
   }
 
-  // Prepared for separate backend/owner acceptance only; do not register as
-  // an MCP tool until the non-atomic share lifecycle gate has been verified.
+  // Uses only existing non-atomic upstream Share API semantics, as approved by
+  // Spec #309 Owner. Scope is an MCP preflight, not an atomic upstream guarantee.
   async disableShare(id: string): Promise<OperationResult> {
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
       throw new OpenListError('INVALID_INPUT');
