@@ -1,8 +1,62 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { posix } from 'node:path';
+import { APPLICATIONS, RELEASE_WORKERS } from './select-affected-apps.mjs';
 
 // Offline release contract: test each GitHub Actions entry point independently.
 const read = name => readFileSync(new URL('../.github/workflows/' + name + '.yml', import.meta.url), 'utf8');
+
+function sameMembers(actual, expected, name) {
+  assert.equal(new Set(actual).size, actual.length, 'Duplicate ' + name);
+  assert.deepEqual([...actual].sort(), [...expected].sort(), 'Mismatched ' + name);
+}
+
+// Accept the current deliberately simple, explicit OR-list; changing the
+// expression shape requires a security review rather than a permissive parser.
+export function verifyReleaseWorkers(source, expectedWorkers) {
+  assert.ok(expectedWorkers.length > 0, 'Empty releasable Worker list');
+  const workerInput = source.match(/^      worker:\n([\s\S]*?)(?=^      [a-z][a-z0-9_]*:\n)/m);
+  const options = workerInput?.[1].match(/^        options:\n((?:          - [^\n]+\n)+)/m);
+  assert.ok(options, 'Missing manual release Worker choices');
+  const choices = options[1].trim().split('\n').map(line => line.trim().slice(2).trim());
+  sameMembers(choices, expectedWorkers, 'manual release choices');
+
+  const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
+  const list = gate.slice(prefix.length, -3);
+  assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
+  const allowed = [...list.matchAll(/inputs\.worker == '([^']+)'/g)].map(match => match[1]);
+  sameMembers(allowed, expectedWorkers, 'release allowlist');
+}
+
+// This is deliberately not a YAML or shell interpreter. It recognizes only
+// literal local reusable-workflow references and supported static script calls.
+// Unknown/dynamic commands are outside this check, not proof of correctness.
+export function verifyStaticWorkflowReferences(workflows, exists) {
+  const command = /(?:(?:pnpm\s+--filter\s+([a-z0-9-]+)\s+exec\s+)?node(?:\s+--[a-z0-9-]+)*|bash)\s+((?:(?:scripts|apps)\/[a-zA-Z0-9_./-]+\.(?:mjs|sh))(?:\s+(?:scripts|apps)\/[a-zA-Z0-9_./-]+\.(?:mjs|sh))*)/g;
+  for (const [workflow, source] of Object.entries(workflows)) {
+    for (const [index, line] of source.split('\n').entries()) {
+      if (line.trimStart().startsWith('#')) continue;
+      const loc = workflow + ':' + (index + 1);
+      const local = line.match(/^\s*(?:-\s*)?uses:\s*(\.\/\.github\/workflows\/[a-zA-Z0-9_./-]+\.ya?ml)\s*(?:#.*)?$/);
+      if (local) {
+        const path = posix.normalize(local[1].slice(2));
+        assert.match(path, /^\.github\/workflows\/[^/]+\.ya?ml$/, loc + ' invalid local workflow');
+        assert.ok(exists(path), loc + ' missing workflow ' + path);
+      }
+      for (const match of line.matchAll(command)) {
+        const prefix = match[1] ? 'apps/' + match[1] + '/' : '';
+        for (const script of match[2].split(/\s+/)) {
+          const path = posix.normalize(prefix + script);
+          assert.ok(!posix.isAbsolute(path) && !path.startsWith('../'), loc + ' invalid script path');
+          assert.ok(exists(path), loc + ' missing script ' + path);
+        }
+      }
+    }
+  }
+}
+
 const ci = read('ci');
 const release = read('release');
 const acceptance = read('acceptance');
@@ -46,8 +100,8 @@ for (const clause of [
   "needs.checks.result == 'success'",
   "needs.checks.outputs.release_ready == 'true'",
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
-for (const name of ['raindrop', 'ima', 'database', 'email', 'ssh', 'remote-control', 'github-actions', 'workflow'])
-  assert.ok(deploy.gate.includes("inputs.worker == '" + name + "-mcp-worker'"), 'Missing allowlisted Worker ' + name);
+assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
+verifyReleaseWorkers(release, RELEASE_WORKERS);
 assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');
 for (const marker of [
@@ -150,5 +204,12 @@ assert.match(emailSmoke, /call\('mail_search'/);
 assert.match(emailSmoke, /call\('mail_get'/);
 assert.match(emailSmoke, /call\('attachment_get'/);
 assert.doesNotMatch(emailSmoke, /call\(['"](?:mail_send|mail_reply|mail_forward|mail_mark|mail_move|mail_trash|draft_create)['"]/);
+
+const workflowDir = new URL('../.github/workflows/', import.meta.url);
+const workflows = Object.fromEntries(readdirSync(workflowDir)
+  .filter(name => /\.ya?ml$/.test(name))
+  .map(name => [name, readFileSync(new URL(name, workflowDir), 'utf8')]));
+verifyStaticWorkflowReferences(workflows,
+  path => existsSync(new URL('../' + path, import.meta.url)));
 
 console.log('WORKFLOW_RELEASE_GATE_CONTRACT_OK');
