@@ -5,6 +5,10 @@ export type Env = {
   DB: D1Database;
   MCP_ACCESS_TOKEN: string;
   MCP_HOST: string;
+  ADMIN_HOST: string;
+  ACCESS_TEAM_DOMAIN: string;
+  ACCESS_AUD: string;
+  OWNER_EMAIL: string;
   WEIXIN_ENCRYPTION_KEY: string;
   WEIXIN_ENCRYPTION_PREVIOUS_KEY?: string;
   WEIXIN_PREVIOUS_KEY_ID?: string;
@@ -15,6 +19,8 @@ export type Binding = {
   session_ciphertext: string | null; session_key_id: string | null;
   last_verified_context_at: number | null; last_sync_at: number | null;
   updated_at: number;
+  lease_holder: string | null;
+  lease_until: number | null;
 };
 export type IlinkSession = {
   botToken: string; ownerId: string; botId: string;

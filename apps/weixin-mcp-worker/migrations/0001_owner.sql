@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS weixin_binding (
   last_verified_context_at INTEGER,
   last_sync_at INTEGER,
   updated_at INTEGER NOT NULL,
+  lease_holder TEXT,
+  lease_until INTEGER,
+  CHECK ((lease_holder IS NULL) = (lease_until IS NULL)),
   CHECK((session_ciphertext IS NULL)=(session_key_id IS NULL))
 );
 INSERT OR IGNORE INTO weixin_binding(id,generation,state,updated_at) VALUES(1,0,'unbound',0);
@@ -20,4 +23,5 @@ CREATE TABLE IF NOT EXISTS weixin_send_receipts (
   PRIMARY KEY(generation,request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_weixin_receipts ON weixin_send_receipts(generation,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_weixin_request_id_global ON weixin_send_receipts(request_id);
 -- No automatic receipt expiry: forgotten IDs must not silently replay.

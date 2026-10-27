@@ -1,5 +1,6 @@
 import { decrypt, sha256 } from './crypto.ts';
 import { fail } from './types.ts';
+import {acquireLease,releaseLease,readUnderLease} from './lease.ts';
 import type { Env, Binding, IlinkSession } from './types.ts';
 
 export type SendStatus = 'accepted'|'rejected'|'unknown';
@@ -39,19 +40,25 @@ export async function sendOnce(env:Env,text:string,requestId:string,dispatch:Dis
     if(existing.text_digest!==digest)fail('request_id_conflict');
     return reply(requestId,existing.status,true);
   }
-  // Rate guard is advisory when two distinct IDs race. Durable uniqueness
-  // is enforced by the PRIMARY KEY for every individual request ID.
+  // Other generations' IDs must never be reused for a new recipient.
+  const oldId=await env.DB.prepare('SELECT generation FROM weixin_send_receipts WHERE request_id=? LIMIT 1')
+    .bind(requestId).first<{generation:number}>();
+  if(oldId&&oldId.generation!==binding.generation)fail('request_id_generation_conflict');
+  // Rate guard is advisory for concurrent attempts. The DB lease ensures
+  // only one upstream operation on the bound account at a time.
   const recent=await env.DB.prepare(
     'SELECT count(*) AS n FROM weixin_send_receipts WHERE generation=? AND created_at>=?'
   ).bind(binding.generation,now-86400).first<{n:number}>();
   if((recent?.n??0)>=25)fail('rate_limited');
+  const lease=await acquireLease(env,binding.generation,['ready']);
+  try {
   // Durable, atomic claim BEFORE sending. This insert reads the current
   // binding generation in the same SQL statement (never a SELECT+INSERT pair).
   const claim=await env.DB.prepare(
     'INSERT OR IGNORE INTO weixin_send_receipts(generation,request_id,text_digest,status,created_at,updated_at) '+
     "SELECT generation,?,?, 'unknown',?,? FROM weixin_binding "+
-    "WHERE id=1 AND generation=? AND state='ready' AND session_ciphertext IS NOT NULL"
-  ).bind(requestId,digest,now,now,binding.generation).run();
+    "WHERE id=1 AND generation=? AND state='ready' AND lease_holder=? AND session_ciphertext IS NOT NULL"
+  ).bind(requestId,digest,now,now,binding.generation,lease.owner).run();
   if(claim.meta.changes!==1){
     const previous=await env.DB.prepare(
       'SELECT text_digest,status FROM weixin_send_receipts WHERE generation=? AND request_id=?'
@@ -64,26 +71,35 @@ export async function sendOnce(env:Env,text:string,requestId:string,dispatch:Dis
   // Recheck generation immediately before transport; management rebind MUST
   // also implement a cross-request fence before this becomes production-ready.
   try{
-    const current=await env.DB.prepare(
-      'SELECT * FROM weixin_binding WHERE id=1'
-    ).first<Binding>();
-    if(!current||current.generation!==binding.generation||current.state!=='ready'||
-      current.session_ciphertext!==binding.session_ciphertext) return reply(requestId,'unknown',false);
+    const current=await readUnderLease(env,lease);
+    if(current.state!=='ready'||current.session_ciphertext!==binding.session_ciphertext)
+      return reply(requestId,'unknown',false);
     const session=await decrypt<IlinkSession>(env,'weixin:owner:binding:'+current.generation,
       current.session_ciphertext!,current.session_key_id!);
     if(!session.botToken||!session.ownerId||!session.contextToken||!session.botId)
       return reply(requestId,'unknown',false);
+    // The provider write timeout is 12s, safely inside the 120s DB lease.
+    // Never dispatch with a lease already near expiration.
+    if(Date.now()+20000>=lease.expiresAt*1000)return reply(requestId,'unknown',false);
     const result=await dispatch(session,text,requestId);
     // A lost DB response or crash leaves the pre-claimed receipt unknown.
     if(result!=='unknown'){
-      await env.DB.prepare(
+      const updated=await env.DB.prepare(
         'UPDATE weixin_send_receipts SET status=?,updated_at=? '+
-        "WHERE generation=? AND request_id=? AND status='unknown'"
-      ).bind(result,Math.floor(Date.now()/1000),binding.generation,requestId).run();
+        "WHERE generation=? AND request_id=? AND status='unknown' "+
+        "AND EXISTS(SELECT 1 FROM weixin_binding WHERE id=1 AND generation=? AND lease_holder=? AND lease_until>?)"
+      ).bind(result,Math.floor(Date.now()/1000),binding.generation,requestId,
+        binding.generation,lease.owner,Math.floor(Date.now()/1000)).run();
+      if(updated.meta.changes!==1)return reply(requestId,'unknown',false);
     }
     return reply(requestId,result,false);
   }catch{
     // Once reserved, all unexpected errors are uncertain, never retry.
     return reply(requestId,'unknown',false);
+  }
+  } finally {
+    // A release failure must not overwrite a persisted acknowledgement after
+    // an external write. The bounded lease will eventually expire safely.
+    await releaseLease(env,lease).catch(()=>{});
   }
 }
