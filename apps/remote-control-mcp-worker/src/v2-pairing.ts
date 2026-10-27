@@ -338,11 +338,19 @@ export class V2OwnerCoordinator {
             typeof p.expires_at !== "number" || !Number.isSafeInteger(p.expires_at) ||
             !t || typeof t !== "object" || Array.isArray(t)) return null;
         const pin = t as Record<string, unknown>;
-        return Object.keys(pin).sort().join("|") === "commit|tag|windows_asset_sha256" &&
-          typeof pin.tag === "string" && typeof pin.commit === "string" &&
-          typeof pin.windows_asset_sha256 === "string" &&
-          /^[a-f0-9]{40}$/.test(pin.commit) &&
-          /^[a-f0-9]{64}$/.test(pin.windows_asset_sha256) ? p : null;
+        const fields=Object.keys(pin).sort().join("|");
+        const windows=fields==="commit|tag|windows_asset_sha256" &&
+          typeof pin.windows_asset_sha256==="string" &&
+          /^[a-f0-9]{64}$/.test(pin.windows_asset_sha256);
+        const linux=fields==="commit|linux_arch|linux_asset_sha256|tag" &&
+          (pin.linux_arch==="x64"||pin.linux_arch==="arm64") &&
+          typeof pin.linux_asset_sha256==="string" &&
+          /^[a-f0-9]{64}$/.test(pin.linux_asset_sha256) &&
+          typeof pin.tag==="string" &&
+          /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(pin.tag);
+        return (windows||linux) && typeof pin.tag==="string" &&
+          typeof pin.commit==="string" && /^[a-f0-9]{40}$/.test(pin.commit)
+          ? p : null;
       },
       write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
       edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
