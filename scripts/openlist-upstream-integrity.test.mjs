@@ -108,3 +108,20 @@ test('rejects invalid credentials and bounded/malformed JSON without leaking res
         !error.message.includes('secret'));
   }
 });
+
+test('scheduled-only upstream health reuses existing read probe and cannot dispatch writes', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const workflow = await readFile(new URL('../.github/workflows/openlist-acceptance.yml', import.meta.url), 'utf8');
+  const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /  schedule:\\n    - cron: '17 \\* \\* \\* \\*'/);
+  const start = workflow.indexOf('  upstream-integrity:');
+  const end = workflow.indexOf('  driver-e2e:', start);
+  assert.ok(start > 0 && end > start);
+  const scheduledJob = workflow.slice(start, end);
+  assert.match(scheduledJob, /github.event_name == 'schedule'/);
+  assert.match(scheduledJob, /github.ref == 'refs\\/heads\\/main'/);
+  assert.match(scheduledJob, /node scripts\\/openlist-upstream-integrity\\.mjs/);
+  assert.match(scheduledJob, /node scripts\\/openlist-production-read-smoke\\.mjs/);
+  assert.doesNotMatch(scheduledJob, /(OPENLIST_API_TOKEN|confirm_disposable_write|wrangler deploy|register-openlist-portal)/);
+  assert.match(release, /if: inputs.worker == 'openlist-mcp-worker'[\\s\\S]*?run: node scripts\\/openlist-upstream-integrity\\.mjs/);
+});
