@@ -205,6 +205,24 @@ assert.match(emailSmoke, /call\('mail_get'/);
 assert.match(emailSmoke, /call\('attachment_get'/);
 assert.doesNotMatch(emailSmoke, /call\(['"](?:mail_send|mail_reply|mail_forward|mail_mark|mail_move|mail_trash|draft_create)['"]/);
 
+// Narrow operator-documentation contracts: prevent unsafe release examples and
+// credential-type regressions without introducing a general Markdown linter.
+export function verifyDocumentationContracts({ imaContext, raindropReadme, githubActionsReadme }) {
+  assert.match(imaContext, /`IMA_CLIENT_ID`[^\n]*Variable/, 'IMA Client ID must be documented as a Variable');
+  assert.match(imaContext, /`IMA_API_KEY`[^\n]*Secret/, 'IMA API key must be documented as a Secret');
+  assert.doesNotMatch(imaContext, /单用户 Worker Secrets/, 'IMA Client ID must not be documented as a Secret');
+  assert.match(raindropReadme, /Release Worker/, 'Raindrop must use the selected-Worker release');
+  assert.doesNotMatch(raindropReadme, /wrangler\s+secret\s+put/, 'Raindrop must not recommend direct production secret writes');
+  assert.match(githubActionsReadme, /inputs=\{"worker":"github-actions-mcp-worker","deploy_to_production":"true"\}/,
+    'GitHub Actions MCP example must select its own Worker');
+}
+
+verifyDocumentationContracts({
+  imaContext: readFileSync(new URL('../apps/ima-mcp-worker/CONTEXT.md', import.meta.url), 'utf8'),
+  raindropReadme: readFileSync(new URL('../apps/raindrop-mcp-worker/README.md', import.meta.url), 'utf8'),
+  githubActionsReadme: readFileSync(new URL('../apps/github-actions-mcp-worker/README.md', import.meta.url), 'utf8'),
+});
+
 const workflowDir = new URL('../.github/workflows/', import.meta.url);
 const workflows = Object.fromEntries(readdirSync(workflowDir)
   .filter(name => /\.ya?ml$/.test(name))

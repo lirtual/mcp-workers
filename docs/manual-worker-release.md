@@ -10,7 +10,7 @@
 - 只能选择一个明确白名单 Worker。数据库必须通过真正的 PostgreSQL/MySQL 集成检查；其他 Worker 不得被数据库集成步骤错误阻挡。
 - 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。Actions 自动选择该名称，无须维护 `WORKER_CONFIG_SCOPE`。GitHub 可能自动建立尚不存在的空 Environment，应事先配置 Worker 专属 Secrets、审批与分支保护；每次手动部署缺少必需密钥都必须在上传前失败。
 - Repository Secrets 放 `CLOUDFLARE_API_TOKEN`、默认的 `MCP_ACCESS_TOKEN`；Repository Variable 放 `CLOUDFLARE_ACCOUNT_ID`。Worker 自己的 Environment 保存其余敏感字段。对应同名 Environment Secret 可覆盖全局 Portal Token。
-- 用户需自行将旧 `production` Environment 的已保存密钥与保护规则迁移。**在迁移成功前不要运行新的手动发布，也不要删除旧 Environment**。所有敏感值不得出现在代码/日志/PR 中。
+- **仅对仍使用旧 `production` Environment 的部署**，先将其必需密钥与保护规则迁移到对应 Worker Environment，并完成读回核对；在此之前不要启动新的手动发布，也不要删除旧 Environment。已完成迁移的 Worker 无需重复执行。所有敏感值不得出现在代码/日志/PR 中。
 - 发布前检查当前 `main` SHA，校验 Cloudflare 状态及 Worker 是否存在；首次发布还须满足对应 Worker 的专项前置检查（例如 OpenList 要求既有 `openlist-tsworkers` 上游）；不能将不存在的 Worker 或自动创建的空 Environment 当作部署许可。
 - 首次部署及后续每次手动发布，均通过 `wrangler deploy --secrets-file` 同步被选 Worker 的全部必需 GitHub Secrets；缺失或空值则拒绝发布，不再静默沿用现网旧值。其他 Worker、`edgessh` 不受该次发布影响。
 - 受管 Worker 使用 `keep_vars: false`；运行时普通 Variables 仅来自 Wrangler 配置默认值及被选 GitHub Environment 白名单覆盖，不再保留 Dashboard 临时配置。凭据必须使用 Secret，不以 Variable 传递；IMA 的 `IMA_CLIENT_ID` 和 Workflow 的 `MCP_PORTAL_CLIENT_ID` 是明确允许的非秘密标识符 Variable。
@@ -35,4 +35,4 @@
 - SSH 使用既有 EdgeSSH D1 的只读应用访问和自己的 `SSH_OPERATIONS` Durable Object，并以相同的 `ENCRYPTION_KEY` 解密选定主机记录；它不是数据库级只读权限。现行方案不使用已退役的 `EDGE_SSH_BROKER` Service Binding，不重建数据库，也不擅自轮换已有密钥。
 - Remote Control 严格维持独立 SQLite `DeviceCoordinator`（不能复用 Preview DO、不能使用 VPC 和 v1/v2 运行模式开关）；不将既有的配对、身份或回执验收默认为新环境测试。
 
-正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享的 `MCP_ACCESS_TOKEN` 和 SSH 的 `ENCRYPTION_KEY`（EdgeSSH 与 SSH MCP 需与既有加密记录对应并分别验收），以及 GitHub Actions MCP 的 `ACTIONS_GITHUB_DISPATCH_TOKENS`。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。IMA 的 `IMA_CLIENT_ID` 改由该 Worker 的必填 GitHub Environment Variable 提供，`IMA_API_KEY` 仍保密。Cloudflare 现网旧 `CLIENT_ID` Variable 不会仅因为 PR 合并而删除，首次手动发布必须通过 readback 验证新的 `IMA_CLIENT_ID` 为 `plain_text` 且旧名称被移除，失败不能当作迁移完成；请参考部署指南的一次性迁移步骤。
+正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享的 `MCP_ACCESS_TOKEN` 和 SSH 的 `ENCRYPTION_KEY`（EdgeSSH 与 SSH MCP 需与既有加密记录对应并分别验收），以及 GitHub Actions MCP 的 `ACTIONS_GITHUB_DISPATCH_TOKENS`。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。IMA 的 `IMA_CLIENT_ID` 改由该 Worker 的必填 GitHub Environment Variable 提供，`IMA_API_KEY` 仍保密。只有遗留部署仍带有旧 `CLIENT_ID` Variable 时，才需要按部署指南执行一次性迁移；当前 IMA 生产绑定已是 `IMA_CLIENT_ID` 的 `plain_text`，正常发布仍须通过绑定读回，不能把失败当成迁移完成。
