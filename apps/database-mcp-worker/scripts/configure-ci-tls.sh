@@ -19,7 +19,7 @@ done
 pg=$(docker ps --filter ancestor=postgres:17 --format '{{.ID}}' | head -1)
 my=$(docker ps --filter ancestor=mysql:8.4 --format '{{.ID}}' | head -1)
 [[ -n "$pg" && -n "$my" ]] || { echo 'CI database containers missing'; exit 1; }
-sudo sh -c 'printf "127.0.0.1 postgres.db-ci.test mysql.db-ci.test\n" >> /etc/hosts'
+sudo sh -c 'printf "127.0.0.1 postgres.db-ci.test mysql.db-ci.test postgres-wrong.db-ci.test mysql-wrong.db-ci.test\n" >> /etc/hosts'
 # PostgreSQL: install a trusted SAN cert and force hostssl (no plaintext TCP).
 docker cp "$work/postgres.crt" "$pg:/var/lib/postgresql/data/server.crt"
 docker cp "$work/postgres.key" "$pg:/var/lib/postgresql/data/server.key"
@@ -37,6 +37,15 @@ docker cp "$work/mysql.crt" "$my:/var/lib/mysql/server-cert.pem"
 docker cp "$work/mysql.key" "$my:/var/lib/mysql/server-key.pem"
 docker exec -u 0 "$my" sh -c 'chown mysql:mysql /var/lib/mysql/{ca.pem,server-cert.pem,server-key.pem} 2>/dev/null || chown mysql:mysql /var/lib/mysql/*.pem; chmod 600 /var/lib/mysql/server-key.pem'
 docker exec "$my" mysql -uroot -proot -e 'ALTER INSTANCE RELOAD TLS; SET GLOBAL require_secure_transport=ON;'
+# Explicitly prove network plaintext is disabled on both disposable test engines.
+pg_ci_password=$(node -e 'process.stdout.write(new URL(process.env.TEST_POSTGRES_ADMIN_URL).password)')
+if docker exec -e "PGPASSWORD=$pg_ci_password" "$pg" sh -c 'PGSSLMODE=disable psql -h 127.0.0.1 -U postgres -d testdb -Atqc "SELECT 1" >/dev/null 2>&1'; then
+  echo 'PostgreSQL accepted plaintext TCP unexpectedly'; exit 1
+fi
+unset pg_ci_password
+if docker exec "$my" mysql -h 127.0.0.1 --protocol=TCP --ssl-mode=DISABLED -umcp_reader -preader -e 'SELECT 1' >/dev/null 2>&1; then
+  echo 'MySQL accepted plaintext TCP unexpectedly'; exit 1
+fi
 # Trust root applies to Node integration tests; do not disable verifier anywhere.
 {
   printf 'NODE_EXTRA_CA_CERTS=%s/root.crt\n' "$work"

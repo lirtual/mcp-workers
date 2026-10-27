@@ -1,0 +1,83 @@
+import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Env } from '../../src/types.js';
+import { PublicError } from '../../src/errors.js';
+const { fakeHealth } = vi.hoisted(() => ({ fakeHealth: vi.fn() }));
+vi.mock('../../src/db/index.js', () => ({ healthCheck: fakeHealth }));
+import { handleSetup } from '../../src/setup/handler.js';
+
+function fixture() {
+  const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
+  const prepare = (sql: string, args: unknown[] = []) => {
+    const stmt = sqlite.prepare(sql);
+    return {
+      bind(...a: unknown[]) { return prepare(sql, a); },
+      async all<T>() { return { results: stmt.all(...args as []) as T[] }; },
+      async first<T>() { return (stmt.get(...args as []) as T) ?? null; },
+      async run() { const result = stmt.run(...args as []); return { meta: { changes: result.changes } }; }
+    };
+  };
+  const env = {
+    DB: { prepare }, DATABASE_ENCRYPTION_KEY: btoa('q'.repeat(32)), DATABASE_KEY_ID: 'key-one',
+    DATABASE_SETUP_HOST: 'db-owner.example.net', ACCESS_TEAM_DOMAIN: 'testing.cloudflareaccess.com',
+    ACCESS_AUD: 'test-aud', OWNER_EMAIL: 'owner@example.net',
+    RATE_LIMITER: { async limit() { return { success: true }; } },
+    SETUP_RATE_LIMITER: { async limit() { return { success: true }; } }
+  } as unknown as Env;
+  return { sqlite, env };
+}
+const instances: DatabaseSync[] = [];
+afterEach(() => { instances.splice(0).forEach(db => db.close()); fakeHealth.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+const pageUrl = 'https://db-owner.example.net/setup';
+
+async function auth() {
+  const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+  const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
+  const message = encode({ alg: 'RS256', kid: 'ci-owner' }) + '.' + encode({
+    iss: 'https://testing.cloudflareaccess.com', aud: 'test-aud', sub: 'owner-id',
+    email: 'owner@example.net', exp: Math.floor(Date.now() / 1000) + 60
+  });
+  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', pair.privateKey, new TextEncoder().encode(message));
+  const jwt = message + '.' + Buffer.from(signature).toString('base64url');
+  const certificates = async () => Response.json({ keys: [{ ...jwk, kid: 'ci-owner', alg: 'RS256' }] });
+  return { jwt, certificates };
+}
+
+describe('Owner HTML → D1 real-SQL lifecycle', () => {
+  it('preserves active configuration after a failed edit, and requires disable to delete', async () => {
+    const { sqlite, env } = fixture(); instances.push(sqlite);
+    const { jwt, certificates } = await auth();
+    vi.stubGlobal('fetch', async () => Response.json({ Status: 0, Answer: [{ type: 1, data: '1.1.1.1' }] }));
+    fakeHealth.mockResolvedValue({ latencyMs: 2 });
+    const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    expect(page.status).toBe(200);
+    const csrf = (await page.text()).match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    expect(csrf).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+    const post = async (action: string, values: Record<string, string>) => handleSetup(new Request(pageUrl + '/' + action, {
+      method: 'POST', headers: { 'cf-access-jwt-assertion': jwt, origin: 'https://db-owner.example.net', cookie,
+        'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf, ...values })
+    }), env, certificates);
+    const original = 'postgres://reader:pass@db.example.net/catalog';
+    expect((await post('add', { id: 'main', dialect: 'postgres', url: original })).status).toBe(200);
+    let row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
+    expect(row).toMatchObject({ status: 'active', revision: 2 });
+    const ciphertext = row.ciphertext;
+    fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unavailable'));
+    expect((await post('edit', { id: 'main', revision: '2', credential_mode: 'replace',
+      url: 'postgres://reader:changed@db.example.net/catalog' })).status).toBe(422);
+    row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
+    expect(row).toMatchObject({ status: 'active', revision: 2, ciphertext });
+    expect((await post('delete', { id: 'main', revision: '2', confirm_id: 'main' })).status).toBe(422);
+    expect((await post('disable', { id: 'main', revision: '2' })).status).toBe(200);
+    expect((await post('delete', { id: 'main', revision: '3', confirm_id: 'other' })).status).toBe(422);
+    expect((await post('delete', { id: 'main', revision: '3', confirm_id: 'main' })).status).toBe(200);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
+    vi.unstubAllGlobals();
+  });
+});
