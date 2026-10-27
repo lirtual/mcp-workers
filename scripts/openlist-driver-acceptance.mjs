@@ -47,9 +47,16 @@ async function boundedJson(response, cap = 32768) {
 
 export async function runOpenListDriverAcceptance(env, transport = fetch) {
   check(env.OPENLIST_DRIVER_E2E_APPROVED === 'true', 'not_approved');
-  check(typeof env.MCP_ACCESS_TOKEN === 'string' && env.MCP_ACCESS_TOKEN.length > 10 &&
+  // Match the existing release's authenticated MCP smoke and secret-staging
+  // contract: nonempty, no leading/trailing whitespace, no CR/LF. Arbitrary
+  // minimum-length rules must not be added only to an acceptance fixture.
+  check(typeof env.MCP_ACCESS_TOKEN === 'string' &&
+    env.MCP_ACCESS_TOKEN.length > 0 &&
+    env.MCP_ACCESS_TOKEN.trim() === env.MCP_ACCESS_TOKEN &&
     !/[\r\n]/.test(env.MCP_ACCESS_TOKEN), 'missing_mcp_token');
-  check(typeof env.OPENLIST_API_TOKEN === 'string' && env.OPENLIST_API_TOKEN.length > 10 &&
+  check(typeof env.OPENLIST_API_TOKEN === 'string' &&
+    env.OPENLIST_API_TOKEN.length > 0 &&
+    env.OPENLIST_API_TOKEN.trim() === env.OPENLIST_API_TOKEN &&
     !/[\r\n]/.test(env.OPENLIST_API_TOKEN) &&
     env.OPENLIST_API_TOKEN !== env.MCP_ACCESS_TOKEN, 'missing_upstream_token');
   let roots;
