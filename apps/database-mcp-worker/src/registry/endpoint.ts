@@ -19,11 +19,16 @@ function publicIPv4(ip: string): boolean {
     (a === 203 && b === 0 && c === 113));
 }
 function publicIPv6(ip: string): boolean {
+  // DNS JSON returns textual addresses, not necessarily canonical IPv6.
+  // Normalize before checking reserved prefixes (e.g. 2001:0db8::/32).
+  let value: string;
+  try { value = new URL(`http://[${ip}]/`).hostname.slice(1, -1); }
+  catch { return false; }
   // Only global unicast 2000::/3; exclude documented/special-purpose prefixes.
-  const value = ip.toLowerCase();
   if (!/^[23][0-9a-f]{0,3}:/.test(value)) return false;
-  return !value.startsWith('2001:db8:') && !value.startsWith('2001:0:') &&
-    !value.startsWith('2001:10:') && !value.startsWith('2001:20:');
+  return !value.startsWith('2001:db8:') && !value.startsWith('2001::') &&
+    !value.startsWith('2001:0:') && !value.startsWith('2001:10:') &&
+    !value.startsWith('2001:20:');
 }
 function publicAddress(ip: string): boolean {
   return isIP(ip) === 4 ? publicIPv4(ip) : isIP(ip) === 6 ? publicIPv6(ip) : false;
