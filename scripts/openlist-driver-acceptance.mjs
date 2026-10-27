@@ -205,6 +205,36 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       typeof signed.permanent === 'boolean' &&
       (signed.permanent ? signed.expires_at === null :
         typeof signed.expires_at === 'string'), 'native_link_invalid');
+    // Verify the actual signed public route with a tiny exact synthetic file,
+    // not just the URL's appearance. No credential is forwarded or logged.
+    let publicResponse;
+    try {
+      publicResponse = await transport(new Request(signed.url,{
+        method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
+        headers:{ accept:'text/plain' },
+      }));
+    } catch { stop('native_link_transport'); }
+    check(publicResponse.status === 200 && !publicResponse.redirected &&
+      !publicResponse.headers.has('location'), 'native_link_status');
+    let publicBytes;
+    try {
+      const reader=publicResponse.body?.getReader();
+      check(reader,'native_link_body');
+      const chunks=[];let total=0;
+      for (;;) {
+        const {done,value}=await reader.read();
+        if (done) break;
+        total+=value.byteLength;
+        check(total<=4096,'native_link_oversize');
+        chunks.push(value);
+      }
+      publicBytes=new Uint8Array(total);let offset=0;
+      for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
+    } catch {stop('native_link_body');}
+    let publicText;
+    try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
+    catch { stop('native_link_invalid_utf8'); }
+    check(publicText===nativeContent,'native_link_content');
     const forbiddenNative = await mcp('openlist_move',{
       path:'/__openlist_e2e_prohibited/file.txt',destination_dir:destinationDir},true);
     check(forbiddenNative.status === 'not_executed' &&

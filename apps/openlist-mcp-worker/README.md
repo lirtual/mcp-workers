@@ -309,8 +309,8 @@ No new workflow, environment, credentials or automatic release is introduced.
 
 The enhanced path uses **one fresh, approved synthetic Koofr test folder**
 with exact run-scoped children, and exercises MCP `upload_small`, `copy`,
-`rename`, `move`, small text readback, signed URL construction and a
-scope-denial case. The existing default path is unchanged. The test will
+`rename`, `move`, small text readback, signed URL construction **and a real anonymous HTTPS
+GET of its exact synthetic bytes** (no redirects), plus a scope-denial case. The existing default path is unchanged. The test will
 leave its synthetic files for separately approved cleanup, never overwrite
 normal user paths or mutate retained prior runs, and does not print the
 sensitive signed URL. This step **does not** create, disable or revoke

@@ -41,6 +41,16 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
       uploaded=true;
       return Response.json({code:200,data:null});
     }
+    if(url.pathname.startsWith('/api/p/')) {
+      requests.push('signed_get');
+      assert.equal(req.method,'GET');
+      assert.equal(url.origin,'https://openlist.lirtual.dpdns.org');
+      assert.equal(req.headers.get('authorization'),null);
+      assert.equal(url.pathname,'/api/p/'+nativeDest.slice(1));
+      assert.equal(url.searchParams.get('sign'),'0.'+'a'.repeat(64));
+      return new Response(nativeFiles.get(nativeDest),{
+        status:200,headers:{'content-type':'text/plain'}});
+    }
     assert.equal(url.pathname,'/mcp');
     assert.equal(req.headers.get('authorization'),'Bearer '+authEnv.MCP_ACCESS_TOKEN);
     const rpc=await req.json();
@@ -227,6 +237,7 @@ test('expanded native E2E requires a separate explicit opt-in and only mutates t
   assert.equal(requests.filter(x=>x==='openlist_copy').length,1);
   assert.equal(requests.filter(x=>x==='openlist_rename').length,1);
   assert.equal(requests.filter(x=>x==='openlist_move').length,2);
+  assert.equal(requests.filter(x=>x==='signed_get').length,1);
   assert.equal(requests.includes('openlist_share_disable'),false);
   assert.equal(requests.includes('openlist_delete'),false);
 });
