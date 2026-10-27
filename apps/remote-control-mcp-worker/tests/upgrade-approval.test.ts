@@ -17,6 +17,7 @@ const PIN: ReviewedUpgradePin = {
 const NOW = 1793100000000;
 function fixture() {
   const rows = new Map<string, unknown>();
+  rows.set("session:epoch:" + DEVICE, "signed-before-switch");
   rows.set("device:" + DEVICE, {
     device_id: DEVICE, name: "RAY-WORKSPACE", public_key: "fixed-key",
     fingerprint: "1234567890abcdef12345678", revoked: false, grant_type: "permanent",
@@ -246,6 +247,9 @@ test("only exactly reported signed new target permits terminal completion and fu
     "an admitted operation is not an upgrade");
   const current=f.rows.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
   f.modifyDevice({device_info:{...current.device_info,agent_version:PIN.tag}});
+  assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),false,
+    "the original authenticated socket cannot masquerade as a new Agent incarnation");
+  f.rows.set("session:epoch:" + DEVICE, "signed-after-switch");
   assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),true,
     "signed Agent receipt validation is a separate mandatory caller gate");
   assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"completed");
@@ -267,6 +271,7 @@ test("terminal ledger refuses re-pair, revocation, target mismatch or missing ru
     assert.equal(await confirmWindowsUpgrade(f.store,p.preview.operation_id,p.confirmation,
       shown!.form_token,NOW+2),true);
     assert.ok(await claimWindowsUpgradeDispatch(f.store,p.preview.operation_id,NOW+3));
+    f.rows.set("session:epoch:" + DEVICE, "signed-after-switch");
     f.modifyDevice(change);
     assert.equal(await markWindowsUpgradeCompleted(f.store,p.preview.operation_id,DEVICE),false);
     assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"claimed");
