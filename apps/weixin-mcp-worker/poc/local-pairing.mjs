@@ -47,7 +47,8 @@ function page() {
   if (stage === 'unbound') body = form('start', 'Create temporary QR');
   if (stage === 'qr_pending') {
     body = `<p>Scan with your own Weixin account. Never forward this QR.</p><div class="qr">${state.svg ?? ''}</div>` +
-      form('scan', 'Check scan confirmation');
+      form('scan', 'Check scan confirmation') +
+      form('refresh', 'Generate a NEW QR (discard expired one)');
   }
   if (stage === 'bound_unverified') {
     body = `<p>Send this unique proof as a standalone text message to the ClawBot conversation in Weixin. Do not send it here:</p>
@@ -101,7 +102,11 @@ async function perform(action) {
   if (expired()) { clear(); state.stage = 'expired'; return; }
   state.lastError = null;
   try {
-    if (action === 'start' && state.stage === 'unbound') {
+    if ((action === 'start' && state.stage === 'unbound') ||
+        (action === 'refresh' && state.stage === 'qr_pending')) {
+      // Discard the old QR *before* requesting a replacement; never reuse stale QR.
+      clear();
+      state.stage = 'unbound';
       const qr = await api.getQr();
       const svg = execFileSync('python3', [QR_SCRIPT], {
         input: qr.qrcode_img_content, encoding: 'utf8', maxBuffer: 512 * 1024,
@@ -153,7 +158,7 @@ async function perform(action) {
     }
   } catch (err) {
     state.lastError = safe(err);
-    if (action === 'start') { clear(); state.stage = 'unbound'; }
+    if (action === 'start' || action === 'refresh') { clear(); state.stage = 'unbound'; }
     if (action === 'scan' && err?.code === 'UNSAFE_REDIRECT') { clear(); state.stage = 'expired'; }
     if (action === 'verify' && err?.code === 'STALE_SESSION') { clear(); state.stage = 'expired'; }
   }
@@ -165,7 +170,7 @@ const server = http.createServer(async (req, res) => {
     reply(res, 404, 'not found'); return;
   }
   if (req.method === 'GET' && url.pathname === '/') { reply(res); return; }
-  if (req.method !== 'POST' || !['start','scan','verify','send'].includes(url.pathname.slice(1))) {
+  if (req.method !== 'POST' || !['start','refresh','scan','verify','send'].includes(url.pathname.slice(1))) {
     reply(res, 404, 'not found'); return;
   }
   if (!['application/x-www-form-urlencoded'].includes((req.headers['content-type'] ?? '').split(';')[0]) ||
@@ -176,7 +181,7 @@ const server = http.createServer(async (req, res) => {
   if (!data || !checkCsrf(data.get('csrf'))) { reply(res, 403, 'forbidden'); return; }
   // An out-of-order POST must not appear successful or dispatch any message.
   const action = url.pathname.slice(1);
-  const expectedStage = { start:'unbound', scan:'qr_pending',
+  const expectedStage = { start:'unbound', refresh:'qr_pending', scan:'qr_pending',
     verify:'bound_unverified', send:'ready' };
   if (expired() || state.stage !== expectedStage[action] ||
       (action === 'send' && state.sent)) { reply(res, 409); return; }

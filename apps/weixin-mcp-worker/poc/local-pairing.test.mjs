@@ -30,7 +30,7 @@ test('localhost PoC refuses pre-verification sends, cross-site and malformed req
   assert.match(csrf, /^[0-9a-f]{48}$/);
   const form = new URLSearchParams({csrf}).toString();
   const options = {method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',origin},body:form};
-  for (const endpoint of ['/send','/scan','/verify']) {
+  for (const endpoint of ['/send','/scan','/verify','/refresh']) {
     assert.equal((await fetch(base + endpoint, options)).status, 409, endpoint + ' must not dispatch');
   }
   assert.equal((await fetch(base + '/start', {method:'POST',
