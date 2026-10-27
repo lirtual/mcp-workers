@@ -14,8 +14,24 @@ async function limitedJson(response) {
   check(response.status===200&&!response.redirected&&!response.headers.has('location'),'transport_denied');
   const h=response.headers.get('content-length');
   check(h===null||(/^\d+$/.test(h)&&Number(h)<=32768),'limit');
-  const text=await response.text();
-  check(new TextEncoder().encode(text).byteLength<=32768,'limit');
+  const reader=response.body?.getReader();
+  check(reader,'missing_body');
+  const pieces=[];let length=0;
+  try{
+    for(;;){
+      const{done,value}=await reader.read();
+      if(done)break;
+      length+=value.byteLength;
+      check(length<=32768,'limit');
+      pieces.push(value);
+    }
+  }catch{stop('body_read');}
+  finally{void reader.cancel().catch(()=>{});}
+  const bytes=new Uint8Array(length);let pos=0;
+  for(const part of pieces){bytes.set(part,pos);pos+=part.length;}
+  let text;
+  try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}
+  catch{stop('utf8');}
   let value;
   try{
     const content=response.headers.get('content-type')?.split(';')[0]?.trim();
