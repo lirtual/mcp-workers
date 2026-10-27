@@ -3,6 +3,8 @@ import test from 'node:test';
 import {fileURLToPath} from 'node:url';
 import {readFileSync} from 'node:fs';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
+import {startPairing,pollPairing,pairingView,verifyPairing} from '../src/pairing.ts';
+import {acquireLease,releaseLease,unbindLocal} from '../src/lease.ts';
 
 // Exercise Cloudflare's workerd/D1 implementation, not the node:sqlite adapter.
 // Every token, account and receipt here is synthetic. No Tencent call is made.
@@ -122,5 +124,65 @@ test('actual workerd D1 migration, ingress authorization, CAS lease and receipt 
     const admin=await mf.dispatchFetch('https://'+adminHost+'/setup');
     assert.equal(admin.status,403);
     assert.doesNotMatch(await admin.text(),/synthetic-sealed-fixture|owner@example.org/);
+  }finally{await mf.dispose();}
+});
+
+
+test('real workerd D1 drives the application QR proof and generation CAS without Tencent',async()=>{
+  const mf=runtime();
+  try{
+    const db=await mf.getD1Database('DB');
+    await db.exec(migration);
+    const env={DB:db,WEIXIN_ENCRYPTION_KEY:Buffer.alloc(32,17).toString('base64')};
+    const owner='signed-access-test-sub';
+    let incoming=[];
+    const api={
+      getQr:async()=>({
+        qrcode:'synthetic-private-qr',
+        qrcode_img_content:'https://liteapp.weixin.qq.com/synthetic-only',
+      }),
+      pollQr:async()=>({
+        status:'confirmed',bot_token:'synthetic-private-token',
+        ilink_bot_id:'synthetic-bot',ilink_user_id:'synthetic-owner',
+      }),
+      getUpdates:async()=>({msgs:incoming,get_updates_buf:'synthetic-next-cursor'}),
+    };
+    await startPairing(env,owner,api);
+    assert.equal((await pairingView(env,owner)).phase,'qr_pending');
+    assert.equal((await pollPairing(env,owner,api)),'confirmed');
+    const challenge=(await pairingView(env,owner)).proof;
+    assert.match(challenge,/^WX346-[A-F0-9]{24}$/);
+    const forged={from_user_id:'different-user',to_user_id:'synthetic-bot',
+      message_type:1,context_token:'untrusted-context',
+      item_list:[{type:1,text_item:{text:challenge}}]};
+    incoming=[forged];
+    assert.equal(await verifyPairing(env,owner,api),'waiting_for_proof');
+    assert.equal((await db.prepare('SELECT generation FROM weixin_binding').first()).generation,0);
+    await db.prepare('UPDATE weixin_pairing SET poll_after=0').run();
+    incoming=[{...forged,from_user_id:'synthetic-owner',
+      context_token:'synthetic-private-context'}];
+    assert.equal(await verifyPairing(env,owner,api),'ready');
+    const active=await db.prepare('SELECT * FROM weixin_binding WHERE id=1').first();
+    assert.equal(active.generation,1);
+    assert.equal(active.state,'ready');
+    assert.doesNotMatch(JSON.stringify(active),/synthetic-private-token|synthetic-private-context/);
+    const staged=await db.prepare('SELECT phase,ciphertext FROM weixin_pairing').first();
+    assert.equal(staged.phase,'expired');
+    assert.equal(staged.ciphertext,null);
+    assert.equal((await pairingView(env,owner)).phase,'none');
+
+    const status=await call(mf,'tools/call',{name:'weixin_status',arguments:{}});
+    assert.equal(status.status,200);
+    assert.match(status.body,/ready/);
+    assert.doesNotMatch(status.body,/synthetic-private-token|synthetic-private-context/);
+
+    const lease=await acquireLease(env,1,['ready']);
+    await assert.rejects(()=>unbindLocal(env),/binding_busy/);
+    await releaseLease(env,lease);
+    assert.equal(await unbindLocal(env),2);
+    const after=await db.prepare('SELECT generation,state,session_ciphertext FROM weixin_binding').first();
+    assert.equal(after.generation,2);
+    assert.equal(after.state,'unbound');
+    assert.equal(after.session_ciphertext,null);
   }finally{await mf.dispose();}
 });
