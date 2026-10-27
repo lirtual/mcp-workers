@@ -123,3 +123,26 @@ test("stale, revoked, malformed or oversized device info is rejected without cha
   assert.equal(revoked.closeCode, 1008);
   assert.equal((h.rows.get("device:" + h.activeId) as {device_info?: unknown}).device_info, undefined);
 });
+
+
+test("upgrade capability is accepted only from signed native Windows x64 device info and is not public", async () => {
+  const h = harness();
+  const reported = JSON.stringify({ ...JSON.parse(deviceInfo),upgrade_protocol:"owner-one-shot-v1" });
+  assert.equal(await handleDeviceInfoMessage(h.state,h.live as unknown as WebSocket,reported),true);
+  const stored = h.rows.get("device:"+h.activeId) as {device_info:{upgrade_protocol:string}};
+  assert.equal(stored.device_info.upgrade_protocol,"owner-one-shot-v1");
+  const listed = (await listApprovedDevices(h.state)).body as Array<Record<string,any>>;
+  assert.equal(listed.find(d=>d.device_id===h.activeId)!.device_info.upgrade_protocol,undefined,
+    "private protocol capability must not be public metadata");
+  for (const changes of [
+    { upgrade_protocol:"invented" },
+    { os:"linux", upgrade_protocol:"owner-one-shot-v1" },
+    { environment:"wsl2",upgrade_protocol:"owner-one-shot-v1" },
+    { arch:"arm64",upgrade_protocol:"owner-one-shot-v1" },
+  ]) {
+    const isolated=h.makeSocket(h.otherId,"epoch-other");
+    const raw=JSON.stringify({...JSON.parse(deviceInfo),...changes});
+    assert.equal(await handleDeviceInfoMessage(h.state,isolated as unknown as WebSocket,raw),true);
+    assert.equal(isolated.closeCode,1008);
+  }
+});
