@@ -613,7 +613,7 @@ export function verifyPublishedVersion(previous, observed, expected) {
   return true;
 }
 
-function readConfiguration(worker, content) {
+export function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
   if (worker === "database-mcp-worker") verifyDatabaseCutoverSource(conf);
@@ -626,7 +626,7 @@ function readConfiguration(worker, content) {
       conf.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must stay enabled");
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "weixin-mcp-worker"].includes(worker) ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
       "Source Invocation Logs setting differs from production");
   }
