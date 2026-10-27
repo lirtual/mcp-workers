@@ -250,3 +250,68 @@ test('readText never downloads when GET metadata name or path disagrees with tar
     assert.equal(calls,1);
   }
 });
+
+test('gated getShare uses only explicit share ID and returns a strictly scoped safe projection', async () => {
+  let sent: Request | undefined;
+  const api = new OpenListApi(createConfig(env(async request => {
+    sent = request;
+    return ok({
+      id:'share_Ab-09', files:['/drive/safe/readme.md','/drive/safe/docs/info.txt'],
+      disabled:false, expires:'2026-12-31T00:00:00Z', max_accessed:10,
+      pwd:'secret-password', creator:'admin@example.test', creator_role:2,
+      new_id:'hidden-new-id', readme:'private notes', header:'private header',
+      remark:'private remark', raw_url:'https://evil.test/key', accessed:2,
+    });
+  })));
+  const response = await api.getShare('share_Ab-09');
+  assert.deepEqual(response, {
+    id:'share_Ab-09',
+    files:['/drive/safe/readme.md','/drive/safe/docs/info.txt'],
+    disabled:false, expires:'2026-12-31T00:00:00Z', max_accessed:10,
+  });
+  assert.equal(sent!.method,'GET');
+  assert.equal(new URL(sent!.url).pathname,'/api/share/get');
+  assert.equal(new URL(sent!.url).searchParams.get('id'),'share_Ab-09');
+  assert.equal(sent!.headers.get('authorization'),'admin-token');
+  assert.doesNotMatch(JSON.stringify(response), /secret-password|creator|private|raw_url|"accessed":/);
+});
+
+test('gated getShare rejects malformed IDs before upstream dispatch', async () => {
+  let calls = 0;
+  const api = new OpenListApi(createConfig(env(async () => {
+    ++calls; return ok(null);
+  })));
+  for (const id of ['', '../test','a/b','a%2fb','?q=bad', 'a'.repeat(65), ' space', 'é']) {
+    await assert.rejects(api.getShare(id),
+      (e: unknown) => e instanceof OpenListError && e.code === 'INVALID_INPUT');
+  }
+  assert.equal(calls,0);
+});
+
+test('gated getShare rejects entire record if one shared file escapes scope or identity is wrong', async () => {
+  for (const response of [
+    {id:'share', files:['/drive/safe/ok','/drive/other/secret'],disabled:false},
+    {id:'share', files:['/drive/safe/ok','/drive/safe/../secret'],disabled:false},
+    {id:'share', files:['/drive/safe/ok','/drive/safe/%2fsecret'],disabled:false},
+    {id:'share', files:['/drive/safe/ok','/@s/another'],disabled:false},
+    {id:'share', files:[],disabled:false},
+    {id:'share', files:['/drive/safe/ok'],disabled:'false'},
+    {id:'another', files:['/drive/safe/ok'],disabled:false},
+    {id:'share', files:['/drive/safe/ok'],disabled:false,pwd:'secret',expires:'A'.repeat(65)},
+  ]) {
+    const api = new OpenListApi(createConfig(env(async () => ok(response))));
+    await assert.rejects(api.getShare('share'),
+      (e: unknown) => e instanceof OpenListError &&
+        ['OUT_OF_SCOPE','UPSTREAM_UNAVAILABLE'].includes(e.code));
+  }
+});
+
+test('gated getShare distinguishes absent ID from upstream malformed responses', async () => {
+  const absent = new OpenListApi(createConfig(env(async () =>
+    Response.json({code:404,data:null,message:'not found'}))));
+  await assert.rejects(absent.getShare('share'),
+    (e: unknown) => e instanceof OpenListError && e.code === 'NOT_FOUND');
+  const malformed = new OpenListApi(createConfig(env(async () => ok({id:'share',files:null}))));
+  await assert.rejects(malformed.getShare('share'),
+    (e: unknown) => e instanceof OpenListError && e.code === 'UPSTREAM_UNAVAILABLE');
+});

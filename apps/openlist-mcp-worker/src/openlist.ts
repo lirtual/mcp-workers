@@ -213,6 +213,47 @@ export class OpenListApi {
     }
     return { entries };
   }
+  // Gated candidate only: do NOT register as an MCP tool until real
+  // OpenList driver and Portal acceptance. Never query the global share list.
+  async getShare(id: string): Promise<Record<string, unknown>> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const share = (await this.request('GET', '/api/share/get?id=' + encodeURIComponent(id))).data;
+    if (!isObject(share) || share.id !== id || !Array.isArray(share.files) ||
+        share.files.length < 1 || share.files.length > 32 ||
+        typeof share.disabled !== 'boolean')
+      throw new OpenListError('UPSTREAM_UNAVAILABLE');
+    const files: string[] = [];
+    for (const value of share.files) {
+      let file: string;
+      try { file = canonicalPath(value); }
+      catch { throw new OpenListError('UPSTREAM_UNAVAILABLE'); }
+      if (!inScope(file, this.config.roots))
+        throw new OpenListError('OUT_OF_SCOPE');
+      files.push(file);
+    }
+    if (new Set(files).size !== files.length)
+      throw new OpenListError('UPSTREAM_UNAVAILABLE');
+
+    // An explicit allowlist keeps upstream creator, password, remark, raw links
+    // and other administrator-only metadata out of all user-facing results.
+    const result: Record<string, unknown> = { id, files, disabled: share.disabled };
+    if (share.expires !== undefined) {
+      if (share.expires !== null &&
+          !(typeof share.expires === 'string' && share.expires.length <= 64) &&
+          !(typeof share.expires === 'number' && Number.isSafeInteger(share.expires) &&
+            share.expires >= 0))
+        throw new OpenListError('UPSTREAM_UNAVAILABLE');
+      result.expires = share.expires;
+    }
+    if (share.max_accessed !== undefined) {
+      if (typeof share.max_accessed !== 'number' ||
+          !Number.isSafeInteger(share.max_accessed) || share.max_accessed < 0)
+        throw new OpenListError('UPSTREAM_UNAVAILABLE');
+      result.max_accessed = share.max_accessed;
+    }
+    return result;
+  }
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);
     const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;
