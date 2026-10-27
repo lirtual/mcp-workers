@@ -285,7 +285,7 @@ test('one-shot share creation has a pinned synthetic identity, expiry and hidden
   const api=new OpenListApi(createConfig(env(async request => {
     const route=new URL(request.url);
     assert.equal(route.origin,'https://openlist.internal');
-    assert.equal(request.headers.get('authorization'),'admin-token');
+    assert.equal(request.headers.get('authorization'), route.pathname.startsWith('/d/') ? null : 'admin-token');
     if (route.pathname==='/api/fs/get')
       return ok({name:'sample-40493124967-1.txt',path:ONE_SHOT_FILE,is_dir:false,
         size:new TextEncoder().encode(ONE_SHOT_CONTENT).byteLength,sign:'test-signed'});
