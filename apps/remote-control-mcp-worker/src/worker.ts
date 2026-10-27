@@ -1270,17 +1270,26 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
       if (!preview.ok) return deny(404);
       const result = await preview.json() as {
         preview?: {operation_id:string;device_id:string;fingerprint:string;
-          current_version:string;target:{tag:string;commit:string;windows_asset_sha256:string}};
+          current_version:string;target:{tag:string;commit:string;
+            windows_asset_sha256?:string;linux_asset_sha256?:string;linux_arch?:string}};
         form_token?:string;
       };
       const item = result.preview;
-      if (!item || item.operation_id !== operationId ||
+      const shape=item?.target && Object.keys(item.target).sort().join("|");
+      const windows=shape==="commit|tag|windows_asset_sha256" &&
+        /^[a-f0-9]{64}$/.test(item?.target?.windows_asset_sha256 ?? "");
+      const linux=shape==="commit|linux_arch|linux_asset_sha256|tag" &&
+        ["x64","arm64"].includes(item?.target?.linux_arch ?? "") &&
+        /^[a-f0-9]{64}$/.test(item?.target?.linux_asset_sha256 ?? "");
+      if (!item || item.operation_id !== operationId || (!windows && !linux) ||
           !/^[a-f0-9]{64}$/.test(result.form_token ?? "") ||
           !/^[a-f0-9-]{36}$/.test(item.device_id) ||
           !/^[a-f0-9]{24}$/.test(item.fingerprint) ||
-          !/^[a-f0-9]{40}$/.test(item.target?.commit ?? "") ||
-          !/^[a-f0-9]{64}$/.test(item.target?.windows_asset_sha256 ?? "")) return deny();
+          !/^[a-f0-9]{40}$/.test(item.target?.commit ?? "")) return deny();
       const e = escapeUpgradeHtml;
+      const assetLabel=windows?"Windows x64":"Linux "+item.target.linux_arch;
+      const assetHash=windows ? item.target.windows_asset_sha256! :
+        item.target.linux_asset_sha256!;
       const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
         "<title>Authorize Agent upgrade</title></head><body><main>" +
@@ -1291,7 +1300,7 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
         "</dd><dt>Current version</dt><dd>" + e(item.current_version) +
         "</dd><dt>Target version</dt><dd>" + e(item.target.tag) +
         "</dd><dt>Release commit</dt><dd>" + e(item.target.commit) +
-        "</dd><dt>Windows asset SHA-256</dt><dd>" + e(item.target.windows_asset_sha256) +
+        "</dd><dt>" + e(assetLabel) + " asset SHA-256</dt><dd>" + e(assetHash) +
         "</dd><dt>Operation ID</dt><dd>" + e(operationId) +
         "</dd></dl><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"" +
         e(result.form_token!) + "\"><button type=\"submit\">Approve this one upgrade</button>" +
