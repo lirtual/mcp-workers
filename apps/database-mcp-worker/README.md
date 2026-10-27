@@ -1,162 +1,65 @@
 # Cloudflare Database MCP Worker
 
-A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, structured writes, and structured schema changes. Each logical connection has one database principal; native MySQL/PostgreSQL grants determine which operations succeed. Direct database URLs remain supported where plaintext transport is explicitly acceptable; Cloudflare Hyperdrive is supported for TLS-capable read and write paths.
+A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, structured Safe Write and Safe Admin/DDL. **This README describes the unmerged [Spec #344](https://github.com/lirtual/mcp-workers/issues/344) Draft implementation; it does not describe an approved production cutover.** See [the cutover/rollback checklist](../../docs/database-cutover-344.md).
 
-## Minimal deployment
+## Current deployment status
 
-The normal deployment requires two Runtime Secrets:
+**Production cutover: BLOCKED.** The existing production Worker continues using its original `DATABASE_CONFIG` Secret until a separately authorized, verified migration. Do not remove, rotate or overwrite that existing Secret in preparation for this Draft. Do not invoke the Database production release workflow while its dedicated D1/Access/TLS gates are incomplete.
 
-- `MCP_ACCESS_TOKEN` — authenticates Cloudflare MCP Portal -> Worker.
-- `DATABASE_CONFIG` — a flat map of connection ids to SQL URLs or strict Hyperdrive references.
+The Draft moves the live connection catalog to a **dedicated D1 database**: one AES-256-GCM encrypted record per logical connection. Every SQL tool reads that record on admission, checks that it is active, and uses the selected connection's own database principal. A disabled/missing ID fails explicitly; there is no plaintext or Hyperdrive fallback.
 
-Store both under **Worker Settings -> Variables and Secrets** as **Secret** values. The connection id is also the display name. Presence in the map enables a connection; remove an entry to disable it.
+## Secrets, bindings, and Owner access
 
-```json
-{
-  "scrape_relay": "mysql://user:password@host1:3306/scrape_relay",
-  "analytics": "postgres://user:password@host2:5432/analytics"
-}
-```
+The Draft release requires the following Worker Secrets:
 
-The catalog accepts 1-50 IDs matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. Values must be SQL URL strings or strict Hyperdrive references. Nested connection objects, legacy `read`/`write`/`admin` fields, per-connection settings, and unknown fields are rejected. There is no dual-format compatibility.
+- `MCP_ACCESS_TOKEN` — the existing Cloudflare MCP Portal-to-Worker Bearer credential.
+- `DATABASE_ENCRYPTION_KEY` — canonical 32-byte Base64 AES-GCM key, independent of other Workers.
+- `DATABASE_KEY_ID` — key identifier, with optional matching previous key/ID retained for D1 backup and rollback compatibility.
 
-When one connection is configured, tools may omit `connection`. With multiple connections, tools require an explicit configured ID; the Worker never chooses by catalog order. `list_connections` returns only ID, dialect, and transport.
+Before any separately approved deployment, create and approve the dedicated `database-mcp-db` D1 and bind it as `DB`. The reviewed schema lives under `migrations/`; release checks are **read-only** and must not implicitly create or import D1 data. Keep existing encrypted backups and historical keys for their retention period.
 
-## MySQL server-level connection
+Owner management uses a dedicated HTTPS custom domain and a separate **self-hosted Cloudflare Access OTP** application, restricted to exactly the Owner email. Required plaintext Access configuration: `DATABASE_SETUP_HOST`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, and `OWNER_EMAIL`. The setup hostname/route comes from reviewed Wrangler configuration, not arbitrary GitHub variable overrides. The release gate verifies the domain, audience, one precise email policy, OTP-only identity provider, and short session. The MCP Bearer credential cannot authorize Owner setup.
 
-MySQL may omit the database name when one account needs to access multiple databases on the same server:
+The setup UI is a small server-rendered `/setup` page. It shows only non-secret ID, dialect, status and revision; the password, complete URL, CA material, encryption keys and ciphertext are never echoed. New and edited records are validated for eligible public endpoints and must pass verified TLS health before activation. Unreachable but structurally valid candidates may be saved **disabled**, not enabled. Edits, status changes, deletion and bounded key rotation enforce optimistic revision checks. Delete requires disabled status and explicit confirmation; it never deletes the upstream database.
 
-```json
-{ "mysql_server": "mysql://user:password@db.example.com:3306" }
-```
+## Direct TLS requirement
 
-`health_check` works without a default database. `inspect_schema` without `schema` lists databases visible to the account; schema-specific inspection requires `schema`. `get_schema_context` requires `schema` when the URL has no default database. Reads and structured mutations accept explicit `schema`; database grants remain the access boundary. PostgreSQL URLs require a database name.
+- PostgreSQL accepts `postgres://` / `postgresql://` with an explicit database.
+- MySQL accepts `mysql://` with an optional database name; operations requiring a schema must name it when the connection URL omits a default database.
+- Driver-level URL query parameters that could override SSL policy are rejected. MySQL Direct TLS requires a DNS hostname; IP literals are refused until peer identity validation is proven.
+- Both drivers must verify the server certificate chain and peer DNS identity. Optional validated project CA material is encrypted per connection.
+- **P0 acceptance requires actual Cloudflare Workers Direct TLS against separately approved disposable MySQL and PostgreSQL databases**, including reads, writes, health, DDL, and negative certificate/hostname/plaintext cases. Successful Node.js CI, dry-run, or an offline TLS mock **is not** proof.
+- Dynamic DNS validation rejects local/private/reserved targets but does not pin the DNS result to the driver's outgoing socket. Residual DNS rebinding/TOCTOU risk is documented; never claim full SSRF isolation.
 
-## Hyperdrive
-
-Hyperdrive references use the strict object form because bindings are configured in Wrangler/Cloudflare:
-
-```json
-{
-  "reporting": { "hyperdrive": "REPORTING_HYPERDRIVE", "dialect": "postgres" }
-}
-```
-
-The same selected binding and database principal serve reads and structured writes. Structured DDL remains direct-only and fails with `ADMIN_OPERATION_NOT_SUPPORTED` for Hyperdrive, without fallback.
-
-## Direct mode
-
-Direct mode accepts complete SQL URLs:
-
-- PostgreSQL: `postgres://` or `postgresql://` (database name required)
-- MySQL: `mysql://` (database name optional)
-
-Dialect is derived from the URL. Direct URLs requesting TLS are rejected; use Hyperdrive for TLS-capable database paths.
-
-## Global limits and database permissions
-
-Safe defaults and hard maxima apply globally through Wrangler vars:
-
-- `MAX_ROWS=500` (hard maximum 5,000)
-- `MAX_RESULT_BYTES=1048576` (hard maximum 8 MiB)
-- `MAX_SCHEMA_BYTES=524288` (hard maximum 4 MiB)
-- `QUERY_TIMEOUT_MS=15000` (hard maximum 60,000)
-- `MAX_WRITE_AFFECTED_ROWS=20` (hard maximum 100)
-
-The selected database account's native grants control reads, inserts, updates, deletes, and DDL. The Worker uses no elevated credential fallback. Structured mutation limits, parameterization, rollback on affected-row overflow, query bounds, rate limiting, redacted errors, and no-replay behavior remain enforced. The `connection` id selects credentials; it does not grant permissions.
-
-Deployment SQL examples under `deploy/sql/` remain optional starting points for accounts with different grant sets. PostgreSQL DDL requires suitable object ownership; MySQL DDL requires the corresponding database/table privileges.
+No proxy, custom database-protocol implementation, Hyperdrive restoration, TLS downgrade or direct plaintext fallback is approved.
 
 ## MCP tools
 
-Read tools:
+The existing names and structured permissions remain:
 
-- `list_connections`
-- `inspect_schema`
-- `get_schema_context`
-- `query_read`
-- `explain`
-- `health_check`
+| Read and inspect | Safe Write | Safe Admin / DDL |
+| --- | --- | --- |
+| `list_connections`, `inspect_schema`, `get_schema_context`, `query_read`, `explain`, `health_check` | `insert_rows`, `update_rows`, `delete_rows` | `create_table`, `alter_table`, `create_index`, `drop_index`, `drop_table` |
 
-`get_schema_context` is optimized for Agent/LLM planning rather than exhaustive metadata. It returns a compact text representation of up to 50 tables by default (`tableLimit` accepts 1-100), including columns, nullability, primary keys, and foreign-key relationships. It reports `tableCount`, `totalTables`, and `truncated` so callers know when the context is incomplete. Use `inspect_schema` when detailed defaults or indexes are needed.
+`list_connections` returns only non-secret metadata and works with an empty catalog. With exactly one configured connection, the `connection` argument can be omitted. With multiple configured IDs, a caller must provide one even when only one is active.
 
-Safe Write tools:
+Safe Write accepts structured operations, not raw mutation SQL. UPDATE/DELETE use bounded transactions and roll back changes above the affected-row cap. Structured DDL uses database-native permissions and explicit targets; it is not automatically retried after ambiguous results. Existing row/schema/result byte caps and query timeouts remain enforced. PostgreSQL RLS and native grants are the final permissions boundary; MySQL transactional rollback requires a transactional engine such as InnoDB.
 
-- `insert_rows`
-- `update_rows`
-- `delete_rows`
+## Limits and tests
 
-Safe Admin/DDL tools:
-
-- `create_table`
-- `alter_table` — add column, drop column, rename column, rename table
-- `create_index`
-- `drop_index`
-- `drop_table`
-
-`query_read` remains read-only. Safe Write tools never accept raw write SQL. Safe Admin tools never accept raw DDL or arbitrary type/default expressions.
-
-## Safe Write guarantees
-
-- `insert_rows`: 1-100 rows per invocation.
-- `update_rows` / `delete_rows`: require a non-empty structured predicate.
-- UPDATE/DELETE run in an explicit transaction.
-- If affected rows exceed the configured maximum, the transaction is rolled back with `WRITE_LIMIT_EXCEEDED`.
-- PostgreSQL RLS and database-native permissions remain authoritative.
-- MySQL rollback guarantees require transactional engines such as InnoDB.
-
-## Safe Admin guarantees
-
-- Each logical connection uses one account; the database grants determine operation access.
-- `create_table` accepts only a bounded scalar type subset and literal defaults.
-- `alter_table` supports only add/drop/rename column and rename table in v0.3.
-- `create_index` supports ordinary column indexes only; expression/partial/fulltext/spatial/vendor-specific advanced indexes are excluded.
-- DDL tools identify their targets explicitly and expose destructive risk through MCP annotations; the client owns user approval.
-- destructive Admin operations are not automatically retried after an ambiguous result.
-- v0.3 Safe Admin is direct-only; unverified Hyperdrive Admin fails closed.
-- no `execute_sql`, raw DDL, GRANT/REVOKE, user/role management, routine, trigger, replication, backup, or server-configuration tool is exposed.
-- database-native privileges remain the final boundary even when the MCP input is structurally valid.
-
-Supported column types in the initial v0.3 subset:
-
-- integer / bigint
-- numeric / decimal
-- varchar / text
-- boolean
-- date
-- timestamp / datetime
-- json
-
-Supported column options are limited to bounded varchar length, numeric precision/scale, nullability, literal defaults, primary key, and unique.
-
-## Portal authentication
-
-Store a dedicated Worker secret:
-
-```bash
-pnpm --filter database-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
-```
-
-Then configure Cloudflare MCP Portal to send the same value as upstream Bearer authentication.
-
-The Worker returns `503 portal_auth_not_configured` when the Portal token is missing and `503 database_config_not_configured` when `DATABASE_CONFIG` is unavailable at runtime.
-
-## Development and verification
+Runtime defaults: `MAX_ROWS=500` (maximum 5,000), `MAX_RESULT_BYTES=1048576` (maximum 8 MiB), `MAX_SCHEMA_BYTES=524288` (maximum 4 MiB), `QUERY_TIMEOUT_MS=15000` (maximum 60,000), `MAX_WRITE_AFFECTED_ROWS=20` (maximum 100). The registry allows **0–50** logical connections, with an atomic insertion cap.
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
 ```
 
-Monorepo CI runs unit checks plus real PostgreSQL 17 / MySQL 8.4 integration tests against native grants, structured mutation limits, and schema behavior. Unit checks cover flat configuration rejection, connection selection, global limits, Hyperdrive behavior, and schema-context formatting.
+CI also uses isolated disposable MySQL/PostgreSQL containers with certificate-verified TLS and exercises the SQL tools. These fixtures are **not** production databases. Production compatibility must be tested independently in a real deployed Workers runtime.
 
-## Security notes
+The old whole-catalog JSON parser remains only for **offline, independently authorized source migration and test fixtures**; it rejects legacy Hyperdrive records and is not connected to HTTP/MCP runtime admission. The migration helper imports records disabled and verifies every encrypted readback without querying the upstream SQL servers. Every legacy ID must separately pass real TLS health and receive explicit cutover approval before activation.
 
-- Keep `DATABASE_CONFIG` as a Cloudflare Runtime Secret; never commit its real value.
-- Do not log `DATABASE_CONFIG`, SQL URLs, database passwords, MCP bearer tokens, write values, write predicates, or generated admin SQL.
-- `list_connections` exposes only non-secret ID, dialect, and transport metadata.
-- Direct database URLs and Hyperdrive binding internals are never returned in MCP responses.
+**Never test, health-check, modify or connect to `scrape_relay` or `b2b` during this work.** Do not copy their credentials to temporary fixtures. Preserve the old production Worker, original Secret, and rollback recovery materials until expressly authorized otherwise.
 
 ## License and provenance
 
-MIT license and source provenance are preserved in `LICENSE` and `SOURCE.md`.
+MIT license and upstream source provenance remain in `LICENSE` and `SOURCE.md`.
