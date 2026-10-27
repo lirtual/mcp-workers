@@ -1,0 +1,194 @@
+name: One-time #344 Aiven Hyperdrive strict CA test
+on:
+  push:
+    branches: [feat/database-spec-344]
+    paths: [.github/workflows/database-hyperdrive-one-shot-aiven-344.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Aiven-only Hyperdrive verified TLS
+    runs-on: ubuntu-latest
+    environment: database-mcp-worker
+    timeout-minutes: 10
+    concurrency:
+      group: db344-one-shot-hyperdrive-verify
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      AIVEN_PG_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
+      AIVEN_MYSQL_PASSWORD: ${{ secrets.DATABASE_TEST_MYSQL_PASSWORD }}
+      CF_TEST_CA: c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a
+      PROBE_WORKER: database-mcp-hd-probe-344
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate exact test scope and dependency inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/feat/database-spec-344" ]]
+          [[ "$CLOUDFLARE_ACCOUNT_ID" == "8bb496011403552e785ea1b834daffdf" ]]
+          [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CF_TEST_CA" && -n "$AIVEN_PG_PASSWORD" && -n "$AIVEN_MYSQL_PASSWORD" ]]
+          [[ "$PROBE_WORKER" != "database-mcp-worker" ]]
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify project CA and create two temporary strict TLS Hyperdrive bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          const root='https://api.cloudflare.com/client/v4/accounts/'+process.env.CLOUDFLARE_ACCOUNT_ID;
+          const headers={authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN,'content-type':'application/json'};
+          const ca=process.env.CF_TEST_CA;
+          const read=await fetch(root+'/mtls_certificates/'+ca,{headers,signal:AbortSignal.timeout(15000)});
+          const cr=await read.json().catch(()=>({}));
+          console.log('certificate_read',JSON.stringify({http:read.status,ok:cr.success===true,is_ca:cr.result?.ca===true,codes:(cr.errors||[]).map(e=>e.code)}));
+          if(!read.ok||!cr.success||!cr.result?.ca) throw Error('Test certificate cannot be read by the global Token');
+          const origins=[
+            {dialect:'postgres',host:'postgresql-zeroverse.d.aivencloud.com',database:'database-mcp-test-postgres',
+             scheme:'postgres',password:process.env.AIVEN_PG_PASSWORD,sslmode:'verify-full'},
+            {dialect:'mysql',host:'mysql-zeroverse.d.aivencloud.com',database:'database-mcp-test-mysql',
+             scheme:'mysql',password:process.env.AIVEN_MYSQL_PASSWORD,sslmode:'VERIFY_IDENTITY'}];
+          const file=process.env.RUNNER_TEMP+'/db344-hyperdrive-created.json';
+          const ids={}; const persist=()=>writeFileSync(file,JSON.stringify(ids),{mode:0o600});
+          for(const origin of origins){
+            const req={name:'db344-once-'+origin.dialect+'-'+process.env.GITHUB_RUN_ID,
+              origin:{scheme:origin.scheme,host:origin.host,port:18691,database:origin.database,
+                user:'test',password:origin.password},
+              mtls:{ca_certificate_id:ca,sslmode:origin.sslmode},
+              caching:{disabled:true},origin_connection_limit:5};
+            const r=await fetch(root+'/hyperdrive/configs',{method:'POST',headers,body:JSON.stringify(req),signal:AbortSignal.timeout(45000)});
+            const data=await r.json().catch(()=>({}));
+            if(data.result?.id){ids[origin.dialect]=data.result.id;persist();}
+            const tls=data.result?.mtls;
+            const verified=Boolean(r.ok && data.success===true && data.result?.id &&
+                tls?.sslmode===origin.sslmode && tls?.ca_certificate_id===ca);
+            console.log('hyperdrive_create',JSON.stringify({dialect:origin.dialect,http:r.status,success:verified,
+              codes:(data.errors||[]).map(e=>e.code)}));
+            if(!verified)throw Error('Aiven '+origin.dialect+' Hyperdrive verified TLS setup blocked');
+          }
+          NODE
+      - name: Deploy isolated one-use Worker with Hyperdrive bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/database-mcp-worker
+          cat > src/hyperdrive-one-shot-344.ts <<'TS'
+          import {Client} from 'pg';
+          import {createConnection} from 'mysql2/promise';
+          interface H {connectionString:string;host:string;user:string;password:string;database:string;port:number;}
+          interface Env { PROBE_TOKEN:string; PG:H; MYSQL:H; }
+          export default {
+            async fetch(request:Request,env:Env):Promise<Response>{
+              if(request.method!=='POST'||new URL(request.url).pathname!=='/run')return new Response('Not found',{status:404});
+              if(!env.PROBE_TOKEN||request.headers.get('authorization')!=='Bearer '+env.PROBE_TOKEN)return new Response('Forbidden',{status:403});
+              const result:Record<string,unknown>={};
+              let pstage='connect';
+              const pg=new Client({connectionString:env.PG.connectionString,ssl:false,connectionTimeoutMillis:10000});
+              try{
+                await pg.connect();pstage='query';
+                const r=await pg.query("SELECT 1 AS probe, (SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()) AS tls");
+                result.postgres={read:Number(r.rows[0]?.probe)===1,tls:r.rows[0]?.tls===true};
+              }catch(e){const code=e&&typeof e==='object'&&'code'in e?String((e as {code:unknown}).code):'unknown';
+                result.postgres={read:false,stage:pstage,code:/^[A-Z0-9_]{1,48}$/.test(code)?code:'unknown'};}
+              finally{await pg.end().catch(()=>{});}
+              let mstage='connect';let mysql:Awaited<ReturnType<typeof createConnection>>|undefined;
+              try{
+                mysql=await createConnection({host:env.MYSQL.host,user:env.MYSQL.user,
+                  password:env.MYSQL.password,database:env.MYSQL.database,port:env.MYSQL.port,
+                  connectTimeout:10000,disableEval:true});mstage='query';
+                const [a]=await mysql.query('SELECT 1 AS probe');
+                const [b]=await mysql.query("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
+                result.mysql={read:Number((a as Array<{probe:number}>)[0]?.probe)===1,
+                  tls:Boolean((b as Array<{Value:string}>)[0]?.Value)};
+              }catch(e){const code=e&&typeof e==='object'&&'code'in e?String((e as {code:unknown}).code):'unknown';
+                result.mysql={read:false,stage:mstage,code:/^[A-Z0-9_]{1,48}$/.test(code)?code:'unknown'};}
+              finally{await mysql?.end().catch(()=>{});}
+              return Response.json(result,{headers:{'Cache-Control':'no-store'}});
+            }
+          };
+          TS
+          node --input-type=module <<'NODE'
+          import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
+          import {randomBytes} from 'node:crypto';
+          const ids=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/db344-hyperdrive-created.json','utf8'));
+          if(!ids.postgres||!ids.mysql)throw Error('Both temporary Hyperdrive IDs required');
+          const token=randomBytes(32).toString('hex');
+          writeFileSync(process.env.RUNNER_TEMP+'/db344-probe-token',token,{mode:0o600});
+          writeFileSync(process.env.RUNNER_TEMP+'/db344-probe-secrets.json',JSON.stringify({PROBE_TOKEN:token}),{mode:0o600});
+          const cfg={name:process.env.PROBE_WORKER,main:'src/hyperdrive-one-shot-344.ts',
+            compatibility_date:'2026-09-12',compatibility_flags:['nodejs_compat'],
+            workers_dev:true,preview_urls:false,
+            hyperdrive:[{binding:'PG',id:ids.postgres},{binding:'MYSQL',id:ids.mysql}]};
+          writeFileSync('.wrangler-hyperdrive-one-shot.json',JSON.stringify(cfg),{mode:0o600});
+          NODE
+          pnpm exec wrangler deploy --config .wrangler-hyperdrive-one-shot.json \
+            --secrets-file "$RUNNER_TEMP/db344-probe-secrets.json" \
+            > "$RUNNER_TEMP/db344-hd-deploy.log" 2>&1 || { echo "DISPOSABLE_WORKER_DEPLOY_FAILED"; exit 1; }
+          node --input-type=module <<'NODE'
+          import {readFileSync,appendFileSync} from 'node:fs';
+          const s=readFileSync(process.env.RUNNER_TEMP+'/db344-hd-deploy.log','utf8');
+          const url=s.match(/https:\/\/[a-zA-Z0-9.-]+\.workers\.dev\b/)?.[0];
+          if(!url)throw Error('Disposable Worker URL not available');
+          appendFileSync(process.env.GITHUB_ENV,'DB344_PROBE_URL='+url+'\n');
+          NODE
+      - name: Confirm live Worker query and TLS on two test databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          const token=readFileSync(process.env.RUNNER_TEMP+'/db344-probe-token','utf8');
+          let body;
+          for(let i=0;i<4;i++){
+            const r=await fetch(process.env.DB344_PROBE_URL+'/run',{
+              method:'POST',headers:{authorization:'Bearer '+token},signal:AbortSignal.timeout(50000)});
+            if(r.ok){body=await r.json();break;}
+            if(![404,502,503].includes(r.status))throw Error('Worker returned HTTP '+r.status);
+            await new Promise(f=>setTimeout(f,2000));
+          }
+          if(!body)throw Error('Disposable Worker not reachable');
+          for(const name of ['postgres','mysql']){
+            console.log('worker_probe',name,JSON.stringify(body[name]));
+            if(body[name]?.read!==true||body[name]?.tls!==true)process.exitCode=1;
+          }
+          NODE
+      - name: Always clean up disposable Worker and Hyperdrive
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd apps/database-mcp-worker
+          if [[ -f .wrangler-hyperdrive-one-shot.json ]]; then
+            pnpm exec wrangler delete --config .wrangler-hyperdrive-one-shot.json --name "$PROBE_WORKER" --force >/dev/null 2>&1
+            echo "worker_cleanup_attempted"
+          fi
+          node --input-type=module <<'NODE'
+          import {readFileSync,existsSync,rmSync} from 'node:fs';
+          const path=process.env.RUNNER_TEMP+'/db344-hyperdrive-created.json';
+          if(existsSync(path)){
+            const ids=JSON.parse(readFileSync(path,'utf8'));
+            for(const [name,id] of Object.entries(ids)){
+              try{
+                const r=await fetch('https://api.cloudflare.com/client/v4/accounts/'+process.env.CLOUDFLARE_ACCOUNT_ID+'/hyperdrive/configs/'+id,{
+                  method:'DELETE',headers:{authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN},
+                  signal:AbortSignal.timeout(20000)});
+                console.log('hyperdrive_cleanup',name,r.status);
+              }catch{console.log('hyperdrive_cleanup',name,'unverified');}
+            }
+          }
+          for(const p of [path,process.env.RUNNER_TEMP+'/db344-probe-token',
+            process.env.RUNNER_TEMP+'/db344-probe-secrets.json',process.env.RUNNER_TEMP+'/db344-hd-deploy.log',
+            '.wrangler-hyperdrive-one-shot.json','src/hyperdrive-one-shot-344.ts'])rmSync(p,{force:true});
+          NODE
