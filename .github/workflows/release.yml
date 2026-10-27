@@ -481,6 +481,8 @@ jobs:
             mcp_endpoint="https://workflow.lirtual.dpdns.org/mcp"
           elif [[ "$SELECTED_WORKER" == "email-mcp-worker" ]]; then
             mcp_endpoint="https://email-mcp.lirtual.dpdns.org/mcp"
+          elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then
+            mcp_endpoint="https://weixin-mcp.lirtual.dpdns.org/mcp"
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do
             status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' \

@@ -355,6 +355,19 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /Unexpected unauthenticated MCP status/);
 });
 
+test("Weixin manual release probes its configured custom-domain MCP ingress", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const config = JSON.parse(readFileSync(new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  const start = workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials");
+  const end = workflow.indexOf("      - name: Register production HTTP MCP with existing One-MCP Portal", start);
+  assert.ok(start >= 0 && end > start);
+  const check = workflow.slice(start, end);
+  assert.equal(config.workers_dev, false);
+  assert.ok(check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
+  assert.ok(check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
+  assert.match(check, /401\|403\)/, "unauthenticated requests must remain denied");
+});
+
 test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
   const worker = "github-actions-mcp-worker";
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "ACTIONS_GITHUB_DISPATCH_TOKENS" }];
