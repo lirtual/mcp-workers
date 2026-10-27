@@ -6,7 +6,7 @@ function requireCondition(condition, message) {
   if (!condition) throw Error(message);
 }
 
-export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail }) {
+export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId }) {
   requireCondition(app?.type === "self_hosted" && app.domain === host &&
     Array.isArray(app.self_hosted_domains) &&
     app.self_hosted_domains.length === 1 &&
@@ -16,6 +16,14 @@ export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, owner
   requireCondition(app.session_duration === "15m" &&
     app.auto_redirect_to_identity === true,
     "Database Owner Access OTP session configuration drift");
+  // An empty/unset allowed_idps list inherits all account login methods.
+  // Exact owner email is necessary but does not prove OTP-only authentication.
+  requireCondition(typeof otpId === "string" &&
+    /^[a-f0-9-]{36}$/i.test(otpId) &&
+    Array.isArray(app.allowed_idps) &&
+    app.allowed_idps.length === 1 &&
+    app.allowed_idps[0] === otpId,
+    "Database Owner Access must restrict login to the One-time PIN identity provider");
   requireCondition(Array.isArray(policies) && policies.length === 1,
     "Database Owner must have one restricted Access policy");
   const policy = policies[0];
@@ -38,6 +46,15 @@ function ensureList(response, label) {
       response.result_info.total_count <= response.result.length),
     "Database Owner Access " + label + " inventory unavailable or incomplete");
   return response.result;
+}
+
+export function findDatabaseOwnerOtpProvider(inventory) {
+  const matches = ensureList(inventory, "identity providers")
+    .filter(provider => provider?.type === "onetimepin");
+  requireCondition(matches.length === 1 &&
+    /^[a-f0-9-]{36}$/i.test(matches[0]?.id ?? ""),
+    "Database Owner One-time PIN provider missing or ambiguous");
+  return matches[0].id;
 }
 
 export function findDatabaseOwnerApp(inventory, host) {
@@ -69,10 +86,12 @@ export async function verifyDatabaseOwnerAccessCloudflare(config, environment, t
     requireCondition(response.ok, "Database Owner Access inventory request failed");
     return response.json();
   };
+  const otpId = findDatabaseOwnerOtpProvider(await get(
+    "https://api.cloudflare.com/client/v4/accounts/" + account + "/access/identity_providers?per_page=100"));
   const app = findDatabaseOwnerApp(await get(url + "?per_page=100"), host);
   const policies = ensureList(await get(url + "/" + encodeURIComponent(app.id) + "/policies?per_page=100"),
     "policies");
-  return verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail });
+  return verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId });
 }
 
 async function main() {
