@@ -33,7 +33,7 @@ function fixture() {
   const socket={
     readyState:WebSocket.OPEN,
     deserializeAttachment:()=>({device_id:DEVICE,epoch:"signed-epoch",
-      last_auth_check_at:Date.now()-1000}),
+      last_auth_check_at:Date.now()-1000,device_info_reported:true}),
     send: (raw:string)=>{
       sent++;const payload=JSON.parse(raw) as Record<string,unknown>;
       frames.push(payload);
