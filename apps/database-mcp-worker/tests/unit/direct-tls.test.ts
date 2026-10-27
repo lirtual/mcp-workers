@@ -36,6 +36,16 @@ describe('Direct transport TLS invariant', () => {
     await expect(mysqlHealthCheck({ ...direct('mysql'), host: '8.8.8.8' }))
       .rejects.toMatchObject({ code: 'INVALID_INPUT' });
   });
+  it('rejects every non-Direct transport before either driver can open a socket', async () => {
+    mysqlConnect.mockClear();
+    postgresConstruct.mockClear();
+    await expect(mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' }))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    await expect(postgresHealthCheck({ ...direct('postgres'), transport: 'hyperdrive' }))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    expect(mysqlConnect).not.toHaveBeenCalled();
+    expect(postgresConstruct).not.toHaveBeenCalled();
+  });
   it('does not let a PostgreSQL connection string override verified TLS', async () => {
     await postgresHealthCheck({ ...direct('postgres'), ca: 'TEST_AIVEN_PROJECT_CA' });
     expect(postgresConstruct).toHaveBeenCalledWith(expect.objectContaining({
