@@ -75,8 +75,17 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(row).toMatchObject({ status: 'active', revision: 2, ciphertext });
     expect((await post('delete', { id: 'main', revision: '2', confirm_id: 'main' })).status).toBe(422);
     expect((await post('disable', { id: 'main', revision: '2' })).status).toBe(200);
-    expect((await post('delete', { id: 'main', revision: '3', confirm_id: 'other' })).status).toBe(422);
-    expect((await post('delete', { id: 'main', revision: '3', confirm_id: 'main' })).status).toBe(200);
+    // A disabled placeholder with unreachable credentials can be repaired without
+    // making it active. An active connection must never accept failed edits.
+    fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unreachable fixture'));
+    expect((await post('edit', { id: 'main', revision: '3', credential_mode: 'replace',
+      url: 'postgres://reader:replacement@db.example.net/catalog', allow_disabled: '1' })).status).toBe(200);
+    row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
+    expect(row.status).toBe('disabled');
+    expect(row.revision).toBe(4);
+
+    expect((await post('delete', { id: 'main', revision: '4', confirm_id: 'other' })).status).toBe(422);
+    expect((await post('delete', { id: 'main', revision: '4', confirm_id: 'main' })).status).toBe(200);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
     vi.unstubAllGlobals();
   });

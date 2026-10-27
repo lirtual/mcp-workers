@@ -118,12 +118,20 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       const previous = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
       const url = mode === 'keep' ? previous.url : required(form, 'url');
-      // Never replace even a disabled record with an untested candidate.
-      await testCandidate(env, id, url, row.dialect);
+      // Active connection edits always require a verified healthy replacement.
+      // A disabled record may retain an unreachable, structurally valid candidate
+      // for subsequent repair, but the disabled state is never changed here.
+      await validatePublicEndpoint(url, id);
+      try { await testCandidate(env, id, url, row.dialect); }
+      catch (error) {
+        const safe = toPublicError(error);
+        if (row.status !== 'disabled' || form.get('allow_disabled') !== '1' ||
+          !['CONNECTION_UNAVAILABLE', 'QUERY_TIMEOUT', 'DATABASE_ERROR'].includes(safe.code)) throw safe;
+      }
       const sealed = await sealConnectionConfig(env, id, row.dialect, { ...previous, url });
       await updateRegistryConnection(env.DB, id, version,
         { dialect: row.dialect, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
-      return setupResult('Test succeeded; only the selected connection was updated.');
+      return setupResult('Only the selected connection configuration was updated. Status is unchanged.');
     }
     return setupFailure('not_found', 404);
   } catch (error) {

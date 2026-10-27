@@ -33,6 +33,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     `<details><summary>Edit or replace credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credential mode<select name="credential_mode"><option value="keep">Keep previous URL</option><option value="replace">Replace URL</option></select></label>' +
     '<label>New database URL (only for replace; never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
+    (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if the candidate is unreachable</label>' : '') +
     '<button type="submit">Test and save edit</button></form></details></li>').join('');
   return htmlResponse('<h1>Database connections</h1><p>Access-authorized Owner only. Passwords and complete URLs are never displayed.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
