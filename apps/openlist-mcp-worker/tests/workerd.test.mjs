@@ -108,7 +108,10 @@ test('workerd runs MCP ingress and private Service Binding to an isolated upstre
     const hits = await search.text();
     assert.match(hits,/found\.txt/);
     assert.match(hits,/nested\.txt/);
-    const searchPage = JSON.parse(JSON.parse(hits).result.content[0].text).observed_state;
+    // MCP streamable HTTP can return SSE, rather than a bare JSON document.
+    const dataLine = hits.split('\n').find(line => line.startsWith('data: '));
+    assert.ok(dataLine, 'expected a serialized MCP SSE event');
+    const searchPage = JSON.parse(JSON.parse(dataLine.slice(6)).result.content[0].text).observed_state;
     assert.deepEqual(searchPage, {
       entries: [
         {name:'found.txt',path:'/Koofr/safe/found.txt',size:7,is_dir:false},
