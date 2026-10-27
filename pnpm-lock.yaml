@@ -361,6 +361,9 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      miniflare:
+        specifier: 5.20260908.0-alpha
+        version: 5.20260908.0-alpha
       typescript:
         specifier: 6.0.3
         version: 6.0.3
