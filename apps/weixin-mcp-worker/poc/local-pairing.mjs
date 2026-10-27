@@ -8,8 +8,10 @@ import { join, dirname } from 'node:path';
 import { createIlinkClient, bindVerifiedContext, createOwnershipProof } from './protocol.mjs';
 
 const HOST = '127.0.0.1';
-const PORT = 45346;
-const ORIGIN = `http://localhost:${PORT}`;
+let PORT = process.env.SPEC346_POC_PORT === undefined ? 45346 : Number(process.env.SPEC346_POC_PORT);
+if (!Number.isSafeInteger(PORT) || PORT < 0 || PORT > 65535 ||
+    (PORT !== 0 && PORT < 1024)) throw new Error('INVALID_LOCAL_PORT');
+let ORIGIN = `http://localhost:${PORT}`;
 const EXPIRES_MS = 12 * 60_000;
 const api = createIlinkClient();
 const csrf = randomBytes(24).toString('hex');
@@ -152,6 +154,7 @@ async function perform(action) {
   } catch (err) {
     state.lastError = safe(err);
     if (action === 'start') { clear(); state.stage = 'unbound'; }
+    if (action === 'scan' && err?.code === 'UNSAFE_REDIRECT') { clear(); state.stage = 'expired'; }
     if (action === 'verify' && err?.code === 'STALE_SESSION') { clear(); state.stage = 'expired'; }
   }
 }
@@ -171,7 +174,13 @@ const server = http.createServer(async (req, res) => {
   }
   const data = await readForm(req).catch(() => null);
   if (!data || !checkCsrf(data.get('csrf'))) { reply(res, 403, 'forbidden'); return; }
-  // Only one QR or poll operation can proceed, even if bodies arrive together.
+  // An out-of-order POST must not appear successful or dispatch any message.
+  const action = url.pathname.slice(1);
+  const expectedStage = { start:'unbound', scan:'qr_pending',
+    verify:'bound_unverified', send:'ready' };
+  if (expired() || state.stage !== expectedStage[action] ||
+      (action === 'send' && state.sent)) { reply(res, 409); return; }
+  // Only one QR, poll, proof or send operation can proceed.
   if (state.busy) { reply(res, 409); return; }
   state.busy = true;
   try { await perform(url.pathname.slice(1)); }
@@ -181,6 +190,8 @@ const server = http.createServer(async (req, res) => {
 const timer = setTimeout(() => { clear(); server.close(); }, EXPIRES_MS);
 timer.unref();
 server.listen(PORT, HOST, () => {
+  PORT = server.address().port;
+  ORIGIN = `http://localhost:${PORT}`;
   // Never log QR, bot credentials, owner IDs or the challenge.
   console.log(`SPEC346_LOCAL_POC_READY http://localhost:${PORT} (expires in 12 minutes)`);
 });

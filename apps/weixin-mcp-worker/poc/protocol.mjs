@@ -110,6 +110,15 @@ export function createIlinkClient({ fetchImpl = fetch, apiOrigin = API_ORIGIN } 
       if (!safeString(response.qrcode, 4096) || !safeString(response.qrcode_img_content, 16000)) {
         throw new IlinkError('INVALID_RESPONSE');
       }
+      // Observed upstream QR host (2026-10-27); do not render arbitrary
+      // server-controlled QR destinations, especially a lookalike domain.
+      let qrUrl;
+      try { qrUrl = new URL(response.qrcode_img_content); }
+      catch { throw new IlinkError('UNSAFE_REDIRECT'); }
+      if (qrUrl.origin !== 'https://liteapp.weixin.qq.com' ||
+          qrUrl.username || qrUrl.password) {
+        throw new IlinkError('UNSAFE_REDIRECT');
+      }
       return { qrcode: response.qrcode, qrcode_img_content: response.qrcode_img_content };
     },
     async pollQr(qrcode, verifyCode) {

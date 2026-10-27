@@ -16,7 +16,7 @@ function mock(responses) {
 }
 test('mock iLink QR -> verified owner inbound -> text send; upstream acceptance is not delivery', async () => {
   const fake = mock([
-    { qrcode: 'QR-1', qrcode_img_content: 'mock QR' },
+    { qrcode: 'QR-1', qrcode_img_content: 'https://liteapp.weixin.qq.com/qr/mock' },
     { status: 'confirmed', bot_token: account.botToken, ilink_bot_id: account.botId, ilink_user_id: account.scannedUserId },
     { ret: 0, get_updates_buf: 'cursor-secret', msgs: [
       { from_user_id: 'owner-A', to_user_id: 'bot-A', message_type: 1, context_token: 'ctx-private', item_list: [{ type: 1, text_item: { text: knownProof } }] }
@@ -157,4 +157,24 @@ test('QR owner verification requires a fresh one-time challenge in an inbound us
   }
   assert.throws(() => bindVerifiedContext(scan, { msgs: [message, message] }, 'bot-A', proof),
     e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
+});
+
+test('refuses non-Weixin or non-HTTPS QR payloads before displaying to owner', async () => {
+  const candidates = [
+    'https://evil.example/steal',
+    'https://liteapp.weixin.qq.com.evil.example/login',
+    'http://liteapp.weixin.qq.com/login',
+    'https://user:password@liteapp.weixin.qq.com/login',
+    'https://liteapp.weixin.qq.com:8443/login',
+    'javascript:alert(1)',
+    'weixin://unreviewed',
+  ];
+  for (const qrcode_img_content of candidates) {
+    const fake = mock([{ qrcode: 'opaque-token', qrcode_img_content }]);
+    await assert.rejects(() => createIlinkClient({ fetchImpl: fake.fetchImpl }).getQr(),
+      e => e instanceof IlinkError && e.code === 'UNSAFE_REDIRECT');
+    assert.equal(fake.calls.length, 1);
+  }
+  const good = mock([{ qrcode: 'opaque-token', qrcode_img_content: 'https://liteapp.weixin.qq.com/some-path?opaque=abc' }]);
+  assert.equal((await createIlinkClient({ fetchImpl: good.fetchImpl }).getQr()).qrcode, 'opaque-token');
 });
