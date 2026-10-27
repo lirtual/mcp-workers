@@ -18,6 +18,7 @@ on:
           - http-mcp-worker
           - openlist-mcp-worker
           - workflow-mcp-worker
+          - weixin-mcp-worker
       openlist_portal_registration:
         description: 'OpenList only: separately accept live driver E2E before attaching Portal'
         required: false
@@ -62,7 +63,8 @@ jobs:
            inputs.worker == 'github-actions-mcp-worker' ||
            inputs.worker == 'http-mcp-worker' ||
            inputs.worker == 'openlist-mcp-worker' ||
-           inputs.worker == 'workflow-mcp-worker') }}
+           inputs.worker == 'workflow-mcp-worker' ||
+           inputs.worker == 'weixin-mcp-worker') }}
     runs-on: ubuntu-latest
     # A GitHub Environment is a Worker-scoped configuration namespace, not a
     # staging/production selector. Only manual dispatch on main can deploy.
@@ -128,6 +130,7 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           OPENLIST_API_TOKEN: ${{ inputs.worker == 'openlist-mcp-worker' && secrets.OPENLIST_API_TOKEN || '' }}
           MAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}
+          WEIXIN_ENCRYPTION_KEY: ${{ secrets.WEIXIN_ENCRYPTION_KEY }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_ENCRYPTION_KEY: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_ENCRYPTION_KEY || '' }}
@@ -250,6 +253,31 @@ jobs:
               console.log("Email production D1 schema verified; no mailbox rows read");
             });'
 
+      - name: Apply Weixin production D1 schema and verify required constraints
+        if: inputs.worker == 'weixin-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd apps/weixin-mcp-worker && pnpm exec wrangler d1 migrations apply weixin-mcp-db --remote)
+          output="$(cd apps/weixin-mcp-worker && pnpm exec wrangler d1 execute weixin-mcp-db --remote --json --command "SELECT
+            (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='weixin_binding') AS binding_table,
+            (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='weixin_pairing') AS pairing_table,
+            (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='weixin_send_receipts') AS receipt_table,
+            (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_weixin_request_id_global') AS unique_index,
+            (SELECT COUNT(*) FROM weixin_binding WHERE id=1) AS singleton")"
+          printf '%s' "$output" | node -e '
+            let raw=""; process.stdin.on("data",c=>raw+=c).on("end",()=>{
+              const r=JSON.parse(raw);
+              const row=r?.[0]?.results?.[0];
+              if (!Array.isArray(r)||r.length!==1||!r[0].success||!row||
+                  !["binding_table","pairing_table","receipt_table","unique_index","singleton"].every(k=>row[k]===1))
+                process.exit(1);
+              console.log("Weixin production D1 schema and permanent request-ID index verified");
+            });'
+
       # Only the existing production release lock and GitHub Environment can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
@@ -316,6 +344,16 @@ jobs:
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
             node scripts/manual-worker-release.mjs code-release-check workflow-mcp-worker
 
+      # OpenList upstream's reviewed Wrangler config comments out the KV
+      # binding. A past upstream Wrangler deploy removed the live binding.
+      # Detect drift in the active Cloudflare version; do not modify the Fork.
+      - name: Verify OpenList upstream KV and storage before release
+        if: inputs.worker == 'openlist-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/openlist-upstream-integrity.mjs
+
       # Strictly read-only. A selected Database release cannot proceed if the
       # approved D1 schema is missing; migration/import are separate actions.
       - name: Verify Database D1 schema and legacy IDs before publication (read-only)
@@ -352,7 +390,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|openlist-mcp-worker|workflow-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|openlist-mcp-worker|workflow-mcp-worker|weixin-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"

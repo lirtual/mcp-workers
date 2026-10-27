@@ -1,7 +1,7 @@
 name: OpenList Driver Acceptance
 
-# Independent of release and Portal registration. Intentionally leaves one
-# disposable directory and tiny text file; no automatic delete or write retry.
+# Manual-only driver and Portal flows; no scheduled checks.
+# Fixture writes need explicit approval.
 on:
   workflow_dispatch:
     inputs:

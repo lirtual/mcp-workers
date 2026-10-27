@@ -14,6 +14,7 @@ export const APPLICATIONS = [
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
   'workflow-mcp-worker',
+  'weixin-mcp-worker',
 ];
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
