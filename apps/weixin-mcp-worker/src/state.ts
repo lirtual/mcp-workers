@@ -34,12 +34,12 @@ export async function bindingStatus(env:Env) {
   return {binding_state:displayState,last_verified_context_at:row?.last_verified_context_at??null,
     last_sync_at:row?.last_sync_at??null,next_action:displayState==='ready'?null:'open_owner_pairing_page'};
 }
-export async function sendOnce(env:Env,text:string,requestId:string,dispatch:Dispatcher):Promise<SendReply>{
+export async function sendOnce(env:Env,text:string,requestId:string,dispatch:Dispatcher,beforeNewSend?:()=>Promise<void>):Promise<SendReply>{
   if(!uuid.test(requestId??''))fail('invalid_request_id');
   if(typeof text!=='string'||!text.trim()||encoder.encode(text).byteLength>4096||
     /[\u0000-\u0008\u000B-\u001F\u007F]/.test(text))fail('invalid_text');
   const digest=await sha256(text);
-  const binding=await env.DB.prepare('SELECT * FROM weixin_binding WHERE id=1').first<Binding>();
+  let binding=await env.DB.prepare('SELECT * FROM weixin_binding WHERE id=1').first<Binding>();
   if(!binding||binding.state!=='ready'||!binding.session_ciphertext||!binding.session_key_id)
     fail('binding_not_ready');
   const now=Math.floor(Date.now()/1000);
@@ -62,6 +62,14 @@ export async function sendOnce(env:Env,text:string,requestId:string,dispatch:Dis
     'SELECT count(*) AS n FROM weixin_send_receipts WHERE generation=? AND created_at>=?'
   ).bind(binding.generation,now-86400).first<{n:number}>();
   if((recent?.n??0)>=25)fail('rate_limited');
+  // Existing receipts and invalid requests never poll upstream. For a fresh
+  // request, refresh the verified owner's context before durable send claim.
+  if(beforeNewSend){
+    await beforeNewSend();
+    binding=await env.DB.prepare('SELECT * FROM weixin_binding WHERE id=1').first<Binding>();
+    if(!binding||binding.state!=='ready'||!binding.session_ciphertext||!binding.session_key_id)
+      fail('binding_not_ready');
+  }
   const lease=await acquireLease(env,binding.generation,['ready']);
   try {
   // Durable, atomic claim BEFORE sending. This insert reads the current

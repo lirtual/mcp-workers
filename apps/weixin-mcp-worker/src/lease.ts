@@ -47,6 +47,18 @@ export async function unbindLocal(env:Env):Promise<number>{
   return row.generation;
 }
 export type Poller=(session:IlinkSession)=>Promise<{msgs:unknown[];get_updates_buf:string}>;
+function latestOwnerContext(messages:unknown[],session:IlinkSession):string|null {
+  let latest:string|null=null;
+  for(const item of messages){
+    if(!item||typeof item!=='object')continue;
+    const m=item as Record<string,unknown>;
+    if(m.from_user_id!==session.ownerId||m.to_user_id!==session.botId||
+      m.message_type!==1||m.group_id||typeof m.context_token!=='string'||
+      !m.context_token||m.context_token.length>4096||/[\x00-\x1f\x7f]/.test(m.context_token))continue;
+    latest=m.context_token;
+  }
+  return latest;
+}
 export async function syncCursorOnce(env:Env,poll:Poller):Promise<'updated'|'unchanged'>{
   const old=await env.DB.prepare('SELECT * FROM weixin_binding WHERE id=1').first<Binding>();
   if(!old||old.state!=='ready'||!old.session_ciphertext||!old.session_key_id)
@@ -61,8 +73,10 @@ export async function syncCursorOnce(env:Env,poll:Poller):Promise<'updated'|'unc
     if(!Array.isArray(result?.msgs)||result.msgs.length>100||
       typeof result.get_updates_buf!=='string'||result.get_updates_buf.length>4096)
       fail('invalid_response');
-    // Only the sync cursor is persisted; never retain incoming messages.
-    if(result.get_updates_buf===session.cursor){
+    // Accept contexts only from direct messages by the verified owner to our bot.
+    // Incoming text and all unrelated message fields are discarded.
+    const contextToken=latestOwnerContext(result.msgs,session);
+    if(result.get_updates_buf===session.cursor && (!contextToken||contextToken===session.contextToken)){
       const now=Math.floor(Date.now()/1000);
       const checked=await env.DB.prepare(
         'UPDATE weixin_binding SET last_sync_at=?,updated_at=? '+
@@ -71,11 +85,14 @@ export async function syncCursorOnce(env:Env,poll:Poller):Promise<'updated'|'unc
       if(checked.meta.changes!==1)fail('binding_changed');
       return 'unchanged';
     }
-    const next=await encrypt(env,context,{...session,cursor:result.get_updates_buf});
+    const next=await encrypt(env,context,{...session,cursor:result.get_updates_buf,
+      contextToken:contextToken??session.contextToken});
     const saved=await env.DB.prepare(
-      'UPDATE weixin_binding SET session_ciphertext=?,session_key_id=?,last_sync_at=?,updated_at=? '+
+      'UPDATE weixin_binding SET session_ciphertext=?,session_key_id=?,last_sync_at=?,updated_at=?, '+
+      'last_verified_context_at=CASE WHEN ? THEN ? ELSE last_verified_context_at END '+
       'WHERE id=1 AND generation=? AND state=? AND lease_holder=? AND lease_until>? AND session_ciphertext=?'
     ).bind(next.ciphertext,next.keyId,Math.floor(Date.now()/1000),Math.floor(Date.now()/1000),
+      Boolean(contextToken&&contextToken!==session.contextToken)?1:0,Math.floor(Date.now()/1000),
       lease.generation,'ready',lease.owner,Math.floor(Date.now()/1000),old.session_ciphertext).run();
     if(saved.meta.changes!==1)fail('binding_changed');
     return 'updated';

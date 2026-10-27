@@ -13,7 +13,7 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 - [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
 - [Remote Control MCP](docs/remote-control/README.md)
 - [SSH MCP](apps/ssh-mcp-worker/README.md)
-- [Workflow MCP](apps/workflow-mcp-worker/README.md)
+- [Workflow MCP](apps/workflow-mcp-worker/README.md)\n- [Weixin MCP](apps/weixin-mcp-worker/README.md)
 
 Each app owns its upstream domain, credentials, runtime, tests, and deployment. Source changes do not automatically delete or update any deployed Cloudflare Worker or MCP Portal connection.
 

@@ -9,9 +9,9 @@ async function verifyWeixinAccess(env, transport) {
   const apps = [];
   for (const id of ACCESS_APPS) {
     const res = await transport(new Request('https://api.cloudflare.com/client/v4/accounts/' + env.CLOUDFLARE_ACCOUNT_ID + '/access/apps/' + id, {headers:{authorization:'Bearer ' + env.CLOUDFLARE_API_TOKEN,accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(15000)}));
-    if (!res.ok || res.redirected) throw Error('portal_access_read_unavailable');
+    if (!res.ok || res.redirected) throw Error('portal_access_read_http_'+res.status);
     const body = await res.json();
-    if(body.success!==true || !body.result) throw Error('portal_access_read_unavailable');
+    if(body.success!==true || !body.result) throw Error('portal_access_read_invalid_response');
     apps.push(body.result);
   }
   assert.equal(apps[0].name,'One-MCP','portal_access_identity_drift');
@@ -70,7 +70,7 @@ export async function attachWeixinPortal(env, transport=fetch) {
     if(json?.success!==true||json.result==null)throw Error('portal_api_unavailable');
     return json.result;
   };
-  const before=portalPlan(await request('GET','/portals/one-mcp'));
+  // Validate Access policy permissions and identity before any Portal POST/PUT.\n  // A GitHub Environment token lacking Access: Apps read must fail without mutation.\n  await verifyWeixinAccess(env,transport);\n  console.log('WEIXIN_ACCESS_POLICIES_VERIFIED');\n  const before=portalPlan(await request('GET','/portals/one-mcp'));
   assert.ok(!before.servers.some(x=>x.server_id==='weixin') ||
     before.servers.filter(x=>x.server_id==='weixin').length===1,'portal_duplicate_weixin');
   const existing=await request('GET','/servers');
@@ -100,8 +100,6 @@ export async function attachWeixinPortal(env, transport=fetch) {
   assert.equal(detail.auth_type,'bearer','portal_weixin_auth_drift');
   assert.deepEqual((detail.tools??[]).map(x=>x.name).sort(),WEIXIN_TOOLS,
     'portal_weixin_tool_inventory_drift');
-  await verifyWeixinAccess(env,transport);
-  console.log('WEIXIN_ACCESS_POLICIES_VERIFIED');
   console.log('WEIXIN_PORTAL_TOOLS_SYNCED');
   const fresh=portalPlan(await request('GET','/portals/one-mcp'));
   assertSamePortalMappings(before.servers,fresh.servers);
