@@ -6,7 +6,7 @@ const env={OPENLIST_SHARE_ACCEPTANCE_APPROVED:'true',
   OPENLIST_ALLOWED_ROOTS:'["/Koofr/Downloads"]',MCP_ACCESS_TOKEN:'fixture-secret'};
 const ID='mcp_spec309_40493124967_1';
 const FILE='/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt';
-const expires='2026-11-02T00:00:00.000Z';
+const expires=new Date(Date.now()+3600000).toISOString();
 const envelope=(name,target)=>Response.json({jsonrpc:'2.0',id:1,result:{
   content:[{type:'text',text:JSON.stringify({
     operation:name,status:'succeeded',code:'OK',target,
