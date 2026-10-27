@@ -56,6 +56,27 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
+test('disabled P1 writes cannot be invoked directly or dispatch upstream operations', async () => {
+  let upstreamCalls = 0;
+  const client = await clientFor(settings(async () => {
+    upstreamCalls++;
+    return Response.json({ code: 200, data: null });
+  }));
+  try {
+    // A forged tools/call must not bypass the disabled tools/list inventory.
+    // These upstream WebDAV actions have no verified atomic no-overwrite gate.
+    for (const name of ['openlist_upload_small', 'openlist_rename',
+      'openlist_copy', 'openlist_move']) {
+      await assert.rejects(() => client.callTool({
+        name, arguments: { path: '/Koofr/safe/item.txt', name: 'renamed.txt',
+          src_dir: '/Koofr/safe', dst_dir: '/Koofr/safe/other',
+          names: ['item.txt'], content: 'synthetic' },
+      }), (error: unknown) => error instanceof Error &&
+        error.message.includes('Tool ' + name + ' not found'));
+    }
+    assert.equal(upstreamCalls, 0);
+  } finally { await client.close(); }
+});
 test('tool call on a forbidden path is denied with no upstream fetch', async () => {
   let calls = 0;
   const client = await clientFor(settings(async () => { calls++; return Response.json({ code: 200, data: {} }); }));
