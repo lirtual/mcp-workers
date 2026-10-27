@@ -52,10 +52,11 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
         return response(name,args.path,{
           total:rootReportedTotal ?? entries.length,page:1,entries});
       }
-      if(args.path===nativeDir) return response(name,args.path,{
-        total:nativeFiles.size,page:1,
-        entries:[...nativeFiles.keys()].filter(path=>path.startsWith(nativeDir+'/'))
-          .map(path=>({name:path.slice(nativeDir.length+1),is_dir:false}))});
+      if(args.path===nativeDir) {
+        const entries=[...nativeFiles.keys()].filter(path=>path.startsWith(nativeDir+'/'))
+          .map(path=>({name:path.slice(nativeDir.length+1),is_dir:false}));
+        return response(name,args.path,{total:entries.length,page:1,entries});
+      }
       if(args.path===folder) return response(name,args.path,{
         total:uploaded?1:0,page:1,
         entries:uploaded?[{name:file.split('/').at(-1),is_dir:false,size:new TextEncoder().encode(fixture).length}]:[]});
