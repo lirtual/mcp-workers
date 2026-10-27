@@ -10,7 +10,7 @@ const url = 'https://db-owner.example.org/setup';
 
 describe('Database Owner setup authorization', () => {
   it('denies wrong hosts and missing JWT before any D1 operations', async () => {
-    for (const address of ['https://db-worker.workers.dev/setup', 'http://db-owner.example.org/setup']) {
+    for (const address of ['https://db-worker.workers.dev/setup', 'https://db-owner.pages.dev/setup', 'http://db-owner.example.org/setup']) {
       await expect(verifyAccess(new Request(address), base)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
     }
     await expect(verifyAccess(new Request(url), base)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });

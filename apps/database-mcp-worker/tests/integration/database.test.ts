@@ -177,7 +177,7 @@ describeWriteIntegration('real database safe write integration', () => {
   });
 
   it('writer identities still reject DDL and dangerous routine execution', async () => {
-    const pgClient = new PgClient({ connectionString: pgWriteUrl!, ssl: false });
+    const pgClient = new PgClient({ connectionString: pgWriteUrl!, ssl: { rejectUnauthorized: true } });
     await pgClient.connect();
     try {
       await expect(pgClient.query('CREATE TABLE public.forbidden_writer_table (id integer)')).rejects.toBeTruthy();

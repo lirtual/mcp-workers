@@ -9,7 +9,7 @@ function fail(code: string): never {
 }
 function ownerHost(env: Env): string {
   const host = env.DATABASE_SETUP_HOST;
-  if (!host || !/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(host) || host.endsWith('.workers.dev')) fail('auth_misconfigured');
+  if (!host || !/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(host) || (/\.(?:workers\.dev|pages\.dev|localhost|local)$/i.test(host))) fail('auth_misconfigured');
   return host;
 }
 type Identity = { sub: string; email: string };
@@ -49,7 +49,9 @@ export async function verifyAccess(request: Request, env: Env, requestFetch: typ
   try { certs = await requestFetch('https://' + team + '/cdn-cgi/access/certs', { redirect: 'error', signal: AbortSignal.timeout(5000) }); }
   catch { return fail('auth_unavailable'); }
   if (!certs.ok) fail('auth_unavailable');
-  const body = await certs.json() as { keys?: (JsonWebKey & { kid?: string; alg?: string })[] };
+  let body: { keys?: (JsonWebKey & { kid?: string; alg?: string })[] };
+  try { body = await certs.json() as typeof body; }
+  catch { return fail('auth_unavailable'); }
   const jwk = body.keys?.find(key => key.kid === header.kid && key.kty === 'RSA' && key.alg === 'RS256');
   if (!jwk) fail('unauthorized');
   try {
