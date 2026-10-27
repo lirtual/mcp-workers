@@ -3,6 +3,7 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { collectWorkerVars } from './worker-release-variables.mjs';
+import { canonicalName } from '../apps/openlist-mcp-worker/src/openlist.ts';
 
 export const OPENLIST_MCP_URL = 'https://openlist-mcp-worker.aiyaya.workers.dev/mcp';
 const MAX_RPC_BYTES = 64 * 1024;
@@ -38,6 +39,21 @@ async function boundedText(response) {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   try { return new TextDecoder('utf-8',{fatal:true}).decode(bytes); }
   catch { fail('invalid_encoding'); }
+}
+
+const SAFE_FILE_FIELDS = new Set(['name','path','size','is_dir','modified']);
+function verifySafeListEntry(entry, root) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+      Object.keys(entry).some(key => !SAFE_FILE_FIELDS.has(key)))
+    fail('unsafe_listing_metadata');
+  try { canonicalName(entry.name); }
+  catch { fail('unsafe_listing_metadata'); }
+  if ((Object.hasOwn(entry,'path') && entry.path !== root + '/' + entry.name) ||
+      (Object.hasOwn(entry,'size') && (!Number.isSafeInteger(entry.size) || entry.size < 0)) ||
+      (Object.hasOwn(entry,'is_dir') && typeof entry.is_dir !== 'boolean') ||
+      (Object.hasOwn(entry,'modified') &&
+        (typeof entry.modified !== 'string' || entry.modified.length > 64)))
+    fail('unsafe_listing_metadata');
 }
 
 function parseRpc(response, text, expectError = false) {
@@ -105,6 +121,8 @@ export async function runOpenListProductionReadSmoke(env, transport = fetch) {
         result.observed_state.total < result.observed_state.entries.length ||
         result.observed_state.page !== 1)
       fail('binding_or_root_unverified');
+    for (const entry of result.observed_state.entries)
+      verifySafeListEntry(entry, root);
   }
   // Positive reads alone cannot prove that the deployed MCP enforces scope.
   // With at most 16 configured roots, one of 17 distinct first segments is outside.

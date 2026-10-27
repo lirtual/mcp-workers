@@ -45,7 +45,9 @@ allowed root through the actual authenticated MCP endpoint. It also requires
 one out-of-scope path to return an explicit `OUT_OF_SCOPE` denial. A missing/invalid
 upstream token, unusable Service Binding, inaccessible root, malformed or
 unsuccessful MCP result blocks Portal registration. It does not log file
-names, paths, credentials, raw responses or read file contents. Because the
+names, paths, credentials, raw responses or read file contents. It also
+verifies every returned item against a safe metadata allowlist, rejecting
+exposed `raw_url`, `sign`, passwords, forged paths and malformed fields. Because the
 check runs after deploy, it **cannot prevent the Worker code from being
 published**; it fails release acceptance and blocks Portal onboarding.
 This is not a substitute for real disposable driver-write acceptance, nor
@@ -54,3 +56,25 @@ does it authorize initial deployment.
 ## Portal registration after an authorized first release
 
 The existing manual single-Worker GitHub Actions release registers this Worker into One-MCP only **after** Cloudflare deployment, exact version/binding readback, public-health check and an unauthenticated MCP rejection test. Registration checks the real server `tools/list` inventory against the six known tools and preserves all existing One-MCP Portal mappings. Any mismatch fails the release job; this step does **not** authorize deployment or enable auto-release.
+
+## Failure state and controlled recovery
+
+A manual release is **not atomic across Cloudflare Worker deployment and One-MCP
+Portal registration**. GitHub Actions marks a failed post-deploy verification
+as **failed**, but the newly published Worker may still be running. Do not
+describe this as a successful launch or assume automatic rollback. In
+particular:
+
+- If version, binding, health, anonymous-denial or authenticated read/scope/
+  metadata verification fails, **Portal registration has not yet started** in
+  that run. Keep this incident blocked and inspect the active Worker version,
+  binding, logs and approved configuration through read-only access.
+- If Portal registration itself fails, it may already have created an
+  unattached `openlist` server or updated Portal mappings before its final
+  readback. Inspect both server inventory and the `one-mcp` mapping. Do not
+  assume the server was removed, retry blindly or delete existing mappings.
+- After correcting the specific failure, require a fresh, explicit authorized
+  manual selected-Worker release from trusted `main`. Repeat all post-deploy
+  checks; a previous partial release and green CI are not production
+  acceptance. Never auto-roll back, auto-enable candidate tools or enable
+  automatic publishing to recover.

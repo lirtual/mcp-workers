@@ -84,6 +84,29 @@ test('an open scope or non-denial blocks Portal acceptance despite a readable ro
   }
 });
 
+test('fail closed if actual list metadata leaks raw links, passwords or forged identity', async () => {
+  const localRoot=roots[0];
+  for (const entry of [
+    {name:'sample.txt',size:7,raw_url:'https://example.invalid/secret'},
+    {name:'sample.txt',sign:'signature'},
+    {name:'sample.txt',unexpected_field:'not-a-file-field'},
+    {name:'another.txt',path:'/Koofr/elsewhere/another.txt'},
+    {name:'../escaped'},
+    {name:'sample.txt',size:'7'},
+    {name:'sample.txt',is_dir:'false'},
+    {name:'sample.txt',modified:'x'.repeat(65)},
+  ]) {
+    await assert.rejects(runOpenListProductionReadSmoke({
+      ...validEnv,OPENLIST_ALLOWED_ROOTS:JSON.stringify([localRoot]),
+    },async request => {
+      const target=(await request.json()).params.arguments.path;
+      return response(target===localRoot
+        ? reply(target,{observed_state:{entries:[entry],total:1,page:1}})
+        : denied(target));
+    }),error => /^openlist_smoke_[a-z0-9_]+$/.test(error?.message));
+  }
+});
+
 test('missing credentials or invalid roots fail before any request', async () => {
   let calls=0;
   for (const env of [
