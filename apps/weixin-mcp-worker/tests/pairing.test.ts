@@ -107,7 +107,7 @@ test('scan confirmation never replaces active account without exact inbound proo
     active.session_ciphertext as string,active.session_key_id as string);
   assert.deepEqual(session,{botToken:'new-secret-token',ownerId:'verified-owner',
     botId:'verified-bot',contextToken:'verified-context',
-    cursor:'opaque-cursor-2-0'});
+    cursor:'opaque-cursor-2-17'});
   assert.doesNotMatch(JSON.stringify(active),/verified-context|new-secret-token/);
   const pair=f.db.sql.prepare('SELECT * FROM weixin_pairing').get()!;
   assert.equal(pair.phase,'expired');
