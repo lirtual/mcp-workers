@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, markWindowsUpgradeCompleted, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, markStaleWindowsUpgradeAttention, markWindowsUpgradeCompleted, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -709,6 +709,12 @@ export class V2OwnerCoordinator {
           return Response.json({error:"not_found"},{status:404});
         }
         let status = record.state;
+        // No silent indefinite `claimed` state after stage/watchdog deadlines.
+        // A missing signed Agent receipt stays locked and needs owner attention.
+        // This does not dispatch, cancel, or retry the upgrade.
+        if (status === "claimed" &&
+            await markStaleWindowsUpgradeAttention(this.state.storage,input.operation_id))
+          status = "needs_attention";
         // Reconcile only a freshly authenticated, currently reported socket.
         // A restored old runtime can report a failed local rollback receipt,
         // but must never release the guarded device lock or claim success.
