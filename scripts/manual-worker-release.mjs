@@ -807,14 +807,15 @@ async function main() {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
     });
-    // Compare the active deployment inside the existing retry loop. Cloudflare
-    // may briefly serve the previous version after Wrangler reports success.
-    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker'))
+    // Compare active deployments inside the existing bounded retry loop.
+    // Cloudflare may briefly serve an old version, including for OpenList releases.
+    // Keep identity and binding drift failures fatal.
+    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker' || worker === 'openlist-mcp-worker'))
       verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     return observed;
   };
   const observed = !exists ? { mode: "bootstrap" }
-    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker")
+    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker" || worker === "openlist-mcp-worker")
       ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
