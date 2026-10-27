@@ -199,3 +199,18 @@ test('expired proof-verification lease cannot activate a late inbound reply',asy
   assert.equal((await pairingView(f.env,OWNER)).phase,'bound_unverified');
   assert.equal(f.db.sql.prepare('SELECT session_ciphertext FROM weixin_binding').get()?.session_ciphertext,null);
 });
+
+test('failed upstream verify-code requests consume durable budget before provider returns',async()=>{
+  const f=await fixture();
+  await startPairing(f.env,OWNER,f.client);
+  let attempted=0;
+  const bad={...f.client,pollQr:async()=>{attempted++;throw Error('upstream unavailable');}};
+  for(let i=0;i<3;i++){
+    f.db.sql.prepare('UPDATE weixin_pairing SET poll_after=0').run();
+    await assert.rejects(()=>pollPairing(f.env,OWNER,bad,'1234'),/upstream unavailable/);
+    assert.equal(f.db.sql.prepare('SELECT verify_count FROM weixin_pairing').get()?.verify_count,i+1);
+  }
+  f.db.sql.prepare('UPDATE weixin_pairing SET poll_after=0').run();
+  await assert.rejects(()=>pollPairing(f.env,OWNER,bad,'1234'),/verify_code_blocked/);
+  assert.equal(attempted,3);
+});
