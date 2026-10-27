@@ -49,6 +49,18 @@ async function getJson(url, token, transport) {
   catch { fail('invalid_json'); }
 }
 
+export function verifyPublicStorageSettings(publicSettings) {
+  if (publicSettings?.code !== 200 || publicSettings?.message !== 'success' ||
+      !publicSettings?.data || typeof publicSettings.data !== 'object')
+    fail('storage_unavailable');
+  return true;
+}
+
+// Public-only scheduled health check: no Cloudflare or MCP credentials.
+export async function verifyOpenListPublic(transport = fetch) {
+  return verifyPublicStorageSettings(await getJson(PUBLIC_SETTINGS, null, transport));
+}
+
 export async function verifyOpenListUpstream(env, transport = fetch) {
   const account = env.CLOUDFLARE_ACCOUNT_ID;
   const token = env.CLOUDFLARE_API_TOKEN;
@@ -58,9 +70,9 @@ export async function verifyOpenListUpstream(env, transport = fetch) {
 
   const base = 'https://api.cloudflare.com/client/v4/accounts/' + account +
     '/workers/scripts/' + WORKER;
-  const [deployment, publicSettings] = await Promise.all([
+  const [deployment] = await Promise.all([
     getJson(base + '/deployments?per_page=1', token, transport),
-    getJson(PUBLIC_SETTINGS, null, transport),
+    verifyOpenListPublic(transport),
   ]);
   if (deployment?.success !== true ||
       !Array.isArray(deployment.result?.deployments) ||
@@ -86,15 +98,17 @@ export async function verifyOpenListUpstream(env, transport = fetch) {
       !bindings.some(x => x.name === 'DB_DRIVER' && x.type === 'plain_text' &&
         x.text === 'auto'))
     fail('db_driver_drift');
-  if (publicSettings?.code !== 200 || publicSettings?.message !== 'success' ||
-      !publicSettings?.data || typeof publicSettings.data !== 'object')
-    fail('storage_unavailable');
   return versionId;
 }
 
 if (process.argv[1]?.endsWith('/openlist-upstream-integrity.mjs')) {
-  verifyOpenListUpstream(process.env)
-    .then(version => console.log('OPENLIST_UPSTREAM_READ_OK version=' + version))
+  const mode = process.argv[2] || 'binding';
+  const action = mode === 'public' ? verifyOpenListPublic() :
+    mode === 'binding' ? verifyOpenListUpstream(process.env) :
+      Promise.reject(new Error('openlist_upstream_invalid_mode'));
+  action.then(value => console.log(mode === 'public'
+    ? 'OPENLIST_PUBLIC_READ_OK'
+    : 'OPENLIST_UPSTREAM_READ_OK version=' + value))
     .catch(error => {
       const code = /^openlist_upstream_[a-z_]+$/.test(error?.message)
         ? error.message : 'openlist_upstream_unknown';
