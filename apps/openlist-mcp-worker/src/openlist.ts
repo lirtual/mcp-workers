@@ -1,0 +1,247 @@
+export interface Env {
+  MCP_ACCESS_TOKEN?: string;
+  OPENLIST_API_TOKEN?: string;
+  OPENLIST_ALLOWED_ROOTS?: string;
+  OPENLIST?: { fetch(request: Request): Promise<Response> };
+}
+export type OperationStatus = 'succeeded' | 'failed' | 'unknown' | 'not_executed';
+export interface OperationResult {
+  operation: string;
+  status: OperationStatus;
+  code: string;
+  message: string;
+  request_id: string;
+  target: string;
+  observed_state?: unknown;
+  evidence?: unknown;
+}
+export class OpenListError extends Error {
+  readonly code: string;
+  constructor(code: string) { super(code); this.code = code; }
+}
+export interface Config {
+  roots: string[];
+  token: string;
+  binding: NonNullable<Env['OPENLIST']>;
+}
+const MAX_RESULT_BYTES = 256 * 1024;
+const MAX_TEXT_BYTES = 256 * 1024;
+const MAX_SEGMENT = 255;
+
+export function canonicalPath(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 2 || value.length > 1024 ||
+      !value.startsWith('/') || value.endsWith('/') ||
+      /[\\%?#\u0000-\u001f\u007f]/.test(value) ||
+      value.includes('//') || value.normalize('NFC') !== value)
+    throw new OpenListError('INVALID_PATH');
+  const parts = value.slice(1).split('/');
+  if (parts.some(p => !p || p === '.' || p === '..' || p.length > MAX_SEGMENT ||
+      p === '@s' || p === '@d'))
+    throw new OpenListError('INVALID_PATH');
+  return value;
+}
+export function canonicalName(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > MAX_SEGMENT ||
+      /[\\/%?#\u0000-\u001f\u007f]/.test(value) || value === '.' || value === '..' ||
+      value.normalize('NFC') !== value || value === '@s' || value === '@d')
+    throw new OpenListError('INVALID_PATH');
+  return value;
+}
+export function inScope(path: string, roots: string[]): boolean {
+  return roots.some(root => path === root || path.startsWith(root + '/'));
+}
+export function createConfig(env: Env): Config {
+  if (!env.OPENLIST || typeof env.OPENLIST.fetch !== 'function' ||
+      typeof env.OPENLIST_API_TOKEN !== 'string' || !env.OPENLIST_API_TOKEN.trim() ||
+      !env.MCP_ACCESS_TOKEN?.trim() ||
+      env.OPENLIST_API_TOKEN === env.MCP_ACCESS_TOKEN)
+    throw new OpenListError('CONFIGURATION_ERROR');
+  let value: unknown;
+  try { value = JSON.parse(env.OPENLIST_ALLOWED_ROOTS ?? ''); }
+  catch { throw new OpenListError('CONFIGURATION_ERROR'); }
+  if (!Array.isArray(value) || value.length < 1 || value.length > 16 ||
+      value.some(v => typeof v !== 'string'))
+    throw new OpenListError('CONFIGURATION_ERROR');
+  let roots: string[];
+  try { roots = value.map(canonicalPath); }
+  catch { throw new OpenListError('CONFIGURATION_ERROR'); }
+  if (new Set(roots).size !== roots.length)
+    throw new OpenListError('CONFIGURATION_ERROR');
+  return { binding: env.OPENLIST, token: env.OPENLIST_API_TOKEN, roots };
+}
+function safeErrorCode(code: number): string {
+  if (code === 401 || code === 403) return 'UNAUTHORIZED';
+  if (code === 404) return 'NOT_FOUND';
+  if (code === 501) return 'NOT_SUPPORTED';
+  if (code === 409) return 'CONFLICT';
+  if (code === 400) return 'UPSTREAM_REJECTED';
+  return 'UPSTREAM_UNAVAILABLE';
+}
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+function safeMetadata(value: unknown): Record<string, unknown> {
+  if (!isObject(value)) throw new OpenListError('UPSTREAM_UNAVAILABLE');
+  const obj: Record<string, unknown> = {};
+  if (typeof value.name === 'string') obj.name = canonicalName(value.name);
+  if (typeof value.path === 'string') obj.path = canonicalPath(value.path);
+  if (typeof value.size === 'number' && Number.isSafeInteger(value.size) && value.size >= 0)
+    obj.size = value.size;
+  if (typeof value.is_dir === 'boolean') obj.is_dir = value.is_dir;
+  if (typeof value.modified === 'string' && value.modified.length <= 64) obj.modified = value.modified;
+  return obj;
+}
+function collectEntries(data: unknown): { content: unknown[]; total: number } {
+  if (!isObject(data) || !Array.isArray(data.content) || data.content.length > 100 ||
+      typeof data.total !== 'number' || !Number.isSafeInteger(data.total) || data.total < 0)
+    throw new OpenListError('UPSTREAM_UNAVAILABLE');
+  return { content: data.content, total: data.total };
+}
+async function limitedBody(response: Response, cap: number): Promise<Uint8Array> {
+  const declared = Number(response.headers.get('content-length') ?? 0);
+  if (declared > cap) throw new OpenListError('LIMIT_EXCEEDED');
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      length += result.value.byteLength;
+      if (length > cap) throw new OpenListError('LIMIT_EXCEEDED');
+      chunks.push(result.value);
+    }
+  } finally { await reader.cancel().catch(() => {}); }
+  const out = new Uint8Array(length);
+  let pos = 0;
+  for (const chunk of chunks) { out.set(chunk, pos); pos += chunk.byteLength; }
+  return out;
+}
+type UpstreamReply = { code: number; data: unknown };
+export class OpenListApi {
+  private readonly config: Config;
+  constructor(config: Config) { this.config = config; }
+  get roots(): readonly string[] { return this.config.roots; }
+  check(path: unknown, write = false): string {
+    const canonical = canonicalPath(path);
+    if (!inScope(canonical, this.config.roots)) throw new OpenListError('OUT_OF_SCOPE');
+    if (write && this.config.roots.includes(canonical)) throw new OpenListError('INVALID_PATH');
+    return canonical;
+  }
+  private async request(method: 'POST' | 'GET' | 'PUT', route: string, data?: unknown,
+      headers?: Record<string, string>, write = false): Promise<UpstreamReply> {
+    const request = new Request('https://openlist.internal' + route, {
+      method,
+      headers: {
+        authorization: this.config.token,
+        ...(data !== undefined && method !== 'PUT' ? { 'content-type': 'application/json' } : {}),
+        ...headers,
+      },
+      body: data === undefined ? undefined :
+        method === 'PUT' ? data as Uint8Array<ArrayBuffer> : JSON.stringify(data),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(12000),
+    });
+    let response: Response;
+    try { response = await this.config.binding.fetch(request); }
+    catch { throw new OpenListError(write ? 'UPSTREAM_UNCERTAIN' : 'UPSTREAM_UNAVAILABLE'); }
+    let reply: unknown;
+    try { reply = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(
+      await limitedBody(response, MAX_RESULT_BYTES))); }
+    catch { throw new OpenListError(write ? 'UPSTREAM_UNCERTAIN' : 'UPSTREAM_UNAVAILABLE'); }
+    if (!isObject(reply) || typeof reply.code !== 'number' ||
+        !Number.isSafeInteger(reply.code) || !('data' in reply))
+      throw new OpenListError(write ? 'UPSTREAM_UNCERTAIN' : 'UPSTREAM_UNAVAILABLE');
+    if (response.status !== 200 || reply.code !== 200) {
+      // A write can partly execute before a 5xx/timeout even when JSON reports failure.
+      if (write && (response.status >= 500 || reply.code >= 500))
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      throw new OpenListError(safeErrorCode(reply.code !== 200 ? reply.code : response.status));
+    }
+    return { code: reply.code, data: reply.data };
+  }
+  async list(path: string, page: number, perPage: number) {
+    const dir = this.check(path);
+    if (!Number.isSafeInteger(page) || page < 1 || page > 10000 ||
+        !Number.isSafeInteger(perPage) || perPage < 1 || perPage > 100)
+      throw new OpenListError('LIMIT_EXCEEDED');
+    const { content, total } = collectEntries((await this.request('POST', '/api/fs/list',
+      { path: dir, page, per_page: perPage, refresh: false })).data);
+    const entries = content.map(safeMetadata).filter(item =>
+      typeof item.name === 'string' &&
+      (typeof item.path !== 'string' || item.path.startsWith(dir + '/')));
+    return { entries, total, page };
+  }
+  async get(path: string): Promise<Record<string, unknown>> {
+    const file = this.check(path);
+    const meta = safeMetadata((await this.request('POST', '/api/fs/get', { path: file })).data);
+    return { ...meta, path: file };
+  }
+  async search(parent: string, keywords: string, page: number, perPage: number) {
+    const dir = this.check(parent);
+    if (typeof keywords !== 'string' || keywords.trim().length < 1 || keywords.length > 120)
+      throw new OpenListError('INVALID_INPUT');
+    if (!Number.isSafeInteger(page) || page < 1 || page > 10000 ||
+        !Number.isSafeInteger(perPage) || perPage < 1 || perPage > 100)
+      throw new OpenListError('LIMIT_EXCEEDED');
+    const { content } = collectEntries((await this.request('POST', '/api/fs/search',
+      { parent: dir, keywords, scope: 0, page, per_page: perPage })).data);
+    // Unknown or out-of-root hits are NOT published: upstream search scope may be broader.
+    return { entries: content.map(item => {
+      try { return safeMetadata(item); } catch { return null; }
+    }).filter((entry): entry is Record<string, unknown> =>
+      entry !== null && typeof entry.name === 'string' &&
+      typeof entry.path === 'string' && entry.path.startsWith(dir + '/')) };
+  }
+  async readText(path: string): Promise<{ path: string; text: string }> {
+    const file = this.check(path);
+    const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;
+    const meta = safeMetadata(raw);
+    const sign = isObject(raw) && typeof raw.sign === 'string' && raw.sign.length <= 512 &&
+      !/[\u0000-\u001f\u007f]/.test(raw.sign) ? raw.sign : undefined;
+    if (sign === undefined) throw new OpenListError('NOT_SUPPORTED');
+    if (meta.is_dir !== false || typeof meta.size !== 'number' || meta.size > MAX_TEXT_BYTES)
+      throw new OpenListError('NOT_SUPPORTED');
+    if (!/\.(txt|md|csv|json|yaml|yml|log|xml)$/i.test(file))
+      throw new OpenListError('NOT_SUPPORTED');
+    const route = '/d/' + file.slice(1).split('/').map(encodeURIComponent).join('/') +
+      (sign ? '?sign=' + encodeURIComponent(sign) : '');
+    const request = new Request('https://openlist.internal' + route, {
+      // The unauthenticated internal download handler must never receive an admin credential.
+      redirect: 'manual',
+      signal: AbortSignal.timeout(12000),
+    });
+    let response: Response;
+    try { response = await this.config.binding.fetch(request); }
+    catch { throw new OpenListError('UPSTREAM_UNAVAILABLE'); }
+    if (response.status !== 200 || response.redirected || response.headers.has('location'))
+      throw new OpenListError('NOT_SUPPORTED');
+    const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+    if (!contentType || !['text/plain','text/markdown','text/csv','application/json',
+      'application/xml','text/xml','application/yaml','text/yaml'].includes(contentType))
+      throw new OpenListError('NOT_SUPPORTED');
+    const bytes = await limitedBody(response, MAX_TEXT_BYTES);
+    let text: string;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { throw new OpenListError('NOT_SUPPORTED'); }
+    return { path: file, text };
+  }
+  async mkdir(path: string): Promise<OperationResult> {
+    const target = this.check(path, true);
+    const request_id = crypto.randomUUID();
+    try {
+      const response = await this.request('POST', '/api/fs/mkdir', { path: target }, undefined, true);
+      return { operation: 'openlist_create_folder', status: 'succeeded', code: 'OK',
+        message: 'Upstream reported success; operation is not atomic.', request_id, target,
+        evidence: { business_code: response.code } };
+    } catch (error) {
+      const code = error instanceof OpenListError ? error.code : 'UPSTREAM_UNCERTAIN';
+      return { operation: 'openlist_create_folder',
+        status: code === 'UPSTREAM_UNCERTAIN' ? 'unknown' : 'failed',
+        code, message: code === 'UPSTREAM_UNCERTAIN' ?
+          'Dispatch outcome cannot be determined; do not retry automatically.' : 'Upstream rejected operation.',
+        request_id, target };
+    }
+  }
+}
