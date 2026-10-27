@@ -114,3 +114,21 @@ test('QR redirected sessions and server-supplied alternative baseurls are not si
   assert.equal(fake.calls.length, 2);
   for (const call of fake.calls) assert.equal(new URL(call.url).origin, 'https://ilinkai.weixin.qq.com');
 });
+
+test('a redirected or throttled write is uncertain after dispatch, never auto-followed or replayed', async () => {
+  const input = { botToken: 't', recipientId: 'owner', contextToken: 'ctx',
+    requestId: 'd6d361d3-39cf-45a2-b2f0-cccb4e0b61ba', text: 'write once' };
+  for (const response of [
+    Response.redirect('https://evil.example/receive', 302),
+    new Response(JSON.stringify({ ret: 429 }), { status: 429 })
+  ]) {
+    let count = 0;
+    const api = createIlinkClient({ fetchImpl: async (_url, init) => {
+      count++;
+      assert.equal(init.redirect, 'manual');
+      return response;
+    } });
+    await assert.rejects(() => api.sendText(input), e => e instanceof IlinkError && e.code === 'UNKNOWN_SEND');
+    assert.equal(count, 1);
+  }
+});

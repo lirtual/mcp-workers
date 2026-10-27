@@ -96,8 +96,7 @@ export function createIlinkClient({ fetchImpl = fetch, apiOrigin = API_ORIGIN } 
     try {
       return await parseBounded(response);
     } catch (err) {
-      if (err instanceof IlinkError && err.code === 'UNSAFE_REDIRECT') throw err;
-      if (send && !(err instanceof IlinkError && err.code === 'INVALID_RESPONSE')) throw new IlinkError('UNKNOWN_SEND');
+      // Even a redirect can follow an already-processed write: no retry.
       if (send) throw new IlinkError('UNKNOWN_SEND');
       if (err instanceof IlinkError) throw err;
       throw new IlinkError('UPSTREAM_UNAVAILABLE');
