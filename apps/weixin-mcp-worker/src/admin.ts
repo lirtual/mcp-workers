@@ -116,9 +116,13 @@ export async function handleAdmin(
     validateCsrf(request,data.get('csrf')??'',env);
     if(url.pathname==='/setup/unbind'){
       if(data.get('confirm')!=='local_unbind')fail('confirmation_required');
-      await unbindLocal(env);
-      // Failed cleanup cannot reactivate an old pairing: generation has changed.
-      await env.DB.prepare("UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL WHERE id=1").run().catch(()=>{});
+      const generation=await unbindLocal(env);
+      // A new QR can start immediately after unbind releases the binding lease.
+      // Clear only pre-unbind generations; never erase a newer QR session.
+      await env.DB.prepare(
+        "UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL "+
+        "WHERE id=1 AND generation<?"
+      ).bind(generation).run().catch(()=>{});
       return html('<h1>Local unbind completed</h1><p>No upstream Tencent revocation was attempted.</p>'+
         '<a href="/setup">Back to owner management</a>');
     }
