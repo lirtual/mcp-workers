@@ -186,6 +186,31 @@ importers:
         specifier: 4.131.0
         version: 4.131.0(@cloudflare/workers-types@5.20260911.1)
 
+  apps/openlist-mcp-worker:
+    dependencies:
+      '@mcp-workers/portal-auth':
+        specifier: workspace:*
+        version: link:../../packages/portal-auth
+      '@modelcontextprotocol/server':
+        specifier: 2.0.0
+        version: 2.0.0
+      zod:
+        specifier: 4.6.2
+        version: 4.6.2
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260911.1
+        version: 5.20260911.1
+      miniflare:
+        specifier: 5.20260908.0-alpha
+        version: 5.20260908.0-alpha
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      wrangler:
+        specifier: 4.130.0
+        version: 4.130.0(@cloudflare/workers-types@5.20260911.1)
+
   apps/raindrop-mcp-worker:
     dependencies:
       '@mcp-workers/portal-auth':
