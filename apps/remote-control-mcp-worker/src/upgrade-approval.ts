@@ -84,7 +84,8 @@ function matchesLiveDevice(row: UpgradeApprovalPreview, device: V2Device | undef
     device.device_id === row.device_id && device.fingerprint === row.fingerprint &&
     device.device_info?.os === "windows" && device.device_info?.arch === "x64" &&
     device.device_info?.environment === "native" &&
-    device.device_info?.agent_version === row.current_version;
+    device.device_info?.agent_version === row.current_version &&
+    device.device_info?.upgrade_protocol === "owner-one-shot-v1";
 }
 
 /** Caller MUST obtain reviewedPin from a server-owned allowlist, never MCP arguments. */
@@ -99,6 +100,7 @@ export async function prepareWindowsUpgrade(
     if (!deviceIsAuthorized(device) || device.grant_type === "temporary" ||
         device.device_id !== deviceId || device.device_info?.os !== "windows" ||
         device.device_info?.arch !== "x64" || device.device_info?.environment !== "native" ||
+        device.device_info?.upgrade_protocol !== "owner-one-shot-v1" ||
         typeof device.device_info?.agent_version !== "string" ||
         typeof device.fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(device.fingerprint)) {
       return { status: "refused" };
