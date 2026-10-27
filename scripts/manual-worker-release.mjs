@@ -63,6 +63,7 @@ export function databaseD1ReadinessSql(expectedIds) {
     "  (SELECT COUNT(*) FROM d1_migrations WHERE name='0001_connections.sql') AS migration_count,",
     "  (SELECT COUNT(*) FROM database_connections) AS record_count,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ") AND status='active') AS active_count,",
     "  (SELECT COUNT(*) FROM database_connections WHERE",
     "    key_id = '' OR LENGTH(ciphertext) < 40 OR",
     "    revision < 1 OR status NOT IN ('active','disabled') OR",
@@ -77,7 +78,7 @@ export function verifyDatabaseD1Readiness(response, expectedCount) {
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
   const row = response[0].results[0];
-  for (const name of ["migration_count", "record_count", "preserved_count", "malformed_count"])
+  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "malformed_count"])
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
   invariant(row.migration_count === 1, "Database D1 initial migration not applied");
@@ -85,6 +86,8 @@ export function verifyDatabaseD1Readiness(response, expectedCount) {
     "Database D1 record inventory invalid");
   invariant(row.record_count >= expectedCount && row.preserved_count === expectedCount,
     "Database D1 missing reviewed legacy logical connection IDs");
+  invariant(row.active_count === expectedCount,
+    "Database D1 legacy connections not yet TLS-validated and active");
   return { record_count: row.record_count, preserved_count: row.preserved_count };
 }
 

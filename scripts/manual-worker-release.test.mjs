@@ -141,6 +141,7 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
   const sql = databaseD1ReadinessSql(legacy);
   assert.match(sql, /d1_migrations/);
   assert.match(sql, /preserved_count/);
+  assert.match(sql, /active_count/);
   assert.match(sql, /id IN \('old_mysql','old_pg'\)/);
   assert.doesNotMatch(sql, /SELECT\s+\*|\bpassword\b|\bplaintext\b|\burl\b/i);
   for (const invalid of [undefined, "", "[]", "{}", '["a","a"]',
@@ -148,13 +149,15 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
     assert.throws(() => parseDatabaseCutoverIds(invalid), /expected IDs|JSON invalid/);
   }
   const result = counts => [{ success: true, results: [counts] }];
-  const valid = { migration_count: 1, record_count: 2, preserved_count: 2, malformed_count: 0 };
+  const valid = { migration_count: 1, record_count: 2, preserved_count: 2, active_count: 2, malformed_count: 0 };
   assert.deepEqual(verifyDatabaseD1Readiness(result(valid), 2),
     { record_count: 2, preserved_count: 2 });
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 0, preserved_count: 0 }), 2),
     /missing reviewed legacy/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, preserved_count: 1 }), 2),
     /missing reviewed legacy/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, active_count: 0 }), 2),
+    /not yet TLS-validated and active/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 }), 2),
     /migration not applied/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 51 }), 2),
