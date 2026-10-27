@@ -112,7 +112,7 @@ test('short nonempty Secret values use the deployed auth contract, not an arbitr
 });
 test('empty, whitespace-padded and CRLF tokens fail before network operations',async()=>{
   const {transport,requests}=fakeTransport();
-  for (const invalid of ['', ' ', ' bearer', 'bearer ', 'hello\\r\\nworld']) {
+  for (const invalid of ['', ' ', ' bearer', 'bearer ', 'hello'+String.fromCharCode(13,10)+'world']) {
     await assert.rejects(
       ()=>runOpenListDriverAcceptance({...env,MCP_ACCESS_TOKEN:invalid},transport),
       /missing_mcp_token/,
