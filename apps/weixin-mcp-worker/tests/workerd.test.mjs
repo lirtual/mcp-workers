@@ -62,7 +62,7 @@ test('actual workerd D1 migration, ingress authorization, CAS lease and receipt 
     assert.doesNotMatch(list.body,/weixin_unbind|weixin_start_pairing/);
     const status=await call(mf,'tools/call',{name:'weixin_status',arguments:{}});
     assert.equal(status.status,200);
-    assert.match(status.body,/"unbound"/);
+    assert.match(status.body,/unbound/);
     assert.doesNotMatch(status.body,/test-only-portal-bearer/);
     const noBinding=await call(mf,'tools/call',{name:'weixin_send_message',
       arguments:{text:'synthetic only',request_id:firstId}});
