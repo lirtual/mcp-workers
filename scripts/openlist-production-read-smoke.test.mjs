@@ -8,6 +8,11 @@ const validEnv = {
   MCP_ACCESS_TOKEN:'synthetic-release-ingress-token',
   OPENLIST_ALLOWED_ROOTS:JSON.stringify(roots),
 };
+const denied = target => ({
+  jsonrpc:'2.0',id:1,result:{isError:true,content:[{type:'text',text:JSON.stringify({
+    operation:'openlist_list_files',status:'not_executed',code:'OUT_OF_SCOPE',target,
+  })}]},
+});
 const reply = (root, opts={}) => ({
   jsonrpc:'2.0',id:1,result:{content:[{type:'text',text:JSON.stringify({
     operation:'openlist_list_files',status:'succeeded',code:'OK',
@@ -31,16 +36,21 @@ test('live smoke checks every configured root with only read-only MCP list, no s
       {method:'tools/call',name:'openlist_list_files',page:1,per_page:1});
     const root=body.params.arguments.path;
     called.push(root);
-    return response(reply(root));
+    return response(root.startsWith('/__openlist_mcp_scope_probe_') ?
+      denied(root) : reply(root));
   };
   assert.equal(await runOpenListProductionReadSmoke(validEnv,transport),2);
-  assert.deepEqual(called,roots);
+  assert.deepEqual(called,[...roots,'/__openlist_mcp_scope_probe_0']);
 });
 
 test('accepts bounded MCP SSE response but rejects misbound or error outcomes', async () => {
   assert.equal(await runOpenListProductionReadSmoke({
     ...validEnv,OPENLIST_ALLOWED_ROOTS:JSON.stringify([roots[0]]),
-  },async req => response(reply((await req.json()).params.arguments.path),'text/event-stream')),1);
+  },async req => {
+    const target=(await req.json()).params.arguments.path;
+    return response(target.startsWith('/__openlist_mcp_scope_probe_') ?
+      denied(target) : reply(target),'text/event-stream');
+  }),1);
   for (const failure of [
     response(reply('/Koofr/not-the-root')),
     response(reply(roots[0],{status:'unknown'})),
@@ -57,6 +67,20 @@ test('accepts bounded MCP SSE response but rejects misbound or error outcomes', 
         async () => failure.clone()),
       error => /^openlist_smoke_[a-z0-9_]+$/.test(String(error?.message)) &&
         !String(error?.message).includes('secret'));
+  }
+});
+
+test('an open scope or non-denial blocks Portal acceptance despite a readable root', async () => {
+  const oneRoot={...validEnv,OPENLIST_ALLOWED_ROOTS:JSON.stringify([roots[0]])};
+  for (const unsafe of [
+    path => reply(path), // out-of-scope request erroneously succeeds
+    path => denied('/Koofr/mismatched'), // error attributed to a different target
+    path => ({...denied(path),result:{...denied(path).result,isError:false}}),
+  ]) {
+    await assert.rejects(runOpenListProductionReadSmoke(oneRoot,async request => {
+      const path=(await request.json()).params.arguments.path;
+      return response(path===roots[0] ? reply(path) : unsafe(path));
+    }),error => /^openlist_smoke_[a-z0-9_]+$/.test(error?.message));
   }
 });
 

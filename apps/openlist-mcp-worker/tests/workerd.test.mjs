@@ -3,6 +3,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { runOpenListProductionReadSmoke } from '../../../scripts/openlist-production-read-smoke.mjs';
 
 const scriptPath = fileURLToPath(new URL('../.build/openlist/index.js', import.meta.url));
 const secret = 'synthetic-openlist-admin';
@@ -156,5 +157,51 @@ test('workerd observes mkdir result and refuses duplicate without another write'
     const second = await invoke(mf,'tools/call',input,portal);
     assert.equal(second.status,200);
     assert.match(await second.text(),/CONFLICT/);
+  } finally { await mf.dispose(); }
+});
+
+
+test('production read acceptance reaches real workerd MCP and Service Binding for every approved root', async () => {
+  const roots = ['/Koofr/safe','/OneDrive/safe'];
+  const upstream = `
+    export default {
+      async fetch(request) {
+        const url = new URL(request.url);
+        if (url.host !== 'openlist.internal' || url.pathname !== '/api/fs/list' ||
+            request.method !== 'POST' || request.headers.get('authorization') !== 'synthetic-openlist-admin' ||
+            request.headers.has('cookie'))
+          return Response.json({code:403,data:null},{status:403});
+        const body = await request.json();
+        if (body.page !== 1 || body.per_page !== 1 || body.refresh !== false ||
+            !['/Koofr/safe','/OneDrive/safe'].includes(body.path))
+          return Response.json({code:400,data:null},{status:400});
+        return Response.json({code:200,message:'success',data:{
+          content:[{name:'fixture-secret.txt',size:12,is_dir:false,
+            raw_url:'https://provider.example/secret-link'}],total:1,
+        }});
+      }
+    }
+  `;
+  const mf = new Miniflare(convertV4MiniflareOptions({
+    port:0,
+    workers:[
+      {name:'openlist-mcp-worker',modules:true,script:readFileSync(scriptPath,'utf8'),
+        bindings:{MCP_ACCESS_TOKEN:portal,OPENLIST_API_TOKEN:secret,
+          OPENLIST_ALLOWED_ROOTS:JSON.stringify(roots)},
+        serviceBindings:{OPENLIST:'openlist-tsworkers'},compatibilityDate:'2026-09-10'},
+      {name:'openlist-tsworkers',modules:true,script:upstream,compatibilityDate:'2026-09-10'},
+    ],
+  }));
+  try {
+    const env={MCP_ACCESS_TOKEN:portal,OPENLIST_ALLOWED_ROOTS:JSON.stringify(roots)};
+    const transport=request => mf.dispatchFetch(request.url, request);
+    assert.equal(await runOpenListProductionReadSmoke(env, transport),2);
+    for (const bad of [
+      {...env,MCP_ACCESS_TOKEN:'wrong-portal-token'},
+      {...env,OPENLIST_ALLOWED_ROOTS:'["/Koofr/safe","/Koofr/other"]'},
+    ]) {
+      await assert.rejects(runOpenListProductionReadSmoke(bad,transport),
+        error => /^openlist_smoke_[a-z0-9_]+$/.test(error?.message));
+    }
   } finally { await mf.dispose(); }
 });

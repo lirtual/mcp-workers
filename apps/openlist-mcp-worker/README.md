@@ -30,7 +30,8 @@ The existing single-Worker manual release runs `scripts/openlist-production-read
 **after** Cloudflare version/Service Binding readback and anonymous MCP denial, but
 **before** registering OpenList in One-MCP. It invokes only
 `openlist_list_files` with a page size of one against **each configured**
-allowed root through the actual authenticated MCP endpoint. A missing/invalid
+allowed root through the actual authenticated MCP endpoint. It also requires
+one out-of-scope path to return an explicit `OUT_OF_SCOPE` denial. A missing/invalid
 upstream token, unusable Service Binding, inaccessible root, malformed or
 unsuccessful MCP result blocks Portal registration. It does not log file
 names, paths, credentials, raw responses or read file contents. Because the

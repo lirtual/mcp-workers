@@ -40,7 +40,7 @@ async function boundedText(response) {
   catch { fail('invalid_encoding'); }
 }
 
-function parseRpc(response, text) {
+function parseRpc(response, text, expectError = false) {
   const type = response.headers.get('content-type')?.split(';',1)[0]?.trim().toLowerCase();
   if (type !== 'application/json' && type !== 'text/event-stream')
     fail('invalid_content_type');
@@ -54,7 +54,7 @@ function parseRpc(response, text) {
     }
   } catch { fail('invalid_rpc_json'); }
   if (!value || value.jsonrpc !== '2.0' || value.id !== 1 || value.error ||
-      !value.result || value.result.isError === true ||
+      !value.result || (expectError ? value.result.isError !== true : value.result.isError === true) ||
       !Array.isArray(value.result.content) || value.result.content.length !== 1 ||
       value.result.content[0]?.type !== 'text' ||
       typeof value.result.content[0].text !== 'string')
@@ -106,6 +106,29 @@ export async function runOpenListProductionReadSmoke(env, transport = fetch) {
         result.observed_state.page !== 1)
       fail('binding_or_root_unverified');
   }
+  // Positive reads alone cannot prove that the deployed MCP enforces scope.
+  // With at most 16 configured roots, one of 17 distinct first segments is outside.
+  const probe = Array.from({length:roots.length+1},(_,i) =>
+    '/__openlist_mcp_scope_probe_'+i).find(path =>
+      !roots.some(root => path === root || path.startsWith(root+'/')));
+  if (!probe) fail('scope_probe_unavailable');
+  const body = JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',
+    params:{name:'openlist_list_files',arguments:{path:probe,page:1,per_page:1}}});
+  let denial;
+  try {
+    denial = await transport(new Request(OPENLIST_MCP_URL,{
+      method:'POST',redirect:'manual',signal:AbortSignal.timeout(20000),
+      headers:{authorization:'Bearer '+token,'content-type':'application/json',
+        accept:'application/json, text/event-stream'},body,
+    }));
+  } catch { fail('scope_probe_unreachable'); }
+  if (denial.status !== 200 || denial.redirected || denial.headers.has('location'))
+    fail('scope_probe_transport');
+  const rejected = parseRpc(denial, await boundedText(denial), true);
+  if (rejected.operation !== 'openlist_list_files' ||
+      rejected.target !== probe || rejected.code !== 'OUT_OF_SCOPE' ||
+      rejected.status !== 'not_executed')
+    fail('scope_probe_not_denied');
   return roots.length;
 }
 
