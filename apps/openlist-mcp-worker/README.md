@@ -50,11 +50,15 @@ This project's `scripts/openlist-upstream-integrity.mjs` performs read-only
 checks of the actual Cloudflare active deployment, expected KV binding,
 `DB_DRIVER=auto` and public settings endpoint. It fails an OpenList MCP
 release **before publication** on drift. Once the independent scheduled job
-is merged into `main`, GitHub Actions will also attempt an hourly health
-check, using the existing bounded read-only MCP listing smoke. Monitoring
-detects problems after upstream changes; it does not prevent independent
-upstream deployments or automatically repair storage. The scheduled workflow
-and alert delivery need runtime validation after merge.
+is merged into `main`, GitHub Actions will also attempt an hourly
+**anonymous public storage health check**, without GitHub Environment access
+or any Cloudflare/MCP Secret. The stronger active-version KV identity check
+and authenticated MCP listing remain protected by the explicitly authorized
+manual release process. Public-only monitoring detects observed `NO_STORAGE`
+outages, but cannot detect a wrong KV namespace that still serves a healthy
+public settings endpoint. Monitoring does not prevent independent upstream
+deployments or repair storage; schedule execution and notification delivery
+need verification after merge.
 
 ## Exposed tools
 
