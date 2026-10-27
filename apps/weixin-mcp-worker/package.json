@@ -1,10 +1,13 @@
 {
-  "name": "weixin-mcp-worker", "version": "0.1.0", "private": true, "type": "module",
+  "name": "weixin-mcp-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts && node --test poc/*.test.mjs",
     "deploy:dry-run": "wrangler deploy src/index.ts --dry-run --outdir .build/weixin --name weixin-mcp-worker --compatibility-date 2026-10-27",
-    "check": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.ts && node --test poc/*.test.mjs && wrangler deploy src/index.ts --dry-run --outdir .build/weixin --name weixin-mcp-worker --compatibility-date 2026-10-27"
+    "check": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.ts && node --test poc/*.test.mjs && wrangler deploy src/index.ts --dry-run --outdir .build/weixin --name weixin-mcp-worker --compatibility-date 2026-10-27 && node --test tests/workerd.test.mjs"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*",
