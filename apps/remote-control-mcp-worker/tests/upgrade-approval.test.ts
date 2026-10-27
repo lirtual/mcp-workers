@@ -118,7 +118,8 @@ test("permanent Windows only, known target only, no wrong-device or arbitrary in
     assert.equal((await prepareWindowsUpgrade(f.store, "blocked", DEVICE, PIN, NOW)).status, "refused");
   }
   for (const pin of [
-    { ...PIN, tag: "v0.1.31-rc.1" }, { ...PIN, tag: "v0.1.30-rc.1" },
+    { ...PIN, tag: "v0.1.31-rc.1" },
+    { ...PIN, tag: "v0.1.31-rc.2" }, { ...PIN, tag: "v0.1.30-rc.1" },
     { ...PIN, tag: "../evil" }, { ...PIN, tag: "v0.1.33-" + "9".repeat(10000) },
     { ...PIN, commit: "a".repeat(39) },
     { ...PIN, windows_asset_sha256: "not-a-digest" },
