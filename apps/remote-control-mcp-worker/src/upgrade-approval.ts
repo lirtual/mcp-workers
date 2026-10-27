@@ -119,11 +119,12 @@ export async function prepareWindowsUpgrade(
     const occupied = await tx.get<string>(lock(deviceId));
     if (occupied) {
       const previous = await tx.get<StoredUpgrade>(key(occupied));
-      if (!previous || previous.state === "approved" || previous.state === "claimed" ||
-          previous.state === "needs_attention" || (previous.state === "prepared" && now < previous.expires_at)) {
+      if (!previous || previous.state === "claimed" ||
+          previous.state === "needs_attention" ||
+          ((previous.state === "prepared" || previous.state === "approved") && now < previous.expires_at)) {
         return { status: "refused" };
       }
-      if (previous.state !== "completed" && previous.state !== "prepared") return { status: "refused" };
+      if (!["completed", "prepared", "approved"].includes(previous.state)) return { status: "refused" };
     }
     const token = secret();
     const preview: UpgradeApprovalPreview = {
