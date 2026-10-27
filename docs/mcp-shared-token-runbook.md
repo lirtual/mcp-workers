@@ -6,6 +6,7 @@ Every maintained Worker uses runtime Secret **name** `MCP_ACCESS_TOKEN` for MCP/
 | --- | --- | --- |
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_CONFIG` |
 | `email-mcp-worker` | `MCP_ACCESS_TOKEN` | `MAIL_ENCRYPTION_KEY` |
+| `weixin-mcp-worker` | `MCP_ACCESS_TOKEN` | `WEIXIN_ENCRYPTION_KEY` |
 | `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |
 | `ssh-mcp-worker` | `MCP_ACCESS_TOKEN` | `ENCRYPTION_KEY` |
@@ -19,7 +20,7 @@ Every maintained Worker uses runtime Secret **name** `MCP_ACCESS_TOKEN` for MCP/
 
 ## Rotation and verification
 
-1. Inventory all **ten** maintained Workers above, their actual Cloudflare deployments, existing Environment-level overrides and the affected One-MCP server/client connections. Check for any extra legacy live service outside the source tree before defining the rotation scope.
+1. Inventory all **eleven** maintained Workers above, their actual Cloudflare deployments, existing Environment-level overrides and the affected One-MCP server/client connections. Check for any extra legacy live service outside the source tree before defining the rotation scope.
 2. Verify Secret **name/presence/type**, not plaintext values; preserve unrelated upstream credentials and independently scoped Worker tokens.
 3. Generate the replacement in an operator-controlled secret store and update the appropriate Repository or same-name Environment Secret without exposing its value in Git, Issues or logs.
 4. Coordinate a **non-atomic** cutover: manually release each affected Worker on trusted current `main` with explicit per-Worker approval and update its corresponding Portal/client credential. A GitHub Secret edit alone does not deploy or rotate live credentials.
