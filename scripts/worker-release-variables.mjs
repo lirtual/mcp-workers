@@ -3,6 +3,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { canonicalPath } from "../apps/openlist-mcp-worker/src/openlist.ts";
 
 const INTEGER_LIMITS = Object.freeze({
   RAINDROP_RATE_LIMIT_MAX_RETRIES: [0, 10],
@@ -93,16 +94,14 @@ export function collectWorkerVars(worker, env, options = {}) {
   for (const name of allowed) {
     const value = env[name];
     if (name === "OPENLIST_ALLOWED_ROOTS") {
+      // Use the Worker's exact runtime parser: no release-time/runtime drift.
       let roots;
-      try { roots = JSON.parse(value); } catch { throw Error("Invalid OPENLIST_ALLOWED_ROOTS"); }
-      if (!Array.isArray(roots) || roots.length < 1 || roots.length > 16 ||
-          roots.some(root => typeof root !== "string" || root.length < 2 ||
-            root.length > 1024 || !root.startsWith("/") || root.endsWith("/") ||
-            /[\\%?#\u0000-\u001f\u007f]/.test(root) || root.includes("//") ||
-            root.split("/").slice(1).some(s => !s || s === "." || s === ".." || s === "@s" || s === "@d")) ||
-          new Set(roots).size !== roots.length) {
-        throw Error("Invalid OPENLIST_ALLOWED_ROOTS");
-      }
+      try {
+        roots = JSON.parse(value);
+        if (!Array.isArray(roots) || roots.length < 1 || roots.length > 16 ||
+            new Set(roots).size !== roots.length) throw Error('invalid');
+        for (const root of roots) canonicalPath(root);
+      } catch { throw Error("Invalid OPENLIST_ALLOWED_ROOTS"); }
     }
     if (worker === "email-mcp-worker") {
       const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",

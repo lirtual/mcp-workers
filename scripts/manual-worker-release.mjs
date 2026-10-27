@@ -2,6 +2,7 @@
 // Never log API bodies: Workers settings can include runtime plain-text values.
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { collectWorkerVars } from "./worker-release-variables.mjs";
 
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
 const REQUIRED_SECRETS = {
@@ -56,13 +57,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (options.mode !== "preflight") {
       invariant(typeof roots?.text === "string" && roots.text.length > 0,
         "Required OpenList allowed roots variable missing");
-      let parsed;
-      try { parsed = JSON.parse(roots.text); } catch { throw Error("Invalid OpenList allowed roots"); }
-      invariant(Array.isArray(parsed) && parsed.length > 0 &&
-        parsed.every(x => typeof x === "string" && x.length > 1 && x.startsWith("/") &&
-          !x.endsWith("/") && !x.includes("//") && !/[\\%?#]/.test(x) &&
-          x.split("/").slice(1).every(segment => segment && segment !== "." && segment !== ".." && segment !== "@s")),
-        "Invalid OpenList allowed roots");
+      // Same canonical parser is used before deploy and in the live Worker.
+      // Readback must never accept a root configuration the Worker rejects.
+      try {
+        collectWorkerVars("openlist-mcp-worker", {
+          OPENLIST_ALLOWED_ROOTS: roots.text,
+        });
+      } catch { throw Error("Invalid OpenList allowed roots"); }
     }
   }
   if (worker === "http-mcp-worker") {

@@ -781,3 +781,23 @@ test("HTTP readback tolerates only bounded optional Secret inventory propagation
  assert.equal(attempts,2);
  assert.deepEqual(result,{version_id:"new-version"});
 });
+
+test('OpenList release readback rejects roots that the runtime cannot accept', () => {
+  const secrets = ['MCP_ACCESS_TOKEN','OPENLIST_API_TOKEN'].map(name => ({name}));
+  const base = [
+    {name:'MCP_ACCESS_TOKEN',type:'secret_text'},
+    {name:'OPENLIST_API_TOKEN',type:'secret_text'},
+    {name:'OPENLIST',type:'service',service:'openlist-tsworkers'},
+    {name:'OPENLIST_ALLOWED_ROOTS',type:'plain_text',text:'["/Koofr/safe"]'},
+  ];
+  const config = bindings => ({ bindings, observability: {
+    enabled:true,logs:{invocation_logs:true},
+  }});
+  assert.equal(verifyBindings('openlist-mcp-worker',config(base),secrets),true);
+  for (const root of ['/Koofr/te\u0301st','/Koofr/'+'x'.repeat(256),'/Koofr/@d/alias']) {
+    const bindings=base.map(binding => binding.name==='OPENLIST_ALLOWED_ROOTS'
+      ? {...binding,text:JSON.stringify([root])}:binding);
+    assert.throws(() => verifyBindings('openlist-mcp-worker',config(bindings),secrets),
+      /OpenList allowed roots|OPENLIST_ALLOWED_ROOTS/);
+  }
+});

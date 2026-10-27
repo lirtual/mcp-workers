@@ -26,6 +26,10 @@ Folder creation first checks a complete bounded parent listing for collisions, t
 
 ## Required read-only verification on a separately authorized production release
 
+The existing release-time `OPENLIST_ALLOWED_ROOTS` validation reuses the
+Worker runtime canonical path parser, including Unicode normalization, reserved
+segments and segment-length rules; invalid roots fail before Wrangler deploy.
+
 The existing single-Worker manual release runs `scripts/openlist-production-read-smoke.mjs`
 **after** Cloudflare version/Service Binding readback and anonymous MCP denial, but
 **before** registering OpenList in One-MCP. It invokes only
