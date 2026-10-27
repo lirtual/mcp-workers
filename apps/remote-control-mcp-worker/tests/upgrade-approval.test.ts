@@ -313,3 +313,69 @@ test("terminal ledger refuses re-pair, revocation, target mismatch or missing ru
     assert.equal((await readWindowsUpgrade(f.store,p.preview.operation_id))?.state,"claimed");
   }
 });
+
+
+test("Linux x64/ARM64 use the existing one-use owner approval and fresh WSS epoch ledger",async()=>{
+  for(const arch of ["x64","arm64"] as const){
+    for(const environment of ["native","wsl2"] as const){
+      const f=fixture();
+      const pin:ReviewedUpgradePin={tag:"v0.1.33",commit:"a".repeat(40),
+        linux_arch:arch,linux_asset_sha256:(arch==="x64"?"b":"c").repeat(64)};
+      f.modifyDevice({device_info:{os:"linux",arch,environment,
+        agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"}});
+      const id="linux-"+arch+"-"+environment;
+      const prepared=await prepareWindowsUpgrade(f.store,id,DEVICE,pin,NOW);
+      assert.equal(prepared.status,"prepared",id);
+      if(prepared.status!=="prepared")continue;
+      const preview=await presentWindowsUpgrade(f.store,id,prepared.confirmation,NOW+1);
+      assert.ok(preview,id);
+      assert.equal(await confirmWindowsUpgrade(f.store,id,prepared.confirmation,
+        preview!.form_token,NOW+2),true,id);
+      const one=await claimWindowsUpgradeDispatch(f.store,id,NOW+3);
+      assert.deepEqual(one,{...prepared.preview,approved_at:NOW+2});
+      assert.equal(await claimWindowsUpgradeDispatch(f.store,id,NOW+4),null,
+        "replayed Linux dispatch is forbidden");
+      const before=f.rows.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+      f.modifyDevice({device_info:{...before.device_info,agent_version:pin.tag}});
+      assert.equal(await markWindowsUpgradeCompleted(f.store,id,DEVICE,
+        "signed-before-switch"),false);
+      f.rows.set("session:epoch:"+DEVICE,"signed-new-linux");
+      assert.equal(await markWindowsUpgradeCompleted(f.store,id,DEVICE,
+        "signed-before-switch"),false);
+      assert.equal(await markWindowsUpgradeCompleted(f.store,id,DEVICE,
+        "signed-new-linux"),true);
+      assert.equal((await readWindowsUpgrade(f.store,id))?.state,"completed");
+    }
+  }
+});
+
+test("Linux one-shot owner ledger rejects foreign architecture, downgrade, unsafe SHA and container",async()=>{
+  const linuxPin:ReviewedUpgradePin={
+    tag:"v0.1.33",commit:"a".repeat(40),
+    linux_arch:"x64",linux_asset_sha256:"b".repeat(64)};
+  for(const change of [
+    {arch:"arm64"},{environment:"container"},{environment:"wsl1"},
+    {upgrade_protocol:undefined},{agent_version:"v0.1.34"},
+    {agent_version:"v0.1.33"},
+  ]){
+    const f=fixture();
+    f.modifyDevice({device_info:{os:"linux",arch:"x64",environment:"wsl2",
+      agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1",...change}});
+    assert.equal((await prepareWindowsUpgrade(f.store,"linux-denied",DEVICE,
+      linuxPin,NOW)).status,"refused",JSON.stringify(change));
+  }
+  for(const pin of [
+    {...linuxPin,tag:"v0.1.22"},
+    {...linuxPin,tag:"v0.1.33-rc.1"},
+    {...linuxPin,commit:"x".repeat(40)},
+    {...linuxPin,linux_asset_sha256:"b".repeat(63)},
+    {...linuxPin,linux_arch:"unknown"},
+    {...linuxPin,windows_asset_sha256:"f".repeat(64)},
+  ]){
+    const f=fixture();
+    f.modifyDevice({device_info:{os:"linux",arch:"x64",environment:"native",
+      agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"}});
+    assert.equal((await prepareWindowsUpgrade(f.store,"linux-denied",DEVICE,
+      pin as ReviewedUpgradePin,NOW)).status,"refused",JSON.stringify(pin));
+  }
+});
