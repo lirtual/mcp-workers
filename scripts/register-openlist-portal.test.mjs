@@ -90,7 +90,12 @@ test('manual-release registration happens after deployed version readback and is
   const deny = release.indexOf('name: Check unauthenticated MCP surface without credentials');
   const attach = release.indexOf('name: Register production OpenList MCP with existing One-MCP Portal');
   assert.ok(verify >= 0 && deny > verify && attach > deny);
-  assert.match(release.slice(attach,attach+300),/if: inputs.worker == 'openlist-mcp-worker'/);
+  // The first deployment can verify binding/read scope without publishing six
+  // unaccepted tools to Portal. Human approval after live driver E2E is separate.
+  assert.match(release,/openlist_portal_registration:\\s*\\n\\s*description:.*live driver E2E/);
+  assert.match(release,/openlist_portal_registration:[\\s\\S]*?type: boolean\\s*\\n\\s*default: false/);
+  assert.match(release.slice(attach,attach+400),
+    /if: inputs.worker == 'openlist-mcp-worker' && inputs.openlist_portal_registration == true/);
   assert.match(release,/github\.event_name == 'workflow_dispatch'/);
   assert.match(release,/inputs\.deploy_to_production == true/);
 });
