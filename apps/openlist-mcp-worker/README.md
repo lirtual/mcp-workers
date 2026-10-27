@@ -298,3 +298,22 @@ authorized release must first establish the exact active Worker version and
 real driver results; only a later authorized Portal operation can expose the
 expanded tool set. The original production Worker and Portal retain their
 current seven tools until then.
+
+## Expanded native API driver acceptance (manual only)
+
+The existing `OpenList Driver Acceptance` workflow adds a **default-off**
+`confirm_native_tool_tests` switch. It is effective only when the existing
+`confirm_disposable_write=true` is independently approved, the run is on
+current `main`, and the deployed Worker already contains the candidate tools.
+No new workflow, environment, credentials or automatic release is introduced.
+
+The enhanced path uses **one fresh, approved synthetic Koofr test folder**
+with exact run-scoped children, and exercises MCP `upload_small`, `copy`,
+`rename`, `move`, small text readback, signed URL construction and a
+scope-denial case. The existing default path is unchanged. The test will
+leave its synthetic files for separately approved cleanup, never overwrite
+normal user paths or mutate retained prior runs, and does not print the
+sensitive signed URL. This step **does not** create, disable or revoke
+shares, or delete files: those operations require separate authorization.
+Driver acceptance cannot run against an unmerged PR without production
+publication; it must not be marked Pass based on offline tests alone.

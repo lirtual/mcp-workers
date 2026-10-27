@@ -18,6 +18,13 @@ const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,authEnv = env} = {}) {
   const requests = [];
   let made = false, uploaded = false;
+  const nativeSource = `${folder}/native-${env.GITHUB_RUN_ID}-1.txt`;
+  const nativeDir = `${folder}/native-copies`;
+  const nativeDest = `${nativeDir}/native-${env.GITHUB_RUN_ID}-1.txt`;
+  const renamedDest = `${nativeDir}/renamed-${env.GITHUB_RUN_ID}-1.txt`;
+  const nativeData = `OpenList native MCP E2E ${env.GITHUB_RUN_ID}-1\n`;
+  const nativeFiles=new Map();
+  let nativeFolder=false;
   const response = (name, target, observed_state, isError = false, code = 'OK') =>
     Response.json({jsonrpc:'2.0',id:1,result:{ ...(isError ? {isError:true} : {}),
       content:[{type:'text',text:JSON.stringify({operation:name,
@@ -45,6 +52,10 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
         return response(name,args.path,{
           total:rootReportedTotal ?? entries.length,page:1,entries});
       }
+      if(args.path===nativeDir) return response(name,args.path,{
+        total:nativeFiles.size,page:1,
+        entries:[...nativeFiles.keys()].filter(path=>path.startsWith(nativeDir+'/'))
+          .map(path=>({name:path.slice(nativeDir.length+1),is_dir:false}))});
       if(args.path===folder) return response(name,args.path,{
         total:uploaded?1:0,page:1,
         entries:uploaded?[{name:file.split('/').at(-1),is_dir:false,size:new TextEncoder().encode(fixture).length}]:[]});
@@ -53,6 +64,12 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
     if (name==='openlist_create_folder') {
       if(args.path==='/__openlist_e2e_prohibited')
         return response(name,args.path,undefined,true,'OUT_OF_SCOPE');
+      if(args.path===nativeDir) {
+        assert.equal(made,true);
+        assert.equal(nativeFolder,false);
+        nativeFolder=true;
+        return response(name,nativeDir,{is_dir:true});
+      }
       assert.equal(args.path,folder);
       assert.equal(made,false);
       made=true;
@@ -64,6 +81,9 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
       if(args.path===file && uploaded)
         return response(name,file,{path:file,name:file.split('/').at(-1),is_dir:false,
           size:new TextEncoder().encode(fixture).length});
+      if(nativeFiles.has(args.path)) return response(name,args.path,{
+        path:args.path,name:args.path.split('/').at(-1),
+        is_dir:false,size:new TextEncoder().encode(nativeFiles.get(args.path)).length});
       throw Error('unexpected_get_path');
     }
     if(name==='openlist_search_files') {
@@ -71,8 +91,44 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
       return response(name,folder,{entries:uploaded?[{path:file,name:file.split('/').at(-1)}]:[]});
     }
     if(name==='openlist_read_text') {
-      assert.equal(args.path,file);
-      return response(name,file,{path:file,text:fixture});
+      if(args.path===file) return response(name,file,{path:file,text:fixture});
+      assert.ok(nativeFiles.has(args.path));
+      return response(name,args.path,{path:args.path,text:nativeFiles.get(args.path)});
+    }
+    if(name==='openlist_upload_small') {
+      assert.equal(args.path,nativeSource);
+      assert.equal(args.encoding,'utf8');
+      assert.equal(args.content,nativeData);
+      nativeFiles.set(nativeSource,nativeData);
+      return response(name,nativeSource,{
+        size:new TextEncoder().encode(nativeData).length,native_may_overwrite:true});
+    }
+    if(name==='openlist_copy'){
+      assert.equal(args.path,nativeSource);
+      assert.equal(args.destination_dir,nativeDir);
+      nativeFiles.set(nativeDest,nativeFiles.get(nativeSource));
+      return response(name,nativeSource,{destination:nativeDest,native_may_overwrite:true});
+    }
+    if(name==='openlist_rename'){
+      assert.equal(args.path,nativeDest);
+      assert.equal(args.new_name,renamedDest.split('/').at(-1));
+      nativeFiles.set(renamedDest,nativeFiles.get(nativeDest));
+      nativeFiles.delete(nativeDest);
+      return response(name,nativeDest,{destination:renamedDest,native_may_overwrite:true});
+    }
+    if(name==='openlist_move'){
+      if(args.path.startsWith('/__openlist_e2e_prohibited'))
+        return response(name,args.path,undefined,true,'OUT_OF_SCOPE');
+      assert.equal(args.path,nativeSource);
+      assert.equal(args.destination_dir,nativeDir);
+      nativeFiles.set(nativeDest,nativeFiles.get(nativeSource));
+      nativeFiles.delete(nativeSource);
+      return response(name,nativeSource,{destination:nativeDest,native_may_overwrite:true});
+    }
+    if(name==='openlist_download_link'){
+      assert.equal(args.path,nativeDest);
+      return response(name,nativeDest,{permanent:true,expires_at:null,url:
+        'https://openlist.lirtual.dpdns.org/api/p/'+nativeDest.slice(1)+'?sign=0.'+'a'.repeat(64)});
     }
     throw Error('unexpected_tool');
   }
@@ -154,5 +210,30 @@ test('empty, whitespace-padded and CRLF tokens fail before network operations',a
       /missing_upstream_token/,
     );
   }
+  assert.deepEqual(requests,[]);
+});
+
+test('expanded native E2E requires a separate explicit opt-in and only mutates this run fixture',async()=>{
+  const {transport,requests}=fakeTransport();
+  const result=await runOpenListDriverAcceptance(
+    {...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport);
+  assert.equal(result.folder,folder.split('/').at(-1));
+  assert.deepEqual(result.tested.slice(6),[
+    'upload_small','copy','rename','move','read_native_text',
+    'signed_download_link','native_scope_denial']);
+  assert.equal(requests.filter(x=>x==='upload').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_upload_small').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_copy').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_rename').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_move').length,2);
+  assert.equal(requests.includes('openlist_share_disable'),false);
+  assert.equal(requests.includes('openlist_delete'),false);
+});
+
+test('native approval alone never authorizes a live write without the existing fixture approval',async()=>{
+  const {transport,requests}=fakeTransport();
+  await assert.rejects(()=>runOpenListDriverAcceptance({
+    ...env,OPENLIST_DRIVER_E2E_APPROVED:'false',OPENLIST_NATIVE_E2E_APPROVED:'true',
+  },transport),/not_approved/);
   assert.deepEqual(requests,[]);
 });

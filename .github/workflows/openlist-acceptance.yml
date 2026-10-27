@@ -10,6 +10,11 @@ on:
         required: true
         type: boolean
         default: false
+      confirm_native_tool_tests:
+        description: Also test native upload, copy, rename, move and signed link inside the fresh disposable fixture
+        required: false
+        type: boolean
+        default: false
       confirm_portal_registration:
         description: Separately approve registering existing OpenList MCP in One-MCP (no Worker release)
         required: false
@@ -50,6 +55,7 @@ jobs:
         shell: bash
         env:
           OPENLIST_DRIVER_E2E_APPROVED: ${{ inputs.confirm_disposable_write }}
+          OPENLIST_NATIVE_E2E_APPROVED: ${{ inputs.confirm_native_tool_tests }}
           OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           OPENLIST_API_TOKEN: ${{ secrets.OPENLIST_API_TOKEN }}
@@ -57,7 +63,7 @@ jobs:
 
   portal-checks:
     name: Required checks before OpenList Portal registration
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_portal_registration == true && inputs.confirm_disposable_write != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_portal_registration == true && inputs.confirm_disposable_write != true && inputs.confirm_native_tool_tests != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: openlist-mcp-worker
@@ -70,6 +76,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.confirm_portal_registration == true &&
           inputs.confirm_disposable_write != true &&
+          inputs.confirm_native_tool_tests != true &&
           needs.portal-checks.result == 'success' &&
           needs.portal-checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
