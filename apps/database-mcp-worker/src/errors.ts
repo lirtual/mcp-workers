@@ -62,6 +62,8 @@ export function mapDatabaseError(error: unknown): PublicError {
     'PROTOCOL_CONNECTION_LOST'
   ]);
   const tlsVerificationCodes = new Set([
+    'HANDSHAKE_SSL_ERROR',
+    'HANDSHAKE_NO_SSL_SUPPORT',
     'ERR_TLS_CERT_ALTNAME_INVALID',
     'CERT_HAS_EXPIRED',
     'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
@@ -87,7 +89,7 @@ export function mapDatabaseError(error: unknown): PublicError {
     return new PublicError('CONNECTION_UNAVAILABLE', 'The database connection is unavailable.');
   }
   if (code && tlsVerificationCodes.has(code)) {
-    return new PublicError('TLS_VERIFICATION_FAILED', 'TLS certificate or server identity verification failed.');
+    return new PublicError('TLS_VERIFICATION_FAILED', 'Verified database TLS negotiation failed.');
   }
   if (code && readOnlyCodes.has(code)) {
     return new PublicError('READ_ONLY_VIOLATION', 'The read-only database path rejected the operation.');

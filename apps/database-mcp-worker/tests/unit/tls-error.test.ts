@@ -4,6 +4,7 @@ import { mapDatabaseError } from '../../src/errors.js';
 describe('Direct TLS error boundary', () => {
   it('maps certificate and host identity failures to a stable redacted code', () => {
     for (const code of [
+      'HANDSHAKE_SSL_ERROR', 'HANDSHAKE_NO_SSL_SUPPORT',
       'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED',
       'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN',
       'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'
