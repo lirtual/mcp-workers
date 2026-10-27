@@ -119,6 +119,51 @@ test("owner POST atomically claims approved intent and sends exactly one immutab
   assert.equal(f.frames.filter(frame=>frame.tool==="upgrade_agent").length,upgradeFramesBefore,
     "a read-only status reconciliation is not an additional upgrade dispatch");
 });
+test("owner cancellation before confirmation never dispatches and keeps status auditable",async()=>{
+  const f=fixture();
+  const {confirmation,form}=await f.prepared();
+  const bad=await f.post("/upgrade/cancel",{
+    operation_id:"full-chain-operation",confirmation,form_token:"e".repeat(64),
+  });
+  assert.equal(bad.status,409);
+  assert.equal(f.counts(),0);
+  const result=await f.post("/upgrade/cancel",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.equal(result.status,200);
+  assert.deepEqual(await result.json(),{cancelled:true});
+  assert.equal(f.counts(),0);
+  const status=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal((await status.json() as {status:string}).status,"cancelled");
+  const approve=await f.post("/upgrade/confirm",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.equal(approve.status,409);
+  assert.equal(f.counts(),0);
+  const retry=await f.post("/upgrade/cancel",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.equal(retry.status,409);
+});
+
+test("owner cancellation after one-shot WSS claim is refused and cannot erase attention lock",async()=>{
+  const f=fixture();
+  const {confirmation,form}=await f.prepared();
+  const approved=await f.post("/upgrade/confirm",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.equal(approved.status,200);
+  const before=f.counts();
+  const cancel=await f.post("/upgrade/cancel",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.equal(cancel.status,409);
+  assert.equal(f.counts(),before);
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"claimed");
+});
+
 test("owner preview alone cannot claim and a bad CSRF cannot dispatch",async()=>{
   const f=fixture();
   const {confirmation}=await f.prepared();
