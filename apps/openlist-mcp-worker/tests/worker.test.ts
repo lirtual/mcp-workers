@@ -48,30 +48,33 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.deepEqual(tools.map(t => t.name), [
       'openlist_capabilities','openlist_list_files','openlist_get_file',
       'openlist_search_files','openlist_read_text','openlist_share_get',
-      'openlist_share_create','openlist_create_folder',
+      'openlist_create_folder',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
     assert.equal(tools.find(t => t.name === 'openlist_share_get')?.annotations?.readOnlyHint, true);
-    assert.equal(tools.find(t => t.name === 'openlist_share_create')?.annotations?.readOnlyHint, false);
     const capabilities = await client.callTool({ name: 'openlist_capabilities', arguments: {} });
     assert.match(JSON.stringify(capabilities), /disabled_pending_acceptance/);
     const inventory = JSON.parse((capabilities.content[0] as {text:string}).text).observed_state;
     assert.deepEqual(inventory.active_tools, tools.map(t => t.name));
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_get'), false);
-    assert.equal(inventory.disabled_pending_acceptance.length, 10);
+    assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), true);
+    assert.equal(inventory.disabled_pending_acceptance.length, 11);
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
-test('one-shot share creation fails closed for other configured roots with zero upstream calls', async () => {
+test('retired share creation is unavailable through MCP', async () => {
   let calls = 0;
-  const client = await clientFor(settings(async () => { calls++; return Response.json({code:200,data:null}); }));
+  const client = await clientFor(settings(async () => {
+    calls++;
+    return Response.json({code:200,data:null});
+  }));
   try {
-    const response = await client.callTool({name:'openlist_share_create',arguments:{}});
-    assert.equal(response.isError,true);
-    assert.match(JSON.stringify(response),/NOT_SUPPORTED/);
-    assert.equal(calls,0);
-  } finally {await client.close();}
+    await assert.rejects(() => client.callTool({
+      name:'openlist_share_create', arguments:{},
+    }), /not found/);
+    assert.equal(calls, 0);
+  } finally { await client.close(); }
 });
 
 test('share_get accepts an explicit ID, reads only that record, and strips secrets', async () => {
