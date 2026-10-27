@@ -18,6 +18,7 @@ on:
           - portal-readonly
           - github-action-result-cloud
           - portal-register
+          - weixin-offline
       session_run_id:
         description: Existing temporary Spec 288 Windows Run ID; never contains sensitive values
         type: string
@@ -201,3 +202,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-workflow-portal.mjs
+
+  weixin-offline:
+    name: Weixin full offline pre-release checks (no Cloudflare or Tencent calls)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_type == 'weixin-offline' && inputs.confirm_portal_write != true }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      worker: weixin-mcp-worker

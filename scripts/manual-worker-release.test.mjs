@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -353,6 +353,19 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /404\)/);
   assert.match(step, /attempt < max_attempts/);
   assert.match(step, /Unexpected unauthenticated MCP status/);
+});
+
+test("Weixin manual release probes its configured custom-domain MCP ingress", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const config = JSON.parse(readFileSync(new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  const start = workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials");
+  const end = workflow.indexOf("      - name: Register production HTTP MCP with existing One-MCP Portal", start);
+  assert.ok(start >= 0 && end > start);
+  const check = workflow.slice(start, end);
+  assert.equal(config.workers_dev, false);
+  assert.ok(check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
+  assert.ok(check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
+  assert.match(check, /401\|403\)/, "unauthenticated requests must remain denied");
 });
 
 test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
@@ -840,4 +853,61 @@ test("upstream existence check fails on incomplete or unavailable inventory", as
   const unavailable=async () => Response.json({success:false,result:null},{status:403});
   await assert.rejects(scriptExists(account,"openlist-tsworkers","token",unavailable),
     /inventory HTTP 403/);
+});
+
+
+test("worker release documentation stays aligned with the selected-Worker contract", async () => {
+  const { BOOTSTRAP_SECRETS } = await import("./bootstrap-worker-secrets.mjs");
+  const { WORKER_VARIABLES } = await import("./worker-release-variables.mjs");
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+openlist_portal_registration:/);
+  assert.ok(options, "missing worker release choice options");
+  const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-mcp-worker)$/gm)].map(m => m[1]).sort();
+  assert.deepEqual(selected, Object.keys(BOOTSTRAP_SECRETS).sort());
+  assert.deepEqual(selected, Object.keys(WORKER_VARIABLES).sort());
+
+  for (const path of ["../docs/MANUAL-WORKER-BOOTSTRAP.md",
+    "../docs/runtime-configuration.md", "../docs/mcp-shared-token-runbook.md",
+    "../docs/ingress-policy.md"]) {
+    const doc = readFileSync(new URL(path, import.meta.url), "utf8");
+    for (const worker of selected) assert.ok(doc.includes("`" + worker + "`"), path + " omits " + worker);
+  }
+  const bootstrap = readFileSync(new URL("../docs/MANUAL-WORKER-BOOTSTRAP.md", import.meta.url), "utf8");
+  for (const [worker, secrets] of Object.entries(BOOTSTRAP_SECRETS)) {
+    const row = bootstrap.split("\n").find(line => line.startsWith("| `" + worker + "` |"));
+    assert.ok(row, "missing Worker Environment row for " + worker);
+    for (const secret of secrets.filter(x => x !== "MCP_ACCESS_TOKEN"))
+      assert.ok(row.includes("`" + secret + "`"), worker + " docs omit " + secret);
+  }
+  const actions = readFileSync(new URL("../apps/github-actions-mcp-worker/README.md", import.meta.url), "utf8");
+  assert.match(actions, /"worker":"github-actions-mcp-worker","deploy_to_production":"true"/);
+  assert.doesNotMatch(actions, /"worker":"remote-control-mcp-worker"/);
+  const imaConfig = JSON.parse(readFileSync(new URL("../apps/ima-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  assert.ok(!imaConfig.secrets.required.includes("IMA_CLIENT_ID"));
+  for (const path of ["../apps/ima-mcp-worker/README.md",
+    "../apps/ima-mcp-worker/DEPLOY_CLOUDFLARE.md", "../apps/ima-mcp-worker/docs/mcp-portal.md"]) {
+    const doc = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.match(doc, /IMA_CLIENT_ID/);
+    assert.match(doc, /Variable/);
+    assert.doesNotMatch(doc, /Worker Secrets:.*IMA_CLIENT_ID/);
+  }
+  const ingress = readFileSync(new URL("../docs/ingress-policy.md", import.meta.url), "utf8");
+  for (const worker of ["email-mcp-worker", "workflow-mcp-worker"])
+    assert.match(ingress, new RegExp(worker));
+  assert.match(ingress, /workers_dev: false/);
+});
+
+test("Weixin production preflight requires private invocation logs, without relaxing other Workers", () => {
+  const path = new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url);
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(config.observability.logs.invocation_logs, false);
+  assert.equal(readConfiguration("weixin-mcp-worker", JSON.stringify(config)).name, "weixin-mcp-worker");
+  const logging = structuredClone(config);
+  logging.observability.logs.invocation_logs = true;
+  assert.throws(() => readConfiguration("weixin-mcp-worker", JSON.stringify(logging)),
+    /Source Invocation Logs setting differs from production/);
+  const wrongD1 = structuredClone(config);
+  wrongD1.d1_databases[0].database_id = "00000000-0000-0000-0000-000000000000";
+  assert.throws(() => readConfiguration("weixin-mcp-worker", JSON.stringify(wrongD1)),
+    /Weixin approved production D1 drift/);
 });

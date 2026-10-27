@@ -4,24 +4,24 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 
 ## Applications
 
-- [GitHub Actions MCP](apps/github-actions-mcp-worker/README.md) — repository-scoped GitHub Actions controls using only GitHub REST API (source only; not production deployed).
-
+- [GitHub Actions MCP](apps/github-actions-mcp-worker/README.md)
 - [Database MCP](apps/database-mcp-worker/README.md)
+- [Email MCP](apps/email-mcp-worker/README.md)
+- [HTTP MCP](apps/http-mcp-worker/README.md)
 - [IMA MCP](apps/ima-mcp-worker/README.md)
+- [OpenList MCP](apps/openlist-mcp-worker/README.md)
 - [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
+- [Remote Control MCP](docs/remote-control/README.md)
+- [SSH MCP](apps/ssh-mcp-worker/README.md)
+- [Workflow MCP](apps/workflow-mcp-worker/README.md)\n- [Weixin MCP](apps/weixin-mcp-worker/README.md)
 
 Each app owns its upstream domain, credentials, runtime, tests, and deployment. Source changes do not automatically delete or update any deployed Cloudflare Worker or MCP Portal connection.
 
 ## Ingress policy
 
-Each maintained MCP Worker uses its Cloudflare `workers.dev` origin:
+The maintained Workers do **not** share a universal hostname: Email and Workflow use custom domains with `workers_dev: false`; Remote Control has `workers_dev: true` plus a custom domain; other Workers use `workers.dev`. All disable preview URLs. Obtain the actual Portal target from the Worker's configuration, not from its name.
 
-- `workers_dev: true`
-- `preview_urls: false`
-- no custom domain or zone route is required for MCP ingress
-- the MCP Portal points to `https://<worker-name>.<workers-subdomain>.workers.dev/mcp`
-
-The maintained Workers use the runtime secret name `MCP_ACCESS_TOKEN`; for the single-user deployment the token value is shared across these three Worker bindings. Upstream credentials remain independent. See [ingress policy](docs/ingress-policy.md), [runtime configuration](docs/runtime-configuration.md), and [token runbook](docs/mcp-shared-token-runbook.md).
+Each Worker requires runtime Secret `MCP_ACCESS_TOKEN`. The GitHub Repository Secret supplies a release-time default; a same-name Worker Environment Secret may override it. Matching Secret names never prove matching deployed values. See [ingress policy](docs/ingress-policy.md), [runtime configuration](docs/runtime-configuration.md), [manual bootstrap](docs/MANUAL-WORKER-BOOTSTRAP.md) and [token runbook](docs/mcp-shared-token-runbook.md).
 
 ## MCP smoke runner
 
@@ -44,12 +44,4 @@ configured origin but never grant MCP permissions, expose device data or
 accept pairing approvals. `/mcp` and signed Agent/WebSocket endpoints retain
 their separate authentication.
 
-This is source-level implementation, **not evidence of production deployment**.
-Linux continues to use a verified immutable Agent Release pin. The new Windows
-response is intentionally **503** until the public Agent has been built,
-reviewed, tested and published as a new immutable Windows Release, then both
-its source-script SHA-256 and official release ZIP digest have been
-independently pinned in this Worker. `REVIEWED_WINDOWS_INSTALL_PIN = null`
-is a deliberate release gate, not a missing setting to bypass in production.
-Publishing a Release, changing Cloudflare and upgrading paired devices require
-separate authorization and the normal GitHub Actions gates.
+This source provides reviewed immutable Agent installer pins for Linux and Windows; the Windows route now has a non-null `REVIEWED_WINDOWS_INSTALL_PIN` with commit, script SHA-256 and release-asset SHA-256 checks. These source bindings do **not** independently prove which version is live or that an installation succeeded. Publishing a Release, changing Cloudflare and upgrading paired devices remain separately authorized operations with the normal GitHub Actions gates.

@@ -1,29 +1,32 @@
 # MCP Worker ingress policy
 
-This document defines the shared ingress policy for MCP Workers published through the One-MCP Portal. The endpoints below are a maintained subset, **not** a complete production inventory.
+This records the maintained Wrangler ingress configuration, **not** proof of deployment or the exact One-MCP Portal inventory. The actual Cloudflare deployment and Portal registration must be verified independently.
 
-## Unified policy
+## Ingress contract
 
-Each MCP Worker uses its Cloudflare `workers.dev` origin:
+- All maintained Workers use runtime Secret name `MCP_ACCESS_TOKEN` for MCP entry authentication. Upstream credentials remain separate.
+- All have `preview_urls: false`.
+- `workers_dev` is **not uniform**: Email, Workflow and Weixin have `workers_dev: false`; Remote Control declares both `workers_dev: true` and the `rca.lirtual.dpdns.org` custom domain.
+- The `workers.dev` subdomain is `aiyaya.workers.dev` for Workers where enabled.
+- Email's separate `email.lirtual.dpdns.org` custom domain is for the Access-protected owner Setup page, not its MCP URL. Weixin likewise separates the Access owner Setup custom domain `weixin.lirtual.dpdns.org` from Bearer-protected MCP ingress `weixin-mcp.lirtual.dpdns.org`; both disable workers.dev.
 
-- `workers_dev: true`
-- `preview_urls: false`
-- no custom domain or zone route for MCP ingress
-- the MCP Portal points to the Worker's `workers.dev` `/mcp` endpoint
-- each Worker binds the runtime Secret named `MCP_ACCESS_TOKEN`
+## Configured MCP ingress endpoints
 
-The Cloudflare account workers.dev subdomain is `aiyaya.workers.dev`.
+| App | Worker | Wrangler route | Configured MCP URL |
+| --- | --- | --- | --- |
+| IMA | `ima-mcp-worker` | workers.dev | `https://ima-mcp-worker.aiyaya.workers.dev/mcp` |
+| Raindrop | `raindrop-mcp-worker` | workers.dev | `https://raindrop-mcp-worker.aiyaya.workers.dev/mcp` |
+| Database | `database-mcp-worker` | workers.dev | `https://database-mcp-worker.aiyaya.workers.dev/mcp` |
+| SSH | `ssh-mcp-worker` | workers.dev | `https://ssh-mcp-worker.aiyaya.workers.dev/mcp` |
+| GitHub Actions | `github-actions-mcp-worker` | workers.dev | `https://github-actions-mcp-worker.aiyaya.workers.dev/mcp` |
+| HTTP | `http-mcp-worker` | workers.dev | `https://http-mcp-worker.aiyaya.workers.dev/mcp` |
+| OpenList | `openlist-mcp-worker` | workers.dev | `https://openlist-mcp-worker.aiyaya.workers.dev/mcp` |
+| Remote Control | `remote-control-mcp-worker` | workers.dev + custom domain | `https://rca.lirtual.dpdns.org/mcp` |
+| Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
+| Email | `email-mcp-worker` | custom domains only | `https://email-mcp.lirtual.dpdns.org/mcp` |
+| Weixin | `weixin-mcp-worker` | custom domains only | `https://weixin-mcp.lirtual.dpdns.org/mcp` |
 
-## Target endpoints
-
-| App | Worker | MCP origin |
-| --- | --- | --- |
-| IMA | `ima-mcp-worker` | `https://ima-mcp-worker.aiyaya.workers.dev/mcp` |
-| Raindrop | `raindrop-mcp-worker` | `https://raindrop-mcp-worker.aiyaya.workers.dev/mcp` |
-| Database | `database-mcp-worker` | `https://database-mcp-worker.aiyaya.workers.dev/mcp` |
-| OpenList | `openlist-mcp-worker` | `https://openlist-mcp-worker.aiyaya.workers.dev/mcp` |
-
-An endpoint listed here is not evidence of a successful production deployment. Deployment, Portal discovery, representative safe tool execution, and logs must be verified separately.
+These are configured ingress addresses, not evidence of a successful production release, a live Portal mapping or an authenticated ChatGPT tool call. Verify every release and actual Portal target independently.
 
 ## Cutover rule
 

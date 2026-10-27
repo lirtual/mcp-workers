@@ -64,7 +64,7 @@ test('Workflow MCP Workflow is CI-checked and may only be manually released from
   assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
 });
 
-test('Email MCP is CI-checked but cannot be selected for production until Spec #279 acceptance', async () => {
+test('Email MCP is CI-checked and only manually releasable from main', async () => {
   assert.deepEqual(selectAffectedApps(['apps/email-mcp-worker/src/index.ts']), ['email-mcp-worker']);
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('email-mcp-worker'));
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
@@ -81,4 +81,18 @@ test('Email MCP is CI-checked but cannot be selected for production until Spec #
 test('HTTP MCP is CI-selected',()=>{
   assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
+});
+
+test('Weixin production release remains main-only and explicitly selected', async () => {
+  assert.deepEqual(selectAffectedApps(['apps/weixin-mcp-worker/poc/protocol.mjs']), ['weixin-mcp-worker']);
+  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('weixin-mcp-worker'));
+  const run=(ref)=>execFileSync(process.execPath, ['scripts/select-affected-apps.mjs'], {
+    cwd: new URL('../', import.meta.url),
+    env: { ...process.env, EVENT_NAME: 'workflow_dispatch', MANUAL_WORKER: 'weixin-mcp-worker', MANUAL_REF: ref },
+    encoding: 'utf8'
+  });
+  const release=await readFile(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  assert.ok(release.includes('\n          - weixin-mcp-worker\n'));
+  assert.match(run('refs/heads/main'),/Selected applications: weixin-mcp-worker/);
+  assert.throws(()=>run('refs/heads/draft'),/Unsupported manual Worker selection/);
 });

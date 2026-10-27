@@ -123,3 +123,72 @@ test("stale, revoked, malformed or oversized device info is rejected without cha
   assert.equal(revoked.closeCode, 1008);
   assert.equal((h.rows.get("device:" + h.activeId) as {device_info?: unknown}).device_info, undefined);
 });
+
+
+test("upgrade capability is accepted only from signed native Windows x64 device info and is not public", async () => {
+  const h = harness();
+  const reported = JSON.stringify({ ...JSON.parse(deviceInfo),upgrade_protocol:"owner-one-shot-v1" });
+  assert.equal(await handleDeviceInfoMessage(h.state,h.live as unknown as WebSocket,reported),true);
+  const stored = h.rows.get("device:"+h.activeId) as {device_info:{upgrade_protocol:string}};
+  assert.equal(stored.device_info.upgrade_protocol,"owner-one-shot-v1");
+  const listed = (await listApprovedDevices(h.state)).body as Array<Record<string,any>>;
+  assert.equal(listed.find(d=>d.device_id===h.activeId)!.device_info.upgrade_protocol,undefined,
+    "private protocol capability must not be public metadata");
+  for (const changes of [
+    { upgrade_protocol:"invented" },
+    { os:"linux", environment:"container", upgrade_protocol:"owner-one-shot-v1" },
+    { environment:"wsl2",upgrade_protocol:"owner-one-shot-v1" },
+    { arch:"arm64",upgrade_protocol:"owner-one-shot-v1" },
+  ]) {
+    const isolated=h.makeSocket(h.otherId,"epoch-other");
+    const raw=JSON.stringify({...JSON.parse(deviceInfo),...changes});
+    assert.equal(await handleDeviceInfoMessage(h.state,isolated as unknown as WebSocket,raw),true);
+    assert.equal(isolated.closeCode,1008);
+  }
+});
+
+test("signed Linux native or WSL2 x64/arm64 protocol is accepted without granting an upgrade", async () => {
+  for (const environment of ["native","wsl2"] as const) {
+    for (const arch of ["x64","arm64"] as const) {
+      const h=harness();
+      const raw=JSON.stringify({...JSON.parse(deviceInfo),os:"linux",
+        arch,environment,agent_version:"v0.1.23",
+        upgrade_protocol:"owner-one-shot-v1"});
+      assert.equal(await handleDeviceInfoMessage(h.state,h.live as unknown as WebSocket,raw),true);
+      assert.equal(h.live.closeCode,0,"a signed supported Linux runtime is eligible to report readiness");
+      const saved=h.rows.get("device:"+h.activeId) as {device_info:Record<string,unknown>};
+      assert.equal(saved.device_info.os,"linux");
+      assert.equal(saved.device_info.environment,environment);
+      assert.equal(saved.device_info.arch,arch);
+      assert.equal(saved.device_info.upgrade_protocol,"owner-one-shot-v1");
+      const listing=(await listApprovedDevices(h.state)).body as Array<Record<string,any>>;
+      const publicInfo=listing.find(d=>d.device_id===h.activeId)!.device_info;
+      assert.equal(publicInfo.upgrade_protocol,undefined,
+        "readiness is private signed metadata, never a new public permission");
+    }
+  }
+});
+test("malformed Linux readiness, unsupported platforms and untrusted sessions are denied",async()=>{
+  const valid={...JSON.parse(deviceInfo),os:"linux",arch:"x64",
+    environment:"native",agent_version:"v0.1.23",upgrade_protocol:"owner-one-shot-v1"};
+  for (const changes of [
+    {os:"darwin"},{os:"windows",environment:"wsl2"},
+    {arch:"ia32"},{arch:"riscv64"},{environment:"container"},
+    {environment:"wsl1"},{upgrade_protocol:"owner-other-v1"},
+  ]) {
+    const h=harness();
+    const raw=JSON.stringify({...valid,...changes});
+    assert.equal(await handleDeviceInfoMessage(h.state,h.live as unknown as WebSocket,raw),true);
+    assert.equal(h.live.closeCode,1008,
+      "invalid Linux readiness must close the signed socket rather than persist");
+    assert.equal((h.rows.get("device:"+h.activeId) as {device_info?:unknown}).device_info,
+      undefined);
+  }
+  const h=harness();
+  const stale=h.makeSocket(h.activeId,"wrong-old-epoch");
+  assert.equal(await handleDeviceInfoMessage(h.state,stale as unknown as WebSocket,
+    JSON.stringify(valid)),true);
+  assert.equal(stale.closeCode,1008,"Linux protocol is no substitute for signed fresh epoch");
+  assert.equal((h.rows.get("device:"+h.activeId) as {device_info?:unknown}).device_info,
+    undefined);
+});

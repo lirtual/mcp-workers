@@ -28,6 +28,30 @@ An independent, fail-closed MCP adapter to the existing OpenList-Worker using a 
 
 No public OpenList base URL, separate database, Cron, or generic HTTP proxy.
 
+## Upstream KV deployment safety
+
+The upstream `openlist-tsworkers` is a separate, existing production Worker.
+Its KV binding is **not** managed by the MCP adapter. As verified in October
+2026, both the official `OpenListTeam/OpenList-Worker` and the exact-sync
+read-only Fork `lirtual/OpenList-Worker` leave the example
+`kv_namespaces` setting **commented out** in `wrangler.jsonc`. A Wrangler
+deployment using that effective config can remove an existing production
+KV binding even though the KV namespace itself still exists.
+
+Do **not** deploy the upstream with an unchecked configuration or assume a
+dashboard binding survives a Wrangler upload. Preserve the **existing** `KV`
+namespace, `openlist-tsworkers-kv` (`298dbc9310f948c796522911d0405379`);
+never create a replacement empty namespace as an automatic recovery step.
+Any upstream publishing changes require separate authorization and an
+upstream-approved configuration strategy; this project must not modify or
+privately patch its Fork.
+
+The manual OpenList MCP release checks the active Cloudflare Worker version,
+existing `KV` namespace identity, `DB_DRIVER=auto`, and public storage status
+immediately before Wrangler publication. Production functionality is verified
+directly through the existing ChatGPT OpenList MCP; no scheduled acceptance
+or automatic storage repair is configured.
+
 ## Exposed tools
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,

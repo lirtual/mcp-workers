@@ -122,6 +122,18 @@ export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
   assetSha256: "0ac48c46e2d642523d0ace756306fa33bc43cabb7d104e732425046bdb24bbd3",
 });
 
+/** Maintainer-reviewed immutable Windows upgrade target. Never accept a caller
+ * supplied Release URL/commit/checksum. Distinct from the installation pin. */
+export const REVIEWED_WINDOWS_UPGRADE_PIN = Object.freeze({
+  tag: "v0.1.33",
+  commit: "43a1a423a08be0379f5f8c6899d86a053248112e",
+  windows_asset_sha256: "17503a3e0af4740a6e83a68e06307f5eae69f57fb41d18fc95658b836d649c61",
+});
+export function reviewedWindowsUpgradeTarget(version: unknown) {
+  return version === REVIEWED_WINDOWS_UPGRADE_PIN.tag
+    ? REVIEWED_WINDOWS_UPGRADE_PIN : null;
+}
+
 function validWindowsPin(pin: WindowsInstallPin): boolean {
   return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
     /^[a-f0-9]{40}$/.test(pin.commit) &&

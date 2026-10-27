@@ -7,6 +7,7 @@ const fixtures = {
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
   "email-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") },
+  "weixin-mcp-worker": { MCP_ACCESS_TOKEN: "portal", WEIXIN_ENCRYPTION_KEY: Buffer.alloc(32, 13).toString("base64") },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
@@ -129,4 +130,21 @@ test("HTTP optional managed credentials are staged only when configured",()=>{
       {origin:"https://api.example.org",pathPrefix:"/v1/items",headers:{"X-API-Key":"b"}}])
   ]) assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",
     {...required,HTTP_CREDENTIALS_JSON:invalid}),/Invalid/);
+});
+
+test("Weixin production secret set is pinned and 32-byte AES key is mandatory",()=>{
+  const good=fixtures["weixin-mcp-worker"];
+  assert.deepEqual(BOOTSTRAP_SECRETS["weixin-mcp-worker"],
+    ["MCP_ACCESS_TOKEN","WEIXIN_ENCRYPTION_KEY"]);
+  assert.deepEqual(collectBootstrapSecrets("weixin-mcp-worker",good),good);
+  for(const key of ["MCP_ACCESS_TOKEN","WEIXIN_ENCRYPTION_KEY"]){
+    assert.throws(()=>collectBootstrapSecrets("weixin-mcp-worker",{...good,[key]:""}),new RegExp(key));
+  }
+  for(const key of ["wrong",Buffer.alloc(31).toString("base64"),
+    Buffer.alloc(32).toString("base64url")]){
+    assert.throws(()=>collectBootstrapSecrets("weixin-mcp-worker",
+      {...good,WEIXIN_ENCRYPTION_KEY:key}),/WEIXIN_ENCRYPTION_KEY/);
+  }
+  assert.deepEqual(collectBootstrapSecrets("weixin-mcp-worker",
+    {...good,UNREVIEWED_SECRET:"not-forwarded"}),good);
 });

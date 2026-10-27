@@ -1,22 +1,30 @@
-# Shared MCP entry token: operator runbook
+# MCP entry token rotation: operator runbook
 
-The three maintained MCP Workers authenticate MCP/Portal callers with runtime Secret name `MCP_ACCESS_TOKEN`. In this single-user deployment the **value** is intentionally shared; upstream application credentials remain separate.
+Every maintained Worker uses runtime Secret **name** `MCP_ACCESS_TOKEN` for MCP/Portal calls. The shared GitHub Repository Secret is the release-time default; any same-name Worker Environment Secret overrides it. Identical names do **not** prove the deployed values are equal or that Portal clients are synchronized. Business credentials remain independent.
 
-| Worker | MCP entry Secret | Independent credentials |
+| Worker | MCP entry Secret | Other Environment Secrets |
 | --- | --- | --- |
-| `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` (Secret), `IMA_CLIENT_ID` (Variable) |
 | `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_CONFIG` |
+| `email-mcp-worker` | `MCP_ACCESS_TOKEN` | `MAIL_ENCRYPTION_KEY` |
+| `weixin-mcp-worker` | `MCP_ACCESS_TOKEN` | `WEIXIN_ENCRYPTION_KEY` |
+| `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |
+| `ssh-mcp-worker` | `MCP_ACCESS_TOKEN` | `ENCRYPTION_KEY` |
+| `remote-control-mcp-worker` | `MCP_ACCESS_TOKEN` | 无 |
+| `github-actions-mcp-worker` | `MCP_ACCESS_TOKEN` | `ACTIONS_GITHUB_DISPATCH_TOKENS` |
+| `http-mcp-worker` | `MCP_ACCESS_TOKEN` | `HTTP_CREDENTIALS_JSON` |
+| `openlist-mcp-worker` | `MCP_ACCESS_TOKEN` | `OPENLIST_API_TOKEN` |
+| `workflow-mcp-worker` | `MCP_ACCESS_TOKEN` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` |
 
-Live Secret values must never be read, written, printed, or compared by the repository. Matching Secret names do not prove matching values.
+`HTTP_CREDENTIALS_JSON` is optional. Additional required **non-secret** Variables are Email's `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`; IMA's `IMA_CLIENT_ID`; OpenList's `OPENLIST_ALLOWED_ROOTS`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
 
 ## Rotation and verification
 
-1. Inventory the three deployed Workers and their MCP Portal/client connections.
-2. Confirm required Secret **names and presence only**. Preserve independent upstream credentials.
-3. Generate a replacement in an operator-controlled secret store; never store it in Git or issue comments.
-4. Apply the shared entry-token value to each Worker and update every affected client. This cutover is non-atomic.
-5. Verify authorized MCP discovery, unauthorized `/mcp` denial, and the public health endpoint for each deployed Worker.
-6. If verification fails, stop and restore the previous per-Worker value and client configuration.
+1. Inventory all **eleven** maintained Workers above, their actual Cloudflare deployments, existing Environment-level overrides and the affected One-MCP server/client connections. Check for any extra legacy live service outside the source tree before defining the rotation scope.
+2. Verify Secret **name/presence/type**, not plaintext values; preserve unrelated upstream credentials and independently scoped Worker tokens.
+3. Generate the replacement in an operator-controlled secret store and update the appropriate Repository or same-name Environment Secret without exposing its value in Git, Issues or logs.
+4. Coordinate a **non-atomic** cutover: manually release each affected Worker on trusted current `main` with explicit per-Worker approval and update its corresponding Portal/client credential. A GitHub Secret edit alone does not deploy or rotate live credentials.
+5. For each affected Worker verify its active version, actual MCP ingress, denied anonymous access, authenticated Portal discovery and one explicitly safe read-only call. A health endpoint or source test alone is insufficient.
+6. On failure stop and use operator-held prior values and the reviewed Worker-specific release/Portal procedure to restore service. Do not assume the operation was atomic, fetch live Secret plaintext or automatically replay uncertain writes.
 
-A source-tree deletion does **not** remove a Cloudflare Worker, rotate its Secret, or disconnect an existing MCP Portal client. Decommissioning a live Worker is a separately authorized operation.
+Source deletion does not retire a Cloudflare Worker, remove a Portal client or expire a deployed token; retirement is separately authorized.
