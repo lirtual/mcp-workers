@@ -47,6 +47,9 @@ async function boundedJson(response, cap = 32768) {
 
 export async function runOpenListDriverAcceptance(env, transport = fetch) {
   check(env.OPENLIST_DRIVER_E2E_APPROVED === 'true', 'not_approved');
+  check(!env.OPENLIST_NATIVE_E2E_APPROVED ||
+    ['true', 'false'].includes(env.OPENLIST_NATIVE_E2E_APPROVED),
+    'native_approval_invalid');
   // Match the existing release's authenticated MCP smoke and secret-staging
   // contract: nonempty, no leading/trailing whitespace, no CR/LF. Arbitrary
   // minimum-length rules must not be added only to an acceptance fixture.
@@ -153,7 +156,94 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
   const denied = await mcp('openlist_create_folder', {path:outside}, true);
   check(denied.status === 'not_executed' && denied.code === 'OUT_OF_SCOPE',
     'out_of_scope_write_not_denied');
-  return {folder:dirname, tested:['mkdir','get','list','search','read_text','scope_denial']};
+
+  const tested = ['mkdir','get','list','search','read_text','scope_denial'];
+  if (env.OPENLIST_NATIVE_E2E_APPROVED === 'true') {
+    // Uses only paths generated for this run, never existing user or retained
+    // test data. The selected main must already be manually deployed.
+    const native = `${folder}/native-${id}-${attempt}.txt`;
+    const destinationDir = `${folder}/native-copies`;
+    const moved = `${destinationDir}/native-${id}-${attempt}.txt`;
+    const renamed = `${destinationDir}/renamed-${id}-${attempt}.txt`;
+    const nativeContent = `OpenList native MCP E2E ${id}-${attempt}\n`;
+    const upload = await mcp('openlist_upload_small',
+      {path:native,content:nativeContent,encoding:'utf8'});
+    check(upload.target === native && upload.observed_state?.size ===
+      new TextEncoder().encode(nativeContent).byteLength &&
+      upload.observed_state?.native_may_overwrite === true, 'native_upload');
+    const dest = await mcp('openlist_create_folder',{path:destinationDir});
+    check(dest.target === destinationDir && dest.observed_state?.is_dir === true,
+      'native_dest_create');
+    const emptyDest = (await mcp('openlist_list_files',
+      {path:destinationDir,page:1,per_page:100})).observed_state;
+    check(emptyDest?.total === 0 && Array.isArray(emptyDest.entries) &&
+      emptyDest.entries.length === 0, 'native_dest_not_empty');
+    const copied = await mcp('openlist_copy',{path:native,destination_dir:destinationDir});
+    check(copied.observed_state?.destination === moved &&
+      copied.observed_state?.native_may_overwrite === true, 'native_copy');
+    const renamedResult = await mcp('openlist_rename',
+      {path:moved,new_name:`renamed-${id}-${attempt}.txt`});
+    check(renamedResult.observed_state?.destination === renamed, 'native_rename');
+    const movedResult = await mcp('openlist_move',
+      {path:native,destination_dir:destinationDir});
+    check(movedResult.observed_state?.destination === moved &&
+      movedResult.observed_state?.native_may_overwrite === true, 'native_move');
+    for (const target of [moved,renamed]) {
+      const contentResult = (await mcp('openlist_read_text',{path:target})).observed_state;
+      check(contentResult?.path === target && contentResult.text === nativeContent,
+        'native_file_mismatch');
+    }
+    const signed = (await mcp('openlist_download_link',{path:moved})).observed_state;
+    // The signed URL is bearer-sensitive; never write it to logs, artifacts
+    // or the returned summary. Existing link_expiration=0 is not short-lived.
+    let parsed;
+    try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
+    check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
+      parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
+      typeof parsed.searchParams.get('sign') === 'string' &&
+      parsed.searchParams.get('sign').length > 0 &&
+      typeof signed.permanent === 'boolean' &&
+      (signed.permanent ? signed.expires_at === null :
+        typeof signed.expires_at === 'string'), 'native_link_invalid');
+    // Verify the actual signed public route with a tiny exact synthetic file,
+    // not just the URL's appearance. No credential is forwarded or logged.
+    let publicResponse;
+    try {
+      publicResponse = await transport(new Request(signed.url,{
+        method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
+        headers:{ accept:'text/plain' },
+      }));
+    } catch { stop('native_link_transport'); }
+    check(publicResponse.status === 200 && !publicResponse.redirected &&
+      !publicResponse.headers.has('location'), 'native_link_status');
+    let publicBytes;
+    try {
+      const reader=publicResponse.body?.getReader();
+      check(reader,'native_link_body');
+      const chunks=[];let total=0;
+      for (;;) {
+        const {done,value}=await reader.read();
+        if (done) break;
+        total+=value.byteLength;
+        check(total<=4096,'native_link_oversize');
+        chunks.push(value);
+      }
+      publicBytes=new Uint8Array(total);let offset=0;
+      for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
+    } catch {stop('native_link_body');}
+    let publicText;
+    try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
+    catch { stop('native_link_invalid_utf8'); }
+    check(publicText===nativeContent,'native_link_content');
+    const forbiddenNative = await mcp('openlist_move',{
+      path:'/__openlist_e2e_prohibited/file.txt',destination_dir:destinationDir},true);
+    check(forbiddenNative.status === 'not_executed' &&
+      forbiddenNative.code === 'OUT_OF_SCOPE','native_scope_denial');
+    tested.push('upload_small','copy','rename','move','read_native_text',
+      'signed_download_link','native_scope_denial');
+  }
+  return {folder:dirname, tested};
+
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -2,15 +2,19 @@
 
 ## Implementation status (2026-10-27)
 
-Seven tools are registered in source: the initial six operations plus the
-read-only explicit-ID `openlist_share_get`, which passed real production
+Thirteen tools are registered on this Draft branch: the seven previously deployed
+operations plus `openlist_share_disable`, `openlist_download_link`,
+`openlist_upload_small`, `openlist_rename`, `openlist_copy`, and `openlist_move` using the existing OpenList REST
+endpoint. **Production continues to expose seven tools** until separately
+authorized merge, manual release and real acceptance. The original
+read-only explicit-ID `openlist_share_get` passed real production
 acceptance after the controlled share test recorded in
 [Issue #309](https://github.com/lirtual/mcp-workers/issues/309).
 The one-time `openlist_share_create` used for that test was **retired from
 the Worker, Portal inventory, and manual acceptance entrypoint** after
 successful controlled production testing ([PR #369](https://github.com/lirtual/mcp-workers/pull/369)).
-It must not be callable in future releases. The other eleven candidates
-remain unregistered and gated; this adapter is not a general-purpose OpenList
+It must not be callable in future releases. The other five candidates
+remain unregistered and gated on this Draft branch; this adapter is not a general-purpose OpenList
 API proxy. Verify the deployed inventory separately from this source document.
 
 The original Koofr disposable E2E folders, synthetic test file, and expired
@@ -57,7 +61,9 @@ or automatic storage repair is configured.
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
-`openlist_create_folder` (**seven registered tools in source**).
+`openlist_download_link`, `openlist_share_disable`, `openlist_rename`,
+`openlist_copy`, `openlist_move`, `openlist_upload_small`,
+`openlist_create_folder` (**thirteen on this Draft; seven deployed**).
 
 `openlist_share_get` accepts one explicit ID and requires **every** file
 in the share to remain within allowed roots before returning only allowlisted,
@@ -70,8 +76,8 @@ were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/r
 50-byte synthetic share with a random hidden password, one-hour expiration
 and one access. The live create/get proof succeeded; the tool and temporary
 acceptance code have since been removed. The previously created share record
-may remain expired upstream, but cleanup is out of scope. The eleven remaining
-candidates stay disabled pending real driver/conflict, scope, approval, and
+may remain expired upstream, but cleanup is out of scope. The five remaining
+candidates stay disabled on this Draft branch pending real driver/conflict, scope, approval, and
 share-lifecycle safety evidence. Do not infer physical storage confinement from
 the admin-equivalent upstream token. Every future production release requires
 its own authorized checks.
@@ -99,15 +105,71 @@ does not establish safe conflict behavior. This source audit is not evidence
 that every deployed driver revision or Koofr backend honors a proposed
 conditional request.
 
-**Decision:** keep `openlist_upload_small`, `openlist_rename`,
-`openlist_copy`, and `openlist_move` unregistered. To reconsider them,
-first obtain a verified driver-enforced no-overwrite contract (including
-real Koofr collision and concurrency tests and appropriate conditional
-semantics) or explicitly revise Spec #309's trusted-human-overwrite policy.
-Retain scope, single-target, cross-storage, uncertain-dispatch and no-retry
-gates. Do not add a proxy, database or broad REST escape hatch to bypass this
-restriction. The contract test also checks that direct invocation of these
-unregistered tools does not dispatch a Service Binding request.
+**Updated Owner decision (Spec #309):** implement all candidate MCP tools
+against the upstream API as actually provided; accept its possible overwrite,
+non-atomic and backend-driver differences instead of waiting for an upstream
+conditional/no-overwrite feature. Upload, rename, copy and move are now registered in this
+unmerged Draft against their native REST routes, with input/scope and unknown
+write checks. Production stays unchanged until separately authorized.
+The driver-specific real acceptance remains outstanding, but an upstream change
+is no longer a precondition. Preserve single-target,
+fixed upstream route, explicit overwrite disclosure, unknown-write/no-retry and
+basic authorization gates. Never add a second data store or patch the Fork.
+
+
+A scoped `disableShare(id)` adapter is implemented and registered on this
+**unmerged Draft branch**: it looks up the exact ID, verifies every referenced
+file is within scope, skips already-disabled shares, dispatches at most one
+fixed upstream disable request, and independently verifies the disabled state
+and unchanged sanitized identity. A missing or changed post-write record is
+`unknown`, never automatic success or a reason to retry. This is **not**
+atomic protection against concurrent upstream share edits. The Owner has
+accepted using the existing upstream behavior without an atomic update gate.
+Before separately authorized production release, verify the current driver,
+MCP inventory and share status using a separately approved test share. No live
+share was mutated by this code-only Draft.
+
+
+## Native signed download URL (Draft; not yet production)
+
+The existing Cloudflare Route `openlist.lirtual.dpdns.org/*` was verified to
+point at `openlist-tsworkers`, and anonymous GET of public settings returned
+HTTP 200. `openlist_download_link` uses only `POST /api/fs/get` through the
+existing internal Service Binding, validates exact file identity and the
+TS-Worker HMAC signature shape, then constructs a URL on this fixed public
+origin. It does **not** forward upstream `raw_url`, provider-host URLs,
+credentials, headers or arbitrary redirects. No new database, API endpoint or
+Fork change is required.
+
+This adapter honors the **native** OpenList expiration setting. At the observed
+`sign_all=true` and `link_expiration=0`, the signed link is **permanent**;
+the MCP result marks `permanent:true`, `expires_at:null` and warns that
+anyone with this bearer URL can access the file. No silent conversion to a
+short-lived credential is claimed. Future production acceptance must verify
+one explicitly authorized synthetic signed link through the public route,
+without publishing its signature to CI logs. Code and CI alone cannot
+prove the deployed configuration or driver response.
+
+
+## Native file operations on the unmerged Draft
+
+`openlist_rename` maps to `POST /api/fs/rename` for a single canonical
+source and new name in the same parent. `openlist_copy` and `openlist_move`
+map to `POST /api/fs/copy` and `POST /api/fs/move`, passing exactly one
+name and a scoped source/destination folder. They do not introduce a new
+conditional API, attempt silent rollback, or require a Fork patch.
+
+`openlist_upload_small` uses the existing `PUT /api/fs/put` with a strict
+`File-Path` header, UTF-8 or canonical Base64 bytes, and a 1 MiB cap.
+It verifies the destination's file identity and size afterward but never
+claims byte identity or atomic no-overwrite. The existing driver can
+overwrite an existing destination. The returned
+`native_may_overwrite:true` and warnings are intentional. A successful
+readback only proves that the destination was observed; it does not prove
+transactional integrity or the absence of a concurrent change. After a
+possibly dispatched write, any uncertainty returns `unknown` and **must not**
+be automatically retried. A real Koofr fixture acceptance is still separate
+from code CI, and normal user files are never modified as test data.
 
 ## Verification
 
@@ -204,3 +266,73 @@ A passing workflow establishes driver E2E evidence only. Independent
 approval and ChatGPT Portal acceptance are still required before linking the
 Worker to One-MCP; a green acceptance run does not automatically release,
 register, enable gated tools or close Issue #309.
+
+## Remaining five native API adapters (unregistered)
+
+The Draft also implements internal `createShare`, `updateShare`, `enableShare`,
+`revokeShare` and `deleteFile` methods against existing OpenList REST APIs.
+A bounded create operation generates one random ID and one one-time share password,
+limits expiry/accesses, validates every scoped file and checks the newly created
+record. Updates allow only expiry and access limits. Enable/revoke require an
+exact scoped share ID; revoke deletes only share metadata. Delete accepts one
+in-scope **file**, never a directory. Post-write outcomes are independently
+observed; uncertain effects are **never retried**.
+
+**None of these five are registered as MCP tools** in this Draft: the spec requires
+trusted client human approval for external sharing and irreversible deletion,
+not a model-supplied boolean. CI tests the internal adapters and confirms forged
+MCP `tools/call` messages cannot dispatch these actions. No real share or file
+is mutated in offline acceptance. This does not require modifying the Fork.
+
+## Portal registration inventory gate for the 13-tool Draft
+
+The existing `scripts/register-openlist-portal.mjs` and its offline regression
+contract now require exactly the thirteen MCP tools registered by this Draft,
+not the seven deployed on current production. This keeps the existing
+fail-closed Portal inventory check: a stale 7-tool deployment or an unexpected
+extra destructive tool **fails before changing Portal mappings**. The five
+internal-only share/delete adapters remain absent from this inventory.
+
+This change **does not** run registration, release, or live testing. A separately
+authorized release must first establish the exact active Worker version and
+real driver results; only a later authorized Portal operation can expose the
+expanded tool set. The original production Worker and Portal retain their
+current seven tools until then.
+
+## Expanded native API driver acceptance (manual only)
+
+The existing `OpenList Driver Acceptance` workflow adds a **default-off**
+`confirm_native_tool_tests` switch. It is effective only when the existing
+`confirm_disposable_write=true` is independently approved, the run is on
+current `main`, and the deployed Worker already contains the candidate tools.
+No new workflow, environment, credentials or automatic release is introduced.
+
+The enhanced path uses **one fresh, approved synthetic Koofr test folder**
+with exact run-scoped children, and exercises MCP `upload_small`, `copy`,
+`rename`, `move`, small text readback, signed URL construction **and a real anonymous HTTPS
+GET of its exact synthetic bytes** (no redirects), plus a scope-denial case. The existing default path is unchanged. The test will
+leave its synthetic files for separately approved cleanup, never overwrite
+normal user paths or mutate retained prior runs, and does not print the
+sensitive signed URL. This step **does not** create, disable or revoke
+shares, or delete files: those operations require separate authorization.
+Driver acceptance cannot run against an unmerged PR without production
+publication; it must not be marked Pass based on offline tests alone.
+
+## Manual acceptance approval-combination gate
+
+The existing OpenList acceptance workflow now runs a small, **secret-free**
+`selection-gate` before its driver or Portal jobs. It requires trusted
+`main` and exactly one authorized mode: disposable fixture write (optionally
+with native adapter tests) **or** Portal-only registration. Missing approval,
+conflicting choices, or selection of native tests without fixture-write
+approval **fails the workflow**, rather than silently skipping every job
+and producing a misleading green result. This does not deploy or publish.
+
+## Native rename and move readback improvement
+
+A destination path may already exist, so verifying its presence after a nominal
+upstream success does not prove that a rename or move occurred. The MCP adapter
+now additionally observes **absence of the old source path** for rename/move;
+if either check cannot be established the result is `unknown`, never a false
+success and never an automatic retry. Copy intentionally keeps its source.
+This is an MCP post-condition check, **not** a new upstream atomic primitive.

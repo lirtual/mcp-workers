@@ -28,11 +28,21 @@ const env = {
   CLOUDFLARE_API_TOKEN:'synthetic-cloudflare-token',
   MCP_ACCESS_TOKEN:'synthetic-worker-bearer',
 };
-test('OpenList Portal is attached only after verified exact 7-tool inventory and preserves mappings', async () => {
+test('OpenList Portal is attached only after verified exact 13-tool inventory and preserves mappings', async () => {
   assert.deepEqual(OPENLIST_TOOLS, [
-    'openlist_capabilities', 'openlist_create_folder', 'openlist_get_file',
-    'openlist_list_files', 'openlist_read_text', 'openlist_search_files',
+    'openlist_capabilities',
+    'openlist_copy',
+    'openlist_create_folder',
+    'openlist_download_link',
+    'openlist_get_file',
+    'openlist_list_files',
+    'openlist_move',
+    'openlist_read_text',
+    'openlist_rename',
+    'openlist_search_files',
+    'openlist_share_disable',
     'openlist_share_get',
+    'openlist_upload_small'
   ]);
   const state = portal(), originally = structuredClone(state.servers);
   let server = null, created = 0, synced = 0, puts = 0;
@@ -76,7 +86,7 @@ test('OpenList Portal is attached only after verified exact 7-tool inventory and
 });
 test('unauthorized credential, renamed tools or mismatched existing hostname fail before Portal attachment', async () => {
   await assert.rejects(() => attachOpenListPortal({...env,MCP_ACCESS_TOKEN:''}),/portal_worker_token_missing/);
-  for (const bad of ['inventory','origin']) {
+  for (const bad of ['inventory','stale-seven','origin']) {
     const state = portal();let wrote=false;
     const transport = async request => {
       const path = new URL(request.url).pathname.split('/access/ai-controls/mcp')[1];
@@ -91,7 +101,11 @@ test('unauthorized credential, renamed tools or mismatched existing hostname fai
       else if (request.method === 'GET' && path === '/servers/openlist')
         result={id:'openlist',status:'ready',auth_type:'bearer',
           hostname:'https://openlist-mcp-worker.aiyaya.workers.dev/mcp',
-          tools:[{name:'openlist_delete'}]};
+          tools:bad === 'stale-seven' ? [
+            'openlist_capabilities','openlist_list_files','openlist_get_file',
+            'openlist_search_files','openlist_read_text','openlist_share_get',
+            'openlist_create_folder',
+          ].map(name=>({name})) : [{name:'openlist_delete'}]};
       else if (request.method === 'PUT') {wrote=true;throw Error('not allowed');}
       else throw Error('unexpected route '+path);
       return Response.json({success:true,result});
