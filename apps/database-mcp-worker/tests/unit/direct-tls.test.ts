@@ -27,9 +27,9 @@ const direct = (dialect: 'mysql' | 'postgres'): EffectiveConnection => ({
 describe('Direct transport TLS invariant', () => {
   it('passes verified TLS and hostname verification to mysql2', async () => {
     mysqlConnect.mockResolvedValueOnce({ query: async () => [[], []], end: async () => undefined });
-    await mysqlHealthCheck(direct('mysql'));
+    await mysqlHealthCheck({ ...direct('mysql'), ca: 'TEST_AIVEN_PROJECT_CA' });
     expect(mysqlConnect).toHaveBeenCalledWith(expect.objectContaining({
-      host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true, verifyIdentity: true })
+      host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true, verifyIdentity: true, ca: 'TEST_AIVEN_PROJECT_CA' })
     }));
   });
   it('rejects MySQL IP literals because mysql2 otherwise skips peer identity checking', async () => {
@@ -37,9 +37,9 @@ describe('Direct transport TLS invariant', () => {
       .rejects.toMatchObject({ code: 'INVALID_INPUT' });
   });
   it('does not let a PostgreSQL connection string override verified TLS', async () => {
-    await postgresHealthCheck(direct('postgres'));
+    await postgresHealthCheck({ ...direct('postgres'), ca: 'TEST_AIVEN_PROJECT_CA' });
     expect(postgresConstruct).toHaveBeenCalledWith(expect.objectContaining({
-      host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true })
+      host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true, ca: 'TEST_AIVEN_PROJECT_CA' })
     }));
     expect(postgresConstruct.mock.lastCall?.[0]).not.toHaveProperty('connectionString');
   });

@@ -15,7 +15,7 @@ export function htmlResponse(body: string, csrf?: string, status = 200): Respons
   return new Response('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<title>Database MCP connections</title><style>html{color-scheme:light dark}body{max-width:840px;margin:24px auto;padding:0 16px;font:16px/1.5 system-ui}' +
     'fieldset{margin:20px 0;border:1px solid #999;border-radius:8px;padding:16px}form{display:grid;gap:10px;margin:12px 0}' +
-    'input,select,button{padding:8px;font:inherit}label{display:grid;gap:4px}details{margin:12px 0}li{margin:20px 0}</style><main>' + body + '</main></html>',
+    'input,select,textarea,button{padding:8px;font:inherit}label{display:grid;gap:4px}details{margin:12px 0}li{margin:20px 0}</style><main>' + body + '</main></html>',
     { status, headers });
 }
 function token(csrf: string): string { return `<input type="hidden" name="csrf" value="${escape(csrf)}">`; }
@@ -33,14 +33,17 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     `<details><summary>Edit or replace credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credential mode<select name="credential_mode"><option value="keep">Keep previous URL</option><option value="replace">Replace URL</option></select></label>' +
     '<label>New database URL (only for replace; never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
+    '<label>Certificate authority<select name="ca_mode"><option value="keep">Keep current CA</option><option value="replace">Replace CA</option><option value="clear">Remove CA</option></select></label>' +
+    '<label>New CA PEM (only for replace; never prefilled)<textarea name="ca" rows="5" maxlength="16384" autocomplete="off"></textarea></label>' +
     (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if the candidate is unreachable</label>' : '') +
     '<button type="submit">Test and save edit</button></form></details></li>').join('');
-  return htmlResponse('<h1>Database connections</h1><p>Access-authorized Owner only. Passwords and complete URLs are never displayed.</p>' +
+  return htmlResponse('<h1>Database connections</h1><p>Access-authorized Owner only. Passwords, complete URLs and CA PEM contents are never displayed. Copy the Aiven service URI without URL query options: verified TLS is enforced by the Worker.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Immutable ID<input name="id" maxlength="64" required></label>' +
     '<label>Dialect<select name="dialect"><option value="postgres">PostgreSQL</option><option value="mysql">MySQL</option></select></label>' +
     '<label>Database URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
+    '<label>Aiven CA certificate PEM (optional; encrypted in D1)<textarea name="ca" rows="5" maxlength="16384" autocomplete="off"></textarea></label>' +
     '<label><input type="checkbox" name="allow_disabled" value="1">Save disabled if health check cannot reach server</label>' +
     '<button type="submit">Validate and add</button></form></fieldset>' +
     '<fieldset><legend>Configuration key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +

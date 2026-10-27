@@ -22,7 +22,7 @@ export function createPostgresClient(connection: EffectiveConnection): PgClient 
   return new PgClient({
     host: connection.host, port: connection.port, user: connection.user,
     password: connection.password, database: connection.database,
-    ssl: { rejectUnauthorized: true }, ...common
+    ssl: { rejectUnauthorized: true, ...(connection.ca ? { ca: connection.ca } : {}) }, ...common
   });
 }
 
@@ -40,7 +40,7 @@ export async function createMysqlClient(connection: EffectiveConnection, rowsAsA
     ...(connection.database.length === 0 ? {} : { database: connection.database }),
     port: connection.port,
     // mysql2 must verify both the trust chain and the DNS identity of the peer.
-    ...(connection.transport === 'direct' ? { ssl: { rejectUnauthorized: true, verifyIdentity: true } } : {}),
+    ...(connection.transport === 'direct' ? { ssl: { rejectUnauthorized: true, verifyIdentity: true, ...(connection.ca ? { ca: connection.ca } : {}) } } : {}),
     disableEval: true,
     rowsAsArray,
     supportBigNumbers: true,

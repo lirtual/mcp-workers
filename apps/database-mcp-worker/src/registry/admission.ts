@@ -35,7 +35,7 @@ export async function admitConnection(env: Env, requestedId?: string): Promise<E
   const parsed = await validatePublicEndpoint(payload.url, row.id);
   if (row.dialect !== parsed.dialect) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Connection dialect does not match stored configuration.');
   return { config: { id: row.id, transport: 'direct', url: payload.url }, transport: 'direct',
-    ...parsed, limits: getRuntimeLimits(env) };
+    ...parsed, ...(payload.ca ? { ca: payload.ca } : {}), limits: getRuntimeLimits(env) };
 }
 
 export async function admitWriteConnection(env: Env, id?: string): Promise<EffectiveWriteConnection> {

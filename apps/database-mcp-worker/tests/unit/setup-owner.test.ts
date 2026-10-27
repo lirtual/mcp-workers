@@ -75,7 +75,7 @@ describe('Cloudflare Access signed JWT enforcement', () => {
     expect(unsafe.status).toBe(403);
     const oversized = await handleSetup(new Request(url + '/add', { method: 'POST',
       headers: { 'cf-access-jwt-assertion': valid, origin: url, cookie: cookie!,
-        'content-type': 'application/x-www-form-urlencoded', 'content-length': '25000' },
+        'content-type': 'application/x-www-form-urlencoded', 'content-length': '40001' },
       body: 'csrf=' + csrf }), validEnv, mock);
     expect(oversized.status).toBe(413);
 

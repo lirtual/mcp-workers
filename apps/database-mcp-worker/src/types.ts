@@ -68,6 +68,7 @@ export interface EffectiveConnection {
   password: string;
   database: string;
   port: number;
+  ca?: string;
   limits: RuntimeLimits;
 }
 

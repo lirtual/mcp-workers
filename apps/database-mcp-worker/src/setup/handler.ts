@@ -24,17 +24,26 @@ function revision(form: URLSearchParams): number {
 }
 async function formData(request: Request): Promise<URLSearchParams> {
   const length = Number(request.headers.get('content-length') ?? 0);
-  if (length > 20000) throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
+  if (length > 40000) throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
   if (!(request.headers.get('content-type') ?? '').startsWith('application/x-www-form-urlencoded')) invalid();
   const text = await request.text();
-  if (text.length > 20000) throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
+  if (text.length > 40000) throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
   return new URLSearchParams(text);
 }
-async function testCandidate(env: Env, id: string, url: string, dialect: Dialect): Promise<void> {
+function formCa(form: URLSearchParams): string | undefined {
+  const values = form.getAll('ca');
+  if (values.length > 1) invalid();
+  const ca = values[0]?.trim();
+  if (!ca) return undefined;
+  if (ca.length > 16384 ||
+      !/^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/.test(ca)) invalid();
+  return ca;
+}
+async function testCandidate(env: Env, id: string, url: string, dialect: Dialect, ca?: string): Promise<void> {
   const parsed = await validatePublicEndpoint(url, id);
   if (parsed.dialect !== dialect) invalid();
   await healthCheck({ config: { id, transport: 'direct', url }, transport: 'direct',
-    ...parsed, limits: { ...getRuntimeLimits(env), queryTimeoutMs: 5000 } });
+    ...parsed, ...(ca ? { ca } : {}), limits: { ...getRuntimeLimits(env), queryTimeoutMs: 5000 } });
 }
 async function requiredRow(env: Env, id: string) {
   if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Database registry is unavailable.');
@@ -82,14 +91,15 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       const url = required(form, 'url');
       const parsed = await validatePublicEndpoint(url, id);
       if (parsed.dialect !== dialect) invalid();
+      const ca = formCa(form);
       let healthy = false;
-      try { await testCandidate(env, id, url, dialect); healthy = true; }
+      try { await testCandidate(env, id, url, dialect, ca); healthy = true; }
       catch (error) {
         const safe = toPublicError(error);
         if (form.get('allow_disabled') !== '1' ||
           !['CONNECTION_UNAVAILABLE', 'QUERY_TIMEOUT', 'DATABASE_ERROR'].includes(safe.code)) throw safe;
       }
-      const sealed = await sealConnectionConfig(env, id, dialect, { url });
+      const sealed = await sealConnectionConfig(env, id, dialect, { url, ...(ca ? { ca } : {}) });
       await createRegistryConnection(env.DB, { id, dialect, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
       if (healthy) await setRegistryConnectionStatus(env.DB, id, 1, 'active');
       return setupResult(healthy ? 'Connection verified and enabled.' : 'Candidate stored disabled; verify before enabling.');
@@ -108,7 +118,7 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       if (row.status !== 'disabled') invalid();
       const config = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
-      await testCandidate(env, id, config.url, row.dialect);
+      await testCandidate(env, id, config.url, row.dialect, config.ca);
       await setRegistryConnectionStatus(env.DB, id, version, 'active');
       return setupResult('Connection health verified and enabled.');
     }
@@ -118,17 +128,20 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       const previous = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
       const url = mode === 'keep' ? previous.url : required(form, 'url');
+      const caMode = required(form, 'ca_mode');
+      if (!['keep', 'replace', 'clear'].includes(caMode)) invalid();
+      const ca = caMode === 'keep' ? previous.ca : caMode === 'replace' ? (formCa(form) ?? invalid()) : undefined;
       // Active connection edits always require a verified healthy replacement.
       // A disabled record may retain an unreachable, structurally valid candidate
       // for subsequent repair, but the disabled state is never changed here.
       await validatePublicEndpoint(url, id);
-      try { await testCandidate(env, id, url, row.dialect); }
+      try { await testCandidate(env, id, url, row.dialect, ca); }
       catch (error) {
         const safe = toPublicError(error);
         if (row.status !== 'disabled' || form.get('allow_disabled') !== '1' ||
           !['CONNECTION_UNAVAILABLE', 'QUERY_TIMEOUT', 'DATABASE_ERROR'].includes(safe.code)) throw safe;
       }
-      const sealed = await sealConnectionConfig(env, id, row.dialect, { ...previous, url });
+      const sealed = await sealConnectionConfig(env, id, row.dialect, { url, ...(ca ? { ca } : {}) });
       await updateRegistryConnection(env.DB, id, version,
         { dialect: row.dialect, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
       return setupResult('Only the selected connection configuration was updated. Status is unchanged.');
