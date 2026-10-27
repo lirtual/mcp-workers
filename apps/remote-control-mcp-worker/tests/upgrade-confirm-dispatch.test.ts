@@ -29,10 +29,12 @@ function fixture() {
   let sent=0;
   let owner:V2OwnerCoordinator;
   let respond=true;
+  let currentEpoch="signed-epoch";
+  let receiptState:"completed"|"failed"="completed";
   const frames:Record<string,unknown>[]=[];
   const socket={
     readyState:WebSocket.OPEN,
-    deserializeAttachment:()=>({device_id:DEVICE,epoch:"signed-epoch",
+    deserializeAttachment:()=>({device_id:DEVICE,epoch:currentEpoch,
       last_auth_check_at:Date.now()-1000,device_info_reported:true}),
     send: (raw:string)=>{
       sent++;const payload=JSON.parse(raw) as Record<string,unknown>;
@@ -41,8 +43,8 @@ function fixture() {
         queueMicrotask(()=>void owner.webSocketMessage(socket as unknown as WebSocket,
           JSON.stringify({kind:"operation_result",request_id:payload.request_id,
             result:payload.tool==="get_operation_status"
-              ? {operation_id:payload.operation_id,status:"completed",
-                  receipt:{operation_id:payload.operation_id,tool_name:"upgrade_agent",state:"completed"}}
+              ? {operation_id:payload.operation_id,status:receiptState,
+                  receipt:{operation_id:payload.operation_id,tool_name:"upgrade_agent",state:receiptState}}
               : {operation_id:payload.operation_id,status:"admitted"}})));
       }
     },
@@ -71,6 +73,8 @@ function fixture() {
     return {confirmation:result.confirmation,form:shown.form_token};
   }
   return {data,frames,prepared,post,counts:()=>sent,
+    setSignedEpoch:(next:string)=>{currentEpoch=next;data.set("session:epoch:"+DEVICE,next);},
+    setReceiptState:(next:"completed"|"failed")=>{receiptState=next;},
     disableAgentReply:()=>{respond=false;},storage};
 }
 test("owner POST atomically claims approved intent and sends exactly one immutable no-execution WSS admission",async()=>{
@@ -140,6 +144,12 @@ test("durable ledger finishes only after newly reported signed target and comple
   f.data.set("device:"+DEVICE,{...current,
     device_info:{...current.device_info,
       agent_version:REVIEWED_WINDOWS_UPGRADE_PIN.tag}});
+  const oldEpoch=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal((await oldEpoch.json() as {status:string}).status,"claimed",
+    "version and completed receipt on the pre-upgrade socket must never complete");
+  f.setSignedEpoch("signed-post-switch");
   const completed=await f.post("/upgrade/status",{
     device_id:DEVICE,operation_id:"full-chain-operation",
   });
@@ -152,4 +162,26 @@ test("durable ledger finishes only after newly reported signed target and comple
   });
   assert.equal((await reread.json() as {status:string}).status,"completed");
   assert.equal(f.counts(),count,"terminal ledger must not repeatedly query WSS");
+});
+
+test("signed restored old version reports guarded failure without releasing approval",async()=>{
+  const f=fixture();
+  const {confirmation,form}=await f.prepared();
+  const confirmed=await f.post("/upgrade/confirm",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.deepEqual(await confirmed.json(),{approved:true,status:"admitted"});
+  f.setSignedEpoch("signed-restored-old");
+  f.setReceiptState("failed");
+  const status=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal(status.status,200);
+  assert.equal((await status.json() as {status:string}).status,"needs_attention");
+  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"needs_attention");
+  const replay=await f.post("/upgrade/prepare",{
+    device_id:DEVICE,operation_id:"second-after-rollback",
+    target:REVIEWED_WINDOWS_UPGRADE_PIN,
+  });
+  assert.equal(replay.status,409,"confirmed failure must retain the guarded one-shot lock");
 });
