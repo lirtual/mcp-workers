@@ -1,21 +1,11 @@
 export type Dialect = 'mysql' | 'postgres';
-export type DatabaseTransport = 'direct' | 'hyperdrive';
-
-export interface HyperdriveBinding {
-  connectionString: string;
-  host: string;
-  user: string;
-  password: string;
-  database: string;
-  port: number;
-}
+export type DatabaseTransport = 'direct';
 
 export interface RateLimitBinding {
   limit(input: { key: string }): Promise<{ success: boolean }>;
 }
 
 export interface Env {
-  DATABASE_CONFIG?: string;
   DB?: D1Database;
   DATABASE_SETUP_HOST?: string;
   ACCESS_TEAM_DOMAIN?: string;
@@ -43,13 +33,7 @@ export interface DirectConnectionConfig extends BaseConnectionConfig {
   url: string;
 }
 
-export interface HyperdriveConnectionConfig extends BaseConnectionConfig {
-  transport: 'hyperdrive';
-  dialect: Dialect;
-  binding: string;
-}
-
-export type ConnectionConfig = DirectConnectionConfig | HyperdriveConnectionConfig;
+export type ConnectionConfig = DirectConnectionConfig;
 
 export interface RuntimeLimits {
   maxRows: number;
