@@ -25,3 +25,21 @@ CREATE TABLE IF NOT EXISTS weixin_send_receipts (
 CREATE INDEX IF NOT EXISTS idx_weixin_receipts ON weixin_send_receipts(generation,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_weixin_request_id_global ON weixin_send_receipts(request_id);
 -- No automatic receipt expiry: forgotten IDs must not silently replay.
+
+-- Draft schema has not been provisioned; keep one initial migration until release.
+-- QR, proof, verification and bot credentials are stored only as encrypted JSON.
+CREATE TABLE IF NOT EXISTS weixin_pairing (
+  id INTEGER PRIMARY KEY CHECK (id=1),
+  generation INTEGER NOT NULL,
+  owner_digest TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK(phase IN ('issuing','qr_pending','bound_unverified','expired')),
+  session_id TEXT NOT NULL,
+  ciphertext TEXT,
+  key_id TEXT,
+  expires_at INTEGER NOT NULL,
+  poll_after INTEGER NOT NULL,
+  verify_count INTEGER NOT NULL,
+  window_start INTEGER NOT NULL,
+  attempt_count INTEGER NOT NULL,
+  CHECK((ciphertext IS NULL)=(key_id IS NULL))
+);
