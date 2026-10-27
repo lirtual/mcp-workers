@@ -19,8 +19,22 @@ export async function bindingStatus(env:Env) {
   const row=await env.DB.prepare(
     'SELECT state,last_verified_context_at,last_sync_at FROM weixin_binding WHERE id=1'
   ).first<Pick<Binding,'state'|'last_verified_context_at'|'last_sync_at'>>();
-  return {binding_state:row?.state??'unbound',last_verified_context_at:row?.last_verified_context_at??null,
-    last_sync_at:row?.last_sync_at??null, next_action:row?.state==='ready'?null:'open_owner_pairing_page'};
+  let displayState=row?.state??'unbound';
+  // A pending QR is not an active recipient: keep the previously verified
+  // session active during a rebind, and never expose QR or identity data.
+  if(displayState==='unbound'){
+    const staged=await env.DB.prepare(
+      'SELECT phase,generation,expires_at FROM weixin_pairing WHERE id=1'
+    ).first<{phase:string;generation:number;expires_at:number}>();
+    if(staged&&staged.generation===0+(await env.DB.prepare(
+      'SELECT generation FROM weixin_binding WHERE id=1'
+    ).first<Pick<Binding,'generation'>>())!.generation &&
+       staged.expires_at>Math.floor(Date.now()/1000) &&
+       ['qr_pending','bound_unverified'].includes(staged.phase))
+      displayState=staged.phase as Binding['state'];
+  }
+  return {binding_state:displayState,last_verified_context_at:row?.last_verified_context_at??null,
+    last_sync_at:row?.last_sync_at??null,next_action:displayState==='ready'?null:'open_owner_pairing_page'};
 }
 export async function sendOnce(env:Env,text:string,requestId:string,dispatch:Dispatcher):Promise<SendReply>{
   if(!uuid.test(requestId??''))fail('invalid_request_id');
