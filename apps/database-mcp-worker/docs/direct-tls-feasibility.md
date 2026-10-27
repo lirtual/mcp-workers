@@ -2,6 +2,19 @@
 
 **Release state: BLOCKED. This is not a TLS acceptance certificate or production-ready design.**
 
+## Actual deployed Workers Aiven result (2026-10-27)
+
+**P0 FAILED; do not deploy or merge.** Disposable Aiven-only Workers tests were run using GitHub Actions:
+
+- [Run 40488616910](https://github.com/lirtual/mcp-workers/actions/runs/40488616910): disposable Worker published; probe endpoint request failed.
+- [Run 40488935091](https://github.com/lirtual/mcp-workers/actions/runs/40488935091): disposable Worker published; the real Worker returned MySQL `ERR_OPTION_NOT_IMPLEMENTED` and PostgreSQL an unclassified `runtime_failure`. Neither dialect passed read/write/DDL or verified certificate-negative gates.
+- The locked `mysql2@3.24.4` `lib/base/connection.js` `startTLS` calls `Tls.connect` with `checkServerIdentity` supplied in its option object. Cloudflare's [compatibility contract](https://developers.cloudflare.com/workers/configuration/compatibility-flags/) states unsupported `checkServerIdentity` TLS options throw `ERR_OPTION_NOT_IMPLEMENTED` by default. This gives a concrete compatibility hypothesis consistent with the actual MySQL failure. It does **not** prove that deleting the option or disabling the runtime rejection preserves verified TLS; never suppress the error by relaxing the TLS safety policy.
+- Runtime CA PEM inputs were empty. PostgreSQL's exception was not yet classified, and Aiven CA chain verification, hostname mismatch rejection and TLS-only server-side enforcement have not been proven.
+- The disposable test workflow/handler were removed from the branch after the runs. The cleanup steps were successful; independent Cloudflare Worker inventory subsequently confirmed the test script no longer exists.
+
+Under Q20=B this is a **release-blocking** feasibility result. Keep the current transport design unchanged until a small verified, secure driver adaptation is demonstrated or the Owner separately approves a new architecture decision. Production cutover remains prohibited. Legacy business endpoints were not contacted.
+
+
 - 2026-10-27: Reused mysql2 and pg, consolidated each driver's construction into one shared connection factory across read, health, structured write and DDL. Direct connection factories now request certificate verification and host verification (mysql2). Connection-string TLS/downgrade overrides are refused; PostgreSQL options are passed explicitly, rather than as a connection string that can override `ssl`.
 - MySQL IP-literal destinations are currently rejected even if public: the inspected mysql2 handshake skips DNS identity verification for IP literals. A future IP-SAN-capable implementation would need an independent proof and test.
 - Unit tests, TS typecheck, ESLint and Wrangler dry-run passed locally. These prove option construction, not that real DB TLS negotiation works.
