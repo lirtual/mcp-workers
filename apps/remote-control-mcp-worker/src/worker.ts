@@ -2,7 +2,7 @@ import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { verifyUpgradeOwnerAccess, validUpgradeFormOrigin, upgradeFormCookie, UPGRADE_APPROVAL_ORIGIN } from "./upgrade-access.ts";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 /** Browser tools use the existing authenticated MCP + signed paired-device grant. */
-import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, reviewedWindowsUpgradeTarget } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -30,7 +30,15 @@ function browserToolsAvailable(env:Env):boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "device_rename", "revoke_device"]);
+const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "device_rename", "revoke_device", "upgrade_agent"]);
+function upgradeAgentAvailable(env: Env): boolean {
+  const e = env as V2Env;
+  return Boolean(e.DEVICE_COORDINATOR && !e.V2_OWNER &&
+    /^[a-z0-9-]+\\.cloudflareaccess\\.com$/.test(e.REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN ?? "") &&
+    /^[a-f0-9]{64}$/.test(e.REMOTE_CONTROL_UPGRADE_ACCESS_AUD ?? "") &&
+    /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(e.REMOTE_CONTROL_UPGRADE_OWNER_EMAIL ?? ""));
+}
+
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -148,6 +156,71 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
     }
     return toolText(id, result.text);
   } catch { return toolError(id, "The requested v2 device is unavailable."); }
+}
+
+const UPGRADE_AGENT_TOOL = {
+  name: "upgrade_agent",
+  title: "Request a one-time Windows Agent upgrade",
+  description: "Prepare one immutable pinned Windows Agent upgrade on the exact paired device. Preparation NEVER switches versions. Return a short-lived link requiring a separate verified Cloudflare Access owner confirmation; no remembered MCP tool approval is sufficient. Only after the independent confirmation and signed Agent execution are both operational can a switch take place. Never reuse an uncertain operation ID as a new intent.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      device_id: {type:"string",description:"Full, explicitly selected permanently paired Windows device UUID."},
+      operation_id: {type:"string",description:"Stable unique ID for exactly this upgrade request."},
+      target_version: {type:"string",description:"A reviewed immutable Agent release; no custom URLs or checksums."},
+    },
+    required:["device_id","operation_id","target_version"],
+    additionalProperties:false,
+  },
+  annotations:{ readOnlyHint:false, destructiveHint:true, openWorldHint:false },
+} as const;
+
+async function preparePairedUpgrade(env: Env, id: unknown, input: unknown): Promise<Response> {
+  if (!upgradeAgentAvailable(env) || !pendingOwner(env))
+    return toolError(id,"Independent upgrade approval is not configured.");
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return toolError(id,"An exact device, operation ID and reviewed target are required.");
+  const p = input as Record<string, unknown>;
+  if (Object.keys(p).sort().join("|") !== "device_id|operation_id|target_version" ||
+      typeof p.device_id !== "string" ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(p.device_id) ||
+      typeof p.operation_id !== "string" ||
+      !/^(?!\\.{1,2}$)[A-Za-z0-9._:-]{1,128}$/.test(p.operation_id)) {
+    return toolError(id,"Invalid upgrade intent.");
+  }
+  const target = reviewedWindowsUpgradeTarget(p.target_version);
+  if (!target) return toolError(id,"The requested immutable release has not been reviewed.");
+  try {
+    const response = await pendingOwner(env)!.fetch("https://v2.internal/upgrade/prepare", {
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({device_id:p.device_id,operation_id:p.operation_id,target}),
+    });
+    if (!response.ok) {
+      return toolError(id,response.status === 409
+        ? "An upgrade for this operation or device is already pending or guarded."
+        : "The selected device is not currently eligible or has no authenticated session.");
+    }
+    const prepared = await response.json() as {
+      status?:unknown;confirmation?:unknown;
+      preview?: {device_id?:unknown; operation_id?:unknown; current_version?:unknown;
+        target?:{tag?:unknown}};
+    };
+    if (prepared.status !== "prepared" || prepared.preview?.device_id !== p.device_id ||
+        prepared.preview?.operation_id !== p.operation_id ||
+        prepared.preview?.target?.tag !== target.tag ||
+        typeof prepared.confirmation !== "string" ||
+        !/^[a-f0-9]{64}$/.test(prepared.confirmation)) {
+      return toolError(id,"Upgrade preparation was not confirmed.");
+    }
+    const link = UPGRADE_APPROVAL_ORIGIN + "/upgrade-approve/" + p.operation_id + "/" + prepared.confirmation;
+    return toolText(id,JSON.stringify({
+      status:"pending_owner_approval",device_id:p.device_id,
+      operation_id:p.operation_id,current_version:prepared.preview.current_version,
+      target_version:target.tag,
+      confirmation_url:link,
+      message:"Open the link and explicitly confirm this exact upgrade. No upgrade has started.",
+    }));
+  } catch { return toolError(id,"Upgrade preparation is unavailable."); }
 }
 
 const REVOKE_DEVICE_TOOL = {
@@ -1041,6 +1114,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
           },
         })),
         PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
+        ...(upgradeAgentAvailable(env) ? [UPGRADE_AGENT_TOOL] : []),
       ] });
     }
     return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
@@ -1081,6 +1155,9 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
       return callPairedDeviceRead(env, rpcMessage.id, call.name, call.arguments);
+    }
+    if (call.name === "upgrade_agent" && upgradeAgentAvailable(env)) {
+      return preparePairedUpgrade(env,rpcMessage.id,call.arguments);
     }
     if (call.name === "device_rename" && pendingOwner(env)) {
       return renamePairedDevice(env, rpcMessage.id, call.arguments);
