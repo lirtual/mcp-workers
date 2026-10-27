@@ -31,7 +31,7 @@ function fixture(online: boolean) {
       readyState:WebSocket.OPEN,
       deserializeAttachment:()=>({
         device_id:DEVICE,epoch:"signed-session-epoch",
-        last_auth_check_at:Date.now()-1000,
+        last_auth_check_at:Date.now()-1000,device_info_reported:true,
       }),
     }] : [],
   } as unknown as DurableObjectState;
