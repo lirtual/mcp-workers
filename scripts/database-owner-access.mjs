@@ -14,7 +14,8 @@ export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, owner
     app.aud === audience,
     "Database Owner Access app identity or host mismatch");
   requireCondition(app.session_duration === "15m" &&
-    app.auto_redirect_to_identity === true,
+    app.auto_redirect_to_identity === true &&
+    app.same_site_cookie_attribute === "lax",
     "Database Owner Access OTP session configuration drift");
   // An empty/unset allowed_idps list inherits all account login methods.
   // Exact owner email is necessary but does not prove OTP-only authentication.
