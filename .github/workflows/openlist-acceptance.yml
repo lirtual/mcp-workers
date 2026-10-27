@@ -1,0 +1,51 @@
+name: OpenList Driver Acceptance
+
+# Independent of release and Portal registration. Intentionally leaves one
+# disposable directory and tiny text file; no automatic delete or write retry.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_disposable_write:
+        description: Authorize one new folder and one tiny test file under the reviewed Koofr root
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  driver-e2e:
+    name: Live OpenList MCP / Koofr driver E2E (no deploy)
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: openlist-mcp-worker
+    timeout-minutes: 8
+    concurrency:
+      group: openlist-driver-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate current main and test contracts without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
+          node --check scripts/openlist-driver-acceptance.mjs
+          node --test scripts/openlist-driver-acceptance.test.mjs
+      - name: Verify real MCP tools using one fresh disposable Koofr folder
+        shell: bash
+        env:
+          OPENLIST_DRIVER_E2E_APPROVED: ${{ inputs.confirm_disposable_write }}
+          OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          OPENLIST_API_TOKEN: ${{ secrets.OPENLIST_API_TOKEN }}
+        run: node scripts/openlist-driver-acceptance.mjs

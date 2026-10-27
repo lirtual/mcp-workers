@@ -78,3 +78,36 @@ particular:
   checks; a previous partial release and green CI are not production
   acceptance. Never auto-roll back, auto-enable candidate tools or enable
   automatic publishing to recover.
+
+
+## Disposable real-driver E2E (independent of Worker release)
+
+The manual `OpenList Driver Acceptance` GitHub Actions workflow verifies the
+existing deployed Worker; it does **not** publish or configure a Worker, change
+One-MCP, or enable any unregistered tools. It only runs from the current
+`main` with `confirm_disposable_write=true` and environment
+`openlist-mcp-worker` using existing scoped credentials.
+
+Acceptance is intentionally constrained to the exact single configured
+`/Koofr/Downloads` root **when it is empty**. If configuration differs or
+any entry exists, it fails *before writing*. Each authorized execution uses a
+fresh `mcp-spec309-e2e-<run-id>-<attempt>` subfolder created through the
+**deployed** `openlist_create_folder` tool, verifies its metadata and
+emptiness, then creates **one** small synthetic text file through the reviewed
+upstream `/api/fs/put` endpoint using the separately scoped admin-equivalent
+environment Secret. This upstream upload is only disposable test data setup:
+it is **not** evidence that the gated public `openlist_upload_small` MCP
+tool works or is safe. There are no overwrite claims or effectful retries.
+
+The script then uses MCP tools to verify file metadata, list, search, exact
+UTF-8 text retrieval and out-of-scope **write** refusal. Logs include only
+stable result/error codes and synthetic run-specific folder names; no
+tokens, upstream response bodies or actual file content are logged. Failed
+or uncertain writes are not retried. The test leaves the tiny synthetic
+file and folder for explicit review and *manual* cleanup rather than using
+an unaccepted destructive API.
+
+A passing workflow establishes driver E2E evidence only. Independent
+approval and ChatGPT Portal acceptance are still required before linking the
+Worker to One-MCP; a green acceptance run does not automatically release,
+register, enable gated tools or close Issue #309.
