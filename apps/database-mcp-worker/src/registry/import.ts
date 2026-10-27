@@ -23,12 +23,8 @@ export async function prepareLegacyCatalog(
       !approvedIds.every(id => configs.some(c => c.id === id))) {
     throw new PublicError('INVALID_INPUT', 'The frozen connection inventory does not match approval.');
   }
-  if (configs.some(c => c.transport !== 'direct')) {
-    throw new PublicError('INVALID_INPUT', 'Hyperdrive requires separately approved conversion.');
-  }
   const encrypted = [];
   for (const config of configs) {
-    if (config.transport !== 'direct') throw new PublicError('INVALID_INPUT', 'Invalid transport.');
     const { dialect } = parseDirectDatabaseUrl(config.url, config.id);
     const sealed = await sealConnectionConfig(keys, config.id, dialect, { url: config.url });
     const recovered = await openConnectionConfig(keys, config.id, dialect,
@@ -58,7 +54,6 @@ export async function verifyLegacyCatalogReadback(
   if (!db) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Migration readback unavailable.');
   try {
     for (const original of originals) {
-      if (original.transport !== 'direct') throw Error('unsupported');
       const row = await getRegistryConnection(db, original.id);
       const expected = prepared.find(item => item.id === original.id);
       if (!row || !expected || row.dialect !== expected.dialect ||
