@@ -2,8 +2,8 @@
 
 ## Implementation status (2026-10-27)
 
-Eight tools are registered on this Draft branch: the seven previously deployed
-operations plus `openlist_share_disable` using the existing OpenList REST
+Nine tools are registered on this Draft branch: the seven previously deployed
+operations plus `openlist_share_disable` and `openlist_download_link` using the existing OpenList REST
 endpoint. **Production continues to expose seven tools** until separately
 authorized merge, manual release and real acceptance. The original
 read-only explicit-ID `openlist_share_get` passed real production
@@ -12,7 +12,7 @@ acceptance after the controlled share test recorded in
 The one-time `openlist_share_create` used for that test was **retired from
 the Worker, Portal inventory, and manual acceptance entrypoint** after
 successful controlled production testing ([PR #369](https://github.com/lirtual/mcp-workers/pull/369)).
-It must not be callable in future releases. The other ten candidates
+It must not be callable in future releases. The other nine candidates
 remain unregistered and gated on this Draft branch; this adapter is not a general-purpose OpenList
 API proxy. Verify the deployed inventory separately from this source document.
 
@@ -60,7 +60,7 @@ or automatic storage repair is configured.
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
-`openlist_share_disable`, `openlist_create_folder` (**eight registered tools on this Draft; seven deployed**).
+`openlist_download_link`, `openlist_share_disable`, `openlist_create_folder` (**nine registered tools on this Draft; seven deployed**).
 
 `openlist_share_get` accepts one explicit ID and requires **every** file
 in the share to remain within allowed roots before returning only allowlisted,
@@ -73,7 +73,7 @@ were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/r
 50-byte synthetic share with a random hidden password, one-hour expiration
 and one access. The live create/get proof succeeded; the tool and temporary
 acceptance code have since been removed. The previously created share record
-may remain expired upstream, but cleanup is out of scope. The ten remaining
+may remain expired upstream, but cleanup is out of scope. The nine remaining
 candidates stay disabled on this Draft branch pending real driver/conflict, scope, approval, and
 share-lifecycle safety evidence. Do not infer physical storage confinement from
 the admin-equivalent upstream token. Every future production release requires
@@ -123,6 +123,27 @@ accepted using the existing upstream behavior without an atomic update gate.
 Before separately authorized production release, verify the current driver,
 MCP inventory and share status using a separately approved test share. No live
 share was mutated by this code-only Draft.
+
+
+## Native signed download URL (Draft; not yet production)
+
+The existing Cloudflare Route `openlist.lirtual.dpdns.org/*` was verified to
+point at `openlist-tsworkers`, and anonymous GET of public settings returned
+HTTP 200. `openlist_download_link` uses only `POST /api/fs/get` through the
+existing internal Service Binding, validates exact file identity and the
+TS-Worker HMAC signature shape, then constructs a URL on this fixed public
+origin. It does **not** forward upstream `raw_url`, provider-host URLs,
+credentials, headers or arbitrary redirects. No new database, API endpoint or
+Fork change is required.
+
+This adapter honors the **native** OpenList expiration setting. At the observed
+`sign_all=true` and `link_expiration=0`, the signed link is **permanent**;
+the MCP result marks `permanent:true`, `expires_at:null` and warns that
+anyone with this bearer URL can access the file. No silent conversion to a
+short-lived credential is claimed. Future production acceptance must verify
+one explicitly authorized synthetic signed link through the public route,
+without publishing its signature to CI logs. Code and CI alone cannot
+prove the deployed configuration or driver response.
 
 ## Verification
 

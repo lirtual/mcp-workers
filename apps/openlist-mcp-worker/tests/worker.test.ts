@@ -48,7 +48,7 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.deepEqual(tools.map(t => t.name), [
       'openlist_capabilities','openlist_list_files','openlist_get_file',
       'openlist_search_files','openlist_read_text','openlist_share_get',
-      'openlist_share_disable','openlist_create_folder',
+      'openlist_download_link','openlist_share_disable','openlist_create_folder',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
@@ -60,8 +60,9 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_get'), false);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), true);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_disable'), false);
+    assert.equal(inventory.disabled_pending_acceptance.includes('openlist_download_link'), false);
     assert.equal(tools.find(t => t.name === 'openlist_share_disable')?.annotations?.destructiveHint, true);
-    assert.equal(inventory.disabled_pending_acceptance.length, 10);
+    assert.equal(inventory.disabled_pending_acceptance.length, 9);
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
@@ -241,5 +242,31 @@ test('share disable refuses out-of-scope share without dispatch and returns unkn
     assert.equal(JSON.parse((unknown.content[0] as {text:string}).text).status,'unknown');
     assert.equal(writes,1);
     assert.doesNotMatch(JSON.stringify(unknown),/private-value|timeout after dispatch/);
+  } finally {await client.close();}
+});
+
+test('native signed download link is served only for explicit in-scope file via MCP', async () => {
+  const sign='0.'+'a'.repeat(64);
+  let calls=0;
+  const client=await clientFor(settings(async request => {
+    calls++;
+    assert.equal(new URL(request.url).pathname,'/api/fs/get');
+    return Response.json({code:200,data:{name:'test.txt',is_dir:false,
+      sign,raw_url:'https://evil.example/private?leak=1',pwd:'private'}});
+  }));
+  try {
+    const result=await client.callTool({name:'openlist_download_link',
+      arguments:{path:'/Koofr/safe/test.txt'}});
+    assert.notEqual(result.isError,true);
+    const body=JSON.parse((result.content[0] as {text:string}).text).observed_state;
+    assert.equal(body.url,'https://openlist.lirtual.dpdns.org/api/p/Koofr/safe/test.txt?sign='+encodeURIComponent(sign));
+    assert.equal(body.permanent,true);
+    assert.equal(body.expires_at,null);
+    assert.doesNotMatch(JSON.stringify(result),/evil.example|leak|private/);
+    const denied=await client.callTool({name:'openlist_download_link',
+      arguments:{path:'/Koofr/other/test.txt'}});
+    assert.equal(denied.isError,true);
+    assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
+    assert.equal(calls,1);
   } finally {await client.close();}
 });

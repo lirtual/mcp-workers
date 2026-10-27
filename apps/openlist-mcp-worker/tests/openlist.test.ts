@@ -412,3 +412,44 @@ test('share disable never repeats a dispatched unknown write or trusts a success
     assert.doesNotMatch(JSON.stringify(result), /secret|other\.txt/);
   }
 });
+
+test('native download link uses verified Cloudflare route with signed path and explicit expiry semantics', async () => {
+  for (const expiration of [0, Math.floor(Date.now()/1000) + 3600]) {
+    const sign=String(expiration)+'.'+'a'.repeat(64);
+    const api=new OpenListApi(createConfig(env(async request => {
+      assert.equal(request.method,'POST');
+      assert.equal(new URL(request.url).pathname,'/api/fs/get');
+      assert.equal(request.headers.get('authorization'),'admin-token');
+      const data=await request.json() as {path:string};
+      assert.equal(data.path,'/drive/safe/hello world.txt');
+      return ok({name:'hello world.txt',path:data.path,is_dir:false,size:11,
+        sign,raw_url:'https://untrusted.example/private?password=leak',
+        provider_token:'private'});
+    })));
+    const output=await api.downloadLink('/drive/safe/hello world.txt');
+    assert.equal(output.url,'https://openlist.lirtual.dpdns.org/api/p/drive/safe/hello%20world.txt?sign='+encodeURIComponent(sign));
+    assert.equal(output.permanent,expiration===0);
+    assert.equal(output.expires_at,expiration===0?null:new Date(expiration*1000).toISOString());
+    assert.doesNotMatch(JSON.stringify(output),/untrusted\.example|password|provider_token|admin-token/);
+  }
+});
+
+test('download link fails closed for out-of-scope path, unsigned, expired and directory responses', async () => {
+  let calls=0;
+  const api=new OpenListApi(createConfig(env(async () => {calls++;return ok({
+    name:'file.txt',is_dir:false,sign:''});})));
+  await assert.rejects(api.downloadLink('/drive/outside/file.txt'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='OUT_OF_SCOPE');
+  assert.equal(calls,0);
+  await assert.rejects(api.downloadLink('/drive/safe/file.txt'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='NOT_SUPPORTED');
+  const variants=[
+    {name:'file.txt',is_dir:false,sign:String(Math.floor(Date.now()/1000)-100)+'.'+'a'.repeat(64)},
+    {name:'file.txt',is_dir:true,sign:'0.'+'a'.repeat(64)},
+  ];
+  for(const item of variants) {
+    const candidate=new OpenListApi(createConfig(env(async()=>ok(item))));
+    await assert.rejects(candidate.downloadLink('/drive/safe/file.txt'),(e:unknown)=>
+      e instanceof OpenListError && e.code==='NOT_SUPPORTED');
+  }
+});

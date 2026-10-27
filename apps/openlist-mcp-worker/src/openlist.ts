@@ -26,6 +26,8 @@ export interface Config {
 }
 const MAX_RESULT_BYTES = 256 * 1024;
 const MAX_TEXT_BYTES = 256 * 1024;
+// Existing verified Cloudflare Workers Route, not a user-controlled redirect target.
+const OPENLIST_PUBLIC_ORIGIN = 'https://openlist.lirtual.dpdns.org';
 const MAX_SEGMENT = 255;
 
 export function canonicalPath(value: unknown): string {
@@ -297,6 +299,30 @@ export class OpenListApi {
           'No upstream mutation dispatched.',
         request_id, target: id };
     }
+  }
+  async downloadLink(path: string): Promise<Record<string, unknown>> {
+    const file = this.check(path);
+    // Only the existing fixed OpenList API produces the signature. Never
+    // forward its raw_url, storage provider URL, headers or admin credential.
+    const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;
+    const meta = targetMetadata(raw, file);
+    if (meta.is_dir !== false || !isObject(raw) || typeof raw.sign !== 'string')
+      throw new OpenListError('NOT_SUPPORTED');
+    const match = /^(0|[1-9][0-9]{1,12})\\.[a-f0-9]{64}$/.exec(raw.sign);
+    if (!match) throw new OpenListError('NOT_SUPPORTED');
+    const expires = Number(match[1]);
+    if (!Number.isSafeInteger(expires) || (expires !== 0 &&
+        (expires <= Math.floor(Date.now() / 1000) || !Number.isFinite(expires * 1000) ||
+          expires * 1000 > 8.64e15)))
+      throw new OpenListError('NOT_SUPPORTED');
+    const route = '/api/p/' + file.slice(1).split('/').map(encodeURIComponent).join('/');
+    const url = OPENLIST_PUBLIC_ORIGIN + route + '?sign=' + encodeURIComponent(raw.sign);
+    return { path: file, url, access: 'signed_bearer_link',
+      permanent: expires === 0,
+      expires_at: expires === 0 ? null : new Date(expires * 1000).toISOString(),
+      warning: expires === 0 ?
+        'OpenList upstream signed URL has no expiry (link_expiration=0). Anyone holding this URL may access the file.' :
+        'Anyone holding this signed URL may access the file until its upstream expiry.' };
   }
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);
