@@ -11,7 +11,7 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 - [IMA MCP](apps/ima-mcp-worker/README.md)
 - [OpenList MCP](apps/openlist-mcp-worker/README.md)
 - [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
-- [Remote Control MCP](apps/remote-control-mcp-worker/README.md)
+- [Remote Control MCP](docs/remote-control/README.md)
 - [SSH MCP](apps/ssh-mcp-worker/README.md)
 - [Workflow MCP](apps/workflow-mcp-worker/README.md)
 
@@ -44,12 +44,4 @@ configured origin but never grant MCP permissions, expose device data or
 accept pairing approvals. `/mcp` and signed Agent/WebSocket endpoints retain
 their separate authentication.
 
-This is source-level implementation, **not evidence of production deployment**.
-Linux continues to use a verified immutable Agent Release pin. The new Windows
-response is intentionally **503** until the public Agent has been built,
-reviewed, tested and published as a new immutable Windows Release, then both
-its source-script SHA-256 and official release ZIP digest have been
-independently pinned in this Worker. `REVIEWED_WINDOWS_INSTALL_PIN = null`
-is a deliberate release gate, not a missing setting to bypass in production.
-Publishing a Release, changing Cloudflare and upgrading paired devices require
-separate authorization and the normal GitHub Actions gates.
+This source provides reviewed immutable Agent installer pins for Linux and Windows; the Windows route now has a non-null `REVIEWED_WINDOWS_INSTALL_PIN` with commit, script SHA-256 and release-asset SHA-256 checks. These source bindings do **not** independently prove which version is live or that an installation succeeded. Publishing a Release, changing Cloudflare and upgrading paired devices remain separately authorized operations with the normal GitHub Actions gates.
