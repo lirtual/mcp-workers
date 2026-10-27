@@ -1292,9 +1292,13 @@ async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Re
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ operation_id: operationId, confirmation, form_token: token }),
     });
-    if (!response.ok || (await response.json() as {approved?: boolean}).approved !== true)
-      return deny(409);
-    return new Response("Approval recorded. An upgrade has NOT been dispatched.\n", {
+    if (!response.ok) return deny(409);
+    const result = await response.json() as {approved?:boolean;status?:unknown};
+    if (result.approved !== true) return deny(409);
+    const message = result.status === "admitted"
+      ? "Approval consumed; Agent durably recorded the upgrade intent. The version has NOT been switched.\n"
+      : "Approval consumed, but Agent admission is uncertain. Do not repeat; inspect this operation ID.\n";
+    return new Response(message, {
       status: 200, headers: { ...UPGRADE_PAGE_HEADERS, "content-type": "text/plain; charset=utf-8",
         "set-cookie": "rca_upgrade_csrf=; Path=/upgrade-approve/; Max-Age=0; Secure; HttpOnly; SameSite=Strict" },
     });
