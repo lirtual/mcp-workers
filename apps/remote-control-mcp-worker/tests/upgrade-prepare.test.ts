@@ -95,3 +95,72 @@ test("new signed WSS epoch cannot borrow old persisted upgrade capability before
   assert.deepEqual(await response.json(),{error:"offline"});
   assert.equal(f.storageValues.has("upgrade:operation:owner-upgrade-39"),false);
 });
+
+
+test("owner DO chooses only the signed Linux architecture from immutable dual-asset review",async()=>{
+  const pin={tag:"v0.1.33",commit:"a".repeat(40),
+    linux_x64_asset_sha256:"b".repeat(64),
+    linux_arm64_asset_sha256:"c".repeat(64),
+    protocol:"owner-one-shot-v1"};
+  for(const arch of ["x64","arm64"] as const){
+    for(const environment of ["native","wsl2"] as const){
+      const f=fixture(true);
+      const device=f.storageValues.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+      f.storageValues.set("device:"+DEVICE,{...device,
+        device_info:{os:"linux",arch,environment,
+          agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"}});
+      const response=await f.request({device_id:DEVICE,
+        operation_id:"linux-"+arch+"-"+environment,target:pin});
+      assert.equal(response.status,200,arch+"/"+environment);
+      const body=await response.json() as {status:string;
+        preview:{target:Record<string,unknown>}};
+      assert.equal(body.status,"prepared");
+      assert.deepEqual(body.preview.target,{
+        tag:pin.tag,commit:pin.commit,linux_arch:arch,
+        linux_asset_sha256:arch==="x64"?pin.linux_x64_asset_sha256:
+          pin.linux_arm64_asset_sha256,
+      });
+      assert.equal(Object.hasOwn(body.preview.target,"release_url"),false);
+    }
+  }
+});
+
+test("owner DO rejects Linux unreviewed pins, unsupported architecture and stale WSS",async()=>{
+  const pin={tag:"v0.1.33",commit:"a".repeat(40),
+    linux_x64_asset_sha256:"b".repeat(64),
+    linux_arm64_asset_sha256:"c".repeat(64),
+    protocol:"owner-one-shot-v1"};
+  for(const change of [
+    {os:"linux",arch:"x64",environment:"container"},
+    {os:"linux",arch:"ia32",environment:"native"},
+    {os:"linux",arch:"x64",environment:"wsl1"},
+    {os:"windows",arch:"x64",environment:"native"},
+    {os:"linux",arch:"arm64",environment:"native",upgrade_protocol:undefined},
+  ]){
+    const f=fixture(true);
+    const device=f.storageValues.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+    f.storageValues.set("device:"+DEVICE,{...device,
+      device_info:{os:"linux",arch:"x64",environment:"native",
+        agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1",...change}});
+    const response=await f.request({device_id:DEVICE,
+      operation_id:"linux-reject",target:pin});
+    assert.equal(response.status,409,JSON.stringify(change));
+    assert.equal(f.storageValues.has("upgrade:operation:linux-reject"),false);
+  }
+  for(const target of [
+    {...pin,linux_arm64_asset_sha256:"invalid"},
+    {...pin,linux_x64_asset_sha256:"f".repeat(64),url:"https://other.example"},
+    {...pin,tag:"v0.1.22"},
+    {...pin,tag:"v0.1.33-rc.1"},
+  ]){
+    const f=fixture(true);
+    const device=f.storageValues.get("device:"+DEVICE) as {device_info:Record<string,unknown>};
+    f.storageValues.set("device:"+DEVICE,{...device,
+      device_info:{os:"linux",arch:"x64",environment:"native",
+        agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"}});
+    const response=await f.request({device_id:DEVICE,
+      operation_id:"linux-reject",target});
+    assert.ok([400,409].includes(response.status));
+    assert.equal(f.storageValues.has("upgrade:operation:linux-reject"),false);
+  }
+});
