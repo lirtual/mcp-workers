@@ -193,7 +193,7 @@ export class OpenListApi {
     if (!Number.isSafeInteger(page) || page < 1 || page > 10000 ||
         !Number.isSafeInteger(perPage) || perPage < 1 || perPage > 100)
       throw new OpenListError('LIMIT_EXCEEDED');
-    const { content } = collectEntries((await this.request('POST', '/api/fs/search',
+    const { content, total } = collectEntries((await this.request('POST', '/api/fs/search',
       { parent: dir, keywords, scope: 0, page, per_page: perPage })).data);
     // Upstream SearchResultItem contains `parent` + `name`, not `path`.
     // Derive the canonical child path ourselves; never trust caller-supplied paths.
@@ -211,7 +211,8 @@ export class OpenListApi {
         entries.push(safeMetadata({ ...item, path: child }));
       } catch { /* untrusted or out-of-scope upstream result */ }
     }
-    return { entries };
+    // Upstream total counts unfiltered matches; entries may be fewer after scope validation.
+    return { entries, total, page, per_page: perPage, has_more: page * perPage < total };
   }
   // Gated candidate only: do NOT register as an MCP tool until real
   // OpenList driver and Portal acceptance. Never query the global share list.

@@ -90,10 +90,33 @@ test('search follows actual upstream parent + name schema and filters malicious 
     ], total: 7});
   })));
   const result = await api.search('/drive/safe', 'txt', 1, 10);
-  assert.deepEqual(result.entries, [
-    { name: 'inside.txt', path: '/drive/safe/inside.txt', size: 4, is_dir: false },
-    { name: 'nested.txt', path: '/drive/safe/docs/nested.txt', size: 5, is_dir: false },
-  ]);
+  assert.deepEqual(result, {
+    entries: [
+      { name: 'inside.txt', path: '/drive/safe/inside.txt', size: 4, is_dir: false },
+      { name: 'nested.txt', path: '/drive/safe/docs/nested.txt', size: 5, is_dir: false },
+    ],
+    total: 7, page: 1, per_page: 10, has_more: false,
+  });
+});
+
+test('search preserves requested pagination despite scope-filtered results', async () => {
+  const api = new OpenListApi(createConfig(env(async request => {
+    const args = await request.json() as {page:number;per_page:number};
+    assert.equal(args.per_page, 2);
+    return ok({content:[
+      {name:'visible.txt',parent:'/drive/safe',size:3,raw_url:'https://secret.test/token'},
+      {name:'excluded.txt',parent:'/drive/other'},
+    ],total:5});
+  })));
+  const second = await api.search('/drive/safe', 'txt', 2, 2);
+  assert.deepEqual(second, {
+    entries: [{name:'visible.txt',path:'/drive/safe/visible.txt',size:3}],
+    total: 5, page: 2, per_page: 2, has_more: true,
+  });
+  const third = await api.search('/drive/safe', 'txt', 3, 2);
+  assert.equal(third.has_more, false);
+  assert.equal(third.page, 3);
+  assert.doesNotMatch(JSON.stringify(second), /secret\.test|excluded\.txt/);
 });
 
 test('upstream 501 and 400 are classified, while transport timeout after write remains unknown', async () => {

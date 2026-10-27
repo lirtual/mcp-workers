@@ -58,7 +58,7 @@ export function buildMcpServer(env: Env): McpServer {
   }, async ({ path: target }) =>
     read('openlist_get_file', target, () => api.get(target)));
   server.registerTool('openlist_search_files', {
-    description: 'Search within an allowed directory. Only results with verified in-scope paths are returned.',
+    description: 'Search within an allowed directory with upstream total, page, per_page and has_more. Returned entries are scope-filtered; upstream total may include discarded hits.',
     inputSchema: z.object({
       parent: path, keywords: z.string().min(1).max(120), page, per_page: perPage,
     }).strict(), annotations: annotationsRead,
