@@ -15,8 +15,7 @@ export function createPostgresClient(connection: EffectiveConnection): PgClient 
     application_name: 'cloudflare-database-mcp'
   };
   if (connection.transport !== 'direct') {
-    // Temporary legacy compatibility: Hyperdrive is removed at D1 cutover.
-    return new PgClient({ connectionString: connection.connectionString, ...common });
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Only verified Direct TLS connections are supported.');
   }
   // NEVER pass connectionString: pg-connection-string can override ssl options via URL params.
   return new PgClient({
@@ -28,9 +27,12 @@ export function createPostgresClient(connection: EffectiveConnection): PgClient 
 
 export async function createMysqlClient(connection: EffectiveConnection, rowsAsArray = false): Promise<Connection> {
   const timeout = Math.min(connection.limits.queryTimeoutMs, 5_000);
+  if (connection.transport !== 'direct') {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Only verified Direct TLS connections are supported.');
+  }
   // mysql2 skips checkServerIdentity when the supplied host is an IP literal.
   // Until verified IP-SAN checking is available, fail closed even for public IPs.
-  if (connection.transport === 'direct' && isIP(connection.host) !== 0) {
+  if (isIP(connection.host) !== 0) {
     throw new PublicError('INVALID_INPUT', 'MySQL Direct TLS requires a DNS hostname.');
   }
   const pending = createConnection({
@@ -40,7 +42,7 @@ export async function createMysqlClient(connection: EffectiveConnection, rowsAsA
     ...(connection.database.length === 0 ? {} : { database: connection.database }),
     port: connection.port,
     // mysql2 must verify both the trust chain and the DNS identity of the peer.
-    ...(connection.transport === 'direct' ? { ssl: { rejectUnauthorized: true, verifyIdentity: true, ...(connection.ca ? { ca: connection.ca } : {}) } } : {}),
+    ssl: { rejectUnauthorized: true, verifyIdentity: true, ...(connection.ca ? { ca: connection.ca } : {}) },
     disableEval: true,
     rowsAsArray,
     supportBigNumbers: true,
