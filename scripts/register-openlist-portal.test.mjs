@@ -92,8 +92,8 @@ test('manual-release registration happens after deployed version readback and is
   assert.ok(verify >= 0 && deny > verify && attach > deny);
   // The first deployment can verify binding/read scope without publishing six
   // unaccepted tools to Portal. Human approval after live driver E2E is separate.
-  assert.match(release,/openlist_portal_registration:\\s*\\n\\s*description:.*live driver E2E/);
-  assert.match(release,/openlist_portal_registration:[\\s\\S]*?type: boolean\\s*\\n\\s*default: false/);
+  assert.match(release,/openlist_portal_registration:\s*\n\s*description:.*live driver E2E/);
+  assert.match(release,/openlist_portal_registration:[\s\S]*?type: boolean\s*\n\s*default: false/);
   assert.match(release.slice(attach,attach+400),
     /if: inputs.worker == 'openlist-mcp-worker' && inputs.openlist_portal_registration == true/);
   assert.match(release,/github\.event_name == 'workflow_dispatch'/);
