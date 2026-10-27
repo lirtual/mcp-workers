@@ -1,12 +1,8 @@
 name: OpenList Driver Acceptance
 
-# Independent of release and Portal registration. Manual driver acceptance
-# may leave a disposable fixture only with explicit write authorization.
-# Scheduled integrity checks are read-only; no automatic repair or retry.
+# Manual-only driver and Portal flows; no scheduled checks.
+# Fixture writes need explicit approval.
 on:
-  # Read-only drift detection; no file, KV or Worker writes.
-  schedule:
-    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       confirm_disposable_write:
@@ -24,24 +20,6 @@ permissions:
   contents: read
 
 jobs:
-  upstream-integrity:
-    name: Hourly OpenList public storage health (no secrets, no writes)
-    if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    concurrency:
-      group: openlist-upstream-integrity
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Verify public OpenList storage availability without credentials
-        run: node scripts/openlist-upstream-integrity.mjs public
-
   driver-e2e:
     name: Live OpenList MCP / Koofr driver E2E (no deploy)
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true }}
