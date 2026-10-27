@@ -226,3 +226,30 @@ export async function readWindowsUpgrade(
   const record = await store.get<StoredUpgrade>(key(operationId));
   return record ? { state: record.state, preview: publicPreview(record) } : null;
 }
+
+/** The signed *new* Agent must first report a completed local receipt. Only
+ * this final atomic ledger transition permits another explicitly approved
+ * upgrade later; an ACK or a version string alone never grants completion.
+ */
+export async function markWindowsUpgradeCompleted(
+  store: Store, operationId: string, deviceId: string,
+): Promise<boolean> {
+  if (!OPERATION.test(operationId) || !UUID.test(deviceId)) return false;
+  return store.transaction(async tx => {
+    const previous = await tx.get<StoredUpgrade>(key(operationId));
+    if (!previous || !["claimed","needs_attention"].includes(previous.state) ||
+        previous.device_id !== deviceId ||
+        await tx.get<string>(lock(deviceId)) !== operationId) return false;
+    const device = await tx.get<V2Device>("device:"+deviceId);
+    if (!deviceIsAuthorized(device) || device.grant_type === "temporary" ||
+        device.device_id !== previous.device_id ||
+        device.fingerprint !== previous.fingerprint ||
+        device.device_info?.os !== "windows" ||
+        device.device_info?.arch !== "x64" ||
+        device.device_info?.environment !== "native" ||
+        device.device_info?.agent_version !== previous.target.tag ||
+        device.device_info?.upgrade_protocol !== "owner-one-shot-v1") return false;
+    await tx.put(key(operationId),{...previous,state:"completed"});
+    return true;
+  });
+}
