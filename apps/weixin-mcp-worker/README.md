@@ -1,9 +1,9 @@
 # Weixin MCP Worker · implementation status (Spec #346)
 
-This directory contains a **non-production first implementation slice** plus an owner-supervised local PoC. No production Cloudflare credentials, D1 databases, Worker routes or Access policies have been created by this PR.
+This directory contains the staged production Worker code plus an owner-supervised local PoC. Read-only Cloudflare inventory now confirms the dedicated production D1 `weixin-mcp-db` and owner-only Access application `Weixin MCP Setup`. The Worker script itself has **not been deployed**; no Portal registration or production QR owner acceptance has been completed.
 
 ## Implemented
-- `/mcp` ingress at the exact configured `MCP_HOST` over HTTPS, with shared Portal Bearer authentication and a separate business domain. A separate HTTPS `ADMIN_HOST` implements Access JWT-verified owner-only `GET /setup` plus CSRF-protected QR start, scan poll, proof verification, local rebind and unbind forms. These routes exist in the Draft code but the Access policy and host have **not** been provisioned.
+- `/mcp` ingress at the exact configured `MCP_HOST` over HTTPS, with shared Portal Bearer authentication and a separate business domain. A separate HTTPS `ADMIN_HOST` implements Access JWT-verified owner-only `GET /setup` plus CSRF-protected QR start, scan poll, proof verification, local rebind and unbind forms. These routes exist in Draft code, and the owner-only Access application has been provisioned; this does **not** establish a live Worker endpoint or browser acceptance.
 - Exactly two MCP tools: `weixin_status` (read only) and `weixin_send_message` (explicit external write). `text` and caller-generated UUID `request_id` are the only send arguments. `status=accepted` is upstream acceptance, **never** handset delivery.
 - D1 migration `migrations/0001_owner.sql`: singleton generation-bound binding row, encrypted expiring QR/pairing staging row, and immutable-on-unknown send receipts; no message history or plaintext QR/token/proof/text columns.
 - Per-generation AES-GCM associated-data protection for account tokens, recipient/context and cursor; tested cross-generation decryption refusal. Credentials and incoming messages must never be logged.
@@ -13,7 +13,7 @@ This directory contains a **non-production first implementation slice** plus an 
 ## Verification (no provider writes)
 The Draft check pipeline now includes `tests/workerd.test.mjs` after the Wrangler dry-run bundle. It uses the same pinned Miniflare already used by OpenList: a fully local Workerd process and disposable D1 database execute the actual migration, MCP ingress, durable lease/receipt operations, and application QR→owner-proof→generation-switch logic with injected **synthetic** Tencent responses. It cannot create Cloudflare resources, call the real Tencent API, or replace an actual account-owner acceptance.
 
-**Verification status:** these new runtime tests have been committed but have **not yet completed a CI run at the current HEAD**. Earlier 49/49 Weixin application/PoC checks and whole-repository CI Success apply only to commit `1620e2d1`. Do not promote this added coverage to Pass until a matching-SHA runner finishes.
+**Verification status:** local workerd/D1, application and protocol checks passed in [manual offline CI #40471021462](https://github.com/lirtual/mcp-workers/actions/runs/40471021462), before the subsequent main-branch integration. The later combined branch must pass its own matching-SHA checks before release. Local workerd testing is not cloud-side production acceptance.
 
 Run `corepack pnpm --filter weixin-mcp-worker check`. The local tests cover authenticated MCP `tools/list`, denied ingress, status and nonready send, D1 SQLite constraints, encryption, duplicate send IDs, unknown outcomes and concurrent same-ID calls, plus PoC mocks.
 
@@ -26,10 +26,10 @@ The Node tests use SQLite for fast D1-compatible statement regression; the new M
 4. Local unbind increments the generation, clears active credentials and scrubs staging ciphertext; **this does not revoke any upstream Tencent credential**. Rebinding also does not establish handset delivery or idle-session reliability.
 
 ## Not yet implemented / hard blockers
-- Current-head CI for the new local workerd D1 suite and signed Access browser flow is still unconfirmed. Deployed Cloudflare D1, Access policy and multi-request QR acceptance remain independently pending.
+- Current-head CI after integrating `main` and the latest release-documentation checks must pass. Live deployed Cloudflare Worker, authenticated owner browser QR and multi-request D1 acceptance remain independently pending.
 - Independent review of the pinned QR encoder and Tencent QR expiry/verification behavior; local protocol responses are synthetic, not evidence of Tencent production compatibility.
 - Durable ciphertext key rotation orchestration, anti-enumeration/rate limiting under multi-region concurrent requests.
-- Actual Wrangler D1 database ID/routing, owner Access policy, production secrets, Portal registration, ChatGPT tool invocation, real Cloudflare D1/Access acceptance, idle/reactivation checks.
+- Dedicated production D1 and Access are already provisioned; verified production Worker deployment, GitHub Environment encryption Secret, Portal registration, authenticated ChatGPT call, cloud-side browser acceptance and idle/reactivation checks remain pending.
 - Main-only authorized release gate remains deliberately closed; CI success is not deploy approval.
 
-Do **not** introduce a placeholder production database ID or default route just to make a dry run pass. The deployment wiring requires separate authorization and owned Cloudflare resources. Keep PR #348 Draft, Issue #346 open.
+Use only the real reviewed `weixin-mcp-db` database ID and dual production custom domains; never substitute staging/preview routes or store encryption keys in Git. Follow main-only manual release gates. Keep PR #348 Draft, Issue #346 open.
