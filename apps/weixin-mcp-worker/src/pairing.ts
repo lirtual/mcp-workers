@@ -34,7 +34,8 @@ async function ownerDigest(sub:string):Promise<string>{
 }
 async function rowForOwner(env:Env,sub:string):Promise<PairRow|null>{
   const row=await env.DB.prepare('SELECT * FROM weixin_pairing WHERE id=1').first<PairRow>();
-  if(row && row.owner_digest!==await ownerDigest(sub))fail('pairing_owner_changed');
+  if(row && row.owner_digest!==await ownerDigest(sub) && row.phase!=='expired' && row.expires_at>now())
+    fail('pairing_owner_changed');
   return row;
 }
 async function secret(env:Env,row:PairRow):Promise<PairSecret>{
@@ -195,10 +196,9 @@ export async function verifyPairing(
       "session_key_id=?,last_verified_context_at=?,last_sync_at=?,updated_at=?,"+
       "lease_holder=NULL,lease_until=NULL "+
       "WHERE id=1 AND generation=? AND state=? AND lease_holder=? AND lease_until>? "+
-      "AND (session_ciphertext IS ? OR session_ciphertext=?)"
+      "AND session_ciphertext IS ?"
     ).bind(next,encrypted.ciphertext,encrypted.keyId,now(),now(),now(),
-      row.generation,binding.state,lease.owner,now(),binding.session_ciphertext,
-      binding.session_ciphertext).run();
+      row.generation,binding.state,lease.owner,now(),binding.session_ciphertext).run();
     if(saved.meta.changes!==1)fail('binding_changed');
     // If this cleanup fails, the generation fence still makes the old QR inert.
     await env.DB.prepare("UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL "+
