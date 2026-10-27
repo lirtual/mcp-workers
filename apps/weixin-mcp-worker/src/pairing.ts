@@ -133,10 +133,11 @@ export async function pollPairing(
     await current(env,row);
     const t=now();
     if(['expired','verify_code_blocked','binded_redirect'].includes(scan.status)){
-      await env.DB.prepare(
+      const discarded=await env.DB.prepare(
         "UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL "+
         "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending'"+fence
       ).bind(row.generation,row.session_id,lease.generation,lease.owner,now()).run();
+      if(discarded.meta.changes!==1)fail('pairing_changed');
       return 'expired';
     }
     if(scan.status==='confirmed'){
