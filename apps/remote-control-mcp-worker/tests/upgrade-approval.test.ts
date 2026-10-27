@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade,
+  prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, cancelPreparedOwnerUpgrade,
   claimOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain,
   markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted,
   readOwnerUpgrade, UPGRADE_APPROVAL_TTL_MS, UPGRADE_UNCONFIRMED_ATTENTION_MS,
@@ -76,6 +76,46 @@ test("Issue #39 prepared upgrade is inert; GET preview is not approval; one-use 
   assert.equal((await prepareOwnerUpgrade(f.store, preview.operation_id, DEVICE, PIN, NOW + 50)).status, "existing");
   assert.equal((await prepareOwnerUpgrade(f.store, "different-operation", DEVICE, PIN, NOW + 50)).status, "refused",
     "a claimed unknown outcome guards the entire device");
+});
+
+test("owner cancellation is atomic, inert, non-replayable and releases only the prepared reservation",async()=>{
+  const f=fixture(),p=await start(f,"cancel-prepared");
+  const form=await presentOwnerUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+  assert.ok(form);
+  assert.equal(await cancelPreparedOwnerUpgrade(f.store,p.preview.operation_id,
+    p.confirmation,"f".repeat(64),NOW+2),false);
+  assert.equal(await cancelPreparedOwnerUpgrade(f.store,p.preview.operation_id,
+    p.confirmation,form!.form_token,NOW+3),true);
+  assert.equal((await readOwnerUpgrade(f.store,p.preview.operation_id))?.state,"cancelled");
+  assert.equal(await cancelPreparedOwnerUpgrade(f.store,p.preview.operation_id,
+    p.confirmation,form!.form_token,NOW+4),false);
+  assert.equal(await confirmOwnerUpgrade(f.store,p.preview.operation_id,
+    p.confirmation,form!.form_token,NOW+4),false);
+  assert.equal(await claimOwnerUpgradeDispatch(f.store,p.preview.operation_id,NOW+5),null);
+  assert.equal((await prepareOwnerUpgrade(f.store,"new-after-cancel",DEVICE,PIN,NOW+6)).status,"prepared");
+  assert.equal((await prepareOwnerUpgrade(f.store,p.preview.operation_id,DEVICE,PIN,NOW+6)).status,"existing");
+});
+
+test("a claimed or concurrently confirmed operation cannot be cancelled or silently unlocked",async()=>{
+  for(const first of ["confirm","cancel"] as const){
+    const f=fixture(),p=await start(f,"cancel-race");
+    const form=await presentOwnerUpgrade(f.store,p.preview.operation_id,p.confirmation,NOW+1);
+    assert.ok(form);
+    const confirm=()=>confirmOwnerUpgrade(f.store,p.preview.operation_id,
+      p.confirmation,form!.form_token,NOW+2);
+    const cancel=()=>cancelPreparedOwnerUpgrade(f.store,p.preview.operation_id,
+      p.confirmation,form!.form_token,NOW+2);
+    const results=await Promise.all(first==="confirm"?[confirm(),cancel()]:[cancel(),confirm()]);
+    assert.deepEqual(results,[true,false],"the first terminal transition wins the DO lock");
+    if(first==="confirm"){
+      assert.ok(await claimOwnerUpgradeDispatch(f.store,p.preview.operation_id,NOW+3));
+      assert.equal(await cancel(),false);
+      assert.equal((await prepareOwnerUpgrade(f.store,"must-stay-locked",DEVICE,PIN,NOW+4)).status,
+        "refused");
+    }else{
+      assert.equal(await claimOwnerUpgradeDispatch(f.store,p.preview.operation_id,NOW+3),null);
+    }
+  }
 });
 
 test("no owner POST, expired or mismatching GET tokens and CSRF cannot approve", async () => {
