@@ -88,6 +88,9 @@ test('valid signed Access identity sees sanitized state; CSRF and explicit confi
   assert.doesNotMatch(page,/portal-secret|super-secret-token|OWNER_EMAIL/);
   assert.equal(get.headers.get('cache-control'),'no-store');
   assert.match(get.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
+  // A no-referrer response makes navigation-mode HTML form POSTs send Origin: null.
+  // Keep same-origin CSRF enforcement functional without disclosing cross-site referrers.
+  assert.equal(get.headers.get('referrer-policy'),'same-origin');
   const cookie=get.headers.get('set-cookie')?.split(';')[0];
   assert.match(cookie??'',/^weixin_setup_csrf=[A-Za-z0-9_-]{40,64}$/);
   const csrf=cookie!.split('=')[1];
@@ -97,6 +100,7 @@ test('valid signed Access identity sees sanitized state; CSRF and explicit confi
     },body:new URLSearchParams(params).toString()});
   for(const [params,origin] of [
     [{csrf,confirm:'local_unbind'},'https://malicious.example.org'],
+    [{csrf,confirm:'local_unbind'},'null'],
     [{csrf:'wrong',confirm:'local_unbind'},'https://'+HOST],
     [{csrf},'https://'+HOST],
   ] as const){
