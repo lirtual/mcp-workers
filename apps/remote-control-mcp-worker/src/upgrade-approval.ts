@@ -30,7 +30,7 @@ export interface UpgradeApprovalPreview {
   target: ReviewedUpgradePin;
   expires_at: number;
 }
-export type UpgradeApprovalState = "prepared" | "approved" | "cancelled" | "claimed" | "completed" | "needs_attention";
+export type UpgradeApprovalState = "prepared" | "approved" | "cancelled" | "claimed" | "completed" | "rolled_back" | "needs_attention";
 interface StoredUpgrade extends UpgradeApprovalPreview {
   state: UpgradeApprovalState;
   confirmation_digest: string;
@@ -285,6 +285,34 @@ export async function markStaleOwnerUpgradeAttention(
         now < record.approved_at + UPGRADE_UNCONFIRMED_ATTENTION_MS ||
         await tx.get<string>(lock(record.device_id)) !== operationId) return false;
     await tx.put(key(operationId), {...record,state:"needs_attention"});
+    return true;
+  });
+}
+
+/** The OLD Linux Agent can report a verified local service rollback only
+ * after a fresh signed WSS incarnation and a narrowly classified SQLite
+ * receipt. Keep the one-shot device guard even after terminal restoration.
+ */
+export async function markOwnerUpgradeRolledBack(
+  store: Store, operationId: string, deviceId: string, observedEpoch: string,
+): Promise<boolean> {
+  if (!OPERATION.test(operationId) || !UUID.test(deviceId) ||
+      !observedEpoch || typeof observedEpoch !== "string") return false;
+  return store.transaction(async tx => {
+    const previous = await tx.get<StoredUpgrade>(key(operationId));
+    if (!previous || !["claimed","needs_attention"].includes(previous.state) ||
+        !("linux_asset_sha256" in previous.target) ||
+        previous.device_id !== deviceId ||
+        await tx.get<string>(lock(deviceId)) !== operationId)return false;
+    const epoch=await tx.get<string>("session:epoch:"+deviceId);
+    if (!previous.claimed_epoch || epoch!==observedEpoch ||
+        epoch===previous.claimed_epoch)return false;
+    const device=await tx.get<V2Device>("device:"+deviceId);
+    if (!deviceIsAuthorized(device) || device.grant_type==="temporary" ||
+        device.device_id!==deviceId || device.fingerprint!==previous.fingerprint ||
+        !matchingPlatform(previous.target,device) ||
+        device.device_info?.agent_version!==previous.current_version)return false;
+    await tx.put(key(operationId),{...previous,state:"rolled_back"});
     return true;
   });
 }
