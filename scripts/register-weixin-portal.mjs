@@ -3,7 +3,31 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
+const ACCESS_APPS = ['6260cc46-4f44-4a95-a550-ad68ae4d0cfa', '3530fecd-7afa-4489-81f2-9e4a810a5c4d'];
+const EXPECTED_POLICIES = ['7cec582c-4038-4fb0-9ad8-fcdb04af4adc', '659d043c-e957-4c91-9f33-2416c52ecbe5'];
+async function verifyWeixinAccess(env, transport) {
+  const apps = [];
+  for (const id of ACCESS_APPS) {
+    const res = await transport(new Request('https://api.cloudflare.com/client/v4/accounts/' + env.CLOUDFLARE_ACCOUNT_ID + '/access/apps/' + id, {headers:{authorization:'Bearer ' + env.CLOUDFLARE_API_TOKEN,accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(15000)}));
+    if (!res.ok || res.redirected) throw Error('portal_access_read_unavailable');
+    const body = await res.json();
+    if(body.success!==true || !body.result) throw Error('portal_access_read_unavailable');
+    apps.push(body.result);
+  }
+  assert.equal(apps[0].name,'One-MCP','portal_access_identity_drift');
+  assert.equal(apps[0].type,'mcp_portal','portal_access_identity_drift');
+  assert.equal(apps[0].domain,'mcp.lirtual.dpdns.org','portal_access_identity_drift');
+  assert.equal(apps[1].name,'Weixin','portal_access_identity_drift');
+  assert.equal(apps[1].type,'mcp','portal_access_identity_drift');
+  for (const app of apps) {
+    assert.deepEqual((app.policies??[]).map(p=>p.id),EXPECTED_POLICIES,'portal_access_policy_drift');
+    assert.deepEqual((app.policies??[]).map(p=>p.decision),['non_identity','allow'],'portal_access_policy_drift');
+    assert.deepEqual((app.policies??[]).map(p=>p.reusable),[true,true],'portal_access_policy_drift');
+    assert.deepEqual((app.policies??[]).map(p=>p.precedence),[1,2],'portal_access_policy_drift');
+    assert.deepEqual((app.policies??[]).map(p=>p.include?.map(x=>Object.keys(x))),[[['service_token']],[['email'],['email'],['email']]],'portal_access_policy_drift');
+  }
+}
+
 import { portalServerMapping, assertSamePortalMappings } from './register-workflow-portal.mjs';
 
 const ORIGIN = 'https://weixin-mcp.lirtual.dpdns.org/mcp';
@@ -76,7 +100,7 @@ export async function attachWeixinPortal(env, transport=fetch) {
   assert.equal(detail.auth_type,'bearer','portal_weixin_auth_drift');
   assert.deepEqual((detail.tools??[]).map(x=>x.name).sort(),WEIXIN_TOOLS,
     'portal_weixin_tool_inventory_drift');
-  await verifyMcpAccessPolicies(env,{id:'weixin',name:'Weixin'},transport);
+  await verifyWeixinAccess(env,transport);
   console.log('WEIXIN_ACCESS_POLICIES_VERIFIED');
   console.log('WEIXIN_PORTAL_TOOLS_SYNCED');
   const fresh=portalPlan(await request('GET','/portals/one-mcp'));
