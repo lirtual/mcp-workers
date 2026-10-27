@@ -15,7 +15,7 @@ const folder = `${ROOT}/mcp-spec309-e2e-${env.GITHUB_RUN_ID}-1`;
 const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
-function fakeTransport({rootOccupied = false,failUpload = false} = {}) {
+function fakeTransport({rootOccupied = false,failUpload = false,authEnv = env} = {}) {
   const requests = [];
   let made = false, uploaded = false;
   const response = (name, target, observed_state, isError = false, code = 'OK') =>
@@ -27,7 +27,7 @@ function fakeTransport({rootOccupied = false,failUpload = false} = {}) {
     if (url.pathname === '/api/fs/put') {
       requests.push('upload');
       assert.equal(req.method,'PUT');
-      assert.equal(req.headers.get('authorization'),env.OPENLIST_API_TOKEN);
+      assert.equal(req.headers.get('authorization'),authEnv.OPENLIST_API_TOKEN);
       assert.equal(decodeURIComponent(req.headers.get('file-path')),file);
       assert.equal(await req.text(),fixture);
       if (failUpload) return Response.json({code:500,data:null});
@@ -35,7 +35,7 @@ function fakeTransport({rootOccupied = false,failUpload = false} = {}) {
       return Response.json({code:200,data:null});
     }
     assert.equal(url.pathname,'/mcp');
-    assert.equal(req.headers.get('authorization'),'Bearer '+env.MCP_ACCESS_TOKEN);
+    assert.equal(req.headers.get('authorization'),'Bearer '+authEnv.MCP_ACCESS_TOKEN);
     const rpc=await req.json();
     const name=rpc.params.name,args=rpc.params.arguments;
     requests.push(name);
@@ -101,4 +101,26 @@ test('ambiguous fixture write is not repeated or followed by further tool calls'
   await assert.rejects(()=>runOpenListDriverAcceptance(env,transport),/fixture_write_unknown/);
   assert.equal(requests.filter(x=>x==='upload').length,1);
   assert.equal(requests.at(-1),'upload');
+});
+
+test('short nonempty Secret values use the deployed auth contract, not an arbitrary length gate',async()=>{
+  const authEnv = {...env,MCP_ACCESS_TOKEN:'mcp123',OPENLIST_API_TOKEN:'api789'};
+  const {transport,requests}=fakeTransport({authEnv});
+  const result=await runOpenListDriverAcceptance(authEnv,transport);
+  assert.equal(result.tested.length,6);
+  assert.equal(requests.filter(x=>x==='upload').length,1);
+});
+test('empty, whitespace-padded and CRLF tokens fail before network operations',async()=>{
+  const {transport,requests}=fakeTransport();
+  for (const invalid of ['', ' ', ' bearer', 'bearer ', 'hello\\r\\nworld']) {
+    await assert.rejects(
+      ()=>runOpenListDriverAcceptance({...env,MCP_ACCESS_TOKEN:invalid},transport),
+      /missing_mcp_token/,
+    );
+    await assert.rejects(
+      ()=>runOpenListDriverAcceptance({...env,OPENLIST_API_TOKEN:invalid},transport),
+      /missing_upstream_token/,
+    );
+  }
+  assert.deepEqual(requests,[]);
 });
