@@ -1,6 +1,6 @@
 # MCP Worker ingress policy
 
-This is the ingress policy for the three MCP Workers maintained in this repository.
+This document defines the shared ingress policy for MCP Workers published through the One-MCP Portal. The endpoints below are a maintained subset, **not** a complete production inventory.
 
 ## Unified policy
 
@@ -21,6 +21,7 @@ The Cloudflare account workers.dev subdomain is `aiyaya.workers.dev`.
 | IMA | `ima-mcp-worker` | `https://ima-mcp-worker.aiyaya.workers.dev/mcp` |
 | Raindrop | `raindrop-mcp-worker` | `https://raindrop-mcp-worker.aiyaya.workers.dev/mcp` |
 | Database | `database-mcp-worker` | `https://database-mcp-worker.aiyaya.workers.dev/mcp` |
+| OpenList | `openlist-mcp-worker` | `https://openlist-mcp-worker.aiyaya.workers.dev/mcp` |
 
 An endpoint listed here is not evidence of a successful production deployment. Deployment, Portal discovery, representative safe tool execution, and logs must be verified separately.
 
