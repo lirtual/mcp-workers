@@ -10,7 +10,7 @@ function fixture(online: boolean) {
       public_key:"signed-fixture",fingerprint:"0123456789abcdef01234567",
       revoked:false,grant_type:"permanent",approved_at:Date.now()-60_000,
       device_info:{os:"windows",environment:"native",arch:"x64",
-        agent_version:"v0.1.31-rc.1"}}],
+        agent_version:"v0.1.31-rc.1",upgrade_protocol:"owner-one-shot-v1"}}],
     ["session:epoch:"+DEVICE,"signed-session-epoch"],
   ]);
   let tail = Promise.resolve();
