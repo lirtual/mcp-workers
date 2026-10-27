@@ -20,10 +20,28 @@ const FAKE_PIN:ReviewedLinuxUpgradePin={
   linux_arm64_asset_sha256:"c".repeat(64),
   protocol:"owner-one-shot-v1",
 };
-test("no verified Linux one-shot Release exists: production selector is inert",()=>{
-  assert.equal(REVIEWED_LINUX_UPGRADE_PIN,null);
-  assert.equal(reviewedLinuxUpgradeTarget(DEVICE),null);
+test("production Linux one-shot target uses only the verified immutable Release",()=>{
+  assert.deepEqual(REVIEWED_LINUX_UPGRADE_PIN,{
+    tag:"v0.1.33",
+    commit:"43a1a423a08be0379f5f8c6899d86a053248112e",
+    linux_x64_asset_sha256:"dad51aab391f4ac10097a798531b398368433e4d2490c63ca22ba79281af7666",
+    linux_arm64_asset_sha256:"89549d7daf1bd399e5c9dafbcc69765a34daafe2cc385c1c69aa80e462369095",
+    protocol:"owner-one-shot-v1",
+  });
+  for(const [arch,sha] of [
+    ["x64","dad51aab391f4ac10097a798531b398368433e4d2490c63ca22ba79281af7666"],
+    ["arm64","89549d7daf1bd399e5c9dafbcc69765a34daafe2cc385c1c69aa80e462369095"],
+  ] as const){
+    const device:V2Device={...DEVICE,device_info:{...DEVICE.device_info!,arch}};
+    assert.deepEqual(reviewedLinuxUpgradeTarget(device),{
+      tag:"v0.1.33",commit:"43a1a423a08be0379f5f8c6899d86a053248112e",arch,
+      asset_name:"remote-control-agent-v0.1.33-linux-"+arch+"-glibc.tar.gz",
+      asset_sha256:sha,
+      release_url:"https://github.com/lirtual/remote-control-agent/releases/download/v0.1.33/remote-control-agent-v0.1.33-linux-"+arch+"-glibc.tar.gz",
+    });
+  }
   assert.equal(reviewedLinuxUpgradeTarget(undefined),null);
+  assert.equal(reviewedLinuxUpgradeTarget({...DEVICE,grant_type:"temporary"}),null);
 });
 test("isolated simulated immutable Linux x64/ARM64 pins select exact official assets",()=>{
   for(const [arch,sha] of [["x64","b"],["arm64","c"]] as const){
