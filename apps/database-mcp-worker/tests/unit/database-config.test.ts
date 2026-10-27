@@ -46,7 +46,9 @@ describe('flat DATABASE_CONFIG', () => {
       { primary: { hyperdrive: 'PG', dialect: 'postgres', maxRows: 10 } },
       { 'bad id': 'mysql://u:p@h/db' },
       { primary: 'ftp://u:p@h/db' },
-      { primary: 'mysql://u:p@h/db?ssl=true' }
+      { primary: 'mysql://u:p@h/db?ssl=true' },
+      { primary: 'mysql://u:p@h/db?sslmode=disable' },
+      { primary: 'postgres://u:p@h/db?rejectUnauthorized=false' }
     ]) expect(() => parseDatabaseConfig(JSON.stringify(config))).toThrow(PublicError);
     expect(() => parseDatabaseConfig('[]')).toThrow(PublicError);
     expect(() => parseDatabaseConfig('{}')).toThrow(PublicError);

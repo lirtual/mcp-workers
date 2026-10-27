@@ -65,31 +65,10 @@ function decodeUrlPart(value: string, connectionId: string): string {
   }
 }
 
-function directUrlRequestsTls(url: URL): boolean {
-  for (const [rawKey, rawValue] of url.searchParams) {
-    const key = rawKey.toLowerCase();
-    const value = rawValue.trim().toLowerCase();
-
-    if (key === 'sslmode' || key === 'ssl-mode') {
-      if (value === 'disable' || value === 'disabled') continue;
-      return true;
-    }
-
-    if (key === 'ssl' || key === 'tls') {
-      if (value === 'false' || value === '0' || value === 'disable' || value === 'disabled') continue;
-      return true;
-    }
-
-    if (
-      key.startsWith('ssl') ||
-      key.startsWith('tls') ||
-      key === 'rejectunauthorized' ||
-      key === 'reject-unauthorized'
-    ) {
-      return true;
-    }
-  }
-  return false;
+function hasUnsupportedDirectUrlOptions(url: URL): boolean {
+  // Driver-level URL parameters are never forwarded to clients. Reject all of
+  // them, particularly sslmode=disable and rejectUnauthorized=false.
+  return [...url.searchParams].length !== 0;
 }
 
 export function parseDirectDatabaseUrl(raw: string, connectionId: string): ParsedDirectUrl {
@@ -116,10 +95,10 @@ export function parseDirectDatabaseUrl(raw: string, connectionId: string): Parse
     throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' uses an unsupported direct database URL scheme.`);
   }
 
-  if (directUrlRequestsTls(url)) {
+  if (hasUnsupportedDirectUrlOptions(url)) {
     throw new PublicError(
       'INVALID_INPUT',
-      `Connection '${connectionId}' requests TLS in direct mode; use Hyperdrive for TLS-capable databases.`
+      `Connection '${connectionId}' has unsupported direct database URL options.`
     );
   }
 

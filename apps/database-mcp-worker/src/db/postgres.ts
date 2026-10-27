@@ -1,4 +1,5 @@
-import { Client } from 'pg';
+import type { Client } from 'pg';
+import { createPostgresClient } from './clients.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import { assertJsonWithinBytes, boundQueryResult, jsonSafe } from '../result.js';
 import { guardReadQuery, toReadLimitedSql } from '../sql/guard.js';
@@ -11,19 +12,8 @@ import type {
 } from '../types.js';
 import { withTimeout } from './timeout.js';
 
-function createClient(connection: EffectiveConnection): Client {
-  return new Client({
-    connectionString: connection.connectionString,
-    ...(connection.transport === 'direct' ? { ssl: false } : {}),
-    statement_timeout: connection.limits.queryTimeoutMs,
-    query_timeout: connection.limits.queryTimeoutMs,
-    connectionTimeoutMillis: Math.min(connection.limits.queryTimeoutMs, 5_000),
-    application_name: 'cloudflare-database-mcp'
-  });
-}
-
 async function withClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
-  const client = createClient(connection);
+  const client = createPostgresClient(connection);
   try {
     await withTimeout(client.connect(), Math.min(connection.limits.queryTimeoutMs, 5_000), () => {
       void client.end().catch(() => undefined);

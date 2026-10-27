@@ -1,0 +1,42 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { EffectiveConnection } from '../../src/types.js';
+
+const { mysqlConnect, postgresConstruct } = vi.hoisted(() => ({
+  mysqlConnect: vi.fn(), postgresConstruct: vi.fn()
+}));
+vi.mock('mysql2/promise', () => ({ createConnection: mysqlConnect }));
+vi.mock('pg', () => ({ Client: class {
+  constructor(options: unknown) { postgresConstruct(options); }
+  async connect() { /* fixture */ }
+  async query() { return { rows: [], fields: [] }; }
+  async end() { /* fixture */ }
+} }));
+
+import { mysqlHealthCheck } from '../../src/db/mysql.js';
+import { postgresHealthCheck } from '../../src/db/postgres.js';
+
+const direct = (dialect: 'mysql' | 'postgres'): EffectiveConnection => ({
+  config: { id: 'tls_test', transport: 'direct', url: `${dialect}://reader:secret@db.example.com/app` },
+  transport: 'direct', dialect,
+  connectionString: `${dialect}://reader:secret@db.example.com/app?sslmode=disable`,
+  host: 'db.example.com', user: 'reader', password: 'secret', database: 'app',
+  port: dialect === 'mysql' ? 3306 : 5432,
+  limits: { maxRows: 5, maxResultBytes: 1024, maxSchemaBytes: 1024, queryTimeoutMs: 1000 }
+});
+
+describe('Direct transport TLS invariant', () => {
+  it('passes verified TLS and hostname verification to mysql2', async () => {
+    mysqlConnect.mockResolvedValueOnce({ query: async () => [[], []], end: async () => undefined });
+    await mysqlHealthCheck(direct('mysql'));
+    expect(mysqlConnect).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true, verifyIdentity: true })
+    }));
+  });
+  it('does not let a PostgreSQL connection string override verified TLS', async () => {
+    await postgresHealthCheck(direct('postgres'));
+    expect(postgresConstruct).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true })
+    }));
+    expect(postgresConstruct.mock.lastCall?.[0]).not.toHaveProperty('connectionString');
+  });
+});

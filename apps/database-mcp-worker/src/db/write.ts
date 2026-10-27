@@ -1,22 +1,12 @@
-import { createConnection, type Connection } from 'mysql2/promise';
-import { Client as PgClient } from 'pg';
+import type { Connection } from 'mysql2/promise';
+import type { Client as PgClient } from 'pg';
+import { createPostgresClient, createMysqlClient } from './clients.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import type { BuiltWriteStatement } from '../sql/write.js';
 import type { EffectiveWriteConnection, WriteResult } from '../types.js';
 import { withTimeout } from './timeout.js';
 
 type MysqlPreparedValue = string | number | boolean | null;
-
-function createPostgresClient(connection: EffectiveWriteConnection): PgClient {
-  return new PgClient({
-    connectionString: connection.connectionString,
-    ...(connection.transport === 'direct' ? { ssl: false } : {}),
-    statement_timeout: connection.limits.queryTimeoutMs,
-    query_timeout: connection.limits.queryTimeoutMs,
-    connectionTimeoutMillis: Math.min(connection.limits.queryTimeoutMs, 5_000),
-    application_name: 'cloudflare-database-mcp'
-  });
-}
 
 async function withPostgresClient<T>(
   connection: EffectiveWriteConnection,
@@ -42,29 +32,6 @@ function postgresTimed<T>(
 ): Promise<T> {
   return withTimeout(query, connection.limits.queryTimeoutMs, () => {
     void client.end().catch(() => undefined);
-  });
-}
-
-async function createMysqlClient(connection: EffectiveWriteConnection): Promise<Connection> {
-  const pendingConnection = createConnection({
-    host: connection.host,
-    user: connection.user,
-    password: connection.password,
-    ...(connection.database.length === 0 ? {} : { database: connection.database }),
-    port: connection.port,
-    disableEval: true,
-    supportBigNumbers: true,
-    bigNumberStrings: true,
-    dateStrings: true,
-    multipleStatements: false,
-    connectTimeout: Math.min(connection.limits.queryTimeoutMs, 5_000)
-  });
-  const timeoutMs = Math.min(connection.limits.queryTimeoutMs, 5_000);
-  return withTimeout(pendingConnection, timeoutMs, () => {
-    void pendingConnection.then(
-      lateClient => lateClient.destroy(),
-      () => undefined
-    );
   });
 }
 
