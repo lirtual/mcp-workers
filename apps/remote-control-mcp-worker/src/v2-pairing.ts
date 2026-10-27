@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, cancelPreparedOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain, markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted, readOwnerUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, cancelPreparedOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain, markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted, markOwnerUpgradeRolledBack, readOwnerUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import {inspectReviewedLinuxUpgradeAsset,type ReviewedLinuxUpgradePin} from "./linux-upgrade-pin.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
@@ -752,7 +752,7 @@ export class V2OwnerCoordinator {
               }),true);
               if (result.ok) {
                 const answer=await result.json() as {
-                  status?:unknown;receipt?:{tool_name?:unknown;state?:unknown;operation_id?:unknown};
+                  status?:unknown;receipt?:{tool_name?:unknown;state?:unknown;operation_id?:unknown;safe_result_summary?:unknown};
                 };
                 if (answer.receipt?.operation_id === input.operation_id &&
                     answer.receipt.tool_name === "upgrade_agent") {
@@ -763,8 +763,14 @@ export class V2OwnerCoordinator {
                     status = "completed";
                   } else if (version === record.preview.current_version &&
                       answer.status === "failed" && answer.receipt.state === "failed" &&
-                      await markUpgradeDispatchUncertain(this.state.storage,input.operation_id)) {
-                    status = "needs_attention";
+                      (device?.device_info?.os === "linux" &&
+                       answer.receipt.safe_result_summary ===
+                         "Original Linux unit and identity restored; signed owner reconciliation required." &&
+                       await markOwnerUpgradeRolledBack(this.state.storage,
+                         input.operation_id,input.device_id,epoch!)
+                       ? (status = "rolled_back", false)
+                       : await markUpgradeDispatchUncertain(this.state.storage,input.operation_id))) {
+                    status = status === "rolled_back" ? "rolled_back" : "needs_attention";
                   }
                 }
               }
