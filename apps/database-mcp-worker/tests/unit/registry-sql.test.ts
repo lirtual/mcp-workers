@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, afterEach } from 'vitest';
-import { createRegistryConnection, listRegistryConnections, updateRegistryConnection,
+import { createRegistryConnection, getRegistryConnection, listRegistryConnections, updateRegistryConnection,
   setRegistryConnectionStatus, deleteRegistryConnection } from '../../src/registry/store.js';
 import type { D1Database } from '@cloudflare/workers-types';
 import { admitConnection, catalogMetadata } from "../../src/registry/admission.js";
-import { sealConnectionConfig } from "../../src/registry/crypto.js";
+import { sealConnectionConfig, openConnectionConfig } from "../../src/registry/crypto.js";
+import { rotateRegistryKeys } from "../../src/registry/rotation.js";
 
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
@@ -101,5 +102,25 @@ describe('fresh admission of a validated connection', () => {
       await setRegistryConnectionStatus(f.db, 'main', 2, 'disabled');
       await expect(admitConnection(env, 'main')).rejects.toMatchObject({ code: 'CONNECTION_DISABLED' });
     } finally { globalThis.fetch = previous; }
+  });
+});
+
+describe('bounded and resumable registry key rotation', () => {
+  it('preserves stored credentials across single-row re-encryption and resume', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    const old = { DATABASE_ENCRYPTION_KEY: btoa('a'.repeat(32)), DATABASE_KEY_ID: 'old' };
+    const next = { DATABASE_ENCRYPTION_KEY: btoa('b'.repeat(32)), DATABASE_KEY_ID: 'new',
+      DATABASE_ENCRYPTION_PREVIOUS_KEY: old.DATABASE_ENCRYPTION_KEY, DATABASE_PREVIOUS_KEY_ID: 'old' };
+    for (const id of ['one', 'two']) {
+      const sealed = await sealConnectionConfig(old, id, 'postgres', { url: 'postgres://u@db.example.net/catalog' });
+      await createRegistryConnection(f.db, { id, dialect: 'postgres', ciphertext: sealed.ciphertext, keyId: sealed.keyId });
+    }
+    expect(await rotateRegistryKeys(f.db, next, 1)).toEqual({ rotated: 1, pending: 1 });
+    expect(await rotateRegistryKeys(f.db, next, 1)).toEqual({ rotated: 1, pending: 0 });
+    expect(await rotateRegistryKeys(f.db, next, 1)).toEqual({ rotated: 0, pending: 0 });
+    const row = await getRegistryConnection(f.db, 'one');
+    expect(row?.key_id).toBe('new');
+    expect(await openConnectionConfig(next, row!.id, row!.dialect, { keyId: row!.key_id, ciphertext: row!.ciphertext }))
+      .toHaveProperty('url');
   });
 });
