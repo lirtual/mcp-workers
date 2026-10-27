@@ -1,0 +1,37 @@
+name: One-time repo-wide Cloudflare Hyperdrive auth diagnosis
+on:
+  push:
+    branches: [feat/database-spec-344]
+    paths: [.github/workflows/database-hyperdrive-global-auth-344.yml]
+permissions:
+  contents: read
+jobs:
+  check-global-token:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Check repository-scope Cloudflare Hyperdrive authorization without Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]]
+          node --input-type=module <<'NODE'
+          const api='https://api.cloudflare.com/client/v4';
+          const headers={Authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN,'Content-Type':'application/json'};
+          const account='8bb496011403552e785ea1b834daffdf';
+          for(const [kind,url,opt] of [
+            ['read',api+'/accounts/'+account+'/hyperdrive/configs',{method:'GET'}],
+            ['create_validation',api+'/accounts/'+account+'/hyperdrive/configs',{method:'POST',body:JSON.stringify({name:'db344-auth-validate-only',origin:{}})}]
+          ]){
+            const r=await fetch(url,{...opt,headers,signal:AbortSignal.timeout(15000)});
+            const data=await r.json().catch(()=>({}));
+            console.log(kind,JSON.stringify({http:r.status,success:data.success===true,codes:(data.errors||[]).map(e=>String(e.code).slice(0,10)).slice(0,3)}));
+            if(kind==='create_validation' && r.ok && data.result?.id) {
+              const d=await fetch(api+'/accounts/'+account+'/hyperdrive/configs/'+data.result.id,{method:'DELETE',headers,signal:AbortSignal.timeout(15000)});
+              console.log('unexpected_created_config_cleanup',d.status);
+              if(!d.ok) process.exitCode=1;
+            }
+          }
+          NODE
