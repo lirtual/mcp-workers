@@ -109,11 +109,15 @@ test("owner POST atomically claims approved intent and sends exactly one immutab
   const wrongDevice = await f.post("/upgrade/status",{operation_id:"full-chain-operation",
     device_id:"11111111-1111-4111-8111-111111111111"});
   assert.equal(wrongDevice.status,404);
+  const beforeReplay=f.counts();
+  const upgradeFramesBefore=f.frames.filter(frame=>frame.tool==="upgrade_agent").length;
   const replay=await f.post("/upgrade/confirm",{
     operation_id:"full-chain-operation",confirmation,form_token:form,
   });
   assert.equal(replay.status,409);
-  assert.equal(f.counts(),1,"repeat owner POST must never send a second WSS frame");
+  assert.equal(f.counts(),beforeReplay,"repeat owner POST cannot dispatch another WSS request");
+  assert.equal(f.frames.filter(frame=>frame.tool==="upgrade_agent").length,upgradeFramesBefore,
+    "a read-only status reconciliation is not an additional upgrade dispatch");
 });
 test("owner preview alone cannot claim and a bad CSRF cannot dispatch",async()=>{
   const f=fixture();
