@@ -15,7 +15,7 @@ const folder = `${ROOT}/mcp-spec309-e2e-${env.GITHUB_RUN_ID}-1`;
 const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
-function fakeTransport({rootOccupied = false,failUpload = false,authEnv = env} = {}) {
+function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,authEnv = env} = {}) {
   const requests = [];
   let made = false, uploaded = false;
   const response = (name, target, observed_state, isError = false, code = 'OK') =>
@@ -40,9 +40,11 @@ function fakeTransport({rootOccupied = false,failUpload = false,authEnv = env} =
     const name=rpc.params.name,args=rpc.params.arguments;
     requests.push(name);
     if(name==='openlist_list_files') {
-      if(args.path===ROOT) return response(name,args.path,{
-        total:made?1:rootOccupied?1:0,page:1,
-        entries:made?[{name:folder.split('/').at(-1),is_dir:true}]:rootOccupied?[{name:'existing.txt'}]:[]});
+      if(args.path===ROOT) {
+        const entries = [...rootEntries, ...(made?[{name:folder.split('/').at(-1),is_dir:true}]:[])];
+        return response(name,args.path,{
+          total:rootReportedTotal ?? entries.length,page:1,entries});
+      }
       if(args.path===folder) return response(name,args.path,{
         total:uploaded?1:0,page:1,
         entries:uploaded?[{name:file.split('/').at(-1),is_dir:false,size:new TextEncoder().encode(fixture).length}]:[]});
@@ -91,10 +93,40 @@ test('missing approval and non-reviewed roots refuse every request',async()=>{
   await assert.rejects(()=>runOpenListDriverAcceptance({...env,OPENLIST_ALLOWED_ROOTS:'["/"]'},transport),/unexpected_root/);
   assert.deepEqual(requests,[]);
 });
-test('pre-existing user file prevents all writes',async()=>{
-  const {transport,requests}=fakeTransport({rootOccupied:true});
-  await assert.rejects(()=>runOpenListDriverAcceptance(env,transport),/root_not_empty/);
-  assert.deepEqual(requests,['openlist_list_files']);
+test('retained prior fixture permits a new isolated run without touching older files',async()=>{
+  const previous = {name:'mcp-spec309-e2e-40447759574-1',is_dir:true};
+  const {transport,requests}=fakeTransport({rootEntries:[previous]});
+  const result=await runOpenListDriverAcceptance(env,transport);
+  assert.equal(result.folder,folder.split('/').at(-1));
+  assert.equal(requests.filter(x=>x==='upload').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_create_folder').length,2);
+  assert.equal(requests.includes('openlist_delete'),false);
+});
+
+test('user data, foreign directories, or reused run ID prevent all writes',async()=>{
+  for (const item of [
+    {name:'existing.txt',is_dir:false},
+    {name:'my-photos',is_dir:true},
+    {name:folder.split('/').at(-1),is_dir:true},
+    {name:'mcp-spec309-e2e-40447759574-1',is_dir:false},
+    {name:'mcp-spec309-e2e-40447759574-1',is_dir:true,path:'/Koofr/Other/forged'},
+  ]) {
+    const {transport,requests}=fakeTransport({rootEntries:[item]});
+    await assert.rejects(()=>runOpenListDriverAcceptance(env,transport),/root_not_isolated/);
+    assert.deepEqual(requests,['openlist_list_files']);
+  }
+});
+
+test('incomplete, excessive, or duplicate root metadata prevents writes',async()=>{
+  for (const options of [
+    {rootEntries:[],rootReportedTotal:101},
+    {rootEntries:[{name:'mcp-spec309-e2e-40447759574-1',is_dir:true}],rootReportedTotal:2},
+    {rootEntries:Array.from({length:2},()=>({name:'mcp-spec309-e2e-40447759574-1',is_dir:true}))},
+  ]) {
+    const {transport,requests}=fakeTransport(options);
+    await assert.rejects(()=>runOpenListDriverAcceptance(env,transport),/root_not_isolated/);
+    assert.deepEqual(requests,['openlist_list_files']);
+  }
 });
 test('ambiguous fixture write is not repeated or followed by further tool calls',async()=>{
   const {transport,requests}=fakeTransport({failUpload:true});
