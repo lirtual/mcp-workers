@@ -44,7 +44,7 @@ const lock = (deviceId: string) => "upgrade:device:" + deviceId;
 function newerWindowsVersion(target: string, current: string): boolean {
   const parse = (version: string) => {
     if (version.length > 64 || !RELEASE.test(version)) return null;
-    const groups = /^v([0-9]+)\\.([0-9]+)\\.([0-9]+)/.exec(version);
+    const groups = /^v([0-9]+)\.([0-9]+)\.([0-9]+)/.exec(version);
     if (!groups) return null;
     const parts = groups.slice(1).map(Number);
     return parts.every(Number.isSafeInteger) ? parts : null;
