@@ -709,20 +709,25 @@ export class V2OwnerCoordinator {
           return Response.json({error:"not_found"},{status:404});
         }
         let status = record.state;
-        // A signed WSS receipt from a new runtime, not an old ACK or
-        // persisted device version alone, is required for final completion.
+        // Reconcile only a freshly authenticated, currently reported socket.
+        // A restored old runtime can report a failed local rollback receipt,
+        // but must never release the guarded device lock or claim success.
         if (status === "claimed" || status === "needs_attention") {
           const device = await this.state.storage.get<V2Device>("device:"+input.device_id);
           const epoch = await this.state.storage.get<string>("session:epoch:"+input.device_id);
+          const version = device?.device_info?.agent_version;
           let reported = false;
           if (device && epoch && device.fingerprint === record.preview.fingerprint &&
-              device.device_info?.agent_version === record.preview.target.tag) {
+              (version === record.preview.target.tag || version === record.preview.current_version)) {
             for (const ws of this.state.getWebSockets("device:"+input.device_id)) {
               try {
                 const a = ws.deserializeAttachment() as {device_id?:unknown;
-                  epoch?:unknown;device_info_reported?:unknown} | null;
+                  epoch?:unknown;device_info_reported?:unknown;last_auth_check_at?:unknown} | null;
+                const last = a?.last_auth_check_at;
                 if (ws.readyState === WebSocket.OPEN && a?.device_id === input.device_id &&
-                    a.epoch === epoch && a.device_info_reported === true) {
+                    a.epoch === epoch && a.device_info_reported === true &&
+                    typeof last === "number" && last <= Date.now() &&
+                    Date.now() - last < 16 * 60_000) {
                   reported = true; break;
                 }
               } catch { /* An unreported or stale socket never verifies completion. */ }
@@ -742,12 +747,19 @@ export class V2OwnerCoordinator {
                 const answer=await result.json() as {
                   status?:unknown;receipt?:{tool_name?:unknown;state?:unknown;operation_id?:unknown};
                 };
-                if (answer.status === "completed" &&
-                    answer.receipt?.operation_id === input.operation_id &&
-                    answer.receipt.tool_name === "upgrade_agent" &&
-                    answer.receipt.state === "completed" &&
-                    await markWindowsUpgradeCompleted(this.state.storage,
-                      input.operation_id,input.device_id)) status = "completed";
+                if (answer.receipt?.operation_id === input.operation_id &&
+                    answer.receipt.tool_name === "upgrade_agent") {
+                  if (version === record.preview.target.tag &&
+                      answer.status === "completed" && answer.receipt.state === "completed" &&
+                      await markWindowsUpgradeCompleted(this.state.storage,
+                        input.operation_id,input.device_id)) {
+                    status = "completed";
+                  } else if (version === record.preview.current_version &&
+                      answer.status === "failed" && answer.receipt.state === "failed" &&
+                      await markUpgradeDispatchUncertain(this.state.storage,input.operation_id)) {
+                    status = "needs_attention";
+                  }
+                }
               }
             } catch { /* Uncertain upgrade remains guarded and queryable. */ }
           }
