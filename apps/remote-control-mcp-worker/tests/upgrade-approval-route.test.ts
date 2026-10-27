@@ -34,11 +34,11 @@ test("upgrade confirmation URLs fail closed when a separate Access app isn't con
 });
 test("forged owner JWT, arbitrary target and wrong route cannot approve", async () => {
   const f = fixture();
-  const env = Object.assign(f.env as Record<string,unknown>, {
+  const env = Object.assign(f.env as unknown as Record<string,unknown>, {
     REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com",
     REMOTE_CONTROL_UPGRADE_ACCESS_AUD: "1".repeat(64),
     REMOTE_CONTROL_UPGRADE_OWNER_EMAIL: "owner@example.test",
-  }) as Env;
+  }) as unknown as Env;
   const badPaths = [
     "https://evil.example/upgrade-approve/op-123/" + "a".repeat(64),
     "https://rca.lirtual.dpdns.org/upgrade-approve/op-123/" + "a".repeat(64) + "?extra=true",
