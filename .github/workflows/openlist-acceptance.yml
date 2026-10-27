@@ -1,7 +1,8 @@
 name: OpenList Driver Acceptance
 
-# Independent of release and Portal registration. Intentionally leaves one
-# disposable directory and tiny text file; no automatic delete or write retry.
+# Independent of release and Portal registration. Manual driver acceptance
+# may leave a disposable fixture only with explicit write authorization.
+# Scheduled integrity checks are read-only; no automatic repair or retry.
 on:
   # Read-only drift detection; no file, KV or Worker writes.
   schedule:
