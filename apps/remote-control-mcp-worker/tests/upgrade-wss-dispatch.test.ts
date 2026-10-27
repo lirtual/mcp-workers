@@ -61,7 +61,7 @@ test("approved owner POST consumes once, sends one exact signed WSS admission, n
   const p=await f.send("/upgrade/prepare",{
     device_id:DEVICE,operation_id:"one-wss-upgrade",target:REVIEWED_WINDOWS_UPGRADE_PIN,
   });
-  assert.equal(p.code,200);
+  assert.equal(p.code,200,JSON.stringify(p.data));
   assert.equal(p.data.status,"prepared");
   assert.equal(f.frames.length,0);
   const preview=await f.send("/upgrade/preview",{
@@ -102,7 +102,7 @@ test("WSS offline after preparation consumes confirmed approval without dispatch
   const p=await f.send("/upgrade/prepare",{
     device_id:DEVICE,operation_id:"no-wss-upgrade",target:REVIEWED_WINDOWS_UPGRADE_PIN,
   });
-  assert.equal(p.code,200);
+  assert.equal(p.code,200,JSON.stringify(p.data));
   const view=await f.send("/upgrade/preview",{
     operation_id:"no-wss-upgrade",confirmation:p.data.confirmation,
   });
