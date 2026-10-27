@@ -1,0 +1,53 @@
+name: One-time Aiven Hyperdrive verified TLS creation
+on:
+  push:
+    branches: [feat/database-spec-344]
+    paths: [.github/workflows/database-hyperdrive-ca-proof-344.yml]
+permissions:
+  contents: read
+jobs:
+  aiven-ca-proof:
+    runs-on: ubuntu-latest
+    environment: database-mcp-worker
+    timeout-minutes: 5
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      POSTGRES_TEST_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
+      MYSQL_TEST_PASSWORD: ${{ secrets.DATABASE_TEST_MYSQL_PASSWORD }}
+    steps:
+      - name: One-time strict TLS connection verification and cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const api='https://api.cloudflare.com/client/v4/accounts/8bb496011403552e785ea1b834daffdf/hyperdrive/configs';
+          const headers={authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN,'content-type':'application/json'};
+          const ca='c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a';
+          const cases=[
+            {dialect:'postgres',host:'postgresql-zeroverse.d.aivencloud.com',database:'database-mcp-test-postgres',sslmode:'verify-full',secret:process.env.POSTGRES_TEST_PASSWORD},
+            {dialect:'mysql',host:'mysql-zeroverse.d.aivencloud.com',database:'database-mcp-test-mysql',sslmode:'VERIFY_IDENTITY',secret:process.env.MYSQL_TEST_PASSWORD}
+          ];
+          let failures=0;
+          for(const test of cases){
+            if(!test.secret){console.log(test.dialect,'missing_secret');failures++;continue;}
+            let id;
+            try{
+              const body={name:'db344-aiven-ca-'+test.dialect+'-'+process.env.GITHUB_RUN_ID,
+                origin:{scheme:test.dialect,host:test.host,port:18691,database:test.database,user:'test',password:test.secret},
+                mtls:{ca_certificate_id:ca,sslmode:test.sslmode},caching:{disabled:true},origin_connection_limit:5};
+              const response=await fetch(api,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(35000)});
+              const data=await response.json().catch(()=>({}));
+              id=data.result?.id;
+              const verified=Boolean(response.ok&&data.success&&id&&data.result?.mtls?.sslmode===test.sslmode&&data.result?.mtls?.ca_certificate_id===ca);
+              console.log(test.dialect,JSON.stringify({http:response.status,verified_tls_config_created:verified,error_codes:(data.errors||[]).map(x=>x.code).slice(0,2)}));
+              if(!verified)failures++;
+            }catch{console.log(test.dialect,'connection_attempt_failed');failures++;}
+            finally{
+              if(id){
+                try{const r=await fetch(api+'/'+id,{method:'DELETE',headers,signal:AbortSignal.timeout(15000)});console.log('cleanup',test.dialect,r.status);if(!r.ok)failures++;}
+                catch{console.log('cleanup',test.dialect,'unconfirmed');failures++;}
+              }
+            }
+          }
+          if(failures)process.exitCode=1;
+          NODE
