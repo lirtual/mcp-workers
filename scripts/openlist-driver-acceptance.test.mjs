@@ -15,7 +15,8 @@ const folder = `${ROOT}/mcp-spec309-e2e-${env.GITHUB_RUN_ID}-1`;
 const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
-function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,authEnv = env} = {}) {
+function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
+  authEnv = env,nativeMoveError} = {}) {
   const requests = [];
   let made = false, uploaded = false;
   const nativeSource = `${folder}/native-${env.GITHUB_RUN_ID}-1.txt`;
@@ -132,6 +133,14 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,au
         return response(name,args.path,undefined,true,'OUT_OF_SCOPE');
       assert.equal(args.path,nativeSource);
       assert.equal(args.destination_dir,nativeDir);
+      if (nativeMoveError) {
+        return Response.json({jsonrpc:'2.0',id:1,result:{isError:true,
+          content:[{type:'text',text:JSON.stringify({
+            operation:name,status:nativeMoveError.status,code:nativeMoveError.code,
+            target:nativeSource,
+            message:'Never print upstream errors, file paths or ' + authEnv.MCP_ACCESS_TOKEN,
+          })}]}});
+      }
       nativeFiles.set(nativeDest,nativeFiles.get(nativeSource));
       nativeFiles.delete(nativeSource);
       return response(name,nativeSource,{destination:nativeDest,native_may_overwrite:true});
@@ -240,6 +249,32 @@ test('expanded native E2E requires a separate explicit opt-in and only mutates t
   assert.equal(requests.filter(x=>x==='signed_get').length,1);
   assert.equal(requests.includes('openlist_share_disable'),false);
   assert.equal(requests.includes('openlist_delete'),false);
+});
+
+test('native move error is classified without leaking payloads or replaying the write',async()=>{
+  for (const c of [
+    {status:'unknown',code:'UPSTREAM_UNCERTAIN',
+      expected:'openlist_driver_e2e_openlist_move_unknown_upstream_uncertain'},
+    {status:'not_executed',code:'UPSTREAM_REJECTED',
+      expected:'openlist_driver_e2e_openlist_move_not_executed_upstream_rejected'},
+    {status:'unknown',code:'SECRET_' + env.MCP_ACCESS_TOKEN,
+      expected:'openlist_driver_e2e_openlist_move_unknown_unclassified'},
+  ]) {
+    const {transport,requests}=fakeTransport({nativeMoveError:c});
+    await assert.rejects(
+      ()=>runOpenListDriverAcceptance({...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport),
+      error=>{
+        assert.equal(error.message,c.expected);
+        assert.doesNotMatch(error.message,/synthetic-|Koofr|Never print|SECRET_/);
+        assert.equal(error.message.includes('/api/'),false);
+        return true;
+      },
+    );
+    assert.equal(requests.filter(x=>x==='openlist_move').length,1);
+    assert.equal(requests.filter(x=>x==='openlist_download_link').length,0);
+    assert.equal(requests.filter(x=>x==='signed_get').length,0);
+    assert.equal(requests.at(-1),'openlist_move');
+  }
 });
 
 test('native approval alone never authorizes a live write without the existing fixture approval',async()=>{
