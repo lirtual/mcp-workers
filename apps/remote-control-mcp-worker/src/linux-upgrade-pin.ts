@@ -1,11 +1,9 @@
 /**
- * Issue #39: private preflight for a FUTURE independently reviewed immutable
- * Linux owner-one-shot-v1 Release. No owner route/dispatch invokes this yet.
+ * Issue #39: immutable, independently reviewed Linux owner-one-shot-v1 Release.
  *
  * A supported signed Linux device does not itself authorize an upgrade.
- * Until BOTH native artifacts are published, SHA-reviewed and this server
- * constant is explicitly populated in a separately authorized change, the
- * production selector always refuses. Never accept a pin from MCP arguments.
+ * Only the verified, server-owned dual-architecture release is eligible.
+ * Never accept a release pin from MCP arguments.
  */
 import {deviceIsAuthorized,type V2Device} from "./v2-session.ts";
 
@@ -19,8 +17,14 @@ export type LinuxUpgradeAsset=Readonly<{
   asset_sha256:string;release_url:string;
 }>;
 
-/** Deliberately absent: the current public v0.1.22 is NOT a protocol Release. */
-export const REVIEWED_LINUX_UPGRADE_PIN:ReviewedLinuxUpgradePin|null=null;
+/** Reviewed v0.1.33 immutable native release, distinct from the public installer pin. */
+export const REVIEWED_LINUX_UPGRADE_PIN:ReviewedLinuxUpgradePin|null=Object.freeze({
+  tag:"v0.1.33",
+  commit:"43a1a423a08be0379f5f8c6899d86a053248112e",
+  linux_x64_asset_sha256:"dad51aab391f4ac10097a798531b398368433e4d2490c63ca22ba79281af7666",
+  linux_arm64_asset_sha256:"89549d7daf1bd399e5c9dafbcc69765a34daafe2cc385c1c69aa80e462369095",
+  protocol:"owner-one-shot-v1",
+});
 
 const TAG=/^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
 const COMMIT=/^[a-f0-9]{40}$/;
