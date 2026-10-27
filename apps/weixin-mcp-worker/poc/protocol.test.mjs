@@ -191,7 +191,45 @@ test('getUpdates business rejection exposes only bounded numeric status, never e
       e => e instanceof IlinkError && e.code === 'UPSTREAM_REJECTED' &&
         e.diagnostic?.ret === (Number.isSafeInteger(answer.ret) ? answer.ret : null) &&
         e.diagnostic?.errcode === (Number.isSafeInteger(answer.errcode) ? answer.errcode : null) &&
+        e.diagnostic?.ret_kind === (answer.ret === undefined ? 'missing' : typeof answer.ret) &&
+        e.diagnostic?.errcode_kind === (answer.errcode === undefined ? 'missing' : typeof answer.errcode) &&
         !JSON.stringify({message:e.message,diagnostic:e.diagnostic}).includes('SENSITIVE_TOKEN_INTERNAL'));
     assert.equal(fake.calls.length, 1, 'never silently repeat polling');
+  }
+});
+
+test('getUpdates permits absent status only for a fully valid message/cursor envelope', async () => {
+  const accepted = [
+    { msgs: [], get_updates_buf: 'opaque-cursor' },
+    { msgs: [], get_updates_buf: '', errcode: 0 },
+    { msgs: [], get_updates_buf: '', ret: 0 },
+  ];
+  for (const envelope of accepted) {
+    const fake = mock([envelope]);
+    assert.deepEqual(
+      await createIlinkClient({ fetchImpl: fake.fetchImpl }).getUpdates('token',''),
+      envelope,
+    );
+    assert.equal(fake.calls.length, 1);
+  }
+  for (const envelope of [
+    {},
+    { errmsg:'private upstream message' },
+    { msgs: [] },
+    { get_updates_buf:'' },
+    { msgs:[], get_updates_buf:'', errmsg:'upstream private failure' },
+    { msgs:[], get_updates_buf:'', ret:'0' },
+    { msgs:[], get_updates_buf:'', ret:-3 },
+    { msgs:[], get_updates_buf:'', errcode:-3 },
+  ]) {
+    const fake = mock([envelope]);
+    await assert.rejects(
+      () => createIlinkClient({ fetchImpl: fake.fetchImpl }).getUpdates('token',''),
+      error => error instanceof IlinkError &&
+        ['INVALID_RESPONSE', 'UPSTREAM_REJECTED'].includes(error.code) &&
+        !error.message.includes('private') &&
+        !JSON.stringify(error.diagnostic ?? '').includes('private'),
+    );
+    assert.equal(fake.calls.length, 1);
   }
 });

@@ -37,7 +37,14 @@ function safe(err) {
     const code = n => Number.isSafeInteger(n) && Math.abs(n) <= 999999999
       ? String(n) : 'absent';
     return 'UPSTREAM_REJECTED (ret=' + code(err.diagnostic?.ret) +
-      ', errcode=' + code(err.diagnostic?.errcode) + ')';
+      ', errcode=' + code(err.diagnostic?.errcode) +
+      ', types=' + (err.diagnostic?.ret_kind ?? 'missing') +
+      '/' + (err.diagnostic?.errcode_kind ?? 'missing') + ')';
+  }
+  if (err?.code === 'INVALID_RESPONSE' && err.diagnostic?.has_msgs_array !== undefined) {
+    return 'INVALID_RESPONSE (msgs=' + (err.diagnostic.has_msgs_array ? 'array' : 'invalid') +
+      ', cursor=' + (err.diagnostic.has_cursor_string ? 'string' : 'invalid') +
+      ', error_text=' + (err.diagnostic.has_error_text ? 'present' : 'absent') + ')';
   }
   return allowed.has(err?.code) ? err.code : 'POC_OPERATION_FAILED';
 }

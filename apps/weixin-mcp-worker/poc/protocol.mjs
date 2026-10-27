@@ -58,13 +58,18 @@ function validateRet(payload, isSync = false) {
   if (isSync && (payload.ret === -14 || payload.errcode === -14)) {
     throw new IlinkError('STALE_SESSION');
   }
-  if (payload.ret !== 0 || (payload.errcode !== undefined && payload.errcode !== 0)) {
+  const hasRetFailure = isSync
+    ? payload.ret !== undefined && payload.ret !== 0
+    : payload.ret !== 0;
+  if (hasRetFailure || (payload.errcode !== undefined && payload.errcode !== 0)) {
     // Do not include upstream-provided errmsg, tokens, message objects or cursor.
     // Numeric statuses are enough to distinguish session and protocol errors.
     const bounded = value => Number.isSafeInteger(value) && Math.abs(value) <= 999999999
       ? value : null;
     throw new IlinkError('UPSTREAM_REJECTED', {
       ret: bounded(payload.ret), errcode: bounded(payload.errcode),
+      ret_kind: payload.ret === undefined ? 'missing' : payload.ret === null ? 'null' : typeof payload.ret,
+      errcode_kind: payload.errcode === undefined ? 'missing' : payload.errcode === null ? 'null' : typeof payload.errcode,
     });
   }
 }
@@ -158,9 +163,20 @@ export function createIlinkClient({ fetchImpl = fetch, apiOrigin = API_ORIGIN } 
         token: botToken, body: { get_updates_buf: cursor, base_info: baseInfo }
       });
       validateRet(response, true);
-      if (!Array.isArray(response.msgs) || response.msgs.length > 100 ||
-          typeof response.get_updates_buf !== 'string' || response.get_updates_buf.length > 4096) {
-        throw new IlinkError('INVALID_RESPONSE');
+      // Missing ret/errcode is not itself a business rejection. Fail closed
+      // unless the reply still satisfies the entire normal getUpdates shape.
+      const suspiciousErrorText = response.ret === undefined &&
+        response.errcode === undefined && typeof response.errmsg === 'string' &&
+        response.errmsg.length > 0;
+      const validMsgs = Array.isArray(response.msgs) && response.msgs.length <= 100;
+      const validCursor = typeof response.get_updates_buf === 'string' &&
+        response.get_updates_buf.length <= 4096;
+      if (!validMsgs || !validCursor || suspiciousErrorText) {
+        throw new IlinkError('INVALID_RESPONSE', {
+          has_msgs_array: Array.isArray(response.msgs),
+          has_cursor_string: typeof response.get_updates_buf === 'string',
+          has_error_text: suspiciousErrorText,
+        });
       }
       return response; // in-memory only; caller must discard message contents.
     },

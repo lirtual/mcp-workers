@@ -38,3 +38,12 @@ Owner QR scan was confirmed (local status `bound_unverified`). A user-initiated 
 The adapter now attaches only bounded integer `ret` and `errcode` diagnostics to business rejections. The local page may show `UPSTREAM_REJECTED (ret=..., errcode=...)`; `absent` means no bounded integer was present. These fields are safe to report, but **never** copy an `errmsg`, raw JSON, QR, token, proof, messages, or cursor to chat or GitHub. This change only affects new local process sessions, because the QR and bot credential remain intentionally memory-only. Do not restart or replay a verified send operation to diagnose an ambiguous send result.
 
 If the numeric error recurs, check for a second OpenClaw/iLink consumer owning the same session, the actual upstream response handling contract, and strict fail-closed termination for ret -14. Treat authenticated inbound monitoring as a separate NO-GO gate until a real owner-proof message is read.
+
+
+## Missing getUpdates return codes (2026-10-27)
+
+Observed live `getUpdates` failure reported `UPSTREAM_REJECTED (ret=absent, errcode=absent)`. This display only proved that *neither value was a bounded integer*, not that upstream definitively rejected the call. The previous adapter incorrectly treated `undefined !== 0` as a business rejection.
+
+Corrected behavior: for `getUpdates` (read-only), reject explicit nonzero `ret` or `errcode`, and stop on `-14`; missing status fields are acceptable only if the full expected `msgs: []` array and string `get_updates_buf` cursor are structurally valid. Unexpected nonempty error text with both status fields missing is rejected as `INVALID_RESPONSE`. Bad/unknown status *types* are rejected, never silently coerced. `sendmessage` acceptance semantics are **unchanged**; no outbound retry.
+
+The optional UI diagnostics include only status field types (e.g. `missing`, `number`, `string`) and response-shape flags, never response text, messages, cursor, QR or authorization headers. The current bound PoC process cannot hot reload the changed adapter; any new manual verification requires a fresh process/QR and owner proof. A valid response alone does not establish identity: exact owner challenge matching is still mandatory.
