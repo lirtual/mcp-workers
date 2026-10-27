@@ -576,9 +576,30 @@ export class OpenListApi {
         let sourceAbsent = false;
         try { await this.get(source); }
         catch (error) {
-          if (error instanceof OpenListError && error.code === 'NOT_FOUND')
+          if (error instanceof OpenListError && error.code === 'NOT_FOUND') {
             sourceAbsent = true;
-          else throw error;
+          } else if (error instanceof OpenListError && error.code === 'UPSTREAM_UNAVAILABLE') {
+            // The existing upstream /api/fs/get can respond with code=500 when
+            // a removed source no longer exists. Do not interpret 500 itself
+            // as proof of absence; verify a fresh, complete parent listing.
+            const { content, total } = collectEntries((await this.request(
+              'POST', '/api/fs/list',
+              { path: srcParent, page: 1, per_page: 100, refresh: true })).data);
+            if (total > 100 || content.length !== total)
+              throw new OpenListError('UPSTREAM_UNCERTAIN');
+            const names = new Set<string>();
+            for (const item of content) {
+              if (!isObject(item)) throw new OpenListError('UPSTREAM_UNCERTAIN');
+              const name = canonicalName(item.name);
+              if (names.has(name) ||
+                  (item.path !== undefined && item.path !== srcParent + '/' + name))
+                throw new OpenListError('UPSTREAM_UNCERTAIN');
+              names.add(name);
+            }
+            sourceAbsent = !names.has(srcName);
+          } else {
+            throw error;
+          }
         }
         if (!sourceAbsent) throw new OpenListError('UPSTREAM_UNCERTAIN');
       }

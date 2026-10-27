@@ -497,6 +497,79 @@ test('native rename/copy/move adapt exactly one scoped target and observe destin
   }
 });
 
+test('native rename/move confirms absent source using one fresh parent listing after upstream get 500', async () => {
+  for (const kind of ['rename', 'move'] as const) {
+    const source='/drive/safe/file.txt';
+    const destination=kind==='rename'?'/drive/safe/updated.txt':'/drive/safe/sub/file.txt';
+    const parent='/drive/safe';
+    const routes:string[]=[];
+    let mutated=false,writes=0;
+    const api=new OpenListApi(createConfig(env(async request=>{
+      const route=new URL(request.url).pathname;
+      routes.push(route);
+      if(route==='/api/fs/get') {
+        const {path}=await request.json() as {path:string};
+        if(!mutated) {
+          assert.equal(path,source);
+          return ok({name:'file.txt',path:source,is_dir:false,size:3});
+        }
+        if(path===destination) return ok({name:'file.txt'===destination.split('/').at(-1)?'file.txt':'updated.txt',
+          path:destination,is_dir:false,size:3});
+        assert.equal(path,source);
+        // OpenList's /get returns 500 for a nonexistent source path.
+        return Response.json({code:500,message:'upstream path sensitive',data:null},{status:500});
+      }
+      if(route==='/api/fs/'+kind) {
+        writes++;mutated=true;return ok(null);
+      }
+      assert.equal(route,'/api/fs/list');
+      assert.deepEqual(await request.json(),{
+        path:parent,page:1,per_page:100,refresh:true,
+      });
+      const content=kind==='rename'?[{name:'updated.txt',is_dir:false}]:[];
+      return ok({content,total:content.length});
+    })));
+    const result=kind==='rename'?
+      await api.renameFile(source,'updated.txt'):
+      await api.moveFile(source,'/drive/safe/sub');
+    assert.equal(result.status,'succeeded',kind);
+    assert.equal(result.code,'OK');
+    assert.equal(writes,1);
+    assert.deepEqual(routes,['/api/fs/get','/api/fs/'+kind,'/api/fs/get',
+      '/api/fs/get','/api/fs/list']);
+    assert.doesNotMatch(JSON.stringify(result),/sensitive|admin-token/);
+  }
+});
+
+test('missing-source confirmation fails closed for present source, partial list and forged paths', async () => {
+  const cases=[
+    {content:[{name:'file.txt',is_dir:false},{name:'updated.txt',is_dir:false}],total:2},
+    {content:[{name:'updated.txt',is_dir:false}],total:101},
+    {content:[{name:'updated.txt',path:'/drive/outside/updated.txt',is_dir:false}],total:1},
+    {content:[{name:'updated.txt',is_dir:false},{name:'updated.txt',is_dir:false}],total:2},
+  ];
+  for (const response of cases) {
+    let writes=0,lists=0,mutated=false;
+    const api=new OpenListApi(createConfig(env(async request=>{
+      const route=new URL(request.url).pathname;
+      if(route==='/api/fs/rename'){writes++;mutated=true;return ok(null);}
+      if(route==='/api/fs/list') {lists++;return ok(response);}
+      assert.equal(route,'/api/fs/get');
+      const {path}=await request.json() as {path:string};
+      if(!mutated) return ok({name:'file.txt',path,is_dir:false,size:1});
+      if(path==='/drive/safe/updated.txt')
+        return ok({name:'updated.txt',path,is_dir:false,size:1});
+      return Response.json({code:500,message:'secret',data:null},{status:500});
+    })));
+    const result=await api.renameFile('/drive/safe/file.txt','updated.txt');
+    assert.equal(result.status,'unknown');
+    assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+    assert.equal(writes,1);
+    assert.equal(lists,1);
+    assert.doesNotMatch(JSON.stringify(result),/secret/);
+  }
+});
+
 test('native file mutations block out-of-scope paths and preserve unknown after one dispatch', async () => {
   let calls=0,writes=0;
   const api=new OpenListApi(createConfig(env(async request=>{
