@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -692,6 +692,32 @@ export class V2OwnerCoordinator {
     // The only route that can create an owner upgrade intent. The public MCP
     // layer must supply a SERVER-PINNED target, never caller-provided commit/
     // hash/URL. A live signed WSS epoch is mandatory even to prepare.
+    // Read-only owner DO status for an upgrade remains queryable after Agent
+    // Task shutdown, unlike a live-WSS receipt query. Never returns the
+    // confirmation secret, form token or full device fingerprint.
+    if (path === "/upgrade/status") {
+      try {
+        const input = await limitedJson(request, 1024) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).sort().join("|") !== "device_id|operation_id" ||
+            typeof input.operation_id !== "string" ||
+            typeof input.device_id !== "string") {
+          return Response.json({error:"invalid_request"},{status:400});
+        }
+        const record = await readWindowsUpgrade(this.state.storage,input.operation_id);
+        if (!record || record.preview.device_id !== input.device_id) {
+          return Response.json({error:"not_found"},{status:404});
+        }
+        return Response.json({
+          operation_id:record.preview.operation_id,
+          device_id:record.preview.device_id,
+          status:record.state,
+          target_version:record.preview.target.tag,
+        },{headers:{"cache-control":"no-store"}});
+      } catch {
+        return Response.json({error:"unavailable"},{status:503});
+      }
+    }
     if (path === "/upgrade/prepare") {
       try {
         const input = await limitedJson(request, 2048) as Record<string, unknown>;
