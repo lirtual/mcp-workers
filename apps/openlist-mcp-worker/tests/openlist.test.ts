@@ -453,3 +453,64 @@ test('download link fails closed for out-of-scope path, unsigned, expired and di
       e instanceof OpenListError && e.code==='NOT_SUPPORTED');
   }
 });
+
+test('native rename/copy/move adapt exactly one scoped target and observe destination', async () => {
+  const cases=[
+    {kind:'rename',dest:'/drive/safe/updated.txt',data:{path:'/drive/safe/file.txt',name:'updated.txt'}},
+    {kind:'copy',dest:'/drive/safe/sub/file.txt',
+      data:{src_dir:'/drive/safe',dst_dir:'/drive/safe/sub',names:['file.txt']}},
+    {kind:'move',dest:'/drive/safe/sub/file.txt',
+      data:{src_dir:'/drive/safe',dst_dir:'/drive/safe/sub',names:['file.txt']}},
+  ] as const;
+  for (const c of cases) {
+    const routes:string[]=[];
+    const api=new OpenListApi(createConfig(env(async request=>{
+      const route=new URL(request.url).pathname;
+      routes.push(request.method+' '+route);
+      assert.equal(request.headers.get('authorization'),'admin-token');
+      const body=await request.json() as Record<string,unknown>;
+      if(route==='/api/fs/get') {
+        const file=body.path;
+        const expected=file===c.dest?c.dest:'/drive/safe/file.txt';
+        assert.equal(file,expected);
+        return ok({name:expected.slice(expected.lastIndexOf('/')+1),path:expected,
+          is_dir:false,size:3,pwd:'secret'});
+      }
+      assert.equal(route,'/api/fs/'+c.kind);
+      assert.deepEqual(body,c.data);
+      return ok(null);
+    })));
+    const result=c.kind==='rename'?
+      await api.renameFile('/drive/safe/file.txt','updated.txt'):
+      c.kind==='copy'?await api.copyFile('/drive/safe/file.txt','/drive/safe/sub'):
+        await api.moveFile('/drive/safe/file.txt','/drive/safe/sub');
+    assert.equal(result.status,'succeeded',c.kind);
+    assert.deepEqual(result.observed_state,{
+      destination:c.dest,is_dir:false,native_may_overwrite:true});
+    assert.deepEqual(routes,['POST /api/fs/get','POST /api/fs/'+c.kind,'POST /api/fs/get']);
+    assert.doesNotMatch(JSON.stringify(result),/secret|admin-token/);
+  }
+});
+
+test('native file mutations block out-of-scope paths and preserve unknown after one dispatch', async () => {
+  let calls=0,writes=0;
+  const api=new OpenListApi(createConfig(env(async request=>{
+    calls++;
+    const route=new URL(request.url).pathname;
+    if(route==='/api/fs/rename') {writes++;throw new Error('possible write timeout');}
+    assert.equal(route,'/api/fs/get');
+    return ok({name:'file.txt',path:'/drive/safe/file.txt',is_dir:false});
+  })));
+  await assert.rejects(api.renameFile('/drive/other/file.txt','good.txt'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='OUT_OF_SCOPE');
+  await assert.rejects(api.copyFile('/drive/safe/file.txt','/drive/other'),(e:unknown)=>
+    e instanceof OpenListError && e.code==='OUT_OF_SCOPE');
+  await assert.rejects(api.moveFile('/drive/safe/file.txt','/drive/safe/file.txt/sub'),(e:unknown)=>
+    e instanceof OpenListError && ['INVALID_PATH','INVALID_INPUT'].includes(e.code));
+  assert.equal(calls,0);
+  const result=await api.renameFile('/drive/safe/file.txt','updated.txt');
+  assert.equal(result.status,'unknown');
+  assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+  assert.equal(writes,1);
+  assert.equal(calls,2);
+});

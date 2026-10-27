@@ -48,7 +48,8 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.deepEqual(tools.map(t => t.name), [
       'openlist_capabilities','openlist_list_files','openlist_get_file',
       'openlist_search_files','openlist_read_text','openlist_share_get',
-      'openlist_download_link','openlist_share_disable','openlist_create_folder',
+      'openlist_download_link','openlist_share_disable',
+      'openlist_rename','openlist_copy','openlist_move','openlist_create_folder',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
@@ -61,8 +62,10 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), true);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_disable'), false);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_download_link'), false);
+    for(const name of ['openlist_rename','openlist_copy','openlist_move'])
+      assert.equal(inventory.disabled_pending_acceptance.includes(name), false);
     assert.equal(tools.find(t => t.name === 'openlist_share_disable')?.annotations?.destructiveHint, true);
-    assert.equal(inventory.disabled_pending_acceptance.length, 9);
+    assert.equal(inventory.disabled_pending_acceptance.length, 6);
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
@@ -137,7 +140,7 @@ test('share_get refuses out-of-scope share records without exposing their conten
   } finally { await client.close(); }
 });
 
-test('disabled P1 writes cannot be invoked directly or dispatch upstream operations', async () => {
+test('gated upload is not invokable through the native file-adapter tools', async () => {
   let upstreamCalls = 0;
   const client = await clientFor(settings(async () => {
     upstreamCalls++;
@@ -145,9 +148,8 @@ test('disabled P1 writes cannot be invoked directly or dispatch upstream operati
   }));
   try {
     // A forged tools/call must not bypass the disabled tools/list inventory.
-    // These upstream WebDAV actions have no verified atomic no-overwrite gate.
-    for (const name of ['openlist_upload_small', 'openlist_rename',
-      'openlist_copy', 'openlist_move']) {
+    // Upload is not implemented yet; no unregistered tool may dispatch.
+    for (const name of ['openlist_upload_small']) {
       await assert.rejects(() => client.callTool({
         name, arguments: { path: '/Koofr/safe/item.txt', name: 'renamed.txt',
           src_dir: '/Koofr/safe', dst_dir: '/Koofr/safe/other',
@@ -268,5 +270,36 @@ test('native signed download link is served only for explicit in-scope file via 
     assert.equal(denied.isError,true);
     assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
     assert.equal(calls,1);
+  } finally {await client.close();}
+});
+
+test('native MCP rename exposes overwrite semantics and gates cross-root writes', async () => {
+  let mutated=false,writes=0;
+  const client=await clientFor(settings(async request=>{
+    const url=new URL(request.url);
+    const payload=await request.json() as Record<string,unknown>;
+    if(url.pathname==='/api/fs/rename'){
+      writes++;
+      assert.deepEqual(payload,{path:'/Koofr/safe/file.txt',name:'updated.txt'});
+      mutated=true;
+      return Response.json({code:200,data:null});
+    }
+    assert.equal(url.pathname,'/api/fs/get');
+    const pathname=payload.path as string;
+    assert.equal(pathname,mutated?'/Koofr/safe/updated.txt':'/Koofr/safe/file.txt');
+    return Response.json({code:200,data:{name:mutated?'updated.txt':'file.txt',path:pathname,is_dir:false}});
+  }));
+  try {
+    const result=await client.callTool({name:'openlist_rename',arguments:{
+      path:'/Koofr/safe/file.txt',new_name:'updated.txt'}});
+    assert.notEqual(result.isError,true);
+    assert.equal(JSON.parse((result.content[0] as {text:string}).text)
+      .observed_state.native_may_overwrite,true);
+    assert.equal(writes,1);
+    const denied=await client.callTool({name:'openlist_copy',arguments:{
+      path:'/Koofr/safe/file.txt',destination_dir:'/Koofr/other'}});
+    assert.equal(denied.isError,true);
+    assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
+    assert.equal(writes,1);
   } finally {await client.close();}
 });

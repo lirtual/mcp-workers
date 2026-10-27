@@ -300,6 +300,74 @@ export class OpenListApi {
         request_id, target: id };
     }
   }
+  // The native OpenList file APIs may overwrite existing destinations. This
+  // MCP adapter never asserts an atomic no-overwrite or durable transaction.
+  private async performFileMutation(kind: 'rename' | 'copy' | 'move',
+      sourcePath: string, destination: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const dest = this.check(destination, true);
+    const srcParent = source.slice(0, source.lastIndexOf('/'));
+    const dstParent = dest.slice(0, dest.lastIndexOf('/'));
+    const srcName = source.slice(source.lastIndexOf('/') + 1);
+    const destName = dest.slice(dest.lastIndexOf('/') + 1);
+    this.check(srcParent);
+    this.check(dstParent);
+    if (source === dest || dest.startsWith(source + '/'))
+      throw new OpenListError('INVALID_PATH');
+    if (kind === 'rename' && dstParent !== srcParent)
+      throw new OpenListError('INVALID_INPUT');
+    if (kind !== 'rename' && destName !== srcName)
+      throw new OpenListError('INVALID_INPUT');
+
+    const operation = 'openlist_' + kind;
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.get(source);
+      if (typeof before.is_dir !== 'boolean')
+        throw new OpenListError('UPSTREAM_UNAVAILABLE');
+      // OpenList's built-in copy/move API accepts an array of names; always
+      // submit exactly one canonical target. Native overwrite is possible.
+      const data = kind === 'rename' ? { path: source, name: destName } :
+        { src_dir: srcParent, dst_dir: dstParent, names: [srcName] };
+      dispatched = true;
+      const reply = await this.request('POST', '/api/fs/' + kind, data, undefined, true);
+      const after = await this.get(dest);
+      if (after.path !== dest || after.is_dir !== before.is_dir)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation, status: 'succeeded', code: 'OK',
+        message: 'Destination was observed after the native OpenList operation; upstream may overwrite and is not atomic.',
+        request_id, target: source, evidence: { business_code: reply.code },
+        observed_state: { destination: dest, is_dir: after.is_dir,
+          native_may_overwrite: true } };
+    } catch (error) {
+      const code = dispatched ? 'UPSTREAM_UNCERTAIN' :
+        error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      return { operation, status: dispatched ? 'unknown' : 'not_executed',
+        code, message: dispatched ?
+          'Native operation dispatched; result uncertain, do not retry automatically.' :
+          'No upstream mutation dispatched.',
+        request_id, target: source };
+    }
+  }
+  async renameFile(sourcePath: string, newName: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const name = canonicalName(newName);
+    const parent = source.slice(0, source.lastIndexOf('/'));
+    return this.performFileMutation('rename', source, parent + '/' + name);
+  }
+  async copyFile(sourcePath: string, destinationDir: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const dir = this.check(destinationDir);
+    const name = source.slice(source.lastIndexOf('/') + 1);
+    return this.performFileMutation('copy', source, dir + '/' + name);
+  }
+  async moveFile(sourcePath: string, destinationDir: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const dir = this.check(destinationDir);
+    const name = source.slice(source.lastIndexOf('/') + 1);
+    return this.performFileMutation('move', source, dir + '/' + name);
+  }
   async downloadLink(path: string): Promise<Record<string, unknown>> {
     const file = this.check(path);
     // Only the existing fixed OpenList API produces the signature. Never
