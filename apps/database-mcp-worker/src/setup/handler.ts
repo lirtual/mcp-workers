@@ -23,11 +23,35 @@ function revision(form: URLSearchParams): number {
   return value;
 }
 async function formData(request: Request): Promise<URLSearchParams> {
-  const length = Number(request.headers.get('content-length') ?? 0);
-  if (length > 40000) throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
+  const maxBytes = 40_000;
+  const declared = request.headers.get('content-length');
+  if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > maxBytes)) {
+    throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
+  }
   if (!(request.headers.get('content-type') ?? '').startsWith('application/x-www-form-urlencoded')) invalid();
-  const text = await request.text();
-  if (text.length > 40000) throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
+  if (!request.body) invalid();
+  // Enforce the byte limit while reading: request.text() buffers the entire
+  // body first, leaving chunked or falsely declared large requests unbounded.
+  const reader = request.body.getReader();
+  const bytes = new Uint8Array(maxBytes);
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength > maxBytes - size) {
+        void reader.cancel().catch(() => undefined);
+        throw new PublicError('BODY_TOO_LARGE', 'Request body is too large.');
+      }
+      bytes.set(value, size);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)); }
+  catch { return invalid(); }
   return new URLSearchParams(text);
 }
 function formCa(form: URLSearchParams): string | undefined {
