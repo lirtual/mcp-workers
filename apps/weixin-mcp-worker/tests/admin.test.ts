@@ -144,3 +144,57 @@ test('admin rejects oversized streamed POST body even if Content-Length is missi
   assert.match(await res.text(),/request_too_large/);
   assert.equal(db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,0);
 });
+
+test('full Access browser QR flow enforces CSRF, renders private QR and activates only verified owner',async()=>{
+  const {env,db}=setup();
+  const {jwt,certs}=await issuer();
+  const token=await jwt();
+  let inbound:unknown[]=[];
+  const client={
+    getQr:async()=>({qrcode:'opaque-secret-qrcode',
+      qrcode_img_content:'https://liteapp.weixin.qq.com/verified-only?nonce=123'}),
+    pollQr:async()=>({status:'confirmed',bot_token:'new-bot-token',
+      ilink_bot_id:'new-bot',ilink_user_id:'scanned-owner'}),
+    getUpdates:async()=>({msgs:inbound,get_updates_buf:'private-cursor'}),
+  };
+  const initial=await handleAdmin(request(ownerUrl,token),env,certs,client);
+  const cookie=initial.headers.get('set-cookie')!.split(';')[0]!;
+  const csrf=cookie.split('=')[1]!;
+  const post=(path:string,params:Record<string,string>)=>request(ownerUrl+'/'+path,token,{
+    method:'POST',headers:{origin:'https://'+HOST,cookie,
+      'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams(params).toString()
+  });
+  assert.equal((await handleAdmin(post('start',{csrf:'incorrect',confirm:'start_pairing'}),
+    env,certs,client)).status,400);
+  assert.equal(db.sql.prepare('SELECT count(*) AS n FROM weixin_pairing').get()?.n,0);
+  const start=await handleAdmin(post('start',{csrf,confirm:'start_pairing'}),env,certs,client);
+  assert.equal(start.status,200);
+  const html=await start.text();
+  assert.match(html,/<svg/);
+  assert.doesNotMatch(html,/opaque-secret-qrcode|verified-only\?nonce|new-bot-token/);
+  assert.equal((await handleAdmin(post('poll',{csrf}),env,certs,client)).status,200);
+  const after=await handleAdmin(request(ownerUrl,token),env,certs,client);
+  const page=await after.text();
+  const proof=page.match(/WX346-[A-F0-9]{24}/)?.[0];
+  assert.ok(proof);
+  assert.doesNotMatch(page,/new-bot-token|scanned-owner/);
+  inbound=[{from_user_id:'attacker',to_user_id:'new-bot',message_type:1,
+    context_token:'fake-context',
+    item_list:[{type:1,text_item:{text:proof}}]}];
+  const waiting=await handleAdmin(post('verify',{csrf}),env,certs,client);
+  assert.equal(waiting.status,200);
+  assert.match(await waiting.text(),/Waiting for the exact owner proof/);
+  assert.equal(db.sql.prepare('SELECT state FROM weixin_binding').get()?.state,'unbound');
+  db.sql.prepare('UPDATE weixin_pairing SET poll_after=0').run();
+  inbound=[{from_user_id:'scanned-owner',to_user_id:'new-bot',message_type:1,
+    context_token:'verified-context',
+    item_list:[{type:1,text_item:{text:proof}}]}];
+  const verified=await handleAdmin(post('verify',{csrf}),env,certs,client);
+  assert.equal(verified.status,200);
+  assert.match(await verified.text(),/local binding activated/);
+  assert.deepEqual(db.sql.prepare('SELECT generation,state FROM weixin_binding').get(),
+    {generation:1,state:'ready'});
+  assert.doesNotMatch(JSON.stringify(db.sql.prepare('SELECT * FROM weixin_binding').get()),
+    /new-bot-token|verified-context/);
+});
