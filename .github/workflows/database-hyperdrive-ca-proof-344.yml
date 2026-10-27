@@ -39,7 +39,9 @@ jobs:
               const data=await response.json().catch(()=>({}));
               id=data.result?.id;
               const verified=Boolean(response.ok&&data.success&&id&&data.result?.mtls?.sslmode===test.sslmode&&data.result?.mtls?.ca_certificate_id===ca);
-              console.log(test.dialect,JSON.stringify({http:response.status,verified_tls_config_created:verified,error_codes:(data.errors||[]).map(x=>x.code).slice(0,2)}));
+              const diagnostic=String(data.errors?.[0]?.message||'').toLowerCase();
+              const categories=['permission','scope','token','unauthorized','forbidden','billing','plan','account','certificate','ssl','tls','host','connection','credential','password','rate limit','access','database','denied','internal'].filter(k=>diagnostic.includes(k));
+              console.log(test.dialect,JSON.stringify({http:response.status,verified_tls_config_created:verified,error_codes:(data.errors||[]).map(x=>x.code).slice(0,2),message_categories:categories}));
               if(!verified)failures++;
             }catch{console.log(test.dialect,'connection_attempt_failed');failures++;}
             finally{
