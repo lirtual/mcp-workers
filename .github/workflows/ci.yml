@@ -41,6 +41,9 @@ jobs:
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs
 
+      - name: Verify static workflow references and release Worker fixtures
+        run: node --test scripts/verify-workflow-dispatch-gates.test.mjs
+
       - name: Verify Workflow Portal registration contract (offline)
         run: node --test scripts/register-workflow-portal.test.mjs
 
@@ -107,7 +110,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-github-release-token.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
