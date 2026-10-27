@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { RELEASE_WORKERS } from './select-affected-apps.mjs';
-import { verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
+import { verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
 
 const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 
@@ -64,4 +64,22 @@ test('a local workflow reference cannot traverse out of the workflow directory',
   assert.throws(() => verifyStaticWorkflowReferences(
     { 'test.yml': '    uses: ./.github/workflows/../../other.yml' }, () => true),
   /invalid local workflow/);
+});
+
+test('release documentation contracts reject wrong Worker and Secret/Variable drift', () => {
+  const docs = {
+    imaContext: '`IMA_CLIENT_ID` 是 GitHub Environment Variable；`IMA_API_KEY` 是 GitHub Environment Secret。',
+    raindropReadme: 'Production uses Release Worker.',
+    githubActionsReadme: 'inputs={"worker":"github-actions-mcp-worker","deploy_to_production":"true"}',
+  };
+  assert.doesNotThrow(() => verifyDocumentationContracts(docs));
+  assert.throws(() => verifyDocumentationContracts({
+    ...docs, imaContext: '`IMA_CLIENT_ID` and `IMA_API_KEY` are 单用户 Worker Secrets。',
+  }), /IMA Client ID must be documented as a Variable/);
+  assert.throws(() => verifyDocumentationContracts({
+    ...docs, raindropReadme: docs.raindropReadme + '\\nwrangler secret put RAINDROP_ACCESS_TOKEN',
+  }), /Raindrop must not recommend direct production secret writes/);
+  assert.throws(() => verifyDocumentationContracts({
+    ...docs, githubActionsReadme: 'inputs={"worker":"remote-control-mcp-worker","deploy_to_production":"true"}',
+  }), /GitHub Actions MCP example must select its own Worker/);
 });

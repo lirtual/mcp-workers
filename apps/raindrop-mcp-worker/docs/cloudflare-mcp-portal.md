@@ -16,7 +16,7 @@ MCP client
 
 The credentials are intentionally independent:
 
-- `MCP_ACCESS_TOKEN` authenticates MCP Portal to this Worker. Each Worker uses its own value.
+- `MCP_ACCESS_TOKEN` authenticates MCP Portal to this Worker. Its effective value is supplied by the shared GitHub Repository default or a reviewed same-name Worker Environment override; never infer value equality from its name.
 - `RAINDROP_ACCESS_TOKEN` authenticates this Worker to Raindrop.io.
 
 Never reuse either value for the other purpose.

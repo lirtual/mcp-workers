@@ -49,12 +49,7 @@ Existing public read and write paths are exercised through MCP SDK `tools/list` 
 
 ## Configuration
 
-Worker secrets:
-
-```bash
-pnpm --filter raindrop-mcp-worker exec wrangler secret put MCP_ACCESS_TOKEN
-pnpm --filter raindrop-mcp-worker exec wrangler secret put RAINDROP_ACCESS_TOKEN
-```
+Configure `RAINDROP_ACCESS_TOKEN` in the `raindrop-mcp-worker` GitHub Environment **Secret**. `MCP_ACCESS_TOKEN` comes from the GitHub Repository Secret by default (or a reviewed same-name Worker Environment override). Production credentials are synchronized only through the separately authorized main-only **Release Worker** workflow, not by direct CLI Secret mutations or Cloudflare Builds.
 
 Optional Worker variable:
 
