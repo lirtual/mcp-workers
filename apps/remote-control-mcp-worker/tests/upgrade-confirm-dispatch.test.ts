@@ -40,7 +40,10 @@ function fixture() {
       if(respond){
         queueMicrotask(()=>void owner.webSocketMessage(socket as unknown as WebSocket,
           JSON.stringify({kind:"operation_result",request_id:payload.request_id,
-            result:{operation_id:payload.operation_id,status:"admitted"}})));
+            result:payload.tool==="get_operation_status"
+              ? {operation_id:payload.operation_id,status:"completed",
+                  receipt:{operation_id:payload.operation_id,tool_name:"upgrade_agent",state:"completed"}}
+              : {operation_id:payload.operation_id,status:"admitted"}})));
       }
     },
     close:()=>{},
@@ -117,4 +120,36 @@ test("owner preview alone cannot claim and a bad CSRF cannot dispatch",async()=>
   assert.equal(rejected.status,409);
   assert.equal(f.counts(),0);
   assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"prepared");
+});
+
+test("durable ledger finishes only after newly reported signed target and completed local WSS receipt",async()=>{
+  const f=fixture();
+  const {confirmation,form}=await f.prepared();
+  const approved=await f.post("/upgrade/confirm",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.equal(approved.status,200);
+  const old=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal((await old.json() as {status:string}).status,"claimed",
+    "WSS ACK alone is not terminal success");
+  const current=f.data.get("device:"+DEVICE) as {
+    device_info:Record<string,unknown>;
+  };
+  f.data.set("device:"+DEVICE,{...current,
+    device_info:{...current.device_info,
+      agent_version:REVIEWED_WINDOWS_UPGRADE_PIN.tag}});
+  const completed=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal(completed.status,200);
+  assert.equal((await completed.json() as {status:string}).status,"completed");
+  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"completed");
+  const count=f.counts();
+  const reread=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal((await reread.json() as {status:string}).status,"completed");
+  assert.equal(f.counts(),count,"terminal ledger must not repeatedly query WSS");
 });
