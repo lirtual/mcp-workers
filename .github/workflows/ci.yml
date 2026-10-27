@@ -49,6 +49,8 @@ jobs:
 
       - name: Verify HTTP Portal registration contract (offline)
         run: node --test scripts/register-http-portal.test.mjs
+      - name: Verify OpenList Portal registration contract (offline)
+        run: node --test scripts/register-openlist-portal.test.mjs
 
       - id: scope
         name: Select affected applications

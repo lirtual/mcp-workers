@@ -23,3 +23,7 @@ Folder creation first checks a complete bounded parent listing for collisions, t
 ## Verification
 
 `pnpm --filter openlist-mcp-worker check` runs typecheck, Wrangler dry run, Node contract tests and real workerd/Miniflare multi-Worker isolation tests. The Miniflare dependency is pinned and uses the compatibility adapter for its worker options. Real binding, portal discovery and disposable live tests are separate blocking gates. **No production deployment or automatic release is authorized by this code.**
+
+## Portal registration after an authorized first release
+
+The existing manual single-Worker GitHub Actions release registers this Worker into One-MCP only **after** Cloudflare deployment, exact version/binding readback, public-health check and an unauthenticated MCP rejection test. Registration checks the real server `tools/list` inventory against the six known tools and preserves all existing One-MCP Portal mappings. Any mismatch fails the release job; this step does **not** authorize deployment or enable auto-release.
