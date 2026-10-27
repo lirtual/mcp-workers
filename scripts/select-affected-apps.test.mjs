@@ -82,3 +82,13 @@ test('HTTP MCP is CI-selected',()=>{
   assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
 });
+
+test('Weixin PoC is CI-selected but strictly not production-release selectable', () => {
+  assert.deepEqual(selectAffectedApps(['apps/weixin-mcp-worker/poc/protocol.mjs']), ['weixin-mcp-worker']);
+  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('weixin-mcp-worker'));
+  assert.throws(() => execFileSync(process.execPath, ['scripts/select-affected-apps.mjs'], {
+    cwd: new URL('../', import.meta.url),
+    env: { ...process.env, EVENT_NAME: 'workflow_dispatch', MANUAL_WORKER: 'weixin-mcp-worker', MANUAL_REF: 'refs/heads/main' },
+    encoding: 'utf8'
+  }), /Unsupported manual Worker selection/);
+});

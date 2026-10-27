@@ -14,10 +14,12 @@ export const APPLICATIONS = [
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
   'workflow-mcp-worker',
+  'weixin-mcp-worker',
 ];
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
-const RELEASE_WORKERS = [...APPLICATIONS];
+// The PoC can be CI checked, but is not a deployable Worker until live gates pass.
+const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'weixin-mcp-worker');
 
 function requiresAllApps(file) {
   return file === 'package.json'

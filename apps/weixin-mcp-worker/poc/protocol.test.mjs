@@ -1,0 +1,116 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createIlinkClient, IlinkError, bindVerifiedContext } from './protocol.mjs';
+
+const account = { botToken: 'secret-test-token', scannedUserId: 'owner-A', botId: 'bot-A' };
+function mock(responses) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const next = responses.shift();
+    if (next instanceof Error) throw next;
+    return new Response(JSON.stringify(next), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  return { calls, fetchImpl };
+}
+test('mock iLink QR -> verified owner inbound -> text send; upstream acceptance is not delivery', async () => {
+  const fake = mock([
+    { qrcode: 'QR-1', qrcode_img_content: 'mock QR' },
+    { status: 'confirmed', bot_token: account.botToken, ilink_bot_id: account.botId, ilink_user_id: account.scannedUserId },
+    { ret: 0, get_updates_buf: 'cursor-secret', msgs: [
+      { from_user_id: 'owner-A', to_user_id: 'bot-A', context_token: 'ctx-private', item_list: [{ type: 1, text_item: { text: 'hello secret' } }] }
+    ] },
+    { ret: 0 }
+  ]);
+  const api = createIlinkClient({ fetchImpl: fake.fetchImpl });
+  const qr = await api.getQr();
+  const scanned = await api.pollQr(qr.qrcode);
+  assert.equal(scanned.status, 'confirmed');
+  assert.equal(scanned.ilink_user_id, 'owner-A');
+  const updates = await api.getUpdates(account.botToken, '');
+  const verified = bindVerifiedContext(scanned, updates, account.botId);
+  assert.equal(verified.recipientId, 'owner-A');
+  const result = await api.sendText({
+    botToken: account.botToken, recipientId: verified.recipientId,
+    contextToken: verified.contextToken, requestId: 'd6d361d3-39cf-45a2-b2f0-cccb4e0b61ba',
+    text: 'https://example.org/hello'
+  });
+  assert.deepEqual(result, { status: 'accepted' });
+  assert.equal(fake.calls.length, 4);
+  assert.deepEqual(fake.calls.map(c => new URL(c.url).pathname), [
+    '/ilink/bot/get_bot_qrcode','/ilink/bot/get_qrcode_status','/ilink/bot/getupdates','/ilink/bot/sendmessage'
+  ]);
+  assert.equal(fake.calls[2].init.headers.Authorization, 'Bearer secret-test-token');
+  const outgoing = JSON.parse(fake.calls[3].init.body);
+  assert.equal(outgoing.msg.to_user_id, 'owner-A');
+  assert.equal(outgoing.msg.context_token, 'ctx-private');
+  assert.equal(outgoing.msg.item_list[0].text_item.text, 'https://example.org/hello');
+  assert.equal(outgoing.msg.client_id, 'd6d361d3-39cf-45a2-b2f0-cccb4e0b61ba');
+  assert.equal(outgoing.msg.message_type, 2);
+  assert.equal(outgoing.msg.message_state, 2);
+  assert.equal(outgoing.msg.from_user_id, '');
+});
+test('does not activate binding from another sender, a group, or missing context', () => {
+  const scanned = { status: 'confirmed', ilink_user_id: 'owner-A' };
+  for (const message of [
+    { from_user_id: 'attacker', context_token: 'ctx' },
+    { from_user_id: 'owner-A', context_token: 'ctx', group_id: 'group' },
+    { from_user_id: 'owner-A', context_token: '' }
+  ]) {
+    assert.throws(() => bindVerifiedContext(scanned, { msgs: [message] }, 'bot-A'), e => e instanceof IlinkError && e.code === 'IDENTITY_UNVERIFIED');
+  }
+});
+test('fails closed on hostile protocol hosts, redirects, oversized and malformed replies', async () => {
+  assert.throws(() => createIlinkClient({ apiOrigin: 'http://localhost:1234' }), /not allowed/);
+  assert.throws(() => createIlinkClient({ apiOrigin: 'https://evil.example' }), /not allowed/);
+  let attempts = 0;
+  const api = createIlinkClient({ fetchImpl: async () => {
+    attempts++;
+    return Response.redirect('https://evil.example/steal', 302);
+  } });
+  await assert.rejects(() => api.getQr(), e => e instanceof IlinkError && e.code === 'UNSAFE_REDIRECT');
+  assert.equal(attempts, 1);
+  const oversized = createIlinkClient({ fetchImpl: async () =>
+    new Response('x'.repeat(70000), { status: 200 }) });
+  await assert.rejects(() => oversized.getQr(), e => e instanceof IlinkError && e.code === 'INVALID_RESPONSE');
+  const malformed = createIlinkClient({ fetchImpl: async () => new Response('{not json', { status: 200 }) });
+  await assert.rejects(() => malformed.getQr(), e => e instanceof IlinkError && e.code === 'INVALID_RESPONSE');
+});
+test('blocked unverified context and invalid input never dispatch', async () => {
+  const fake = mock([{ ret: 0 }]);
+  const api = createIlinkClient({ fetchImpl: fake.fetchImpl });
+  const base = { botToken: 'token', recipientId: 'owner', contextToken: '', requestId: 'd6d361d3-39cf-45a2-b2f0-cccb4e0b61ba', text: 'Hi' };
+  for (const patch of [{}, { contextToken: 'ctx', text: '  ' }, { contextToken: 'ctx', text: '😊'.repeat(1500) },
+    { contextToken: 'ctx', requestId: 'invalid' }, { contextToken: 'ctx', recipientId: '' }]) {
+    await assert.rejects(() => api.sendText({ ...base, ...patch }), e => e instanceof IlinkError && e.code === 'INVALID_INPUT');
+  }
+  assert.equal(fake.calls.length, 0);
+});
+test('nonzero ret rejected; uncertain transport is unknown and never auto-retried', async () => {
+  const input = { botToken: 't', recipientId: 'owner', contextToken: 'ctx', requestId: 'd6d361d3-39cf-45a2-b2f0-cccb4e0b61ba', text: 'Hi' };
+  const failing = mock([{ ret: -14 }]);
+  await assert.rejects(() => createIlinkClient({ fetchImpl: failing.fetchImpl }).sendText(input), e => e instanceof IlinkError && e.code === 'UPSTREAM_REJECTED');
+  assert.equal(failing.calls.length, 1);
+  const timedOut = mock([new Error('secrets should not leak')]);
+  await assert.rejects(() => createIlinkClient({ fetchImpl: timedOut.fetchImpl }).sendText(input),
+    e => e instanceof IlinkError && e.code === 'UNKNOWN_SEND' && !e.message.includes('secrets'));
+  assert.equal(timedOut.calls.length, 1);
+});
+
+test('getUpdates -14 marks stale session and never attempts a second poll', async () => {
+  const fake = mock([{ ret: -14, msgs: [], get_updates_buf: '' }]);
+  await assert.rejects(() => createIlinkClient({ fetchImpl: fake.fetchImpl }).getUpdates('token', ''),
+    e => e instanceof IlinkError && e.code === 'STALE_SESSION');
+  assert.equal(fake.calls.length, 1);
+});
+test('QR redirected sessions and server-supplied alternative baseurls are not silently trusted', async () => {
+  const fake = mock([
+    { status: 'scaned_but_redirect', redirect_host: 'evil.example' },
+    { status: 'confirmed', bot_token: 'bot-secret', ilink_bot_id: 'bot', ilink_user_id: 'owner', baseurl: 'https://evil.example' }
+  ]);
+  const api = createIlinkClient({ fetchImpl: fake.fetchImpl });
+  await assert.rejects(() => api.pollQr('qr'), e => e instanceof IlinkError && e.code === 'UNSAFE_REDIRECT');
+  await assert.rejects(() => api.pollQr('qr'), e => e instanceof IlinkError && e.code === 'INVALID_RESPONSE');
+  assert.equal(fake.calls.length, 2);
+  for (const call of fake.calls) assert.equal(new URL(call.url).origin, 'https://ilinkai.weixin.qq.com');
+});
