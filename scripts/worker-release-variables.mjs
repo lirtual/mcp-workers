@@ -19,7 +19,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
-    "MAX_WRITE_AFFECTED_ROWS",
+    "MAX_WRITE_AFFECTED_ROWS", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL",
   ],
   "email-mcp-worker": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
   "ssh-mcp-worker": [],
@@ -102,6 +102,14 @@ export function collectWorkerVars(worker, env, options = {}) {
             new Set(roots).size !== roots.length) throw Error('invalid');
         for (const root of roots) canonicalPath(root);
       } catch { throw Error("Invalid OPENLIST_ALLOWED_ROOTS"); }
+    }
+    if (worker === "database-mcp-worker" &&
+        ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"].includes(name)) {
+      if (typeof value !== "string" || value.length > 256 ||
+          (name === "ACCESS_TEAM_DOMAIN" && !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(value)) ||
+          (name === "ACCESS_AUD" && !/^[a-f0-9]{64}$/i.test(value)) ||
+          (name === "OWNER_EMAIL" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)))
+        throw new Error("Invalid or missing Database Owner Access Variable: " + name);
     }
     if (worker === "email-mcp-worker") {
       const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",

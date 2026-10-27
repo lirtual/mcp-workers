@@ -5,7 +5,7 @@ import { BOOTSTRAP_SECRETS, collectBootstrapSecrets } from "./bootstrap-worker-s
 const fixtures = {
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
-  "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONFIG: '{"sample":"mysql://user:pass@host/db"}' },
+  "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1" },
   "email-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
@@ -47,9 +47,34 @@ test("missing or empty Secrets fail before any deploy, including shared portal b
   }
 });
 
-test("database config stays an unescaped JSON string; no extra nesting", () => {
+test("Database release stages new D1 encryption keys, never legacy DATABASE_CONFIG", () => {
   const input = fixtures["database-mcp-worker"];
-  assert.equal(collectBootstrapSecrets("database-mcp-worker", input).DATABASE_CONFIG, input.DATABASE_CONFIG);
+  const obsolete = { ...input, DATABASE_CONFIG: '{"a":"mysql://old"}' };
+  assert.deepEqual(collectBootstrapSecrets("database-mcp-worker", obsolete), input);
+  for (const invalid of ["bad", Buffer.alloc(31).toString("base64"), ""]) {
+    assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
+      ...input, DATABASE_ENCRYPTION_KEY: invalid
+    }), /DATABASE_ENCRYPTION_KEY/);
+  }
+  assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
+    ...input, DATABASE_KEY_ID: "invalid key"
+  }), /DATABASE_KEY_ID/);
+  const previous = { ...obsolete,
+    DATABASE_ENCRYPTION_PREVIOUS_KEY: Buffer.alloc(32, 7).toString("base64"),
+    DATABASE_PREVIOUS_KEY_ID: "v0"
+  };
+  assert.deepEqual(collectBootstrapSecrets("database-mcp-worker", previous), {
+    ...input,
+    DATABASE_ENCRYPTION_PREVIOUS_KEY: previous.DATABASE_ENCRYPTION_PREVIOUS_KEY,
+    DATABASE_PREVIOUS_KEY_ID: "v0"
+  });
+  assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
+    ...input, DATABASE_ENCRYPTION_PREVIOUS_KEY: previous.DATABASE_ENCRYPTION_PREVIOUS_KEY
+  }), /required together/);
+  assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
+    ...input, DATABASE_ENCRYPTION_PREVIOUS_KEY: previous.DATABASE_ENCRYPTION_PREVIOUS_KEY,
+    DATABASE_PREVIOUS_KEY_ID: "v1"
+  }), /must differ/);
 });
 
 test("SSH catalog key must be a canonical 32-byte Base64 key", () => {

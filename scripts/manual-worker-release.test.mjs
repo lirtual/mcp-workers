@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, DATABASE_D1_READINESS_SQL, verifyDatabaseD1Readiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -107,21 +107,95 @@ test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable 
   } }, secrets), /tracing drift/);
 });
 
-test("Database RATE_LIMITER and required runtime Secret names are a strict gate", () => {
-  const names = ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"];
-  const secrets = names.map((name) => ({ name }));
-  const limiter = { name: "RATE_LIMITER", type: "ratelimit", namespace_id: "1001",
-    simple: { limit: 120, period: 60 } };
-  const settings = {
-    bindings: [...names.map((name) => ({ name, type: "secret_text" })), limiter],
-    observability: { enabled: true, logs: { invocation_logs: true } },
+test("Database production release verifies D1 before the first Wrangler deploy", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const a = workflow.indexOf("Verify Database D1 schema before publication (read-only)");
+  const b = workflow.indexOf("Publish exactly selected Worker", a);
+  assert.ok(a > 0 && b > a, "Database D1 guard must run before publish");
+  const step = workflow.slice(a, b);
+  assert.match(step, /if: inputs\.worker == 'database-mcp-worker'/);
+  assert.match(step, /database-d1-sql database-mcp-worker/);
+  assert.match(step, /database-d1-check database-mcp-worker/);
+  assert.match(step, /wrangler d1 execute database-mcp-db --remote --json/);
+  assert.doesNotMatch(step, /\bmigrations apply\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b/i);
+});
+
+test("Database D1 read-only schema gate never enumerates plaintext credentials", () => {
+  assert.match(DATABASE_D1_READINESS_SQL, /d1_migrations/);
+  assert.doesNotMatch(DATABASE_D1_READINESS_SQL, /SELECT\s+\*/);
+  const result = counts => [{ success: true, results: [counts] }];
+  const valid = { migration_count: 1, record_count: 2, malformed_count: 0 };
+  assert.deepEqual(verifyDatabaseD1Readiness(result(valid)), { record_count: 2 });
+  assert.deepEqual(verifyDatabaseD1Readiness(result({ ...valid, record_count: 0 })), { record_count: 0 });
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 })), /migration not applied/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 51 })), /inventory invalid/);
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, malformed_count: 1 })), /inventory invalid/);
+  assert.throws(() => verifyDatabaseD1Readiness([{ success: false, results: [valid] }]), /unavailable/);
+});
+
+test("Database transition validates reviewed D1, Owner route and two throttles before release", () => {
+  const source = {
+    name: "database-mcp-worker", main: "src/index.ts",
+    secrets: { required: ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"] },
+    workers_dev: true, preview_urls: false,
+    d1_databases: [{ binding: "DB", database_name: "database-mcp-db",
+      database_id: "7e6251e5-ac52-4f1e-8e8e-bcf14c12c428", migrations_dir: "migrations" }],
+    vars: { DATABASE_SETUP_HOST: "database-owner.example.com" },
+    routes: [{ pattern: "database-owner.example.com", custom_domain: true }],
+    ratelimits: [
+      { name: "RATE_LIMITER", namespace_id: "1001", simple: { limit: 120, period: 60 } },
+      { name: "SETUP_RATE_LIMITER", namespace_id: "1002", simple: { limit: 20, period: 60 } }
+    ]
   };
-  assert.equal(verifyBindings("database-mcp-worker", settings, secrets), true);
-  assert.throws(() => verifyBindings("database-mcp-worker",
-    { ...settings, bindings: settings.bindings.filter((x) => x.name !== "RATE_LIMITER") }, secrets), /RATE_LIMITER/);
-  assert.throws(() => verifyBindings("database-mcp-worker",
-    { ...settings, bindings: [...settings.bindings.slice(0, 2), { ...limiter, simple: { limit: 200, period: 60 } }] },
-    secrets), /RATE_LIMITER/);
+  assert.equal(verifyDatabaseCutoverSource(source), true);
+  const broken = (change, message) => {
+    const candidate = structuredClone(source);
+    change(candidate);
+    assert.throws(() => verifyDatabaseCutoverSource(candidate), message);
+  };
+  broken(x => { x.d1_databases = undefined; }, /dedicated production D1/);
+  broken(x => { x.d1_databases[0].database_id = "FILL_ME_IN"; }, /dedicated production D1/);
+  broken(x => { x.secrets.required.push("DATABASE_CONFIG"); }, /never legacy DATABASE_CONFIG/);
+  broken(x => { x.routes = []; }, /dedicated HTTPS hostname/);
+  broken(x => { x.routes[0].pattern = "other.example.com"; }, /dedicated HTTPS hostname/);
+  broken(x => { x.ratelimits[1].simple.limit = 100; }, /rate-limit policies/);
+  const names = ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"];
+  const limiter = source.ratelimits[0];
+  const setup = source.ratelimits[1];
+  const list = names.map(name => ({ name }));
+  const settings = {
+    bindings: [...names.map(name => ({ name, type: "secret_text" })),
+      { name: "DATABASE_CONFIG", type: "secret_text" }, // retained until separately approved cleanup
+      { name: "DB", type: "d1", id: source.d1_databases[0].database_id },
+      { name: "DATABASE_SETUP_HOST", type: "plain_text", text: source.vars.DATABASE_SETUP_HOST },
+      ...["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"].map(name =>
+        ({ name, type: "plain_text", text: "approved-owner" })),
+      { ...limiter, type: "ratelimit" }, { ...setup, type: "ratelimit" }],
+    observability: { enabled: true, logs: { invocation_logs: true } }
+  };
+  assert.equal(verifyBindings("database-mcp-worker", settings, list, {
+    mode: "readback", sourceConfig: source
+  }), true);
+  const check = (bindingName, regex) => assert.throws(() => verifyBindings("database-mcp-worker",
+    { ...settings, bindings: settings.bindings.filter(x => x.name !== bindingName) },
+    list, { mode: "readback", sourceConfig: source }), regex);
+  check("DB", /D1 binding mismatch/);
+  check("SETUP_RATE_LIMITER", /SETUP_RATE_LIMITER/);
+  check("ACCESS_AUD", /Access variable missing/);
+  assert.throws(() => verifyBindings("database-mcp-worker", settings,
+    list.filter(x => x.name !== "DATABASE_ENCRYPTION_KEY"),
+    { mode: "readback", sourceConfig: source }), /DATABASE_ENCRYPTION_KEY/);
+  const previous = {
+    bindings: [
+      { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
+      { name: "DATABASE_CONFIG", type: "secret_text" },
+      { ...limiter, type: "ratelimit" }
+    ],
+    observability: settings.observability
+  };
+  assert.equal(verifyBindings("database-mcp-worker", previous,
+    [{ name: "MCP_ACCESS_TOKEN" }, { name: "DATABASE_CONFIG" }],
+    { mode: "preflight", sourceConfig: source }), true);
 });
 
 test("Remote production requires its own DO and rejects Preview namespace reuse", () => {
@@ -291,9 +365,11 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_CONFIG", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
+  assert.equal(secretStep.includes("secrets.DATABASE_CONFIG"), false,
+    "releases must never restage the retired whole-catalog Secret");
   assert.equal(secretStep.includes("secrets.IMA_CLIENT_ID"), false,
     "IMA_CLIENT_ID must not be staged as a Secret");
   const variableStep = workflow.slice(variableStart,

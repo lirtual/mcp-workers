@@ -130,7 +130,10 @@ jobs:
           MAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
-          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
+          DATABASE_ENCRYPTION_KEY: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_ENCRYPTION_KEY || '' }}
+          DATABASE_KEY_ID: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_KEY_ID || '' }}
+          DATABASE_ENCRYPTION_PREVIOUS_KEY: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_ENCRYPTION_PREVIOUS_KEY || '' }}
+          DATABASE_PREVIOUS_KEY_ID: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_PREVIOUS_KEY_ID || '' }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
           HTTP_CREDENTIALS_JSON: ${{ inputs.worker == 'http-mcp-worker' && secrets.HTTP_CREDENTIALS_JSON || '' }}
@@ -312,6 +315,21 @@ jobs:
           (cd apps/workflow-mcp-worker &&
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
             node scripts/manual-worker-release.mjs code-release-check workflow-mcp-worker
+
+      # Strictly read-only. A selected Database release cannot proceed if the
+      # approved D1 schema is missing; migration/import are separate actions.
+      - name: Verify Database D1 schema before publication (read-only)
+        if: inputs.worker == 'database-mcp-worker'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          query="$(node scripts/manual-worker-release.mjs database-d1-sql database-mcp-worker)"
+          (cd apps/database-mcp-worker &&
+            pnpm exec wrangler d1 execute database-mcp-db --remote --json --command "$query") |
+            node scripts/manual-worker-release.mjs database-d1-check database-mcp-worker
 
       - name: Publish exactly selected Worker
         id: publish
