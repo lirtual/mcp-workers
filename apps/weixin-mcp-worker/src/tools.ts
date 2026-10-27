@@ -1,6 +1,7 @@
 import {McpServer} from '@modelcontextprotocol/server';
 import {z} from 'zod';
 import {bindingStatus,sendOnce} from './state.ts';
+import {syncCursorOnce} from './lease.ts';
 import type {Env, IlinkSession} from './types.ts';
 import {WeixinError} from './types.ts';
 // Reviewed iLink compatibility seam, isolated in the same Worker bundle.
@@ -39,6 +40,12 @@ export function buildMcpServer(env:Env,dispatch:Dispatcher=sendToWeixin):McpServ
     description:'Send one bounded text to the currently owner-verified Weixin ClawBot. Explicit external write. Requires a fresh caller-generated UUID request_id. Duplicate IDs are fenced; unknown outcome must not be retried with a new ID automatically. Status accepted does NOT mean delivered.',
     inputSchema:z.object({text:z.string().min(1).max(4096),
       request_id:z.string().uuid()}).strict(),annotations:write,
-  },async({text:body,request_id})=>safe(()=>sendOnce(env,body,request_id,dispatch)));
+  },async({text:body,request_id})=>safe(async()=>{
+    // Refresh the verified owner's context before claiming a new send receipt.
+    // A failed poll must not cause a send with a known potentially stale token.
+    // This is bounded on-demand, not a scheduler or a new MCP tool.
+    await syncCursorOnce(env,session=>createIlinkClient().getUpdates(session.botToken,session.cursor));
+    return sendOnce(env,body,request_id,dispatch);
+  }));
   return server;
 }
