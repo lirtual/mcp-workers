@@ -20,7 +20,7 @@ function fixture() {
     fingerprint: "1234567890abcdef12345678", revoked: false, grant_type: "permanent",
     approved_at: NOW - 60_000,
     device_info: { os: "windows", arch: "x64", environment: "native",
-      agent_version: "v0.1.31-rc.1", hostname: "RAY-WORKSPACE", os_version: "10.0.26200" },
+      agent_version: "v0.1.31-rc.1", upgrade_protocol:"owner-one-shot-v1", hostname: "RAY-WORKSPACE", os_version: "10.0.26200" },
   });
   let tail = Promise.resolve();
   let store: Pick<DurableObjectStorage, "get" | "put" | "transaction">;
