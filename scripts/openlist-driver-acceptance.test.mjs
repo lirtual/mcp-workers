@@ -16,7 +16,7 @@ const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
-  authEnv = env,nativeMoveError,staleUploadedListingReads = 0} = {}) {
+  authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false} = {}) {
   const requests = [];
   let made = false, uploaded = false;
   let staleReads = staleUploadedListingReads;
@@ -42,6 +42,20 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       if (failUpload) return Response.json({code:500,data:null});
       uploaded=true;
       return Response.json({code:200,data:null});
+    }
+    if(url.pathname === '/api/fs/list') {
+      requests.push('refresh_listing');
+      assert.equal(req.method,'POST');
+      assert.equal(url.origin,'https://openlist.lirtual.dpdns.org');
+      assert.equal(req.headers.get('authorization'),authEnv.OPENLIST_API_TOKEN);
+      assert.deepEqual(await req.json(),{
+        path:folder,page:1,per_page:100,refresh:true,
+      });
+      if(failRefresh) return Response.json({code:500,data:null},{status:500});
+      assert.equal(uploaded,true);
+      staleReads=0;
+      return Response.json({code:200,data:{content:[
+        {name:file.split('/').at(-1),is_dir:false}],total:1}});
     }
     if(url.pathname.startsWith('/api/p/')) {
       requests.push('signed_get');
@@ -170,13 +184,26 @@ test('isolated E2E verifies all six operations with only one fixture PUT',async(
   assert.equal(requests.filter(x=>x==='upload').length,1);
   assert.equal(requests.filter(x=>x==='openlist_create_folder').length,2);
 });
-test('fresh fixture tolerates one stale empty read without retrying uploads',async()=>{
-  const {transport,requests}=fakeTransport({staleUploadedListingReads:1});
+test('cached empty listing triggers one read-only refresh, not a second upload',async()=>{
+  const {transport,requests}=fakeTransport({staleUploadedListingReads:8});
   const result=await runOpenListDriverAcceptance(env,transport);
   assert.equal(result.folder,folder.split('/').at(-1));
   assert.equal(requests.filter(x=>x==='upload').length,1);
+  assert.equal(requests.filter(x=>x==='refresh_listing').length,1);
   assert.equal(requests.filter(x=>x==='openlist_list_files').length,4);
   assert.equal(requests.filter(x=>x==='openlist_create_folder').length,2);
+});
+
+test('failed read-only refresh stops before any native write and is never retried',async()=>{
+  const {transport,requests}=fakeTransport({
+    staleUploadedListingReads:8,failRefresh:true,
+  });
+  await assert.rejects(()=>runOpenListDriverAcceptance(env,transport),
+    /openlist_driver_e2e_file_listing_refresh_unknown/);
+  assert.equal(requests.filter(x=>x==='upload').length,1);
+  assert.equal(requests.filter(x=>x==='refresh_listing').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_upload_small').length,0);
+  assert.equal(requests.at(-1),'refresh_listing');
 });
 
 test('missing approval and non-reviewed roots refuse every request',async()=>{
