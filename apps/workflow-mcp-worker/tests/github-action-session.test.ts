@@ -256,6 +256,80 @@ test('Go download dispatch-unknown holds the shared lock until physical terminal
  }finally{f.db.close();}
 });
 
+test('Go download release needs proven no-dispatch, not only an inactive parent',async()=>{
+ const f=fixture();
+ try{
+  const task={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const taskPlan={...plan,github_action_approvals:[task],steps:[{
+   id:'batch',uses:'flow.foreach',needs:[],with:{
+    items:{ref:'inputs.download_batches'},max_items:1,template:{
+     id:'download',uses:'github.run',with:{capability:'github.action',
+      action:{...task,ref:'refs/tags/v1',inputs:{batch_json:{ref:'item.value'}}}}
+    }
+   }
+  }]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(taskPlan),'v');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(1),'batch_0_download'),'reserved');
+  assert.equal(await releaseNeverDispatchedSessionSlot(
+   f.adapter,run(1),'batch_0_download',Date.now()),false,
+   'live parent may still register and dispatch its physical Task');
+  f.db.prepare("UPDATE runs SET outcome='indeterminate' WHERE id=?").run(run(1));
+  assert.equal(await releaseNeverDispatchedSessionSlot(
+   f.adapter,run(1),'batch_0_download',0),false,
+   'a reservation may not be cleaned before its age cutoff');
+  assert.equal(await releaseNeverDispatchedSessionSlot(
+   f.adapter,run(1),'batch_0_download',Date.now()),true,
+   'terminal parent and no persisted Attempt prove no dispatch occurred');
+  assert.equal(await releaseNeverDispatchedSessionSlot(
+   f.adapter,run(1),'batch_0_download',Date.now()),false);
+  const session={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const sPlan={...plan,github_action_approvals:[session],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...session,ref:'refs/tags/v1',
+    inputs:{duration_minutes:300,session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(sPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
+  assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?')
+   .get(run(2))?.fixed_key,'123:go-openlist');
+ }finally{f.db.close();}
+});
+
+test('Go download definitive pre-dispatch rejection releases only its own reservation',async()=>{
+ const f=fixture();
+ try{
+  const task={...action,type:'task',workflowPath:'.github/workflows/download.yml'};
+  const tPlan={...plan,github_action_approvals:[task],steps:[{
+   id:'batch',uses:'flow.foreach',needs:[],with:{
+    items:{ref:'inputs.download_batches'},max_items:1,template:{
+     id:'download',uses:'github.run',with:{capability:'github.action',
+      action:{...task,ref:'refs/tags/v1',inputs:{batch_json:{ref:'item.value'}}}}
+    }
+   }
+  }]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(tPlan),'v');
+  assert.equal(await reserveGoOpenListDownloadSlot(f.adapter,run(1),'batch_0_download'),'reserved');
+  f.db.prepare(`INSERT INTO step_attempts
+   (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,
+    workflow_ref,ref,created_at,updated_at)
+   VALUES(?,?,'batch_0_download','github.action',?,'rejected',
+    'lirtual/session-actions','123',
+    'lirtual/session-actions/.github/workflows/download.yml@refs/tags/v1',
+    'refs/tags/v1',1,1)`).run(run(5),run(1),'definitive-rejection');
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'batch_0_download'),'held');
+  assert.equal(await releaseRejectedSessionSlot(f.adapter,run(1),'batch_0_download'),true);
+  assert.equal(await releaseRejectedSessionSlot(f.adapter,run(1),'batch_0_download'),false);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions WHERE run_id=?')
+   .get(run(1))?.state,'terminated');
+  const session={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const sPlan={...plan,github_action_approvals:[session],steps:[{...plan.steps[0],
+   with:{...plan.steps[0].with,action:{...session,ref:'refs/tags/v1',
+    inputs:{duration_minutes:300,session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(sPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved');
+ }finally{f.db.close();}
+});
+
 test('fixed Windows and Ubuntu provide stable MagicDNS locators only after Ready',async()=>{
  const f=fixture();
  try{
