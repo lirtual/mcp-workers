@@ -721,11 +721,14 @@ export class V2OwnerCoordinator {
           try {
             const attached = socket.deserializeAttachment() as {
               device_id?:unknown; epoch?:unknown; last_auth_check_at?:unknown;
+              device_info_reported?:unknown;
             } | null;
             const last = attached?.last_auth_check_at;
+            // Newly connected sockets must report their current runtime
+            // capability before an old persisted capability can be trusted.
             if (socket.readyState === WebSocket.OPEN && attached?.device_id === id &&
-                attached.epoch === epoch && typeof last === "number" &&
-                last <= now && now - last < 16 * 60_000) {
+                attached.epoch === epoch && attached.device_info_reported === true &&
+                typeof last === "number" && last <= now && now - last < 16 * 60_000) {
               authenticated = true; break;
             }
           } catch { /* malformed WSS incarnation cannot prepare an upgrade */ }
