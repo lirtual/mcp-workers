@@ -214,3 +214,36 @@ test('failed upstream verify-code requests consume durable budget before provide
   await assert.rejects(()=>pollPairing(f.env,OWNER,bad,'1234'),/verify_code_blocked/);
   assert.equal(attempted,3);
 });
+
+test('superseded QR proof cannot activate after newer QR request takes same generation lease',async()=>{
+  const f=await fixture(true);
+  const oldProof=await stage(f);
+  // All QR sessions before activation share the same active binding generation.
+  assert.equal(f.db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,1);
+  f.add(proofMessage(oldProof));
+  await startPairing(f.env,OWNER,f.client);
+  // The stale proof was valid for the old QR but not for this replacement.
+  await assert.rejects(()=>verifyPairing(f.env,OWNER,f.client),/pairing_not_confirmed/);
+  assert.equal(f.db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,1);
+  assert.equal(f.db.sql.prepare('SELECT state FROM weixin_binding').get()?.state,'ready');
+  assert.equal((await pairingView(f.env,OWNER)).phase,'qr_pending');
+  assert.equal(await pollPairing(f.env,OWNER,f.client),'confirmed');
+  f.clear();
+  const newProof=(await pairingView(f.env,OWNER)).proof!;
+  assert.notEqual(newProof,oldProof);
+  f.add(proofMessage(newProof));
+  assert.equal(await verifyPairing(f.env,OWNER,f.client),'ready');
+  assert.equal(f.db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,2);
+});
+test('replaced QR between verification read and lease admission fails closed',async()=>{
+  const f=await fixture();
+  const proof=await stage(f);
+  f.add(proofMessage(proof));
+  // Prove the exact row check independently: after a new session exists, an
+  // invocation using the old session cannot activate it or modify its cursor.
+  const stale=f.db.sql.prepare('SELECT session_id FROM weixin_pairing').get()?.session_id;
+  await startPairing(f.env,OWNER,f.client);
+  assert.notEqual(f.db.sql.prepare('SELECT session_id FROM weixin_pairing').get()?.session_id,stale);
+  await assert.rejects(()=>verifyPairing(f.env,OWNER,f.client),/pairing_not_confirmed/);
+  assert.equal(f.db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,0);
+});
