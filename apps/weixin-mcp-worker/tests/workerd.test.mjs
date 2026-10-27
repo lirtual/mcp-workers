@@ -22,7 +22,9 @@ function runtime(){
       name:'weixin-mcp-worker',
       modules:true,
       script:readFileSync(scriptPath,'utf8'),
-      compatibilityDate:'2026-10-27',
+      // Pinned local workerd supports flags only through 2026-09-15. The
+      // deployed Worker keeps the separately reviewed 2026-10-27 date.
+      compatibilityDate:'2026-09-15',
       d1Databases:{DB:'weixin-local-test'},
       bindings:{
         MCP_HOST:mcpHost,
