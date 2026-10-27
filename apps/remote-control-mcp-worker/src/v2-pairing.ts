@@ -752,7 +752,7 @@ export class V2OwnerCoordinator {
                   if (version === record.preview.target.tag &&
                       answer.status === "completed" && answer.receipt.state === "completed" &&
                       await markWindowsUpgradeCompleted(this.state.storage,
-                        input.operation_id,input.device_id)) {
+                        input.operation_id,input.device_id,epoch!)) {
                     status = "completed";
                   } else if (version === record.preview.current_version &&
                       answer.status === "failed" && answer.receipt.state === "failed" &&
