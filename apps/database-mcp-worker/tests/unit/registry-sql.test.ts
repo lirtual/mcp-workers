@@ -124,3 +124,12 @@ describe('bounded and resumable registry key rotation', () => {
       .toHaveProperty('url');
   });
 });
+
+describe('immutable connection identity', () => {
+  it('reports duplicate ids as a stable conflict without replacing the original row', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    await createRegistryConnection(f.db, input('same'));
+    await expect(createRegistryConnection(f.db, input('same'))).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    expect((await getRegistryConnection(f.db, 'same'))?.revision).toBe(1);
+  });
+});

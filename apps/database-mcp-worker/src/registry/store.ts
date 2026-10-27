@@ -58,12 +58,16 @@ export async function createRegistryConnection(db: Db, data: NewRegistryConnecti
   assertId(data.id); assertEncrypted(data.ciphertext, data.keyId);
   if (data.dialect !== 'mysql' && data.dialect !== 'postgres') invalid('Invalid connection dialect.');
   const now = Date.now();
-  await dbCall(async () => {
+  try {
     const result = await db.prepare(`INSERT INTO database_connections(id,dialect,status,ciphertext,key_id,revision,created_at,updated_at)
       SELECT ?,?,'disabled',?,?,1,?,? WHERE (SELECT COUNT(*) FROM database_connections) < 50`)
       .bind(data.id, data.dialect, data.ciphertext, data.keyId, now, now).run();
     if (result.meta.changes !== 1) throw new PublicError('RATE_LIMITED', 'The maximum of 50 connections is configured.');
-  });
+  } catch (error) {
+    if (error instanceof PublicError) throw error;
+    if (error instanceof Error && /UNIQUE constraint failed: database_connections\.id/i.test(error.message)) conflict();
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is unavailable.');
+  }
 }
 export async function updateRegistryConnection(db: Db, id: string, revision: number, data: { dialect: Dialect; ciphertext: string; keyId: string }): Promise<void> {
   assertId(id); assertRevision(revision); assertEncrypted(data.ciphertext, data.keyId);
