@@ -12,12 +12,19 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.host !== 'openlist.internal' ||
-        !['/api/fs/list','/api/fs/search'].includes(url.pathname) ||
+        !['/api/fs/list','/api/fs/search','/api/fs/get'].includes(url.pathname) ||
         request.method !== 'POST' || request.headers.get('authorization') !== 'synthetic-openlist-admin' ||
         request.headers.has('cookie')) {
       return Response.json({code:403,message:'wrong service binding request',data:null},{status:403});
     }
     const body = await request.json();
+    if (url.pathname === '/api/fs/get') {
+      return Response.json({code:200,data:{
+        name:'another.txt',path:'/Koofr/safe/another.txt',
+        size:5,is_dir:false,sign:'sensitive-signer',
+        raw_url:'https://provider.example/private'
+      }});
+    }
     if (url.pathname === '/api/fs/search') {
       if (body.parent !== '/Koofr/safe' || body.keywords !== 'txt' ||
           body.page !== 1 || body.per_page !== 10)
@@ -82,6 +89,18 @@ test('workerd runs MCP ingress and private Service Binding to an isolated upstre
     const body = await call.text();
     assert.match(body,/notes\.txt/);
     assert.doesNotMatch(body,/provider\.example|forbidden/);
+    const forged = await invoke(mf,'tools/call',{name:'openlist_get_file',
+      arguments:{path:'/Koofr/safe/notes.txt'}},portal);
+    assert.equal(forged.status,200);
+    const forgedBody = await forged.text();
+    assert.match(forgedBody,/UPSTREAM_UNAVAILABLE/);
+    assert.doesNotMatch(forgedBody,/another\.txt|provider\.example|sensitive-signer/);
+    const forgedRead = await invoke(mf,'tools/call',{name:'openlist_read_text',
+      arguments:{path:'/Koofr/safe/notes.txt'}},portal);
+    assert.equal(forgedRead.status,200);
+    const forgedReadBody = await forgedRead.text();
+    assert.match(forgedReadBody,/UPSTREAM_UNAVAILABLE/);
+    assert.doesNotMatch(forgedReadBody,/another\.txt|sensitive-signer/);
     const search = await invoke(mf,'tools/call',{name:'openlist_search_files',
       arguments:{parent:'/Koofr/safe',keywords:'txt',page:1,per_page:10}},portal);
     assert.equal(search.status,200);

@@ -91,6 +91,15 @@ function safeMetadata(value: unknown): Record<string, unknown> {
   if (typeof value.modified === 'string' && value.modified.length <= 64) obj.modified = value.modified;
   return obj;
 }
+function targetMetadata(value: unknown, target: string): Record<string, unknown> {
+  const meta = safeMetadata(value);
+  const expectedName = target.slice(target.lastIndexOf('/') + 1);
+  if (meta.name !== expectedName ||
+      (meta.path !== undefined && meta.path !== target))
+    throw new OpenListError('UPSTREAM_UNAVAILABLE');
+  return { ...meta, path: target };
+}
+
 function collectEntries(data: unknown): { content: unknown[]; total: number } {
   if (!isObject(data) || !Array.isArray(data.content) || data.content.length > 100 ||
       typeof data.total !== 'number' || !Number.isSafeInteger(data.total) || data.total < 0)
@@ -170,13 +179,12 @@ export class OpenListApi {
       { path: dir, page, per_page: perPage, refresh: false })).data);
     const entries = content.map(safeMetadata).filter(item =>
       typeof item.name === 'string' &&
-      (typeof item.path !== 'string' || item.path.startsWith(dir + '/')));
+      (item.path === undefined || item.path === dir + '/' + item.name));
     return { entries, total, page };
   }
   async get(path: string): Promise<Record<string, unknown>> {
     const file = this.check(path);
-    const meta = safeMetadata((await this.request('POST', '/api/fs/get', { path: file })).data);
-    return { ...meta, path: file };
+    return targetMetadata((await this.request('POST', '/api/fs/get', { path: file })).data, file);
   }
   async search(parent: string, keywords: string, page: number, perPage: number) {
     const dir = this.check(parent);
@@ -208,7 +216,7 @@ export class OpenListApi {
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);
     const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;
-    const meta = safeMetadata(raw);
+    const meta = targetMetadata(raw, file);
     const sign = isObject(raw) && typeof raw.sign === 'string' && raw.sign.length <= 512 &&
       !/[\u0000-\u001f\u007f]/.test(raw.sign) ? raw.sign : undefined;
     if (sign === undefined) throw new OpenListError('NOT_SUPPORTED');

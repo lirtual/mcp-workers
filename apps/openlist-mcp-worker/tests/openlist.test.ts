@@ -210,3 +210,43 @@ test('readText does not report a truncated upstream 200 body as a successful fil
   await assert.rejects(api.readText('/drive/safe/notes.txt'),
     (e: unknown) => e instanceof OpenListError && e.code === 'UPSTREAM_UNAVAILABLE');
 });
+
+test('getFile rejects upstream metadata identifying a different file', async () => {
+  for (const meta of [
+    {name:'other.txt',size:4,is_dir:false},
+    {name:'target.txt',path:'/drive/safe/elsewhere.txt',size:4,is_dir:false},
+    {size:4,is_dir:false},
+  ]) {
+    const api = new OpenListApi(createConfig(env(async () => ok(meta))));
+    await assert.rejects(api.get('/drive/safe/target.txt'),
+      (e: unknown) => e instanceof OpenListError && e.code === 'UPSTREAM_UNAVAILABLE');
+  }
+});
+
+test('list rejects an upstream child path that disagrees with its entry name', async () => {
+  const api = new OpenListApi(createConfig(env(async () => ok({
+    content: [
+      {name:'good.txt',path:'/drive/safe/good.txt',size:3},
+      {name:'liar.txt',path:'/drive/safe/other.txt',size:3},
+      {name:'deep.txt',path:'/drive/safe/sub/deep.txt',size:3},
+    ],total:3,
+  }))));
+  const result = await api.list('/drive/safe',1,10);
+  assert.deepEqual(result.entries,[{name:'good.txt',path:'/drive/safe/good.txt',size:3}]);
+});
+
+test('readText never downloads when GET metadata name or path disagrees with target', async () => {
+  for (const meta of [
+    {name:'mismatch.txt',size:4,is_dir:false,sign:'sign'},
+    {name:'target.txt',path:'/drive/safe/another.txt',size:4,is_dir:false,sign:'sign'},
+  ]) {
+    let calls = 0;
+    const api = new OpenListApi(createConfig(env(async () => {
+      ++calls;
+      return ok(meta);
+    })));
+    await assert.rejects(api.readText('/drive/safe/target.txt'),
+      (e: unknown) => e instanceof OpenListError && e.code === 'UPSTREAM_UNAVAILABLE');
+    assert.equal(calls,1);
+  }
+});
