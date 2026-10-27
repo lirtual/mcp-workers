@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { V2OwnerCoordinator } from "../src/v2-pairing.ts";
-import { presentWindowsUpgrade, readWindowsUpgrade, UPGRADE_UNCONFIRMED_ATTENTION_MS } from "../src/upgrade-approval.ts";
+import { presentOwnerUpgrade, readOwnerUpgrade, UPGRADE_UNCONFIRMED_ATTENTION_MS } from "../src/upgrade-approval.ts";
 import { REVIEWED_WINDOWS_UPGRADE_PIN } from "../src/install-bootstrap.ts";
 
 const DEVICE="2a83dae6-600c-49cc-b643-ab0d5ec7e0c8";
@@ -68,7 +68,7 @@ function fixture() {
     assert.equal(p.status,200);
     const result=await p.json() as {confirmation:string;preview:{operation_id:string}};
     assert.match(result.confirmation,/^[a-f0-9]{64}$/);
-    const shown=await presentWindowsUpgrade(storage,result.preview.operation_id,result.confirmation);
+    const shown=await presentOwnerUpgrade(storage,result.preview.operation_id,result.confirmation);
     assert.ok(shown);
     return {confirmation:result.confirmation,form:shown.form_token};
   }
@@ -95,7 +95,7 @@ test("owner POST atomically claims approved intent and sends exactly one immutab
   assert.equal(args.device_id,DEVICE);
   assert.equal(args.fingerprint,"0123456789abcdef01234567");
   assert.ok(Number.isSafeInteger(args.approved_at));
-  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"claimed");
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"claimed");
   const status = await f.post("/upgrade/status",{operation_id:"full-chain-operation",device_id:DEVICE});
   assert.equal(status.status,200);
   const safe = await status.json() as Record<string,unknown>;
@@ -127,7 +127,7 @@ test("owner preview alone cannot claim and a bad CSRF cannot dispatch",async()=>
   });
   assert.equal(rejected.status,409);
   assert.equal(f.counts(),0);
-  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"prepared");
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"prepared");
 });
 
 test("durable ledger finishes only after newly reported signed target and completed local WSS receipt",async()=>{
@@ -159,7 +159,7 @@ test("durable ledger finishes only after newly reported signed target and comple
   });
   assert.equal(completed.status,200);
   assert.equal((await completed.json() as {status:string}).status,"completed");
-  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"completed");
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"completed");
   const count=f.counts();
   const reread=await f.post("/upgrade/status",{
     device_id:DEVICE,operation_id:"full-chain-operation",
@@ -182,7 +182,7 @@ test("signed restored old version reports guarded failure without releasing appr
   });
   assert.equal(status.status,200);
   assert.equal((await status.json() as {status:string}).status,"needs_attention");
-  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"needs_attention");
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"needs_attention");
   const replay=await f.post("/upgrade/prepare",{
     device_id:DEVICE,operation_id:"second-after-rollback",
     target:REVIEWED_WINDOWS_UPGRADE_PIN,
@@ -210,7 +210,7 @@ test("read-only owner status ages an unresponsive one-shot into guarded attentio
   });
   assert.equal(response.status,200);
   assert.equal((await response.json() as {status:string}).status,"needs_attention");
-  assert.equal((await readWindowsUpgrade(f.storage,"full-chain-operation"))?.state,"needs_attention");
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"needs_attention");
   assert.equal(f.counts(),sentBefore,"offline reconciliation does not dispatch or query WSS");
   const repeat=await f.post("/upgrade/prepare",{
     device_id:DEVICE,operation_id:"unsafe-stale-retry",target:REVIEWED_WINDOWS_UPGRADE_PIN,

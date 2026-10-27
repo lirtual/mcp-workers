@@ -10,7 +10,7 @@ const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
-import { prepareWindowsUpgrade, presentWindowsUpgrade, confirmWindowsUpgrade, claimWindowsUpgradeDispatch, markUpgradeDispatchUncertain, markStaleWindowsUpgradeAttention, markWindowsUpgradeCompleted, readWindowsUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
+import { prepareOwnerUpgrade, presentOwnerUpgrade, confirmOwnerUpgrade, claimOwnerUpgradeDispatch, markUpgradeDispatchUncertain, markStaleOwnerUpgradeAttention, markOwnerUpgradeCompleted, readOwnerUpgrade, type ReviewedUpgradePin } from "./upgrade-approval.ts";
 import {inspectReviewedLinuxUpgradeAsset,type ReviewedLinuxUpgradePin} from "./linux-upgrade-pin.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
@@ -705,7 +705,7 @@ export class V2OwnerCoordinator {
             typeof input.device_id !== "string") {
           return Response.json({error:"invalid_request"},{status:400});
         }
-        const record = await readWindowsUpgrade(this.state.storage,input.operation_id);
+        const record = await readOwnerUpgrade(this.state.storage,input.operation_id);
         if (!record || record.preview.device_id !== input.device_id) {
           return Response.json({error:"not_found"},{status:404});
         }
@@ -714,7 +714,7 @@ export class V2OwnerCoordinator {
         // A missing signed Agent receipt stays locked and needs owner attention.
         // This does not dispatch, cancel, or retry the upgrade.
         if (status === "claimed" &&
-            await markStaleWindowsUpgradeAttention(this.state.storage,input.operation_id))
+            await markStaleOwnerUpgradeAttention(this.state.storage,input.operation_id))
           status = "needs_attention";
         // Reconcile only a freshly authenticated, currently reported socket.
         // A restored old runtime can report a failed local rollback receipt,
@@ -758,7 +758,7 @@ export class V2OwnerCoordinator {
                     answer.receipt.tool_name === "upgrade_agent") {
                   if (version === record.preview.target.tag &&
                       answer.status === "completed" && answer.receipt.state === "completed" &&
-                      await markWindowsUpgradeCompleted(this.state.storage,
+                      await markOwnerUpgradeCompleted(this.state.storage,
                         input.operation_id,input.device_id,epoch!)) {
                     status = "completed";
                   } else if (version === record.preview.current_version &&
@@ -841,7 +841,7 @@ export class V2OwnerCoordinator {
           approvedTarget={tag:reviewed.tag,commit:reviewed.commit,
             linux_arch:reviewed.arch,linux_asset_sha256:reviewed.asset_sha256};
         }
-        const result = await prepareWindowsUpgrade(this.state.storage,
+        const result = await prepareOwnerUpgrade(this.state.storage,
           input.operation_id, id, approvedTarget, now);
         return Response.json(result, {status:result.status === "prepared" ? 200 : 409,
           headers:{"cache-control":"no-store"}});
@@ -865,20 +865,20 @@ export class V2OwnerCoordinator {
           return Response.json({ error: "invalid_request" }, { status: 400 });
         }
         if (path === "/upgrade/preview") {
-          const result = await presentWindowsUpgrade(this.state.storage,
+          const result = await presentOwnerUpgrade(this.state.storage,
             body.operation_id, body.confirmation);
           return result
             ? Response.json(result, { headers: { "cache-control": "no-store" } })
             : Response.json({ error: "not_found" }, { status: 404 });
         }
-        const approved = await confirmWindowsUpgrade(this.state.storage,
+        const approved = await confirmOwnerUpgrade(this.state.storage,
           body.operation_id, body.confirmation, body.form_token as string);
         if (!approved) return Response.json({approved:false},{status:409,
           headers:{"cache-control":"no-store"}});
         // The single Access owner POST consumes the grant before attempting
         // one signed WSS admission. The current Agent handler only fsyncs its
         // receipt; no installer download or Task switch exists on this branch.
-        const dispatch = await claimWindowsUpgradeDispatch(this.state.storage,body.operation_id);
+        const dispatch = await claimOwnerUpgradeDispatch(this.state.storage,body.operation_id);
         if (!dispatch) return Response.json({approved:true,status:"needs_attention"},{
           headers:{"cache-control":"no-store"}});
         const pending = await this.readFile(new Request("https://v2.internal/operation",{

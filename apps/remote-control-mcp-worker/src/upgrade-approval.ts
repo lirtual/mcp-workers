@@ -1,4 +1,4 @@
-/** Private owner-DO admission for one confirmed Windows Agent upgrade.
+/** Private owner-DO admission for one confirmed, reviewed Agent upgrade.
  * No MCP tool or HTTP route invokes these functions until Access and the
  * signed Agent executor are connected and independently tested.
  *
@@ -116,7 +116,7 @@ function matchesLiveDevice(row: UpgradeApprovalPreview, device: V2Device | undef
 }
 
 /** Caller MUST obtain reviewedPin from a server-owned allowlist, never MCP arguments. */
-export async function prepareWindowsUpgrade(
+export async function prepareOwnerUpgrade(
   store: Store, operationId: string, deviceId: string, reviewedPin: ReviewedUpgradePin,
   now = Date.now(),
 ): Promise<{ status: "prepared"; confirmation: string; preview: UpgradeApprovalPreview } | { status: "existing" | "refused" }> {
@@ -159,7 +159,7 @@ export async function prepareWindowsUpgrade(
 /** Call only AFTER validating the Access JWT and its exact owner, issuer and audience.
  * GET issues an independent CSRF token; receiving the preview is not consent.
  */
-export async function presentWindowsUpgrade(
+export async function presentOwnerUpgrade(
   store: Store, operationId: string, confirmation: string, now = Date.now(),
 ): Promise<{ preview: UpgradeApprovalPreview; form_token: string } | null> {
   if (!OPERATION.test(operationId) || !SHA.test(confirmation)) return null;
@@ -178,7 +178,7 @@ export async function presentWindowsUpgrade(
 /** Call ONLY after Access owner JWT verification and an explicit POST/Origin/CSRF
  * browser action. A remembered MCP confirmation is never sufficient.
  */
-export async function confirmWindowsUpgrade(
+export async function confirmOwnerUpgrade(
   store: Store, operationId: string, confirmation: string, formToken: string, now = Date.now(),
 ): Promise<boolean> {
   if (!OPERATION.test(operationId) || !SHA.test(confirmation) || !SHA.test(formToken)) return false;
@@ -198,7 +198,7 @@ export async function confirmWindowsUpgrade(
 /** Claim exactly once before any signed Agent WSS dispatch. A claimed/unknown
  * operation stays guarded even if WSS drops or the caller retries.
  */
-export async function claimWindowsUpgrade(
+export async function claimOwnerUpgrade(
   store: Store, preview: UpgradeApprovalPreview, now = Date.now(),
 ): Promise<boolean> {
   if (!OPERATION.test(preview.operation_id) || !UUID.test(preview.device_id)) return false;
@@ -218,7 +218,7 @@ export async function claimWindowsUpgrade(
  * payload to a single authenticated Agent WSS dispatch. Never replay after
  * losing the WSS response: the DO record stays claimed/guarded.
  */
-export async function claimWindowsUpgradeDispatch(
+export async function claimOwnerUpgradeDispatch(
   store: Store, operationId: string, now = Date.now(),
 ): Promise<(UpgradeApprovalPreview & { approved_at: number }) | null> {
   if (!OPERATION.test(operationId)) return null;
@@ -251,7 +251,7 @@ export async function markUpgradeDispatchUncertain(
  * scheduled retry or second dispatch. The exact claimed approval remains
  * guarded and a later genuine signed success may still complete it.
  */
-export async function markStaleWindowsUpgradeAttention(
+export async function markStaleOwnerUpgradeAttention(
   store: Store, operationId: string, now = Date.now(),
 ): Promise<boolean> {
   if (!OPERATION.test(operationId) || !Number.isSafeInteger(now)) return false;
@@ -268,7 +268,7 @@ export async function markStaleWindowsUpgradeAttention(
 }
 
 /** Read-only status: never returns the nonce or CSRF token. */
-export async function readWindowsUpgrade(
+export async function readOwnerUpgrade(
   store: Store, operationId: string,
 ): Promise<{ state: UpgradeApprovalState; preview: UpgradeApprovalPreview } | null> {
   if (!OPERATION.test(operationId)) return null;
@@ -280,7 +280,7 @@ export async function readWindowsUpgrade(
  * this final atomic ledger transition permits another explicitly approved
  * upgrade later; an ACK or a version string alone never grants completion.
  */
-export async function markWindowsUpgradeCompleted(
+export async function markOwnerUpgradeCompleted(
   store: Store, operationId: string, deviceId: string, observedEpoch: string,
 ): Promise<boolean> {
   if (!OPERATION.test(operationId) || !UUID.test(deviceId) ||
