@@ -6,6 +6,8 @@ import { attachFixedPortalServer } from './register-mcp-portal-server.mjs';
 export const OPENLIST_TOOLS = [
   'openlist_capabilities', 'openlist_list_files', 'openlist_get_file',
   'openlist_search_files', 'openlist_read_text', 'openlist_share_get',
+  'openlist_download_link', 'openlist_share_disable',
+  'openlist_upload_small', 'openlist_rename', 'openlist_copy', 'openlist_move',
   'openlist_create_folder',
 ].sort();
 

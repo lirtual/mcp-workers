@@ -283,3 +283,18 @@ trusted client human approval for external sharing and irreversible deletion,
 not a model-supplied boolean. CI tests the internal adapters and confirms forged
 MCP `tools/call` messages cannot dispatch these actions. No real share or file
 is mutated in offline acceptance. This does not require modifying the Fork.
+
+## Portal registration inventory gate for the 13-tool Draft
+
+The existing `scripts/register-openlist-portal.mjs` and its offline regression
+contract now require exactly the thirteen MCP tools registered by this Draft,
+not the seven deployed on current production. This keeps the existing
+fail-closed Portal inventory check: a stale 7-tool deployment or an unexpected
+extra destructive tool **fails before changing Portal mappings**. The five
+internal-only share/delete adapters remain absent from this inventory.
+
+This change **does not** run registration, release, or live testing. A separately
+authorized release must first establish the exact active Worker version and
+real driver results; only a later authorized Portal operation can expose the
+expanded tool set. The original production Worker and Portal retain their
+current seven tools until then.
