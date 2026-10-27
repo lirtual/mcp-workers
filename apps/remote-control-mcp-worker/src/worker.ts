@@ -1,4 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
+import { verifyUpgradeOwnerAccess, validUpgradeFormOrigin, upgradeFormCookie, UPGRADE_APPROVAL_ORIGIN } from "./upgrade-access.ts";
 import { BROWSER_TOOLS, BROWSER_EFFECT_TOOLS, BROWSER_READ_TOOLS, parseBrowserCall, browserEffectClientStatus } from "./browser-tools.ts";
 /** Browser tools use the existing authenticated MCP + signed paired-device grant. */
 import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
@@ -11,6 +12,9 @@ type V2Env = Env & {
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
+  REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN?: string;
+  REMOTE_CONTROL_UPGRADE_ACCESS_AUD?: string;
+  REMOTE_CONTROL_UPGRADE_OWNER_EMAIL?: string;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1129,6 +1133,97 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   return rpcError(rpcMessage.id, -32601, "Method not found.");
 }
 
+const UPGRADE_PAGE_HEADERS = {
+  "cache-control": "no-store, max-age=0",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "x-frame-options": "DENY",
+  "content-security-policy": "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+} as const;
+function escapeUpgradeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
+}
+/** Deliberately unreachable without an independent Access application and a
+ * prepared owner-DO operation. The page can only approve, never dispatch.
+ */
+async function handleUpgradeApprovalPage(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const match = /^\/upgrade-approve\/([A-Za-z0-9._:-]{1,128})\/([a-f0-9]{64})$/.exec(url.pathname);
+  const deny = (status = 403) => new Response("Upgrade authorization unavailable.\n",
+    { status, headers: UPGRADE_PAGE_HEADERS });
+  const owner = pendingOwner(env);
+  if (!match || url.search || url.hash || !owner || !pairedOnly(env) ||
+      !["GET","POST"].includes(request.method)) return deny(404);
+  const values = env as V2Env;
+  if (!await verifyUpgradeOwnerAccess(request, {
+    teamDomain: values.REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN,
+    audience: values.REMOTE_CONTROL_UPGRADE_ACCESS_AUD,
+    ownerEmail: values.REMOTE_CONTROL_UPGRADE_OWNER_EMAIL,
+  })) return deny();
+  const operationId = match[1]!, confirmation = match[2]!;
+  if (request.method === "GET") {
+    try {
+      const preview = await owner.fetch("https://v2.internal/upgrade/preview", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ operation_id: operationId, confirmation }),
+      });
+      if (!preview.ok) return deny(404);
+      const result = await preview.json() as {
+        preview?: {operation_id:string;device_id:string;fingerprint:string;
+          current_version:string;target:{tag:string;commit:string;windows_asset_sha256:string}};
+        form_token?:string;
+      };
+      const item = result.preview;
+      if (!item || item.operation_id !== operationId ||
+          !/^[a-f0-9]{64}$/.test(result.form_token ?? "") ||
+          !/^[a-f0-9-]{36}$/.test(item.device_id) ||
+          !/^[a-f0-9]{24}$/.test(item.fingerprint) ||
+          !/^[a-f0-9]{40}$/.test(item.target?.commit ?? "") ||
+          !/^[a-f0-9]{64}$/.test(item.target?.windows_asset_sha256 ?? "")) return deny();
+      const e = escapeUpgradeHtml;
+      const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+        "<title>Authorize Agent upgrade</title></head><body><main>" +
+        "<h1>Authorize one Agent upgrade</h1>" +
+        "<p>Confirm only if you requested this exact device and immutable Release.</p>" +
+        "<dl><dt>Device UUID</dt><dd>" + e(item.device_id) +
+        "</dd><dt>Key fingerprint</dt><dd>" + e(item.fingerprint) +
+        "</dd><dt>Current version</dt><dd>" + e(item.current_version) +
+        "</dd><dt>Target version</dt><dd>" + e(item.target.tag) +
+        "</dd><dt>Release commit</dt><dd>" + e(item.target.commit) +
+        "</dd><dt>Windows asset SHA-256</dt><dd>" + e(item.target.windows_asset_sha256) +
+        "</dd><dt>Operation ID</dt><dd>" + e(operationId) +
+        "</dd></dl><form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"" +
+        e(result.form_token!) + "\"><button type=\"submit\">Approve this one upgrade</button>" +
+        "</form></main></body></html>";
+      return new Response(html, { status: 200, headers: {
+        ...UPGRADE_PAGE_HEADERS, "content-type": "text/html; charset=utf-8",
+        "set-cookie": upgradeFormCookie(result.form_token!),
+      } });
+    } catch { return deny(503); }
+  }
+  if (request.headers.get("content-type") !== "application/x-www-form-urlencoded") return deny();
+  const raw = await readBounded(request, 2048);
+  if (raw === null) return deny();
+  const form = new URLSearchParams(raw);
+  if ([...form.keys()].length !== 1 || !form.has("csrf")) return deny();
+  const token = form.get("csrf") ?? "";
+  if (!validUpgradeFormOrigin(request, token)) return deny();
+  try {
+    const response = await owner.fetch("https://v2.internal/upgrade/confirm", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operation_id: operationId, confirmation, form_token: token }),
+    });
+    if (!response.ok || (await response.json() as {approved?: boolean}).approved !== true)
+      return deny(409);
+    return new Response("Approval recorded. An upgrade has NOT been dispatched.\n", {
+      status: 200, headers: { ...UPGRADE_PAGE_HEADERS, "content-type": "text/plain; charset=utf-8",
+        "set-cookie": "rca_upgrade_csrf=; Path=/upgrade-approve/; Max-Age=0; Secure; HttpOnly; SameSite=Strict" },
+    });
+  } catch { return deny(503); }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // A newly uploaded public preview must not expose even the bounded
@@ -1138,6 +1233,9 @@ export default {
     }
     const url = new URL(request.url);
 
+    if (url.pathname.startsWith("/upgrade-approve/")) {
+      return handleUpgradeApprovalPage(request, env);
+    }
     if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1") {
       // Serve pinned public installer only from the existing, configured
       // production owner Worker; other environments remain fail-closed.
