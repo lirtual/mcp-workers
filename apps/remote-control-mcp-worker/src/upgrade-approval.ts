@@ -34,6 +34,8 @@ interface StoredUpgrade extends UpgradeApprovalPreview {
   confirmation_digest: string;
   form_digest?: string;
   approved_at?: number;
+  /** Authenticated socket incarnation at the moment the one-shot claim was consumed. */
+  claimed_epoch?: string;
 }
 type Store = Pick<DurableObjectStorage, "get" | "put" | "transaction">;
 const key = (operationId: string) => "upgrade:operation:" + operationId;
@@ -182,7 +184,9 @@ export async function claimWindowsUpgrade(
     if (!record || record.state !== "approved" || now >= record.expires_at ||
         !samePreview(record, preview) || await tx.get<string>(lock(preview.device_id)) !== preview.operation_id ||
         !matchesLiveDevice(record, await tx.get<V2Device>("device:" + record.device_id))) return false;
-    await tx.put(key(preview.operation_id), { ...record, state: "claimed" });
+    const epoch = await tx.get<string>("session:epoch:" + record.device_id);
+    if (!epoch) return false;
+    await tx.put(key(preview.operation_id), { ...record, state: "claimed", claimed_epoch: epoch });
     return true;
   });
 }
@@ -202,7 +206,9 @@ export async function claimWindowsUpgradeDispatch(
         record.approved_at > now || now >= record.expires_at ||
         await tx.get<string>(lock(record.device_id)) !== operationId ||
         !matchesLiveDevice(record, await tx.get<V2Device>("device:" + record.device_id))) return null;
-    await tx.put(key(operationId), { ...record, state: "claimed" });
+    const epoch = await tx.get<string>("session:epoch:" + record.device_id);
+    if (!epoch) return null;
+    await tx.put(key(operationId), { ...record, state: "claimed", claimed_epoch: epoch });
     return { ...publicPreview(record), approved_at: record.approved_at };
   });
 }
@@ -240,6 +246,10 @@ export async function markWindowsUpgradeCompleted(
     if (!previous || !["claimed","needs_attention"].includes(previous.state) ||
         previous.device_id !== deviceId ||
         await tx.get<string>(lock(deviceId)) !== operationId) return false;
+    // A version/report on the original WSS socket is not a NEW authenticated
+    // post-switch incarnation, even if its local receipt claims completion.
+    const signedEpoch = await tx.get<string>("session:epoch:" + deviceId);
+    if (!previous.claimed_epoch || !signedEpoch || signedEpoch === previous.claimed_epoch) return false;
     const device = await tx.get<V2Device>("device:"+deviceId);
     if (!deviceIsAuthorized(device) || device.grant_type === "temporary" ||
         device.device_id !== previous.device_id ||
