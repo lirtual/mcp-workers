@@ -6,6 +6,8 @@ export type DeviceInfo = {
   arch: string;
   environment: "native" | "wsl2" | "container";
   agent_version?: string;
+  /** Future native updater readiness, never inferred from a version or pairing. */
+  upgrade_protocol?: "owner-one-shot-v1";
 };
 
 export function parseDeviceInfo(raw: string): DeviceInfo | null {
@@ -15,7 +17,7 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   const allowed = new Set(["kind", "hostname", "os", "os_version", "arch",
-    "environment", "agent_version", "capabilities"]);
+    "environment", "agent_version", "capabilities", "upgrade_protocol"]);
   if (v.kind !== "device_info" || Object.keys(v).some(k => !allowed.has(k))) return null;
   const label = (x: unknown, max: number) =>
     typeof x === "string" && x.length > 0 && x.length <= max &&
@@ -23,6 +25,11 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
   if (!label(v.hostname, 64) || !label(v.os_version, 96) ||
       !label(v.arch, 16) ||
       (v.agent_version !== undefined && !label(v.agent_version, 48)) ||
+      (v.upgrade_protocol !== undefined &&
+        (v.upgrade_protocol !== "owner-one-shot-v1" ||
+         !((v.os === "windows" && v.arch === "x64" && v.environment === "native") ||
+           (v.os === "linux" && ["x64", "arm64"].includes(String(v.arch)) &&
+            ["native", "wsl2"].includes(String(v.environment)))))) ||
       !["linux", "windows", "darwin"].includes(String(v.os)) ||
       !["native", "wsl2", "container"].includes(String(v.environment)) ||
       // Deployed Agents still report this legacy field. Validate and discard it.
@@ -38,5 +45,6 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
     arch: v.arch as string,
     environment: v.environment as DeviceInfo["environment"],
     ...(v.agent_version !== undefined ? { agent_version: v.agent_version as string } : {}),
+    ...(v.upgrade_protocol === "owner-one-shot-v1" ? { upgrade_protocol: v.upgrade_protocol } : {}),
   };
 }
