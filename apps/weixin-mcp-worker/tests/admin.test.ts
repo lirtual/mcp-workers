@@ -193,8 +193,9 @@ test('full Access browser QR flow enforces CSRF, renders private QR and activate
   const verified=await handleAdmin(post('verify',{csrf}),env,certs,client);
   assert.equal(verified.status,200);
   assert.match(await verified.text(),/local binding activated/);
-  assert.deepEqual(db.sql.prepare('SELECT generation,state FROM weixin_binding').get(),
-    {generation:1,state:'ready'});
+  const active=db.sql.prepare('SELECT generation,state FROM weixin_binding').get()!;
+  assert.equal(active.generation,1);
+  assert.equal(active.state,'ready');
   assert.doesNotMatch(JSON.stringify(db.sql.prepare('SELECT * FROM weixin_binding').get()),
     /new-bot-token|verified-context/);
 });
