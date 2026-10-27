@@ -5,13 +5,19 @@ import { presentOwnerUpgrade, readOwnerUpgrade, UPGRADE_UNCONFIRMED_ATTENTION_MS
 import { REVIEWED_WINDOWS_UPGRADE_PIN } from "../src/install-bootstrap.ts";
 
 const DEVICE="2a83dae6-600c-49cc-b643-ab0d5ec7e0c8";
-function fixture() {
+const LINUX_PIN={tag:"v0.1.33",commit:"a".repeat(40),
+  linux_x64_asset_sha256:"b".repeat(64),linux_arm64_asset_sha256:"c".repeat(64),
+  protocol:"owner-one-shot-v1"} as const;
+function fixture(platform:"windows"|"linux"="windows") {
   const data=new Map<string,unknown>([
     ["device:"+DEVICE,{device_id:DEVICE,name:"RAY-WORKSPACE",revoked:false,
       public_key:"test-public-spki",fingerprint:"0123456789abcdef01234567",
       approved_at:Date.now()-1000,grant_type:"permanent",
-      device_info:{os:"windows",arch:"x64",environment:"native",
-        agent_version:"v0.1.31-rc.1",upgrade_protocol:"owner-one-shot-v1"}}],
+      device_info:platform==="linux"
+        ? {os:"linux",arch:"x64",environment:"wsl2",
+            agent_version:"v0.1.22",upgrade_protocol:"owner-one-shot-v1"}
+        : {os:"windows",arch:"x64",environment:"native",
+            agent_version:"v0.1.31-rc.1",upgrade_protocol:"owner-one-shot-v1"}}],
     ["session:epoch:"+DEVICE,"signed-epoch"],
   ]);
   let serial=Promise.resolve();
@@ -31,6 +37,7 @@ function fixture() {
   let respond=true;
   let currentEpoch="signed-epoch";
   let receiptState:"completed"|"failed"="completed";
+  let receiptSummary:string|undefined;
   const frames:Record<string,unknown>[]=[];
   const socket={
     readyState:WebSocket.OPEN,
@@ -44,7 +51,8 @@ function fixture() {
           JSON.stringify({kind:"operation_result",request_id:payload.request_id,
             result:payload.tool==="get_operation_status"
               ? {operation_id:payload.operation_id,status:receiptState,
-                  receipt:{operation_id:payload.operation_id,tool_name:"upgrade_agent",state:receiptState}}
+                  receipt:{operation_id:payload.operation_id,tool_name:"upgrade_agent",state:receiptState,
+                    ...(receiptSummary?{safe_result_summary:receiptSummary}:{})}}
               : {operation_id:payload.operation_id,status:"admitted"}})));
       }
     },
@@ -63,7 +71,7 @@ function fixture() {
   async function prepared(){
     const p=await post("/upgrade/prepare",{
       device_id:DEVICE,operation_id:"full-chain-operation",
-      target:REVIEWED_WINDOWS_UPGRADE_PIN,
+      target:platform==="linux"?LINUX_PIN:REVIEWED_WINDOWS_UPGRADE_PIN,
     });
     assert.equal(p.status,200);
     const result=await p.json() as {confirmation:string;preview:{operation_id:string}};
@@ -75,6 +83,7 @@ function fixture() {
   return {data,frames,prepared,post,counts:()=>sent,
     setSignedEpoch:(next:string)=>{currentEpoch=next;data.set("session:epoch:"+DEVICE,next);},
     setReceiptState:(next:"completed"|"failed")=>{receiptState=next;},
+    setReceiptSummary:(next:string)=>{receiptSummary=next;},
     disableAgentReply:()=>{respond=false;},storage};
 }
 test("owner POST atomically claims approved intent and sends exactly one immutable no-execution WSS admission",async()=>{
@@ -233,6 +242,32 @@ test("signed restored old version reports guarded failure without releasing appr
     target:REVIEWED_WINDOWS_UPGRADE_PIN,
   });
   assert.equal(replay.status,409,"confirmed failure must retain the guarded one-shot lock");
+});
+
+test("fresh signed restored Linux with exact rollback receipt reports rolled_back, not upgrade success",async()=>{
+  const f=fixture("linux");
+  const {confirmation,form}=await f.prepared();
+  const approved=await f.post("/upgrade/confirm",{
+    operation_id:"full-chain-operation",confirmation,form_token:form,
+  });
+  assert.deepEqual(await approved.json(),{approved:true,status:"admitted"});
+  f.setSignedEpoch("signed-restored-linux");
+  f.setReceiptState("failed");
+  // An ordinary failed receipt is NOT sufficient to classify restored service.
+  const uncertain=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal((await uncertain.json() as {status:string}).status,"needs_attention");
+  f.setReceiptSummary("Original Linux unit and identity restored; signed owner reconciliation required.");
+  const restored=await f.post("/upgrade/status",{
+    device_id:DEVICE,operation_id:"full-chain-operation",
+  });
+  assert.equal((await restored.json() as {status:string}).status,"rolled_back");
+  assert.equal((await readOwnerUpgrade(f.storage,"full-chain-operation"))?.state,"rolled_back");
+  const after=await f.post("/upgrade/prepare",{
+    device_id:DEVICE,operation_id:"unsafe-retry",target:LINUX_PIN,
+  });
+  assert.equal(after.status,409,"a restored service must not silently free the approval lock");
 });
 
 test("read-only owner status ages an unresponsive one-shot into guarded attention",async()=>{
