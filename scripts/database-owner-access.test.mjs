@@ -24,11 +24,11 @@ test("Owner Access allows only a matching app and exactly one email policy", () 
     { ...app, self_hosted_domains: [host, "other.example.net"] },
     { ...app, type: "mcp" },
     { ...app, session_duration: "24h" },
-    { ...app, auto_redirect_to_identity: false }
-    , { ...app, allowed_idps: undefined }
-    , { ...app, allowed_idps: [] }
-    , { ...app, allowed_idps: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }
-    , { ...app, allowed_idps: [otpId, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }
+    { ...app, auto_redirect_to_identity: false },
+    { ...app, allowed_idps: undefined },
+    { ...app, allowed_idps: [] },
+    { ...app, allowed_idps: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] },
+    { ...app, allowed_idps: [otpId, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }
   ]) assert.throws(() => verifyDatabaseOwnerPolicy(altered, [allowed], params), /identity|session|One-time PIN/);
   for (const policies of [
     [], [allowed, allowed],
