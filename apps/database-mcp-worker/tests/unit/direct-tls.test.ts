@@ -32,6 +32,10 @@ describe('Direct transport TLS invariant', () => {
       host: 'db.example.com', ssl: expect.objectContaining({ rejectUnauthorized: true, verifyIdentity: true })
     }));
   });
+  it('rejects MySQL IP literals because mysql2 otherwise skips peer identity checking', async () => {
+    await expect(mysqlHealthCheck({ ...direct('mysql'), host: '8.8.8.8' }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
   it('does not let a PostgreSQL connection string override verified TLS', async () => {
     await postgresHealthCheck(direct('postgres'));
     expect(postgresConstruct).toHaveBeenCalledWith(expect.objectContaining({

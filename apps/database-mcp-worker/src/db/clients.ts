@@ -1,4 +1,6 @@
 import { createConnection, type Connection } from 'mysql2/promise';
+import { isIP } from 'node:net';
+import { PublicError } from '../errors.js';
 import { Client as PgClient } from 'pg';
 import type { EffectiveConnection } from '../types.js';
 import { withTimeout } from './timeout.js';
@@ -26,6 +28,11 @@ export function createPostgresClient(connection: EffectiveConnection): PgClient 
 
 export async function createMysqlClient(connection: EffectiveConnection, rowsAsArray = false): Promise<Connection> {
   const timeout = Math.min(connection.limits.queryTimeoutMs, 5_000);
+  // mysql2 skips checkServerIdentity when the supplied host is an IP literal.
+  // Until verified IP-SAN checking is available, fail closed even for public IPs.
+  if (connection.transport === 'direct' && isIP(connection.host) !== 0) {
+    throw new PublicError('INVALID_INPUT', 'MySQL Direct TLS requires a DNS hostname.');
+  }
   const pending = createConnection({
     host: connection.host,
     user: connection.user,
