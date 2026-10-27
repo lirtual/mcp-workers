@@ -22,7 +22,7 @@ export type LinuxUpgradeAsset=Readonly<{
 /** Deliberately absent: the current public v0.1.22 is NOT a protocol Release. */
 export const REVIEWED_LINUX_UPGRADE_PIN:ReviewedLinuxUpgradePin|null=null;
 
-const TAG=/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const TAG=/^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
 const COMMIT=/^[a-f0-9]{40}$/;
 const SHA=/^[a-f0-9]{64}$/;
 const FINGERPRINT=/^[a-f0-9]{24}$/;
