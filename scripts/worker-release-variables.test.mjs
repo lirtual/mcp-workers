@@ -154,3 +154,22 @@ test("Email Access Variables must match exact approved values", () => {
       { ...approved, [name]: "bad-value" }), /Email production Access Variable mismatch/);
   }
 });
+
+test('OpenList roots must exactly satisfy the Worker runtime canonical path rules before publication', () => {
+  const approved = ['/Koofr/safe','/OneDrive/docs'];
+  assert.deepEqual(collectWorkerVars('openlist-mcp-worker', {
+    OPENLIST_ALLOWED_ROOTS: JSON.stringify(approved),
+  }), ['OPENLIST_ALLOWED_ROOTS:'+JSON.stringify(approved)]);
+  for (const invalid of [
+    '/Koofr/te\u0301st',  // not NFC
+    '/Koofr/'+'a'.repeat(256), // invalid segment, even though entire path < 1024
+    '/Koofr/@d/alias',
+    '/Koofr/@s/share',
+    '/Koofr/\u007fcontrol',
+    '/Koofr/%2Fescape',
+  ]) {
+    assert.throws(() => collectWorkerVars('openlist-mcp-worker', {
+      OPENLIST_ALLOWED_ROOTS: JSON.stringify([invalid]),
+    }), /OPENLIST_ALLOWED_ROOTS/, invalid);
+  }
+});

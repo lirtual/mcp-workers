@@ -16,6 +16,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "http-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "openlist-mcp-worker": ["MCP_ACCESS_TOKEN", "OPENLIST_API_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 });
 
@@ -31,6 +32,8 @@ export function collectBootstrapSecrets(worker, env) {
     }
     payload[name] = value;
   }
+  if (worker === "openlist-mcp-worker" && payload.OPENLIST_API_TOKEN === payload.MCP_ACCESS_TOKEN)
+    throw new Error("OpenList admin Token must differ from MCP_ACCESS_TOKEN");
   if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length < 20 ||
       payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
       /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))

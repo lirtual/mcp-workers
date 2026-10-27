@@ -8,6 +8,7 @@ The active repository contains independently owned MCP Worker bounded contexts:
 - [HTTP MCP](./apps/http-mcp-worker/README.md): owns interactive public HTTP(S) debugging, bounded responses, and origin/path-scoped outbound credentials.
 - [Database MCP](./apps/database-mcp-worker/README.md): owns database connection configuration, SQL safety, and database tool semantics.
 - [IMA MCP](./apps/ima-mcp-worker/CONTEXT.md): owns IMA knowledge and notes operations.
+- [OpenList MCP](./apps/openlist-mcp-worker/CONTEXT.md): owns guarded virtual-tree operations to the existing OpenList-Worker through a private Service Binding.
 - [Raindrop MCP](./apps/raindrop-mcp-worker/CONTEXT.md): owns Raindrop.io bookmark, collection, tag, highlight, and upstream API semantics.
 - Remote Control MCP (`apps/remote-control-mcp-worker` and `apps/remote-control-agent`): owns the Portal ingress for one private Linux device and the curated relay to native Node.js file operations. Its implemented tool surface includes file reads, directory listing, search, receipt-protected `write_file`, `create_directory`, `edit_block`, and `move_file`, plus `get_operation_status`. Shell remains separately gated on the real Linux-user privilege review; code changes alone do not deploy or enable the live Worker/Portal connection.
 

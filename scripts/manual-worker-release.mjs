@@ -2,8 +2,9 @@
 // Never log API bodies: Workers settings can include runtime plain-text values.
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { collectWorkerVars } from "./worker-release-variables.mjs";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
+const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
@@ -13,6 +14,7 @@ const REQUIRED_SECRETS = {
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "http-mcp-worker": ["MCP_ACCESS_TOKEN"],
+  "openlist-mcp-worker": ["MCP_ACCESS_TOKEN", "OPENLIST_API_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 };
 const WORKER_ENTRIES = {
@@ -24,6 +26,7 @@ const WORKER_ENTRIES = {
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
   "http-mcp-worker": "src/index.ts",
+  "openlist-mcp-worker": "src/index.ts",
   "workflow-mcp-worker": "src/index.ts",
 };
 
@@ -44,6 +47,23 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (options.mode !== "preflight") {
       invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
       invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
+    }
+  }
+  if (worker === "openlist-mcp-worker") {
+    const service = find("OPENLIST", "service");
+    invariant(service?.service === "openlist-tsworkers",
+      "OpenList Service Binding target differs from approved upstream");
+    const roots = find("OPENLIST_ALLOWED_ROOTS", "plain_text");
+    if (options.mode !== "preflight") {
+      invariant(typeof roots?.text === "string" && roots.text.length > 0,
+        "Required OpenList allowed roots variable missing");
+      // Same canonical parser is used before deploy and in the live Worker.
+      // Readback must never accept a root configuration the Worker rejects.
+      try {
+        collectWorkerVars("openlist-mcp-worker", {
+          OPENLIST_ALLOWED_ROOTS: roots.text,
+        });
+      } catch { throw Error("Invalid OpenList allowed roots"); }
     }
   }
   if (worker === "http-mcp-worker") {
@@ -205,6 +225,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   const allowed = new Set(worker === "workflow-mcp-worker"
     ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] : ["DB", "WORKFLOW"]) :
+    worker === "openlist-mcp-worker" ? ["OPENLIST"] :
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
@@ -473,6 +494,15 @@ function readConfiguration(worker, content) {
   }
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
+  if (worker === "openlist-mcp-worker") {
+    invariant(conf.services?.length === 1 &&
+      conf.services[0].binding === "OPENLIST" &&
+      conf.services[0].service === "openlist-tsworkers" &&
+      conf.workers_dev === true && conf.preview_urls === false &&
+      !conf.vars && !conf.d1_databases?.length && !conf.r2_buckets?.length &&
+      !conf.durable_objects?.bindings?.length,
+      "OpenList source binding or unexpected infrastructure drift");
+  }
   if (worker === "http-mcp-worker") {
     invariant(conf.workers_dev === true && conf.preview_urls === false &&
       JSON.stringify(conf.compatibility_flags) === JSON.stringify(["global_fetch_strictly_public"]) &&
@@ -576,10 +606,10 @@ async function cfGet(account, worker, token, endpoint) {
   return document.result;
 }
 
-async function scriptExists(account, worker, token) {
+export async function scriptExists(account, worker, token, transport = fetch) {
   const url = "https://api.cloudflare.com/client/v4/accounts/" +
     encodeURIComponent(account) + "/workers/scripts?per_page=100";
-  const response = await fetch(url, {
+  const response = await transport(url, {
     headers: { Authorization: "Bearer " + token, Accept: "application/json" },
     signal: AbortSignal.timeout(15_000),
   });
@@ -717,6 +747,10 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
+  if (mode === "preflight" && worker === "openlist-mcp-worker") {
+    invariant(await scriptExists(account, "openlist-tsworkers", token),
+      "Required OpenList upstream Worker is not deployed");
+  }
   const read = async () => {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,

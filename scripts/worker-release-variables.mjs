@@ -3,6 +3,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { canonicalPath } from "../apps/openlist-mcp-worker/src/openlist.ts";
 
 const INTEGER_LIMITS = Object.freeze({
   RAINDROP_RATE_LIMIT_MAX_RETRIES: [0, 10],
@@ -25,6 +26,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
   "http-mcp-worker": [],
+  "openlist-mcp-worker": ["OPENLIST_ALLOWED_ROOTS"],
   "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID"],
 });
 
@@ -91,6 +93,16 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   for (const name of allowed) {
     const value = env[name];
+    if (name === "OPENLIST_ALLOWED_ROOTS") {
+      // Use the Worker's exact runtime parser: no release-time/runtime drift.
+      let roots;
+      try {
+        roots = JSON.parse(value);
+        if (!Array.isArray(roots) || roots.length < 1 || roots.length > 16 ||
+            new Set(roots).size !== roots.length) throw Error('invalid');
+        for (const root of roots) canonicalPath(root);
+      } catch { throw Error("Invalid OPENLIST_ALLOWED_ROOTS"); }
+    }
     if (worker === "email-mcp-worker") {
       const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
         ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",

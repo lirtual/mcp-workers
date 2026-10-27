@@ -11,6 +11,7 @@ const fixtures = {
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
   "http-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
+  "openlist-mcp-worker": { MCP_ACCESS_TOKEN: "portal", OPENLIST_API_TOKEN: "separate-openlist" },
   "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24), SESSION_RUNTIME_DATA_KEY: Buffer.alloc(32, 9).toString("base64") },
 };
 
@@ -18,6 +19,12 @@ test("bootstrap supports all selected Workers, including isolated Remote Control
   assert.deepEqual(Object.keys(BOOTSTRAP_SECRETS).sort(), Object.keys(fixtures).sort());
   assert.deepEqual(collectBootstrapSecrets("remote-control-mcp-worker", { ...fixtures["remote-control-mcp-worker"], REMOTE_CONTROL_DEVICE_TOKEN: "legacy" }), fixtures["remote-control-mcp-worker"]);
   assert.throws(() => collectBootstrapSecrets("unlisted-worker", {}), /not enabled/);
+});
+
+test("OpenList upstream admin token must differ from Portal ingress token", () => {
+  assert.throws(() => collectBootstrapSecrets("openlist-mcp-worker", {
+    MCP_ACCESS_TOKEN: "shared", OPENLIST_API_TOKEN: "shared",
+  }), /must differ/);
 });
 
 test("selected Worker receives only required named secrets (no JSON wrappers)", () => {
