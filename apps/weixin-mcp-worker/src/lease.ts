@@ -7,7 +7,7 @@ import {fail} from './types.ts';
 const LEASE_SECONDS=120;
 export type Lease={owner:string;generation:number;expiresAt:number};
 export async function acquireLease(env:Env,generation:number,allowed:string[]):Promise<Lease>{
-  if(allowed.length<1||!allowed.every(s=>['ready','bound_unverified'].includes(s)))fail('invalid_state');
+  if(allowed.length<1||!allowed.every(s=>['unbound','ready','bound_unverified','needs_interaction','reauth_required','temporarily_unavailable'].includes(s)))fail('invalid_state');
   const owner=crypto.randomUUID(),now=Math.floor(Date.now()/1000),expiresAt=now+LEASE_SECONDS;
   const placeholders=allowed.map(()=>'?').join(',');
   const result=await env.DB.prepare(
