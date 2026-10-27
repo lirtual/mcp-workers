@@ -214,8 +214,8 @@ export class OpenListApi {
     // Upstream total counts unfiltered matches; entries may be fewer after scope validation.
     return { entries, total, page, per_page: perPage, has_more: page * perPage < total };
   }
-  // Gated candidate only: do NOT register as an MCP tool until real
-  // OpenList driver and Portal acceptance. Never query the global share list.
+  // Explicit-ID, read-only share metadata. Publication still requires separate
+  // approval and real client acceptance. Never query the global share list.
   async getShare(id: string): Promise<Record<string, unknown>> {
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
       throw new OpenListError('INVALID_INPUT');
