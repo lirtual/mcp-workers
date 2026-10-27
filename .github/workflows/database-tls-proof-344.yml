@@ -93,11 +93,16 @@ jobs:
           node --input-type=module <<'NODE'
           import {readFileSync} from 'node:fs';
           const token=readFileSync(process.env.RUNNER_TEMP+'/db344-probe-token','utf8');
-          const response=await fetch(process.env.PROBE_URL+'/run',{
-            method:'POST', headers:{authorization:'Bearer '+token},
-            signal:AbortSignal.timeout(80000)
-          });
-          if (!response.ok) throw Error('Proof endpoint rejected request');
+          let response;
+          for (let attempt=0; attempt<6; attempt++) {
+            response=await fetch(process.env.PROBE_URL+'/run',{
+              method:'POST', headers:{authorization:'Bearer '+token},
+              signal:AbortSignal.timeout(80000)
+            });
+            if(response.ok || ![404,502,503].includes(response.status)) break;
+            await new Promise(resolve=>setTimeout(resolve,2000));
+          }
+          if (!response?.ok) throw Error('Proof endpoint rejected request (HTTP '+response?.status+')');
           const body=await response.json();
           for(const dialect of ['postgres','mysql']){
             const result=body.results?.find(r=>r.dialect===dialect);
