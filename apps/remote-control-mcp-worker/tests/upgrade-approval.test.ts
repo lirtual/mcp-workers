@@ -355,6 +355,25 @@ test("terminal ledger refuses re-pair, revocation, target mismatch or missing ru
 });
 
 
+test("Windows watchdog-verified original Task rollback needs a fresh signed epoch and retains guard",async()=>{
+  const f=fixture(),id="signed-windows-rollback";
+  const p=await start(f,id);
+  const shown=await presentOwnerUpgrade(f.store,id,p.confirmation,NOW+1);
+  assert.ok(shown);
+  assert.equal(await confirmOwnerUpgrade(f.store,id,p.confirmation,shown!.form_token,NOW+2),true);
+  assert.ok(await claimOwnerUpgradeDispatch(f.store,id,NOW+3));
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"signed-before-switch"),false,
+    "Original signed WSS epoch cannot attest to a restored Task");
+  f.rows.set("session:epoch:"+DEVICE,"signed-old-windows-restored");
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"foreign-socket"),false);
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"signed-old-windows-restored"),true);
+  assert.equal((await readOwnerUpgrade(f.store,id))?.state,"rolled_back");
+  assert.equal(await markOwnerUpgradeRolledBack(f.store,id,DEVICE,"signed-old-windows-restored"),false,
+    "A completed rollback cannot be attested a second time");
+  assert.equal((await prepareOwnerUpgrade(f.store,"unsafe-windows-retry",DEVICE,PIN,NOW+10)).status,"refused",
+    "Even a verified rollback keeps the one-shot device lock");
+});
+
 test("Linux restored old Agent needs a fresh signed epoch and keeps the one-shot lock",async()=>{
   const f=fixture(),id="signed-linux-rollback";
   const pin:ReviewedUpgradePin={tag:"v0.1.33",commit:"a".repeat(40),
