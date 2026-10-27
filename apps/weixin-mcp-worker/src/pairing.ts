@@ -7,6 +7,8 @@ import {bindVerifiedContext,createIlinkClient,createOwnershipProof} from '../poc
 
 const TTL=600;
 const MAX_ATTEMPTS=5;
+// Fence every asynchronous QR write against the SAME binding lease used by sends.
+const fence=" AND EXISTS (SELECT 1 FROM weixin_binding WHERE id=1 AND generation=? AND lease_holder=? AND lease_until>?)";
 type Phase='issuing'|'qr_pending'|'bound_unverified'|'expired';
 type PairRow={
   id:number;generation:number;owner_digest:string;phase:Phase;session_id:string;
@@ -95,8 +97,9 @@ export async function startPairing(env:Env,sub:string,client:PairClient):Promise
       {qrcode:qr.qrcode,qrUrl:qr.qrcode_img_content});
     const written=await env.DB.prepare(
       "UPDATE weixin_pairing SET phase='qr_pending',ciphertext=?,key_id=? "+
-      "WHERE id=1 AND phase='issuing' AND generation=? AND session_id=? AND expires_at>?"
-    ).bind(saved.ciphertext,saved.keyId,binding.generation,sessionId,now()).run();
+      "WHERE id=1 AND phase='issuing' AND generation=? AND session_id=? AND expires_at>?"+fence
+    ).bind(saved.ciphertext,saved.keyId,binding.generation,sessionId,now(),
+      lease.generation,lease.owner,now()).run();
     if(written.meta.changes!==1)fail('pairing_expired');
     await readUnderLease(env,lease);
   }finally{await releaseLease(env,lease);}
@@ -122,8 +125,8 @@ export async function pollPairing(
     if(['expired','verify_code_blocked','binded_redirect'].includes(scan.status)){
       await env.DB.prepare(
         "UPDATE weixin_pairing SET phase='expired',ciphertext=NULL,key_id=NULL "+
-        "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending'"
-      ).bind(row.generation,row.session_id).run();
+        "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending'"+fence
+      ).bind(row.generation,row.session_id,lease.generation,lease.owner,now()).run();
       return 'expired';
     }
     if(scan.status==='confirmed'){
@@ -134,16 +137,18 @@ export async function pollPairing(
       } satisfies PairSecret);
       const changed=await env.DB.prepare(
         "UPDATE weixin_pairing SET phase='bound_unverified',ciphertext=?,key_id=?,poll_after=? "+
-        "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' AND expires_at>?"
-      ).bind(sealed.ciphertext,sealed.keyId,0,row.generation,row.session_id,t).run();
+        "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' AND expires_at>?"+fence
+      ).bind(sealed.ciphertext,sealed.keyId,0,row.generation,row.session_id,t,
+        lease.generation,lease.owner,now()).run();
       if(changed.meta.changes!==1)fail('pairing_changed');
       return 'confirmed';
     }
     if(!['wait','scaned','need_verifycode'].includes(scan.status))fail('pairing_unsupported');
     const changed=await env.DB.prepare(
       "UPDATE weixin_pairing SET poll_after=?,verify_count=verify_count+? "+
-      "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' AND expires_at>?"
-    ).bind(t+4,verifyCode===undefined?0:1,row.generation,row.session_id,t).run();
+      "WHERE id=1 AND generation=? AND session_id=? AND phase='qr_pending' AND expires_at>?"+fence
+    ).bind(t+4,verifyCode===undefined?0:1,row.generation,row.session_id,t,
+      lease.generation,lease.owner,now()).run();
     if(changed.meta.changes!==1)fail('pairing_changed');
     return scan.status as 'wait'|'scaned'|'need_verifycode';
   }finally{await releaseLease(env,lease);}
@@ -181,8 +186,9 @@ export async function verifyPairing(
       const encrypted=await encrypt(env,aad(row),{...value,cursor:updates.get_updates_buf});
       const saved=await env.DB.prepare(
         "UPDATE weixin_pairing SET ciphertext=?,key_id=?,poll_after=? "+
-        "WHERE id=1 AND generation=? AND session_id=? AND phase='bound_unverified' AND expires_at>?"
-      ).bind(encrypted.ciphertext,encrypted.keyId,now()+3,row.generation,row.session_id,now()).run();
+        "WHERE id=1 AND generation=? AND session_id=? AND phase='bound_unverified' AND expires_at>?"+fence
+      ).bind(encrypted.ciphertext,encrypted.keyId,now()+3,row.generation,row.session_id,now(),
+        lease.generation,lease.owner,now()).run();
       if(saved.meta.changes!==1)fail('pairing_changed');
       return 'waiting_for_proof';
     }
