@@ -6,7 +6,7 @@ import {encrypt,decrypt} from '../src/crypto.ts';
 import {acquireLease,releaseLease,unbindLocal} from '../src/lease.ts';
 import {pairingView,pollPairing,startPairing,verifyPairing} from '../src/pairing.ts';
 import type {PairClient} from '../src/pairing.ts';
-import {sendOnce} from '../src/state.ts';
+import {bindingStatus,sendOnce} from '../src/state.ts';
 import type {Env,IlinkSession} from '../src/types.ts';
 
 const OWNER='access-sub-1';
@@ -60,6 +60,8 @@ async function fixture(ready=false){
 async function stage(f:Awaited<ReturnType<typeof fixture>>){
   await startPairing(f.env,OWNER,f.client);
   assert.equal((await pairingView(f.env,OWNER)).phase,'qr_pending');
+  if((await bindingStatus(f.env)).binding_state!=='ready')
+    assert.equal((await bindingStatus(f.env)).binding_state,'qr_pending');
   assert.equal(await pollPairing(f.env,OWNER,f.client),'confirmed');
   const view=await pairingView(f.env,OWNER);
   assert.equal(view.phase,'bound_unverified');
@@ -161,4 +163,39 @@ test('unsupported QR redirect states fail closed without a new credential',async
   assert.equal(await pollPairing(f.env,OWNER,f.client),'expired');
   assert.equal((await pairingView(f.env,OWNER)).phase,'none');
   assert.equal(f.db.sql.prepare('SELECT state FROM weixin_binding').get()?.state,'unbound');
+});
+
+test('expired QR poll lease does not commit a late scan confirmation',async()=>{
+  const f=await fixture();
+  await startPairing(f.env,OWNER,f.client);
+  let start!:()=>void,complete!:(value:{status:string;bot_token:string;
+    ilink_bot_id:string;ilink_user_id:string})=>void;
+  const called=new Promise<void>(r=>{start=r;});
+  const gate=new Promise<{status:string;bot_token:string;ilink_bot_id:string;
+    ilink_user_id:string}>(r=>{complete=r;});
+  const slow={...f.client,pollQr:async()=>{start();return gate;}};
+  const request=pollPairing(f.env,OWNER,slow);
+  await called;
+  f.db.sql.prepare('UPDATE weixin_binding SET lease_until=1').run();
+  complete({status:'confirmed',bot_token:'old-token',ilink_bot_id:'bot',ilink_user_id:'owner'});
+  await assert.rejects(request,/pairing_changed/);
+  assert.equal((await pairingView(f.env,OWNER)).phase,'qr_pending');
+  assert.equal(f.db.sql.prepare('SELECT generation FROM weixin_binding').get()?.generation,0);
+  assert.equal(f.db.sql.prepare('SELECT phase FROM weixin_pairing').get()?.phase,'qr_pending');
+});
+test('expired proof-verification lease cannot activate a late inbound reply',async()=>{
+  const f=await fixture();
+  const proof=await stage(f);
+  let start!:()=>void,complete!:(value:{msgs:unknown[];get_updates_buf:string})=>void;
+  const called=new Promise<void>(r=>{start=r;});
+  const gate=new Promise<{msgs:unknown[];get_updates_buf:string}>(r=>{complete=r;});
+  const slow={...f.client,getUpdates:async()=>{start();return gate;}};
+  const request=verifyPairing(f.env,OWNER,slow);
+  await called;
+  f.db.sql.prepare('UPDATE weixin_binding SET lease_until=1').run();
+  complete({msgs:[proofMessage(proof)],get_updates_buf:'late-cursor'});
+  await assert.rejects(request,/binding_changed/);
+  assert.equal(f.db.sql.prepare('SELECT state FROM weixin_binding').get()?.state,'unbound');
+  assert.equal((await pairingView(f.env,OWNER)).phase,'bound_unverified');
+  assert.equal(f.db.sql.prepare('SELECT session_ciphertext FROM weixin_binding').get()?.session_ciphertext,null);
 });
