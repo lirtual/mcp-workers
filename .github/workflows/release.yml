@@ -110,9 +110,9 @@ jobs:
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      # The upstream is independently deployed from a read-only Fork.
-      # Its Wrangler source declares KV but a real deployment has dropped it.
-      # Check the active production version, not just source manifests.
+      # OpenList upstream's reviewed Wrangler config comments out the KV
+      # binding. A past upstream Wrangler deploy removed the live binding.
+      # Detect drift in the active Cloudflare version; do not modify the Fork.
       - name: Verify OpenList upstream KV and storage before release
         if: inputs.worker == 'openlist-mcp-worker'
         env:
