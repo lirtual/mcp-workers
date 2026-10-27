@@ -1,48 +1,47 @@
 # Cloudflare runtime configuration
 
-The three MCP Workers maintained here deploy independently but share an ingress-authentication and runtime-configuration contract.
+The ten independently managed MCP Workers share an MCP-entry Secret **name**, not a uniform hostname, credential or logging policy. Authoritative release contracts: `.github/workflows/release.yml`, `scripts/bootstrap-worker-secrets.mjs`, `scripts/worker-release-variables.mjs`, `scripts/manual-worker-release.mjs` and each app's `wrangler.jsonc`.
 
 ## Source of truth
 
-`wrangler.jsonc` owns non-sensitive configuration, Cloudflare bindings, required Secret **names**, and Workers Observability settings. Actual secret **values** belong in Cloudflare Runtime Secrets, not committed code, Wrangler `vars`, Cloudflare Build credentials, or logs. Runtime credentials must not be copied into build-time variables simply to make Builds succeed.
+- Wrangler defines non-secret settings, Cloudflare bindings and required Secret names; never commit secret values.
+- The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default.
+- Every selected Worker has its own same-name GitHub Environment for app Secrets and whitelisted Variables. Only a separately approved, `main`-only, manual **Release Worker** run publishes it. Editing a GitHub Secret alone does not rotate live credentials.
+- All Workers require `MCP_ACCESS_TOKEN`. `IMA_CLIENT_ID` and `MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
 
-## MCP entry authentication
+## Worker-scoped configuration
 
-All three Workers require runtime Secret `MCP_ACCESS_TOKEN`. For the current single-user deployment, its value is intentionally shared across the three independently configured Worker bindings and the affected MCP Portal clients. Shared MCP entry authentication does not imply shared upstream credentials.
+| Worker | Additional Environment Secrets | Environment Variables |
+| --- | --- | --- |
+| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_KEY_ID`（轮换时可选两项 previous-key Secret） | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）；SQL 行数、结果大小及超时上限（可选） |
+| `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
+| `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
+| `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
+| `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
+| `remote-control-mcp-worker` | 无 | 无 |
+| `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
+| `http-mcp-worker` | `HTTP_CREDENTIALS_JSON` | 无 |
+| `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
+| `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
-| Worker | Required runtime Secrets |
-| --- | --- |
-| `ima-mcp-worker` | `MCP_ACCESS_TOKEN`, `IMA_API_KEY` (Secret), `IMA_CLIENT_ID` (Variable) |
-| `database-mcp-worker` | `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG` |
-| `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN`, `RAINDROP_ACCESS_TOKEN` |
+Database MCP Spec #344 is **Draft / BLOCKED**, not the deployed configuration. Existing live `DATABASE_CONFIG` must remain intact until independently authorized migration and rollback; the proposed release checks require a dedicated D1 registry, exact Owner Access OTP, and `DATABASE_CUTOVER_EXPECTED_IDS` as a GitHub gate variable (never a Worker runtime credential). See [cutover checklist](./database-cutover-344.md).
 
-The Database app stores its logical connection catalog in `DATABASE_CONFIG`. Secret names in `secrets.required` are deployment preconditions; do not remove a name to bypass missing runtime configuration.
+Notes: `HTTP_CREDENTIALS_JSON` is an **optional Secret**, not a required placeholder. `IMA_BASE_URL`, Raindrop retry count, Database limits and Workflow's `WORKFLOW_ACTION_APPROVED_REPOSITORIES` are optional Variables. Email's three Access Variables, OpenList's `OPENLIST_ALLOWED_ROOTS`, IMA's `IMA_CLIENT_ID` and Workflow's `MCP_PORTAL_CLIENT_ID` are **required**. Workflow's approved-repositories GitHub Variable is translated to the `GITHUB_ACTION_APPROVED_REPOSITORIES` runtime binding.
 
-See [shared-token rotation runbook](./mcp-shared-token-runbook.md).
+`MAIL_ENCRYPTION_KEY` and `SESSION_RUNTIME_DATA_KEY` are canonical 32-byte Base64-encoded keys. SSH's `ENCRYPTION_KEY` must match the real EdgeSSH key protecting existing D1 records; the retired `SSH_BROKER_TOKEN` is not a release requirement. The existing Email D1, OpenList Service Binding and legacy IMA DO binding must not be deleted during documentation maintenance. Other pinned variables (e.g. Workflow Portal endpoint and Remote Control installation origin) come from scripts or Wrangler, not arbitrary GitHub Environment input.
 
-## Workers Observability
+See [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md) and [token rotation runbook](./mcp-shared-token-runbook.md).
 
-The maintained Workers use the existing logging baseline:
+## Ingress and observability
 
-```jsonc
-"observability": {
-  "enabled": true,
-  "logs": {
-    "invocation_logs": true,
-    "head_sampling_rate": 1
-  }
-}
-```
-
-Tracing is not automatically part of the baseline. Never emit `Authorization` values, `MCP_ACCESS_TOKEN`, `DATABASE_CONFIG`, upstream credentials, or private upstream responses into logs.
+Use [ingress policy](./ingress-policy.md) rather than deriving `workers.dev` for Email or Workflow. Invocation logs are disabled for Email and Remote Control, rather than having one monorepo-wide value. Never emit authentication headers, credentials, private responses or unredacted sensitive query strings to logs.
 
 ## Deployment verification
 
-1. Configure each Worker's required runtime Secrets under Cloudflare Worker Settings → Variables and Secrets.
-2. Deploy the selected app using its current package script or configured Cloudflare Build.
-3. Verify the public health endpoint where implemented.
-4. Confirm unauthorized `/mcp` calls fail closed.
-5. Perform authenticated Portal initialization/tool discovery and an explicitly selected safe read-only tool call.
-6. Check Workers Observability without exposing tokens or private data.
+1. Verify selected GitHub Repository/Environment Secrets, Variables, branch protection and approvals. Do not use Cloudflare Builds or unreviewed direct Wrangler deploys for routine production publishing.
+2. Manually dispatch **Release Worker** from current `main` with exactly one Worker selected and `deploy_to_production` explicitly approved.
+3. Confirm exact Cloudflare active Version ID and required Secret/Variable/DO/D1/Service Bindings and custom-domain settings where applicable.
+4. Verify public health where implemented and reject anonymous `/mcp` requests. A 401/403 alone does not prove end-to-end authenticated access.
+5. Verify actual One-MCP server address, reusable Access policy IDs/order, authenticated discovery and a safe read-only call.
 
-Removing source from this repository does not decommission a live Cloudflare deployment or its portal connection. Live resource retirement is a separate authorized action.
+Git, Wrangler or README changes cannot decommission live Cloudflare resources or Portal clients. Retire them only under separate authorization and verification.
