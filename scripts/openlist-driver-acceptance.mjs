@@ -98,9 +98,18 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     return body;
   }
   const initial = (await mcp('openlist_list_files', {path:ROOT,page:1,per_page:100})).observed_state;
-  // Do not create anything if the parent contains user files or cannot prove emptiness.
-  check(initial?.total === 0 && Array.isArray(initial.entries) &&
-    initial.entries.length === 0, 'root_not_empty');
+  // Retained prior disposable runs are allowed, but ordinary user files,
+  // incomplete pagination, forged children, and a reused run ID all block writes.
+  // Nothing under an existing fixture is read, modified, or deleted.
+  const fixtureName = /^mcp-spec309-e2e-\\d{5,18}-[1-9]\\d{0,2}$/;
+  check(initial && Number.isSafeInteger(initial.total) && initial.total >= 0 &&
+    initial.total <= 100 && Array.isArray(initial.entries) &&
+    initial.entries.length === initial.total &&
+    initial.entries.every(entry => entry && typeof entry.name === 'string' &&
+      fixtureName.test(entry.name) && entry.is_dir === true &&
+      (entry.path === undefined || entry.path === `${ROOT}/${entry.name}`)) &&
+    new Set(initial.entries.map(entry => entry.name)).size === initial.entries.length &&
+    !initial.entries.some(entry => entry.name === dirname), 'root_not_isolated');
   const created = await mcp('openlist_create_folder', {path:folder});
   check(created.target === folder && created.observed_state?.is_dir === true,
     'folder_unconfirmed');
