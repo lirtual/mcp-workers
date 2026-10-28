@@ -113,13 +113,13 @@ export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.fre
 export type WindowsInstallPin = Readonly<{
   tag: string; commit: string; scriptSha256: string; assetSha256: string;
 }>;
-// Public Windows bootstrap source is pinned to the exact reviewed Agent
+// Public Windows bootstrap source is pinned to the exact immutable v0.1.34 Agent
 // commit; the source hash is separate from the official Windows asset digest.
 export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
-  tag: "v0.1.22",
-  commit: "a1c8afe1b47c279a52569ebb44e576b29fcba4f4",
-  scriptSha256: "02770e56ed803936b1e060fbb92309edddd361a8a807b9e63c2b01a504b7e4d3",
-  assetSha256: "0ac48c46e2d642523d0ace756306fa33bc43cabb7d104e732425046bdb24bbd3",
+  tag: "v0.1.34",
+  commit: "2f06bb18e760ac24e8c30fb286d87eed3f14aea7",
+  scriptSha256: "4ba573a57d72c306e8e40aea203ced037550913d3f7a3782edadb04fadc04b84",
+  assetSha256: "5364356d3e205fe4c10db5a5b8390aa36e913538187c6f964e0872163b3a1f50",
 });
 
 /** Maintainer-reviewed immutable Windows upgrade target. Never accept a caller
