@@ -68,6 +68,9 @@ test('existing release job blocks mixed-action dispatch before credentials are s
     ['DATABASE_CONFIG', 'DATABASE_CONFIG']
   );
   assert.equal((preparationBlock.match(/DATABASE_CONFIG: \$\{\{ secrets\.DATABASE_CONFIG \}\}/g) || []).length, 2);
+  assert.equal((yaml.match(/DATABASE_KEY_ID: \$\{\{ vars\.DATABASE_KEY_ID \}\}/g) || []).length, 2);
+  assert.match(yaml, /DATABASE_KEY_ID: \$\{\{ inputs\.worker == 'database-mcp-worker' && vars\.DATABASE_KEY_ID \|\| '' \}\}/);
+  assert.doesNotMatch(yaml, /secrets\.DATABASE_KEY_ID/);
   assert.match(prepSource, /parseLegacyImport\(required\('DATABASE_CONFIG'\)\)/);
   assert.match(publishBlock, /DATABASE_PREPARE_APPROVED:[^\n]*inputs\.database_prepare_approved/);
   assert.match(activationBlock, /DATABASE_PREPARE_APPROVED:[^\n]*inputs\.database_prepare_approved/);
