@@ -244,6 +244,26 @@ anyone with this bearer URL can access the file. No silent conversion to a
 short-lived credential is claimed. The synthetic signed-link fetch passed in real Koofr E2E #40606166139 without exposing its signature in logs. This does not provide a finite expiry when upstream returns `link_expiration=0`; formal acceptance of the non-expiring bearer risk remains pending.
 
 
+### Candidate MCP-only safeguard — not yet deployed
+
+A proposed fail-closed change to `openlist_download_link` rejects an upstream
+`0.<signature>` (non-expiring) token with `NOT_SUPPORTED` **before** a public
+bearer URL is constructed or returned. Finite, unexpired native signatures
+continue to work with their **actual upstream expiry**, without claiming a
+short-lived guarantee. The existing tool name and Portal inventory remain
+unchanged, and `openlist_read_text` continues to fetch content through its
+private Service Binding (it never returns a signed URL to the client).
+
+This is an **MCP output policy**, not an OpenList configuration or signer
+change. It cannot revoke signed URLs already issued or issued directly by
+OpenList, and it does not prove link-expiration policy for the OpenList site.
+The current production worker still returns permanent URLs until a **separately
+approved, manually triggered Worker release** deploys this change.
+The existing manual Koofr driver acceptance must verify a native permanent
+signature was refused without publicly fetching it, or test and retrieve an
+actual finite-expiry link. The Owner has not accepted permanent-link risk.
+
+
 ## Native file operations (current production)
 
 `openlist_rename` maps to `POST /api/fs/rename` for a single canonical
