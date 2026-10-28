@@ -68,6 +68,13 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
   check(!env.OPENLIST_NATIVE_E2E_APPROVED ||
     ['true', 'false'].includes(env.OPENLIST_NATIVE_E2E_APPROVED),
     'native_approval_invalid');
+  check(!env.OPENLIST_HIGH_RISK_E2E_APPROVED ||
+    ['true','false'].includes(env.OPENLIST_HIGH_RISK_E2E_APPROVED),
+    'high_risk_approval_invalid');
+  check(env.OPENLIST_HIGH_RISK_E2E_APPROVED !== 'true' ||
+    (env.OPENLIST_DRIVER_E2E_APPROVED === 'true' &&
+      env.OPENLIST_NATIVE_E2E_APPROVED !== 'true' &&
+      env.GITHUB_RUN_ATTEMPT === '1'), 'high_risk_approval_invalid');
   // Match the existing release's authenticated MCP smoke and secret-staging
   // contract: nonempty, no leading/trailing whitespace, no CR/LF. Arbitrary
   // minimum-length rules must not be added only to an acceptance fixture.
@@ -339,6 +346,120 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       forbiddenNative.code === 'OUT_OF_SCOPE','native_scope_denial');
     tested.push('upload_small','copy','rename','move','read_native_text',
       linkCheck,'native_scope_denial');
+  }
+
+  if (env.OPENLIST_HIGH_RISK_E2E_APPROVED === 'true') {
+    // Every target is scoped to the *new folder and file of THIS first-attempt
+    // manual run*. No historical fixture, user object or directory is deleted.
+    // Never retry a write after any unknown result.
+    const exactFile = file;
+    const exactSize = new TextEncoder().encode(content).byteLength;
+    const original = (await mcp('openlist_get_file',{path:exactFile})).observed_state;
+    check(original?.path === exactFile && original.name === filename &&
+      original.is_dir === false && original.size === exactSize,
+      'high_risk_file_preflight');
+    const outOfScope = await mcp('openlist_delete',{
+      path:'/__openlist_e2e_prohibited/synthetic-file.txt'},true);
+    check(outOfScope.status==='not_executed' && outOfScope.code==='OUT_OF_SCOPE',
+      'high_risk_out_of_scope_delete');
+    const invalidShare = await mcp('openlist_share_create',{
+      files:['/__openlist_e2e_prohibited/synthetic-file.txt'],
+      expires_hours:1,max_accessed:3},true);
+    check(invalidShare.status==='not_executed' &&
+      invalidShare.code==='OUT_OF_SCOPE','high_risk_out_of_scope_share');
+    const wrongUpdate=await mcp('openlist_share_update',{id:'invalid/..',expires_hours:2},true);
+    check(wrongUpdate.code==='INVALID_INPUT' ||
+      wrongUpdate.code==='INVALID_PATH','high_risk_invalid_share_id');
+
+    const createdShare=await mcp('openlist_share_create',{
+      files:[exactFile],expires_hours:1,max_accessed:3,
+    });
+    const newId=createdShare.target;
+    const password=createdShare.observed_state?.password_once;
+    check(typeof newId==='string' && /^[a-f0-9]{16}$/.test(newId) &&
+      /^[a-f0-9]{48}$/.test(password) &&
+      createdShare.observed_state?.id===newId &&
+      createdShare.observed_state?.disabled===false &&
+      JSON.stringify(createdShare.observed_state?.files)===JSON.stringify([exactFile]) &&
+      createdShare.observed_state?.max_accessed===3 &&
+      typeof createdShare.observed_state?.expires==='string',
+      'high_risk_create_uncertain');
+    // Stable non-secret ID is essential for exact manual recovery if any
+    // later effect is unknown. Never print password, public URL or raw replies.
+    console.log('OPENLIST_HIGH_RISK_CREATED id='+newId);
+    const initialShare=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(initialShare?.id===newId && initialShare?.disabled===false &&
+      initialShare.max_accessed===3 &&
+      JSON.stringify(initialShare.files)===JSON.stringify([exactFile]),
+      'high_risk_create_readback');
+    const update=await mcp('openlist_share_update',{
+      id:newId,expires_hours:2,max_accessed:4,
+    });
+    check(update.observed_state?.id===newId &&
+      update.observed_state?.max_accessed===4 &&
+      JSON.stringify(update.observed_state?.files)===JSON.stringify([exactFile]),
+      'high_risk_update');
+    const updated=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(updated?.max_accessed===4 && updated.disabled===false &&
+      typeof updated.expires==='string' && updated.expires!==initialShare.expires,
+      'high_risk_update_readback');
+
+    async function publicShare(expected) {
+      let response;
+      try {
+        response=await transport(new Request('https://openlist.lirtual.dpdns.org/api/fs/get',{
+          method:'POST',redirect:'manual',signal:AbortSignal.timeout(16000),
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify({path:'/@s/'+newId,password}),
+        }));
+      } catch {stop('high_risk_public_transport')}
+      check((response.status===200 || response.status===400) &&
+        !response.redirected && !response.headers.has('location'),
+        'high_risk_public_status');
+      const body=await boundedJson(response,8192);
+      if(expected==='allowed')
+        check(response.status===200 && body.code===200 &&
+          body.data?.name===filename && body.data?.size===exactSize &&
+          body.data?.is_dir===false,'high_risk_public_not_allowed');
+      else
+        check(response.status===400 && body.code===400 &&
+          /disabled/i.test(String(body.message)),
+          'high_risk_public_not_disabled');
+    }
+    // Unauthenticated public access proves a newly created public share was
+    // active, and that disabling it controls access (not merely quota exhaustion).
+    await publicShare('allowed');
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    const disabled=await mcp('openlist_share_disable',{id:newId});
+    check(disabled.observed_state?.disabled===true,'high_risk_disable');
+    const afterDisabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(afterDisabled?.disabled===true,'high_risk_disable_readback');
+    await publicShare('disabled');
+    const enabled=await mcp('openlist_share_enable',{id:newId});
+    check(enabled.observed_state?.disabled===false,'high_risk_enable');
+    const afterEnabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(afterEnabled?.disabled===false && afterEnabled?.max_accessed===4,
+      'high_risk_enable_readback');
+    await publicShare('allowed');
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    const revoke=await mcp('openlist_share_revoke',{id:newId});
+    check(revoke.observed_state?.revoked===true,'high_risk_revoke');
+    const absent=await mcp('openlist_share_get',{id:newId},true);
+    check(absent.status==='not_executed' && absent.code==='NOT_FOUND',
+      'high_risk_revoke_readback');
+    const preserved=(await mcp('openlist_get_file',{path:exactFile})).observed_state;
+    check(preserved?.path===exactFile && preserved.is_dir===false &&
+      preserved.size===exactSize,'high_risk_revoke_preserved_file');
+    const deleted=await mcp('openlist_delete',{path:exactFile});
+    check(deleted.observed_state?.deleted===true && deleted.target===exactFile,
+      'high_risk_delete');
+    const gone=await mcp('openlist_get_file',{path:exactFile},true);
+    check(gone.status==='not_executed' && gone.code==='NOT_FOUND',
+      'high_risk_delete_readback');
+    console.log('OPENLIST_HIGH_RISK_E2E_PASS share_id='+newId+
+      ' share_revoked=true source_deleted=true');
+    tested.push('share_create','share_update','share_disable',
+      'share_enable','share_revoke','single_file_delete','public_access');
   }
   return {folder:dirname, tested};
 
