@@ -63,7 +63,10 @@ test('existing release job blocks mixed-action dispatch before credentials are s
   const preparationBlock = yaml.slice(yaml.indexOf('\n  database-prepare:\n'));
   const prepSource = readFileSync(new URL('./database-prep-344.mjs', import.meta.url), 'utf8');
   // The existing DATABASE_CONFIG is the only legacy import input name.
-  assert.doesNotMatch(preparationBlock + prepSource, /DATABASE_LEGACY_IMPORT_CONFIG/);
+  assert.deepEqual(
+    [...preparationBlock.matchAll(/^\s+(DATABASE_[A-Z0-9_]*CONFIG):/gm)].map(m => m[1]),
+    ['DATABASE_CONFIG', 'DATABASE_CONFIG']
+  );
   assert.equal((preparationBlock.match(/DATABASE_CONFIG: \$\{\{ secrets\.DATABASE_CONFIG \}\}/g) || []).length, 2);
   assert.match(prepSource, /parseLegacyImport\(required\('DATABASE_CONFIG'\)\)/);
   assert.match(publishBlock, /DATABASE_PREPARE_APPROVED:[^\n]*inputs\.database_prepare_approved/);
