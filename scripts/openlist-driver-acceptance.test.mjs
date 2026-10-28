@@ -19,7 +19,7 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
   permanentLink = true, rejectFinite = false, failPublic = false,
   staleRevokedReads = 0, malformedPassword = false,
-  failAfterReenable = false} = {}) {
+  failAfterReenable = false, staleCreatedReads = 0} = {}) {
   const requests = [];
   let made = false, uploaded = false, deleted = false;
   let highShare = null, justRevoked = null;
@@ -221,6 +221,10 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
     }
     if(name==='openlist_share_get') {
       assert.ok([highId,'mcp_spec309_no_such_share'].includes(args.id));
+      if(highShare && args.id===highId && staleCreatedReads>0) {
+        staleCreatedReads--;
+        return response(name,args.id,undefined,true,'NOT_FOUND');
+      }
       if(!highShare || args.id!==highId){
         if(!highShare && justRevoked && args.id===highId && staleRevokedReads>0){
           staleRevokedReads--;
@@ -403,6 +407,18 @@ test('high-risk manual E2E is first-attempt only and runs only on newly created 
   assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
   assert.equal(requests.filter(x=>x==='openlist_delete').length,2);
   assert.equal(requests.filter(x=>x==='public_share_get').length,4);
+});
+test('new share initial NOT_FOUND is retried read-only until in-scope metadata becomes visible',async()=>{
+  const {transport,requests}=fakeTransport({staleCreatedReads:3});
+  const result=await runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport);
+  assert.ok(result.tested.includes('share_create'));
+  assert.equal(requests.filter(x=>x==='openlist_share_create').length,2,
+    'one negative scope test and just one actual create');
+  assert.equal(requests.filter(x=>x==='openlist_share_update').length,2);
+  assert.ok(requests.filter(x=>x==='openlist_share_get').length>=4,
+    'three transient NOT_FOUND results and one successful read are independently observed');
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
 });
 test('revoke readback tolerates bounded stale disabled record without replaying revoke',async()=>{
   const {transport,requests}=fakeTransport({staleRevokedReads:2});

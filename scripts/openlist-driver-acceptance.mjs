@@ -390,6 +390,16 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       JSON.stringify(createdShare.observed_state?.files)===JSON.stringify([exactFile]),
       'high_risk_create_uncertain');
     let disableDispatched=false, revokeDispatched=false;
+    async function readOwnedShare(){
+      const state=await mcp('openlist_share_get',{id:newId},'read-or-not-found');
+      if(state.status==='not_executed' && state.code==='NOT_FOUND')return null;
+      check(state.status==='succeeded' &&
+        state.observed_state?.id===newId &&
+        JSON.stringify(state.observed_state.files)===JSON.stringify([exactFile]) &&
+        typeof state.observed_state.disabled==='boolean',
+        'high_risk_share_identity');
+      return state.observed_state;
+    }
     try {
     // A malformed one-time password or metadata is a *post-creation* failure;
     // the owned synthetic share still needs protective disable/revoke.
@@ -399,11 +409,19 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       typeof createdShare.observed_state?.expires==='string',
       'high_risk_create_uncertain');
     console.log('OPENLIST_HIGH_RISK_CREATED id='+newId);
-    const initialShare=(await mcp('openlist_share_get',{id:newId})).observed_state;
-    check(initialShare?.id===newId && initialShare?.disabled===false &&
-      initialShare.max_accessed===3 &&
-      JSON.stringify(initialShare.files)===JSON.stringify([exactFile]),
-      'high_risk_create_readback');
+    // The first independent read may be NOT_FOUND just after a successful
+    // creation due to cache visibility. Retry only the *read*, never create.
+    let initialShare=null;
+    for(let i=0;i<10;i++){
+      const state=await readOwnedShare();
+      if(state?.disabled===false && state.max_accessed===3){
+        initialShare=state;break;
+      }
+      if(state && (state.disabled!==false || state.max_accessed!==3))
+        stop('high_risk_create_readback_mismatch');
+      if(i<9)await new Promise(resolve=>setTimeout(resolve,750));
+    }
+    check(initialShare!==null,'high_risk_create_readback');
     const update=await mcp('openlist_share_update',{
       id:newId,expires_hours:2,max_accessed:4,
     });
@@ -535,12 +553,37 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       // update/disable/revoke. The new fixture file is kept for diagnosis.
       console.log('OPENLIST_HIGH_RISK_FAILSAFE share_id='+newId);
       if(!revokeDispatched) {
-        if(!disableDispatched) {
-          disableDispatched=true;
-          try {await mcp('openlist_share_disable',{id:newId});}catch{}
+        // A just-created share can temporarily look absent. Observe ONLY
+        // this verified ID for a bounded period; no write retries.
+        let safe=false,absent=false;
+        try {
+          for(let i=0;i<10;i++){
+            const state=await readOwnedShare();
+            if(state?.disabled===true){safe=true;break}
+            if(state===null){
+              if(i<9)await new Promise(resolve=>setTimeout(resolve,750));
+              else absent=true;
+              continue;
+            }
+            if(!disableDispatched) {
+              disableDispatched=true;
+              try {await mcp('openlist_share_disable',{id:newId});}catch{}
+            }
+            if(i<9)await new Promise(resolve=>setTimeout(resolve,750));
+          }
+          // Revoke only an independently verified disabled record, never
+          // an unconfirmed active share after an ambiguous disable.
+          if(safe) {
+            revokeDispatched=true;
+            try {await mcp('openlist_share_revoke',{id:newId});}catch{}
+          } else if(absent) {
+            console.log('OPENLIST_HIGH_RISK_FAILSAFE_NOT_VISIBLE share_id='+newId);
+          } else {
+            console.log('OPENLIST_HIGH_RISK_FAILSAFE_UNCONFIRMED share_id='+newId);
+          }
+        } catch {
+          console.log('OPENLIST_HIGH_RISK_FAILSAFE_UNCONFIRMED share_id='+newId);
         }
-        revokeDispatched=true;
-        try {await mcp('openlist_share_revoke',{id:newId});}catch{}
       }
       throw error;
     }
