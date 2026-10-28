@@ -22,7 +22,7 @@ const good = {
   token: 'cloudflare-secret', portalToken: 'portal-secret', actor: 'lirtual',
   ref: 'refs/heads/main', sourceSha: 'b'.repeat(40), source, manifest
 };
-function fixture({ wrongCA = false, healthOk = true, differentBinding = false, lostActivationAck = false, lostBeforeWrite = false } = {}) {
+function fixture({ wrongCA = false, healthOk = true, differentBinding = false, lostActivationAck = false, lostBeforeWrite = false, lostDisableAck = false, disableRejected = false, externalDisableOnHealth = false } = {}) {
   const row = { id: 'test_mysql', dialect: 'mysql', transport: 'hyperdrive',
     status: 'disabled', revision: 1, config_id: configId, binding_name: binding };
   const calls = [];
@@ -52,19 +52,23 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false, l
       }]);
       if (sql.sql.startsWith('UPDATE database_connections')) {
         if (lostBeforeWrite && sql.sql.includes("SET status='active'")) throw Error('simulated network outage');
+        if (disableRejected && sql.sql.includes("SET status='disabled'")) return response([{ success: true, meta: { changes: 0 } }]);
         const enabling = sql.sql.includes("SET status='active'");
         const expected = Number(sql.params[2]);
         if (row.revision === expected && row.status === (enabling ? 'disabled' : 'active')) {
           row.status = enabling ? 'active' : 'disabled';
           row.revision++;
           if (enabling && lostActivationAck) throw Error('simulated lost commit acknowledgement');
+          if (!enabling && lostDisableAck) throw Error('simulated lost disable acknowledgement');
           return response([{ success: true, meta: { changes: 1 } }]);
         }
         return response([{ success: true, meta: { changes: 0 } }]);
       }
       throw Error('Unexpected D1 query');
     }
-    if (url.endsWith('/mcp')) return {
+    if (url.endsWith('/mcp')) {
+      if (externalDisableOnHealth) { row.status = 'disabled'; row.revision++; }
+      return {
       ok: true, headers: { get: () => 'application/json' },
       text: async () => JSON.stringify({
         jsonrpc: '2.0', id: 1, result: { structuredContent: {
@@ -72,6 +76,7 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false, l
         }}
       })
     };
+    }
     throw Error('Unexpected remote request: ' + url);
   }
   return { request, row, calls };
@@ -129,4 +134,23 @@ test('D1 outage before write leaves connection disabled, with no MCP health', as
   assert.equal(f.row.status, 'disabled');
   assert.equal(f.row.revision, 1);
   assert.equal(f.calls.filter(x => x.url.endsWith('/mcp')).length, 0);
+});
+
+test('lost compensation acknowledgement is independently confirmed disabled', async () => {
+  const f = fixture({ healthOk: false, lostDisableAck: true });
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /CAS-disabled/);
+  assert.equal(f.row.status, 'disabled');
+  assert.equal(f.row.revision, 3);
+});
+test('rejected compensation never claims a successful disable', async () => {
+  const f = fixture({ healthOk: false, disableRejected: true });
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
+    /disabled state unconfirmed; manual intervention required/);
+  assert.equal(f.row.status, 'active');
+  assert.equal(f.row.revision, 2);
+});
+test('concurrent external disable cannot be reported as successful activation', async () => {
+  const f = fixture({ externalDisableOnHealth: true });
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /CAS-disabled/);
+  assert.equal(f.row.status, 'disabled');
 });

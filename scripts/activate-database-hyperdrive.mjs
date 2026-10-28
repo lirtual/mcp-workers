@@ -59,6 +59,28 @@ export async function activateDatabaseHyperdrive({
       'D1 operation not confirmed');
     return result[0];
   }
+  // D1/Cf API acknowledgements can be lost after a committed update.
+  // Never trust the compensation response alone; read back exact identity.
+  async function confirmDisabledAfterAttempt(original) {
+    const sqlRow = 'SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?';
+    const same = candidate => candidate?.id === original.id &&
+      candidate.dialect === original.dialect && candidate.transport === 'hyperdrive' &&
+      candidate.config_id === original.config_id && candidate.binding_name === original.binding_name;
+    try {
+      const before = await sql(sqlRow, [original.id]);
+      const current = before.results?.length === 1 ? before.results[0] : null;
+      if (!same(current)) return false;
+      if (current.status === 'active' && current.revision === Number(expectedRevision) + 1) {
+        try {
+          await sql("UPDATE database_connections SET status='disabled',revision=revision+1,updated_at=? WHERE id=? AND revision=? AND status='active' AND transport='hyperdrive' AND config_id=? AND binding_name=?",
+            [Date.now(), original.id, current.revision, original.config_id, original.binding_name]);
+        } catch { /* A lost disable acknowledgement still needs readback. */ }
+      }
+      const after = await sql(sqlRow, [original.id]);
+      const final = after.results?.length === 1 ? after.results[0] : null;
+      return same(final) && final.status === 'disabled';
+    } catch { return false; }
+  }
   async function verifyCloudAndBinding() {
     const settings = await cloud('/workers/scripts/database-mcp-worker/settings');
     const bindings = settings?.bindings;
@@ -97,25 +119,7 @@ export async function activateDatabaseHyperdrive({
     update = await sql("UPDATE database_connections SET status='active',revision=revision+1,updated_at=? WHERE id=? AND status='disabled' AND revision=? AND transport='hyperdrive' AND dialect=? AND config_id=? AND binding_name=?",
       [Date.now(), connectionId, expectedRevision, row.dialect, row.config_id, row.binding_name]);
   } catch {
-    // A lost Cloudflare response does not prove D1 rolled back. Re-read the
-    // exact row and compensate only our expected next revision.
-    let safe = false;
-    try {
-      const result = await sql('SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?', [connectionId]);
-      const current = result.results?.[0];
-      const matches = result.results?.length === 1 && current.id === connectionId &&
-        current.dialect === row.dialect && current.transport === 'hyperdrive' &&
-        current.config_id === row.config_id && current.binding_name === row.binding_name;
-      if (matches && current.status === 'active' && current.revision === Number(expectedRevision) + 1) {
-        await sql("UPDATE database_connections SET status='disabled',revision=revision+1,updated_at=? WHERE id=? AND revision=? AND status='active' AND transport='hyperdrive' AND config_id=? AND binding_name=?",
-          [Date.now(), connectionId, current.revision, row.config_id, row.binding_name]);
-      }
-      const checked = await sql('SELECT status,transport,config_id,binding_name FROM database_connections WHERE id=?', [connectionId]);
-      safe = checked.results?.length === 1 && checked.results[0].status === 'disabled' &&
-        checked.results[0].transport === 'hyperdrive' &&
-        checked.results[0].config_id === row.config_id &&
-        checked.results[0].binding_name === row.binding_name;
-    } catch { /* Unconfirmed compensation must be escalated. */ }
+    const safe = await confirmDisabledAfterAttempt(row);
     throw Error(safe
       ? 'Database activation blocked: ambiguous D1 write; connection confirmed disabled'
       : 'Database activation unsafe: ambiguous D1 write and disabled state unconfirmed; manual intervention required');
@@ -156,20 +160,18 @@ export async function activateDatabaseHyperdrive({
       value?.connection === connectionId && value?.transport === 'hyperdrive' &&
       value?.dialect === row.dialect, 'live MCP health did not verify approved origin');
     await verifyCloudAndBinding();
+    const confirmed = await sql('SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?', [connectionId]);
+    const final = confirmed.results?.length === 1 ? confirmed.results[0] : null;
+    requireGate(final?.id === connectionId && final.dialect === row.dialect &&
+      final.transport === 'hyperdrive' && final.status === 'active' &&
+      final.revision === Number(expectedRevision) + 1 &&
+      final.config_id === row.config_id && final.binding_name === row.binding_name,
+      'post-health active state was not confirmed');
   } catch {
-    let disabled = false;
-    try {
-      const revert = await sql("UPDATE database_connections SET status='disabled',revision=revision+1,updated_at=? WHERE id=? AND revision=? AND status='active' AND transport='hyperdrive' AND config_id=? AND binding_name=?",
-        [Date.now(), connectionId, Number(expectedRevision) + 1, row.config_id, row.binding_name]);
-      disabled = revert.meta?.changes === 1;
-      if (!disabled) {
-        const state = await sql('SELECT status FROM database_connections WHERE id=?', [connectionId]);
-        disabled = state.results?.length === 1 && state.results[0]?.status === 'disabled';
-      }
-    } catch { /* surface fail-closed uncertainty, never claim rollback success */ }
+    const disabled = await confirmDisabledAfterAttempt(row);
     throw Error(disabled
       ? 'Database activation blocked: health/readback failed; connection CAS-disabled'
-      : 'Database activation unsafe: post-check failed and disable was not confirmed; manual intervention required');
+      : 'Database activation unsafe: post-check failed and disabled state unconfirmed; manual intervention required');
   }
   return { activated: true, connectionId, revision: Number(expectedRevision) + 1 };
 }
