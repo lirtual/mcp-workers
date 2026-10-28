@@ -225,14 +225,15 @@ test('homepage copy state follows the separately verified platform pins',async()
 });
 
 
-test('reviewed Linux v0.1.22 enables explicit upgrade while Windows stays independently pinned', async () => {
+test('reviewed Linux v0.1.34 enables explicit local upgrade while Windows installer stays independently pinned', async () => {
   const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'a1c8afe1b47c279a52569ebb44e576b29fcba4f4');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.34');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '2f06bb18e760ac24e8c30fb286d87eed3f14aea7');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '7a2d90b77d34a3bb4a540c5adcbbc19b3de29ce4b4fdf6504856e0c7b482649a');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '0c925d6aad4f240fe768fcfbe42acc0bfd88f640a9501f5aa63a10a8639bf702');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '1e33e4d9dfedaaa2ad75fc6f895fe399512c7ba7af79af9d3c45aecbf5d5aaf9');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, 'f6dea0082afe1b1b5edc16034802575e7a50a89ec668652c2ec6c687215c4273');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '0ac48c46e2d642523d0ace756306fa33bc43cabb7d104e732425046bdb24bbd3');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '02770e56ed803936b1e060fbb92309edddd361a8a807b9e63c2b01a504b7e4d3');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
