@@ -38,7 +38,7 @@ pnpm --filter database-mcp-worker check
 node --test scripts/manual-worker-release.test.mjs
 ```
 
-Unit tests and dry-run are not deployed Workers acceptance. All **four** dialect/transport combinations must pass connection, read/schema/explain, Safe Write and rollback, controlled DDL, negatives, TLS and security gates before #344 is production-ready. Existing `scrape_relay` and `b2b` database access is specifically prohibited without fresh separate Owner authorization. See [production cutover and rollback](../../docs/database-cutover-344.md), [historical Direct TLS investigation](docs/direct-tls-feasibility.md), and [Spec #344](https://github.com/lirtual/mcp-workers/issues/344).
+Unit tests and dry-run are not deployed Workers acceptance. The initial release enables **MySQL Direct only**; each deferred PostgreSQL Direct / Hyperdrive transport must pass its own connection, TLS and security acceptance before a later approved code release. Existing `scrape_relay` and `b2b` database access is specifically prohibited without fresh separate Owner authorization. See [production cutover and rollback](../../docs/database-cutover-344.md), [historical Direct TLS investigation](docs/direct-tls-feasibility.md), and [Spec #344](https://github.com/lirtual/mcp-workers/issues/344).
 
 ## License
 
