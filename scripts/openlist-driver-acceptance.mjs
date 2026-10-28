@@ -400,7 +400,15 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       update.observed_state?.max_accessed===4 &&
       JSON.stringify(update.observed_state?.files)===JSON.stringify([exactFile]),
       'high_risk_update');
-    const updated=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    // Cloudflare upstream persisted share changes can appear after a bounded
+    // read-only propagation delay. Never repeat the update itself.
+    let updated;
+    for(let i=0;i<8;i++){
+      updated=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(updated?.max_accessed===4 && updated.disabled===false &&
+        typeof updated.expires==='string' && updated.expires!==initialShare.expires)break;
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
     check(updated?.max_accessed===4 && updated.disabled===false &&
       typeof updated.expires==='string' && updated.expires!==initialShare.expires,
       'high_risk_update_readback');
@@ -433,30 +441,56 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     await new Promise(resolve=>setTimeout(resolve,1200));
     const disabled=await mcp('openlist_share_disable',{id:newId});
     check(disabled.observed_state?.disabled===true,'high_risk_disable');
-    const afterDisabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    let afterDisabled;
+    for(let i=0;i<8;i++){
+      afterDisabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(afterDisabled?.disabled===true)break;
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
     check(afterDisabled?.disabled===true,'high_risk_disable_readback');
     await publicShare('disabled');
     const enabled=await mcp('openlist_share_enable',{id:newId});
     check(enabled.observed_state?.disabled===false,'high_risk_enable');
-    const afterEnabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
-    check(afterEnabled?.disabled===false && afterEnabled?.max_accessed===4,
+    let afterEnabled;
+    for(let i=0;i<8;i++){
+      afterEnabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(afterEnabled?.disabled===false&&afterEnabled.max_accessed===4)break;
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(afterEnabled?.disabled===false&&afterEnabled.max_accessed===4,
       'high_risk_enable_readback');
     await publicShare('allowed');
     await new Promise(resolve=>setTimeout(resolve,1200));
     const revoke=await mcp('openlist_share_revoke',{id:newId});
     check(revoke.observed_state?.revoked===true,'high_risk_revoke');
-    const absent=await mcp('openlist_share_get',{id:newId},true);
-    check(absent.status==='not_executed' && absent.code==='NOT_FOUND',
-      'high_risk_revoke_readback');
+    let shareGone=false;
+    for(let i=0;i<8;i++){
+      const absent=await mcp('openlist_share_get',{id:newId},true);
+      if(absent.status==='not_executed'&&absent.code==='NOT_FOUND'){
+        shareGone=true;break;
+      }
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(shareGone,'high_risk_revoke_readback');
     const preserved=(await mcp('openlist_get_file',{path:exactFile})).observed_state;
     check(preserved?.path===exactFile && preserved.is_dir===false &&
       preserved.size===exactSize,'high_risk_revoke_preserved_file');
     const deleted=await mcp('openlist_delete',{path:exactFile});
     check(deleted.observed_state?.deleted===true && deleted.target===exactFile,
       'high_risk_delete');
-    const gone=await mcp('openlist_get_file',{path:exactFile},true);
-    check(gone.status==='not_executed' && gone.code==='NOT_FOUND',
-      'high_risk_delete_readback');
+    // Native Koofr get_file may classify a removed path as UPSTREAM_UNAVAILABLE
+    // rather than NOT_FOUND. Verify only the original now-empty directory;
+    // do not repeat deletion or treat generic get errors as proof.
+    let empty=false;
+    for(let i=0;i<8;i++){
+      const listing=(await mcp('openlist_list_files',{
+        path:folder,page:1,per_page:100})).observed_state;
+      if(listing?.total===0 && listing.entries?.length===0){empty=true;break}
+      check(listing?.total===1 && listing.entries?.length===1 &&
+        listing.entries[0].name===filename,'high_risk_delete_listing');
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(empty,'high_risk_delete_readback');
     console.log('OPENLIST_HIGH_RISK_E2E_PASS share_id='+newId+
       ' share_revoked=true source_deleted=true');
     tested.push('share_create','share_update','share_disable',
