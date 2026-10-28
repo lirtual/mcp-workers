@@ -97,6 +97,36 @@ The rest of this README documents the implementation and historical
 security analysis; prior "Draft/seven tools" status descriptions are
 superseded by this verified section.
 
+## Five high-risk native tools — implementation candidate (NOT released)
+
+The Owner approved using ChatGPT's OpenList-specific **Always ask** app permission
+and existing MCP identity, logical root checks, bounded native REST arguments,
+non-atomic readback, and `unknown` **never retry** semantics as the pragmatic
+basis for acceptance of the five previously gated operations. This accepts
+that `Always ask` and MCP tool annotations are **client-side signals**, not
+Worker-attestable, per-invocation human authorization. There is no additional
+approval store, second Worker, or model-supplied `confirmation=true` shortcut.
+
+**Current production remains 13/18**. The candidate branch adds registration
+of `openlist_delete` (one **file**, not directories), `openlist_share_create`
+(random password returned once, 1–168 hour expiry, 1–100 access limit,
+1–8 explicit paths), `openlist_share_update` (expiry and/or access limit),
+`openlist_share_enable`, and `openlist_share_revoke` (share record only,
+never source files). Each exposes accurate destructive/external-access
+annotations; the upstream administrator-equivalent API Token is unchanged.
+
+This is a **candidate**, not authorization to change the production Worker or
+Portal. Before release, require isolated production E2E on exact disposable
+objects for each of the five operations: accepted action and independent
+readback; out-of-scope/invalid/no-op negatives; one-call/no-retry on unknown;
+external share access effects; file-delete verified only against new disposable
+test content. No existing user file/share or retained fixture is a permitted
+test target without its own precise authorization. Use existing manual GitHub
+Actions, no scheduled deployment. The permanent signed URL refusal from original [PR #386](https://github.com/lirtual/mcp-workers/pull/386)
+has already been **integrated into this #387 candidate** (the duplicate #386
+was closed unmerged). This combined proposal must still pass independent
+production release and read-only link-policy verification.
+
 ## Share-disable consistency: evidence and safe interpretation
 
 The deployed native `/api/share/disable` handler changes one record then
@@ -242,6 +272,26 @@ This adapter honors the **native** OpenList expiration setting. At the observed
 the MCP result marks `permanent:true`, `expires_at:null` and warns that
 anyone with this bearer URL can access the file. No silent conversion to a
 short-lived credential is claimed. The synthetic signed-link fetch passed in real Koofr E2E #40606166139 without exposing its signature in logs. This does not provide a finite expiry when upstream returns `link_expiration=0`; formal acceptance of the non-expiring bearer risk remains pending.
+
+
+### Candidate MCP-only safeguard — not yet deployed
+
+This combined #387 candidate's fail-closed change to `openlist_download_link` rejects an upstream
+`0.<signature>` (non-expiring) token with `NOT_SUPPORTED` **before** a public
+bearer URL is constructed or returned. Finite, unexpired native signatures
+continue to work with their **actual upstream expiry**, without claiming a
+short-lived guarantee. The existing tool name and Portal inventory remain
+unchanged, and `openlist_read_text` continues to fetch content through its
+private Service Binding (it never returns a signed URL to the client).
+
+This is an **MCP output policy**, not an OpenList configuration or signer
+change. It cannot revoke signed URLs already issued or issued directly by
+OpenList, and it does not prove link-expiration policy for the OpenList site.
+The current production worker still returns permanent URLs until a **separately
+approved, manually triggered Worker release** deploys this change.
+The existing manual Koofr driver acceptance must verify a native permanent
+signature was refused without publicly fetching it, or test and retrieve an
+actual finite-expiry link. The Owner has not accepted permanent-link risk.
 
 
 ## Native file operations (current production)

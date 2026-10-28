@@ -7,6 +7,7 @@ const ROOT = '/Koofr/Downloads';
 const MCP = 'https://openlist-mcp-worker.aiyaya.workers.dev/mcp';
 const UPSTREAM = 'https://openlist.lirtual.dpdns.org/api/fs/put';
 const UPSTREAM_LIST = 'https://openlist.lirtual.dpdns.org/api/fs/list';
+const UPSTREAM_GET = 'https://openlist.lirtual.dpdns.org/api/fs/get';
 
 function stop(code) { throw Error('openlist_driver_e2e_' + code); }
 function check(condition, code) { if (!condition) stop(code); }
@@ -67,6 +68,13 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
   check(!env.OPENLIST_NATIVE_E2E_APPROVED ||
     ['true', 'false'].includes(env.OPENLIST_NATIVE_E2E_APPROVED),
     'native_approval_invalid');
+  check(!env.OPENLIST_HIGH_RISK_E2E_APPROVED ||
+    ['true','false'].includes(env.OPENLIST_HIGH_RISK_E2E_APPROVED),
+    'high_risk_approval_invalid');
+  check(env.OPENLIST_HIGH_RISK_E2E_APPROVED !== 'true' ||
+    (env.OPENLIST_DRIVER_E2E_APPROVED === 'true' &&
+      env.OPENLIST_NATIVE_E2E_APPROVED !== 'true' &&
+      env.GITHUB_RUN_ATTEMPT === '1'), 'high_risk_approval_invalid');
   // Match the existing release's authenticated MCP smoke and secret-staging
   // contract: nonempty, no leading/trailing whitespace, no CR/LF. Arbitrary
   // minimum-length rules must not be added only to an acceptance fixture.
@@ -118,9 +126,20 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // Classify an unexpected MCP tool error before the expected-success
     // isError check. The previous ordering hid native write failures as
     // a generic mcp_contract error. Never retry an unknown write.
-    if (!expectsError && rpc.result.isError === true) stopToolFailure(name, body);
-    check((rpc.result.isError === true) === expectsError, 'mcp_contract');
-    if (!expectsError) check(body.status === 'succeeded' && body.code === 'OK', 'mcp_tool_failed');
+    // Policy acceptance: the native signer can legitimately return a permanent
+    // signature. MCP must reject it instead of exposing a bearer URL.
+    if (expectsError === 'policy-denial') {
+      if (rpc.result.isError === true)
+        check(body.status === 'not_executed' && body.code === 'NOT_SUPPORTED',
+          'native_link_policy');
+      else
+        check(body.status === 'succeeded' && body.code === 'OK',
+          'native_link_policy');
+    } else {
+      if (!expectsError && rpc.result.isError === true) stopToolFailure(name, body);
+      check((rpc.result.isError === true) === expectsError, 'mcp_contract');
+      if (!expectsError) check(body.status === 'succeeded' && body.code === 'OK', 'mcp_tool_failed');
+    }
     return body;
   }
   const initial = (await mcp('openlist_list_files', {path:ROOT,page:1,per_page:100})).observed_state;
@@ -249,54 +268,199 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       check(contentResult?.path === target && contentResult.text === nativeContent,
         'native_file_mismatch');
     }
-    const signed = (await mcp('openlist_download_link',{path:moved})).observed_state;
-    // The signed URL is bearer-sensitive; never write it to logs, artifacts
-    // or the returned summary. Existing link_expiration=0 is not short-lived.
-    let parsed;
-    try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
-    check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
-      parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
-      typeof parsed.searchParams.get('sign') === 'string' &&
-      parsed.searchParams.get('sign').length > 0 &&
-      typeof signed.permanent === 'boolean' &&
-      (signed.permanent ? signed.expires_at === null :
-        typeof signed.expires_at === 'string'), 'native_link_invalid');
-    // Verify the actual signed public route with a tiny exact synthetic file,
-    // not just the URL's appearance. No credential is forwarded or logged.
-    let publicResponse;
-    try {
-      publicResponse = await transport(new Request(signed.url,{
-        method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
-        headers:{ accept:'text/plain' },
-      }));
-    } catch { stop('native_link_transport'); }
-    check(publicResponse.status === 200 && !publicResponse.redirected &&
-      !publicResponse.headers.has('location'), 'native_link_status');
-    let publicBytes;
-    try {
-      const reader=publicResponse.body?.getReader();
-      check(reader,'native_link_body');
-      const chunks=[];let total=0;
-      for (;;) {
-        const {done,value}=await reader.read();
-        if (done) break;
-        total+=value.byteLength;
-        check(total<=4096,'native_link_oversize');
-        chunks.push(value);
-      }
-      publicBytes=new Uint8Array(total);let offset=0;
-      for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
-    } catch {stop('native_link_body');}
-    let publicText;
-    try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
-    catch { stop('native_link_invalid_utf8'); }
-    check(publicText===nativeContent,'native_link_content');
+    const linkReply = await mcp('openlist_download_link',{path:moved},'policy-denial');
+    let linkCheck;
+    if (linkReply.status === 'not_executed' && linkReply.code === 'NOT_SUPPORTED') {
+      // Verify the actual native signer is permanent; otherwise an unrelated
+      // NOT_SUPPORTED error must not silently count as a policy acceptance.
+      let upstream;
+      try {
+        upstream = await transport(new Request(UPSTREAM_GET,{
+          method:'POST',redirect:'manual',signal:AbortSignal.timeout(12000),
+          headers:{authorization:env.OPENLIST_API_TOKEN,
+            'content-type':'application/json'},
+          body:JSON.stringify({path:moved}),
+        }));
+      } catch { stop('native_link_signer_unavailable'); }
+      check(upstream.status === 200 && !upstream.redirected &&
+        !upstream.headers.has('location'), 'native_link_signer_unavailable');
+      const native = await boundedJson(upstream, 8192)
+        .catch(() => stop('native_link_signer_unavailable'));
+      check(native?.code === 200 && native.data?.name === moved.split('/').at(-1) &&
+        (native.data?.path === undefined || native.data.path === moved) &&
+        native.data?.is_dir === false &&
+        /^0\.[a-f0-9]{64}$/.test(native.data?.sign),
+        'native_link_policy_unverified');
+      linkCheck = 'permanent_signed_link_refused';
+    } else {
+      check(linkReply.status === 'succeeded' && linkReply.code === 'OK',
+        'native_link_policy');
+      const signed = linkReply.observed_state;
+
+      // The signed URL is bearer-sensitive; never print it to logs or artifacts.
+      let parsed;
+      try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
+      check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
+        parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
+        typeof parsed.searchParams.get('sign') === 'string' &&
+        parsed.searchParams.get('sign').length > 0 &&
+        signed.permanent === false &&
+        typeof signed.expires_at === 'string' &&
+        Number.isFinite(Date.parse(signed.expires_at)) &&
+        Date.parse(signed.expires_at) > Date.now(), 'native_link_invalid');
+      // Verify the actual signed public route with a tiny exact synthetic file,
+      // not just the URL's appearance. No credential is forwarded or logged.
+      let publicResponse;
+      try {
+        publicResponse = await transport(new Request(signed.url,{
+          method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
+          headers:{ accept:'text/plain' },
+        }));
+      } catch { stop('native_link_transport'); }
+      check(publicResponse.status === 200 && !publicResponse.redirected &&
+        !publicResponse.headers.has('location'), 'native_link_status');
+      let publicBytes;
+      try {
+        const reader=publicResponse.body?.getReader();
+        check(reader,'native_link_body');
+        const chunks=[];let total=0;
+        for (;;) {
+          const {done,value}=await reader.read();
+          if (done) break;
+          total+=value.byteLength;
+          check(total<=4096,'native_link_oversize');
+          chunks.push(value);
+        }
+        publicBytes=new Uint8Array(total);let offset=0;
+        for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
+      } catch {stop('native_link_body');}
+      let publicText;
+      try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
+      catch { stop('native_link_invalid_utf8'); }
+      check(publicText===nativeContent,'native_link_content');
+      linkCheck = 'finite_signed_download_link';
+    }
     const forbiddenNative = await mcp('openlist_move',{
       path:'/__openlist_e2e_prohibited/file.txt',destination_dir:destinationDir},true);
     check(forbiddenNative.status === 'not_executed' &&
       forbiddenNative.code === 'OUT_OF_SCOPE','native_scope_denial');
     tested.push('upload_small','copy','rename','move','read_native_text',
-      'signed_download_link','native_scope_denial');
+      linkCheck,'native_scope_denial');
+  }
+
+  if (env.OPENLIST_HIGH_RISK_E2E_APPROVED === 'true') {
+    // Every target is scoped to the *new folder and file of THIS first-attempt
+    // manual run*. No historical fixture, user object or directory is deleted.
+    // Never retry a write after any unknown result.
+    const exactFile = file;
+    const exactSize = new TextEncoder().encode(content).byteLength;
+    const original = (await mcp('openlist_get_file',{path:exactFile})).observed_state;
+    check(original?.path === exactFile && original.name === filename &&
+      original.is_dir === false && original.size === exactSize,
+      'high_risk_file_preflight');
+    const outOfScope = await mcp('openlist_delete',{
+      path:'/__openlist_e2e_prohibited/synthetic-file.txt'},true);
+    check(outOfScope.status==='not_executed' && outOfScope.code==='OUT_OF_SCOPE',
+      'high_risk_out_of_scope_delete');
+    const invalidShare = await mcp('openlist_share_create',{
+      files:['/__openlist_e2e_prohibited/synthetic-file.txt'],
+      expires_hours:1,max_accessed:3},true);
+    check(invalidShare.status==='not_executed' &&
+      invalidShare.code==='OUT_OF_SCOPE','high_risk_out_of_scope_share');
+    const wrongUpdate=await mcp('openlist_share_update',{
+      id:'mcp_spec309_no_such_share',expires_hours:2},true);
+    check(wrongUpdate.status==='not_executed' && wrongUpdate.code==='NOT_FOUND',
+      'high_risk_unknown_share_not_mutated');
+
+    const createdShare=await mcp('openlist_share_create',{
+      files:[exactFile],expires_hours:1,max_accessed:3,
+    });
+    const newId=createdShare.target;
+    const password=createdShare.observed_state?.password_once;
+    check(typeof newId==='string' && /^[a-f0-9]{16}$/.test(newId) &&
+      /^[a-f0-9]{48}$/.test(password) &&
+      createdShare.observed_state?.id===newId &&
+      createdShare.observed_state?.disabled===false &&
+      JSON.stringify(createdShare.observed_state?.files)===JSON.stringify([exactFile]) &&
+      createdShare.observed_state?.max_accessed===3 &&
+      typeof createdShare.observed_state?.expires==='string',
+      'high_risk_create_uncertain');
+    // Stable non-secret ID is essential for exact manual recovery if any
+    // later effect is unknown. Never print password, public URL or raw replies.
+    console.log('OPENLIST_HIGH_RISK_CREATED id='+newId);
+    const initialShare=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(initialShare?.id===newId && initialShare?.disabled===false &&
+      initialShare.max_accessed===3 &&
+      JSON.stringify(initialShare.files)===JSON.stringify([exactFile]),
+      'high_risk_create_readback');
+    const update=await mcp('openlist_share_update',{
+      id:newId,expires_hours:2,max_accessed:4,
+    });
+    check(update.observed_state?.id===newId &&
+      update.observed_state?.max_accessed===4 &&
+      JSON.stringify(update.observed_state?.files)===JSON.stringify([exactFile]),
+      'high_risk_update');
+    const updated=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(updated?.max_accessed===4 && updated.disabled===false &&
+      typeof updated.expires==='string' && updated.expires!==initialShare.expires,
+      'high_risk_update_readback');
+
+    async function publicShare(expected) {
+      let response;
+      try {
+        response=await transport(new Request('https://openlist.lirtual.dpdns.org/api/fs/get',{
+          method:'POST',redirect:'manual',signal:AbortSignal.timeout(16000),
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify({path:'/@s/'+newId,password}),
+        }));
+      } catch {stop('high_risk_public_transport')}
+      check((response.status===200 || response.status===400) &&
+        !response.redirected && !response.headers.has('location'),
+        'high_risk_public_status');
+      const body=await boundedJson(response,8192);
+      if(expected==='allowed')
+        check(response.status===200 && body.code===200 &&
+          body.data?.name===filename && body.data?.size===exactSize &&
+          body.data?.is_dir===false,'high_risk_public_not_allowed');
+      else
+        check(response.status===400 && body.code===400 &&
+          /disabled/i.test(String(body.message)),
+          'high_risk_public_not_disabled');
+    }
+    // Unauthenticated public access proves a newly created public share was
+    // active, and that disabling it controls access (not merely quota exhaustion).
+    await publicShare('allowed');
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    const disabled=await mcp('openlist_share_disable',{id:newId});
+    check(disabled.observed_state?.disabled===true,'high_risk_disable');
+    const afterDisabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(afterDisabled?.disabled===true,'high_risk_disable_readback');
+    await publicShare('disabled');
+    const enabled=await mcp('openlist_share_enable',{id:newId});
+    check(enabled.observed_state?.disabled===false,'high_risk_enable');
+    const afterEnabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    check(afterEnabled?.disabled===false && afterEnabled?.max_accessed===4,
+      'high_risk_enable_readback');
+    await publicShare('allowed');
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    const revoke=await mcp('openlist_share_revoke',{id:newId});
+    check(revoke.observed_state?.revoked===true,'high_risk_revoke');
+    const absent=await mcp('openlist_share_get',{id:newId},true);
+    check(absent.status==='not_executed' && absent.code==='NOT_FOUND',
+      'high_risk_revoke_readback');
+    const preserved=(await mcp('openlist_get_file',{path:exactFile})).observed_state;
+    check(preserved?.path===exactFile && preserved.is_dir===false &&
+      preserved.size===exactSize,'high_risk_revoke_preserved_file');
+    const deleted=await mcp('openlist_delete',{path:exactFile});
+    check(deleted.observed_state?.deleted===true && deleted.target===exactFile,
+      'high_risk_delete');
+    const gone=await mcp('openlist_get_file',{path:exactFile},true);
+    check(gone.status==='not_executed' && gone.code==='NOT_FOUND',
+      'high_risk_delete_readback');
+    console.log('OPENLIST_HIGH_RISK_E2E_PASS share_id='+newId+
+      ' share_revoked=true source_deleted=true');
+    tested.push('share_create','share_update','share_disable',
+      'share_enable','share_revoke','single_file_delete','public_access');
   }
   return {folder:dirname, tested};
 

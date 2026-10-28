@@ -16,9 +16,14 @@ const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
-  authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false} = {}) {
+  authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
+  permanentLink = true, rejectFinite = false} = {}) {
   const requests = [];
-  let made = false, uploaded = false;
+  let made = false, uploaded = false, deleted = false;
+  let highShare = null;
+  const highId='1234567890abcdef';
+  const highPwd='b'.repeat(48);
+  let publicReads=0;
   let staleReads = staleUploadedListingReads;
   const nativeSource = `${folder}/native-${env.GITHUB_RUN_ID}-1.txt`;
   const nativeDir = `${folder}/native-copies`;
@@ -26,6 +31,8 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   const renamedDest = `${nativeDir}/renamed-${env.GITHUB_RUN_ID}-1.txt`;
   const nativeData = `OpenList native MCP E2E ${env.GITHUB_RUN_ID}-1\n`;
   const nativeFiles=new Map();
+  const finiteExpiration = Math.floor(Date.now()/1000)+3600;
+  const signature = (permanentLink ? '0' : String(finiteExpiration))+'.'+'a'.repeat(64);
   let nativeFolder=false;
   const response = (name, target, observed_state, isError = false, code = 'OK') =>
     Response.json({jsonrpc:'2.0',id:1,result:{ ...(isError ? {isError:true} : {}),
@@ -57,13 +64,34 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       return Response.json({code:200,data:{content:[
         {name:file.split('/').at(-1),is_dir:false}],total:1}});
     }
+    if(url.pathname === '/api/fs/get' && req.headers.get('authorization')===null) {
+      requests.push('public_share_get');
+      assert.equal(req.method,'POST');
+      const args=await req.json();
+      assert.deepEqual(args,{path:'/@s/'+highId,password:highPwd});
+      if(!highShare) return Response.json({code:404,message:'share not found'}, {status:404});
+      if(highShare.disabled)return Response.json({code:400,
+        message:'share has been disabled'},{status:400});
+      publicReads++;
+      return Response.json({code:200,data:{
+        name:file.split('/').at(-1),size:new TextEncoder().encode(fixture).length,is_dir:false}});
+    }
+    if(url.pathname === '/api/fs/get') {
+      requests.push('upstream_sign_check');
+      assert.equal(req.method,'POST');
+      assert.equal(url.origin,'https://openlist.lirtual.dpdns.org');
+      assert.equal(req.headers.get('authorization'),authEnv.OPENLIST_API_TOKEN);
+      assert.deepEqual(await req.json(),{path:nativeDest});
+      return Response.json({code:200,data:{name:nativeDest.split('/').at(-1),
+        path:nativeDest,is_dir:false,sign:signature}});
+    }
     if(url.pathname.startsWith('/api/p/')) {
       requests.push('signed_get');
       assert.equal(req.method,'GET');
       assert.equal(url.origin,'https://openlist.lirtual.dpdns.org');
       assert.equal(req.headers.get('authorization'),null);
       assert.equal(url.pathname,'/api/p/'+nativeDest.slice(1));
-      assert.equal(url.searchParams.get('sign'),'0.'+'a'.repeat(64));
+      assert.equal(url.searchParams.get('sign'),signature);
       return new Response(nativeFiles.get(nativeDest),{
         status:200,headers:{'content-type':'text/plain'}});
     }
@@ -109,9 +137,11 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       return response(name,folder,{is_dir:true});
     }
     if(name==='openlist_get_file') {
+      if(args.path===file && deleted)
+        return response(name,file,undefined,true,'NOT_FOUND');
       if(args.path===folder && made)
         return response(name,folder,{path:folder,name:folder.split('/').at(-1),is_dir:true});
-      if(args.path===file && uploaded)
+      if(args.path===file && uploaded && !deleted)
         return response(name,file,{path:file,name:file.split('/').at(-1),is_dir:false,
           size:new TextEncoder().encode(fixture).length});
       if(nativeFiles.has(args.path)) return response(name,args.path,{
@@ -166,10 +196,63 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       nativeFiles.delete(nativeSource);
       return response(name,nativeSource,{destination:nativeDest,native_may_overwrite:true});
     }
+    if(name==='openlist_delete') {
+      if(args.path.startsWith('/__openlist_e2e_prohibited/'))
+        return response(name,args.path,undefined,true,'OUT_OF_SCOPE');
+      assert.equal(args.path,file);
+      assert.equal(uploaded,true);
+      assert.equal(deleted,false);
+      deleted=true;
+      return response(name,file,{deleted:true});
+    }
+    if(name==='openlist_share_create') {
+      if(args.files[0]?.startsWith('/__openlist_e2e_prohibited/'))
+        return response(name,args.files[0],undefined,true,'OUT_OF_SCOPE');
+      assert.deepEqual(args,{files:[file],expires_hours:1,max_accessed:3});
+      assert.equal(highShare,null);
+      highShare={id:highId,files:[file],disabled:false,max_accessed:3,
+        expires:'2026-10-28T13:00:00.000Z'};
+      return response(name,highId,{...highShare,password_once:highPwd});
+    }
+    if(name==='openlist_share_get') {
+      assert.ok([highId,'mcp_spec309_no_such_share'].includes(args.id));
+      if(!highShare || args.id!==highId)return response(name,args.id,undefined,true,'NOT_FOUND');
+      return response(name,highId,{...highShare});
+    }
+    if(name==='openlist_share_update') {
+      if(args.id==='mcp_spec309_no_such_share')
+        return response(name,args.id,undefined,true,'NOT_FOUND');
+      assert.equal(args.id,highId);
+      assert.equal(args.expires_hours,2);
+      assert.equal(args.max_accessed,4);
+      highShare={...highShare,max_accessed:4,expires:'2026-10-28T14:00:00.000Z'};
+      return response(name,highId,{...highShare});
+    }
+    if(name==='openlist_share_disable') {
+      assert.equal(args.id,highId);
+      assert.equal(highShare.disabled,false);
+      highShare={...highShare,disabled:true};
+      return response(name,highId,{disabled:true});
+    }
+    if(name==='openlist_share_enable') {
+      assert.equal(args.id,highId);
+      assert.equal(highShare.disabled,true);
+      highShare={...highShare,disabled:false};
+      return response(name,highId,{disabled:false});
+    }
+    if(name==='openlist_share_revoke') {
+      assert.equal(args.id,highId);
+      assert.ok(highShare);
+      highShare=null;
+      return response(name,highId,{revoked:true});
+    }
     if(name==='openlist_download_link'){
       assert.equal(args.path,nativeDest);
-      return response(name,nativeDest,{permanent:true,expires_at:null,url:
-        'https://openlist.lirtual.dpdns.org/api/p/'+nativeDest.slice(1)+'?sign=0.'+'a'.repeat(64)});
+      if(permanentLink || rejectFinite)
+        return response(name,nativeDest,null,true,'NOT_SUPPORTED');
+      return response(name,nativeDest,{permanent:false,
+        expires_at:new Date(finiteExpiration*1000).toISOString(),
+        url:'https://openlist.lirtual.dpdns.org/api/p/'+nativeDest.slice(1)+'?sign='+signature});
     }
     throw Error('unexpected_tool');
   }
@@ -283,15 +366,60 @@ test('expanded native E2E requires a separate explicit opt-in and only mutates t
   assert.equal(result.folder,folder.split('/').at(-1));
   assert.deepEqual(result.tested.slice(6),[
     'upload_small','copy','rename','move','read_native_text',
-    'signed_download_link','native_scope_denial']);
+    'permanent_signed_link_refused','native_scope_denial']);
   assert.equal(requests.filter(x=>x==='upload').length,1);
   assert.equal(requests.filter(x=>x==='openlist_upload_small').length,1);
   assert.equal(requests.filter(x=>x==='openlist_copy').length,1);
   assert.equal(requests.filter(x=>x==='openlist_rename').length,1);
   assert.equal(requests.filter(x=>x==='openlist_move').length,2);
-  assert.equal(requests.filter(x=>x==='signed_get').length,1);
+  assert.equal(requests.filter(x=>x==='signed_get').length,0);
+  assert.equal(requests.filter(x=>x==='upstream_sign_check').length,1);
   assert.equal(requests.includes('openlist_share_disable'),false);
   assert.equal(requests.includes('openlist_delete'),false);
+});
+
+test('high-risk manual E2E is first-attempt only and runs only on newly created synthetic file/share',async()=>{
+  const {transport,requests}=fakeTransport();
+  const result=await runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport);
+  assert.equal(result.tested.includes('single_file_delete'),true);
+  assert.equal(requests.filter(x=>x==='openlist_share_create').length,2);
+  assert.equal(requests.filter(x=>x==='openlist_share_update').length,2);
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_enable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_delete').length,2);
+  assert.equal(requests.filter(x=>x==='public_share_get').length,3);
+});
+test('high-risk manual E2E refuses replay and conflicting native approval without network',async()=>{
+  for(const overrides of [
+    {GITHUB_RUN_ATTEMPT:'2'},
+    {OPENLIST_NATIVE_E2E_APPROVED:'true'},
+    {OPENLIST_DRIVER_E2E_APPROVED:'false'},
+  ]){
+    const {transport,requests}=fakeTransport();
+    await assert.rejects(runOpenListDriverAcceptance({
+      ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true',...overrides},transport),
+      /openlist_driver_e2e_high_risk_approval_invalid|openlist_driver_e2e_not_approved/);
+    assert.equal(requests.length,0);
+  }
+});
+test('native signed-link E2E still fetches and verifies finite-expiry URL when upstream issues it',async()=>{
+  const {transport,requests}=fakeTransport({permanentLink:false});
+  const result=await runOpenListDriverAcceptance(
+    {...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport);
+  assert.ok(result.tested.includes('finite_signed_download_link'));
+  assert.equal(requests.filter(x=>x==='signed_get').length,1);
+  assert.equal(requests.filter(x=>x==='upstream_sign_check').length,0);
+});
+
+test('native E2E does not confuse unrelated NOT_SUPPORTED with permanent-link policy refusal',async()=>{
+  const {transport,requests}=fakeTransport({permanentLink:false,rejectFinite:true});
+  await assert.rejects(runOpenListDriverAcceptance(
+    {...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport),
+    /openlist_driver_e2e_native_link_policy_unverified/);
+  assert.equal(requests.filter(x=>x==='upstream_sign_check').length,1);
+  assert.equal(requests.filter(x=>x==='signed_get').length,0);
 });
 
 test('native move error is classified without leaking payloads or replaying the write',async()=>{
