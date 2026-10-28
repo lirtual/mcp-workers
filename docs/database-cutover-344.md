@@ -67,3 +67,93 @@ Hyperdrive binding manifest entries must also declare the **nonsecret** `origin_
 - [Real Worker/Hyperdrive run 40619969144](https://github.com/lirtual/mcp-workers/actions/runs/40619969144) passed all **11/11 isolated MySQL acceptance checks**: strict origin TLS, Health, query, Read, EXPLAIN, Schema, structured table/index/alter DDL, parameterized INSERT with reserved characters, over-limit UPDATE rollback and persisted-value verification, bounded UPDATE and DELETE. This real acceptance used the current SQL core and the origin-schema/proxy-database separation helper; it is not a production binding deployment or a blanket production-acceptance claim.
 - [Read-only run 40620251325](https://github.com/lirtual/mcp-workers/actions/runs/40620251325) found **zero** non-system PostgreSQL schemas with CREATE privileges for the isolated `test` role (one ordinary schema visible), so PostgreSQL persistent DDL remains **Blocked** pending narrowly scoped isolated test privileges. The same independent live read found **zero `db344_` MySQL test tables**. Both temporary Hyperdrive configurations and the Worker were removed; the temporary CA was subsequently deleted following Cloudflare API verification of no associations, no Hyperdrive configurations and no temporary Workers.
 - This resolves the MySQL schema-mismatch and MySQL SQL-mode blockers. It does **not** authorize replacing the empty production `hyperdrive-bindings.json`, merging Draft PR #345, migrating production D1, touching `scrape_relay`/`b2b`, or releasing the production Worker. PostgreSQL full DDL/Safe Write/rollback and final cutover remain pending.
+
+## PostgreSQL isolated DDL gate — least privilege operator handoff (2026-10-28)
+
+**Status: Blocked, not executed.** The dedicated Aiven PostgreSQL service is
+`postgresql-zeroverse.d.aivencloud.com:18691`, database
+`database-mcp-test-postgres`, database role `test`. The authenticated
+role lacks `CREATE` on the database and on all visible non-system schemas.
+[Read-only proof #40620251325](https://github.com/lirtual/mcp-workers/actions/runs/40620251325).
+No authorized administrator credential or Aiven management connection is available
+to this implementation session. The two available GitHub secrets authenticate
+only the dedicated `test` roles; the Database connector exposes only
+`scrape_relay` and `b2b`, which must never be used for this acceptance.
+Do **not** attempt to upgrade the test role, use an old password, or touch
+any business database.
+
+An authorized Aiven PostgreSQL administrator may execute **once** in the
+**dedicated** `database-mcp-test-postgres` database. Run in the Aiven SQL
+editor or another trusted administrator session; do not post any passwords
+or connection URLs in GitHub or ChatGPT. This deliberately refuses
+wrong database/user or a pre-existing schema and grants **only**
+`USAGE, CREATE` on a dedicated new schema, not on `public`:
+
+```sql
+DO $db344_guard$
+BEGIN
+  IF current_database() <> 'database-mcp-test-postgres'
+     OR current_user <> 'avnadmin' THEN
+    RAISE EXCEPTION 'db344: wrong dedicated test database or administrator';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test') THEN
+    RAISE EXCEPTION 'db344: dedicated test role not present';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'db344_acceptance') THEN
+    RAISE EXCEPTION 'db344: schema already exists; review manually';
+  END IF;
+  EXECUTE 'CREATE SCHEMA db344_acceptance';
+  EXECUTE 'GRANT USAGE, CREATE ON SCHEMA db344_acceptance TO "test"';
+END;
+$db344_guard$;
+```
+
+Read-only permission verification, **as role `test` connected to the dedicated
+test database**, must yield three `true` values, with
+`pg_has_role`/other broader privilege changes neither required nor allowed:
+
+```sql
+SELECT current_database() = 'database-mcp-test-postgres' AS approved_database,
+       has_schema_privilege(current_user, 'db344_acceptance', 'USAGE') AS can_use,
+       has_schema_privilege(current_user, 'db344_acceptance', 'CREATE') AS can_create;
+```
+
+After verification, reuse the already established **one-time temporary** GitHub
+Actions / Cloudflare Hyperdrive test path from this Draft PR's history and
+set its PostgreSQL DDL schema parameter to `db344_acceptance` (never
+`public`). Test Health, Read, EXPLAIN, Schema, structured CREATE/ALTER/index,
+INSERT, bounded UPDATE/DELETE, over-limit rollback and final table cleanup.
+Retain real run IDs and exact pass/fail phase markers. No permanent workflow,
+Acceptance environment, production binding, production migration or wider
+permissions may be introduced.
+
+**Cleanup** after the test is confirmed: the administrator reconnects to
+the same dedicated test database and executes the following guarded cleanup.
+It refuses a different database, user or schema owner, and uses `RESTRICT`
+rather than `CASCADE`:
+
+```sql
+DO $db344_cleanup$
+BEGIN
+  IF current_database() <> 'database-mcp-test-postgres'
+     OR current_user <> 'avnadmin' THEN
+    RAISE EXCEPTION 'db344: wrong dedicated test database or administrator';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_namespace
+    WHERE nspname = 'db344_acceptance'
+      AND nspowner = (SELECT oid FROM pg_roles WHERE rolname = 'avnadmin')
+  ) THEN
+    RAISE EXCEPTION 'db344: schema absent or owned by another role';
+  END IF;
+  EXECUTE 'REVOKE CREATE, USAGE ON SCHEMA db344_acceptance FROM "test"';
+  EXECUTE 'DROP SCHEMA db344_acceptance RESTRICT';
+END;
+$db344_cleanup$;
+```
+
+If any object remains, `RESTRICT` deliberately fails and the transaction
+rolls back; investigate and remove **only** the isolated test objects first.
+Do not drop unrelated schemas or grant privileges on `public`.
+Independently confirm the disposable Hyperdrive, Worker and CA have been
+deleted and the Draft PR's temporary workflow has been removed.
