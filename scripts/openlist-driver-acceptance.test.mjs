@@ -17,7 +17,7 @@ const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
-  permanentLink = true, rejectFinite = false} = {}) {
+  permanentLink = true, rejectFinite = false, failPublic = false} = {}) {
   const requests = [];
   let made = false, uploaded = false, deleted = false;
   let highShare = null;
@@ -72,6 +72,7 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       if(!highShare) return Response.json({code:404,message:'share not found'}, {status:404});
       if(highShare.disabled)return Response.json({code:400,
         message:'share has been disabled'},{status:400});
+      if(failPublic)return Response.json({code:400,message:'public test refused'},{status:400});
       publicReads++;
       return Response.json({code:200,data:{
         name:file.split('/').at(-1),size:new TextEncoder().encode(fixture).length,is_dir:false}});
@@ -391,6 +392,23 @@ test('high-risk manual E2E is first-attempt only and runs only on newly created 
   assert.equal(requests.filter(x=>x==='openlist_delete').length,2);
   assert.equal(requests.filter(x=>x==='public_share_get').length,3);
 });
+test('high-risk E2E failure after creating one synthetic share performs a single fail-safe disable and revoke',async()=>{
+  const {transport,requests}=fakeTransport({failPublic:true});
+  await assert.rejects(runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport),
+    /openlist_driver_e2e_high_risk_public_not_allowed/);
+  assert.equal(requests.filter(x=>x==='openlist_share_create').length,2,
+    'only one valid share create');
+  assert.equal(requests.filter(x=>x==='openlist_share_update').length,2,
+    'only one valid update');
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,1,
+    'fail-safe must not retry disable');
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1,
+    'fail-safe must not retry revoke');
+  assert.equal(requests.filter(x=>x==='openlist_delete').length,1,
+    'no synthetic file deleted after E2E failure');
+});
+
 test('high-risk manual E2E refuses replay and conflicting native approval without network',async()=>{
   for(const overrides of [
     {GITHUB_RUN_ATTEMPT:'2'},
