@@ -60,7 +60,7 @@ env:
 jobs:
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_prepare_approved != true && inputs.database_activation_id == '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -72,7 +72,6 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
-          inputs.database_prepare_approved != true &&
           inputs.database_activation_id == '' &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
@@ -679,7 +678,6 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.worker == 'database-mcp-worker' &&
           inputs.deploy_to_production == false &&
-          inputs.database_prepare_approved != true &&
           inputs.database_activation_approved == true &&
           inputs.database_activation_id != '' &&
           inputs.database_activation_revision != '' }}
