@@ -9,6 +9,8 @@ export const OPENLIST_TOOLS = [
   'openlist_download_link', 'openlist_share_disable',
   'openlist_upload_small', 'openlist_rename', 'openlist_copy', 'openlist_move',
   'openlist_create_folder',
+  'openlist_delete', 'openlist_share_create', 'openlist_share_update',
+  'openlist_share_enable', 'openlist_share_revoke',
 ].sort();
 
 export function attachOpenListPortal(env, transport = fetch) {
