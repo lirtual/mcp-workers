@@ -367,9 +367,10 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       expires_hours:1,max_accessed:3},true);
     check(invalidShare.status==='not_executed' &&
       invalidShare.code==='OUT_OF_SCOPE','high_risk_out_of_scope_share');
-    const wrongUpdate=await mcp('openlist_share_update',{id:'invalid/..',expires_hours:2},true);
-    check(wrongUpdate.code==='INVALID_INPUT' ||
-      wrongUpdate.code==='INVALID_PATH','high_risk_invalid_share_id');
+    const wrongUpdate=await mcp('openlist_share_update',{
+      id:'mcp_spec309_no_such_share',expires_hours:2},true);
+    check(wrongUpdate.status==='not_executed' && wrongUpdate.code==='NOT_FOUND',
+      'high_risk_unknown_share_not_mutated');
 
     const createdShare=await mcp('openlist_share_create',{
       files:[exactFile],expires_hours:1,max_accessed:3,
