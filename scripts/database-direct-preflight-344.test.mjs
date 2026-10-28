@@ -194,3 +194,24 @@ test('direct preflight manual gate is Owner-only, isolated and never a write rou
   const checks = source.slice(source.indexOf('\n  checks:\n'), source.indexOf('\n  deploy:\n'));
   assert.ok(checks.includes('inputs.database_direct_preflight_approved != true'));
 });
+
+test('Database publication rechecks active Direct ciphertext and URL inventory before deployment', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const name = 'Verify active Direct encryption and original URL inventory before publication (read-only)';
+  const start = source.indexOf(name);
+  const publish = source.indexOf('Publish exactly selected Worker');
+  assert.ok(start > 0 && start < publish, 'Direct prepublication guard must execute before deployment');
+  const end = source.indexOf('\n      # Read-only Hyperdrive API check', start);
+  assert.ok(end > start);
+  const stage = source.slice(start, end);
+  for (const required of [
+    "if: inputs.worker == 'database-mcp-worker'",
+    'DATABASE_DIRECT_PREFLIGHT_PHASE: release',
+    'DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}',
+    'DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}',
+    'DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}',
+    'node scripts/database-direct-preflight-344.mjs'
+  ]) assert.ok(stage.includes(required), 'Database publish encryption guard missing: ' + required);
+  assert.doesNotMatch(stage, /\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b|wrangler deploy/);
+});
