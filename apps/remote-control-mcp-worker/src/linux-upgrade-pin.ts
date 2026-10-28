@@ -17,12 +17,12 @@ export type LinuxUpgradeAsset=Readonly<{
   asset_sha256:string;release_url:string;
 }>;
 
-/** Reviewed v0.1.33 immutable native release, distinct from the public installer pin. */
+/** Reviewed v0.1.34 immutable native release, distinct from the public installer pin. */
 export const REVIEWED_LINUX_UPGRADE_PIN:ReviewedLinuxUpgradePin|null=Object.freeze({
-  tag:"v0.1.33",
-  commit:"43a1a423a08be0379f5f8c6899d86a053248112e",
-  linux_x64_asset_sha256:"dad51aab391f4ac10097a798531b398368433e4d2490c63ca22ba79281af7666",
-  linux_arm64_asset_sha256:"89549d7daf1bd399e5c9dafbcc69765a34daafe2cc385c1c69aa80e462369095",
+  tag:"v0.1.34",
+  commit:"2f06bb18e760ac24e8c30fb286d87eed3f14aea7",
+  linux_x64_asset_sha256:"1e33e4d9dfedaaa2ad75fc6f895fe399512c7ba7af79af9d3c45aecbf5d5aaf9",
+  linux_arm64_asset_sha256:"f6dea0082afe1b1b5edc16034802575e7a50a89ec668652c2ec6c687215c4273",
   protocol:"owner-one-shot-v1",
 });
 
