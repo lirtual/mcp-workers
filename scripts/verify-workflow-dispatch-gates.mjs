@@ -22,7 +22,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && inputs.database_direct_preflight_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
