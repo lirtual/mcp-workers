@@ -1,28 +1,103 @@
 # OpenList MCP Worker · Spec #309
 
-## Implementation status (2026-10-27)
+## Verified production status (2026-10-28)
 
-Thirteen tools are registered on this Draft branch: the seven previously deployed
-operations plus `openlist_share_disable`, `openlist_download_link`,
-`openlist_upload_small`, `openlist_rename`, `openlist_copy`, and `openlist_move` using the existing OpenList REST
-endpoint. **Production continues to expose seven tools** until separately
-authorized merge, manual release and real acceptance. The original
-read-only explicit-ID `openlist_share_get` passed real production
-acceptance after the controlled share test recorded in
-[Issue #309](https://github.com/lirtual/mcp-workers/issues/309).
-The one-time `openlist_share_create` used for that test was **retired from
-the Worker, Portal inventory, and manual acceptance entrypoint** after
-successful controlled production testing ([PR #369](https://github.com/lirtual/mcp-workers/pull/369)).
-It must not be callable in future releases. The other five candidates
-remain unregistered and gated on this Draft branch; this adapter is not a general-purpose OpenList
-API proxy. Verify the deployed inventory separately from this source document.
+**Partial delivery — 13 of 18 candidate MCP tools exposed; five high-risk tools disabled.**
+The actual authenticated production `openlist_capabilities` response lists these
+13 operations: `openlist_capabilities`, `openlist_list_files`,
+`openlist_get_file`, `openlist_search_files`, `openlist_read_text`,
+`openlist_share_get`, `openlist_download_link`, `openlist_share_disable`,
+`openlist_upload_small`, `openlist_rename`, `openlist_copy`,
+`openlist_move`, `openlist_create_folder`. Only
+`/Koofr/Downloads` is in the production allowed-root list.
 
-The original Koofr disposable E2E folders, synthetic test file, and expired
-share metadata were **not deleted** by this code-only cleanup. Those require
-separate authorization. Automatic production publication remains disabled;
-only the existing manually authorized GitHub Actions production release is used.
+The **five still unregistered** tools are `openlist_delete`,
+`openlist_share_create`, `openlist_share_update`,
+`openlist_share_enable`, and `openlist_share_revoke`. Internal API
+adapters do **not** satisfy the trusted-client human approval gate for
+destructive changes or external sharing; do not expose these simply to reach
+18 tools. The upstream `lirtual/OpenList-Worker` Fork is read-only.
 
-An independent, fail-closed MCP adapter to the existing OpenList-Worker using a Cloudflare **Service Binding**. This adapter does not change the upstream deployment, drivers, mounts, UI or public route.
+- [PR #371](https://github.com/lirtual/mcp-workers/pull/371) through
+  [PR #376](https://github.com/lirtual/mcp-workers/pull/376) are merged.
+  [PR #378](https://github.com/lirtual/mcp-workers/pull/378) enabled
+  read-only historical-share inspection; the single-use test
+  [PR #379](https://github.com/lirtual/mcp-workers/pull/379) was followed by
+  [PR #380](https://github.com/lirtual/mcp-workers/pull/380), which removed
+  its consumed write entrypoint. Verified `main` as of this review:
+  `7c0960b6407dfae703ebb71a754a9bfb675b527a`.
+- Existing manual single-Worker [production release #40606014736](https://github.com/lirtual/mcp-workers/actions/runs/40606014736)
+  passed active-version, Service Binding, KV/storage, health, anonymous denial
+  and scoped read-only MCP checks; **Portal re-registration was skipped**.
+  This is not authorization to change Portal mappings.
+- Controlled real [Koofr driver E2E #40606166139](https://github.com/lirtual/mcp-workers/actions/runs/40606166139)
+  passed **13 acceptance steps** (fixture creation, scoped reads,
+  upload/copy/rename/move, signed-link fetch, denial checks). This does
+  **not** mean 13 public tools each had independent live acceptance.
+- **P1 partially verified:** a single authorized real
+  `openlist_share_disable` call targeted only the expired synthetic share
+  `mcp_spec309_40493124967_1`. The preflight
+  [read-only run #40609056573](https://github.com/lirtual/mcp-workers/actions/runs/40609056573)
+  showed `disabled=false`. [One-write run #40609655831](https://github.com/lirtual/mcp-workers/actions/runs/40609655831)
+  **failed its extra immediate readback** with
+  `openlist_smoke_share_disable_readback_unknown` — do not mark that
+  workflow as Pass. **No write retry occurred.** An independent later
+  [read-only run #40609731190](https://github.com/lirtual/mcp-workers/actions/runs/40609731190)
+  confirmed `disabled=true` and the same ID, exact file and expiry; the
+  original 50-byte file remains intact. This proves the observed state
+  transition, **not** immediate consistency or invalidation of an
+  unexpired public share. The single-use write mode was removed in #380;
+  only the bounded historical **read-only** lookup remains. Do not repeat
+  the already applied write.
+- **Open lifetime risk:** upstream `sign_all=true` and
+  `link_expiration=0` yield a **non-expiring bearer signed URL**.
+  `openlist_download_link` correctly reports `permanent:true` and
+  `expires_at:null`; a successful signed-link download is **not**
+  proof of short-lived access. Owner acceptance of this permanent-link
+  risk remains **undocumented / pending**, not implicitly accepted.
+  Do not silently alter global upstream settings.
+- Seven retained isolated `mcp-spec309-e2e-*` directories are visible
+  under `/Koofr/Downloads` as of this review. They include failed-run
+  fixtures; **no automatic cleanup, deletion or write replay** is allowed.
+  Exact-path cleanup requires independent approval.
+- Automatic production release remains disabled. Keep using the existing
+  manual GitHub Actions checks; absent verified `main` branch protection,
+  do not enable automatic production releases.
+
+**Status:** Spec [#309](https://github.com/lirtual/mcp-workers/issues/309)
+remains **Open**. Native Koofr file operations have real end-to-end evidence;
+full 18-tool completion, immediate share-disable readback/public-access
+acceptance, short-link guarantees and separate high-risk authorization are
+**not** established.
+
+This is a fail-closed MCP adapter to the existing OpenList REST API over
+Cloudflare **Service Binding**, not a second store/proxy/deployment path.
+The rest of this README documents the implementation and historical
+security analysis; prior "Draft/seven tools" status descriptions are
+superseded by this verified section.
+
+## Share-disable consistency: evidence and safe interpretation
+
+The deployed native `/api/share/disable` handler changes one record then
+writes it through `saveDb`; `/api/share/get` reads from `getDb` (official
+[OpenList share handler](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/server/share.ts)).
+The upstream model has an internal **1,000 ms database cache** and refreshes
+its same-request cache on writes
+([upstream model](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/internal/model/db.ts)).
+Whether another Worker instance reads a current value immediately also
+depends on its configured persistence backend. These mechanisms are
+**possible contributors**, not a demonstrated root cause of the failed
+immediate acceptance read; the sanitized job log does not reveal the exact
+post-write response. Avoid treating one 200 or same-request cache hit as
+proof of global, immediate share revocation.
+
+For any *future separately authorized* share-disable acceptance, require
+exact ID and file-scope preflight, at most one write, an independent
+post-write state check, and a clear `unknown` / non-retry result when
+verification fails. Read-only follow-up is safe; another effectful write
+is not. The historical test share was **already expired**, so it does not
+verify active public-link invalidation or latency. No Fork, storage
+backend, Portal or global link-expiration setting was changed here.
 
 ## Configuration
 
@@ -63,7 +138,7 @@ or automatic storage repair is configured.
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
 `openlist_download_link`, `openlist_share_disable`, `openlist_rename`,
 `openlist_copy`, `openlist_move`, `openlist_upload_small`,
-`openlist_create_folder` (**thirteen on this Draft; seven deployed**).
+`openlist_create_folder` (**thirteen registered and deployed**).
 
 `openlist_share_get` accepts one explicit ID and requires **every** file
 in the share to remain within allowed roots before returning only allowlisted,
@@ -77,7 +152,7 @@ were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/r
 and one access. The live create/get proof succeeded; the tool and temporary
 acceptance code have since been removed. The previously created share record
 may remain expired upstream, but cleanup is out of scope. The five remaining
-candidates stay disabled on this Draft branch pending real driver/conflict, scope, approval, and
+candidates stay disabled in production pending real driver/conflict, scope, approval, and
 share-lifecycle safety evidence. Do not infer physical storage confinement from
 the admin-equivalent upstream token. Every future production release requires
 its own authorized checks.
@@ -88,8 +163,7 @@ Folder creation first checks a complete bounded parent listing for collisions, t
 
 The scoped Koofr acceptance mount was previously reported by the real upstream as a
 WebDAV provider. Its prior upload/overwrite audit did not run a collision or
-mutation test. That historical audit does not change the current seven-tool
-inventory or the remaining write-operation restrictions.
+mutation test. That historical upstream source audit remains a driver-risk note; the current production inventory is thirteen tools, with non-atomic writes and overwrite risks explicitly disclosed.
 
 In OpenList-Worker upstream source at
 [`29b7a8eb`](https://github.com/OpenListTeam/OpenList-Worker/tree/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f),
@@ -108,29 +182,22 @@ conditional request.
 **Updated Owner decision (Spec #309):** implement all candidate MCP tools
 against the upstream API as actually provided; accept its possible overwrite,
 non-atomic and backend-driver differences instead of waiting for an upstream
-conditional/no-overwrite feature. Upload, rename, copy and move are now registered in this
-unmerged Draft against their native REST routes, with input/scope and unknown
-write checks. Production stays unchanged until separately authorized.
-The driver-specific real acceptance remains outstanding, but an upstream change
-is no longer a precondition. Preserve single-target,
+conditional/no-overwrite feature. Upload, rename, copy and move are now registered in production against native REST routes with scope and unknown-write checks. The controlled Koofr native-driver E2E #40606166139 passed; this remains non-atomic, overwrite-capable behavior, not general race/driver safety proof. Preserve single-target,
 fixed upstream route, explicit overwrite disclosure, unknown-write/no-retry and
 basic authorization gates. Never add a second data store or patch the Fork.
 
 
-A scoped `disableShare(id)` adapter is implemented and registered on this
-**unmerged Draft branch**: it looks up the exact ID, verifies every referenced
-file is within scope, skips already-disabled shares, dispatches at most one
-fixed upstream disable request, and independently verifies the disabled state
-and unchanged sanitized identity. A missing or changed post-write record is
-`unknown`, never automatic success or a reason to retry. This is **not**
-atomic protection against concurrent upstream share edits. The Owner has
-accepted using the existing upstream behavior without an atomic update gate.
-Before separately authorized production release, verify the current driver,
-MCP inventory and share status using a separately approved test share. No live
-share was mutated by this code-only Draft.
+A scoped `disableShare(id)` adapter is **registered in production**. It
+looks up the exact share ID and verifies all referenced file paths are in
+scope, sends at most one `/api/share/disable`, then checks the ID/state
+again. Non-atomic upstream changes and unknown write outcomes are reported
+without automatic replay. **A real share-disable operation and independent
+readback against an approved isolated share are still pending.** Prior
+controlled share-create/get evidence is not a substitute. The temporary
+`openlist_share_create` acceptance route has been retired; do not
+re-enable it solely for this test.
 
-
-## Native signed download URL (Draft; not yet production)
+## Native signed download URL (production; lifetime risk open)
 
 The existing Cloudflare Route `openlist.lirtual.dpdns.org/*` was verified to
 point at `openlist-tsworkers`, and anonymous GET of public settings returned
@@ -145,13 +212,10 @@ This adapter honors the **native** OpenList expiration setting. At the observed
 `sign_all=true` and `link_expiration=0`, the signed link is **permanent**;
 the MCP result marks `permanent:true`, `expires_at:null` and warns that
 anyone with this bearer URL can access the file. No silent conversion to a
-short-lived credential is claimed. Future production acceptance must verify
-one explicitly authorized synthetic signed link through the public route,
-without publishing its signature to CI logs. Code and CI alone cannot
-prove the deployed configuration or driver response.
+short-lived credential is claimed. The synthetic signed-link fetch passed in real Koofr E2E #40606166139 without exposing its signature in logs. This does not provide a finite expiry when upstream returns `link_expiration=0`; formal acceptance of the non-expiring bearer risk remains pending.
 
 
-## Native file operations on the unmerged Draft
+## Native file operations (current production)
 
 `openlist_rename` maps to `POST /api/fs/rename` for a single canonical
 source and new name in the same parent. `openlist_copy` and `openlist_move`
@@ -168,8 +232,7 @@ overwrite an existing destination. The returned
 readback only proves that the destination was observed; it does not prove
 transactional integrity or the absence of a concurrent change. After a
 possibly dispatched write, any uncertainty returns `unknown` and **must not**
-be automatically retried. A real Koofr fixture acceptance is still separate
-from code CI, and normal user files are never modified as test data.
+be automatically retried. A controlled real Koofr fixture acceptance passed in #40606166139 independently of code CI. No normal user files were used as test data.
 
 ## Verification
 
@@ -269,7 +332,7 @@ register, enable gated tools or close Issue #309.
 
 ## Remaining five native API adapters (unregistered)
 
-The Draft also implements internal `createShare`, `updateShare`, `enableShare`,
+The Worker also implements internal `createShare`, `updateShare`, `enableShare`,
 `revokeShare` and `deleteFile` methods against existing OpenList REST APIs.
 A bounded create operation generates one random ID and one one-time share password,
 limits expiry/accesses, validates every scoped file and checks the newly created
@@ -278,26 +341,21 @@ exact scoped share ID; revoke deletes only share metadata. Delete accepts one
 in-scope **file**, never a directory. Post-write outcomes are independently
 observed; uncertain effects are **never retried**.
 
-**None of these five are registered as MCP tools** in this Draft: the spec requires
+**None of these five are registered as production MCP tools**: the spec requires
 trusted client human approval for external sharing and irreversible deletion,
 not a model-supplied boolean. CI tests the internal adapters and confirms forged
 MCP `tools/call` messages cannot dispatch these actions. No real share or file
 is mutated in offline acceptance. This does not require modifying the Fork.
 
-## Portal registration inventory gate for the 13-tool Draft
+## Portal registration inventory gate for the 13-tool production contract
 
 The existing `scripts/register-openlist-portal.mjs` and its offline regression
-contract now require exactly the thirteen MCP tools registered by this Draft,
-not the seven deployed on current production. This keeps the existing
+contract requires exactly the thirteen production MCP tools; a stale seven-tool deployment fails before any Portal mutation. This keeps the existing
 fail-closed Portal inventory check: a stale 7-tool deployment or an unexpected
 extra destructive tool **fails before changing Portal mappings**. The five
 internal-only share/delete adapters remain absent from this inventory.
 
-This change **does not** run registration, release, or live testing. A separately
-authorized release must first establish the exact active Worker version and
-real driver results; only a later authorized Portal operation can expose the
-expanded tool set. The original production Worker and Portal retain their
-current seven tools until then.
+Current Worker release #40606014736 and real Koofr E2E #40606166139 have passed, but the release deliberately skipped Portal registration. Future Portal inventory changes need separate approval and readback; the public MCP capability count is already thirteen.
 
 ## Expanded native API driver acceptance (manual only)
 
