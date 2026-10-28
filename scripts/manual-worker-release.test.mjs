@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, parseDatabaseCutoverIds, databaseD1ReadinessSql, verifyDatabaseD1Readiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, parseDatabaseCutoverIds, databaseD1ReadinessSql, verifyDatabaseD1Readiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -150,18 +150,20 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
     assert.throws(() => parseDatabaseCutoverIds(invalid), /expected IDs|JSON invalid/);
   }
   const result = counts => [{ success: true, results: [counts] }];
-  const valid = { migration_count: 1, record_count: 2, preserved_count: 2, active_count: 2, malformed_count: 0 };
+  const valid = { migration_count: 2, record_count: 2, preserved_count: 2, active_count: 2, retired_count: 0, reused_count: 0, malformed_count: 0 };
   assert.deepEqual(verifyDatabaseD1Readiness(result(valid), 2),
-    { record_count: 2, preserved_count: 2 });
+    { record_count: 2, preserved_count: 2, active_count: 2 });
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 0, preserved_count: 0 }), 2),
     /missing reviewed legacy/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, preserved_count: 1 }), 2),
     /missing reviewed legacy/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, active_count: 0 }), 2),
-    /not yet TLS-validated and active/);
+  assert.deepEqual(verifyDatabaseD1Readiness(result({ ...valid, active_count: 0 }), 2),
+    { record_count: 2, preserved_count: 2, active_count: 0 });
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, active_count: 3 }), 2),
+    /active connection count/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 }), 2),
     /migration not applied/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 51 }), 2),
+  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 11 }), 2),
     /inventory invalid/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, malformed_count: 1 }), 2),
     /inventory invalid/);
@@ -176,17 +178,20 @@ test("generated Database D1 release SQL executes against actual SQLite schema", 
   try {
     sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0001_connections.sql",
       import.meta.url), "utf8"));
+    sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0002_transport_and_retired_ids.sql", import.meta.url), "utf8"));
     sql.exec("CREATE TABLE d1_migrations (name TEXT NOT NULL)");
     sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0001_connections.sql");
-    const add = sql.prepare("INSERT INTO database_connections VALUES (?,? ,? ,? ,?,1,1,1)");
+    sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0002_transport_and_retired_ids.sql");
+    const add = sql.prepare("INSERT INTO database_connections(id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at) VALUES (?, ?, 'direct', ?, ?, ?, 1,1,1)");
     add.run("source_mysql", "mysql", "active", "x".repeat(48), "key_v1");
     add.run("source_pg", "postgres", "disabled", "y".repeat(48), "key_v1");
     const query = databaseD1ReadinessSql(["source_mysql", "source_pg"]);
     const execute = () => [{ success: true, results: [sql.prepare(query).get()] }];
-    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /not yet TLS-validated and active/);
+    assert.deepEqual(verifyDatabaseD1Readiness(execute(), 2),
+      { record_count: 2, preserved_count: 2, active_count: 1 });
     sql.prepare("UPDATE database_connections SET status='active' WHERE id=?").run("source_pg");
     assert.deepEqual(verifyDatabaseD1Readiness(execute(), 2),
-      { record_count: 2, preserved_count: 2 });
+      { record_count: 2, preserved_count: 2, active_count: 2 });
     sql.prepare("UPDATE database_connections SET ciphertext='invalid' WHERE id=?").run("source_mysql");
     assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /inventory invalid/);
     sql.prepare("DELETE FROM database_connections WHERE id=?").run("source_mysql");
@@ -1036,4 +1041,29 @@ test("Weixin production preflight requires private invocation logs, without rela
   wrongD1.d1_databases[0].database_id = "00000000-0000-0000-0000-000000000000";
   assert.throws(() => readConfiguration("weixin-mcp-worker", JSON.stringify(wrongD1)),
     /Weixin approved production D1 drift/);
+});
+
+
+test("Database Hyperdrive mapping requires exactly matching unique Wrangler IDs", () => {
+  const manifest = [{ binding: "HYPERDRIVE_APP", id: "11111111-2222-3333-4444-555555555555" }];
+  assert.equal(verifyDatabaseHyperdriveSource({ hyperdrive: [...manifest] }, manifest), true);
+  assert.throws(() => verifyDatabaseHyperdriveSource({ hyperdrive: manifest }, []), /manifest\/source mismatch/);
+  assert.throws(() => verifyDatabaseHyperdriveSource({ hyperdrive: [...manifest, { ...manifest[0], binding: "HYPERDRIVE_OTHER" }] },
+    [...manifest, { ...manifest[0], binding: "HYPERDRIVE_OTHER" }]), /not uniquely/);
+});
+
+test("Database Hyperdrive config readback is fail-closed before and after release", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const before = workflow.indexOf("Verify Database Hyperdrive TLS, CA, origin and cache before publication");
+  const publish = workflow.indexOf("Publish exactly selected Worker");
+  const after = workflow.indexOf("Verify Database Hyperdrive TLS, CA, origin and cache after publication");
+  assert.ok(before > 0 && before < publish && after > publish);
+  for (const name of [
+    "Verify Database Hyperdrive TLS, CA, origin and cache before publication",
+    "Verify Database Hyperdrive TLS, CA, origin and cache after publication"
+  ]) {
+    const section = workflow.slice(workflow.indexOf("- name: " + name), workflow.indexOf("run: node scripts/verify-database-hyperdrive.mjs", workflow.indexOf("- name: " + name)) + 55);
+    assert.match(section, /if: inputs.worker == 'database-mcp-worker'/);
+    assert.match(section, /CLOUDFLARE_API_TOKEN/);
+  }
 });

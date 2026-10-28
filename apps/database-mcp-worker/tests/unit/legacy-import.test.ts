@@ -15,6 +15,7 @@ afterEach(() => { for (const d of opened.splice(0)) d.close(); });
 function localDb() {
   const sql = new DatabaseSync(':memory:'); opened.push(sql);
   sql.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../../migrations/0002_transport_and_retired_ids.sql', import.meta.url), 'utf8'));
   const prepare = (text: string, args: unknown[] = []) => ({
     bind(...next: unknown[]) { return prepare(text, next); },
     async run() { const result = sql.prepare(text).run(...args as []); return { meta: { changes: result.changes } }; },
@@ -44,23 +45,23 @@ describe('offline atomic legacy migration', () => {
   });
   it('duplicate connection ID is atomic and does not overwrite', async () => {
     const { sql, db } = localDb();
-    sql.prepare("INSERT INTO database_connections VALUES ('source_pg','postgres','disabled','opaque.value','v0',1,1,1)").run();
+    sql.prepare("INSERT INTO database_connections(id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at) VALUES ('source_pg','postgres','direct','disabled','opaque.value','v0',1,1,1)").run();
     const batch = await prepareLegacyCatalog(keys, catalog, ['source_pg', 'source_mysql']);
     await expect(insertLegacyCatalogAtomically(db, batch)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
     expect(sql.prepare('SELECT id,ciphertext FROM database_connections').all())
       .toEqual([{ id: 'source_pg', ciphertext: 'opaque.value' }]);
   });
 
-  it('enforces the total 50-row cap in one write statement', async () => {
+  it('enforces the total 10-row cap in one write statement', async () => {
     const { sql, db } = localDb();
-    const seed = sql.prepare("INSERT INTO database_connections VALUES (?, 'mysql','disabled','opaque.value','v0',1,1,1)");
-    for (let i = 0; i < 49; i++) seed.run('existing_' + i);
+    const seed = sql.prepare("INSERT INTO database_connections(id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at) VALUES (?, 'mysql','direct','disabled','opaque.value','v0',1,1,1)");
+    for (let i = 0; i < 9; i++) seed.run('existing_' + i);
     const batch = await prepareLegacyCatalog(keys, catalog, ['source_mysql','source_pg']);
     await expect(insertLegacyCatalogAtomically(db, batch)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
-    expect((sql.prepare('SELECT COUNT(*) AS n FROM database_connections').get() as {n: number}).n).toBe(49);
-    sql.prepare("DELETE FROM database_connections WHERE id='existing_48'").run();
+    expect((sql.prepare('SELECT COUNT(*) AS n FROM database_connections').get() as {n: number}).n).toBe(9);
+    sql.prepare("DELETE FROM database_connections WHERE id='existing_8'").run();
     expect(await insertLegacyCatalogAtomically(db, batch)).toEqual({ inserted: 2 });
-    expect((sql.prepare('SELECT COUNT(*) AS n FROM database_connections').get() as {n: number}).n).toBe(50);
+    expect((sql.prepare('SELECT COUNT(*) AS n FROM database_connections').get() as {n: number}).n).toBe(10);
   });
 
 

@@ -11,6 +11,7 @@ import { handleSetup } from '../../src/setup/handler.js';
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../migrations/0002_transport_and_retired_ids.sql', import.meta.url), 'utf8'));
   const prepare = (sql: string, args: unknown[] = []) => {
     const stmt = sqlite.prepare(sql);
     return {
@@ -65,22 +66,18 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       body: new URLSearchParams({ csrf, ...values })
     }), env, certificates);
     const original = 'postgres://reader:pass@db.example.net/catalog';
-    const projectCa = '-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----';
-    const replacementCa = '-----BEGIN CERTIFICATE-----\nREVG\n-----END CERTIFICATE-----';
-    expect((await post('add', { id: 'bad', dialect: 'postgres', url: original, ca: 'not a certificate' })).status).toBe(422);
-    expect((await post('add', { id: 'main', dialect: 'postgres', url: original, ca: projectCa })).status).toBe(200);
+    expect((await post('add', { id: 'bad', dialect: 'postgres', transport: 'direct', plaintext_ack: '1', url: original, ca: 'not a certificate' })).status).toBe(422);
+    expect((await post('add', { id: 'main', dialect: 'postgres', transport: 'direct', plaintext_ack: '1', url: original })).status).toBe(200);
     const listing = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const listingHtml = await listing.text();
     expect(listingHtml).not.toContain(original);
-    expect(listingHtml).not.toContain(projectCa);
     let row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
     expect(row).toMatchObject({ status: 'active', revision: 2 });
     const ciphertext = row.ciphertext;
-    expect(ciphertext).not.toContain(projectCa);
-    expect(fakeHealth.mock.lastCall?.[0]).toHaveProperty('ca', projectCa);
-    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext})).ca).toBe(projectCa);
+    expect(fakeHealth.mock.lastCall?.[0]).not.toHaveProperty('ca');
+    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext})).ca).toBeUndefined();
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unavailable'));
-    expect((await post('edit', { id: 'main', revision: '2', credential_mode: 'replace', ca_mode: 'keep',
+    expect((await post('edit', { id: 'main', revision: '2', credential_mode: 'replace', plaintext_ack: '1',
       url: 'postgres://reader:changed@db.example.net/catalog' })).status).toBe(422);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
     expect(row).toMatchObject({ status: 'active', revision: 2, ciphertext });
@@ -89,16 +86,17 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     // A disabled placeholder with unreachable credentials can be repaired without
     // making it active. An active connection must never accept failed edits.
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unreachable fixture'));
-    expect((await post('edit', { id: 'main', revision: '3', credential_mode: 'replace', ca_mode: 'replace',
-      url: 'postgres://reader:replacement@db.example.net/catalog', ca: replacementCa, allow_disabled: '1' })).status).toBe(200);
+    expect((await post('edit', { id: 'main', revision: '3', credential_mode: 'replace', plaintext_ack: '1',
+      url: 'postgres://reader:replacement@db.example.net/catalog', allow_disabled: '1' })).status).toBe(200);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
     expect(row.status).toBe('disabled');
     expect(row.revision).toBe(4);
-    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBe(replacementCa);
-    expect((await post('enable', { id: 'main', revision: '4' })).status).toBe(200);
-    expect(fakeHealth.mock.lastCall?.[0]).toHaveProperty('ca', replacementCa);
+    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
+    expect((await post('enable', { id: 'main', revision: '4' })).status).toBe(422);
+    expect((await post('enable', { id: 'main', revision: '4', plaintext_ack: '1' })).status).toBe(200);
+    expect(fakeHealth.mock.lastCall?.[0]).not.toHaveProperty('ca');
     expect((await post('disable', { id: 'main', revision: '5' })).status).toBe(200);
-    expect((await post('edit', { id: 'main', revision: '6', credential_mode: 'keep', ca_mode: 'clear' })).status).toBe(200);
+    expect((await post('edit', { id: 'main', revision: '6', credential_mode: 'keep' })).status).toBe(200);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as typeof row;
     expect(row.revision).toBe(7);
     expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
@@ -106,6 +104,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'other' })).status).toBe(422);
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'main' })).status).toBe(200);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
+    expect((await post('add', { id: 'cloud_ref', dialect: 'postgres', transport: 'hyperdrive',
+      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
+    expect((await post('delete', { id: 'cloud_ref', revision: '1', confirm_id: 'cloud_ref' })).status).toBe(422);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 1 });
     vi.unstubAllGlobals();
   });
 });

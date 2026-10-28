@@ -1,3 +1,5 @@
+> **Historical investigation only.** Spec #344 Q24–Q46 (2026-10-28) supersedes the Direct-TLS-only architectural decision. This file preserves prior failed probe evidence; the current plan is explicit Direct plaintext or separately CA/hostname-verified Hyperdrive TLS. See [Spec #344](https://github.com/lirtual/mcp-workers/issues/344) and [Worker README](../README.md). No production TLS, plaintext, or source-database testing is authorized by this note.
+
 # Spec #344 — Direct TLS feasibility gate (blocked)
 
 **Release state: BLOCKED. This is not a TLS acceptance certificate or production-ready design.**

@@ -11,6 +11,7 @@ import { rotateRegistryKeys } from "../../src/registry/rotation.js";
 function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../migrations/0002_transport_and_retired_ids.sql', import.meta.url), 'utf8'));
   function statement(sql: string, args: unknown[] = []) {
     const prepared = sqlite.prepare(sql);
     return {
@@ -29,16 +30,16 @@ const all: DatabaseSync[] = [];
 afterEach(() => { all.splice(0).forEach(db => db.close()); });
 
 describe('actual D1 registry SQL', () => {
-  it('permits zero records; inserts only up to 50 even on concurrent last-slot admissions', async () => {
+  it('permits zero records; inserts only up to 10 even on concurrent last-slot admissions', async () => {
     const f = fixture(); all.push(f.sqlite);
     expect(await listRegistryConnections(f.db)).toEqual([]);
-    await Promise.all(Array.from({ length: 49 }, (_, i) => createRegistryConnection(f.db, input('db' + i))));
-    const contenders = await Promise.allSettled([createRegistryConnection(f.db, input('db49')), createRegistryConnection(f.db, input('db50'))]);
+    await Promise.all(Array.from({ length: 9 }, (_, i) => createRegistryConnection(f.db, input('db' + i))));
+    const contenders = await Promise.allSettled([createRegistryConnection(f.db, input('db9')), createRegistryConnection(f.db, input('db10'))]);
     expect(contenders.filter(x => x.status === 'fulfilled')).toHaveLength(1);
-    expect((await listRegistryConnections(f.db)).length).toBe(50);
+    expect((await listRegistryConnections(f.db)).length).toBe(10);
     const results = await Promise.allSettled([createRegistryConnection(f.db, input('slotA')), createRegistryConnection(f.db, input('slotB'))]);
     expect(results.every(r => r.status === 'rejected')).toBe(true);
-    expect((await listRegistryConnections(f.db)).length).toBe(50);
+    expect((await listRegistryConnections(f.db)).length).toBe(10);
   });
   it('enforces immutable dialect and revision CAS on edit, disable, enable, delete', async () => {
     const f = fixture(); all.push(f.sqlite);
@@ -120,7 +121,7 @@ describe('bounded and resumable registry key rotation', () => {
     expect(await rotateRegistryKeys(f.db, next, 1)).toEqual({ rotated: 0, pending: 0 });
     const row = await getRegistryConnection(f.db, 'one');
     expect(row?.key_id).toBe('new');
-    expect(await openConnectionConfig(next, row!.id, row!.dialect, { keyId: row!.key_id, ciphertext: row!.ciphertext }))
+    expect(await openConnectionConfig(next, row!.id, row!.dialect, { keyId: row!.key_id!, ciphertext: row!.ciphertext! }))
       .toHaveProperty('url');
   });
 });
@@ -131,5 +132,67 @@ describe('immutable connection identity', () => {
     await createRegistryConnection(f.db, input('same'));
     await expect(createRegistryConnection(f.db, input('same'))).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
     expect((await getRegistryConnection(f.db, 'same'))?.revision).toBe(1);
+  });
+});
+
+
+describe('retired connection ids', () => {
+  it('never reassigns a deleted id, even when the ten-record capacity is freed', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    await createRegistryConnection(f.db, input('retired'));
+    await deleteRegistryConnection(f.db, 'retired', 1, 'retired');
+    await expect(createRegistryConnection(f.db, input('retired')))
+      .rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    expect(f.sqlite.prepare('SELECT id FROM retired_connection_ids').all()).toEqual([{ id: 'retired' }]);
+  });
+  it('preserves existing ciphertext and records the transport during additive migration', () => {
+    const f = fixture(); all.push(f.sqlite);
+    const row = f.sqlite.prepare('PRAGMA table_info(database_connections)').all();
+    expect(row).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'transport' })]));
+    const columns = f.sqlite.prepare('SELECT transport,ciphertext,key_id FROM database_connections').all();
+    expect(columns).toEqual([]);
+  });
+});
+
+
+describe('Hyperdrive metadata-only lifecycle', () => {
+  it('persists only a dedicated reference, disabled by default, and rejects duplicate config IDs', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    const ref = { id: 'proxy_mysql', dialect: 'mysql' as const, transport: 'hyperdrive' as const,
+      configId: '11111111-2222-3333-4444-555555555555', bindingName: 'HYPERDRIVE_MYSQL' };
+    await createRegistryConnection(f.db, ref);
+    expect(await getRegistryConnection(f.db, ref.id)).toMatchObject({
+      id: ref.id, dialect: 'mysql', transport: 'hyperdrive', status: 'disabled',
+      ciphertext: null, key_id: null, config_id: ref.configId, binding_name: ref.bindingName
+    });
+    const records = await listRegistryConnections(f.db);
+    expect(JSON.stringify(records)).not.toContain('11111111');
+    await expect(admitConnection({ DB: f.db } as Parameters<typeof admitConnection>[0], ref.id))
+      .rejects.toMatchObject({ code: 'CONNECTION_DISABLED' });
+    await expect(createRegistryConnection(f.db, { ...ref, id: 'proxy_pg', dialect: 'postgres', bindingName: 'HYPERDRIVE_PG' }))
+      .rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    await expect(updateRegistryConnection(f.db, ref.id, 1, { dialect: 'mysql', ciphertext, keyId: 'key1' }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+  it('does not execute or fall back to Direct if an active Hyperdrive Binding is absent', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    await createRegistryConnection(f.db, { id: 'missing', dialect: 'postgres', transport: 'hyperdrive',
+      configId: '11111111-2222-3333-4444-555555555555', bindingName: 'HYPERDRIVE_MISSING' });
+    await setRegistryConnectionStatus(f.db, 'missing', 1, 'active');
+    await expect(admitConnection({ DB: f.db } as Parameters<typeof admitConnection>[0], 'missing'))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+  });
+});
+
+
+describe('legacy encrypted transport migration', () => {
+  it('conserves encrypted credentials but disables active old rows instead of silently downgrading TLS to plaintext', () => {
+    const db = new DatabaseSync(':memory:'); all.push(db);
+    db.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
+    db.prepare(`INSERT INTO database_connections(id,dialect,status,ciphertext,key_id,revision,created_at,updated_at)
+      VALUES ('old_mysql','mysql','active','opaque.original','old_key',4,1,2)`).run();
+    db.exec(readFileSync(new URL('../../migrations/0002_transport_and_retired_ids.sql', import.meta.url), 'utf8'));
+    expect(db.prepare('SELECT transport,status,ciphertext,key_id,revision FROM database_connections WHERE id=?').get('old_mysql'))
+      .toEqual({transport:'direct',status:'disabled',ciphertext:'opaque.original',key_id:'old_key',revision:5});
   });
 });

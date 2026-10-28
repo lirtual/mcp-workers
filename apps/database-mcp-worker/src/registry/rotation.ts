@@ -11,14 +11,14 @@ export async function rotateRegistryKeys(db: D1Database, keys: EncryptionKeys, b
     !keys.DATABASE_KEY_ID || !/^[A-Za-z0-9_-]{1,32}$/.test(keys.DATABASE_KEY_ID)) fail();
   try {
     // Preflight every historic key identifier, not just the next batch.
-    const distinct = await db.prepare('SELECT DISTINCT key_id FROM database_connections WHERE key_id<>?')
+    const distinct = await db.prepare("SELECT DISTINCT key_id FROM database_connections WHERE transport='direct' AND key_id<>?")
       .bind(keys.DATABASE_KEY_ID).all<{ key_id: string }>();
     if (distinct.results.some(row => row.key_id !== keys.DATABASE_PREVIOUS_KEY_ID ||
       !keys.DATABASE_ENCRYPTION_PREVIOUS_KEY)) {
       throw new PublicError('ENCRYPTION_KEY_UNAVAILABLE', 'A required database recovery key is unavailable.');
     }
     const source = await db.prepare(`SELECT id,dialect,revision,ciphertext,key_id FROM database_connections
-      WHERE key_id<>? ORDER BY id LIMIT ?`).bind(keys.DATABASE_KEY_ID, batchSize).all<RotationRow>();
+      WHERE transport='direct' AND key_id<>? ORDER BY id LIMIT ?`).bind(keys.DATABASE_KEY_ID, batchSize).all<RotationRow>();
     let rotated = 0;
     for (const row of source.results) {
       const plaintext = await openConnectionConfig(keys, row.id, row.dialect,
@@ -35,7 +35,7 @@ export async function rotateRegistryKeys(db: D1Database, keys: EncryptionKeys, b
       if (result.meta.changes === 1) rotated++;
       // Concurrent edit wins the CAS: do not overwrite newer credentials.
     }
-    const result = await db.prepare('SELECT COUNT(*) AS n FROM database_connections WHERE key_id<>?')
+    const result = await db.prepare("SELECT COUNT(*) AS n FROM database_connections WHERE transport='direct' AND key_id<>?")
       .bind(keys.DATABASE_KEY_ID).first<{ n: number }>();
     if (!result || !Number.isSafeInteger(result.n)) fail();
     return { rotated, pending: result.n };

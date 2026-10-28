@@ -1,65 +1,45 @@
-# Cloudflare Database MCP Worker
+# Database MCP Worker · Spec #344
 
-A Cloudflare-native MCP server for bounded PostgreSQL/MySQL reads, structured Safe Write and Safe Admin/DDL. **This README describes the unmerged [Spec #344](https://github.com/lirtual/mcp-workers/issues/344) Draft implementation; it does not describe an approved production cutover.** See [the cutover/rollback checklist](../../docs/database-cutover-344.md).
+Cloudflare MCP Worker for bounded MySQL/PostgreSQL reads, schema inspection, structured Safe Write and controlled DDL. The [approved Spec #344](https://github.com/lirtual/mcp-workers/issues/344) supersedes the old Direct-TLS-only Draft. **This worktree is unmerged implementation in progress, not a production cutover approval.**
 
-## Current deployment status
+## Delivery boundary
 
-**Production cutover: BLOCKED.** The existing production Worker continues using its original `DATABASE_CONFIG` Secret until a separately authorized, verified migration. Do not remove, rotate or overwrite that existing Secret in preparation for this Draft. Do not invoke the Database production release workflow while its dedicated D1/Access/TLS gates are incomplete.
+**Production migration and release: BLOCKED.** The currently deployed Worker still uses its pre-cutover `DATABASE_CONFIG` Secret. Do not overwrite/delete that Secret, modify production D1, probe business databases, or publish this code without separate explicit authorization and the full acceptance matrix. The earlier Aiven Hyperdrive `SELECT 1` evidence is only partial.
 
-The Draft moves the live connection catalog to a **dedicated D1 database**: one AES-256-GCM encrypted record per logical connection. Every SQL tool reads that record on admission, checks that it is active, and uses the selected connection's own database principal. A disabled/missing ID fails explicitly; there is no plaintext or Hyperdrive fallback.
+The new D1 `database_connections` registry supports 0–10 configured logical connections; disabled rows count. IDs and dialect/transport are immutable, revisions are CAS-checked, and `retired_connection_ids` prevents ID reuse on normal delete. A historical whole-D1 restore can roll back that retirement history: freeze changes and reconcile against independently retained identity evidence before allowing adds/enables.
 
-## Secrets, bindings, and Owner access
+`migrations/0001_connections.sql` is unchanged. **Additive `0002_transport_and_retired_ids.sql` has not been applied to production.** It preserves existing encrypted Direct ciphertext while **disabling all migrated connections and incrementing revisions** to prohibit automatic old TLS → new plaintext downgrade; explicit risk confirmation is required before later enabling. Hyperdrive references are added without storing origin credentials.
 
-The Draft release requires the following Worker Secrets:
+## Transport contracts
 
-- `MCP_ACCESS_TOKEN` — the existing Cloudflare MCP Portal-to-Worker Bearer credential.
-- `DATABASE_ENCRYPTION_KEY` — canonical 32-byte Base64 AES-GCM key, independent of other Workers.
-- `DATABASE_KEY_ID` — key identifier, with optional matching previous key/ID retained for D1 backup and rollback compatibility.
+| Transport | Origin data | Connection security | Changes |
+|---|---|---|---|
+| **Direct** | AES-256-GCM encrypted URL per D1 row | **Plaintext TCP**, explicitly insecure; credentials and SQL can be intercepted | Direct records may be changed individually with no Worker release |
+| **Hyperdrive** | Nonsecret config ID and binding name in D1; origin password and CA only in Cloudflare | **Must be separately proven** strict chain/hostname TLS and disabled caching at the Hyperdrive → origin boundary | Dedicated Cloudflare config and versioned Worker binding through the existing protected GitHub Actions release |
 
-Before any separately approved deployment, create and approve the dedicated `database-mcp-db` D1 and bind it as `DB`. The reviewed schema lives under `migrations/`; release checks are **read-only** and must not implicitly create or import D1 data. Keep existing encrypted backups and historical keys for their retention period.
+The Owner `/setup` page is isolated behind Cloudflare Access exact-email OTP, signed JWT, Origin and CSRF checks, and throttling. Direct creation and sensitive URL edits require an explicit plaintext-risk checkbox. Hyperdrive additions remain disabled until binding release and verification; no transport downgrade occurs. Neither passwords, URLs, CA, keys nor ciphertext are displayed.
 
-Owner management uses a dedicated HTTPS custom domain and a separate **self-hosted Cloudflare Access OTP** application, restricted to exactly the Owner email. Required plaintext Access configuration: `DATABASE_SETUP_HOST`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, and `OWNER_EMAIL`. The setup hostname/route comes from reviewed Wrangler configuration, not arbitrary GitHub variable overrides. The release gate verifies the domain, audience, one precise email policy, OTP-only identity provider, and short session. The MCP Bearer credential cannot authorize Owner setup.
+**Important gate:** `hyperdrive-bindings.json` is the reviewed nonsecret binding/config-ID + origin/CA provenance mapping, currently `[]`. Each real entry must contain `binding`, `id`, `dialect`, `origin_host`, `origin_port`, `origin_database`, and `ca_certificate_id`. The origin password and PEM must NEVER appear in that file. The existing GitHub Actions release uses a read-only Cloudflare Hyperdrive GET (requires **Hyperdrive Read** on its existing token) both before and after deployment to compare the exact origin and CA, require PostgreSQL `verify-full` / MySQL `VERIFY_IDENTITY`, and require `caching.disabled=true`. The release preflight compares it against the reviewed Wrangler `hyperdrive` entries and readback checks the deployed IDs. Runtime rejects any missing or mismatched Binding. This alone **does not prove** source Hyperdrive configuration, CA trust, hostname validation, disabled query cache, pool restart, or rollback-version safety; these remain mandatory external verification gates before any Hyperdrive activation. No account-management token is embedded in the production Worker.
 
-The setup UI is a small server-rendered `/setup` page. It shows only non-secret ID, dialect, status and revision; the password, complete URL, CA material, encryption keys and ciphertext are never echoed. New and edited records are validated for eligible public endpoints and must pass verified TLS health before activation. Unreachable but structurally valid candidates may be saved **disabled**, not enabled. Edits, status changes, deletion and bounded key rotation enforce optimistic revision checks. Delete requires disabled status and explicit confirmation; it never deletes the upstream database.
+For MySQL Hyperdrive, the driver cannot use protocol-level prepared `execute()`. Structured writes use `query(sql, params)` only for primitive values and verify `NO_BACKSLASH_ESCAPES` is absent from the **same transaction/session immediately before interpolation**. This is **not a server-side parameter binding**, and deployed Workers escaping/injection/rollback tests remain P0 requirements. PostgreSQL Hyperdrive must respect transaction pooling. Never retry ambiguous non-idempotent commits.
 
-## Direct TLS requirement
+The existing MCP tools remain: `list_connections`, `inspect_schema`, `get_schema_context`, `query_read`, `explain`, `health_check`, `insert_rows`, `update_rows`, `delete_rows`, `create_table`, `alter_table`, `create_index`, `drop_index`, `drop_table`. Existing row, result-byte, query-time and write-affected-row limits remain.
 
-- PostgreSQL accepts `postgres://` / `postgresql://` with an explicit database.
-- MySQL accepts `mysql://` with an optional database name; operations requiring a schema must name it when the connection URL omits a default database.
-- Driver-level URL query parameters that could override SSL policy are rejected. MySQL Direct TLS requires a DNS hostname; IP literals are refused until peer identity validation is proven.
-- Both drivers must verify the server certificate chain and peer DNS identity. Optional validated project CA material is encrypted per connection.
-- **P0 acceptance requires actual Cloudflare Workers Direct TLS against separately approved disposable MySQL and PostgreSQL databases**, including reads, writes, health, DDL, and negative certificate/hostname/plaintext cases. Successful Node.js CI, dry-run, or an offline TLS mock **is not** proof.
-- Dynamic DNS validation rejects local/private/reserved targets but does not pin the DNS result to the driver's outgoing socket. Residual DNS rebinding/TOCTOU risk is documented; never claim full SSRF isolation.
+## Security and release checks
 
-No proxy, custom database-protocol implementation, Hyperdrive restoration, TLS downgrade or direct plaintext fallback is approved.
+Direct public-host/DNS/address checks are retained, with documented DNS rebinding/TOCTOU residual risk. Never use Direct with a server requiring encrypted database traffic. Database GRANT/RLS and transactional engine properties remain the authorization and rollback boundaries.
 
-## MCP tools
+The Worker requires `MCP_ACCESS_TOKEN`, `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, a dedicated D1 `DB` binding, `RATE_LIMITER`, `SETUP_RATE_LIMITER`, and the existing Owner Access Variables. Bounded CAS key rotation applies **only to encrypted Direct records**; retained rollback versions and backups must be compatible with both current and historic encryption keys.
 
-The existing names and structured permissions remain:
-
-| Read and inspect | Safe Write | Safe Admin / DDL |
-| --- | --- | --- |
-| `list_connections`, `inspect_schema`, `get_schema_context`, `query_read`, `explain`, `health_check` | `insert_rows`, `update_rows`, `delete_rows` | `create_table`, `alter_table`, `create_index`, `drop_index`, `drop_table` |
-
-`list_connections` returns only non-secret metadata and works with an empty catalog. With exactly one configured connection, the `connection` argument can be omitted. With multiple configured IDs, a caller must provide one even when only one is active.
-
-Safe Write accepts structured operations, not raw mutation SQL. UPDATE/DELETE use bounded transactions and roll back changes above the affected-row cap. Structured DDL uses database-native permissions and explicit targets; it is not automatically retried after ambiguous results. Existing row/schema/result byte caps and query timeouts remain enforced. PostgreSQL RLS and native grants are the final permissions boundary; MySQL transactional rollback requires a transactional engine such as InnoDB.
-
-## Limits and tests
-
-Runtime defaults: `MAX_ROWS=500` (maximum 5,000), `MAX_RESULT_BYTES=1048576` (maximum 8 MiB), `MAX_SCHEMA_BYTES=524288` (maximum 4 MiB), `QUERY_TIMEOUT_MS=15000` (maximum 60,000), `MAX_WRITE_AFFECTED_ROWS=20` (maximum 100). The registry allows **0–50** logical connections, with an atomic insertion cap.
+Use the existing GitHub Actions workflow only after authorized migration and the read-only D1/Access/binding checks pass. For a sensitive Hyperdrive Cloudflare change: disable the logical connection, change the dedicated upstream config with approved access, restart/drain its native pool, verify **new connections** and TLS/caching/binding provenance, then explicitly enable. Failures remain disabled. Before deleting a Hyperdrive record, safely unbind and verify live/rollback versions and shared-CA dependencies. Do not add auto-cleanup or another orchestrator.
 
 ```bash
-pnpm install --frozen-lockfile
 pnpm --filter database-mcp-worker check
+node --test scripts/manual-worker-release.test.mjs
 ```
 
-CI also uses isolated disposable MySQL/PostgreSQL containers with certificate-verified TLS and exercises the SQL tools. These fixtures are **not** production databases. Production compatibility must be tested independently in a real deployed Workers runtime.
+Unit tests and dry-run are not deployed Workers acceptance. All **four** dialect/transport combinations must pass connection, read/schema/explain, Safe Write and rollback, controlled DDL, negatives, TLS and security gates before #344 is production-ready. Existing `scrape_relay` and `b2b` database access is specifically prohibited without fresh separate Owner authorization. See [production cutover and rollback](../../docs/database-cutover-344.md), [historical Direct TLS investigation](docs/direct-tls-feasibility.md), and [Spec #344](https://github.com/lirtual/mcp-workers/issues/344).
 
-The old whole-catalog JSON parser remains only for **offline, independently authorized source migration and test fixtures**; it rejects legacy Hyperdrive records and is not connected to HTTP/MCP runtime admission. The migration helper imports records disabled and verifies every encrypted readback without querying the upstream SQL servers. Every legacy ID must separately pass real TLS health and receive explicit cutover approval before activation.
+## License
 
-**Never test, health-check, modify or connect to `scrape_relay` or `b2b` during this work.** Do not copy their credentials to temporary fixtures. Preserve the old production Worker, original Secret, and rollback recovery materials until expressly authorized otherwise.
-
-## License and provenance
-
-MIT license and upstream source provenance remain in `LICENSE` and `SOURCE.md`.
+MIT; upstream provenance retained in `LICENSE` and `SOURCE.md`.

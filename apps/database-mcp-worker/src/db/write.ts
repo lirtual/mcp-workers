@@ -1,12 +1,11 @@
 import type { Connection } from 'mysql2/promise';
 import type { Client as PgClient } from 'pg';
 import { createPostgresClient, createMysqlClient } from './clients.js';
+import { assertMysqlHyperdriveSqlMode, mysqlSafeParams } from './mysql-mode.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import type { BuiltWriteStatement } from '../sql/write.js';
 import type { EffectiveWriteConnection, WriteResult } from '../types.js';
 import { withTimeout } from './timeout.js';
-
-type MysqlPreparedValue = string | number | boolean | null;
 
 async function withPostgresClient<T>(
   connection: EffectiveWriteConnection,
@@ -52,23 +51,6 @@ async function withMysqlClient<T>(
 
 function mysqlTimed<T>(client: Connection, connection: EffectiveWriteConnection, query: Promise<T>): Promise<T> {
   return withTimeout(query, connection.limits.queryTimeoutMs, () => client.destroy());
-}
-
-function mysqlPreparedValues(params: unknown[]): MysqlPreparedValue[] {
-  return params.map(value => {
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'boolean' ||
-      (typeof value === 'number' && Number.isFinite(value))
-    ) {
-      return value;
-    }
-    throw new PublicError(
-      'INVALID_INPUT',
-      'MySQL Safe Write values must be string, number, boolean, or null; serialize structured JSON values explicitly.'
-    );
-  });
 }
 
 function mysqlAffectedRows(result: unknown): number {
@@ -140,12 +122,24 @@ async function mysqlInsert(
   statement: BuiltWriteStatement
 ): Promise<WriteResult> {
   return withMysqlClient(connection, async client => {
-    const [result] = await mysqlTimed(
-      client,
-      connection,
-      client.execute(statement.sql, mysqlPreparedValues(statement.params))
-    );
-    return { affectedRows: mysqlAffectedRows(result) };
+    const params = mysqlSafeParams(statement.params);
+    if (connection.transport === 'direct') {
+      const [result] = await mysqlTimed(client, connection, client.execute(statement.sql, params));
+      return { affectedRows: mysqlAffectedRows(result) };
+    }
+    let transactionOpen = false;
+    try {
+      await mysqlTimed(client, connection, client.beginTransaction());
+      transactionOpen = true;
+      await assertMysqlHyperdriveSqlMode(client, connection);
+      const [result] = await mysqlTimed(client, connection, client.query(statement.sql, params));
+      const affectedRows = mysqlAffectedRows(result);
+      await mysqlTimed(client, connection, client.commit());
+      transactionOpen = false;
+      return { affectedRows };
+    } finally {
+      if (transactionOpen) await mysqlTimed(client, connection, client.rollback()).catch(() => undefined);
+    }
   });
 }
 
@@ -158,10 +152,11 @@ async function mysqlGuardedMutation(
     try {
       await mysqlTimed(client, connection, client.beginTransaction());
       transactionOpen = true;
+      if (connection.transport === 'hyperdrive') await assertMysqlHyperdriveSqlMode(client, connection);
+      const params = mysqlSafeParams(statement.params);
       const [result] = await mysqlTimed(
-        client,
-        connection,
-        client.execute(statement.sql, mysqlPreparedValues(statement.params))
+        client, connection,
+        connection.transport === 'hyperdrive' ? client.query(statement.sql, params) : client.execute(statement.sql, params)
       );
       const affectedRows = mysqlAffectedRows(result);
       if (affectedRows > connection.maxAffectedRows) {

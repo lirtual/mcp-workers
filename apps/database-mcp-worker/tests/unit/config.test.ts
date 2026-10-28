@@ -9,9 +9,9 @@ describe('database configuration limits and URLs', () => {
     expect(() => parseDirectDatabaseUrl('mysql://u:p@host/db?ssl=true', 'mysql')).toThrow();
   });
 
-  it('accepts between one and fifty flat entries only', () => {
-    expect(() => parseDatabaseConfig(JSON.stringify(Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`db${i}`, 'mysql://u:p@h/db']))))).not.toThrow();
-    expect(() => parseDatabaseConfig(JSON.stringify(Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`db${i}`, 'mysql://u:p@h/db']))))).toThrow();
+  it('accepts between one and ten flat entries only', () => {
+    expect(() => parseDatabaseConfig(JSON.stringify(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`db${i}`, 'mysql://u:p@h/db']))))).not.toThrow();
+    expect(() => parseDatabaseConfig(JSON.stringify(Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`db${i}`, 'mysql://u:p@h/db']))))).toThrow();
   });
 
   it('uses bounded safe runtime defaults', () => {

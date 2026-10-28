@@ -1,5 +1,6 @@
 import { getRuntimeLimits } from '../config.js';
 import { healthCheck } from '../db/index.js';
+import { resolveHyperdriveConnection } from '../db/hyperdrive.js';
 import { PublicError, toPublicError } from '../errors.js';
 import { openConnectionConfig, sealConnectionConfig } from '../registry/crypto.js';
 import { validatePublicEndpoint } from '../registry/endpoint.js';
@@ -112,21 +113,30 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
     if (action === 'add') {
       const dialect = required(form, 'dialect');
       if (dialect !== 'mysql' && dialect !== 'postgres') invalid();
+      const transport = required(form, 'transport');
+      if (transport === 'hyperdrive') {
+        // The binding and Cloudflare-managed credential/CA must already be configured
+        // through the separately authorized protected release before activation.
+        await createRegistryConnection(env.DB, {
+          id, dialect, transport, configId: required(form, 'config_id'), bindingName: required(form, 'binding_name')
+        });
+        return setupResult('Hyperdrive reference saved disabled. Publish and verify its dedicated binding and strict TLS before enabling.');
+      }
+      if (transport !== 'direct' || form.get('plaintext_ack') !== '1' || formCa(form)) invalid();
       const url = required(form, 'url');
       const parsed = await validatePublicEndpoint(url, id);
       if (parsed.dialect !== dialect) invalid();
-      const ca = formCa(form);
       let healthy = false;
-      try { await testCandidate(env, id, url, dialect, ca); healthy = true; }
+      try { await testCandidate(env, id, url, dialect); healthy = true; }
       catch (error) {
         const safe = toPublicError(error);
         if (form.get('allow_disabled') !== '1' ||
           !['CONNECTION_UNAVAILABLE', 'QUERY_TIMEOUT', 'DATABASE_ERROR'].includes(safe.code)) throw safe;
       }
-      const sealed = await sealConnectionConfig(env, id, dialect, { url, ...(ca ? { ca } : {}) });
-      await createRegistryConnection(env.DB, { id, dialect, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
+      const sealed = await sealConnectionConfig(env, id, dialect, { url });
+      await createRegistryConnection(env.DB, { id, dialect, transport, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
       if (healthy) await setRegistryConnectionStatus(env.DB, id, 1, 'active');
-      return setupResult(healthy ? 'Connection verified and enabled.' : 'Candidate stored disabled; verify before enabling.');
+      return setupResult(healthy ? 'Plaintext Direct connection verified and enabled.' : 'Direct candidate saved disabled; verify before enabling.');
     }
     const version = revision(form);
     const row = await requiredRow(env, id);
@@ -135,40 +145,50 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       return setupResult('Connection disabled for new operations.');
     }
     if (action === 'delete') {
+      if (row.transport === 'hyperdrive') {
+        // Current-version unbinding cannot prove older rollback versions have released
+        // this config or a shared CA. Fail closed until independent retire evidence.
+        invalid();
+      }
       await deleteRegistryConnection(env.DB, id, version, required(form, 'confirm_id'));
-      return setupResult('Disabled connection record deleted. No upstream database was altered.');
+      return setupResult('Disabled connection record retired. No upstream database was altered.');
     }
     if (action === 'enable') {
       if (row.status !== 'disabled') invalid();
-      const config = await openConnectionConfig(env, id, row.dialect,
-        { keyId: row.key_id, ciphertext: row.ciphertext });
-      await testCandidate(env, id, config.url, row.dialect, config.ca);
+      if (row.transport === 'direct' && form.get('plaintext_ack') !== '1') invalid();
+      if (row.transport === 'hyperdrive') {
+        const candidate = resolveHyperdriveConnection(env, row);
+        await healthCheck({ ...candidate, limits: { ...candidate.limits, queryTimeoutMs: 5000 } });
+      } else {
+        const config = await openConnectionConfig(env, id, row.dialect,
+          { keyId: row.key_id, ciphertext: row.ciphertext });
+        await testCandidate(env, id, config.url, row.dialect);
+      }
       await setRegistryConnectionStatus(env.DB, id, version, 'active');
-      return setupResult('Connection health verified and enabled.');
+      return setupResult('Connection checked and enabled.');
     }
     if (action === 'edit') {
+      if (row.transport !== 'direct') invalid(); // Cloudflare-managed Hyperdrive refs are immutable.
       const mode = required(form, 'credential_mode');
       if (mode !== 'keep' && mode !== 'replace') invalid();
+      // Any sensitive Direct update is a new explicit acceptance of plaintext risk.
+      if (mode === 'replace' && form.get('plaintext_ack') !== '1') invalid();
+      if (formCa(form)) invalid();
       const previous = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
       const url = mode === 'keep' ? previous.url : required(form, 'url');
-      const caMode = required(form, 'ca_mode');
-      if (!['keep', 'replace', 'clear'].includes(caMode)) invalid();
-      const ca = caMode === 'keep' ? previous.ca : caMode === 'replace' ? (formCa(form) ?? invalid()) : undefined;
-      // Active connection edits always require a verified healthy replacement.
-      // A disabled record may retain an unreachable, structurally valid candidate
-      // for subsequent repair, but the disabled state is never changed here.
+      // Active failed edits preserve the prior ciphertext, revision and status.
       await validatePublicEndpoint(url, id);
-      try { await testCandidate(env, id, url, row.dialect, ca); }
+      try { await testCandidate(env, id, url, row.dialect); }
       catch (error) {
         const safe = toPublicError(error);
         if (row.status !== 'disabled' || form.get('allow_disabled') !== '1' ||
           !['CONNECTION_UNAVAILABLE', 'QUERY_TIMEOUT', 'DATABASE_ERROR'].includes(safe.code)) throw safe;
       }
-      const sealed = await sealConnectionConfig(env, id, row.dialect, { url, ...(ca ? { ca } : {}) });
+      const sealed = await sealConnectionConfig(env, id, row.dialect, { url });
       await updateRegistryConnection(env.DB, id, version,
         { dialect: row.dialect, ciphertext: sealed.ciphertext, keyId: sealed.keyId });
-      return setupResult('Only the selected connection configuration was updated. Status is unchanged.');
+      return setupResult('Selected Direct configuration updated; status unchanged.');
     }
     return setupFailure('not_found', 404);
   } catch (error) {

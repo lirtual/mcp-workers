@@ -24,31 +24,36 @@ function ids(row: RegistryMetadata): string {
 }
 function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' | 'delete'): string {
   return `<form action="/setup/${verb}" method="post">${token(csrf)}${ids(row)}` +
-    (verb === 'delete' ? '<label>Type connection ID to confirm deletion<input name="confirm_id" required></label>' : '') +
+    (verb === 'delete' ? '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' : '') +
+    (verb === 'enable' && row.transport === 'direct' ? '<label><input type="checkbox" name="plaintext_ack" value="1" required>I accept that enabling Direct sends credentials and SQL over plaintext TCP.</label>' : '') +
     `<button type="submit">${verb}</button></form>`;
 }
+const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="1">I understand Direct sends database passwords and queries without TLS; traffic may be intercepted.</label>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
-  const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.status)} · revision ${row.revision}` +
+  const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
     (row.status === 'active' ? action(row, csrf, 'disable') : action(row, csrf, 'enable') + action(row, csrf, 'delete')) +
-    `<details><summary>Edit or replace credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
-    '<label>Credential mode<select name="credential_mode"><option value="keep">Keep previous URL</option><option value="replace">Replace URL</option></select></label>' +
-    '<label>New database URL (only for replace; never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
-    '<label>Certificate authority<select name="ca_mode"><option value="keep">Keep current CA</option><option value="replace">Replace CA</option><option value="clear">Remove CA</option></select></label>' +
-    '<label>New CA PEM (only for replace; never prefilled)<textarea name="ca" rows="5" maxlength="16384" autocomplete="off"></textarea></label>' +
-    (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if the candidate is unreachable</label>' : '') +
-    '<button type="submit">Test and save edit</button></form></details></li>').join('');
-  return htmlResponse('<h1>Database connections</h1><p>Access-authorized Owner only. Passwords, complete URLs and CA PEM contents are never displayed. Copy the Aiven service URI without URL query options: verified TLS is enforced by the Worker.</p>' +
-    '<p>URL and CA have separate input limits and a combined UTF-8 encrypted-storage limit. Shorten the URL or CA if the combined configuration is too large.</p>' +
+    (row.transport !== 'direct' ? '<p>Hyperdrive origin/CA/credentials are Cloudflare-managed. Disable before external updates; restart the pool, verify strict TLS and manually re-enable.</p>' :
+    `<details><summary>Edit or replace Direct credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
+    '<label>Credential mode<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
+    '<label>Replacement URL (never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
+    plaintextAck +
+    (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
+    '<button type="submit">Test and save edit</button></form></details>') + '</li>').join('');
+  return htmlResponse('<h1>Database connections</h1><p>Owner-only. Passwords and origin URLs are never displayed. At most 10 connections; removed IDs are never reused.</p>' +
+    '<p><strong>Direct:</strong> plaintext TCP (insecure, explicit consent required). <strong>Hyperdrive:</strong> strict upstream CA and hostname TLS managed externally, cached queries disabled, dedicated binding published via protected Actions. No fallback.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Immutable ID<input name="id" maxlength="64" required></label>' +
     '<label>Dialect<select name="dialect"><option value="postgres">PostgreSQL</option><option value="mysql">MySQL</option></select></label>' +
-    '<label>Database URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
-    '<label>Aiven CA certificate PEM (optional; encrypted in D1)<textarea name="ca" rows="5" maxlength="16384" autocomplete="off"></textarea></label>' +
-    '<label><input type="checkbox" name="allow_disabled" value="1">Save disabled if health check cannot reach server</label>' +
+    '<label>Transport<select name="transport"><option value="direct">Direct plaintext</option><option value="hyperdrive">Hyperdrive strict TLS</option></select></label>' +
+    '<label>Direct URL (password is not prefilled)<input type="password" name="url" maxlength="8192" autocomplete="off"></label>' +
+    plaintextAck +
+    '<label>Hyperdrive dedicated Cloudflare config ID<input name="config_id" maxlength="64" autocomplete="off"></label>' +
+    '<label>Release binding name (HYPERDRIVE_...)<input name="binding_name" maxlength="64" autocomplete="off"></label>' +
+    '<label><input type="checkbox" name="allow_disabled" value="1">Save Direct candidate disabled if unreachable</label>' +
     '<button type="submit">Validate and add</button></form></fieldset>' +
-    '<fieldset><legend>Configuration key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +
-    '<button type="submit">Rotate next batch</button></form></fieldset>', csrf);
+    '<fieldset><legend>Direct key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +
+    '<button type="submit">Rotate next bounded batch</button></form></fieldset>', csrf);
 }
 export function setupFailure(code: string, status: number): Response {
   return htmlResponse(`<h1>Request rejected</h1><p>${escape(code)}</p><a href="/setup">Back to connections</a>`, undefined, status);

@@ -85,7 +85,7 @@ enabled('real database Safe Admin/DDL integration', () => {
   });
 
   it('ADMIN identities cannot perform out-of-scope user/role administration', async () => {
-    const pgClient = new PgClient({ connectionString: pgAdminUrl, ssl: { rejectUnauthorized: true } });
+    const pgClient = new PgClient({ connectionString: pgAdminUrl, ssl: false });
     await pgClient.connect();
     try {
       await expect(pgClient.query('CREATE ROLE forbidden_admin_role')).rejects.toBeTruthy();
@@ -101,7 +101,6 @@ enabled('real database Safe Admin/DDL integration', () => {
       password: decodeURIComponent(url.password),
       database: decodeURIComponent(url.pathname.slice(1)),
       disableEval: true,
-      ssl: { rejectUnauthorized: true, verifyIdentity: true }
     });
     try {
       await expect(mysqlClient.query("CREATE USER 'forbidden_admin_user'@'%' IDENTIFIED BY 'x'")).rejects.toBeTruthy();

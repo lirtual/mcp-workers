@@ -12,7 +12,7 @@ import { getRegistryConnection } from './store.js';
 export async function prepareLegacyCatalog(
   keys: EncryptionKeys, rawCatalog: string, approvedIds: readonly string[]
 ): Promise<ReadonlyArray<{ id: string; dialect: Dialect; ciphertext: string; keyId: string }>> {
-  if (!Array.isArray(approvedIds) || approvedIds.length < 1 || approvedIds.length > 50 ||
+  if (!Array.isArray(approvedIds) || approvedIds.length < 1 || approvedIds.length > 10 ||
       approvedIds.some(id => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) ||
       new Set(approvedIds).size !== approvedIds.length) {
     throw new PublicError('INVALID_INPUT', 'The approved connection inventory is invalid.');
@@ -25,6 +25,7 @@ export async function prepareLegacyCatalog(
   }
   const encrypted = [];
   for (const config of configs) {
+    if (config.transport !== 'direct') throw new PublicError('INVALID_INPUT', 'Legacy imports require Direct transport.');
     const { dialect } = parseDirectDatabaseUrl(config.url, config.id);
     const sealed = await sealConnectionConfig(keys, config.id, dialect, { url: config.url });
     const recovered = await openConnectionConfig(keys, config.id, dialect,
@@ -54,13 +55,14 @@ export async function verifyLegacyCatalogReadback(
   if (!db) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Migration readback unavailable.');
   try {
     for (const original of originals) {
+      if (original.transport !== 'direct') throw Error('mismatch');
       const row = await getRegistryConnection(db, original.id);
       const expected = prepared.find(item => item.id === original.id);
-      if (!row || !expected || row.dialect !== expected.dialect ||
+      if (!row || row.transport !== 'direct' || !expected || row.dialect !== expected.dialect ||
           (row.status !== 'disabled' && row.status !== 'active') ||
           row.revision < 1) throw Error('mismatch');
       const opened = await openConnectionConfig(keys, row.id, row.dialect,
-        { keyId: row.key_id, ciphertext: row.ciphertext });
+        { keyId: row.key_id!, ciphertext: row.ciphertext! });
       if (opened.url !== original.url || opened.ca !== undefined) throw Error('mismatch');
     }
   } catch {
@@ -77,7 +79,7 @@ export async function verifyLegacyCatalogReadback(
 export async function insertLegacyCatalogAtomically(
   db: D1Database, rows: ReadonlyArray<{ id: string; dialect: Dialect; ciphertext: string; keyId: string }>
 ): Promise<{ inserted: number }> {
-  if (!db || !Array.isArray(rows) || rows.length < 1 || rows.length > 50 ||
+  if (!db || !Array.isArray(rows) || rows.length < 1 || rows.length > 10 ||
       new Set(rows.map(r => r.id)).size !== rows.length ||
       rows.some(r => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(r.id) ||
         !['mysql', 'postgres'].includes(r.dialect) ||
@@ -89,12 +91,13 @@ export async function insertLegacyCatalogAtomically(
   const tuples = rows.map(() => '(?,?,?,?,?,?)').join(',');
   const sql = 'WITH candidates(id,dialect,ciphertext,key_id,created_at,updated_at) AS ' +
     '(VALUES ' + tuples + ') ' +
-    'INSERT INTO database_connections(id,dialect,status,ciphertext,key_id,revision,created_at,updated_at) ' +
-    "SELECT id,dialect,'disabled',ciphertext,key_id,1,created_at,updated_at FROM candidates " +
-    'WHERE (SELECT COUNT(*) FROM database_connections) <= ?';
+    'INSERT INTO database_connections(id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at) ' +
+    "SELECT id,dialect,'direct','disabled',ciphertext,key_id,1,created_at,updated_at FROM candidates " +
+    'WHERE (SELECT COUNT(*) FROM database_connections) <= ? ' +
+    'AND NOT EXISTS(SELECT 1 FROM retired_connection_ids r JOIN candidates c ON r.id=c.id)';
   const args = rows.flatMap(r => [r.id, r.dialect, r.ciphertext, r.keyId, now, now]);
   try {
-    const result = await db.prepare(sql).bind(...args, 50 - rows.length).run();
+    const result = await db.prepare(sql).bind(...args, 10 - rows.length).run();
     if (result.meta.changes !== rows.length) {
       throw new PublicError('REVISION_CONFLICT', 'The cutover inventory or capacity changed.');
     }

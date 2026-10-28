@@ -1,5 +1,6 @@
 import type { Connection, FieldPacket } from 'mysql2/promise';
 import { createMysqlClient } from './clients.js';
+import { assertMysqlHyperdriveSqlMode, mysqlSafeParams } from './mysql-mode.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import { assertJsonWithinBytes, boundQueryResult, jsonSafe } from '../result.js';
 import { guardReadQuery, injectMySqlExecutionTimeout, toReadLimitedSql } from '../sql/guard.js';
@@ -19,6 +20,16 @@ async function withConnection<T>(
   let client: Connection | undefined;
   try {
     client = await createMysqlClient(connection, true);
+    if (connection.transport === 'hyperdrive') {
+      // Pin the backend session during SQL-mode check and client interpolation.
+      await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      try {
+        await assertMysqlHyperdriveSqlMode(client, connection);
+        return await operation(client);
+      } finally {
+        await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy()).catch(() => undefined);
+      }
+    }
     return await operation(client);
   } catch (error) {
     throw mapDatabaseError(error);
@@ -44,7 +55,7 @@ export async function mysqlQueryRead(
 
   return withConnection(connection, async client => {
     const [rows, fields] = await withTimeout(
-      client.query(timedSql, params),
+      client.query(timedSql, mysqlSafeParams(params)),
       connection.limits.queryTimeoutMs,
       () => client.destroy()
     );
@@ -67,7 +78,7 @@ export async function mysqlExplain(
   const timedSql = injectMySqlExecutionTimeout(guarded.sql, connection.limits.queryTimeoutMs);
   const explainSql = `EXPLAIN FORMAT=JSON ${timedSql}`;
   return withConnection(connection, async client => {
-    const [rows] = await withTimeout(client.query(explainSql, params), connection.limits.queryTimeoutMs, () => {
+    const [rows] = await withTimeout(client.query(explainSql, mysqlSafeParams(params)), connection.limits.queryTimeoutMs, () => {
       client.destroy();
     });
     const value = jsonSafe(rows);

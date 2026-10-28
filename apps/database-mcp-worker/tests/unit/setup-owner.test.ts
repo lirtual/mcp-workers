@@ -27,7 +27,7 @@ describe('Database Owner setup authorization', () => {
       headers: { origin: 'null', cookie: 'database_setup_csrf=' + token } }), base, token)).toThrow();
   });
   it('renders metadata only and escapes untrusted connection identifiers', () => {
-    const response = setupPage([{ id: 'test<svg onload=1>', dialect: 'mysql', status: 'disabled',
+    const response = setupPage([{ id: 'test<svg onload=1>', dialect: 'mysql', transport: 'direct', status: 'disabled',
       revision: 1, created_at: 1, updated_at: 2 }], 'a'.repeat(43));
     expect(response.headers.get('content-security-policy')).toContain("default-src 'none'");
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');

@@ -140,8 +140,8 @@ export function parseDatabaseConfig(raw: string): ConnectionConfig[] {
     throw new PublicError('INVALID_INPUT', 'DATABASE_CONFIG must be a JSON object keyed by connection id.');
   }
   const entries = Object.entries(parsed as Record<string, unknown>);
-  if (entries.length < 1 || entries.length > 50) {
-    throw new PublicError('INVALID_INPUT', 'DATABASE_CONFIG must contain 1 to 50 connections.');
+  if (entries.length < 1 || entries.length > 10) {
+    throw new PublicError('INVALID_INPUT', 'DATABASE_CONFIG must contain 1 to 10 connections.');
   }
   return entries.map(([id, value]) => {
     if (!ID_RE.test(id)) throw new PublicError('INVALID_INPUT', `Connection id '${id}' is invalid.`);
@@ -164,11 +164,13 @@ function selectConnection(catalog: ConnectionConfig[], id?: string): ConnectionC
 }
 
 export function resolveConnectionDialect(_env: Env, config: ConnectionConfig): Dialect {
+  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through D1 admission.');
   return parseDirectDatabaseUrl(config.url, config.id).dialect;
 }
 
 export function resolveConnection(env: Env, catalog: ConnectionConfig[], id?: string): EffectiveConnection {
   const config = selectConnection(catalog, id);
+  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through D1 admission.');
   return { config, transport: 'direct', ...parseDirectDatabaseUrl(config.url, config.id),
     limits: getRuntimeLimits(env) };
 }

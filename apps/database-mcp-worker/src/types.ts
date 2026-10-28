@@ -1,5 +1,14 @@
 export type Dialect = 'mysql' | 'postgres';
-export type DatabaseTransport = 'direct';
+export type DatabaseTransport = 'direct' | 'hyperdrive';
+export interface HyperdriveBinding {
+  // Cloudflare's documented per-Worker proxy connection fields.
+  connectionString: string;
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}
 
 export interface RateLimitBinding {
   limit(input: { key: string }): Promise<{ success: boolean }>;
@@ -33,7 +42,12 @@ export interface DirectConnectionConfig extends BaseConnectionConfig {
   url: string;
 }
 
-export type ConnectionConfig = DirectConnectionConfig;
+export interface HyperdriveConnectionConfig extends BaseConnectionConfig {
+  transport: 'hyperdrive';
+  configId: string;
+  bindingName: string;
+}
+export type ConnectionConfig = DirectConnectionConfig | HyperdriveConnectionConfig;
 
 export interface RuntimeLimits {
   maxRows: number;

@@ -1,49 +1,41 @@
-# Database MCP Spec 344 — production cutover and rollback checklist
+# Database MCP Spec #344 — production cutover / rollback
 
-**Status: BLOCKED. This document grants no deployment or migration approval.**
-Do not test the existing scrape_relay and b2b business connections. Use only
-owner-provisioned disposable Aiven MySQL/PostgreSQL for feature acceptance.
+**BLOCKED; this checklist is not production, D1 migration, credential, or Hyperdrive resource authorization.** The existing deployed Worker and its whole-catalog `DATABASE_CONFIG` Secret remain unchanged. Do not connect to or probe `scrape_relay` or `b2b` without separate express Owner approval.
 
-## Required independent evidence before production cutover
+## Preconditions (independent evidence)
 
-1. Real Cloudflare Workers Direct TLS verified for both MySQL and PostgreSQL:
-   hostname and certificate trust, read/write/health/DDL, and certificate,
-   hostname and plaintext negative tests. CI Node tests cannot substitute.
-2. Independent Owner self-hosted Cloudflare Access application on the exact
-   configured custom domain, one exact owner-email allow policy, OTP, short
-   session, and real browser JWT/Origin/CSRF negative tests.
-3. Dedicated approved D1, schema migration, AES-GCM keys and backup/key
-   compatibility. Preserve sufficient historical keys for D1 Time Travel
-   and any retained manually exported encrypted snapshots.
-4. Explicitly freeze the authoritative old catalog and independently compare
-   every old ID, dialect and confidential URL with the encrypted D1 record.
-   Never echo any credentials, ciphertext or CA material in logs or artifacts.
-   The offline-only source helper in src/registry/import.ts prepares and inserts
-   a single SQLite statement; it imports disabled and DOES NOT run in any
-   deployed route or CI migration workflow. Repeated imports/collisions fail.
-   The offline verifyLegacyCatalogReadback helper independently opens every
-   stored D1 ciphertext using authenticated AES-GCM and checks the original
-   ID, dialect, URL and absence of unapproved custom CA. A row count or status
-   is NOT equivalent to this cryptographic source-to-D1 verification.
-5. Existing migrated IDs cannot become active until individually verified with
-   real TLS and health evidence. The owner disallows testing the two current
-   business databases; their individual validation must stay BLOCKED and
-   consequently production cutover stays BLOCKED, regardless of Aiven tests.
-6. At a separately approved release: recheck the exact main SHA, source and
-   runtime D1 bindings, expected legacy IDs and ACTIVE status, Access policy,
-   immutable version, rollback candidate and successful real Portal + Owner
-   smoke. Do not delete or restage the old catalog secret automatically.
+1. **Release identity:** freeze the exact authorized `main` commit and the complete reviewed legacy ID→dialect→target inventory *offline*. Preserve a recoverable pre-cutover Worker, D1 snapshot, original Secret, encryption keys, and explicit rollback compatibility.
+2. **D1:** apply reviewed **additive** `0002_transport_and_retired_ids.sql` using separately authorized D1 migration steps, leaving deployed `0001` and ledger unmodified. Verify both migrations, 0–10 slots, encrypted Direct records, null Hyperdrive credentials, CAS and retired-ID invariants. Previously active Direct records become disabled with incremented revisions to prevent silent TLS-to-plaintext downgrade; each requires a new explicit plaintext risk acknowledgment before enabling. Old legacy records must be authenticated against the frozen inventory without upstream SQL calls.
+3. **Owner:** read back exact-domain Cloudflare Access OTP, JWT audience, Owner email, Origin/CSRF, session duration and negative tests. Verify no credentials or CA appear in source, Worker variables, logs or test artifacts.
+4. **Direct:** obtain separately authorized, isolated **plaintext** MySQL and PostgreSQL fixtures. Confirm explicit risk consent, public endpoint filtering, health, read/schema/explain, Safe Write/rollback, controlled DDL, timeouts and injection/Host negatives. A TLS-only Aiven instance is **not** a Direct fixture.
+5. **Hyperdrive:** prepare one dedicated Cloudflare configuration per connection, strictly verify real origin hostname and full CA chain (Postgres verify-full / MySQL VERIFY_IDENTITY), `caching.disabled=true`, quotas and credential ownership. Publish only the nonsecret config ID/Binding and approved origin/CA metadata through existing GitHub Actions, require Hyperdrive Read permission and verify pre/post-deploy Cloudflare API readback against the protected manifest and actual deployed bindings/config IDs, prove live read, Safe Write/rollback, controlled DDL and negative TLS/hostname/CA tests in **real Workers** for each dialect. MySQL `query(sql,params)` escaping and transaction/session SQL mode is P0; a Node mock or Aiven SELECT 1 alone cannot discharge it.
+6. **Sensitive Hyperdrive changes:** disable with D1 CAS; update Cloudflare only during an authorized maintenance window; restart/drain its native connection pool; verify new-session target/auth/strict TLS/CA/cache and binding; manually re-enable. An interrupted or failed change stays disabled. Worker code rollback does not restore Cloudflare origin, CA, password or pooled state.
+7. **Cutover:** obtain **fresh separate authorization** to touch the original two business DBs and perform migration. Every legacy identity must be accounted for and safely tested; no Aiven substitute, no silent transport change or ID reuse. Confirm successful /mcp and /setup against the actual production Worker, readback of version, D1 and Access, and rollback-safe keys before retiring the prior config path. Do not automatically delete the previous production Secret.
 
-## Failure and recovery
+## Recovery rules
 
-- Until activation and cutover, keep the existing Worker and original Secret.
-  Reject all release attempts if D1/Access/expected IDs are missing or disabled.
-- On a failed cutover, use ONLY a previously verified D1-compatible code
-  version; preserve D1 state and encryption keys. Do not silently deploy
-  old JSON-based Worker code over newly modified D1 data.
-- Any return to the old JSON source requires separate owner authorization,
-  freeze and backup of current D1, reconciliation of all post-cutover changes,
-  and proof that old/new encryption keys and catalog snapshots are recoverable.
-- D1 Time Travel restores a whole database, not one connection row.
-- No credential export, secret deletion, Aiven subscription changes or
-  Cloudflare production mutation is authorized by this checklist.
+- A missing D1 migration, mismatched immutable manifest, unknown Hyperdrive ID, disabled legacy ID, unverified CA/hostname, failed MySQL escaping, inadequate pool restart or unresolved rollback reference blocks publication/activation. Never downgrade to Direct.
+- Cloudflare config, Worker binding and D1 CAS writes are independent; no distributed transaction or automatic compensating saga. Failed partial sequences remain disabled with manual recovery.
+- An old whole-D1 Time Travel restore **can lose retired IDs**. Freeze add/enable, reconcile against independently retained approved identity/retirement evidence before restoring service, and fail closed if any IDs cannot be accounted for.
+- Retain previous encryption keys for all active and rollback-eligible Worker versions, D1 Time Travel and exported backups. A whole-D1 restore may also lose later connection changes: reconcile under Owner supervision.
+- Deleting Hyperdrive means: disable → unbind through authorized protected release → independent live Worker readback → check rollback-eligible versions and other consumers → retire D1 row → only then consider removing dedicated config and CA; never automatically reclaim another service's resource.
+- No new environment, Worker, monitor, proxy, credentials export, fork modification, secret deletion, or production write is authorized by this document.
+
+Track actual four-path acceptance and each blocked gate in [Issue #344](https://github.com/lirtual/mcp-workers/issues/344). Leave Issue open and PR #345 Draft until explicit deliverable approval.
+
+## Important cutover ordering guard
+
+Migration `0002` disables every historical Direct row (preserving ciphertext, increasing revision). The read-only publish D1 gate accepts disabled rows **only** when the reviewed IDs and schema/ledger match. This does not authorize production cutover, nor does it mean that any old connection is safe to enable. After a separately authorized release and readback, the Owner must reconfigure any old TLS/CA connection for Direct plaintext and explicitly acknowledge plaintext risk before enabling. Production cutover requires the original separate approvals and tests.
+
+## Local integration evidence (not Cloudflare)
+
+Disposable PostgreSQL 17 and MySQL 8.0 Docker fixtures exercised the existing SQL integration suite (Direct health/read, privilege/RLS, Safe Write rollback/limits, and structured DDL). A separate MySQL adapter test deliberately simulates the Hyperdrive *Worker→proxy* path by using a local plaintext MySQL server and validates transaction-pinned SQL mode, client-side SQL escaping and injection rejection. It does **not** validate the Hyperdrive→origin TLS chain, actual Worker binding, pool restart or real Cloudflare MySQL behavior; those remain pending.
+
+## 2026-10-28 isolated acceptance evidence (no production cutover)
+
+- Reused the existing protected GitHub Actions one-time smoke workflow, **run 40529759928**, successful rerun. A temporary bearer-gated Worker connected to the two dedicated Aiven test services through Cloudflare Hyperdrive with PostgreSQL `verify-full` and MySQL `VERIFY_IDENTITY`, explicit CA ID `c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a` and caching disabled. Both `SELECT 1` and database-side TLS session checks returned true. This is real Worker/Hyperdrive smoke proof, **not** full read/write/DDL proof for this PR.
+- Separately checked the Aiven dedicated test endpoints using the locally existing project CA and OpenSSL: correct chain and hostname were accepted for PostgreSQL and MySQL; wrong CA and wrong hostname were rejected for each. These are independent TLS client checks, **not** a claim that Hyperdrive itself rejected those negative cases.
+- The one-time workflow deleted both Hyperdrive configs. A separate read-only Cloudflare API query proved zero Hyperdrive configs, zero temporary `db344-` Workers and zero certificate associations. The test CA uploaded for this rerun was then deleted after reference checks; no additional persistent Cloudflare test resource remains.
+- Disposable local PostgreSQL 17/MySQL 8.0 database fixtures passed **22/22** integration cases, including Direct SQL tools and a clearly labeled simulated Worker→Hyperdrive MySQL adapter; neither is a deployed four-mode acceptance.
+- This local worktree passed **97/97** app unit tests, **46/46** release/readback tests, TypeScript, ESLint, Wrangler dry-run, and `git diff --check` after switching the Hyperdrive runtime adapter to Cloudflare's structured host/user/password/database/port binding fields.
+- **Remaining blocking evidence:** run the actual new Database MCP Worker in an isolated Cloudflare test with safe read/schema/explain, Safe Write, rollback and controlled DDL for both Hyperdrive dialects; independently test Hyperdrive wrong-CA/hostname, MySQL session mode, credential update+pool restart, rollback-compatible bindings and key/D1 restore. Do not treat passing smoke or isolated tests as authorization for PR merge, migrations, any original business database contact or a production Worker release.
