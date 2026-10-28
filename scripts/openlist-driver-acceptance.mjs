@@ -7,6 +7,7 @@ const ROOT = '/Koofr/Downloads';
 const MCP = 'https://openlist-mcp-worker.aiyaya.workers.dev/mcp';
 const UPSTREAM = 'https://openlist.lirtual.dpdns.org/api/fs/put';
 const UPSTREAM_LIST = 'https://openlist.lirtual.dpdns.org/api/fs/list';
+const UPSTREAM_GET = 'https://openlist.lirtual.dpdns.org/api/fs/get';
 
 function stop(code) { throw Error('openlist_driver_e2e_' + code); }
 function check(condition, code) { if (!condition) stop(code); }
@@ -118,9 +119,20 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // Classify an unexpected MCP tool error before the expected-success
     // isError check. The previous ordering hid native write failures as
     // a generic mcp_contract error. Never retry an unknown write.
-    if (!expectsError && rpc.result.isError === true) stopToolFailure(name, body);
-    check((rpc.result.isError === true) === expectsError, 'mcp_contract');
-    if (!expectsError) check(body.status === 'succeeded' && body.code === 'OK', 'mcp_tool_failed');
+    // Policy acceptance: the native signer can legitimately return a permanent
+    // signature. MCP must reject it instead of exposing a bearer URL.
+    if (expectsError === 'policy-denial') {
+      if (rpc.result.isError === true)
+        check(body.status === 'not_executed' && body.code === 'NOT_SUPPORTED',
+          'native_link_policy');
+      else
+        check(body.status === 'succeeded' && body.code === 'OK',
+          'native_link_policy');
+    } else {
+      if (!expectsError && rpc.result.isError === true) stopToolFailure(name, body);
+      check((rpc.result.isError === true) === expectsError, 'mcp_contract');
+      if (!expectsError) check(body.status === 'succeeded' && body.code === 'OK', 'mcp_tool_failed');
+    }
     return body;
   }
   const initial = (await mcp('openlist_list_files', {path:ROOT,page:1,per_page:100})).observed_state;
@@ -249,54 +261,84 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       check(contentResult?.path === target && contentResult.text === nativeContent,
         'native_file_mismatch');
     }
-    const signed = (await mcp('openlist_download_link',{path:moved})).observed_state;
-    // The signed URL is bearer-sensitive; never write it to logs, artifacts
-    // or the returned summary. Existing link_expiration=0 is not short-lived.
-    let parsed;
-    try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
-    check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
-      parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
-      typeof parsed.searchParams.get('sign') === 'string' &&
-      parsed.searchParams.get('sign').length > 0 &&
-      typeof signed.permanent === 'boolean' &&
-      (signed.permanent ? signed.expires_at === null :
-        typeof signed.expires_at === 'string'), 'native_link_invalid');
-    // Verify the actual signed public route with a tiny exact synthetic file,
-    // not just the URL's appearance. No credential is forwarded or logged.
-    let publicResponse;
-    try {
-      publicResponse = await transport(new Request(signed.url,{
-        method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
-        headers:{ accept:'text/plain' },
-      }));
-    } catch { stop('native_link_transport'); }
-    check(publicResponse.status === 200 && !publicResponse.redirected &&
-      !publicResponse.headers.has('location'), 'native_link_status');
-    let publicBytes;
-    try {
-      const reader=publicResponse.body?.getReader();
-      check(reader,'native_link_body');
-      const chunks=[];let total=0;
-      for (;;) {
-        const {done,value}=await reader.read();
-        if (done) break;
-        total+=value.byteLength;
-        check(total<=4096,'native_link_oversize');
-        chunks.push(value);
-      }
-      publicBytes=new Uint8Array(total);let offset=0;
-      for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
-    } catch {stop('native_link_body');}
-    let publicText;
-    try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
-    catch { stop('native_link_invalid_utf8'); }
-    check(publicText===nativeContent,'native_link_content');
+    const linkReply = await mcp('openlist_download_link',{path:moved},'policy-denial');
+    let linkCheck;
+    if (linkReply.status === 'not_executed' && linkReply.code === 'NOT_SUPPORTED') {
+      // Verify the actual native signer is permanent; otherwise an unrelated
+      // NOT_SUPPORTED error must not silently count as a policy acceptance.
+      let upstream;
+      try {
+        upstream = await transport(new Request(UPSTREAM_GET,{
+          method:'POST',redirect:'manual',signal:AbortSignal.timeout(12000),
+          headers:{authorization:env.OPENLIST_API_TOKEN,
+            'content-type':'application/json'},
+          body:JSON.stringify({path:moved}),
+        }));
+      } catch { stop('native_link_signer_unavailable'); }
+      check(upstream.status === 200 && !upstream.redirected &&
+        !upstream.headers.has('location'), 'native_link_signer_unavailable');
+      const native = await boundedJson(upstream, 8192)
+        .catch(() => stop('native_link_signer_unavailable'));
+      check(native?.code === 200 && native.data?.name === moved.split('/').at(-1) &&
+        (native.data?.path === undefined || native.data.path === moved) &&
+        native.data?.is_dir === false &&
+        /^0\.[a-f0-9]{64}$/.test(native.data?.sign),
+        'native_link_policy_unverified');
+      linkCheck = 'permanent_signed_link_refused';
+    } else {
+      check(linkReply.status === 'succeeded' && linkReply.code === 'OK',
+        'native_link_policy');
+      const signed = linkReply.observed_state;
+
+      // The signed URL is bearer-sensitive; never print it to logs or artifacts.
+      let parsed;
+      try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
+      check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
+        parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
+        typeof parsed.searchParams.get('sign') === 'string' &&
+        parsed.searchParams.get('sign').length > 0 &&
+        signed.permanent === false &&
+        typeof signed.expires_at === 'string' &&
+        Number.isFinite(Date.parse(signed.expires_at)) &&
+        Date.parse(signed.expires_at) > Date.now(), 'native_link_invalid');
+      // Verify the actual signed public route with a tiny exact synthetic file,
+      // not just the URL's appearance. No credential is forwarded or logged.
+      let publicResponse;
+      try {
+        publicResponse = await transport(new Request(signed.url,{
+          method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
+          headers:{ accept:'text/plain' },
+        }));
+      } catch { stop('native_link_transport'); }
+      check(publicResponse.status === 200 && !publicResponse.redirected &&
+        !publicResponse.headers.has('location'), 'native_link_status');
+      let publicBytes;
+      try {
+        const reader=publicResponse.body?.getReader();
+        check(reader,'native_link_body');
+        const chunks=[];let total=0;
+        for (;;) {
+          const {done,value}=await reader.read();
+          if (done) break;
+          total+=value.byteLength;
+          check(total<=4096,'native_link_oversize');
+          chunks.push(value);
+        }
+        publicBytes=new Uint8Array(total);let offset=0;
+        for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
+      } catch {stop('native_link_body');}
+      let publicText;
+      try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
+      catch { stop('native_link_invalid_utf8'); }
+      check(publicText===nativeContent,'native_link_content');
+      linkCheck = 'finite_signed_download_link';
+    }
     const forbiddenNative = await mcp('openlist_move',{
       path:'/__openlist_e2e_prohibited/file.txt',destination_dir:destinationDir},true);
     check(forbiddenNative.status === 'not_executed' &&
       forbiddenNative.code === 'OUT_OF_SCOPE','native_scope_denial');
     tested.push('upload_small','copy','rename','move','read_native_text',
-      'signed_download_link','native_scope_denial');
+      linkCheck,'native_scope_denial');
   }
   return {folder:dirname, tested};
 
