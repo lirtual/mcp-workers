@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { runOpenListProductionReadSmoke, runOpenListHistoricalShareRead, runOpenListHistoricalShareDisable, OPENLIST_MCP_URL } from './openlist-production-read-smoke.mjs';
+import { runOpenListProductionReadSmoke, runOpenListHistoricalShareRead, OPENLIST_MCP_URL } from './openlist-production-read-smoke.mjs';
 
 const roots=['/Koofr/mcp-test','/OneDrive/safe'];
 const validEnv = {
@@ -236,106 +236,4 @@ test('share-read workflow is mutually exclusive with write and Portal modes',asy
   assert.match(workflow,/OPENLIST_HISTORICAL_SHARE_READ: "true"/);
   assert.match(workflow,/name: Read only exact historical synthetic share/);
   assert.match(workflow,/inputs.confirm_historical_share_read == true/);
-});
-
-const disableEnv = {
-  ...shareEnv,OPENLIST_HISTORICAL_SHARE_READ:'false',
-  OPENLIST_HISTORICAL_SHARE_DISABLE:'true',
-};
-const exactExpiry='2026-10-27T13:55:53.913Z';
-const mockDisableTransport=({
-  initialDisabled=false,afterDisabled=true,
-  badFiles=false,unknownOutcome=false,throwOnWrite=false,
-}={}) => {
-  let reads=0,writes=0;
-  return {
-    counts:()=>({reads,writes}),
-    transport:async req=>{
-      assert.equal(req.method,'POST');
-      assert.equal(req.url,OPENLIST_MCP_URL);
-      assert.equal(req.headers.get('authorization'),
-        'Bearer synthetic-release-ingress-token');
-      const data=await req.json();
-      assert.equal(data.method,'tools/call');
-      assert.equal(data.params.arguments.id,knownShare);
-      if(data.params.name==='openlist_share_get') {
-        reads++;
-        const disabled = reads===1 ? initialDisabled : afterDisabled;
-        return shareResult({status:'succeeded',code:'OK',
-          observed_state:{id:knownShare,files:badFiles?['/Koofr/Downloads/other.txt']:[knownFile],
-            disabled,expires:exactExpiry,max_accessed:1}});
-      }
-      assert.equal(data.params.name,'openlist_share_disable');
-      writes++;
-      assert.equal(writes,1,'never replay an effectful mutation');
-      if(throwOnWrite) throw Error('write transport lost');
-      if(unknownOutcome) return response({jsonrpc:'2.0',id:1,result:{
-        isError:true,content:[{type:'text',text:JSON.stringify({
-          operation:'openlist_share_disable',target:knownShare,
-          status:'unknown',code:'UPSTREAM_UNCERTAIN'})}]}});
-      return response({jsonrpc:'2.0',id:1,result:{
-        content:[{type:'text',text:JSON.stringify({
-          operation:'openlist_share_disable',target:knownShare,
-          status:'succeeded',code:'OK',observed_state:{disabled:true}})}]}});
-    },
-  };
-};
-
-test('approved historical share is disabled once, after exact preflight and independent readback',async()=>{
-  const mock=mockDisableTransport();
-  const result=await runOpenListHistoricalShareDisable(disableEnv,mock.transport);
-  assert.deepEqual(result,{id:knownShare,before_disabled:false,
-    after_disabled:true,expired:true,write_calls:1});
-  assert.deepEqual(mock.counts(),{reads:2,writes:1});
-});
-
-test('an already-disabled or unexpected shared file blocks before any mutation',async()=>{
-  for(const options of [{initialDisabled:true},{badFiles:true}]){
-    const mock=mockDisableTransport(options);
-    await assert.rejects(runOpenListHistoricalShareDisable(disableEnv,mock.transport),
-      /^Error: openlist_smoke_/);
-    assert.deepEqual(mock.counts(),{reads:1,writes:0});
-  }
-});
-
-test('unknown dispatched mutation and lost response never trigger a replay',async()=>{
-  for(const options of [{unknownOutcome:true},{throwOnWrite:true}]){
-    const mock=mockDisableTransport(options);
-    await assert.rejects(runOpenListHistoricalShareDisable(disableEnv,mock.transport),
-      /openlist_smoke_share_disable_unknown/);
-    assert.deepEqual(mock.counts(),{reads:1,writes:1});
-  }
-});
-
-test('postwrite independent readback mismatch is unknown but no duplicate write',async()=>{
-  const mock=mockDisableTransport({afterDisabled:false});
-  await assert.rejects(runOpenListHistoricalShareDisable(disableEnv,mock.transport),
-    /openlist_smoke_share_disable_readback_unknown/);
-  assert.deepEqual(mock.counts(),{reads:2,writes:1});
-});
-
-test('mutation mode and root authorization are required before any network',async()=>{
-  for(const override of [
-    {OPENLIST_HISTORICAL_SHARE_DISABLE:'false'},
-    {OPENLIST_HISTORICAL_SHARE_READ:'true'},
-    {OPENLIST_ALLOWED_ROOTS:'["/Koofr/other"]'},
-    {MCP_ACCESS_TOKEN:''},
-  ]){
-    const mock=mockDisableTransport();
-    await assert.rejects(runOpenListHistoricalShareDisable(
-      {...disableEnv,...override},mock.transport),/^Error: openlist_smoke_/);
-    assert.deepEqual(mock.counts(),{reads:0,writes:0});
-  }
-});
-
-test('one-time historical share disable is manual, exclusive and not a deployment',async()=>{
-  const wf=await readFile(new URL('../.github/workflows/openlist-acceptance.yml',import.meta.url),'utf8');
-  assert.match(wf,/confirm_historical_share_disable:/);
-  assert.match(wf,/APPROVE_SHARE_DISABLE: \${{ inputs.confirm_historical_share_disable }}/);
-  assert.match(wf,/\$APPROVE_SHARE_DISABLE" == "true"/);
-  assert.match(wf,/inputs.confirm_historical_share_disable == true/);
-  assert.match(wf,/OPENLIST_HISTORICAL_SHARE_DISABLE: "true"/);
-  assert.match(wf,/name: One-time owner-approved historical synthetic share disable \(no deploy\)/);
-  assert.match(wf,/Independent new-process readback of historical share \(no writes\)/);
-  assert.match(wf,/cancel-in-progress: false/);
 });
