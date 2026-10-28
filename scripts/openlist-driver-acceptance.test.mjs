@@ -20,13 +20,14 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   postRefreshStaleListingReads = 0,
   permanentLink = true, rejectFinite = false, failPublic = false,
   staleRevokedReads = 0, malformedPassword = false,
-  failAfterReenable = false, staleCreatedReads = 0} = {}) {
+  failAfterReenable = false, staleCreatedReads = 0,
+  unknownFinalDisable = false} = {}) {
   const requests = [];
   let made = false, uploaded = false, deleted = false;
   let highShare = null, justRevoked = null;
   const highId='1234567890abcdef';
   const highPwd='b'.repeat(48);
-  let publicReads=0;
+  let publicReads=0, disableCalls=0;
   let staleReads = staleUploadedListingReads;
   const nativeSource = `${folder}/native-${env.GITHUB_RUN_ID}-1.txt`;
   const nativeDir = `${folder}/native-copies`;
@@ -247,6 +248,15 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
     if(name==='openlist_share_disable') {
       assert.equal(args.id,highId);
       assert.equal(highShare.disabled,false);
+      disableCalls++;
+      // Simulate a dispatched write whose result is unknown and whose
+      // persisted effect is still not visible. It must not be replayed.
+      if(unknownFinalDisable && disableCalls===2) {
+        return Response.json({jsonrpc:'2.0',id:1,result:{isError:true,
+          content:[{type:'text',text:JSON.stringify({
+            operation:name,status:'unknown',code:'UPSTREAM_UNCERTAIN',target:highId,
+          })}]}});
+      }
       highShare={...highShare,disabled:true};
       return response(name,highId,{disabled:true});
     }
@@ -462,6 +472,20 @@ test('post-reenable public failure triggers one new safe disable and revoke, not
   assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
   assert.equal(requests.filter(x=>x==='openlist_delete').length,1,
     'do not delete source file when lifecycle fails');
+});
+
+test('unknown final disable after re-enable never replays the write or blindly revokes',async()=>{
+  const {transport,requests}=fakeTransport({unknownFinalDisable:true});
+  await assert.rejects(runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport),
+    /openlist_driver_e2e_openlist_share_disable_unknown_upstream_uncertain/);
+  assert.equal(requests.filter(x=>x==='openlist_share_enable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,2,
+    'one disable per exposure period, with no replay of uncertain final disable');
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,0,
+    'cannot revoke a share without independently confirmed disabled state');
+  assert.equal(requests.filter(x=>x==='openlist_delete').length,1,
+    'negative scope check only; preserve the failed fixture for diagnosis');
 });
 
 test('high-risk E2E failure after creating one synthetic share performs a single fail-safe disable and revoke',async()=>{
