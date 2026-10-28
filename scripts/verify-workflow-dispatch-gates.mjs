@@ -22,12 +22,37 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
   const allowed = [...list.matchAll(/inputs\.worker == '([^']+)'/g)].map(match => match[1]);
   sameMembers(allowed, expectedWorkers, 'release allowlist');
+}
+
+/** Owner-only Hyperdrive activation must never be a second publish path. */
+export function verifyDatabaseActivationGate(source) {
+  const activation = job(source, 'database-activate');
+  const gate = activation.gate.replace(/\s+/g, ' ').trim();
+  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_activation_approved == true && inputs.database_activation_id != '' && inputs.database_activation_revision != '' }}";
+  assert.equal(gate, expected, 'Unsafe Database activation gate');
+  const checks = job(source, 'checks').content;
+  assert.ok(checks.includes("inputs.database_activation_id == ''"), 'Activation must never initiate release checks');
+  const deploy = job(source, 'deploy').content;
+  assert.ok(deploy.includes("inputs.database_activation_id == ''"), 'Activation must never initiate deployment');
+  for (const item of [
+    'name: database-mcp-worker',
+    'group: worker-release-database-mcp-worker',
+    'node scripts/activate-database-hyperdrive.mjs',
+    "github.ref == 'refs/heads/main'",
+    'git ls-remote origin refs/heads/main',
+    'DATABASE_ACTIVATION_ID: ' + dollar + '{{ inputs.database_activation_id }}',
+    'DATABASE_ACTIVATION_REVISION: ' + dollar + '{{ inputs.database_activation_revision }}',
+    'CLOUDFLARE_API_TOKEN: ' + dollar + '{{ secrets.CLOUDFLARE_API_TOKEN }}',
+    'MCP_ACCESS_TOKEN: ' + dollar + '{{ secrets.MCP_ACCESS_TOKEN }}'
+  ]) assert.ok(activation.content.includes(item), 'Database activation safeguard missing: ' + item);
+  assert.doesNotMatch(activation.content, /wrangler deploy|Publish exactly selected Worker|manual-worker-release\.mjs readback/,
+    'Activation must not deploy a Worker');
 }
 
 // This is deliberately not a YAML or shell interpreter. It recognizes only
@@ -102,6 +127,7 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 verifyReleaseWorkers(release, RELEASE_WORKERS);
+verifyDatabaseActivationGate(release);
 assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');
 for (const marker of [

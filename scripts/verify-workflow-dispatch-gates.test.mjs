@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { RELEASE_WORKERS } from './select-affected-apps.mjs';
-import { verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
+import { verifyDatabaseActivationGate, verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
 
 const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 
@@ -19,6 +19,17 @@ test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'openlist-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+});
+
+test('database activation is Owner-gated, non-deploying and serialized with Worker release', () => {
+  assert.doesNotThrow(() => verifyDatabaseActivationGate(release));
+  for (const degraded of [
+    release.replace("github.actor == 'lirtual' &&", 'true &&'),
+    release.replace("inputs.database_activation_approved == true &&", 'true &&'),
+    release.replace("inputs.deploy_to_production == false &&", 'true &&'),
+    release.replace("inputs.database_activation_id == '' &&", 'true &&'),
+    release.replace('group: worker-release-database-mcp-worker', 'group: insecure-activation')
+  ]) assert.throws(() => verifyDatabaseActivationGate(degraded), /Unsafe|must never|missing/);
 });
 
 test('existing static reusable workflows and local scripts pass', () => {
