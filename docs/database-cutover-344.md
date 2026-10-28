@@ -2,6 +2,18 @@
 
 **BLOCKED; this checklist is not production, D1 migration, credential, or Hyperdrive resource authorization.** The existing deployed Worker and its whole-catalog `DATABASE_CONFIG` Secret remain unchanged. Do not connect to or probe `scrape_relay` or `b2b` without separate express Owner approval.
 
+## One-time protected D1 preparation (not a production cutover)
+
+The reviewed `Release Worker` workflow on `main` now has a separate **database_prepare_approved** manual path for `database-mcp-worker` with **deploy_to_production=false**. It is deliberately mutually exclusive with Worker publishing and Hyperdrive activation. The path uses the existing protected `database-mcp-worker` GitHub Environment, serializes against Worker releases, checks the exact main SHA and Owner actor, and starts with a read-only preflight.
+
+The operator must put `DATABASE_LEGACY_IMPORT_CONFIG` in that **Environment's Secret store**, with the exact current legacy `DATABASE_CONFIG` JSON map for **only** `scrape_relay` and `b2b`, copied out-of-band from the authorized original source. Do **not** send or paste it into ChatGPT, git, workflow inputs, logs, issues, or artifacts. Cloudflare cannot read back an existing Worker Secret, so the importer cannot independently prove that the supplied map equals today's deployed Secret; Owner identity/target attestation is required before dispatch. If the original values cannot be obtained safely, stop.
+
+Other prerequisites: Environment Secrets `DATABASE_ENCRYPTION_KEY` (canonical Base64 32 bytes), `DATABASE_KEY_ID` (approved stable key ID), existing `CLOUDFLARE_API_TOKEN`; variables `CLOUDFLARE_ACCOUNT_ID` and `DATABASE_CUTOVER_EXPECTED_IDS` (exactly the two reviewed IDs). Back up the key with an approved recovery method. No secret values should enter the source tree. The current deployed Worker continues to use `DATABASE_CONFIG` throughout preparation.
+
+The protected flow first validates source/input/key, and confirms D1 `0001` present, `0002` absent and registry empty. It then uses **Wrangler's normal D1 migration ledger** to apply only reviewed additive migrations; the existing script encrypts the two URLs with AES-256-GCM and AAD bound to ID/dialect, inserts both disabled records in one SQLite INSERT, and reads back their nonsecret identities, modes, revisions, and ciphertext lengths. Every failure stops without publishing the Worker or enabling the connections. If the migration succeeds and the import fails, **leave the old production Worker unchanged** and recover/reconcile manually; never retry blindly or forge migration records.
+
+**Important:** This preparatory step does not prove either re-enabled Direct connection, nor authorize a legacy TLS-to-plaintext change. The two D1 records are initially `disabled`; even after successful preparation, a release would intentionally break old consumers unless a separately approved and verified enablement/cutover sequence proves both identities, keys, routes, and rollback. Keep PR #345 Draft and do not dispatch this production preparation until the required Environment Secrets and explicit production migration authorization have been independently verified.
+
 ## Preconditions (independent evidence)
 
 1. **Release identity:** freeze the exact authorized `main` commit and the complete reviewed legacy ID→dialect→target inventory *offline*. Preserve a recoverable pre-cutover Worker, D1 snapshot, original Secret, encryption keys, and explicit rollback compatibility.
