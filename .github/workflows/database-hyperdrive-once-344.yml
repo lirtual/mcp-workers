@@ -227,8 +227,15 @@ jobs:
                 first && typeof first === 'object' ? (first as Record<string,unknown>).mode : undefined;
               await c.rollback();
               return {
+                rowsArray: Array.isArray(rows),
+                rowsHaveOne: Array.isArray(rows) && rows.length === 1,
                 arrayShape: Array.isArray(first),
+                firstObject: !!first && typeof first === 'object',
+                firstKeys: first && typeof first === 'object'
+                  ? Object.keys(first).slice(0,5).map(k=>k.slice(0,35)) : [],
+                modeIsNull: mode === null,
                 modeIsString: typeof mode === 'string',
+                modeIsObject: !!mode && typeof mode === 'object',
                 forbiddenBackslashMode: typeof mode === 'string' &&
                   mode.toUpperCase().split(',').some(x=>x.trim()==='NO_BACKSLASH_ESCAPES')
               };
