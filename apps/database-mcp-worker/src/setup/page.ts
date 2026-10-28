@@ -55,8 +55,11 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<fieldset><legend>Direct key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +
     '<button type="submit">Rotate next bounded batch</button></form></fieldset>', csrf);
 }
-export function setupFailure(code: string, status: number): Response {
-  return htmlResponse(`<h1>Request rejected</h1><p>${escape(code)}</p><a href="/setup">Back to connections</a>`, undefined, status);
+export function setupFailure(code: string, status: number, reference?: string): Response {
+  // References are fixed internal codes supplied by the handler, never raw exceptions.
+  const detail = reference && /^[a-z_]{1,40}$/.test(reference)
+    ? `<p>Diagnostic: ${escape(reference)}</p>` : '';
+  return htmlResponse(`<h1>Request rejected</h1><p>${escape(code)}</p>${detail}<a href="/setup">Back to connections</a>`, undefined, status);
 }
 export function setupResult(message: string): Response {
   return htmlResponse(`<h1>Connection management</h1><p>${escape(message)}</p><a href="/setup">Back to connections</a>`);
