@@ -62,6 +62,18 @@ describe('transport security semantics', () => {
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
     expect(calls).toEqual(['begin','rollback']);
   });
+  it('fails closed when Hyperdrive returns an empty SQL-mode result set', async () => {
+    const calls: string[] = [];
+    mysqlConnect.mockResolvedValueOnce({
+      beginTransaction: async () => { calls.push('begin'); },
+      query: async () => [[], []],
+      rollback: async () => { calls.push('rollback'); },
+      end: async () => { calls.push('end'); }
+    });
+    await expect(mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' }))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    expect(calls).toEqual(['begin','rollback','end']);
+  });
   it('rejects objects and custom SQL interpolation hooks', () => {
     expect(mysqlSafeParams(['ok', 1.5, null, false])).toEqual(['ok',1.5,null,false]);
     expect(() => mysqlSafeParams([{ toSqlString: () => '1 OR 1=1' }]))
