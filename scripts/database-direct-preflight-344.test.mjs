@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encryptDirect } from './database-prep-344.mjs';
-import { verifyDirectCutoverPreflight } from './database-direct-preflight-344.mjs';
+import { checkReadOnlyD1, verifyDirectCutoverPreflight } from './database-direct-preflight-344.mjs';
 
 const config = Object.freeze({
   b2b: 'mysql://test:example@db-b.example.net:3306/example',
@@ -78,4 +78,68 @@ test('fail closed if approved original URL changes, including implicit TLS chang
     ...config, b2b: config.b2b + '?ssl=true'
   });
   await assert.rejects(verifyDirectCutoverPreflight(tls));
+});
+
+test('production preflight is strictly read-only, guarded and redacts credentials', async () => {
+  const base = await fixture();
+  const env = {
+    GITHUB_ACTOR: 'lirtual', GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: 'a'.repeat(40), CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+    CLOUDFLARE_API_TOKEN: 'synthetic-test-token',
+    DATABASE_CONFIG: base.originalConfig, DATABASE_ENCRYPTION_KEY: encryptionKey,
+    DATABASE_KEY_ID: keyId
+  };
+  const previous = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    assert.match(url, /^https:\/\/api\.cloudflare\.com\/client\/v4\/accounts\/a{32}\//);
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-test-token');
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ method: options.method, path: new URL(url).pathname, sql: body?.sql });
+    if (url.endsWith('/settings')) {
+      assert.equal(options.method, 'GET');
+      return { ok: true, json: async () => ({
+        success: true, result: { bindings: [{ name: 'DATABASE_CONFIG', type: 'secret_text' }] }
+      }) };
+    }
+    assert.equal(options.method, 'POST'); // Cloudflare D1 SELECT transport
+    assert.match(body.sql, /^SELECT /);
+    assert.doesNotMatch(body.sql, /\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b/);
+    const rows = body.sql.includes('AS migrations')
+      ? [{ migrations: 2, retired: 0, total: 2 }] : base.rows;
+    return { ok: true, json: async () => ({ success: true, result: [{ success: true, results: rows }] }) };
+  };
+  try {
+    assert.deepEqual(await checkReadOnlyD1(env), {
+      valid: true, records: 2, status: 'disabled', workerChanged: false
+    });
+    assert.deepEqual(calls.map(x => x.method), ['GET', 'POST', 'POST']);
+    await assert.rejects(checkReadOnlyD1({ ...env, GITHUB_ACTOR: 'other' }), /preflight failed/);
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test('a deployed new D1 binding prevents Direct preflight', async () => {
+  const base = await fixture();
+  const env = {
+    GITHUB_ACTOR: 'lirtual', GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: 'a'.repeat(40), CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+    CLOUDFLARE_API_TOKEN: 'synthetic-test-token',
+    DATABASE_CONFIG: base.originalConfig, DATABASE_ENCRYPTION_KEY: encryptionKey,
+    DATABASE_KEY_ID: keyId
+  };
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true, json: async () => ({
+      success: true, result: {
+        bindings: [
+          { name: 'DATABASE_CONFIG', type: 'secret_text' },
+          { name: 'DB', type: 'd1' }
+        ]
+      }
+    })
+  });
+  try { await assert.rejects(checkReadOnlyD1(env), /preflight failed/); }
+  finally { globalThis.fetch = previous; }
 });
