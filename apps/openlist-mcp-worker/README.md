@@ -122,10 +122,10 @@ readback; out-of-scope/invalid/no-op negatives; one-call/no-retry on unknown;
 external share access effects; file-delete verified only against new disposable
 test content. No existing user file/share or retained fixture is a permitted
 test target without its own precise authorization. Use existing manual GitHub
-Actions, no scheduled deployment. The separate [Draft PR #386](https://github.com/lirtual/mcp-workers/pull/386)
-proposes rejecting permanent MCP download links and must be reconciled before
-a release; do not accidentally re-enable permanent URL exposure by merging
-outdated tool descriptions.
+Actions, no scheduled deployment. The permanent signed URL refusal from original [PR #386](https://github.com/lirtual/mcp-workers/pull/386)
+has already been **integrated into this #387 candidate** (the duplicate #386
+was closed unmerged). This combined proposal must still pass independent
+production release and read-only link-policy verification.
 
 ## Share-disable consistency: evidence and safe interpretation
 
@@ -276,7 +276,7 @@ short-lived credential is claimed. The synthetic signed-link fetch passed in rea
 
 ### Candidate MCP-only safeguard — not yet deployed
 
-A proposed fail-closed change to `openlist_download_link` rejects an upstream
+This combined #387 candidate's fail-closed change to `openlist_download_link` rejects an upstream
 `0.<signature>` (non-expiring) token with `NOT_SUPPORTED` **before** a public
 bearer URL is constructed or returned. Finite, unexpired native signatures
 continue to work with their **actual upstream expiry**, without claiming a
