@@ -71,19 +71,19 @@ export async function runActiveShareAcceptance(env, transport=fetch,
   let createDispatched=false, createConfirmed=false, disableDispatched=false;
   let beforePublic=false, publicAfterDisabled=false, beforeState=false, afterState=false;
   let disableMcpStatus='not_dispatched', publicRejection='not_tested', observedDelayMs=null;
-  const limits={max_accessed:1,expires};
   const summary=()=>({id,createDispatched,createConfirmed,disableDispatched,
     disableMcpStatus,beforePublic,afterState,publicAfterDisabled,publicRejection,observedDelayMs});
 
-  async function jsonPost(url, headers, payload, code) {
+  async function jsonPost(url, headers, payload, code, allowPublicDenial=false) {
     let response;
     try {response=await transport(new Request(url,{
       method:'POST',redirect:'manual',signal:AbortSignal.timeout(18000),
       headers:{'content-type':'application/json',...headers},
       body:JSON.stringify(payload),
     }))} catch{fail(code)}
-    check(response.status===200 && !response.redirected &&
-      !response.headers.has('location'),code);
+    check((response.status===200 ||
+      (allowPublicDenial && (response.status===400 || response.status===403))) &&
+      !response.redirected && !response.headers.has('location'),code);
     try{return await readJson(response)}
     catch{fail(code)}
   }
@@ -155,8 +155,8 @@ export async function runActiveShareAcceptance(env, transport=fetch,
     if(!probeError) {
       // Incorrect password must be refused without spending the single access.
       const wrong=await jsonPost(PUBLIC,{},
-        {path:'/@s/'+id,password:'incorrect-test-password'},'public_probe_unknown');
-      check(wrong?.code===400 && /password/i.test(String(wrong.message)),
+        {path:'/@s/'+id,password:'incorrect-test-password'},'public_probe_unknown',true);
+      check(wrong?.code===403 && /password/i.test(String(wrong.message)),
         'public_wrong_password_not_denied');
       const granted=await jsonPost(PUBLIC,{},{path:'/@s/'+id,password:pwd},
         'public_probe_unknown');
@@ -198,7 +198,7 @@ export async function runActiveShareAcceptance(env, transport=fetch,
     for(let attempt=0;attempt<4;attempt++){
       try{
         const denied=await jsonPost(PUBLIC,{},{path:'/@s/'+id,password:pwd},
-          'public_post_unknown');
+          'public_post_unknown',true);
         if(denied?.code===400 && /disabled/i.test(String(denied.message))){
           publicAfterDisabled=true;publicRejection='disabled';break;
         }
