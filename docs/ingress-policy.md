@@ -8,7 +8,7 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 - All have `preview_urls: false`.
 - `workers_dev` is **not uniform**: Email, Workflow and Weixin have `workers_dev: false`; Remote Control declares both `workers_dev: true` and the `rca.lirtual.dpdns.org` custom domain.
 - The `workers.dev` subdomain is `aiyaya.workers.dev` for Workers where enabled.
-- Email's separate `email.lirtual.dpdns.org` custom domain is for the Access-protected owner Setup page, not its MCP URL. Weixin likewise separates the Access owner Setup custom domain `weixin.lirtual.dpdns.org` from Bearer-protected MCP ingress `weixin-mcp.lirtual.dpdns.org`; both disable workers.dev.
+- Email's separate `email.lirtual.dpdns.org` custom domain is for the Access-protected owner Setup page, not its MCP URL. Weixin owner Setup remains on Access-protected `weixin.lirtual.dpdns.org`; the old Bearer MCP custom domain `weixin-mcp.lirtual.dpdns.org` is retired by Spec #392. Internal Cloudflare Service Binding RPC is unaffected; workers.dev stays disabled.
 
 ## Configured MCP ingress endpoints
 
@@ -24,7 +24,7 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 | Remote Control | `remote-control-mcp-worker` | workers.dev + custom domain | `https://rca.lirtual.dpdns.org/mcp` |
 | Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
 | Email | `email-mcp-worker` | custom domains only | `https://email-mcp.lirtual.dpdns.org/mcp` |
-| Weixin | `weixin-mcp-worker` | custom domains only | `https://weixin-mcp.lirtual.dpdns.org/mcp` |
+| Weixin Action Provider | `weixin-mcp-worker` (existing physical Worker) | Access owner setup domain + internal Service Binding | No public MCP ingress; `weixin.lirtual.dpdns.org` is owner administration only |
 
 These are configured ingress addresses, not evidence of a successful production release, a live Portal mapping or an authenticated ChatGPT tool call. Verify every release and actual Portal target independently.
 
