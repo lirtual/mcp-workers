@@ -584,7 +584,7 @@ jobs:
         env:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
-          DATABASE_KEY_ID: ${{ secrets.DATABASE_KEY_ID }}
+          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-prep-344.mjs validate
@@ -606,7 +606,7 @@ jobs:
         env:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
-          DATABASE_KEY_ID: ${{ secrets.DATABASE_KEY_ID }}
+          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-prep-344.mjs import
