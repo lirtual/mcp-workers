@@ -82,10 +82,16 @@ export async function runPublishedCloudflareAction(
    .bind(runId,sourceId).first<Source>();
   if(!current||typeof current.session_url!=='string'||
     !URL_PATTERN.test(current.session_url)||current.session_url.length>180||
-    new URL(current.session_url).href!==current.session_url||
     current.repository!=='lirtual/session-actions'||
     !current.workflow_ref.startsWith('lirtual/session-actions/.github/workflows/openlist.yml@'))
    return denied('session_ready_not_trusted');
+  // Cloudflare Quick Tunnel's signed Ready callback uses a bare root origin
+  // without a slash. Normalize only that equivalent form for Provider digest
+  // and RPC; keep the signed raw D1 URL in the reservation/race predicate.
+  const canonicalSessionUrl=new URL(current.session_url).href;
+  if(canonicalSessionUrl!==current.session_url&&
+     canonicalSessionUrl!==current.session_url+'/')
+    return denied('session_ready_not_trusted');
   if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return denied('session_physical_unconfirmed');
   let live;
   try{live=await inspect(db,current.attempt_id,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);}
@@ -95,7 +101,7 @@ export async function runPublishedCloudflareAction(
   try{binding=await provider.getBinding();}catch{return denied('weixin_binding_unconfirmed');}
   if(!binding?.ready||!Number.isSafeInteger(binding.generation)||binding.generation<1)
    return denied('weixin_binding_not_ready');
-  const inputDigest=await digest('OpenList Session Ready\n'+current.session_url);
+  const inputDigest=await digest('OpenList Session Ready\n'+canonicalSessionUrl);
   const identity=crypto.randomUUID();
   const admitted=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
    (run_id,step_id,invocation_id,source_attempt_id,input_digest,
@@ -122,7 +128,7 @@ export async function runPublishedCloudflareAction(
   }
   try{
    const value=await provider.sendText({invocation_id:identity,
-    binding_generation:binding.generation,session_url:current.session_url,
+    binding_generation:binding.generation,session_url:canonicalSessionUrl,
     deployment_id:version,contract_digest:manifest.contract_digest});
    if(value.input_digest!==inputDigest)return uncertain('weixin_receipt_conflict');
    return receipt(value.status);
