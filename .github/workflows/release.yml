@@ -597,6 +597,48 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-openlist-portal.mjs
 
+  database-activate:
+    name: Protected Database Hyperdrive activation (no deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' &&
+          inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false &&
+          inputs.database_activation_approved == true &&
+          inputs.database_activation_id != '' &&
+          inputs.database_activation_revision != '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify Owner, protected source and explicit activation scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Attest deployed Binding and strict TLS, then CAS-enable and verify live MCP health
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          DATABASE_ACTIVATION_ID: ${{ inputs.database_activation_id }}
+          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_activation_revision }}
+        run: node scripts/activate-database-hyperdrive.mjs
+
   # One-time D1 preparation, isolated from the actual Worker publish job.
   database-prepare:
     name: Prepare Database D1 legacy IDs without release
@@ -669,45 +711,3 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-prep-344.mjs import
-
-  database-activate:
-    name: Protected Database Hyperdrive activation (no deployment)
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' &&
-          inputs.worker == 'database-mcp-worker' &&
-          inputs.deploy_to_production == false &&
-          inputs.database_activation_approved == true &&
-          inputs.database_activation_id != '' &&
-          inputs.database_activation_revision != '' }}
-    runs-on: ubuntu-latest
-    environment:
-      name: database-mcp-worker
-    concurrency:
-      group: worker-release-database-mcp-worker
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Verify Owner, protected source and explicit activation scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Attest deployed Binding and strict TLS, then CAS-enable and verify live MCP health
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
-          DATABASE_ACTIVATION_ID: ${{ inputs.database_activation_id }}
-          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_activation_revision }}
-        run: node scripts/activate-database-hyperdrive.mjs
