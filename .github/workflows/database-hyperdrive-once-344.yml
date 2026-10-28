@@ -1,4 +1,4 @@
-name: One-time Aiven Hyperdrive final read-only privilege proof 344
+name: One-time Aiven Hyperdrive isolated DDL error classification 344
 on:
   push:
     branches: [feat/database-spec-344]
@@ -89,6 +89,7 @@ jobs:
           cat > src/hyperdrive-tmp344.ts <<'TS'
           import { createConnection } from 'mysql2/promise';
           import { Client } from 'pg';
+          import { buildCreateTableStatement } from './sql/admin.js';
           interface HD { host:string;port:number;user:string;password:string;database:string;connectionString:string; }
           interface Env {MYSQL:HD;POSTGRES:HD;PROBE_TOKEN:string;}
           type Result = Record<string,boolean|number|string>;
@@ -148,6 +149,31 @@ jobs:
               out.grantSummary={readable:true,createPrivilege,scopeGranted,probeTableCount:Array.isArray(tables)?tables.length:-1};
             } finally {await c.end().catch(()=>undefined);}
            } catch {out.grantSummary={unavailable:true};}
+           const name='db344_ddl_probe_'+crypto.randomUUID().replaceAll('-','').slice(0,8);
+           const q=(value:string)=>'`'+value.replaceAll('`','``')+'`';
+           const ddl=buildCreateTableStatement('mysql',hd.database,name,[
+             {name:'id',type:'integer',primaryKey:true},
+             {name:'value',type:'varchar',length:80,nullable:false}
+           ]);
+           const c=await createConnection({host:hd.host,port:hd.port,user:hd.user,password:hd.password,
+             database:hd.database,disableEval:true,connectTimeout:12000});
+           let createSuccess=false,cleanupSuccess=false,driverCode='unknown',driverErrno=0,sqlState='';
+           try {
+             try {await c.query(ddl.sql);createSuccess=true;}
+             catch(e) {
+                if(e&&typeof e==='object'){
+                  const value=e as {code?:unknown;errno?:unknown;sqlState?:unknown};
+                  if(typeof value.code==='string' && /^[A-Z0-9_]{1,45}$/.test(value.code))driverCode=value.code;
+                  if(typeof value.errno==='number'&&Number.isSafeInteger(value.errno))driverErrno=value.errno;
+                  if(typeof value.sqlState==='string'&&/^[A-Z0-9]{5}$/.test(value.sqlState))sqlState=value.sqlState;
+                }
+             }
+           } finally {
+             try{await c.query('DROP TABLE IF EXISTS '+q(hd.database)+'.'+q(name));cleanupSuccess=true;}
+             catch{cleanupSuccess=false;}
+             await c.end().catch(()=>undefined);
+           }
+           out.ddlProbe={createSuccess,cleanupSuccess,driverCode,driverErrno,sqlState};
            return out;
           }
           export default {async fetch(req:Request,env:Env):Promise<Response>{
