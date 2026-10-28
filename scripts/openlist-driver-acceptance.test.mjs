@@ -416,7 +416,8 @@ test('new share initial NOT_FOUND is retried read-only until in-scope metadata b
   assert.equal(requests.filter(x=>x==='openlist_share_create').length,2,
     'one negative scope test and just one actual create');
   assert.equal(requests.filter(x=>x==='openlist_share_update').length,2);
-  assert.ok(requests.filter(x=>x==='openlist_share_get').length>=10);
+  assert.ok(requests.filter(x=>x==='openlist_share_get').length>=4,
+    'three transient NOT_FOUND results and one successful read are independently observed');
   assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
 });
 test('revoke readback tolerates bounded stale disabled record without replaying revoke',async()=>{
