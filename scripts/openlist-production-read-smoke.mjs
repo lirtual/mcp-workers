@@ -216,12 +216,73 @@ export async function runOpenListHistoricalShareRead(env, transport = fetch) {
     expires:expirationKnown ? expires : null};
 }
 
+
+// Owner-authorized, fixed-ID ONE-WRITE acceptance. Not a generic share mutation
+// endpoint: the only permitted target is the expired historical synthetic share.
+// The existing deployed MCP itself performs the upstream pre/post checks.
+export async function runOpenListHistoricalShareDisable(env, transport = fetch) {
+  if (env.OPENLIST_HISTORICAL_SHARE_DISABLE !== 'true' ||
+      env.OPENLIST_HISTORICAL_SHARE_READ === 'true')
+    fail('share_disable_not_approved');
+  const readEnv={...env,OPENLIST_HISTORICAL_SHARE_READ:'true'};
+  const before=await runOpenListHistoricalShareRead(readEnv,transport);
+  // A concurrent edit or unexpected share state blocks *before* the one write.
+  if (!before.present || before.disabled !== false ||
+      before.expired !== true ||
+      before.expires !== '2026-10-27T13:55:53.913Z')
+    fail('share_disable_precondition');
+
+  const requestBody=JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',
+    params:{name:'openlist_share_disable',arguments:{id:HISTORICAL_SHARE_ID}}});
+  let response;
+  // Once this call begins, the write might have happened even if the transport
+  // fails. Never retry it, whether via this script or the workflow.
+  try {
+    response=await transport(new Request(OPENLIST_MCP_URL,{
+      method:'POST',redirect:'manual',signal:AbortSignal.timeout(20000),
+      headers:{authorization:'Bearer '+env.MCP_ACCESS_TOKEN,
+        'content-type':'application/json',
+        accept:'application/json, text/event-stream'},
+      body:requestBody,
+    }));
+  } catch { fail('share_disable_unknown'); }
+  if (response.status !== 200 || response.redirected ||
+      response.headers.has('location'))
+    fail('share_disable_unknown');
+  let outcome;
+  try { outcome=parseRpc(response,await boundedText(response),'either'); }
+  catch { fail('share_disable_unknown'); }
+  if (outcome?.operation !== 'openlist_share_disable' ||
+      outcome.target !== HISTORICAL_SHARE_ID ||
+      outcome.status !== 'succeeded' || outcome.code !== 'OK' ||
+      outcome.observed_state?.disabled !== true)
+    fail('share_disable_unknown');
+
+  // A second independent tools/call verifies the result from production,
+  // not a copy of the mutation response. Readback failure means unknown.
+  let after;
+  try { after=await runOpenListHistoricalShareRead(readEnv,transport); }
+  catch { fail('share_disable_readback_unknown'); }
+  if (!after.present || after.disabled !== true ||
+      after.expires !== before.expires || after.expired !== true)
+    fail('share_disable_readback_unknown');
+  return {id:HISTORICAL_SHARE_ID,before_disabled:false,after_disabled:true,
+    expired:true,write_calls:1};
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  (process.env.OPENLIST_HISTORICAL_SHARE_READ === 'true'
-    ? runOpenListHistoricalShareRead(process.env)
-    : runOpenListProductionReadSmoke(process.env))
+  (process.env.OPENLIST_HISTORICAL_SHARE_DISABLE === 'true'
+    ? runOpenListHistoricalShareDisable(process.env)
+    : process.env.OPENLIST_HISTORICAL_SHARE_READ === 'true'
+      ? runOpenListHistoricalShareRead(process.env)
+      : runOpenListProductionReadSmoke(process.env))
     .then(value => {
-      if (process.env.OPENLIST_HISTORICAL_SHARE_READ === 'true') {
+      if (process.env.OPENLIST_HISTORICAL_SHARE_DISABLE === 'true') {
+        console.log('OPENLIST_HISTORICAL_SHARE_DISABLE_OK id='+value.id+
+          ' before_disabled='+value.before_disabled+
+          ' after_disabled='+value.after_disabled+
+          ' expired='+value.expired+' write_calls='+value.write_calls);
+      } else if (process.env.OPENLIST_HISTORICAL_SHARE_READ === 'true') {
         console.log('OPENLIST_HISTORICAL_SHARE_READ_OK id='+HISTORICAL_SHARE_ID+
           ' present='+value.present+
           (value.present ? ' disabled='+value.disabled+
