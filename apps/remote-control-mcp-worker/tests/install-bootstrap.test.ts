@@ -242,7 +242,7 @@ test('reviewed Linux v0.1.34 enables explicit local upgrade while Windows instal
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.22/);
+  assert.match(shell, /remote-control-agent-v0\.1\.34/);
   assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
   assert.match(shell, /"\$@" < \/dev\/tty/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
