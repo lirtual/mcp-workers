@@ -167,3 +167,33 @@ test('missing Access policies block attaching the newly synced OpenList server',
   assert.equal(putCount,0);
   assert.deepEqual(state.servers,portal().servers);
 });
+
+
+test('Worker registration and Portal tool inventory remain identical; five high-risk adapters are not exposed', async()=>{
+  const {readFile}=await import('node:fs/promises');
+  const source=await readFile(
+    new URL('../apps/openlist-mcp-worker/src/tools.ts',import.meta.url),'utf8');
+  const registered=[...source.matchAll(/server\.registerTool\('([^']+)'/g)]
+    .map(match=>match[1]).sort();
+  assert.equal(registered.length,13,
+    'production must not accidentally register new dangerous tools');
+  assert.equal(new Set(registered).size,registered.length);
+  assert.deepEqual(registered,[...OPENLIST_TOOLS].sort(),
+    'a Worker-only tool bypasses the vetted Portal inventory or vice versa');
+  const gated=[
+    'openlist_delete','openlist_share_create','openlist_share_update',
+    'openlist_share_enable','openlist_share_revoke',
+  ];
+  for(const name of gated)
+    assert.ok(!registered.includes(name),name+' must remain unregistered');
+  const shareDisable=source.slice(
+    source.indexOf("server.registerTool('openlist_share_disable'"),
+    source.indexOf("server.registerTool('openlist_upload_small'"));
+  assert.match(shareDisable,/destructiveHint:\s*true/);
+  assert.match(shareDisable,/readOnlyHint:\s*false|annotations:\s*\{\s*\.\.\.annotationsWrite/);
+  const download=source.slice(
+    source.indexOf("server.registerTool('openlist_download_link'"),
+    source.indexOf("server.registerTool('openlist_share_disable'"));
+  assert.match(download,/Native signature expiry may be permanent/);
+  assert.match(download,/openWorldHint:\s*true/);
+});
