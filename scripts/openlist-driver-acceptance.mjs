@@ -128,7 +128,13 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // a generic mcp_contract error. Never retry an unknown write.
     // Policy acceptance: the native signer can legitimately return a permanent
     // signature. MCP must reject it instead of exposing a bearer URL.
-    if (expectsError === 'policy-denial') {
+    if (expectsError === 'read-or-not-found') {
+      check((rpc.result.isError === true &&
+        body.status === 'not_executed' && body.code === 'NOT_FOUND') ||
+        (rpc.result.isError !== true &&
+          body.status === 'succeeded' && body.code === 'OK'),
+        'mcp_read_contract');
+    } else if (expectsError === 'policy-denial') {
       if (rpc.result.isError === true)
         check(body.status === 'not_executed' && body.code === 'NOT_SUPPORTED',
           'native_link_policy');
@@ -377,16 +383,21 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     });
     const newId=createdShare.target;
     const password=createdShare.observed_state?.password_once;
+    // Only a verified share identity and exact file grant permission to
+    // perform fail-safe cleanup; never act on an unrelated returned ID.
     check(typeof newId==='string' && /^[a-f0-9]{16}$/.test(newId) &&
-      /^[a-f0-9]{48}$/.test(password) &&
       createdShare.observed_state?.id===newId &&
+      JSON.stringify(createdShare.observed_state?.files)===JSON.stringify([exactFile]),
+      'high_risk_create_uncertain');
+    let disableDispatched=false, revokeDispatched=false;
+    try {
+    // A malformed one-time password or metadata is a *post-creation* failure;
+    // the owned synthetic share still needs protective disable/revoke.
+    check(/^[a-f0-9]{48}$/.test(password) &&
       createdShare.observed_state?.disabled===false &&
-      JSON.stringify(createdShare.observed_state?.files)===JSON.stringify([exactFile]) &&
       createdShare.observed_state?.max_accessed===3 &&
       typeof createdShare.observed_state?.expires==='string',
       'high_risk_create_uncertain');
-    // Stable non-secret ID is essential for exact manual recovery if any
-    // later effect is unknown. Never print password, public URL or raw replies.
     console.log('OPENLIST_HIGH_RISK_CREATED id='+newId);
     const initialShare=(await mcp('openlist_share_get',{id:newId})).observed_state;
     check(initialShare?.id===newId && initialShare?.disabled===false &&
@@ -400,7 +411,15 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       update.observed_state?.max_accessed===4 &&
       JSON.stringify(update.observed_state?.files)===JSON.stringify([exactFile]),
       'high_risk_update');
-    const updated=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    // Cloudflare upstream persisted share changes can appear after a bounded
+    // read-only propagation delay. Never repeat the update itself.
+    let updated;
+    for(let i=0;i<8;i++){
+      updated=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(updated?.max_accessed===4 && updated.disabled===false &&
+        typeof updated.expires==='string' && updated.expires!==initialShare.expires)break;
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
     check(updated?.max_accessed===4 && updated.disabled===false &&
       typeof updated.expires==='string' && updated.expires!==initialShare.expires,
       'high_risk_update_readback');
@@ -431,32 +450,100 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // active, and that disabling it controls access (not merely quota exhaustion).
     await publicShare('allowed');
     await new Promise(resolve=>setTimeout(resolve,1200));
+    disableDispatched=true;
     const disabled=await mcp('openlist_share_disable',{id:newId});
     check(disabled.observed_state?.disabled===true,'high_risk_disable');
-    const afterDisabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+    let afterDisabled;
+    for(let i=0;i<8;i++){
+      afterDisabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(afterDisabled?.disabled===true)break;
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
     check(afterDisabled?.disabled===true,'high_risk_disable_readback');
     await publicShare('disabled');
+    // A later enable starts a NEW publicly accessible period. Permit exactly
+    // one fresh safety-disable in its own failure path, but never replay the
+    // earlier disable for the prior period.
+    disableDispatched=false;
     const enabled=await mcp('openlist_share_enable',{id:newId});
     check(enabled.observed_state?.disabled===false,'high_risk_enable');
-    const afterEnabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
-    check(afterEnabled?.disabled===false && afterEnabled?.max_accessed===4,
+    let afterEnabled;
+    for(let i=0;i<8;i++){
+      afterEnabled=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(afterEnabled?.disabled===false&&afterEnabled.max_accessed===4)break;
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(afterEnabled?.disabled===false&&afterEnabled.max_accessed===4,
       'high_risk_enable_readback');
     await publicShare('allowed');
     await new Promise(resolve=>setTimeout(resolve,1200));
+    // Make the newly enabled share non-public AGAIN *before* revoking its
+    // record. If revoke fails or is uncertain, it must not remain enabled.
+    // This is a separate enabled→disabled transition, NOT a retry of the
+    // earlier disabled→enabled→disabled lifecycle.
+    const safeDisabled=await mcp('openlist_share_disable',{id:newId});
+    check(safeDisabled.observed_state?.disabled===true,'high_risk_final_disable');
+    let finalDisabled=false;
+    for(let i=0;i<8;i++){
+      const state=(await mcp('openlist_share_get',{id:newId})).observed_state;
+      if(state?.id===newId && state.disabled===true){
+        finalDisabled=true;break;
+      }
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(finalDisabled,'high_risk_final_disable_readback');
+    await publicShare('disabled');
+    revokeDispatched=true;
     const revoke=await mcp('openlist_share_revoke',{id:newId});
     check(revoke.observed_state?.revoked===true,'high_risk_revoke');
-    const absent=await mcp('openlist_share_get',{id:newId},true);
-    check(absent.status==='not_executed' && absent.code==='NOT_FOUND',
-      'high_risk_revoke_readback');
+    let shareGone=false;
+    for(let i=0;i<8;i++){
+      const absent=await mcp('openlist_share_get',{id:newId},'read-or-not-found');
+      if(absent.status==='not_executed'&&absent.code==='NOT_FOUND'){
+        shareGone=true;break;
+      }
+      check(absent.observed_state?.id===newId &&
+        JSON.stringify(absent.observed_state.files)===JSON.stringify([exactFile]) &&
+        absent.observed_state.disabled===true,
+        'high_risk_revoke_readback_unexpected_share');
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(shareGone,'high_risk_revoke_readback');
     const preserved=(await mcp('openlist_get_file',{path:exactFile})).observed_state;
     check(preserved?.path===exactFile && preserved.is_dir===false &&
       preserved.size===exactSize,'high_risk_revoke_preserved_file');
     const deleted=await mcp('openlist_delete',{path:exactFile});
     check(deleted.observed_state?.deleted===true && deleted.target===exactFile,
       'high_risk_delete');
-    const gone=await mcp('openlist_get_file',{path:exactFile},true);
-    check(gone.status==='not_executed' && gone.code==='NOT_FOUND',
-      'high_risk_delete_readback');
+    // Native Koofr get_file may classify a removed path as UPSTREAM_UNAVAILABLE
+    // rather than NOT_FOUND. Verify only the original now-empty directory;
+    // do not repeat deletion or treat generic get errors as proof.
+    let empty=false;
+    for(let i=0;i<8;i++){
+      const listing=(await mcp('openlist_list_files',{
+        path:folder,page:1,per_page:100})).observed_state;
+      if(listing?.total===0 && listing.entries?.length===0){empty=true;break}
+      check(listing?.total===1 && listing.entries?.length===1 &&
+        listing.entries[0].name===filename,'high_risk_delete_listing');
+      if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    check(empty,'high_risk_delete_readback');
+    } catch (error) {
+      // When any post-create check fails, immediately attempt at most one
+      // disable and one revoke of ONLY the exact newly created share. This
+      // is a separate authorized safety cleanup, never a retry of an unknown
+      // update/disable/revoke. The new fixture file is kept for diagnosis.
+      console.log('OPENLIST_HIGH_RISK_FAILSAFE share_id='+newId);
+      if(!revokeDispatched) {
+        if(!disableDispatched) {
+          disableDispatched=true;
+          try {await mcp('openlist_share_disable',{id:newId});}catch{}
+        }
+        revokeDispatched=true;
+        try {await mcp('openlist_share_revoke',{id:newId});}catch{}
+      }
+      throw error;
+    }
     console.log('OPENLIST_HIGH_RISK_E2E_PASS share_id='+newId+
       ' share_revoked=true source_deleted=true');
     tested.push('share_create','share_update','share_disable',
