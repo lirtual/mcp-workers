@@ -28,6 +28,17 @@ test('two matching disabled encrypted records authenticate without exposing secr
   assert.ok(!JSON.stringify(result).includes('mysql://'));
 });
 
+test('release phase requires both verified active revision-2 records', async () => {
+  const base = await fixture();
+  const released = structuredClone(base);
+  for (const row of released.rows) { row.status = 'active'; row.revision = 2; }
+  assert.deepEqual(await verifyDirectCutoverPreflight({ ...released, phase: 'release' }),
+    { valid: true, ids: ['b2b', 'scrape_relay'], expectedRevision: 2 });
+  await assert.rejects(verifyDirectCutoverPreflight({ ...base, phase: 'release' }), /preflight failed/);
+  await assert.rejects(verifyDirectCutoverPreflight({ ...released, phase: 'staged' }), /preflight failed/);
+  await assert.rejects(verifyDirectCutoverPreflight({ ...released, phase: 'invalid' }), /preflight failed/);
+});
+
 test('fail closed on incorrect, reordered, missing, extra or active identities', async () => {
   const base = await fixture();
   for (const mutate of [
@@ -114,6 +125,15 @@ test('production preflight is strictly read-only, guarded and redacts credential
       valid: true, records: 2, status: 'disabled', workerChanged: false
     });
     assert.deepEqual(calls.map(x => x.method), ['GET', 'POST', 'POST']);
+    // A future release must fail until BOTH records are active and revision 2.
+    await assert.rejects(checkReadOnlyD1({ ...env, DATABASE_DIRECT_PREFLIGHT_PHASE: 'release' }),
+      /preflight failed/);
+    for (const row of base.rows) { row.status = 'active'; row.revision = 2; }
+    assert.deepEqual(await checkReadOnlyD1({ ...env, DATABASE_DIRECT_PREFLIGHT_PHASE: 'release' }), {
+      valid: true, records: 2, status: 'active', workerChanged: false
+    });
+    await assert.rejects(checkReadOnlyD1({ ...env, DATABASE_DIRECT_PREFLIGHT_PHASE: 'unknown' }),
+      /preflight failed/);
     await assert.rejects(checkReadOnlyD1({ ...env, GITHUB_ACTOR: 'other' }), /preflight failed/);
   } finally {
     globalThis.fetch = previous;
