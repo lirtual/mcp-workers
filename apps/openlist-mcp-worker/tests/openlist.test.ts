@@ -140,17 +140,17 @@ test('upstream 501 and 400 are classified, while transport timeout after write r
   assert.doesNotMatch(JSON.stringify(result), /credentials-in-error/);
 });
 
-test('valid signed text flows through internal route, bounded and without returning signer', async () => {
+test('internal text reads retain native permanent signer without returning a public URL', async () => {
   let calls = 0;
   const api = new OpenListApi(createConfig(env(async request => {
     calls++;
     const url = new URL(request.url);
     if (url.pathname === '/api/fs/get') return ok({
-      name: 'notes.md', size: 5, is_dir: false, sign: 'private-signature',
+      name: 'notes.md', size: 5, is_dir: false, sign: '0.'+'a'.repeat(64),
       raw_url: 'https://outside.example/sensitive',
     });
     assert.equal(url.pathname, '/d/drive/safe/notes.md');
-    assert.equal(url.searchParams.get('sign'), 'private-signature');
+    assert.equal(url.searchParams.get('sign'), '0.'+'a'.repeat(64));
     assert.equal(request.headers.get('authorization'), null);
     return new Response('hello', { headers: { 'content-type': 'text/markdown' } });
   })));
@@ -413,25 +413,38 @@ test('share disable never repeats a dispatched unknown write or trusts a success
   }
 });
 
-test('native download link uses verified Cloudflare route with signed path and explicit expiry semantics', async () => {
-  for (const expiration of [0, Math.floor(Date.now()/1000) + 3600]) {
-    const sign=String(expiration)+'.'+'a'.repeat(64);
-    const api=new OpenListApi(createConfig(env(async request => {
-      assert.equal(request.method,'POST');
-      assert.equal(new URL(request.url).pathname,'/api/fs/get');
-      assert.equal(request.headers.get('authorization'),'admin-token');
-      const data=await request.json() as {path:string};
-      assert.equal(data.path,'/drive/safe/hello world.txt');
-      return ok({name:'hello world.txt',path:data.path,is_dir:false,size:11,
-        sign,raw_url:'https://untrusted.example/private?password=leak',
-        provider_token:'private'});
-    })));
-    const output=await api.downloadLink('/drive/safe/hello world.txt');
-    assert.equal(output.url,'https://openlist.lirtual.dpdns.org/api/p/drive/safe/hello%20world.txt?sign='+encodeURIComponent(sign));
-    assert.equal(output.permanent,expiration===0);
-    assert.equal(output.expires_at,expiration===0?null:new Date(expiration*1000).toISOString());
-    assert.doesNotMatch(JSON.stringify(output),/untrusted\.example|password|provider_token|admin-token/);
-  }
+test('finite signed download link uses only verified Cloudflare route with native expiry', async () => {
+  const expiration=Math.floor(Date.now()/1000)+3600;
+  const sign=String(expiration)+'.'+'a'.repeat(64);
+  const api=new OpenListApi(createConfig(env(async request => {
+    assert.equal(request.method,'POST');
+    assert.equal(new URL(request.url).pathname,'/api/fs/get');
+    assert.equal(request.headers.get('authorization'),'admin-token');
+    const data=await request.json() as {path:string};
+    assert.equal(data.path,'/drive/safe/hello world.txt');
+    return ok({name:'hello world.txt',path:data.path,is_dir:false,size:11,
+      sign,raw_url:'https://untrusted.example/private?password=leak',
+      provider_token:'private'});
+  })));
+  const output=await api.downloadLink('/drive/safe/hello world.txt');
+  assert.equal(output.url,'https://openlist.lirtual.dpdns.org/api/p/drive/safe/hello%20world.txt?sign='+encodeURIComponent(sign));
+  assert.equal(output.permanent,false);
+  assert.equal(output.expires_at,new Date(expiration*1000).toISOString());
+  assert.doesNotMatch(JSON.stringify(output),/untrusted\.example|password|provider_token|admin-token/);
+});
+
+test('non-expiring upstream signature is never returned as a bearer download link', async () => {
+  let calls=0;
+  const api=new OpenListApi(createConfig(env(async request => {
+    calls++;
+    assert.equal(new URL(request.url).pathname,'/api/fs/get');
+    return ok({name:'file.txt',path:'/drive/safe/file.txt',size:5,
+      is_dir:false,sign:'0.'+'a'.repeat(64)});
+  })));
+  await assert.rejects(api.downloadLink('/drive/safe/file.txt'), (e: unknown) =>
+    e instanceof OpenListError && e.code === 'NOT_SUPPORTED' &&
+    !e.message.includes('0.'+'a'.repeat(64)));
+  assert.equal(calls,1);
 });
 
 test('download link fails closed for out-of-scope path, unsigned, expired and directory responses', async () => {
