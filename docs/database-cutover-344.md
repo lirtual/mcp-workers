@@ -185,8 +185,8 @@ deleted and the Draft PR's temporary workflow has been removed.
 ## 2026-10-28 PostgreSQL Hyperdrive real DDL / Safe Write acceptance
 
 - The authorized administrator independently confirmed the existing test schema
-  \`db344_acceptance\` belongs to \`avnadmin\` and the dedicated \`test\`
-  role has \`USAGE\` and \`CREATE\` on **only that schema**. No production
+  `db344_acceptance` belongs to `avnadmin` and the dedicated `test`
+  role has `USAGE` and `CREATE` on **only that schema**. No production
   credential, business database, or privilege escalation was used.
 - [One-time real Worker run #40624927834](https://github.com/lirtual/mcp-workers/actions/runs/40624927834)
   succeeded with **13/13** true checks: approved test database, user and
@@ -195,11 +195,11 @@ deleted and the Draft PR's temporary workflow has been removed.
   generated CREATE TABLE, indexes, ALTER TABLE; bounded INSERT, UPDATE and
   DELETE; over-limit UPDATE rollback with persisted-value readback; and
   post-test table deletion plus independent PostgreSQL catalog check.
-  Test SQL was strictly schema-qualified to \`db344_acceptance\`, never
-  \`public\`. The private disposable table was cleaned, and the run used
+  Test SQL was strictly schema-qualified to `db344_acceptance`, never
+  `public`. The private disposable table was cleaned, and the run used
   the current application SQL core, not an unrelated demonstration query.
 - The disposable Worker and Hyperdrive configuration were deleted in the
-  GitHub Actions \`always()\` cleanup, with Hyperdrive DELETE HTTP 200.
+  GitHub Actions `always()` cleanup, with Hyperdrive DELETE HTTP 200.
   Cloudflare readback showed no temporary configs/Workers or CA associations
   before the disposable CA was deleted (API HTTP 200); the final readback
   is recorded separately. The one-time workflow must not persist in the
@@ -209,14 +209,14 @@ deleted and the Draft PR's temporary workflow has been removed.
   proofs, not blanket approval for Direct plaintext transport, origin TLS
   negative cases, release-binding setup, production D1 cutover or Worker
   deployment. Previous no-permission PostgreSQL blockers are now resolved.
-- **Remaining operator cleanup:** \`db344_acceptance\` persists in the
-  isolated Aiven test database with a grant to \`test\`. The administrator
+- **Remaining operator cleanup:** `db344_acceptance` persists in the
+  isolated Aiven test database with a grant to `test`. The administrator
   should run the guarded schema-owner/database readback then
-  \`DROP SCHEMA db344_acceptance RESTRICT\` individually in the Aiven SQL
+  `DROP SCHEMA db344_acceptance RESTRICT` individually in the Aiven SQL
   editor after successful tests; failure if other objects are present is
   intentional. This cleanup is not yet verified and must not be claimed.
 - Spec #344 and PR #345 remain Open/Draft. The empty production
-  \`hyperdrive-bindings.json\` manifest is deliberate. Existing GitGuardian
+  `hyperdrive-bindings.json` manifest is deliberate. Existing GitGuardian
   findings require separate resolution; no check waiver, merge,
   production deploy, migration, Fork changes, or restricted DB operations
   are authorized by this acceptance.
