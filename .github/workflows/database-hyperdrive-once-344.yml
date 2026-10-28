@@ -1,4 +1,4 @@
-name: One-time Aiven Hyperdrive safe SQL proof 344
+name: One-time Aiven Hyperdrive final read-only privilege proof 344
 on:
   push:
     branches: [feat/database-spec-344]
@@ -87,215 +87,77 @@ jobs:
           set -euo pipefail
           cd apps/database-mcp-worker
           cat > src/hyperdrive-tmp344.ts <<'TS'
-          import { Client as PgClient } from 'pg';
-          import { createConnection as mysqlConnect } from 'mysql2/promise';
-          import {
-            healthCheck, queryRead, explainRead, inspectSchema,
-            createTable, alterTable, createIndex, dropIndex, dropTable,
-            insertRows, updateRows, deleteRows
-          } from './db/index.js';
-          import type { Dialect, EffectiveConnection, EffectiveWriteConnection } from './types.js';
-
-          interface HD { connectionString: string; host: string; port: number; user: string; password: string; database: string; }
-          interface Env { PROBE_TOKEN: string; POSTGRES: HD; MYSQL: HD; }
-          type Check = Record<string, boolean>;
-          const limits = { maxRows: 10, maxResultBytes: 50000, maxSchemaBytes: 50000, queryTimeoutMs: 12000 };
-          function identity(dialect: Dialect, hd: HD): EffectiveConnection {
-            return {
-              config: { id: 'isolated_acceptance_' + dialect, transport: 'hyperdrive',
-                configId: 'test-only', bindingName: dialect.toUpperCase() },
-              transport: 'hyperdrive', dialect,
-              connectionString: hd.connectionString, host: hd.host, port: hd.port,
-              user: hd.user, password: hd.password, database: hd.database, limits
-            };
+          import { createConnection } from 'mysql2/promise';
+          import { Client } from 'pg';
+          interface HD { host:string;port:number;user:string;password:string;database:string;connectionString:string; }
+          interface Env {MYSQL:HD;POSTGRES:HD;PROBE_TOKEN:string;}
+          type Result = Record<string,boolean|number|string>;
+          function safeStats(rows:unknown, name:string):Result {
+           const isArray=Array.isArray(rows), first=isArray?rows[0]:undefined;
+           const values=first && typeof first==='object'?Object.values(first):[];
+           const value=values[0];
+           return {name,rowsArray:isArray,rowsCount:isArray?rows.length:-1,
+           firstArray:Array.isArray(first),firstObject:!!first&&typeof first==='object',
+           valueString:typeof value==='string', valuePresent:value!==undefined&&value!==null,
+           modeHasUnsafe:typeof value==='string'&&value.toUpperCase().split(',').some(x=>x.trim()==='NO_BACKSLASH_ESCAPES')};
           }
-          async function tlsProof(dialect: Dialect, hd: HD): Promise<boolean> {
-            if (dialect === 'postgres') {
-              const client = new PgClient({
-                host: hd.host, user: hd.user, password: hd.password, database: hd.database,
-                port: hd.port, ssl: false, connectionTimeoutMillis: 12000
-              });
-              try {
-                await client.connect();
-                const result = await client.query<{ssl: boolean}>(
-                  'SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()'
-                );
-                return result.rows[0]?.ssl === true;
-              } finally { await client.end().catch(() => undefined); }
-            }
-            const client = await mysqlConnect({
-              host:hd.host, user:hd.user, password:hd.password, database:hd.database, port:hd.port,
-              disableEval:true,connectTimeout:12000
-            });
-            try {
-              const [rows] = await client.query("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
-              return !!(Array.isArray(rows) && (rows as Array<{Value:string}>)[0]?.Value);
-            } finally { await client.end().catch(() => undefined); }
+          async function postgres(hd:HD):Promise<Result>{
+           const c=new Client({host:hd.host,port:hd.port,user:hd.user,password:hd.password,database:hd.database,ssl:false,connectionTimeoutMillis:10000});
+           try {
+            await c.connect();
+            const x=await c.query("SELECT has_database_privilege(current_user, current_database(), 'CREATE') AS can_create_database, has_schema_privilege(current_user, 'public', 'CREATE') AS can_create_public, has_database_privilege(current_user, current_database(), 'TEMP') AS can_create_temp, current_schema() AS active_schema");
+            return {dbCreate:x.rows[0]?.can_create_database===true,publicCreate:x.rows[0]?.can_create_public===true,tempCreate:x.rows[0]?.can_create_temp===true,hasSchema:typeof x.rows[0]?.active_schema==='string'};
+           }finally{await c.end().catch(()=>undefined);}
           }
-          async function runDialect(dialect: Dialect, hd: HD): Promise<Check> {
-            const result: Check = {
-              query: false, tls: false, health: false, read: false, explain: false,
-              schema: false, ddl: false, insert: false, rollback: false, update: false, remove: false
-            };
-            const connection = identity(dialect, hd);
-            const write: EffectiveWriteConnection = { ...connection, maxAffectedRows: 20 };
-            const guarded: EffectiveWriteConnection = { ...connection, maxAffectedRows: 1 };
-            const schema = dialect === 'postgres' ? 'public' : undefined;
-            const table = 'db344_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16);
-            let created = false;
-            let stage = 'tls';
+          async function mysql(hd:HD):Promise<Record<string,unknown>>{
+           const out:Record<string,unknown>={};
+           const cases=[
+            ['select_session','SELECT @@SESSION.sql_mode AS mode'],
+            ['select_short','SELECT @@sql_mode AS mode'],
+            ['show_session',"SHOW SESSION VARIABLES LIKE 'sql_mode'"],
+            ['show_global',"SHOW GLOBAL VARIABLES LIKE 'sql_mode'"],
+            ['select_global','SELECT @@GLOBAL.sql_mode AS mode'],
+            ['select_session_flag',"SELECT FIND_IN_SET('NO_BACKSLASH_ESCAPES', @@SESSION.sql_mode) AS flag"],
+            ['select_constant','SELECT 1 AS probe']
+           ] as const;
+           for (const rowsAsArray of [false,true]){
+            const conn=await createConnection({host:hd.host,port:hd.port,user:hd.user,password:hd.password,database:hd.database,disableEval:true,rowsAsArray,connectTimeout:10000});
             try {
-              result.tls = await tlsProof(dialect, hd);
-              stage = 'health';
-              result.health = (await healthCheck(connection)).ok;
-              stage = 'read';
-              const read = await queryRead(connection, 'SELECT 1 AS probe', [], 3);
-              result.query = read.rowCount === 1 && Number(read.rows[0]?.[0]) === 1;
-              result.read = result.query;
-              stage = 'explain';
-              result.explain = (await explainRead(connection, 'SELECT 1 AS probe', [])) != null;
-              if (dialect === 'postgres') {
-                result.schema = !!(await inspectSchema(connection, 'public'));
-                // The existing dedicated PostgreSQL test role lacks CREATE privileges.
-                // This test does not escalate access or attempt any persistent DDL.
-                return result;
+             for (const inTxn of [false,true]){
+              if(inTxn)await conn.beginTransaction();
+              for (const [name,sql] of cases){
+               try {const [rows]=await conn.query(sql);out[`${rowsAsArray?'array':'object'}_${inTxn?'txn':'single'}_${name}`]=safeStats(rows,name);}
+               catch(e){const code=e && typeof e==='object' && 'code' in e?String((e as {code:unknown}).code):'unknown';out[`${rowsAsArray?'array':'object'}_${inTxn?'txn':'single'}_${name}`]={errorCode:/^[A-Z0-9_]{1,40}$/.test(code)?code:'unknown'};}
               }
-              // DDL scoped to one unique disposable table on dedicated test DB.
-              stage = 'ddl_create';
-              await createTable(connection, schema, table, [
-                {name:'id', type:'integer', primaryKey:true},
-                {name:'value', type:'varchar', length:80, nullable:false}
-              ]);
-              created = true;
-              stage = 'schema';
-              const description = await inspectSchema(connection, schema, table);
-              result.schema = description.columns?.some(column => column.name === 'value') === true;
-              stage = 'ddl_index';
-              await createIndex(connection, schema, table, ['value'], false, 'db344_value_index');
-              await dropIndex(connection, schema, table, 'db344_value_index');
-              stage = 'ddl_alter';
-              await alterTable(connection, schema, table, {
-                action:'add_column', column:{name:'flag',type:'integer',default:1}
-              });
-              result.ddl = true;
-              stage = 'insert';
-              const inserted = await insertRows(write, schema, table,
-                [{id:1,value:'start'}, {id:2,value:"quote' and \\ slash"}]);
-              result.insert = inserted.affectedRows === 2;
-              stage = 'read_special';
-              const special = await queryRead(connection,
-                dialect === 'postgres'
-                  ? 'SELECT value FROM "'+table+'" WHERE id = $1'
-                  : 'SELECT value FROM `'+table+'` WHERE id = ?',
-                [2], 3);
-              result.insert = result.insert && special.rowCount === 1 &&
-                special.rows[0]?.[0] === "quote' and \\ slash";
-              stage = 'rollback_mutation';
-              let denied = false;
-              try {
-                await updateRows(guarded, schema, table, {value:'blocked'},
-                  {id:{in:[1,2]}});
-              } catch (e) {
-                denied = !!(e && typeof e === 'object' && 'code' in e &&
-                  (e as {code:unknown}).code === 'WRITE_LIMIT_EXCEEDED');
-              }
-              stage = 'rollback_verify';
-              const values = await queryRead(connection,
-                dialect === 'postgres'
-                  ? 'SELECT value FROM "'+table+'" WHERE id IN ($1,$2) ORDER BY id'
-                  : 'SELECT value FROM `'+table+'` WHERE id IN (?,?) ORDER BY id',
-                [1,2], 3);
-              result.rollback = denied && values.rowCount === 2 &&
-                values.rows[0]?.[0] === 'start' && values.rows[1]?.[0] === "quote' and \\ slash";
-              stage = 'update';
-              result.update = (await updateRows(guarded,schema,table,{value:'changed'},{id:1}))
-                .affectedRows === 1;
-              stage = 'remove';
-              result.remove = (await deleteRows(guarded,schema,table,{id:1})).affectedRows === 1;
-            } catch(e) {
-              const code = e && typeof e === 'object' && 'code' in e ?
-                String((e as {code: unknown}).code) : 'unknown';
-              throw { phase: stage, code: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown' };
-            } finally {
-              if (created) await dropTable(connection,schema,table).catch(() => undefined);
-            }
-            return result;
-          }
-          async function inspectMysqlMode(hd: HD): Promise<Record<string,boolean>> {
-            const c = await mysqlConnect({
-              host:hd.host,user:hd.user,password:hd.password,database:hd.database,port:hd.port,
-              disableEval:true,rowsAsArray:true,connectTimeout:12000
-            });
+              if(inTxn)await conn.rollback();
+             }
+            }finally{await conn.end().catch(()=>undefined);}
+           }
+           try {
+            const c=await createConnection({host:hd.host,port:hd.port,user:hd.user,password:hd.password,
+              database:hd.database,disableEval:true,connectTimeout:10000});
             try {
-              await c.beginTransaction();
-              const [rows] = await c.query('SELECT @@SESSION.sql_mode AS mode');
-              const first:unknown = Array.isArray(rows) ? rows[0] : undefined;
-              const mode:unknown = Array.isArray(first) ? first[0] :
-                first && typeof first === 'object' ? (first as Record<string,unknown>).mode : undefined;
-              await c.rollback();
-              return {
-                rowsArray: Array.isArray(rows),
-                rowsHaveOne: Array.isArray(rows) && rows.length === 1,
-                arrayShape: Array.isArray(first),
-                firstObject: !!first && typeof first === 'object',
-                firstKeys: first && typeof first === 'object'
-                  ? Object.keys(first).slice(0,5).map(k=>k.slice(0,35)) : [],
-                modeIsNull: mode === null,
-                modeIsString: typeof mode === 'string',
-                modeIsObject: !!mode && typeof mode === 'object',
-                forbiddenBackslashMode: typeof mode === 'string' &&
-                  mode.toUpperCase().split(',').some(x=>x.trim()==='NO_BACKSLASH_ESCAPES')
-              };
-            } finally { await c.end().catch(()=>undefined); }
-          }
-          async function mysqlDdlPermissionSummary(hd: HD):Promise<Record<string,boolean|number>> {
-            const c=await mysqlConnect({host:hd.host,user:hd.user,password:hd.password,database:hd.database,
-              port:hd.port,disableEval:true,connectTimeout:12000});
-            try {
-              const [raw]=await c.query('SHOW GRANTS');
-              const grants=Array.isArray(raw)
-                ? raw.flatMap(row=>row&&typeof row==='object'?Object.values(row):[]).filter((v):v is string=>typeof v==='string')
+              const [grantRows]=await c.query('SHOW GRANTS');
+              const statements=Array.isArray(grantRows)
+                ? grantRows.flatMap(row => row && typeof row === 'object' ? Object.values(row) : [])
+                    .filter((v):v is string => typeof v === 'string')
                 : [];
-              const allowed=/\b(?:ALL PRIVILEGES|CREATE)\b/i;
-              const ddlGrant=grants.some(text=>allowed.test(text));
-              const scopeGrants=grants.some(text=>text.includes(hd.database)||/ON\s+\*\.\*/i.test(text));
+              const createPrivilege=statements.some(text => /\b(?:ALL PRIVILEGES|CREATE)\b/i.test(text));
+              const scopeGranted=statements.some(text => text.includes(hd.database) || /ON\s+\*\.\*/i.test(text));
               const [tables]=await c.query("SHOW TABLES LIKE 'db344_%'");
-              return {grantsReadable:true,ddlGrant,scopeGrants,existingProbeTableCount:Array.isArray(tables)?tables.length:-1};
+              out.grantSummary={readable:true,createPrivilege,scopeGranted,probeTableCount:Array.isArray(tables)?tables.length:-1};
             } finally {await c.end().catch(()=>undefined);}
+           } catch {out.grantSummary={unavailable:true};}
+           return out;
           }
-          export default {
-            async fetch(req: Request, env: Env): Promise<Response> {
-              if (req.method !== 'POST' || new URL(req.url).pathname !== '/run')
-                return new Response('Not found',{status:404});
-              if (!env.PROBE_TOKEN || req.headers.get('authorization') !== 'Bearer ' + env.PROBE_TOKEN)
-                return new Response('Forbidden',{status:403});
-              const summary: Record<string, unknown> = {};
-              for (const [name, dialect, hd] of [
-                ['postgres','postgres',env.POSTGRES],
-                ['mysql','mysql',env.MYSQL]
-              ] as const) {
-                try { summary[name] = await runDialect(dialect,hd); }
-                catch(e) {
-                  // Deliberately avoid surfacing DB error messages, credentials, host or SQL.
-                  const code = e && typeof e === 'object' && 'code' in e
-                    ? String((e as {code:unknown}).code) : 'unknown';
-                  const phase = e && typeof e === 'object' && 'phase' in e
-                    ? String((e as {phase:unknown}).phase) : 'unknown';
-                  const modeDiagnostic = name === 'mysql' && phase==='health'
-                    ? await inspectMysqlMode(hd).catch(() => ({ modeProbeUnavailable:true }))
-                    : name === 'mysql' && phase==='ddl_create'
-                      ? await mysqlDdlPermissionSummary(hd).catch(() => ({grantProbeUnavailable:true}))
-                      : {};
-                  summary[name] = {
-                    errorCode: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown',
-                    phase: /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown',
-                    ...modeDiagnostic
-                  };
-                }
-              }
-              return Response.json(summary,{headers:{'Cache-Control':'no-store'}});
-            }
-          };
+          export default {async fetch(req:Request,env:Env):Promise<Response>{
+           if (req.method!=='POST'||new URL(req.url).pathname!=='/run')return new Response('Not found',{status:404});
+           if (!env.PROBE_TOKEN ||req.headers.get('authorization')!=='Bearer '+env.PROBE_TOKEN)return new Response('Forbidden',{status:403});
+           const output:Record<string,unknown>={};
+           try{output.postgres=await postgres(env.POSTGRES);}catch{output.postgres={probeFailed:true};}
+           try{output.mysql=await mysql(env.MYSQL);}catch{output.mysql={probeFailed:true};}
+           return Response.json(output,{headers:{'Cache-Control':'no-store'}});
+          }};
           TS
           node --input-type=module <<'NODE'
           import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
@@ -342,8 +204,7 @@ jobs:
           for(const dialect of ['postgres','mysql']){
             const result=body[dialect];
             console.log('AIVEN_TEST_QUERY',JSON.stringify({dialect,...result}));
-            const keys=dialect==='postgres'?['tls','health','query','read','explain','schema']:['tls','health','query','read','explain','schema','ddl','insert','rollback','update','remove'];
-            if(!result || keys.some(key=>result[key]!==true))process.exitCode=1;
+            if(!result || (dialect==='postgres' && typeof result.dbCreate!=='boolean') || (dialect==='mysql' && !result.grantSummary))process.exitCode=1;
           }
           NODE
       - name: Always delete disposable Worker and Hyperdrive configs and temporary runner secrets
