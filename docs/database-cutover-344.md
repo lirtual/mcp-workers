@@ -209,12 +209,13 @@ deleted and the Draft PR's temporary workflow has been removed.
   proofs, not blanket approval for Direct plaintext transport, origin TLS
   negative cases, release-binding setup, production D1 cutover or Worker
   deployment. Previous no-permission PostgreSQL blockers are now resolved.
-- **Remaining operator cleanup:** `db344_acceptance` persists in the
-  isolated Aiven test database with a grant to `test`. The administrator
-  should run the guarded schema-owner/database readback then
-  `DROP SCHEMA db344_acceptance RESTRICT` individually in the Aiven SQL
-  editor after successful tests; failure if other objects are present is
-  intentional. This cleanup is not yet verified and must not be claimed.
+- **Post-test isolated Schema cleanup:** on 2026-10-28 the authorized
+  administrator reported completing the previously documented
+  `DROP SCHEMA db344_acceptance RESTRICT` in the dedicated Aiven PostgreSQL
+  test database. This is **operator-confirmed**, not independently re-read
+  using the isolated `test` credentials in this final review. Do not claim
+  a fresh SQL absence check or retain the permission grant as active
+  without verification. The full cleanup query remains above for audit.
 - Spec #344 and PR #345 remain Open/Draft. The empty production
   `hyperdrive-bindings.json` manifest is deliberate. Existing GitGuardian
   findings require separate resolution; no check waiver, merge,
