@@ -143,29 +143,39 @@ jobs:
             const schema = dialect === 'postgres' ? 'public' : undefined;
             const table = 'db344_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16);
             let created = false;
+            let stage = 'tls';
             try {
               result.tls = await tlsProof(dialect, hd);
+              stage = 'health';
               result.health = (await healthCheck(connection)).ok;
+              stage = 'read';
               const read = await queryRead(connection, 'SELECT 1 AS probe', [], 3);
               result.query = read.rowCount === 1 && Number(read.rows[0]?.[0]) === 1;
+              stage = 'explain';
               result.explain = (await explainRead(connection, 'SELECT 1 AS probe', [])) != null;
               // DDL scoped to one unique disposable table on dedicated test DB.
+              stage = 'ddl_create';
               await createTable(connection, schema, table, [
                 {name:'id', type:'integer', primaryKey:true},
                 {name:'value', type:'varchar', length:80, nullable:false}
               ]);
               created = true;
+              stage = 'schema';
               const description = await inspectSchema(connection, schema, table);
               result.schema = description.columns?.some(column => column.name === 'value') === true;
+              stage = 'ddl_index';
               await createIndex(connection, schema, table, ['value'], false, 'db344_value_index');
               await dropIndex(connection, schema, table, 'db344_value_index');
+              stage = 'ddl_alter';
               await alterTable(connection, schema, table, {
                 action:'add_column', column:{name:'flag',type:'integer',default:1}
               });
               result.ddl = true;
+              stage = 'insert';
               const inserted = await insertRows(write, schema, table,
                 [{id:1,value:'start'}, {id:2,value:"quote' and \\ slash"}]);
               result.insert = inserted.affectedRows === 2;
+              stage = 'read_special';
               const special = await queryRead(connection,
                 dialect === 'postgres'
                   ? 'SELECT value FROM "'+table+'" WHERE id = $1'
@@ -173,6 +183,7 @@ jobs:
                 [2], 3);
               result.insert = result.insert && special.rowCount === 1 &&
                 special.rows[0]?.[0] === "quote' and \\ slash";
+              stage = 'rollback_mutation';
               let denied = false;
               try {
                 await updateRows(guarded, schema, table, {value:'blocked'},
@@ -181,6 +192,7 @@ jobs:
                 denied = !!(e && typeof e === 'object' && 'code' in e &&
                   (e as {code:unknown}).code === 'WRITE_LIMIT_EXCEEDED');
               }
+              stage = 'rollback_verify';
               const values = await queryRead(connection,
                 dialect === 'postgres'
                   ? 'SELECT value FROM "'+table+'" WHERE id IN ($1,$2) ORDER BY id'
@@ -188,9 +200,15 @@ jobs:
                 [1,2], 3);
               result.rollback = denied && values.rowCount === 2 &&
                 values.rows[0]?.[0] === 'start' && values.rows[1]?.[0] === "quote' and \\ slash";
+              stage = 'update';
               result.update = (await updateRows(guarded,schema,table,{value:'changed'},{id:1}))
                 .affectedRows === 1;
+              stage = 'remove';
               result.remove = (await deleteRows(guarded,schema,table,{id:1})).affectedRows === 1;
+            } catch(e) {
+              const code = e && typeof e === 'object' && 'code' in e ?
+                String((e as {code: unknown}).code) : 'unknown';
+              throw { phase: stage, code: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown' };
             } finally {
               if (created) await dropTable(connection,schema,table).catch(() => undefined);
             }
@@ -212,7 +230,12 @@ jobs:
                   // Deliberately avoid surfacing DB error messages, credentials, host or SQL.
                   const code = e && typeof e === 'object' && 'code' in e
                     ? String((e as {code:unknown}).code) : 'unknown';
-                  summary[name] = { errorCode: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown' };
+                  const phase = e && typeof e === 'object' && 'phase' in e
+                    ? String((e as {phase:unknown}).phase) : 'unknown';
+                  summary[name] = {
+                    errorCode: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown',
+                    phase: /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown'
+                  };
                 }
               }
               return Response.json(summary,{headers:{'Cache-Control':'no-store'}});
