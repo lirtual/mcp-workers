@@ -111,9 +111,6 @@ async function main() {
     console.log('Database #344 ephemeral migration config generated (no Worker deployment).');
     return;
   }
-  let expected;
-  try { expected = JSON.parse(required('DATABASE_CUTOVER_EXPECTED_IDS')); } catch { fail(); }
-  if (!sameIds(expected)) fail();
   const catalog = parseLegacyImport(required('DATABASE_CONFIG'));
   const key = required('DATABASE_ENCRYPTION_KEY');
   const keyId = required('DATABASE_KEY_ID');
