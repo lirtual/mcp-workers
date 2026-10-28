@@ -42,8 +42,10 @@ test('OpenList Portal is attached only after verified exact 13-tool inventory an
     'openlist_search_files',
     'openlist_share_disable',
     'openlist_share_get',
-    'openlist_upload_small'
-  ]);
+    'openlist_upload_small',
+    'openlist_delete','openlist_share_create','openlist_share_update',
+    'openlist_share_enable','openlist_share_revoke',
+  ].sort());
   const state = portal(), originally = structuredClone(state.servers);
   let server = null, created = 0, synced = 0, puts = 0;
   const transport = async request => {
@@ -169,14 +171,14 @@ test('missing Access policies block attaching the newly synced OpenList server',
 });
 
 
-test('Worker registration and Portal tool inventory remain identical; five high-risk adapters are not exposed', async()=>{
+test('Worker and Portal both stage exactly eighteen bounded operations with risk annotations', async()=>{
   const {readFile}=await import('node:fs/promises');
   const source=await readFile(
     new URL('../apps/openlist-mcp-worker/src/tools.ts',import.meta.url),'utf8');
   const registered=[...source.matchAll(/server\.registerTool\('([^']+)'/g)]
     .map(match=>match[1]).sort();
-  assert.equal(registered.length,13,
-    'production must not accidentally register new dangerous tools');
+  assert.equal(registered.length,18,
+    'candidate tool surface must remain exactly the reviewed 18');
   assert.equal(new Set(registered).size,registered.length);
   assert.deepEqual(registered,[...OPENLIST_TOOLS].sort(),
     'a Worker-only tool bypasses the vetted Portal inventory or vice versa');
@@ -184,8 +186,16 @@ test('Worker registration and Portal tool inventory remain identical; five high-
     'openlist_delete','openlist_share_create','openlist_share_update',
     'openlist_share_enable','openlist_share_revoke',
   ];
-  for(const name of gated)
-    assert.ok(!registered.includes(name),name+' must remain unregistered');
+  for(const name of gated) {
+    assert.ok(registered.includes(name),name+' must be in candidate inventory');
+    const start=source.indexOf("server.registerTool('"+name+"'");
+    const next=source.indexOf("server.registerTool('",start+1);
+    const section=source.slice(start,next<0?undefined:next);
+    assert.match(section,/destructiveHint:\s*true/,name+' risk annotation');
+    assert.match(section,/annotations:\s*\{\s*\.\.\.annotationsWrite/,name+' write annotation');
+    assert.doesNotMatch(section,/confirm_approved|confirmation_token|approval_secret/,
+      'model-provided confirmation field must never be mistaken for trusted approval');
+  }
   const shareDisable=source.slice(
     source.indexOf("server.registerTool('openlist_share_disable'"),
     source.indexOf("server.registerTool('openlist_upload_small'"));
