@@ -97,6 +97,36 @@ The rest of this README documents the implementation and historical
 security analysis; prior "Draft/seven tools" status descriptions are
 superseded by this verified section.
 
+## Five high-risk native tools — implementation candidate (NOT released)
+
+The Owner approved using ChatGPT's OpenList-specific **Always ask** app permission
+and existing MCP identity, logical root checks, bounded native REST arguments,
+non-atomic readback, and `unknown` **never retry** semantics as the pragmatic
+basis for acceptance of the five previously gated operations. This accepts
+that `Always ask` and MCP tool annotations are **client-side signals**, not
+Worker-attestable, per-invocation human authorization. There is no additional
+approval store, second Worker, or model-supplied `confirmation=true` shortcut.
+
+**Current production remains 13/18**. The candidate branch adds registration
+of `openlist_delete` (one **file**, not directories), `openlist_share_create`
+(random password returned once, 1–168 hour expiry, 1–100 access limit,
+1–8 explicit paths), `openlist_share_update` (expiry and/or access limit),
+`openlist_share_enable`, and `openlist_share_revoke` (share record only,
+never source files). Each exposes accurate destructive/external-access
+annotations; the upstream administrator-equivalent API Token is unchanged.
+
+This is a **candidate**, not authorization to change the production Worker or
+Portal. Before release, require isolated production E2E on exact disposable
+objects for each of the five operations: accepted action and independent
+readback; out-of-scope/invalid/no-op negatives; one-call/no-retry on unknown;
+external share access effects; file-delete verified only against new disposable
+test content. No existing user file/share or retained fixture is a permitted
+test target without its own precise authorization. Use existing manual GitHub
+Actions, no scheduled deployment. The separate [Draft PR #386](https://github.com/lirtual/mcp-workers/pull/386)
+proposes rejecting permanent MCP download links and must be reconciled before
+a release; do not accidentally re-enable permanent URL exposure by merging
+outdated tool descriptions.
+
 ## Share-disable consistency: evidence and safe interpretation
 
 The deployed native `/api/share/disable` handler changes one record then
