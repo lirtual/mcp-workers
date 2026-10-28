@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      confirm_high_risk_lifecycle:
+        description: Single first-attempt test of share create/update/disable/enable/revoke and delete only the newly created synthetic file (requires disposable write, no native)
+        required: false
+        type: boolean
+        default: false
       confirm_portal_registration:
         description: Separately approve registering existing OpenList MCP in One-MCP (no Worker release)
         required: false
@@ -42,12 +47,19 @@ jobs:
           CURRENT_REF: ${{ github.ref }}
           APPROVE_FIXTURE_WRITE: ${{ inputs.confirm_disposable_write }}
           APPROVE_NATIVE: ${{ inputs.confirm_native_tool_tests }}
+          APPROVE_HIGH_RISK: ${{ inputs.confirm_high_risk_lifecycle }}
           APPROVE_PORTAL: ${{ inputs.confirm_portal_registration }}
           APPROVE_SHARE_READ: ${{ inputs.confirm_historical_share_read }}
         run: |
           set -euo pipefail
           [[ "$CURRENT_REF" == "refs/heads/main" ]] || exit 1
-          if [[ "$APPROVE_SHARE_READ" == "true" ]]; then
+          if [[ "$APPROVE_HIGH_RISK" == "true" ]]; then
+            [[ "$APPROVE_FIXTURE_WRITE" == "true" &&
+               "$APPROVE_NATIVE" == "false" &&
+               "$APPROVE_PORTAL" == "false" &&
+               "$APPROVE_SHARE_READ" == "false" &&
+               "$GITHUB_RUN_ATTEMPT" == "1" ]] || exit 1
+          elif [[ "$APPROVE_SHARE_READ" == "true" ]]; then
             [[ "$APPROVE_FIXTURE_WRITE" == "false" &&
                "$APPROVE_NATIVE" == "false" &&
                "$APPROVE_PORTAL" == "false" ]] || exit 1
@@ -63,7 +75,7 @@ jobs:
   driver-e2e:
     name: Live OpenList MCP / Koofr driver E2E (no deploy)
     needs: selection-gate
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_disposable_write == true && inputs.confirm_portal_registration != true && inputs.confirm_historical_share_read != true }}
     runs-on: ubuntu-latest
     environment:
       name: openlist-mcp-worker
@@ -85,6 +97,7 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
+          if [[ "${{ inputs.confirm_high_risk_lifecycle }}" == "true" ]]; then [[ "$GITHUB_RUN_ATTEMPT" == "1" ]]; fi
           node --check scripts/openlist-driver-acceptance.mjs
           node --test scripts/openlist-driver-acceptance.test.mjs
       - name: Verify real MCP tools using one fresh disposable Koofr folder
@@ -92,6 +105,7 @@ jobs:
         env:
           OPENLIST_DRIVER_E2E_APPROVED: ${{ inputs.confirm_disposable_write }}
           OPENLIST_NATIVE_E2E_APPROVED: ${{ inputs.confirm_native_tool_tests }}
+          OPENLIST_HIGH_RISK_E2E_APPROVED: ${{ inputs.confirm_high_risk_lifecycle }}
           OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           OPENLIST_API_TOKEN: ${{ secrets.OPENLIST_API_TOKEN }}
@@ -100,7 +114,7 @@ jobs:
   historical-share-read:
     name: Read only exact historical synthetic share (no deploy or mutations)
     needs: selection-gate
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_historical_share_read == true && inputs.confirm_disposable_write != true && inputs.confirm_native_tool_tests != true && inputs.confirm_portal_registration != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_historical_share_read == true && inputs.confirm_disposable_write != true && inputs.confirm_native_tool_tests != true && inputs.confirm_portal_registration != true && inputs.confirm_high_risk_lifecycle != true }}
     runs-on: ubuntu-latest
     environment:
       name: openlist-mcp-worker
