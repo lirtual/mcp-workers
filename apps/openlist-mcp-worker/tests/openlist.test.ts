@@ -806,3 +806,40 @@ test('native copy does not require source absence',async()=>{
   const result=await api.copyFile('/drive/safe/test.txt','/drive/safe/dest');
   assert.equal(result.status,'succeeded');
 });
+
+
+test('all five native high-risk adapters report unknown after at most one dispatched write', async()=>{
+  const cases=[
+    ['create', (api:OpenListApi)=>api.createShare(['/drive/safe/a.txt'],1,2)],
+    ['update', (api:OpenListApi)=>api.updateShare('share_1',2,3)],
+    ['enable', (api:OpenListApi)=>api.enableShare('share_1')],
+    ['revoke', (api:OpenListApi)=>api.revokeShare('share_1')],
+    ['delete', (api:OpenListApi)=>api.deleteFile('/drive/safe/a.txt')],
+  ] as const;
+  for(const [kind,invoke] of cases){
+    let writes=0;
+    const api=new OpenListApi(createConfig(env(async req=>{
+      const path=new URL(req.url).pathname;
+      if(req.method==='POST' && path!=='/api/fs/get'){
+        writes++;
+        throw Error('secret-failure-after-dispatch');
+      }
+      if(path==='/api/fs/get')return ok({
+        path:'/drive/safe/a.txt',name:'a.txt',is_dir:false,size:5});
+      if(path==='/api/share/get'){
+        return kind==='create'
+          ? Response.json({code:404,data:null})
+          : ok({id:'share_1',files:['/drive/safe/a.txt'],
+              disabled:kind==='enable',max_accessed:2,
+              pwd:'private-value',creator:'do-not-disclose'});
+      }
+      throw Error('unexpected request in '+kind);
+    })));
+    const result=await invoke(api);
+    assert.equal(result.status,'unknown',kind);
+    assert.equal(result.code,'UPSTREAM_UNCERTAIN',kind);
+    assert.equal(writes,1,kind+' must never retry an uncertain write');
+    assert.doesNotMatch(JSON.stringify(result),
+      /secret-failure-after-dispatch|private-value|do-not-disclose/);
+  }
+});
