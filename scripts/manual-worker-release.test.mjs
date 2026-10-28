@@ -117,7 +117,7 @@ test("Database production release verifies D1 before the first Wrangler deploy",
   assert.match(step, /if: inputs\.worker == 'database-mcp-worker'/);
   assert.match(step, /database-d1-sql database-mcp-worker/);
   assert.match(step, /database-d1-check database-mcp-worker/);
-  assert.match(step, /DATABASE_CUTOVER_EXPECTED_IDS: .*vars\.DATABASE_CUTOVER_EXPECTED_IDS/);
+  assert.doesNotMatch(step, /DATABASE_CUTOVER_EXPECTED_IDS/, 'fixed original IDs require no extra Variable');
   assert.match(step, /wrangler d1 execute database-mcp-db --remote --json/);
   assert.doesNotMatch(step, /\bmigrations apply\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b/i);
 });
