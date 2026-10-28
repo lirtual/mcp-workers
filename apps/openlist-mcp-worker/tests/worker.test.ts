@@ -40,7 +40,7 @@ test('public health, 401 auth, Origin denial, and bad upstream configuration', a
   assert.equal((await worker.fetch(rpc('portal-fixture'), { ...env, OPENLIST: undefined })).status, 503);
   assert.equal(calls, 0);
 });
-test('actual tools/list publishes only safe accepted surface, with correct annotations', async () => {
+test('actual tools/list stages exactly 18 bounded native operations and risk annotations', async () => {
   const env = settings(async () => Response.json({ code: 200, data: {} }));
   const client = await clientFor(env);
   try {
@@ -51,6 +51,8 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
       'openlist_download_link','openlist_share_disable',
       'openlist_upload_small','openlist_rename','openlist_copy',
       'openlist_move','openlist_create_folder',
+      'openlist_delete','openlist_share_create','openlist_share_update',
+      'openlist_share_enable','openlist_share_revoke',
     ]);
     assert.equal(tools.find(t => t.name === 'openlist_create_folder')?.annotations?.readOnlyHint, false);
     assert.equal(tools.find(t => t.name === 'openlist_get_file')?.annotations?.readOnlyHint, true);
@@ -60,28 +62,37 @@ test('actual tools/list publishes only safe accepted surface, with correct annot
     const inventory = JSON.parse((capabilities.content[0] as {text:string}).text).observed_state;
     assert.deepEqual(inventory.active_tools, tools.map(t => t.name));
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_get'), false);
-    assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), true);
+    assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_create'), false);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_share_disable'), false);
     assert.equal(inventory.disabled_pending_acceptance.includes('openlist_download_link'), false);
     for(const name of ['openlist_upload_small','openlist_rename','openlist_copy','openlist_move'])
       assert.equal(inventory.disabled_pending_acceptance.includes(name), false);
     assert.equal(tools.find(t => t.name === 'openlist_share_disable')?.annotations?.destructiveHint, true);
-    assert.equal(inventory.disabled_pending_acceptance.length, 5);
+    assert.deepEqual(inventory.disabled_pending_acceptance, []);
+    for(const name of ['openlist_delete','openlist_share_create',
+      'openlist_share_update','openlist_share_enable','openlist_share_revoke']) {
+      assert.equal(tools.find(t=>t.name===name)?.annotations?.readOnlyHint,false);
+      assert.equal(tools.find(t=>t.name===name)?.annotations?.destructiveHint,true);
+    }
     assert.doesNotMatch(JSON.stringify(capabilities), /upstream-fixture|portal-fixture/);
   } finally { await client.close(); }
 });
-test('retired share creation is unavailable through MCP', async () => {
-  let calls = 0;
-  const client = await clientFor(settings(async () => {
+test('share creation requires bounded input and strict file scope before any upstream operation', async () => {
+  let calls=0;
+  const client=await clientFor(settings(async req => {
     calls++;
     return Response.json({code:200,data:null});
   }));
   try {
-    await assert.rejects(() => client.callTool({
-      name:'openlist_share_create', arguments:{},
-    }), /not found/);
-    assert.equal(calls, 0);
-  } finally { await client.close(); }
+    const missing=await client.callTool({name:'openlist_share_create',
+      arguments:{files:[],expires_hours:1,max_accessed:1}});
+    assert.equal(missing.isError,true);
+    const denied=await client.callTool({name:'openlist_share_create',
+      arguments:{files:['/Koofr/other/file.txt'],expires_hours:1,max_accessed:1}});
+    assert.equal(denied.isError,true);
+    assert.match(JSON.stringify(denied),/OUT_OF_SCOPE/);
+    assert.equal(calls,0);
+  } finally {await client.close();}
 });
 
 test('share_get accepts an explicit ID, reads only that record, and strips secrets', async () => {
@@ -317,16 +328,26 @@ test('MCP native small upload respects scope and emits actual raw bytes with nat
     assert.equal(writes,1);
   }finally {await client.close();}
 });
-test('all dangerous unregistered share/delete tools cannot be called through MCP',async()=>{
-  // API adapters exist in source, but no tool entrypoint bypasses client approval.
-  let calls=0;
-  const client=await clientFor(settings(async()=>{calls++;return Response.json({code:200,data:null})}));
+test('high-risk tools require exact arguments and reject forbidden targets before mutation',async()=>{
+  let writes=0;
+  const client=await clientFor(settings(async req=>{
+    if(req.method!=='GET')writes++;
+    return Response.json({code:200,data:{name:'x.txt',path:'/Koofr/safe/x.txt',is_dir:true}});
+  }));
   try {
-    for(const name of ['openlist_share_create','openlist_share_update',
-      'openlist_share_enable','openlist_share_revoke','openlist_delete']) {
-      await assert.rejects(()=>client.callTool({name,arguments:{id:'abc',path:'/Koofr/safe/x'}}),
-        /not found/);
+    const pairs=[
+      ['openlist_delete',{path:'/Koofr/other/x.txt'},'OUT_OF_SCOPE'],
+      ['openlist_share_create',{files:['/Koofr/other/x.txt'],expires_hours:1,max_accessed:1},'OUT_OF_SCOPE'],
+      ['openlist_share_update',{id:'invalid/..',expires_hours:2},null],
+      ['openlist_share_update',{id:'abc'},null],
+      ['openlist_share_enable',{id:'invalid/..'},null],
+      ['openlist_share_revoke',{id:'invalid/..'},null],
+    ] as const;
+    for(const [name,args,expectedCode] of pairs) {
+      const output=await client.callTool({name,arguments:args});
+      assert.equal(output.isError,true,name);
+      if(expectedCode)assert.match(JSON.stringify(output),new RegExp(expectedCode));
     }
-    assert.equal(calls,0);
+    assert.equal(writes,0);
   }finally {await client.close();}
 });
