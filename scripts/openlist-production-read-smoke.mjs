@@ -165,7 +165,7 @@ export async function runOpenListHistoricalShareRead(env, transport = fetch) {
     fail('share_read_not_approved');
   const token = env.MCP_ACCESS_TOKEN;
   if (typeof token !== 'string' || !token || token.trim() !== token ||
-      /[\\r\\n]/.test(token)) fail('missing_token');
+      /[\r\n]/.test(token)) fail('missing_token');
   try { collectWorkerVars('openlist-mcp-worker', env); }
   catch { fail('invalid_roots'); }
   let roots;
@@ -207,7 +207,7 @@ export async function runOpenListHistoricalShareRead(env, transport = fetch) {
     fail('share_read_unsafe_state');
   const expires = state.expires;
   const expirationKnown = typeof expires === 'string' &&
-    /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z$/.test(expires) &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(expires) &&
     Number.isFinite(Date.parse(expires));
   if (expires !== undefined && expires !== null &&
       !expirationKnown) fail('share_read_bad_expiry');
