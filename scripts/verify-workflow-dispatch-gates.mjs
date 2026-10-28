@@ -36,7 +36,10 @@ export function verifyDatabaseActivationGate(source) {
   const gate = activation.gate.replace(/\s+/g, ' ').trim();
   const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_activation_approved == true && inputs.database_activation_id != '' && inputs.database_activation_revision != '' }}";
   assert.equal(gate, expected, 'Unsafe Database activation gate');
-  const checks = job(source, 'checks').content;
+  const checkStart = source.indexOf('\n  checks:\n');
+  const deployStart = source.indexOf('\n  deploy:\n');
+  assert.ok(checkStart >= 0 && deployStart > checkStart, 'Missing reusable release checks');
+  const checks = source.slice(checkStart, deployStart);
   assert.ok(checks.includes("inputs.database_activation_id == ''"), 'Activation must never initiate release checks');
   const deploy = job(source, 'deploy').content;
   assert.ok(deploy.includes("inputs.database_activation_id == ''"), 'Activation must never initiate deployment');
