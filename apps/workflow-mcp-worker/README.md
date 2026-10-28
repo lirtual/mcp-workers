@@ -11,6 +11,21 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 
 No arbitrary shell input or unreviewed repository dispatch is allowed. Workflow cancellation of approved GitHub Actions is separate from stopping admission; native GitHub Run state is reconciled before a physical termination is declared.
 
+
+### Unified Action syntax (Spec #392, partial)
+
+New GitHub Task/Session Drafts can use `action.run` with `with.executor: github` and
+all existing `github.action` identity fields and explicit Publish grants. The
+compiler deliberately normalizes this to the **unchanged internal** GitHub
+execution shape; the old `github.run` Published Plan, digest, OIDC, Attempt,
+Ready and physical Session lifecycle remain unchanged. The new spelling does
+**not** grant execution or make a discovered Action runnable automatically.
+
+Cloudflare `action.run` is **not available** in this implementation slice:
+it fails validation until separate exact Provider grants, trusted OpenList
+Ready reference, durable Invocation reservation and read-only recovery logic
+are implemented. No public Weixin MCP write is exposed as a shortcut.
+
 ## Runtime
 
 The owner-facing endpoint is `https://workflow.lirtual.dpdns.org/mcp`. The existing production Portal endpoint is `https://mcp.lirtual.dpdns.org/mcp`. The Worker's MCP endpoint requires the existing Portal bearer authentication; GitHub callbacks use GitHub-issued OIDC, not the Portal bearer. External Webhooks require a distinct, scoped random Bearer token; never send the MCP owner credential to a Webhook producer.

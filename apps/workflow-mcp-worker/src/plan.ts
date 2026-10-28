@@ -5,7 +5,7 @@ import {isForeachTaskInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
-export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
+export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run'] as const;
 export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300,maxEventWaitSeconds:3600});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
@@ -337,8 +337,19 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       const source=object(candidate.items,'invalid_foreach_items');
       if(Object.keys(source).length!==1||typeof source.ref!=='string')
         throw new PlanError('invalid_foreach_items',path+'/items');
-      const templ=object(candidate.template,'invalid_foreach_template');
+      const templ={...object(candidate.template,'invalid_foreach_template')};
       keys(templ,['steps'],path+'/template');
+      // Preserve existing foreach Task identity, grants and Run behavior.
+      // Cloudflare actions remain rejected in every template shape.
+      if(Array.isArray(templ.steps))templ.steps=templ.steps.map((entry,index)=>{
+        const child=object(entry,'invalid_foreach_template');
+        if(child.uses!=='action.run')return child;
+        const input=object(child.with,'invalid_step_arguments');
+        const target=path+'/template/steps/'+index+'/with';
+        keys(input,['executor','capability','action'],target);
+        if(input.executor!=='github')throw new PlanError('unsupported_foreach_executor',target+'/executor');
+        return {...child,uses:'github.run',with:{capability:input.capability,action:input.action}};
+      });
       if(!Array.isArray(templ.steps)||templ.steps.length<1||
          templ.steps.length>PLAN_LIMITS.maxForeachTemplateSteps)
         throw new PlanError('unsupported_foreach_template',path+'/template/steps');
@@ -512,8 +523,20 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of expanded){
-    const s=object(s0,'invalid_step');
+    const sourceStep=object(s0,'invalid_step');
     const stepPath='/steps/'+steps.length;
+    // The source-level unified GitHub spelling reuses the mature dispatch,
+    // OIDC, terminal-state and grant machinery. Do not touch old Plan JSON.
+    // Cloudflare actions require an independent audited grant/receipt path;
+    // until that is implemented they MUST fail at compilation, never dispatch.
+    const s:Record<string,unknown>=sourceStep.uses==='action.run'?(()=>{
+      const withData=object(sourceStep.with,'invalid_step_arguments');
+      keys(withData,['executor','capability','action'],stepPath+'/with');
+      if(withData.executor!=='github')
+        throw new PlanError('unsupported_executor',stepPath+'/with/executor');
+      return {...sourceStep,uses:'github.run',
+        with:{capability:withData.capability,action:withData.action}};
+    })():sourceStep;
     keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);

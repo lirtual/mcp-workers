@@ -218,6 +218,12 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
       scope:{const:'read'},arguments:{type:'object'},
       input_schema:{type:'object'},output_schema:{type:'object'},
     }},
+  'action.run':{type:'object',additionalProperties:false,
+    required:['executor','capability','action'],properties:{
+      executor:{const:'github'},
+      capability:{const:'github.action'},
+      action:{type:'object'},
+    }},
   'github.run':{type:'object',additionalProperties:false,
     required:['capability','action'],properties:{
       capability:{const:'github.action'},
@@ -327,7 +333,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
             properties:{steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxForeachTemplateSteps,
                description:'One reviewed Action per item, or 2-4 ordered emit/read-only MCP children with at most one owner-approved literal-input GitHub Task. Only earlier children in the same item can be referenced.',items:{
               type:'object',additionalProperties:false,required:['id','uses','with'],
-              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','github.run']},
+              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','github.run','action.run']},
                 with:{type:'object'},
                 if:{anyOf:[{type:'boolean'},{type:'object'}]}},
               allOf:[
@@ -337,10 +343,12 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
                 {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+                {if:{required:['uses'],properties:{uses:{const:'action.run'}}},
+                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
               ]},allOf:[{if:{minItems:2},then:{anyOf:[
                 {items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}}},
                 {contains:{type:'object',required:['uses'],
-                  properties:{uses:{const:'github.run'}}},minContains:1,maxContains:1},
+                  properties:{uses:{enum:['github.run','action.run']}}},minContains:1,maxContains:1},
               ]}}]}}},
         ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 ordered emit/read-only MCP children with at most one reviewed literal-input GitHub Task; Sessions, multiple Tasks and nesting are unsupported.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
@@ -351,6 +359,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
         {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
         {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+        {if:{properties:{uses:{const:'action.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
       ],
     }},
   },
@@ -369,6 +378,8 @@ const entries=[
    description:'Emit a bounded deterministic result; with={data:expression}.'},
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
+  {id:'action.run.github',kind:'action',availability:'supported_with_grant',
+   description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare executor is not enabled until its separate authorization and receipts are implemented.'},
   {id:'action.github.run',kind:'action',availability:'supported_with_grant',
    description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
   {id:'flow.static_dag',kind:'flow',availability:'supported',
@@ -428,10 +439,10 @@ export async function workflowCapabilities(env:Pick<Env,
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const availability=(entry:Entry)=>
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
-    (entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
+    (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.mcp.call','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.mcp.call','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -456,6 +467,7 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
+    ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
   };
   if(id==='trigger.webhook'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
