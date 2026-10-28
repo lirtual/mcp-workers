@@ -143,3 +143,34 @@ test('a deployed new D1 binding prevents Direct preflight', async () => {
   try { await assert.rejects(checkReadOnlyD1(env), /preflight failed/); }
   finally { globalThis.fetch = previous; }
 });
+
+test('direct preflight manual gate is Owner-only, isolated and never a write route', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const begin = source.indexOf('\n  database-direct-preflight:\n');
+  const end = source.indexOf('\n  database-prepare:\n', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const job = source.slice(begin, end);
+  for (const gate of [
+    "github.actor == 'lirtual'", "github.ref == 'refs/heads/main'",
+    "inputs.worker == 'database-mcp-worker'",
+    'inputs.database_direct_preflight_approved == true',
+    'inputs.deploy_to_production == false',
+    'inputs.database_prepare_approved != true',
+    'inputs.database_activation_approved != true',
+    "inputs.database_activation_id == ''",
+    'name: database-mcp-worker',
+    'group: worker-release-database-mcp-worker',
+    'git ls-remote origin refs/heads/main',
+    'node scripts/database-direct-preflight-344.mjs'
+  ]) assert.ok(job.includes(gate), 'Direct preflight gate missing: ' + gate);
+  assert.doesNotMatch(job, /wrangler deploy|wrangler d1 migrations|database-prep-344\.mjs import|activate-database-hyperdrive\.mjs/);
+  const deploy = source.slice(source.indexOf('\n  deploy:\n'), source.indexOf('\n  database-activate:\n'));
+  const activation = source.slice(source.indexOf('\n  database-activate:\n'), begin);
+  const preparation = source.slice(end);
+  for (const other of [deploy, activation, preparation]) {
+    assert.ok(other.includes('inputs.database_direct_preflight_approved != true'));
+  }
+  const checks = source.slice(source.indexOf('\n  checks:\n'), source.indexOf('\n  deploy:\n'));
+  assert.ok(checks.includes('inputs.database_direct_preflight_approved != true'));
+});
