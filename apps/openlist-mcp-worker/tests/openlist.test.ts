@@ -775,6 +775,87 @@ test('gated delete refuses folders and removes only one file with proof of absen
 });
 
 
+test('Koofr deleted file is proven absent by one refreshed complete parent listing after get 500',async()=>{
+  const routes:string[]=[];
+  let writes=0,deleted=false;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const route=new URL(req.url).pathname;
+    routes.push(route);
+    if(route==='/api/fs/get'){
+      const {path}=await req.json() as {path:string};
+      assert.equal(path,'/drive/safe/x.txt');
+      if(deleted)return Response.json({code:500,message:'sensitive upstream missing file',data:null},{status:500});
+      return ok({name:'x.txt',path,is_dir:false,size:50});
+    }
+    if(route==='/api/fs/remove'){
+      writes++;assert.deepEqual(await req.json(),{dir:'/drive/safe',names:['x.txt']});
+      deleted=true;return ok(null);
+    }
+    assert.equal(route,'/api/fs/list');
+    assert.deepEqual(await req.json(),{path:'/drive/safe',page:1,per_page:100,refresh:true});
+    return ok({content:[{name:'other.txt',path:'/drive/safe/other.txt',is_dir:false}],total:1});
+  })));
+  const result=await api.deleteFile('/drive/safe/x.txt');
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.code,'OK');
+  assert.deepEqual(result.observed_state,{deleted:true});
+  assert.equal(writes,1);
+  assert.deepEqual(routes,['/api/fs/get','/api/fs/remove','/api/fs/get','/api/fs/list']);
+  assert.doesNotMatch(JSON.stringify(result),/sensitive upstream|admin-token/);
+});
+
+test('delete absence proof fails closed for present, incomplete, forged or malformed parent listings',async()=>{
+  const cases=[
+    {content:[{name:'x.txt',is_dir:false}],total:1},
+    {content:[{name:'other.txt',is_dir:false}],total:101},
+    {content:[{name:'other.txt',is_dir:false}],total:2},
+    {content:[{name:'other.txt',path:'/drive/outside/other.txt'}],total:1},
+    {content:[{name:'other.txt'},{name:'other.txt'}],total:2},
+    {content:[{path:'/drive/safe/other.txt'}],total:1},
+  ];
+  for(const listing of cases){
+    let writes=0,reads=0;
+    const api=new OpenListApi(createConfig(env(async req=>{
+      const route=new URL(req.url).pathname;
+      if(route==='/api/fs/get'){
+        reads++;
+        return reads===1?ok({name:'x.txt',path:'/drive/safe/x.txt',is_dir:false,size:50}):
+          Response.json({code:500,data:null},{status:500});
+      }
+      if(route==='/api/fs/remove'){
+        writes++;return ok(null);
+      }
+      assert.equal(route,'/api/fs/list');
+      assert.deepEqual(await req.json(),{path:'/drive/safe',page:1,per_page:100,refresh:true});
+      return ok(listing);
+    })));
+    const result=await api.deleteFile('/drive/safe/x.txt');
+    assert.equal(result.status,'unknown');
+    assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+    assert.equal(writes,1);
+    assert.equal(reads,2);
+  }
+});
+
+test('delete with uncertain native remove never trusts a later listing or retries',async()=>{
+  let writes=0,lists=0;
+  const api=new OpenListApi(createConfig(env(async req=>{
+    const route=new URL(req.url).pathname;
+    if(route==='/api/fs/get')
+      return ok({name:'x.txt',path:'/drive/safe/x.txt',is_dir:false,size:50});
+    if(route==='/api/fs/remove'){
+      writes++;return Response.json({code:500,data:null},{status:500});
+    }
+    if(route==='/api/fs/list')lists++;
+    throw Error('unexpected request');
+  })));
+  const result=await api.deleteFile('/drive/safe/x.txt');
+  assert.equal(result.status,'unknown');
+  assert.equal(result.code,'UPSTREAM_UNCERTAIN');
+  assert.equal(writes,1);
+  assert.equal(lists,0);
+});
+
 test('native rename and move report unknown when source still exists after a nominal success',async()=>{
   for(const kind of ['rename','move'] as const) {
     let writes=0;
