@@ -127,6 +127,9 @@ export async function runActiveShareAcceptance(env, transport=fetch,
     absent.body.code==='NOT_FOUND' && absent.body.target===id,
     'share_id_not_confirmed_absent');
 
+  // ID is synthetic and is not sufficient to access the share; disclose it
+  // for exact recovery if creation is uncertain, never the secret password.
+  console.log('OPENLIST_ACTIVE_SHARE_TARGET id='+id);
   // One create dispatch. A transport failure is *unknown*, never retried.
   let createError=null;
   try {
@@ -137,9 +140,14 @@ export async function runActiveShareAcceptance(env, transport=fetch,
     check(created?.code===200,'create_unknown');
   } catch(e) {createError=e}
   // Read-only lookup can prove creation even when HTTP response was lost.
-  try {createConfirmed=exactShare(await getState(),false)}
-  catch {createConfirmed=false}
-  if(!createConfirmed) fail('create_outcome_unknown');
+  for (let attempt=0;attempt<4;attempt++) {
+    try {createConfirmed=exactShare(await getState(),false)}
+    catch {createConfirmed=false}
+    if(createConfirmed)break;
+    if(attempt<3)await new Promise(resolve=>setTimeout(resolve,400));
+  }
+  if(!createConfirmed)fail('create_outcome_unknown');
+  console.log('OPENLIST_ACTIVE_SHARE_CREATE_CONFIRMED id='+id);
   // From this point the *one known share* must be disabled even if a public
   // probe fails. No retry of either effectful operation is permitted.
   let probeError=createError;
@@ -156,6 +164,11 @@ export async function runActiveShareAcceptance(env, transport=fetch,
         granted.data?.size===50 && granted.data?.is_dir===false,
         'public_access_not_proven');
       beforePublic=true;
+      // The upstream counts successful public accesses with a background
+      // saveDb operation. Give it time to settle before the explicit disable
+      // to avoid racing an in-flight older share snapshot write.
+      await new Promise(resolve=>setTimeout(resolve,1500));
+      check(exactShare(await getState(),false),'public_pre_disable_state_unknown');
     }
   } catch(e) {probeError=e}
 
@@ -165,6 +178,7 @@ export async function runActiveShareAcceptance(env, transport=fetch,
   let disableError=null;
   try {
     disableDispatched=true;
+    console.log('OPENLIST_ACTIVE_SHARE_DISABLE_DISPATCH id='+id);
     const disabled=await rpc('openlist_share_disable',{id});
     disableMcpStatus=disabled.body?.status==='succeeded' &&
       disabled.body?.code==='OK' && !disabled.error ? 'succeeded' :
@@ -195,6 +209,9 @@ export async function runActiveShareAcceptance(env, transport=fetch,
     }
   }
   // No data or password, signed URLs, raw responses or headers in errors.
+  console.log('OPENLIST_ACTIVE_SHARE_OUTCOME id='+id+
+    ' readback_disabled='+afterState+' public_reject='+publicRejection+
+    ' write_status='+disableMcpStatus);
   if(!afterState)fail('disable_readback_unknown');
   if(disableError || disableMcpStatus!=='succeeded')fail('disable_rpc_unknown');
   if(probeError)fail('public_probe_failed');
