@@ -265,6 +265,30 @@ test('post-cutover D1 registry allows independent lifecycle with 0–10 entries 
     config_id: '11111111-1111-4111-8111-111111111111', binding_name: 'HYPERDRIVE_PG' };
   assert.deepEqual(await verifyRegistryReadiness([extra, hyperdrive], keys),
     { valid: true, records: 2, direct: 1, hyperdrive: 1 });
+  const activeHyperdrive = { ...hyperdrive, status: 'active', revision: 2 };
+  const approvedBinding = { binding: hyperdrive.binding_name, id: hyperdrive.config_id,
+    dialect: hyperdrive.dialect, origin_database: 'approved_db' };
+  assert.deepEqual(await verifyRegistryReadiness([extra, activeHyperdrive], keys, [approvedBinding]),
+    { valid: true, records: 2, direct: 1, hyperdrive: 1 });
+  // Disabled references may be staged before a binding release; active ones
+  // must be represented in the reviewed manifest used by the running Worker.
+  await assert.rejects(verifyRegistryReadiness([activeHyperdrive], keys), /preflight failed/);
+  for (const incorrect of [
+    { ...approvedBinding, id: '22222222-2222-4222-8222-222222222222' },
+    { ...approvedBinding, binding: 'HYPERDRIVE_WRONG' },
+    { ...approvedBinding, dialect: 'mysql' }
+  ]) await assert.rejects(verifyRegistryReadiness([activeHyperdrive], keys, [incorrect]),
+    /preflight failed/);
+  await assert.rejects(verifyRegistryReadiness([activeHyperdrive], keys,
+    [approvedBinding, approvedBinding]), /preflight failed/);
+  const longestLegalId = 'a' + 'b'.repeat(63);
+  const maxId = row(longestLegalId, 'mysql', 'active');
+  maxId.ciphertext = await syntheticCipher(maxId.id, maxId.dialect,
+    'mysql://synthetic:secret@db.example.net:3306/db', encryptionKey);
+  assert.deepEqual(await verifyRegistryReadiness([maxId], credentials),
+    { valid: true, records: 1, direct: 1, hyperdrive: 0 });
+  await assert.rejects(verifyRegistryReadiness([{ ...maxId, id: longestLegalId + 'c' }],
+    credentials), /preflight failed/);
   for (const makeBad of [
     () => [{ ...extra, ciphertext: extra.ciphertext + '.extra' }],
     () => [{ ...extra, dialect: 'mysql' }],

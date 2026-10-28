@@ -1,4 +1,5 @@
 // Read-only Spec #344 Direct cutover verifier; never changes D1 or contacts an origin.
+import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,8 +97,9 @@ async function readD1(sql, token, account) {
  * Direct ciphertext using only currently configured recovery keys, without
  * requiring the original two IDs or disclosing any decrypted URL.
  */
-export async function verifyRegistryReadiness(rows, keys) {
-  if (!Array.isArray(rows) || rows.length > 10 || !keys ||
+export async function verifyRegistryReadiness(rows, keys, manifest = []) {
+  if (!Array.isArray(rows) || rows.length > 10 || !Array.isArray(manifest) ||
+      manifest.length > 10 || !keys ||
       typeof keys.DATABASE_KEY_ID !== 'string' ||
       !/^[A-Za-z0-9_-]{1,32}$/.test(keys.DATABASE_KEY_ID)) blocked();
   const seenIds = new Set();
@@ -105,7 +107,7 @@ export async function verifyRegistryReadiness(rows, keys) {
   const seenBindings = new Set();
   let direct = 0;
   for (const row of rows) {
-    if (!row || typeof row.id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(row.id) ||
+    if (!row || typeof row.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(row.id) ||
         seenIds.has(row.id) || !['mysql', 'postgres'].includes(row.dialect) ||
         !['active', 'disabled'].includes(row.status) ||
         !Number.isSafeInteger(row.revision) || row.revision < 1) blocked();
@@ -116,6 +118,12 @@ export async function verifyRegistryReadiness(rows, keys) {
           typeof row.binding_name !== 'string' || !/^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(row.binding_name) ||
           seenConfigs.has(row.config_id) || seenBindings.has(row.binding_name)) blocked();
       seenConfigs.add(row.config_id); seenBindings.add(row.binding_name);
+      // Disabled references may legitimately await a binding release. An
+      // active reference must match the immutable, protected source mapping;
+      // otherwise an existing consumer would lose its connection on release.
+      if (row.status === 'active' && manifest.filter(item =>
+        item?.binding === row.binding_name && item?.id === row.config_id &&
+        item?.dialect === row.dialect).length !== 1) blocked();
       continue;
     }
     if (row.transport !== 'direct' || row.config_id !== null || row.binding_name !== null ||
@@ -195,7 +203,11 @@ export async function checkReadOnlyD1(env = process.env) {
     return { valid: true, records: 2, status: phase === 'staged' ? 'disabled' : 'active', workerChanged: false };
   }
   if (phase !== 'release') blocked();
-  const result = await verifyRegistryReadiness(rows, env);
+  // The runtime consumes this same versioned, nonsecret manifest. The later
+  // Cloudflare-origin readback gate independently checks every declared config.
+  const manifest = JSON.parse(await readFile(new URL(
+    '../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
+  const result = await verifyRegistryReadiness(rows, env, manifest);
   return { ...result, status: 'registry', workerChanged: true };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
