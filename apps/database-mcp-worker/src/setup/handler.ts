@@ -1,6 +1,5 @@
 import { getRuntimeLimits } from '../config.js';
 import { healthCheck } from '../db/index.js';
-import { resolveHyperdriveConnection } from '../db/hyperdrive.js';
 import { PublicError, toPublicError } from '../errors.js';
 import { openConnectionConfig, sealConnectionConfig } from '../registry/crypto.js';
 import { validatePublicEndpoint } from '../registry/endpoint.js';
@@ -155,15 +154,16 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
     }
     if (action === 'enable') {
       if (row.status !== 'disabled') invalid();
-      if (row.transport === 'direct' && form.get('plaintext_ack') !== '1') invalid();
+      // Runtime proxy fields cannot attest Cloudflare CA/identity/cache settings.
+      // Hyperdrive is activated only by the protected Owner-triggered Actions gate.
       if (row.transport === 'hyperdrive') {
-        const candidate = resolveHyperdriveConnection(env, row);
-        await healthCheck({ ...candidate, limits: { ...candidate.limits, queryTimeoutMs: 5000 } });
-      } else {
-        const config = await openConnectionConfig(env, id, row.dialect,
-          { keyId: row.key_id, ciphertext: row.ciphertext });
-        await testCandidate(env, id, config.url, row.dialect);
+        throw new PublicError('CONFIGURATION_UNAVAILABLE',
+          'Hyperdrive activation requires protected Cloudflare readback and live health verification.');
       }
+      if (form.get('plaintext_ack') !== '1') invalid();
+      const config = await openConnectionConfig(env, id, row.dialect,
+        { keyId: row.key_id, ciphertext: row.ciphertext });
+      await testCandidate(env, id, config.url, row.dialect);
       await setRegistryConnectionStatus(env.DB, id, version, 'active');
       return setupResult('Connection checked and enabled.');
     }

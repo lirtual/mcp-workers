@@ -29,6 +29,21 @@ on:
         required: true
         type: boolean
         default: false
+      database_activation_id:
+        description: 'Database only: disabled Hyperdrive connection ID (no deployment)'
+        required: false
+        type: string
+        default: ''
+      database_activation_revision:
+        description: 'Database only: expected D1 revision; stale values fail'
+        required: false
+        type: string
+        default: ''
+      database_activation_approved:
+        description: 'Database only: explicit Owner approval for bounded live activation'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,7 +55,7 @@ env:
 jobs:
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -52,6 +67,7 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
+          inputs.database_activation_id == '' &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
@@ -575,3 +591,45 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-openlist-portal.mjs
+
+  database-activate:
+    name: Protected Database Hyperdrive activation (no deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' &&
+          inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false &&
+          inputs.database_activation_approved == true &&
+          inputs.database_activation_id != '' &&
+          inputs.database_activation_revision != '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify Owner, protected source and explicit activation scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Attest deployed Binding and strict TLS, then CAS-enable and verify live MCP health
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          DATABASE_ACTIVATION_ID: ${{ inputs.database_activation_id }}
+          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_activation_revision }}
+        run: node scripts/activate-database-hyperdrive.mjs

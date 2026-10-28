@@ -106,6 +106,11 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
     expect((await post('add', { id: 'cloud_ref', dialect: 'postgres', transport: 'hyperdrive',
       config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
+    expect((await post('enable', { id: 'cloud_ref', revision: '1' })).status).toBe(503);
+    expect(sqlite.prepare('SELECT status, revision FROM database_connections WHERE id=?').get('cloud_ref'))
+      .toMatchObject({ status: 'disabled', revision: 1 });
+    const hyperdrivePage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    expect((await hyperdrivePage.text())).toContain('protected GitHub Actions activation gate');
     expect((await post('delete', { id: 'cloud_ref', revision: '1', confirm_id: 'cloud_ref' })).status).toBe(422);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 1 });
     vi.unstubAllGlobals();

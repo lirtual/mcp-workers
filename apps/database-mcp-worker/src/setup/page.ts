@@ -31,8 +31,9 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
 const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="1">I understand Direct sends database passwords and queries without TLS; traffic may be intercepted.</label>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
-    (row.status === 'active' ? action(row, csrf, 'disable') : action(row, csrf, 'enable') + action(row, csrf, 'delete')) +
-    (row.transport !== 'direct' ? '<p>Hyperdrive origin/CA/credentials are Cloudflare-managed. Disable before external updates; restart the pool, verify strict TLS and manually re-enable.</p>' :
+    (row.status === 'active' ? action(row, csrf, 'disable') :
+      (row.transport === 'direct' ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
+    (row.transport !== 'direct' ? '<p>Hyperdrive origin/CA/credentials are Cloudflare-managed. Disable before external updates; restart the pool, then use the protected GitHub Actions activation gate. Owner-page enabling is intentionally unavailable.</p>' :
     `<details><summary>Edit or replace Direct credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credential mode<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
     '<label>Replacement URL (never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
