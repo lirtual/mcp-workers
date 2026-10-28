@@ -92,8 +92,34 @@ export async function activateDatabaseHyperdrive({
     'connection state, revision, or approved Binding has changed');
   await verifyCloudAndBinding();
 
-  const update = await sql("UPDATE database_connections SET status='active',revision=revision+1,updated_at=? WHERE id=? AND status='disabled' AND revision=? AND transport='hyperdrive' AND dialect=? AND config_id=? AND binding_name=?",
-    [Date.now(), connectionId, expectedRevision, row.dialect, row.config_id, row.binding_name]);
+  let update;
+  try {
+    update = await sql("UPDATE database_connections SET status='active',revision=revision+1,updated_at=? WHERE id=? AND status='disabled' AND revision=? AND transport='hyperdrive' AND dialect=? AND config_id=? AND binding_name=?",
+      [Date.now(), connectionId, expectedRevision, row.dialect, row.config_id, row.binding_name]);
+  } catch {
+    // A lost Cloudflare response does not prove D1 rolled back. Re-read the
+    // exact row and compensate only our expected next revision.
+    let safe = false;
+    try {
+      const result = await sql('SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?', [connectionId]);
+      const current = result.results?.[0];
+      const matches = result.results?.length === 1 && current.id === connectionId &&
+        current.dialect === row.dialect && current.transport === 'hyperdrive' &&
+        current.config_id === row.config_id && current.binding_name === row.binding_name;
+      if (matches && current.status === 'active' && current.revision === Number(expectedRevision) + 1) {
+        await sql("UPDATE database_connections SET status='disabled',revision=revision+1,updated_at=? WHERE id=? AND revision=? AND status='active' AND transport='hyperdrive' AND config_id=? AND binding_name=?",
+          [Date.now(), connectionId, current.revision, row.config_id, row.binding_name]);
+      }
+      const checked = await sql('SELECT status,transport,config_id,binding_name FROM database_connections WHERE id=?', [connectionId]);
+      safe = checked.results?.length === 1 && checked.results[0].status === 'disabled' &&
+        checked.results[0].transport === 'hyperdrive' &&
+        checked.results[0].config_id === row.config_id &&
+        checked.results[0].binding_name === row.binding_name;
+    } catch { /* Unconfirmed compensation must be escalated. */ }
+    throw Error(safe
+      ? 'Database activation blocked: ambiguous D1 write; connection confirmed disabled'
+      : 'Database activation unsafe: ambiguous D1 write and disabled state unconfirmed; manual intervention required');
+  }
   requireGate(update.meta?.changes === 1, 'activation revision conflict');
 
   try {

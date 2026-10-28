@@ -22,7 +22,7 @@ const good = {
   token: 'cloudflare-secret', portalToken: 'portal-secret', actor: 'lirtual',
   ref: 'refs/heads/main', sourceSha: 'b'.repeat(40), source, manifest
 };
-function fixture({ wrongCA = false, healthOk = true, differentBinding = false } = {}) {
+function fixture({ wrongCA = false, healthOk = true, differentBinding = false, lostActivationAck = false, lostBeforeWrite = false } = {}) {
   const row = { id: 'test_mysql', dialect: 'mysql', transport: 'hyperdrive',
     status: 'disabled', revision: 1, config_id: configId, binding_name: binding };
   const calls = [];
@@ -51,11 +51,13 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false } 
         success: true, results: [{ status: row.status }]
       }]);
       if (sql.sql.startsWith('UPDATE database_connections')) {
+        if (lostBeforeWrite && sql.sql.includes("SET status='active'")) throw Error('simulated network outage');
         const enabling = sql.sql.includes("SET status='active'");
         const expected = Number(sql.params[2]);
         if (row.revision === expected && row.status === (enabling ? 'disabled' : 'active')) {
           row.status = enabling ? 'active' : 'disabled';
           row.revision++;
+          if (enabling && lostActivationAck) throw Error('simulated lost commit acknowledgement');
           return response([{ success: true, meta: { changes: 1 } }]);
         }
         return response([{ success: true, meta: { changes: 0 } }]);
@@ -109,4 +111,22 @@ test('rejects unauthorized actor, ref, stale/non-numeric revision before network
     await assert.rejects(activateDatabaseHyperdrive({ ...good, ...bad, request: f.request }), /blocked/);
     assert.equal(f.calls.length, 0);
   }
+});
+
+test('lost acknowledgment after successful D1 CAS is recovered and disabled before MCP health', async () => {
+  const f = fixture({ lostActivationAck: true });
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
+    /ambiguous D1 write; connection confirmed disabled/);
+  assert.equal(f.row.status, 'disabled');
+  assert.equal(f.row.revision, 3);
+  assert.equal(f.calls.filter(x => x.url.endsWith('/mcp')).length, 0);
+});
+
+test('D1 outage before write leaves connection disabled, with no MCP health', async () => {
+  const f = fixture({ lostBeforeWrite: true });
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
+    /ambiguous D1 write; connection confirmed disabled/);
+  assert.equal(f.row.status, 'disabled');
+  assert.equal(f.row.revision, 1);
+  assert.equal(f.calls.filter(x => x.url.endsWith('/mcp')).length, 0);
 });
