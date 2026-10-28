@@ -75,3 +75,21 @@ describe('safe admin DDL builder', () => {
     expect(() => buildCreateIndexStatement('mysql', 'app', 'widgets', [], false)).toThrow(PublicError);
   });
 });
+
+describe('Hyperdrive MySQL DDL default string-mode independence', () => {
+  it('rejects mode-sensitive backslashes without probing a different session', () => {
+    expect(() => buildCreateTableStatement('mysql', 'app', 'defaults', [
+      {name:'value',type:'varchar',length:80,default:'ends with \\'}
+    ])).toThrowError(/backslashes/);
+    expect(() => buildAlterTableStatement('mysql','app','defaults',{
+      action:'add_column',
+      column:{name:'value',type:'varchar',length:80,default:'quote \\ here'}
+    })).toThrowError(/backslashes/);
+  });
+  it('renders escaped quote defaults independent of NO_BACKSLASH_ESCAPES', () => {
+    const result=buildCreateTableStatement('mysql','app','defaults',[
+      {name:'value',type:'varchar',length:80,default:"O'Brien"}
+    ]);
+    expect(result.sql).toContain("DEFAULT 'O''Brien'");
+  });
+});

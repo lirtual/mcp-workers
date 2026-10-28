@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { APPLICATIONS, RELEASE_WORKERS } from './select-affected-apps.mjs';
-import { verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
+import { verifyDatabaseActivationGate, verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
 
 const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 
@@ -19,6 +19,14 @@ test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'openlist-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+  assert.throws(() => verifyReleaseWorkers(release.replace('inputs.database_restore_approved != true &&', 'true &&'), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+});
+
+test('historical registry activation job is retired and cannot be dispatched', () => {
+  assert.doesNotThrow(() => verifyDatabaseActivationGate(release));
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n  database-activate:\n'), /Historical Database activation/);
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n      database_activation_id:\n'), /Historical Database activation/);
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n        run: node scripts/activate-database-hyperdrive.mjs\n'), /Historical Database activation/);
 });
 
 test('existing static reusable workflows and local scripts pass', () => {

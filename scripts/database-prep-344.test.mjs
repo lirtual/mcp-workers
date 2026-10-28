@@ -55,33 +55,24 @@ test('reject malformed encryption key before any D1 network request', async () =
   await assert.rejects(encryptDirect('b2b', 'mysql://x:y@db.example.net/a', 'invalid'));
 });
 
-test('standalone D1 preparation never publishes a Worker or changes legacy runtime', async () => {
+test('existing release job blocks mixed-action dispatch before credentials are staged', async () => {
   const { readFileSync } = await import('node:fs');
   const yaml = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  const release = yaml.slice(yaml.indexOf('\n  deploy:\n'), yaml.indexOf('\n  database-prepare:\n'));
-  const prepare = yaml.slice(yaml.indexOf('\n  database-prepare:\n'));
+  const publishBlock = yaml.slice(yaml.indexOf('\n  deploy:\n'), yaml.indexOf('\n  database-restore:\n'));
+  const preparationBlock = yaml.slice(yaml.indexOf('\n  database-prepare:\n'));
   const prepSource = readFileSync(new URL('./database-prep-344.mjs', import.meta.url), 'utf8');
-  const runtimeConf = JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc', import.meta.url), 'utf8'));
-
-  // The existing production Worker continues to use the original Secret and
-  // receives no premature D1 binding from this preparation-only branch.
-  assert.deepEqual(runtimeConf.secrets.required, ['MCP_ACCESS_TOKEN', 'DATABASE_CONFIG']);
-  assert.equal(runtimeConf.d1_databases, undefined);
-  assert.equal((prepare.match(/DATABASE_CONFIG: \$\{\{ secrets\.DATABASE_CONFIG \}\}/g) || []).length, 2);
-  assert.equal((prepare.match(/DATABASE_KEY_ID: \$\{\{ vars\.DATABASE_KEY_ID \}\}/g) || []).length, 2);
-  assert.doesNotMatch(prepare, /DATABASE_KEY_ID: \$\{\{ secrets\.DATABASE_KEY_ID \}\}/);
-  assert.match(prepSource, /parseLegacyImport\(required\('DATABASE_CONFIG'\)\)/);
-  assert.doesNotMatch(prepare + prepSource, /DATABASE_CUTOVER_EXPECTED_IDS/);
-  for (const marker of [
+  // The new preparation path must not import, read or publish old credentials.
+  assert.doesNotMatch(preparationBlock, /DATABASE_CONFIG|database-prep-344\.mjs|database-mcp-db/);
+  assert.match(preparationBlock, /wrangler d1 migrations apply database-mcp-registry --remote/);
+  assert.match(publishBlock, /DATABASE_PREPARE_APPROVED:[^\n]*inputs\.database_prepare_approved/);
+  for (const body of [publishBlock]) {
+    assert.match(body, /\[\[ "\$DATABASE_PREPARE_APPROVED" != "true" \]\]/);
+  }
+  for (const required of [
     "github.actor == 'lirtual'", "github.ref == 'refs/heads/main'",
-    "inputs.worker == 'database-mcp-worker'", "inputs.database_prepare_approved == true",
-    'inputs.deploy_to_production == false', 'group: worker-release-database-mcp-worker',
-    'name: database-mcp-worker', 'database-prep-344.mjs validate',
-    'database-prep-344.mjs config', 'database-prep-344.mjs import',
-    'wrangler d1 migrations apply database-mcp-db --remote --config .db344-prep.generated.json'
-  ]) assert.ok(prepare.includes(marker), 'Missing D1 preparation safety gate: ' + marker);
-  assert.match(release, /DATABASE_PREPARE_APPROVED: \$\{\{ inputs\.database_prepare_approved \}\}/);
-  assert.match(release, /\[\[ "\$DATABASE_PREPARE_APPROVED" != "true" \]\]/);
-  assert.doesNotMatch(prepare, /wrangler deploy|Publish exactly selected Worker|activate-database-hyperdrive\.mjs|DATABASE_LEGACY_IMPORT_CONFIG/);
-  assert.doesNotMatch(prepSource, /DATABASE_LEGACY_IMPORT_CONFIG/);
+    "inputs.deploy_to_production == false", "inputs.database_prepare_approved == true",
+    'environment:', 'group: worker-release-database-mcp-worker',
+    'wrangler d1 migrations apply database-mcp-registry --remote'
+  ]) assert.ok(preparationBlock.includes(required), 'Database preparation scope drift: ' + required);
+  assert.doesNotMatch(preparationBlock, /wrangler deploy|Publish exactly selected Worker|activate-database-hyperdrive\.mjs/);
 });

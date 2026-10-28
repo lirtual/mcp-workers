@@ -112,7 +112,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-prep-344.test.mjs scripts/database-direct-preflight-344.test.mjs scripts/database-legacy-restore-preflight-344.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/database-prep-344.test.mjs scripts/database-direct-preflight-344.test.mjs scripts/database-fresh-readiness-344.test.mjs scripts/database-direct-transition-contract-344.test.mjs scripts/database-legacy-restore-preflight-344.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'

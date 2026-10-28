@@ -5,12 +5,10 @@ import type {
   EffectiveConnection,
   EffectiveWriteConnection,
   Env,
-  HyperdriveBinding,
   RuntimeLimits
 } from './types.js';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_LIMITS: RuntimeLimits = {
   maxRows: 500,
   maxResultBytes: 1_048_576,
@@ -45,18 +43,6 @@ function positiveInt(value: unknown, field: string, max: number): number | undef
   return number;
 }
 
-function requiredString(value: unknown, field: string, maxLength = 256): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
-    throw new PublicError('INVALID_INPUT', `Invalid ${field} configuration.`);
-  }
-  return value;
-}
-
-function parseDialect(value: unknown): Dialect {
-  if (value === 'mysql' || value === 'postgres') return value;
-  throw new PublicError('INVALID_INPUT', 'Connection dialect must be mysql or postgres.');
-}
-
 function decodeUrlPart(value: string, connectionId: string): string {
   try {
     return decodeURIComponent(value);
@@ -65,31 +51,10 @@ function decodeUrlPart(value: string, connectionId: string): string {
   }
 }
 
-function directUrlRequestsTls(url: URL): boolean {
-  for (const [rawKey, rawValue] of url.searchParams) {
-    const key = rawKey.toLowerCase();
-    const value = rawValue.trim().toLowerCase();
-
-    if (key === 'sslmode' || key === 'ssl-mode') {
-      if (value === 'disable' || value === 'disabled') continue;
-      return true;
-    }
-
-    if (key === 'ssl' || key === 'tls') {
-      if (value === 'false' || value === '0' || value === 'disable' || value === 'disabled') continue;
-      return true;
-    }
-
-    if (
-      key.startsWith('ssl') ||
-      key.startsWith('tls') ||
-      key === 'rejectunauthorized' ||
-      key === 'reject-unauthorized'
-    ) {
-      return true;
-    }
-  }
-  return false;
+function hasUnsupportedDirectUrlOptions(url: URL): boolean {
+  // Driver-level URL parameters are never forwarded to clients. Reject all of
+  // them, particularly sslmode=disable and rejectUnauthorized=false.
+  return [...url.searchParams].length !== 0;
 }
 
 export function parseDirectDatabaseUrl(raw: string, connectionId: string): ParsedDirectUrl {
@@ -116,10 +81,10 @@ export function parseDirectDatabaseUrl(raw: string, connectionId: string): Parse
     throw new PublicError('INVALID_INPUT', `Connection '${connectionId}' uses an unsupported direct database URL scheme.`);
   }
 
-  if (directUrlRequestsTls(url)) {
+  if (hasUnsupportedDirectUrlOptions(url)) {
     throw new PublicError(
       'INVALID_INPUT',
-      `Connection '${connectionId}' requests TLS in direct mode; use Hyperdrive for TLS-capable databases.`
+      `Connection '${connectionId}' has unsupported direct database URL options.`
     );
   }
 
@@ -166,6 +131,7 @@ export function getMaxWriteAffectedRows(env: Env): number {
   );
 }
 
+/** Offline legacy-catalog import and integration fixture only; NOT a live source. */
 export function parseDatabaseConfig(raw: string): ConnectionConfig[] {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); }
@@ -174,8 +140,8 @@ export function parseDatabaseConfig(raw: string): ConnectionConfig[] {
     throw new PublicError('INVALID_INPUT', 'DATABASE_CONFIG must be a JSON object keyed by connection id.');
   }
   const entries = Object.entries(parsed as Record<string, unknown>);
-  if (entries.length < 1 || entries.length > 50) {
-    throw new PublicError('INVALID_INPUT', 'DATABASE_CONFIG must contain 1 to 50 connections.');
+  if (entries.length < 1 || entries.length > 10) {
+    throw new PublicError('INVALID_INPUT', 'DATABASE_CONFIG must contain 1 to 10 connections.');
   }
   return entries.map(([id, value]) => {
     if (!ID_RE.test(id)) throw new PublicError('INVALID_INPUT', `Connection id '${id}' is invalid.`);
@@ -183,25 +149,8 @@ export function parseDatabaseConfig(raw: string): ConnectionConfig[] {
       parseDirectDatabaseUrl(value, id);
       return { id, transport: 'direct' as const, url: value };
     }
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      throw new PublicError('INVALID_INPUT', `Connection '${id}' must be a SQL URL or strict Hyperdrive reference.`);
-    }
-    const item = value as Record<string, unknown>;
-    if (Object.keys(item).length !== 2 || !Object.hasOwn(item, 'hyperdrive') || !Object.hasOwn(item, 'dialect')) {
-      throw new PublicError('INVALID_INPUT', `Connection '${id}' must be a SQL URL or strict Hyperdrive reference.`);
-    }
-    const binding = requiredString(item.hyperdrive, `connection '${id}'.hyperdrive`, 128);
-    if (!ENV_NAME_RE.test(binding)) throw new PublicError('INVALID_INPUT', `Connection '${id}' has an invalid Hyperdrive binding name.`);
-    return { id, transport: 'hyperdrive' as const, dialect: parseDialect(item.dialect), binding };
+    throw new PublicError('INVALID_INPUT', `Connection '${id}' must be a direct SQL URL; legacy Hyperdrive references are unsupported.`);
   });
-}
-
-function isHyperdriveBinding(value: unknown): value is HyperdriveBinding {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Partial<HyperdriveBinding>;
-  return typeof candidate.connectionString === 'string' && typeof candidate.host === 'string' &&
-    typeof candidate.user === 'string' && typeof candidate.password === 'string' &&
-    typeof candidate.database === 'string' && typeof candidate.port === 'number';
 }
 
 function selectConnection(catalog: ConnectionConfig[], id?: string): ConnectionConfig {
@@ -215,27 +164,15 @@ function selectConnection(catalog: ConnectionConfig[], id?: string): ConnectionC
 }
 
 export function resolveConnectionDialect(_env: Env, config: ConnectionConfig): Dialect {
-  return config.transport === 'hyperdrive' ? config.dialect : parseDirectDatabaseUrl(config.url, config.id).dialect;
-}
-
-function effectiveLimits(env: Env): RuntimeLimits { return getRuntimeLimits(env); }
-
-function resolveHyperdrive(env: Env, binding: string): HyperdriveBinding {
-  const candidate = env[binding];
-  if (!isHyperdriveBinding(candidate)) throw new PublicError('CONNECTION_UNAVAILABLE', 'The configured Hyperdrive binding is unavailable.');
-  return candidate;
+  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through D1 admission.');
+  return parseDirectDatabaseUrl(config.url, config.id).dialect;
 }
 
 export function resolveConnection(env: Env, catalog: ConnectionConfig[], id?: string): EffectiveConnection {
   const config = selectConnection(catalog, id);
-  const limits = effectiveLimits(env);
-  if (config.transport === 'direct') {
-    return { config, transport: 'direct', ...parseDirectDatabaseUrl(config.url, config.id), limits };
-  }
-  const candidate = resolveHyperdrive(env, config.binding);
-  return { config, transport: 'hyperdrive', dialect: config.dialect, connectionString: candidate.connectionString,
-    host: candidate.host, user: candidate.user, password: candidate.password, database: candidate.database,
-    port: candidate.port, limits };
+  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through D1 admission.');
+  return { config, transport: 'direct', ...parseDirectDatabaseUrl(config.url, config.id),
+    limits: getRuntimeLimits(env) };
 }
 
 export function resolveWriteConnection(env: Env, catalog: ConnectionConfig[], id?: string): EffectiveWriteConnection {

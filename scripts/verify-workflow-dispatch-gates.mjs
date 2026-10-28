@@ -22,12 +22,22 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_direct_preflight_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
   const allowed = [...list.matchAll(/inputs\.worker == '([^']+)'/g)].map(match => match[1]);
   sameMembers(allowed, expectedWorkers, 'release allowlist');
+}
+
+/** The superseded historical D1 activation job must never be reachable. */
+export function verifyDatabaseActivationGate(source) {
+  assert.ok(!source.includes('\n  database-activate:\n'), 'Historical Database activation job must be absent');
+  assert.ok(!source.includes('database_activation_id:') &&
+    !source.includes('database_activation_approved:') &&
+    !source.includes('database_activation_revision:') &&
+    !source.includes('node scripts/activate-database-hyperdrive.mjs'),
+    'Historical Database activation input or script remains exposed');
 }
 
 // This is deliberately not a YAML or shell interpreter. It recognizes only
@@ -102,6 +112,7 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 verifyReleaseWorkers(release, RELEASE_WORKERS);
+verifyDatabaseActivationGate(release);
 assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');
 for (const marker of [

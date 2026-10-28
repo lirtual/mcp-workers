@@ -1,6 +1,6 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { parseDatabaseConfig } from './config.js';
 import { buildMcpServer } from './mcp.js';
+import { handleSetup } from './setup/handler.js';
 import { authenticateDatabasePortal } from './portal-auth.js';
 import type { Env } from './types.js';
 
@@ -20,6 +20,7 @@ function authError(status: number, code: string, message: string): Response {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === '/setup' || url.pathname.startsWith('/setup/')) return handleSetup(request, env);
     if (url.pathname !== '/mcp') return new Response('Not found', { status: 404 });
 
     const portalAuth = await authenticateDatabasePortal(request, env);
@@ -33,12 +34,11 @@ export default {
       return authError(401, 'unauthorized', 'Valid MCP Portal authentication is required.');
     }
 
-    if (typeof env.DATABASE_CONFIG !== 'string' || env.DATABASE_CONFIG.length === 0) {
-      return authError(503, 'database_config_not_configured', 'Database configuration is not configured.');
+    if (!env.DB) {
+      return authError(503, 'database_registry_unavailable', 'Database registry is not configured.');
     }
 
-    const catalog = parseDatabaseConfig(env.DATABASE_CONFIG);
-    const handler = createMcpHandler(() => buildMcpServer(env, catalog), { legacy: 'stateless' });
+    const handler = createMcpHandler(() => buildMcpServer(env), { legacy: 'stateless' });
     return handler.fetch(portalAuth.request, { authInfo: portalAuth.authInfo });
   }
 };

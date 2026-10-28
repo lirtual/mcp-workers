@@ -3,7 +3,9 @@
   "name": "database-mcp-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "preview_urls": false,
   "keep_vars": false,
@@ -15,16 +17,32 @@
     }
   },
   "secrets": {
-    "required": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"]
+    "required": [
+      "MCP_ACCESS_TOKEN",
+      "DATABASE_ENCRYPTION_KEY",
+      "DATABASE_KEY_ID"
+    ]
   },
   "vars": {
     "MAX_ROWS": "500",
     "MAX_RESULT_BYTES": "1048576",
     "MAX_SCHEMA_BYTES": "524288",
     "QUERY_TIMEOUT_MS": "15000",
-    "MAX_WRITE_AFFECTED_ROWS": "20"
+    "MAX_WRITE_AFFECTED_ROWS": "20",
+    "DATABASE_SETUP_HOST": "database.lirtual.dpdns.org",
+    "ACCESS_TEAM_DOMAIN": "lirtualzero.cloudflareaccess.com",
+    "ACCESS_AUD": "241a7cfc0e332477bf076b8a9189ef0d354c95efcba068c29ed3891f1d26b0e6",
+    "OWNER_EMAIL": "lirtual@outlook.com"
   },
   "ratelimits": [
+    {
+      "name": "SETUP_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    },
     {
       "name": "RATE_LIMITER",
       "namespace_id": "1001",
@@ -32,6 +50,20 @@
         "limit": 120,
         "period": 60
       }
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "database.lirtual.dpdns.org",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "database-mcp-registry",
+      "database_id": "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a",
+      "migrations_dir": "migrations"
     }
   ]
 }

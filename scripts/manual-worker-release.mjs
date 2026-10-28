@@ -1,6 +1,7 @@
 // Narrow, credential-free-to-import Cloudflare release checks for #19.
 // Never log API bodies: Workers settings can include runtime plain-text values.
 import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
@@ -9,7 +10,7 @@ const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-
 const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
-  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_CONFIG"],
+  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"],
   "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
@@ -33,6 +34,137 @@ const WORKER_ENTRIES = {
 
 function invariant(value, message) {
   if (!value) throw new Error(message);
+}
+
+// Original identities prepared and imported under the separately approved Spec #344 job.
+const REQUIRED_LEGACY_IDS = Object.freeze(['b2b', 'scrape_relay']);
+
+/** Cutover must preserve the explicitly reviewed logical connection IDs.
+ * Never query the upstream databases or expose decrypted URLs/CA material. */
+export function parseDatabaseCutoverIds(raw) {
+  invariant(typeof raw === "string" && raw.length >= 3 && raw.length <= 4096,
+    "Database migration expected IDs must be explicitly configured");
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { throw Error("Database migration expected IDs JSON invalid"); }
+  invariant(Array.isArray(parsed) && parsed.length >= 1 && parsed.length <= 10 &&
+    parsed.every(x => typeof x === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(x)) &&
+    new Set(parsed).size === parsed.length,
+    "Database migration expected IDs invalid or duplicate");
+  return parsed;
+}
+
+/** Read-only D1 release gate. Counts IDs only; no upstream SQL or secrets. */
+export function databaseD1ReadinessSql(expectedIds) {
+  invariant(Array.isArray(expectedIds) && expectedIds.length >= 1 && expectedIds.length <= 10 &&
+    expectedIds.every(x => typeof x === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(x)) &&
+    new Set(expectedIds).size === expectedIds.length,
+    "Database migration expected IDs invalid or duplicate");
+  const idList = expectedIds.map(id => "'" + id + "'").join(",");
+  // Only aggregate counts: no ciphertext, passwords, URLs or driver errors.
+  return [
+    "SELECT",
+    "  (SELECT COUNT(*) FROM d1_migrations WHERE name IN ('0001_connections.sql','0002_transport_and_retired_ids.sql')) AS migration_count,",
+    "  (SELECT COUNT(*) FROM database_connections) AS record_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ") AND status='active') AS active_count,",
+    "  (SELECT COUNT(*) FROM retired_connection_ids) AS retired_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE id IN (SELECT id FROM retired_connection_ids)) AS reused_count,",
+    "  (SELECT COUNT(*) FROM database_connections WHERE",
+    "    revision < 1 OR status NOT IN ('active','disabled') OR",
+    "    dialect NOT IN ('mysql','postgres') OR transport NOT IN ('direct','hyperdrive') OR",
+    "    (transport='direct' AND (key_id IS NULL OR key_id = '' OR LENGTH(ciphertext) < 40 OR config_id IS NOT NULL OR binding_name IS NOT NULL)) OR",
+    "    (transport='hyperdrive' AND (ciphertext IS NOT NULL OR key_id IS NOT NULL OR config_id IS NULL OR binding_name IS NULL))) AS malformed_count"
+  ].join("\n") + ";";
+}
+
+export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cutover') {
+  invariant(Number.isSafeInteger(expectedCount) && expectedCount >= 1 && expectedCount <= 10,
+    "Database migration expected ID count missing");
+  invariant(['cutover', 'registry'].includes(phase), "Database migration phase invalid");
+  invariant(Array.isArray(response) && response.length === 1 &&
+    response[0]?.success === true && response[0]?.results?.length === 1,
+    "Database D1 read-only schema check unavailable");
+  const row = response[0].results[0];
+  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count"])
+    invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
+      "Database D1 readiness count invalid: " + name);
+  invariant(row.migration_count === 2, "Database D1 additive transport migration not applied");
+  // The separate, always-on encrypted Direct prepublication gate enforces
+  // exact active revision-2 legacy records while the old Worker is deployed.
+  // Once the D1-backed Worker is already live, requiring those IDs to remain
+  // active would prohibit the approved 0–10 incremental registry lifecycle.
+  if (phase === 'cutover') {
+    invariant(row.record_count >= expectedCount && row.preserved_count === expectedCount,
+      "Database D1 missing reviewed legacy logical connection IDs");
+    invariant(row.active_count === expectedCount,
+      "Database production release blocked: reviewed legacy connections are disabled");
+  }
+  invariant(row.record_count <= 10 && row.reused_count === 0 && row.malformed_count === 0 &&
+    row.preserved_count <= Math.min(row.record_count, expectedCount) &&
+    row.active_count <= row.preserved_count,
+    "Database D1 record inventory invalid");
+  return { record_count: row.record_count, preserved_count: row.preserved_count,
+    active_count: row.active_count };
+}
+
+/** Wrangler and runtime's immutable nonsecret mapping must be identical. */
+export function verifyDatabaseHyperdriveSource(conf, manifest) {
+  const bindings = conf?.hyperdrive ?? [];
+  invariant(Array.isArray(bindings) && bindings.length <= 10 && Array.isArray(manifest) && manifest.length === bindings.length,
+    "Database Hyperdrive manifest/source mismatch");
+  const names = new Set();
+  const ids = new Set();
+  for (const binding of bindings) {
+    invariant(typeof binding.binding === "string" && /^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(binding.binding) &&
+      typeof binding.id === "string" && /^[A-Za-z0-9-]{8,64}$/.test(binding.id) &&
+      !names.has(binding.binding) && !ids.has(binding.id) &&
+      manifest.filter(row => row?.binding === binding.binding && row?.id === binding.id).length === 1,
+      "Database Hyperdrive binding not uniquely represented in protected release manifest");
+    names.add(binding.binding); ids.add(binding.id);
+  }
+  return true;
+}
+
+/** #344: checked from reviewed source *before* any production publish step.
+ * An unbound D1 Worker would return 503 and drop every existing connection. */
+export function verifyDatabaseCutoverSource(conf) {
+  invariant(conf?.name === "database-mcp-worker" &&
+    conf.main === "src/index.ts", "Database source identity drift");
+  const secrets = conf.secrets?.required;
+  invariant(Array.isArray(secrets) &&
+    JSON.stringify([...secrets].sort()) ===
+    JSON.stringify(["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"].sort()),
+    "Database source must require D1 keys, never legacy DATABASE_CONFIG");
+  const databases = conf.d1_databases;
+  invariant(Array.isArray(databases) && databases.length === 1 &&
+    databases[0]?.binding === "DB" &&
+    databases[0]?.database_name === "database-mcp-registry" &&
+    databases[0]?.database_id === "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a" &&
+    databases[0]?.migrations_dir === "migrations" &&
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(databases[0]?.database_id ?? ""),
+    "Database dedicated production D1 not bound or not approved");
+  const manifest = JSON.parse(readFileSync(new URL("../apps/database-mcp-worker/hyperdrive-bindings.json", import.meta.url), "utf8"));
+  verifyDatabaseHyperdriveSource(conf, manifest);
+  const ownerHost = conf.vars?.DATABASE_SETUP_HOST;
+  invariant(typeof ownerHost === "string" &&
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(ownerHost) &&
+    !ownerHost.endsWith(".workers.dev") &&
+    Array.isArray(conf.routes) && conf.routes.length === 1 &&
+    conf.routes[0]?.custom_domain === true &&
+    conf.routes[0].pattern === ownerHost &&
+    conf.workers_dev === true && conf.preview_urls === false,
+    "Database Owner route and dedicated HTTPS hostname not configured");
+  const limit = (name, namespaceId, max) => conf.ratelimits?.some(b =>
+    b.name === name && String(b.namespace_id) === namespaceId &&
+    Number(b.simple?.limit) === max && Number(b.simple?.period) === 60);
+  invariant(conf.ratelimits?.length === 2 &&
+    limit("RATE_LIMITER", "1001", 120) &&
+    limit("SETUP_RATE_LIMITER", "1002", 20),
+    "Database Owner and MCP rate-limit policies must be declared");
+  return true;
 }
 
 export function verifyBindings(worker, settings, secrets, options = {}) {
@@ -189,6 +321,32 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "Email has unexpected plaintext bindings");
   }
   if (worker === "database-mcp-worker") {
+    if (options.mode !== "preflight") {
+      const source = options.sourceConfig;
+      const expectedD1 = source?.d1_databases?.[0]?.database_id;
+      invariant(expectedD1 &&
+        (find("DB", "d1")?.id || find("DB", "d1")?.database_id) === expectedD1,
+        "Database production D1 binding mismatch");
+      const owner = find("DATABASE_SETUP_HOST", "plain_text");
+      invariant(owner?.text === source?.vars?.DATABASE_SETUP_HOST,
+        "Database Owner hostname not bound to reviewed custom domain");
+      for (const name of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"]) {
+        const text = find(name, "plain_text")?.text;
+        invariant(typeof text === "string" && text.length > 0 && text.length <= 256,
+          "Database Owner Access variable missing: " + name);
+      }
+      invariant(!find("DATABASE_CONFIG", "plain_text"), "Legacy DB catalog must not be a plain variable");
+      const expectedHD = source?.hyperdrive ?? [];
+      const actualHD = bindings.filter(b => b.type === "hyperdrive");
+      invariant(actualHD.length === expectedHD.length && expectedHD.every(cfg =>
+        actualHD.filter(b => b.name === cfg.binding && b.id === cfg.id).length === 1),
+        "Database deployed Hyperdrive binding IDs differ from protected release manifest");
+    }
+    const setup = find("SETUP_RATE_LIMITER", "ratelimit");
+    invariant(options.mode === "preflight" || (setup &&
+      String(setup.namespace_id) === "1002" &&
+      Number(setup.simple?.limit) === 20 && Number(setup.simple?.period) === 60),
+      "Database SETUP_RATE_LIMITER missing or changed");
     const limiter = find("RATE_LIMITER", "ratelimit");
     invariant(limiter && String(limiter.namespace_id) === "1001" &&
       Number(limiter.simple?.limit) === 120 && Number(limiter.simple?.period) === 60,
@@ -236,7 +394,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
-    : worker === "database-mcp-worker" ? ["RATE_LIMITER"]
+    : worker === "database-mcp-worker"
+      ? ["RATE_LIMITER", "SETUP_RATE_LIMITER", "DB", ...((options.sourceConfig?.hyperdrive ?? []).map(x => x.binding))]
       : worker === "ssh-mcp-worker" ? (options.mode === "preflight" ? ["EDGE_SSH_BROKER", "EDGE_SSH_DB", "SSH_OPERATIONS"] : ["EDGE_SSH_DB", "SSH_OPERATIONS"])
       : worker === "remote-control-mcp-worker"
         ? (options.mode === "preflight"
@@ -252,7 +411,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       // Source manifest controls the new bindings; a production preflight may
       // still observe bindings that this release is about to remove.
       // Readback strictly verifies that no extra resource binding survives.
-      if (!(worker === "workflow-mcp-worker" && options.mode === "preflight" && item.type === "service"))
+      if (!(worker === "workflow-mcp-worker" && options.mode === "preflight" && item.type === "service") &&
+          !(worker === "database-mcp-worker" && options.mode === "preflight" && item.type === "hyperdrive"))
         invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
     }
   }
@@ -518,6 +678,7 @@ export function verifyPublishedVersion(previous, observed, expected) {
 export function readConfiguration(worker, content) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
+  if (worker === "database-mcp-worker") verifyDatabaseCutoverSource(conf);
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === false,
@@ -724,7 +885,23 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check", "database-d1-sql", "database-d1-check"].includes(mode), "Unknown release validation mode");
+  if (mode === "database-d1-sql") {
+    invariant(worker === "database-mcp-worker", "Database SQL readiness target mismatch");
+    console.log(databaseD1ReadinessSql(REQUIRED_LEGACY_IDS));
+    return;
+  }
+  if (mode === "database-d1-check") {
+    invariant(worker === "database-mcp-worker", "Database D1 readiness target mismatch");
+    const expected = REQUIRED_LEGACY_IDS;
+    // Generic registry shape only. Exact first-cutover ID, ciphertext and
+    // revision checks are enforced separately by database-direct-preflight.
+    const counts = verifyDatabaseD1Readiness(JSON.parse(await readFile("/dev/stdin", "utf8")),
+      expected.length, 'registry');
+    console.log("Database production D1 schema and encrypted-row shape: PASS; records=" +
+      counts.record_count + "; first-cutover source and ciphertext are separately gated; live TLS requires separate evidence");
+    return;
+  }
   if (mode === "migration-sql") {
     invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
     console.log(reviewedTerminalRunSql(WORKFLOW_MIGRATION_READINESS_SQL));

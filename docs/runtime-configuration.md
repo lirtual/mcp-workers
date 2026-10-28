@@ -17,7 +17,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 
 | Worker | Additional Environment Secrets | Environment Variables |
 | --- | --- | --- |
-| `database-mcp-worker` | `DATABASE_CONFIG` | `MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
+| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_KEY_ID`（轮换时可选两项 previous-key Secret） | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）；SQL 行数、结果大小及超时上限（可选） |
 | `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
@@ -27,6 +27,8 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `http-mcp-worker` | `HTTP_CREDENTIALS_JSON` | 无 |
 | `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
+
+Database MCP Spec #344 is **Draft / BLOCKED**, not the deployed configuration. Existing live `DATABASE_CONFIG` must remain intact until independently authorized migration and rollback; the proposed release checks require a dedicated D1 registry, exact Owner Access OTP, and the two approved legacy IDs (`b2b`, `scrape_relay`) pinned in the source, without a duplicate GitHub Variable. See [cutover checklist](./database-cutover-344.md).
 
 Notes: `HTTP_CREDENTIALS_JSON` is an **optional Secret**, not a required placeholder. `IMA_BASE_URL`, Raindrop retry count, Database limits and Workflow's `WORKFLOW_ACTION_APPROVED_REPOSITORIES` are optional Variables. Email's three Access Variables, OpenList's `OPENLIST_ALLOWED_ROOTS`, IMA's `IMA_CLIENT_ID` and Workflow's `MCP_PORTAL_CLIENT_ID` are **required**. Workflow's approved-repositories GitHub Variable is translated to the `GITHUB_ACTION_APPROVED_REPOSITORIES` runtime binding.
 

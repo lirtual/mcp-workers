@@ -1,4 +1,6 @@
-import { createConnection, type Connection, type FieldPacket } from 'mysql2/promise';
+import type { Connection, FieldPacket } from 'mysql2/promise';
+import { createMysqlClient } from './clients.js';
+import { assertMysqlHyperdriveSqlMode, mysqlSafeParams } from './mysql-mode.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import { assertJsonWithinBytes, boundQueryResult, jsonSafe } from '../result.js';
 import { guardReadQuery, injectMySqlExecutionTimeout, toReadLimitedSql } from '../sql/guard.js';
@@ -11,45 +13,23 @@ import type {
 } from '../types.js';
 import { withTimeout } from './timeout.js';
 
-async function createMysqlConnection(connection: EffectiveConnection): Promise<Connection> {
-  return createConnection({
-    host: connection.host,
-    user: connection.user,
-    password: connection.password,
-    ...(connection.database.length === 0 ? {} : { database: connection.database }),
-    port: connection.port,
-    disableEval: true,
-    rowsAsArray: true,
-    supportBigNumbers: true,
-    bigNumberStrings: true,
-    dateStrings: true,
-    multipleStatements: false,
-    connectTimeout: Math.min(connection.limits.queryTimeoutMs, 5_000)
-  });
-}
-
-async function createMysqlConnectionWithinTimeout(connection: EffectiveConnection): Promise<Connection> {
-  const pendingConnection = createMysqlConnection(connection);
-  const timeoutMs = Math.min(connection.limits.queryTimeoutMs, 5_000);
-
-  return withTimeout(pendingConnection, timeoutMs, () => {
-    // Promise.race does not cancel the underlying mysql2 connection attempt.
-    // If it succeeds after our timeout has already been reported, immediately
-    // destroy that late connection so it cannot escape the request lifecycle.
-    void pendingConnection.then(
-      lateClient => lateClient.destroy(),
-      () => undefined
-    );
-  });
-}
-
 async function withConnection<T>(
   connection: EffectiveConnection,
   operation: (client: Connection) => Promise<T>
 ): Promise<T> {
   let client: Connection | undefined;
   try {
-    client = await createMysqlConnectionWithinTimeout(connection);
+    client = await createMysqlClient(connection, true);
+    if (connection.transport === 'hyperdrive') {
+      // Pin the backend session during SQL-mode check and client interpolation.
+      await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      try {
+        await assertMysqlHyperdriveSqlMode(client, connection);
+        return await operation(client);
+      } finally {
+        await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy()).catch(() => undefined);
+      }
+    }
     return await operation(client);
   } catch (error) {
     throw mapDatabaseError(error);
@@ -75,7 +55,7 @@ export async function mysqlQueryRead(
 
   return withConnection(connection, async client => {
     const [rows, fields] = await withTimeout(
-      client.query(timedSql, params),
+      client.query(timedSql, mysqlSafeParams(params)),
       connection.limits.queryTimeoutMs,
       () => client.destroy()
     );
@@ -98,7 +78,7 @@ export async function mysqlExplain(
   const timedSql = injectMySqlExecutionTimeout(guarded.sql, connection.limits.queryTimeoutMs);
   const explainSql = `EXPLAIN FORMAT=JSON ${timedSql}`;
   return withConnection(connection, async client => {
-    const [rows] = await withTimeout(client.query(explainSql, params), connection.limits.queryTimeoutMs, () => {
+    const [rows] = await withTimeout(client.query(explainSql, mysqlSafeParams(params)), connection.limits.queryTimeoutMs, () => {
       client.destroy();
     });
     const value = jsonSafe(rows);

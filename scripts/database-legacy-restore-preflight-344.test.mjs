@@ -69,6 +69,21 @@ test('API inspection uses exactly three GETs; no version deployment or secret ou
   await assert.rejects(checkLegacyRestoreReadiness({ ...env, GITHUB_ACTOR: 'other' }, get));
   assert.equal(calls.length, 3);
 });
+test('current release workflow runs recovery attestation before first Database publication', () => {
+  const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const check = source.indexOf('Verify original Database Worker recovery version before publication');
+  const publish = source.indexOf('Publish exactly selected Worker');
+  assert.ok(check > 0 && publish > check);
+  const fragment = source.slice(check, publish);
+  for (const text of [
+    "if: inputs.worker == 'database-mcp-worker'",
+    'CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}',
+    'CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}',
+    'node scripts/database-legacy-restore-preflight-344.mjs'
+  ]) assert.ok(fragment.includes(text), 'Missing protected recovery check: ' + text);
+  assert.doesNotMatch(fragment, /run:.*(?:wrangler (?:deploy|rollback)|POST.*deployments)/i);
+});
+
 test('existing read-only Direct staging workflow checks recovery target without publish', () => {
   const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const start = source.indexOf('\n  database-direct-preflight:\n');

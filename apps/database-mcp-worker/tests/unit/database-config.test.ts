@@ -6,7 +6,6 @@ import type { Env } from '../../src/types.js';
 
 const baseEnv = (extra: Record<string, unknown> = {}): Env => ({
   RATE_LIMITER: { async limit() { return { success: true }; } },
-  PG: { connectionString: 'postgres://role@host/db', host: 'host', user: 'role', password: 'secret', database: 'db', port: 5432 },
   ...extra
 });
 
@@ -27,13 +26,10 @@ describe('flat DATABASE_CONFIG', () => {
     expect(() => resolveConnection(baseEnv(), catalog, 'missing')).toThrowError(expect.objectContaining({ code: 'CONNECTION_NOT_FOUND' }));
   });
 
-  it('accepts strict Hyperdrive references for data tools and refuses DDL without fallback', () => {
-    const catalog = parseDatabaseConfig(JSON.stringify({ analytics: { hyperdrive: 'PG', dialect: 'postgres' } }));
-    expect(resolveConnection(baseEnv(), catalog, 'analytics')).toMatchObject({ transport: 'hyperdrive', dialect: 'postgres', user: 'role' });
-    expect(() => resolveAdminConnection(baseEnv(), catalog, 'analytics')).toThrowError(
-      expect.objectContaining({ code: 'ADMIN_OPERATION_NOT_SUPPORTED' })
-    );
-    expect(() => resolveConnection(baseEnv(), catalog, 'analytics')).not.toThrow();
+  it('refuses legacy Hyperdrive bindings even when a matching binding is present', () => {
+    expect(() => parseDatabaseConfig(JSON.stringify({
+      analytics: { hyperdrive: 'PG', dialect: 'postgres' }
+    }))).toThrowError(expect.objectContaining({ code: 'INVALID_INPUT' }));
   });
 
   it('rejects legacy nested formats, speculative fields, malformed ids, and invalid URLs', () => {
@@ -46,7 +42,9 @@ describe('flat DATABASE_CONFIG', () => {
       { primary: { hyperdrive: 'PG', dialect: 'postgres', maxRows: 10 } },
       { 'bad id': 'mysql://u:p@h/db' },
       { primary: 'ftp://u:p@h/db' },
-      { primary: 'mysql://u:p@h/db?ssl=true' }
+      { primary: 'mysql://u:p@h/db?ssl=true' },
+      { primary: 'mysql://u:p@h/db?sslmode=disable' },
+      { primary: 'postgres://u:p@h/db?rejectUnauthorized=false' }
     ]) expect(() => parseDatabaseConfig(JSON.stringify(config))).toThrow(PublicError);
     expect(() => parseDatabaseConfig('[]')).toThrow(PublicError);
     expect(() => parseDatabaseConfig('{}')).toThrow(PublicError);

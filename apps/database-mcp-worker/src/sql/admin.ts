@@ -101,9 +101,17 @@ function quoteString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function renderDefault(value: string | number | boolean | null): string {
+function renderDefault(dialect: Dialect, value: string | number | boolean | null): string {
   if (value === null) return 'NULL';
-  if (typeof value === 'string') return quoteString(value);
+  if (typeof value === 'string') {
+    // MySQL DDL can implicitly commit and release Hyperdrive's backend pin.
+    // Different sessions can have different NO_BACKSLASH_ESCAPES modes.
+    // Reject backslashes rather than constructing a mode-dependent SQL literal.
+    if (dialect === 'mysql' && value.includes('\\')) {
+      throw new PublicError('INVALID_INPUT', 'MySQL DDL string defaults cannot contain backslashes.');
+    }
+    return quoteString(value);
+  }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new PublicError('INVALID_INPUT', 'Column default number must be finite.');
     return String(value);
@@ -122,7 +130,7 @@ function renderColumn(dialect: Dialect, column: AdminColumnDefinition): string {
   }
   const parts = [quoteIdentifier(dialect, column.name), renderType(dialect, column)];
   if (column.nullable === false || column.primaryKey === true) parts.push('NOT NULL');
-  if (column.default !== undefined) parts.push(`DEFAULT ${renderDefault(column.default)}`);
+  if (column.default !== undefined) parts.push(`DEFAULT ${renderDefault(dialect, column.default)}`);
   if (column.primaryKey === true) parts.push('PRIMARY KEY');
   if (column.unique === true) parts.push('UNIQUE');
   return parts.join(' ');

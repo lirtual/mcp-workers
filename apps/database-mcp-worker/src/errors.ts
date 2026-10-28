@@ -5,6 +5,10 @@ export type PublicErrorCode =
   | 'CONNECTION_NOT_FOUND'
   | 'CONNECTION_DISABLED'
   | 'CONNECTION_UNAVAILABLE'
+  | 'TLS_VERIFICATION_FAILED'
+  | 'CONFIGURATION_UNAVAILABLE'
+  | 'ENCRYPTION_KEY_UNAVAILABLE'
+  | 'REVISION_CONFLICT'
   | 'INVALID_INPUT'
   | 'MULTI_STATEMENT_REJECTED'
   | 'READ_ONLY_VIOLATION'
@@ -15,6 +19,7 @@ export type PublicErrorCode =
   | 'ADMIN_NOT_CONFIGURED'
   | 'ADMIN_OPERATION_NOT_SUPPORTED'
   | 'ADMIN_CONFIRMATION_REQUIRED'
+  | 'BODY_TOO_LARGE'
   | 'RATE_LIMITED'
   | 'DATABASE_ERROR'
   | 'INTERNAL_ERROR';
@@ -56,6 +61,18 @@ export function mapDatabaseError(error: unknown): PublicError {
     'EHOSTUNREACH',
     'PROTOCOL_CONNECTION_LOST'
   ]);
+  const tlsVerificationCodes = new Set([
+    'HANDSHAKE_SSL_ERROR',
+    'HANDSHAKE_NO_SSL_SUPPORT',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+    'CERT_HAS_EXPIRED',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'SELF_SIGNED_CERT_IN_CHAIN',
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'UNABLE_TO_GET_ISSUER_CERT',
+    'ERR_SSL_TLSV1_ALERT_UNKNOWN_CA'
+  ]);
   const readOnlyCodes = new Set(['25006', 'ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION']);
   const deniedCodes = new Set([
     '42501',
@@ -70,6 +87,9 @@ export function mapDatabaseError(error: unknown): PublicError {
   if (code && timeoutCodes.has(code)) return new PublicError('QUERY_TIMEOUT', 'The database query timed out.');
   if (code && unavailableCodes.has(code)) {
     return new PublicError('CONNECTION_UNAVAILABLE', 'The database connection is unavailable.');
+  }
+  if (code && tlsVerificationCodes.has(code)) {
+    return new PublicError('TLS_VERIFICATION_FAILED', 'Verified database TLS negotiation failed.');
   }
   if (code && readOnlyCodes.has(code)) {
     return new PublicError('READ_ONLY_VIOLATION', 'The read-only database path rejected the operation.');

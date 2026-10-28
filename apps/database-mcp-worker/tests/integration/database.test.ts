@@ -88,7 +88,7 @@ describeReadIntegration('real database read-only integration', () => {
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
       database: decodeURIComponent(url.pathname.slice(1)),
-      disableEval: true
+      disableEval: true,
     });
     try {
       await expect(client.query("UPDATE users SET email = 'changed' WHERE id = 1")).rejects.toBeTruthy();
@@ -192,7 +192,7 @@ describeWriteIntegration('real database safe write integration', () => {
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
       database: decodeURIComponent(url.pathname.slice(1)),
-      disableEval: true
+      disableEval: true,
     });
     try {
       await expect(mysqlClient.query('CREATE TABLE forbidden_writer_table (id INT)')).rejects.toBeTruthy();

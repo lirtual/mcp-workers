@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { resolveAdminConnection } from './admin-config.js';
-import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from './config.js';
+import { admitConnection, admitWriteConnection, catalogMetadata } from './registry/admission.js';
 import {
   alterTable,
   createIndex,
@@ -20,7 +19,7 @@ import { getSchemaContext } from './db/schema-context.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
 import { clampRequestedLimit, jsonSafe } from './result.js';
-import type { ConnectionConfig, Env } from './types.js';
+import type { Env } from './types.js';
 
 interface ToolContextLike {
   http?: {
@@ -173,7 +172,7 @@ const alterOperationSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('rename_table'), newName: databaseIdentifierSchema }).strict()
 ]);
 
-export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer {
+export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer(
     { name: 'database-mcp-worker', version: '0.3.0' },
     {
@@ -195,13 +194,7 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'list_connections',
-        run: async () => ({
-          connections: catalog.map(connection => ({
-            id: connection.id,
-            dialect: resolveConnectionDialect(env, connection),
-            transport: connection.transport,
-          }))
-        }),
+        run: async () => ({ connections: await catalogMetadata(env) }),
         summarize: value => ({ connectionCount: value.connections.length })
       })
   );
@@ -223,9 +216,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'inspect_schema',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
+        connectionId: connection,
         run: async () => {
-          const resolved = resolveConnection(env, catalog, connection);
+          const resolved = await admitConnection(env, connection);
           return inspectSchema(resolved, schema, table);
         }
       })
@@ -248,8 +241,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'get_schema_context',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => getSchemaContext(resolveConnection(env, catalog, connection), schema, tableLimit),
+        connectionId: connection,
+        run: async () => getSchemaContext(await admitConnection(env, connection), schema, tableLimit),
         summarize: value => ({
           tableCount: value.tableCount,
           totalTables: value.totalTables,
@@ -276,10 +269,10 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'query_read',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
+        connectionId: connection,
         sql,
         run: async () => {
-          const resolved = resolveConnection(env, catalog, connection);
+          const resolved = await admitConnection(env, connection);
           const effectiveLimit = clampRequestedLimit(rowLimit, resolved.limits.maxRows);
           return queryRead(resolved, sql, params, effectiveLimit);
         },
@@ -299,9 +292,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'explain',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
+        connectionId: connection,
         sql,
-        run: async () => explainRead(resolveConnection(env, catalog, connection), sql, params)
+        run: async () => explainRead(await admitConnection(env, connection), sql, params)
       })
   );
 
@@ -317,9 +310,9 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'health_check',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
+        connectionId: connection,
         run: async () => {
-          const resolved = resolveConnection(env, catalog, connection);
+          const resolved = await admitConnection(env, connection);
           const health = await healthCheck(resolved);
           return { connection: resolved.config.id, dialect: resolved.dialect, transport: resolved.transport, ...health };
         },
@@ -345,8 +338,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'insert_rows',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => insertRows(resolveWriteConnection(env, catalog, connection), schema, table, rows),
+        connectionId: connection,
+        run: async () => insertRows(await admitWriteConnection(env, connection), schema, table, rows),
         summarize: value => ({ affectedRows: value.affectedRows })
       })
   );
@@ -370,8 +363,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'update_rows',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => updateRows(resolveWriteConnection(env, catalog, connection), schema, table, set, where),
+        connectionId: connection,
+        run: async () => updateRows(await admitWriteConnection(env, connection), schema, table, set, where),
         summarize: value => ({ affectedRows: value.affectedRows })
       })
   );
@@ -394,8 +387,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'delete_rows',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => deleteRows(resolveWriteConnection(env, catalog, connection), schema, table, where),
+        connectionId: connection,
+        run: async () => deleteRows(await admitWriteConnection(env, connection), schema, table, where),
         summarize: value => ({ affectedRows: value.affectedRows })
       })
   );
@@ -418,8 +411,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'create_table',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => createTable(resolveAdminConnection(env, catalog, connection), schema, table, columns),
+        connectionId: connection,
+        run: async () => createTable(await admitConnection(env, connection), schema, table, columns),
         summarize: value => ({ adminOperation: value.operation })
       })
   );
@@ -442,8 +435,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'alter_table',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => alterTable(resolveAdminConnection(env, catalog, connection), schema, table, operation),
+        connectionId: connection,
+        run: async () => alterTable(await admitConnection(env, connection), schema, table, operation),
         summarize: value => ({ adminOperation: value.operation })
       });
     }
@@ -469,8 +462,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'create_index',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => createIndex(resolveAdminConnection(env, catalog, connection), schema, table, columns, unique, name),
+        connectionId: connection,
+        run: async () => createIndex(await admitConnection(env, connection), schema, table, columns, unique, name),
         summarize: value => ({ adminOperation: value.operation })
       })
   );
@@ -493,8 +486,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'drop_index',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => dropIndex(resolveAdminConnection(env, catalog, connection), schema, table, name),
+        connectionId: connection,
+        run: async () => dropIndex(await admitConnection(env, connection), schema, table, name),
         summarize: value => ({ adminOperation: value.operation })
       });
     }
@@ -517,8 +510,8 @@ export function buildMcpServer(env: Env, catalog: ConnectionConfig[]): McpServer
         env,
         ctx,
         tool: 'drop_table',
-        connectionId: connection ?? (catalog.length === 1 ? catalog[0]?.id : undefined),
-        run: async () => dropTable(resolveAdminConnection(env, catalog, connection), schema, table),
+        connectionId: connection,
+        run: async () => dropTable(await admitConnection(env, connection), schema, table),
         summarize: value => ({ adminOperation: value.operation })
       });
     }

@@ -100,7 +100,7 @@ enabled('real database Safe Admin/DDL integration', () => {
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
       database: decodeURIComponent(url.pathname.slice(1)),
-      disableEval: true
+      disableEval: true,
     });
     try {
       await expect(mysqlClient.query("CREATE USER 'forbidden_admin_user'@'%' IDENTIFIED BY 'x'")).rejects.toBeTruthy();

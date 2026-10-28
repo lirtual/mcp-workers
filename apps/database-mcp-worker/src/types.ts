@@ -1,13 +1,13 @@
 export type Dialect = 'mysql' | 'postgres';
 export type DatabaseTransport = 'direct' | 'hyperdrive';
-
 export interface HyperdriveBinding {
+  // Cloudflare's documented per-Worker proxy connection fields.
   connectionString: string;
   host: string;
+  port: number;
   user: string;
   password: string;
   database: string;
-  port: number;
 }
 
 export interface RateLimitBinding {
@@ -15,7 +15,16 @@ export interface RateLimitBinding {
 }
 
 export interface Env {
-  DATABASE_CONFIG?: string;
+  DB?: D1Database;
+  DATABASE_SETUP_HOST?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
+  OWNER_EMAIL?: string;
+  SETUP_RATE_LIMITER?: RateLimitBinding;
+  DATABASE_ENCRYPTION_KEY?: string;
+  DATABASE_KEY_ID?: string;
+  DATABASE_ENCRYPTION_PREVIOUS_KEY?: string;
+  DATABASE_PREVIOUS_KEY_ID?: string;
   MCP_ACCESS_TOKEN?: string;
   MAX_ROWS?: string;
   MAX_RESULT_BYTES?: string;
@@ -35,10 +44,9 @@ export interface DirectConnectionConfig extends BaseConnectionConfig {
 
 export interface HyperdriveConnectionConfig extends BaseConnectionConfig {
   transport: 'hyperdrive';
-  dialect: Dialect;
-  binding: string;
+  configId: string;
+  bindingName: string;
 }
-
 export type ConnectionConfig = DirectConnectionConfig | HyperdriveConnectionConfig;
 
 export interface RuntimeLimits {
@@ -57,7 +65,11 @@ export interface EffectiveConnection {
   user: string;
   password: string;
   database: string;
+  // Hyperdrive MySQL uses a proxy database for the driver handshake, which
+  // may differ from the reviewed origin schema used in SQL identifiers.
+  proxyDatabase?: string;
   port: number;
+  ca?: string;
   limits: RuntimeLimits;
 }
 
