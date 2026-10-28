@@ -153,6 +153,7 @@ jobs:
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
           node --check scripts/openlist-high-risk-recovery-40621020430.mjs
+          node --test scripts/openlist-high-risk-recovery-40621020430.test.mjs
       - name: Single-use exact recovery without write retries
         shell: bash
         env:
