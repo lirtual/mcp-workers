@@ -16,8 +16,8 @@ const env={
   OPENLIST_API_TOKEN:'synthetic-upstream-credential',
   OPENLIST_ALLOWED_ROOTS:'["/Koofr/Downloads"]',
 };
-const reply = obj => new Response(JSON.stringify(obj),{
-  status:200,headers:{'content-type':'application/json'}});
+const reply = (obj,status=200) => new Response(JSON.stringify(obj),{
+  status,headers:{'content-type':'application/json'}});
 const rpc = (name,observed_state,status='succeeded',code='OK',isError=false) => reply({
   jsonrpc:'2.0',id:1,result:{...(isError?{isError:true}:{}),
     content:[{type:'text',text:JSON.stringify({
@@ -52,10 +52,10 @@ function transportFactory({unknownDisable=false,createFails=false,postDenial='di
       assert.equal(body.path,'/@s/'+id);
       if(body.password!==state.pwd){
         state.publicWrong++;
-        return reply({code:400,message:'wrong password',data:null});
+        return reply({code:403,message:'wrong password',data:null},403);
       }
-      if(state.disabled)return reply({code:400,message:'share has been disabled',data:null});
-      if(state.publicValid>=1)return reply({code:400,message:'share access count exceeded',data:null});
+      if(state.disabled)return reply({code:400,message:'share has been disabled',data:null},400);
+      if(state.publicValid>=1)return reply({code:400,message:'share access count exceeded',data:null},400);
       state.publicValid++;
       return reply({code:200,message:'success',data:{
         name:'sample-40493124967-1.txt',size:50,is_dir:false}});
