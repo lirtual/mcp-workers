@@ -388,6 +388,8 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // Stable non-secret ID is essential for exact manual recovery if any
     // later effect is unknown. Never print password, public URL or raw replies.
     console.log('OPENLIST_HIGH_RISK_CREATED id='+newId);
+    let disableDispatched=false, revokeDispatched=false;
+    try {
     const initialShare=(await mcp('openlist_share_get',{id:newId})).observed_state;
     check(initialShare?.id===newId && initialShare?.disabled===false &&
       initialShare.max_accessed===3 &&
@@ -439,6 +441,7 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // active, and that disabling it controls access (not merely quota exhaustion).
     await publicShare('allowed');
     await new Promise(resolve=>setTimeout(resolve,1200));
+    disableDispatched=true;
     const disabled=await mcp('openlist_share_disable',{id:newId});
     check(disabled.observed_state?.disabled===true,'high_risk_disable');
     let afterDisabled;
@@ -461,6 +464,7 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       'high_risk_enable_readback');
     await publicShare('allowed');
     await new Promise(resolve=>setTimeout(resolve,1200));
+    revokeDispatched=true;
     const revoke=await mcp('openlist_share_revoke',{id:newId});
     check(revoke.observed_state?.revoked===true,'high_risk_revoke');
     let shareGone=false;
@@ -491,6 +495,22 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       if(i<7)await new Promise(resolve=>setTimeout(resolve,700));
     }
     check(empty,'high_risk_delete_readback');
+    } catch (error) {
+      // When any post-create check fails, immediately attempt at most one
+      // disable and one revoke of ONLY the exact newly created share. This
+      // is a separate authorized safety cleanup, never a retry of an unknown
+      // update/disable/revoke. The new fixture file is kept for diagnosis.
+      console.log('OPENLIST_HIGH_RISK_FAILSAFE share_id='+newId);
+      if(!revokeDispatched) {
+        if(!disableDispatched) {
+          disableDispatched=true;
+          try {await mcp('openlist_share_disable',{id:newId});}catch{}
+        }
+        revokeDispatched=true;
+        try {await mcp('openlist_share_revoke',{id:newId});}catch{}
+      }
+      throw error;
+    }
     console.log('OPENLIST_HIGH_RISK_E2E_PASS share_id='+newId+
       ' share_revoked=true source_deleted=true');
     tested.push('share_create','share_update','share_disable',
