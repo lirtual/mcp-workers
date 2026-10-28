@@ -218,6 +218,33 @@ jobs:
               FROM step_attempts WHERE run_id='47739981-0534-4966-8034-1e79c1d17481'
           ") | node scripts/workflow-terminal-run-exception.mjs
 
+      # This owner-confirmed Weixin delivery remains indeterminate in machine
+      # receipts. Only its exact terminal D1, native and GitHub evidence may
+      # exclude it from release counters; no resend or history mutation.
+      - name: Verify second terminal E2E Run proof (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        id: terminal_second
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          TERMINAL_PROOF_KIND: second
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
+            SELECT id,outcome,start_state,error_code FROM runs
+              WHERE id='8e0a94a7-136f-41fd-b839-211c9a60ad49';
+            SELECT run_id,step_id,status,error_code FROM run_steps
+              WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49' ORDER BY step_id;
+            SELECT run_id,step_id,state FROM session_executions
+              WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49';
+            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
+              FROM step_attempts WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49';
+            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
+              FROM cloudflare_action_invocations WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49'
+          ") | node scripts/workflow-terminal-run-exception.mjs
+
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
@@ -226,6 +253,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
           WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
+          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
@@ -264,7 +292,7 @@ jobs:
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID') AS active_runs,
+             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
              (SELECT count(*) FROM runs) AS run_count,
              (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -303,6 +331,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'
           WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
+          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -343,7 +372,7 @@ jobs:
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
               (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID') AS active_runs,
+              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
               (SELECT count(*) FROM runs) AS run_count,
               (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -356,6 +385,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
+          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
         run: |
           set -euo pipefail
           query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
