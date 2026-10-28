@@ -214,6 +214,26 @@ jobs:
             }
             return result;
           }
+          async function inspectMysqlMode(hd: HD): Promise<Record<string,boolean>> {
+            const c = await mysqlConnect({
+              host:hd.host,user:hd.user,password:hd.password,database:hd.database,port:hd.port,
+              disableEval:true,rowsAsArray:true,connectTimeout:12000
+            });
+            try {
+              await c.beginTransaction();
+              const [rows] = await c.query('SELECT @@SESSION.sql_mode AS mode');
+              const first:unknown = Array.isArray(rows) ? rows[0] : undefined;
+              const mode:unknown = Array.isArray(first) ? first[0] :
+                first && typeof first === 'object' ? (first as Record<string,unknown>).mode : undefined;
+              await c.rollback();
+              return {
+                arrayShape: Array.isArray(first),
+                modeIsString: typeof mode === 'string',
+                forbiddenBackslashMode: typeof mode === 'string' &&
+                  mode.toUpperCase().split(',').some(x=>x.trim()==='NO_BACKSLASH_ESCAPES')
+              };
+            } finally { await c.end().catch(()=>undefined); }
+          }
           export default {
             async fetch(req: Request, env: Env): Promise<Response> {
               if (req.method !== 'POST' || new URL(req.url).pathname !== '/run')
@@ -232,9 +252,13 @@ jobs:
                     ? String((e as {code:unknown}).code) : 'unknown';
                   const phase = e && typeof e === 'object' && 'phase' in e
                     ? String((e as {phase:unknown}).phase) : 'unknown';
+                  const modeDiagnostic = name === 'mysql'
+                    ? await inspectMysqlMode(hd).catch(() => ({ modeProbeUnavailable:true }))
+                    : {};
                   summary[name] = {
                     errorCode: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown',
-                    phase: /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown'
+                    phase: /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown',
+                    ...modeDiagnostic
                   };
                 }
               }
