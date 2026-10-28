@@ -302,6 +302,35 @@ test('post-cutover D1 registry allows independent lifecycle with 0–10 entries 
   ]) await assert.rejects(verifyRegistryReadiness(makeBad(), keys), /preflight failed/);
 });
 
+test('post-cutover Direct preflight rejects driver-incompatible stored URL without origin I/O', async () => {
+  const keys = { DATABASE_ENCRYPTION_KEY: encryptionKey, DATABASE_KEY_ID: keyId };
+  const connection = {
+    id: 'sample', dialect: 'mysql', transport: 'direct', status: 'active', revision: 2,
+    key_id: keyId, ciphertext: '', config_id: null, binding_name: null
+  };
+  const connectionWith = async (url, dialect = 'mysql') => ({ ...connection, dialect,
+    ciphertext: await syntheticCipher(connection.id, dialect, url, encryptionKey) });
+  assert.deepEqual(await verifyRegistryReadiness([
+    await connectionWith('mysql://synthetic:secret@db.example.net/allowed')
+  ], keys), { valid: true, records: 1, direct: 1, hyperdrive: 0 });
+  assert.deepEqual(await verifyRegistryReadiness([
+    await connectionWith('postgresql://synthetic:secret@db.example.net/allowed', 'postgres')
+  ], keys), { valid: true, records: 1, direct: 1, hyperdrive: 0 });
+  for (const [url, dialect] of [
+    ['mysql://synthetic:secret@db.example.net/allowed', 'postgres'],
+    ['postgres://synthetic:secret@db.example.net/allowed', 'mysql'],
+    ['mysql://synthetic:secret@db.example.net/allowed?ssl=true', 'mysql'],
+    ['postgres://synthetic:secret@db.example.net/allowed?sslmode=disable', 'postgres'],
+    ['mysql://synthetic:secret@db.example.net/allowed#fragment', 'mysql'],
+    ['postgresql://synthetic:secret@db.example.net', 'postgres'],
+    ['mysql://db.example.net/allowed', 'mysql'],
+    ['https://synthetic:secret@db.example.net/allowed', 'mysql']
+  ]) {
+    await assert.rejects(verifyRegistryReadiness([await connectionWith(url, dialect)], keys),
+      /preflight failed/);
+  }
+});
+
 test('post-cutover read-only release gate permits retired IDs but rejects identity and binding drift', async () => {
   const base = await fixture();
   const state = { rows: [], retired: 2, version: '22222222-2222-4222-8222-222222222222', bindings: [

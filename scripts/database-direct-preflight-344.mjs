@@ -150,8 +150,16 @@ export async function verifyRegistryReadiness(rows, keys, manifest = []) {
       }, key, ciphertext);
       const payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decoded));
       if (!payload || Array.isArray(payload) || Object.keys(payload).length !== 1 ||
-          typeof payload.url !== 'string' || payload.url.length === 0 || payload.url.length > 8192 ||
-          !['mysql:', 'postgres:', 'postgresql:'].includes(new URL(payload.url).protocol)) blocked();
+          typeof payload.url !== 'string' || payload.url.length === 0 || payload.url.length > 8192) blocked();
+      const url = new URL(payload.url);
+      const dialect = url.protocol === 'mysql:' ? 'mysql' :
+        ['postgres:', 'postgresql:'].includes(url.protocol) ? 'postgres' : null;
+      // Runtime Direct admission rejects scheme/dialect mismatch, URL options,
+      // fragments and missing identity. Prevent a subsequent code release from
+      // silently retaining an active connection which cannot be admitted.
+      if (dialect !== row.dialect || url.search || url.hash ||
+          !url.hostname || !url.username ||
+          (dialect === 'postgres' && url.pathname.replace(/^\/+/, '').length === 0)) blocked();
     } catch { blocked(); }
     direct++;
   }
