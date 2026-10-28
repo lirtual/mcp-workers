@@ -502,6 +502,7 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     // record. If revoke fails or is uncertain, it must not remain enabled.
     // This is a separate enabled→disabled transition, NOT a retry of the
     // earlier disabled→enabled→disabled lifecycle.
+    disableDispatched=true; // Fence this exposure period before the write; unknown must not replay.
     const safeDisabled=await mcp('openlist_share_disable',{id:newId});
     check(safeDisabled.observed_state?.disabled===true,'high_risk_final_disable');
     let finalDisabled=false;
