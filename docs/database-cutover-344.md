@@ -82,30 +82,50 @@ only the dedicated `test` roles; the Database connector exposes only
 Do **not** attempt to upgrade the test role, use an old password, or touch
 any business database.
 
-An authorized Aiven PostgreSQL administrator may execute **once** in the
-**dedicated** `database-mcp-test-postgres` database. Run in the Aiven SQL
-editor or another trusted administrator session; do not post any passwords
-or connection URLs in GitHub or ChatGPT. This deliberately refuses
-wrong database/user or a pre-existing schema and grants **only**
-`USAGE, CREATE` on a dedicated new schema, not on `public`:
+An authorized Aiven PostgreSQL administrator may provision the schema **once**
+in the **dedicated** `database-mcp-test-postgres` database. Never post passwords
+or connection URLs in GitHub or ChatGPT.
+
+**Aiven editor compatibility:** The SQL editor may split statements at
+semicolons inside a PostgreSQL `DO $tag$ ... $tag$` block, yielding
+`unterminated dollar-quoted string`. Execute each of these ordinary SQL
+code blocks **separately** instead. This variant requires an operator to
+verify the preflight result **before** any DDL; it is not one atomic SQL guard.
+
+1. Read-only preflight. Expected: exact database, `avnadmin`, false, true:
 
 ```sql
-DO $db344_guard$
-BEGIN
-  IF current_database() <> 'database-mcp-test-postgres'
-     OR current_user <> 'avnadmin' THEN
-    RAISE EXCEPTION 'db344: wrong dedicated test database or administrator';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test') THEN
-    RAISE EXCEPTION 'db344: dedicated test role not present';
-  END IF;
-  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'db344_acceptance') THEN
-    RAISE EXCEPTION 'db344: schema already exists; review manually';
-  END IF;
-  EXECUTE 'CREATE SCHEMA db344_acceptance';
-  EXECUTE 'GRANT USAGE, CREATE ON SCHEMA db344_acceptance TO "test"';
-END;
-$db344_guard$;
+SELECT current_database() AS database_name,
+       current_user AS login_role,
+       EXISTS(SELECT 1 FROM pg_namespace WHERE nspname='db344_acceptance') AS schema_exists,
+       EXISTS(SELECT 1 FROM pg_roles WHERE rolname='test') AS test_role_exists
+```
+
+2. Only if **all four** preflight values match, create the isolated schema.
+   Never use `IF NOT EXISTS`, which can hide a conflicting owner:
+
+```sql
+CREATE SCHEMA db344_acceptance AUTHORIZATION avnadmin
+```
+
+3. Grant exactly the required scope, not database-level or `public` privileges:
+
+```sql
+GRANT USAGE, CREATE ON SCHEMA db344_acceptance TO "test"
+```
+
+4. Independently verify all five fields are `true` before the test:
+
+```sql
+SELECT current_database() = 'database-mcp-test-postgres' AS database_ok,
+       current_user = 'avnadmin' AS administrator_ok,
+       EXISTS (
+         SELECT 1 FROM pg_namespace
+         WHERE nspname='db344_acceptance'
+           AND nspowner=(SELECT oid FROM pg_roles WHERE rolname='avnadmin')
+       ) AS schema_owner_ok,
+       has_schema_privilege('test', 'db344_acceptance', 'USAGE') AS usage_ok,
+       has_schema_privilege('test', 'db344_acceptance', 'CREATE') AS create_ok
 ```
 
 Read-only permission verification, **as role `test` connected to the dedicated
@@ -127,33 +147,34 @@ Retain real run IDs and exact pass/fail phase markers. No permanent workflow,
 Acceptance environment, production binding, production migration or wider
 permissions may be introduced.
 
-**Cleanup** after the test is confirmed: the administrator reconnects to
-the same dedicated test database and executes the following guarded cleanup.
-It refuses a different database, user or schema owner, and uses `RESTRICT`
-rather than `CASCADE`:
+**Cleanup** only after successful acceptance tests and confirmed removal of
+all their test objects. Using the same Aiven SQL editor, perform **separate**
+queries. Because the editor may split dollar-quoted blocks, this is an
+operator-verified sequence rather than an atomic server-side guard.
+
+First require all three values to be `true`; otherwise stop:
 
 ```sql
-DO $db344_cleanup$
-BEGIN
-  IF current_database() <> 'database-mcp-test-postgres'
-     OR current_user <> 'avnadmin' THEN
-    RAISE EXCEPTION 'db344: wrong dedicated test database or administrator';
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_namespace
-    WHERE nspname = 'db344_acceptance'
-      AND nspowner = (SELECT oid FROM pg_roles WHERE rolname = 'avnadmin')
-  ) THEN
-    RAISE EXCEPTION 'db344: schema absent or owned by another role';
-  END IF;
-  EXECUTE 'REVOKE CREATE, USAGE ON SCHEMA db344_acceptance FROM "test"';
-  EXECUTE 'DROP SCHEMA db344_acceptance RESTRICT';
-END;
-$db344_cleanup$;
+SELECT current_database() = 'database-mcp-test-postgres' AS database_ok,
+       current_user = 'avnadmin' AS administrator_ok,
+       EXISTS (
+         SELECT 1 FROM pg_namespace
+         WHERE nspname='db344_acceptance'
+           AND nspowner=(SELECT oid FROM pg_roles WHERE rolname='avnadmin')
+       ) AS schema_owner_ok
 ```
 
-If any object remains, `RESTRICT` deliberately fails and the transaction
-rolls back; investigate and remove **only** the isolated test objects first.
-Do not drop unrelated schemas or grant privileges on `public`.
+Only after these checks pass, run this statement by itself:
+
+```sql
+DROP SCHEMA db344_acceptance RESTRICT
+```
+
+Dropping the dedicated schema also removes its role grants. If objects
+remain, `RESTRICT` fails rather than deleting objects by cascade.
+Never use `CASCADE` or operate on any other database/schema.
+
+If the command fails because objects remain, investigate and remove **only**
+the isolated test objects before attempting cleanup again.
 Independently confirm the disposable Hyperdrive, Worker and CA have been
 deleted and the Draft PR's temporary workflow has been removed.
