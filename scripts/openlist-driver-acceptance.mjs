@@ -212,7 +212,10 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     check(refreshedResult?.code === 200, 'file_listing_refresh_unknown');
     // Refresh is a read-only cache invalidation, not permission to create
     // more files or to weaken the exact one-file confirmation.
-    for (let attempt = 0; attempt < 4; attempt++) {
+    // An upstream refresh may finish before Cloudflare's independent reads
+    // observe the new directory entry. Wait a bounded 10 reads rather than
+    // issuing another upload or accepting a merely stale empty listing.
+    for (let attempt = 0; attempt < 10; attempt++) {
       listing = (await mcp('openlist_list_files',
         {path:folder,page:1,per_page:100})).observed_state;
       if (listing?.total === 1 && listing.entries?.length === 1 &&
@@ -220,7 +223,7 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       check(listing?.total === 0 && listing.page === 1 &&
         Array.isArray(listing.entries) && listing.entries.length === 0,
         'file_listing');
-      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000));
+      if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
   check(listing?.total === 1 && listing.entries?.length === 1 &&
