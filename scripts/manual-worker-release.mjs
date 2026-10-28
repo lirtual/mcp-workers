@@ -80,9 +80,10 @@ export function databaseD1ReadinessSql(expectedIds) {
   ].join("\n") + ";";
 }
 
-export function verifyDatabaseD1Readiness(response, expectedCount) {
+export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cutover') {
   invariant(Number.isSafeInteger(expectedCount) && expectedCount >= 1 && expectedCount <= 10,
     "Database migration expected ID count missing");
+  invariant(['cutover', 'registry'].includes(phase), "Database migration phase invalid");
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
@@ -91,15 +92,20 @@ export function verifyDatabaseD1Readiness(response, expectedCount) {
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
   invariant(row.migration_count === 2, "Database D1 additive transport migration not applied");
-  invariant(row.record_count <= 10 && row.reused_count === 0 && row.malformed_count === 0,
+  // The separate, always-on encrypted Direct prepublication gate enforces
+  // exact active revision-2 legacy records while the old Worker is deployed.
+  // Once the D1-backed Worker is already live, requiring those IDs to remain
+  // active would prohibit the approved 0–10 incremental registry lifecycle.
+  if (phase === 'cutover') {
+    invariant(row.record_count >= expectedCount && row.preserved_count === expectedCount,
+      "Database D1 missing reviewed legacy logical connection IDs");
+    invariant(row.active_count === expectedCount,
+      "Database production release blocked: reviewed legacy connections are disabled");
+  }
+  invariant(row.record_count <= 10 && row.reused_count === 0 && row.malformed_count === 0 &&
+    row.preserved_count <= Math.min(row.record_count, expectedCount) &&
+    row.active_count <= row.preserved_count,
     "Database D1 record inventory invalid");
-  invariant(row.record_count >= expectedCount && row.preserved_count === expectedCount,
-    "Database D1 missing reviewed legacy logical connection IDs");
-  // Never deploy the D1-only Worker with disabled legacy IDs: it would
-  // instantly break existing consumers. Enabling is a separate authorized
-  // D1-only cutover operation before the Worker source is published.
-  invariant(row.active_count === expectedCount,
-    "Database production release blocked: reviewed legacy connections are disabled");
   return { record_count: row.record_count, preserved_count: row.preserved_count,
     active_count: row.active_count };
 }
@@ -887,10 +893,12 @@ async function main() {
   if (mode === "database-d1-check") {
     invariant(worker === "database-mcp-worker", "Database D1 readiness target mismatch");
     const expected = REQUIRED_LEGACY_IDS;
+    // Generic registry shape only. Exact first-cutover ID, ciphertext and
+    // revision checks are enforced separately by database-direct-preflight.
     const counts = verifyDatabaseD1Readiness(JSON.parse(await readFile("/dev/stdin", "utf8")),
-      expected.length);
+      expected.length, 'registry');
     console.log("Database production D1 schema and encrypted-row shape: PASS; records=" +
-      counts.record_count + "; legacy migration integrity and live TLS require separate evidence");
+      counts.record_count + "; first-cutover source and ciphertext are separately gated; live TLS requires separate evidence");
     return;
   }
   if (mode === "migration-sql") {

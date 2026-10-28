@@ -173,6 +173,25 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
 });
 
 
+test("subsequent Database releases allow updated 0–10 connection inventory while retaining schema/retirement checks", () => {
+  const base = { migration_count: 2, record_count: 0, preserved_count: 0,
+    active_count: 0, retired_count: 2, reused_count: 0, malformed_count: 0 };
+  const result = row => [{ success: true, results: [row] }];
+  assert.deepEqual(verifyDatabaseD1Readiness(result(base), 2, 'registry'),
+    { record_count: 0, preserved_count: 0, active_count: 0 });
+  assert.deepEqual(verifyDatabaseD1Readiness(result({ ...base, record_count: 10,
+    preserved_count: 1, active_count: 0 }), 2, 'registry'),
+    { record_count: 10, preserved_count: 1, active_count: 0 });
+  assert.throws(() => verifyDatabaseD1Readiness(result(base), 2, 'cutover'),
+    /missing reviewed legacy/);
+  for (const bad of [
+    { record_count: 11 }, { reused_count: 1 }, { malformed_count: 1 },
+    { migration_count: 1 }, { active_count: 1 }, { preserved_count: 3 },
+    { retired_count: -1 }
+  ]) assert.throws(() => verifyDatabaseD1Readiness(result({ ...base, ...bad }), 2, 'registry'));
+  assert.throws(() => verifyDatabaseD1Readiness(result(base), 2, 'invalid'), /phase invalid/);
+});
+
 test("generated Database D1 release SQL executes against actual SQLite schema", () => {
   const sql = new DatabaseSync(":memory:");
   try {

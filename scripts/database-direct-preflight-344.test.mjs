@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encryptDirect } from './database-prep-344.mjs';
-import { checkReadOnlyD1, verifyDirectCutoverPreflight } from './database-direct-preflight-344.mjs';
+import { webcrypto } from 'node:crypto';
+import { checkReadOnlyD1, verifyDirectCutoverPreflight, verifyRegistryReadiness } from './database-direct-preflight-344.mjs';
 
 const config = Object.freeze({
   b2b: 'mysql://test:example@db-b.example.net:3306/example',
@@ -113,18 +114,24 @@ test('production preflight is strictly read-only, guarded and redacts credential
         success: true, result: { bindings: [{ name: 'DATABASE_CONFIG', type: 'secret_text' }] }
       }) };
     }
+    if (url.endsWith('/deployments')) {
+      assert.equal(options.method, 'GET');
+      return { ok: true, json: async () => ({ success: true, result: { deployments: [
+        { versions: [{ version_id: 'eb3f4823-124b-4d76-abdc-42f85097bb5a', percentage: 100 }] }
+      ] } }) };
+    }
     assert.equal(options.method, 'POST'); // Cloudflare D1 SELECT transport
     assert.match(body.sql, /^SELECT /);
     assert.doesNotMatch(body.sql, /\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b/);
     const rows = body.sql.includes('AS migrations')
-      ? [{ migrations: 2, retired: 0, total: 2 }] : base.rows;
+      ? [{ migrations: 2, retired: 0, total: 2, reused: 0 }] : base.rows;
     return { ok: true, json: async () => ({ success: true, result: [{ success: true, results: rows }] }) };
   };
   try {
     assert.deepEqual(await checkReadOnlyD1(env), {
       valid: true, records: 2, status: 'disabled', workerChanged: false
     });
-    assert.deepEqual(calls.map(x => x.method), ['GET', 'POST', 'POST']);
+    assert.deepEqual(calls.map(x => x.method), ['GET', 'GET', 'POST', 'POST']);
     // A future release must fail until BOTH records are active and revision 2.
     await assert.rejects(checkReadOnlyD1({ ...env, DATABASE_DIRECT_PREFLIGHT_PHASE: 'release' }),
       /preflight failed/);
@@ -198,7 +205,7 @@ test('direct preflight manual gate is Owner-only, isolated and never a write rou
 test('Database publication rechecks active Direct ciphertext and URL inventory before deployment', async () => {
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  const name = 'Verify active Direct encryption and original URL inventory before publication (read-only)';
+  const name = 'Verify first cutover Direct identity or post-cutover registry decryption (read-only)';
   const start = source.indexOf(name);
   const publish = source.indexOf('Publish exactly selected Worker');
   assert.ok(start > 0 && start < publish, 'Direct prepublication guard must execute before deployment');
@@ -214,4 +221,124 @@ test('Database publication rechecks active Direct ciphertext and URL inventory b
     'node scripts/database-direct-preflight-344.mjs'
   ]) assert.ok(stage.includes(required), 'Database publish encryption guard missing: ' + required);
   assert.doesNotMatch(stage, /\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b|wrangler deploy/);
+});
+
+async function syntheticCipher(id, dialect, url, raw) {
+  const bytes = Buffer.from(raw, 'base64');
+  const key = await webcrypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt']);
+  const iv = Buffer.alloc(12, 19);
+  const sealed = await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv,
+    additionalData: new TextEncoder().encode(`database-mcp:connection:v1:${id}:${dialect}`)
+  }, key, new TextEncoder().encode(JSON.stringify({url})));
+  return iv.toString('base64') + '.' + Buffer.from(sealed).toString('base64');
+}
+
+test('post-cutover D1 registry allows independent lifecycle with 0–10 entries and authenticates every Direct ciphertext', async () => {
+  const original = await fixture();
+  const credentials = { DATABASE_ENCRYPTION_KEY: encryptionKey, DATABASE_KEY_ID: keyId };
+  const old = original.rows.map(r => ({ ...r, status: 'active', revision: 2 }));
+  const row = (id, dialect, status, key = encryptionKey, key_id = keyId) => ({
+    id, dialect, transport: 'direct', status, revision: 3, key_id,
+    ciphertext: null, config_id: null, binding_name: null
+  });
+  const extra = row('added_pg', 'postgres', 'disabled');
+  extra.ciphertext = await syntheticCipher('added_pg', 'postgres', 'postgres://synthetic:secret@pg.example.org:5432/db', encryptionKey);
+  const retired = structuredClone(old).slice(1);
+  assert.deepEqual(await verifyRegistryReadiness([], credentials),
+    { valid: true, records: 0, direct: 0, hyperdrive: 0 });
+  assert.deepEqual(await verifyRegistryReadiness([extra, ...retired], credentials),
+    { valid: true, records: 2, direct: 2, hyperdrive: 0 });
+  const previousKey = Buffer.alloc(32, 13).toString('base64');
+  const previous = row('rotating', 'mysql', 'active', previousKey, 'earlier_key');
+  previous.ciphertext = await syntheticCipher(previous.id, 'mysql', 'mysql://synthetic:secret@another.example.net/db', previousKey);
+  const keys = { ...original, DATABASE_KEY_ID: keyId,
+    DATABASE_ENCRYPTION_KEY: encryptionKey,
+    DATABASE_PREVIOUS_KEY_ID: 'earlier_key',
+    DATABASE_ENCRYPTION_PREVIOUS_KEY: previousKey };
+  assert.deepEqual(await verifyRegistryReadiness([extra, previous], keys),
+    { valid: true, records: 2, direct: 2, hyperdrive: 0 });
+  await assert.rejects(verifyRegistryReadiness([extra, previous], {
+    ...keys, DATABASE_ENCRYPTION_PREVIOUS_KEY: undefined
+  }), /preflight failed/);
+  const hyperdrive = { id: 'pg_hyperdrive', dialect: 'postgres', transport: 'hyperdrive',
+    status: 'disabled', revision: 1, key_id: null, ciphertext: null,
+    config_id: '11111111-1111-4111-8111-111111111111', binding_name: 'HYPERDRIVE_PG' };
+  assert.deepEqual(await verifyRegistryReadiness([extra, hyperdrive], keys),
+    { valid: true, records: 2, direct: 1, hyperdrive: 1 });
+  for (const makeBad of [
+    () => [{ ...extra, ciphertext: extra.ciphertext + '.extra' }],
+    () => [{ ...extra, dialect: 'mysql' }],
+    () => [{ ...extra, status: 'unknown' }],
+    () => [{ ...extra, revision: 0 }],
+    () => [{ ...extra, key_id: 'wrong' }],
+    () => [extra, { ...extra }],
+    () => [{ ...hyperdrive, ciphertext: 'never_store_this' }],
+    () => [{ ...hyperdrive, binding_name: 'BAD' }],
+    () => Array.from({length: 11}, (_, i) => ({...extra, id: 'extra_' + i}))
+  ]) await assert.rejects(verifyRegistryReadiness(makeBad(), keys), /preflight failed/);
+});
+
+test('post-cutover read-only release gate permits retired IDs but rejects identity and binding drift', async () => {
+  const base = await fixture();
+  const state = { rows: [], retired: 2, version: '22222222-2222-4222-8222-222222222222', bindings: [
+    { name: 'DB', type: 'd1', id: '8853a6ac-beaa-45aa-bdb2-0867e6f3df6d' },
+    { name: 'MCP_ACCESS_TOKEN', type: 'secret_text' }
+  ] };
+  const env = {
+    GITHUB_ACTOR: 'lirtual', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40),
+    CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32), CLOUDFLARE_API_TOKEN: 'synthetic-test-token',
+    DATABASE_ENCRYPTION_KEY: encryptionKey, DATABASE_KEY_ID: keyId,
+    DATABASE_DIRECT_PREFLIGHT_PHASE: 'release'
+  };
+  const calls = [];
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const sql = options.body ? JSON.parse(options.body).sql : null;
+    calls.push({ method: options.method, sql });
+    assert.match(url, /^https:\/\/api\.cloudflare\.com\/client\/v4\/accounts\/a{32}\//);
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-test-token');
+    if (url.endsWith('/settings')) {
+      assert.equal(options.method, 'GET');
+      return { ok: true, json: async () => ({ success: true, result: { bindings: state.bindings } }) };
+    }
+    if (url.endsWith('/deployments')) {
+      assert.equal(options.method, 'GET');
+      return { ok: true, json: async () => ({ success: true, result: { deployments: [
+        { versions: [{ version_id: state.version, percentage: 100 }] }
+      ] } }) };
+    }
+    assert.equal(options.method, 'POST'); // Cloudflare D1 SELECT over HTTP
+    assert.match(sql, /^SELECT /);
+    assert.doesNotMatch(sql, /\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b/);
+    const results = sql.includes('AS migrations')
+      ? [{ migrations: 2, retired: state.retired, total: state.rows.length, reused: state.reused ?? 0 }]
+      : state.rows;
+    return { ok: true, json: async () => ({ success: true,
+      result: [{ success: true, results }] }) };
+  };
+  try {
+    assert.deepEqual(await checkReadOnlyD1(env),
+      { valid: true, records: 0, direct: 0, hyperdrive: 0, status: 'registry', workerChanged: true });
+    const more = { ...base.rows[0], status: 'disabled', revision: 4 };
+    state.rows = [more];
+    assert.deepEqual(await checkReadOnlyD1(env),
+      { valid: true, records: 1, direct: 1, hyperdrive: 0, status: 'registry', workerChanged: true });
+    assert.equal(calls.every(c => c.method === 'GET' || c.method === 'POST'), true);
+    await assert.rejects(checkReadOnlyD1({ ...env, DATABASE_DIRECT_PREFLIGHT_PHASE: 'staged' }),
+      /preflight failed/);
+    state.version = 'eb3f4823-124b-4d76-abdc-42f85097bb5a';
+    await assert.rejects(checkReadOnlyD1(env), /preflight failed/);
+    state.version = '22222222-2222-4222-8222-222222222222';
+    state.reused = 1;
+    await assert.rejects(checkReadOnlyD1(env), /preflight failed/);
+    state.reused = 0;
+    state.bindings[0].id = '00000000-0000-4000-8000-000000000000';
+    await assert.rejects(checkReadOnlyD1(env), /preflight failed/);
+    state.bindings[0].id = '8853a6ac-beaa-45aa-bdb2-0867e6f3df6d';
+    state.bindings[0].type = 'plain_text';
+    await assert.rejects(checkReadOnlyD1(env), /preflight failed/);
+    state.bindings[0].type = 'd1';
+    state.bindings.push({ name: 'DB', type: 'd1', id: state.bindings[0].id });
+    await assert.rejects(checkReadOnlyD1(env), /preflight failed/);
+  } finally { globalThis.fetch = previous; }
 });

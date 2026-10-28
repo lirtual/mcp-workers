@@ -440,13 +440,15 @@ jobs:
       # Initial D1 cutover: status alone is not enough; authenticate every
       # encrypted legacy URL against the reviewed GitHub source before deploy.
       # Never publish with an unreadable key or a substituted connection.
-      - name: Verify active Direct encryption and original URL inventory before publication (read-only)
+      - name: Verify first cutover Direct identity or post-cutover registry decryption (read-only)
         if: inputs.worker == 'database-mcp-worker'
         env:
           DATABASE_DIRECT_PREFLIGHT_PHASE: release
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
+          DATABASE_ENCRYPTION_PREVIOUS_KEY: ${{ secrets.DATABASE_ENCRYPTION_PREVIOUS_KEY }}
+          DATABASE_PREVIOUS_KEY_ID: ${{ vars.DATABASE_PREVIOUS_KEY_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-direct-preflight-344.mjs
