@@ -22,7 +22,10 @@ function canonicalBase64(value) {
  * The GitHub Environment copy of DATABASE_CONFIG cannot independently attest
  * that the deployed Cloudflare legacy Secret is byte-for-byte equal.
  */
-export async function verifyDirectCutoverPreflight({ rows, originalConfig, encryptionKey, keyId }) {
+export async function verifyDirectCutoverPreflight({ rows, originalConfig, encryptionKey, keyId, phase = 'staged' }) {
+  if (!['staged', 'release'].includes(phase)) blocked();
+  const expectedStatus = phase === 'staged' ? 'disabled' : 'active';
+  const expectedRevision = phase === 'staged' ? 1 : 2;
   const catalog = parseLegacyImport(originalConfig);
   if (!Array.isArray(rows) || rows.length !== expectedIds.length ||
       typeof keyId !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(keyId)) blocked();
@@ -35,7 +38,7 @@ export async function verifyDirectCutoverPreflight({ rows, originalConfig, encry
     const row = rows[i];
     if (!row || row.id !== id || catalog[i]?.id !== id ||
         row.dialect !== 'mysql' || row.transport !== 'direct' ||
-        row.status !== 'disabled' || row.revision !== 1 ||
+        row.status !== expectedStatus || row.revision !== expectedRevision ||
         row.key_id !== keyId || row.config_id !== null || row.binding_name !== null ||
         typeof row.ciphertext !== 'string' || row.ciphertext.length > 32768) blocked();
 
@@ -57,7 +60,7 @@ export async function verifyDirectCutoverPreflight({ rows, originalConfig, encry
     if (!payload || Array.isArray(payload) ||
         Object.keys(payload).length !== 1 || payload.url !== catalog[i].url) blocked();
   }
-  return { valid: true, ids: [...expectedIds], expectedRevision: 1 };
+  return { valid: true, ids: [...expectedIds], expectedRevision };
 }
 
 const D1_ID = '8853a6ac-beaa-45aa-bdb2-0867e6f3df6d';
@@ -88,6 +91,8 @@ async function readD1(sql, token, account) {
 
 /** A deliberately read-only attestation. Does not enable rows or deploy a Worker. */
 export async function checkReadOnlyD1(env = process.env) {
+  const phase = env.DATABASE_DIRECT_PREFLIGHT_PHASE || 'staged';
+  if (!['staged', 'release'].includes(phase)) blocked();
   if (env.GITHUB_ACTOR !== 'lirtual' || env.GITHUB_REF !== 'refs/heads/main' ||
       !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? '') ||
       !/^[a-f0-9]{32}$/i.test(env.CLOUDFLARE_ACCOUNT_ID ?? '') ||
@@ -108,13 +113,13 @@ export async function checkReadOnlyD1(env = process.env) {
   const rows = await readD1(D1_READ_SQL, token, account);
   await verifyDirectCutoverPreflight({
     rows, originalConfig: env.DATABASE_CONFIG,
-    encryptionKey: env.DATABASE_ENCRYPTION_KEY, keyId: env.DATABASE_KEY_ID
+    encryptionKey: env.DATABASE_ENCRYPTION_KEY, keyId: env.DATABASE_KEY_ID, phase
   });
-  return { valid: true, records: 2, status: 'disabled', workerChanged: false };
+  return { valid: true, records: 2, status: phase === 'staged' ? 'disabled' : 'active', workerChanged: false };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   checkReadOnlyD1().then(() => {
-    console.log('Database #344 Direct read-only preflight passed; two disabled encrypted IDs match approved input.');
+    console.log('Database #344 Direct read-only preflight passed; both encrypted IDs match approved input.');
   }).catch(() => {
     console.error('Database #344 Direct read-only preflight blocked; no D1 writes or Worker deployment attempted.');
     process.exitCode = 1;
