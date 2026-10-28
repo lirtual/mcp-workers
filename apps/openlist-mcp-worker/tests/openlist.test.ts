@@ -140,17 +140,17 @@ test('upstream 501 and 400 are classified, while transport timeout after write r
   assert.doesNotMatch(JSON.stringify(result), /credentials-in-error/);
 });
 
-test('valid signed text flows through internal route, bounded and without returning signer', async () => {
+test('internal text reads retain native permanent signer without returning a public URL', async () => {
   let calls = 0;
   const api = new OpenListApi(createConfig(env(async request => {
     calls++;
     const url = new URL(request.url);
     if (url.pathname === '/api/fs/get') return ok({
-      name: 'notes.md', size: 5, is_dir: false, sign: 'private-signature',
+      name: 'notes.md', size: 5, is_dir: false, sign: '0.'+'a'.repeat(64),
       raw_url: 'https://outside.example/sensitive',
     });
     assert.equal(url.pathname, '/d/drive/safe/notes.md');
-    assert.equal(url.searchParams.get('sign'), 'private-signature');
+    assert.equal(url.searchParams.get('sign'), '0.'+'a'.repeat(64));
     assert.equal(request.headers.get('authorization'), null);
     return new Response('hello', { headers: { 'content-type': 'text/markdown' } });
   })));
