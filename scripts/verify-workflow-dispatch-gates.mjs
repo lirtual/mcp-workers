@@ -22,7 +22,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -30,32 +30,14 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(allowed, expectedWorkers, 'release allowlist');
 }
 
-/** Owner-only Hyperdrive activation must never be a second publish path. */
+/** The superseded historical D1 activation job must never be reachable. */
 export function verifyDatabaseActivationGate(source) {
-  const activation = job(source, 'database-activate');
-  const gate = activation.gate.replace(/\s+/g, ' ').trim();
-  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_activation_approved == true && inputs.database_activation_id != '' && inputs.database_activation_revision != '' && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true }}";
-  assert.equal(gate, expected, 'Unsafe Database activation gate');
-  const checkStart = source.indexOf('\n  checks:\n');
-  const deployStart = source.indexOf('\n  deploy:\n');
-  assert.ok(checkStart >= 0 && deployStart > checkStart, 'Missing reusable release checks');
-  const checks = source.slice(checkStart, deployStart);
-  assert.ok(checks.includes("inputs.database_activation_id == ''"), 'Activation must never initiate release checks');
-  const deploy = job(source, 'deploy').content;
-  assert.ok(deploy.includes("inputs.database_activation_id == ''"), 'Activation must never initiate deployment');
-  for (const item of [
-    'name: database-mcp-worker',
-    'group: worker-release-database-mcp-worker',
-    'node scripts/activate-database-hyperdrive.mjs',
-    "github.ref == 'refs/heads/main'",
-    'git ls-remote origin refs/heads/main',
-    'DATABASE_ACTIVATION_ID: ' + dollar + '{{ inputs.database_activation_id }}',
-    'DATABASE_ACTIVATION_REVISION: ' + dollar + '{{ inputs.database_activation_revision }}',
-    'CLOUDFLARE_API_TOKEN: ' + dollar + '{{ secrets.CLOUDFLARE_API_TOKEN }}',
-    'MCP_ACCESS_TOKEN: ' + dollar + '{{ secrets.MCP_ACCESS_TOKEN }}'
-  ]) assert.ok(activation.content.includes(item), 'Database activation safeguard missing: ' + item);
-  assert.doesNotMatch(activation.content, /wrangler deploy|Publish exactly selected Worker|manual-worker-release\.mjs readback/,
-    'Activation must not deploy a Worker');
+  assert.ok(!source.includes('\n  database-activate:\n'), 'Historical Database activation job must be absent');
+  assert.ok(!source.includes('database_activation_id:') &&
+    !source.includes('database_activation_approved:') &&
+    !source.includes('database_activation_revision:') &&
+    !source.includes('node scripts/activate-database-hyperdrive.mjs'),
+    'Historical Database activation input or script remains exposed');
 }
 
 // This is deliberately not a YAML or shell interpreter. It recognizes only

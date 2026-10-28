@@ -184,18 +184,15 @@ test('direct preflight manual gate is Owner-only, isolated and never a write rou
     'inputs.database_direct_preflight_approved == true',
     'inputs.deploy_to_production == false',
     'inputs.database_prepare_approved != true',
-    'inputs.database_activation_approved != true',
-    "inputs.database_activation_id == ''",
     'name: database-mcp-worker',
     'group: worker-release-database-mcp-worker',
     'git ls-remote origin refs/heads/main',
-    'node scripts/database-direct-preflight-344.mjs'
+    'node scripts/database-fresh-readiness-344.mjs'
   ]) assert.ok(job.includes(gate), 'Direct preflight gate missing: ' + gate);
   assert.doesNotMatch(job, /wrangler deploy|wrangler d1 migrations|database-prep-344\.mjs import|activate-database-hyperdrive\.mjs/);
-  const deploy = source.slice(source.indexOf('\n  deploy:\n'), source.indexOf('\n  database-activate:\n'));
-  const activation = source.slice(source.indexOf('\n  database-activate:\n'), begin);
+  const deploy = source.slice(source.indexOf('\n  deploy:\n'), source.indexOf('\n  database-restore:\n'));
   const preparation = source.slice(end);
-  for (const other of [deploy, activation, preparation]) {
+  for (const other of [deploy, preparation]) {
     assert.ok(other.includes('inputs.database_direct_preflight_approved != true'));
   }
   const checks = source.slice(source.indexOf('\n  checks:\n'), source.indexOf('\n  deploy:\n'));
@@ -205,7 +202,7 @@ test('direct preflight manual gate is Owner-only, isolated and never a write rou
 test('Database publication rechecks active Direct ciphertext and URL inventory before deployment', async () => {
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  const name = 'Verify first cutover Direct identity or post-cutover registry decryption (read-only)';
+  const name = 'Verify fresh Database D1 and existing registry (read-only)';
   const start = source.indexOf(name);
   const publish = source.indexOf('Publish exactly selected Worker');
   assert.ok(start > 0 && start < publish, 'Direct prepublication guard must execute before deployment');
@@ -214,11 +211,9 @@ test('Database publication rechecks active Direct ciphertext and URL inventory b
   const stage = source.slice(start, end);
   for (const required of [
     "if: inputs.worker == 'database-mcp-worker'",
-    'DATABASE_DIRECT_PREFLIGHT_PHASE: release',
-    'DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}',
     'DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}',
     'DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}',
-    'node scripts/database-direct-preflight-344.mjs'
+    'node scripts/database-fresh-readiness-344.mjs'
   ]) assert.ok(stage.includes(required), 'Database publish encryption guard missing: ' + required);
   assert.doesNotMatch(stage, /\b(?:INSERT|UPDATE|DELETE|DROP|ALTER)\b|wrangler deploy/);
 });

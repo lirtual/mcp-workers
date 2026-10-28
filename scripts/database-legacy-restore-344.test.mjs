@@ -110,7 +110,7 @@ test('protected recovery is exclusive with every other release/activation/prepar
     const next=rest.search(/\n  [a-z][a-z0-9-]*:\n/);
     return yaml.slice(begin,next<0?undefined:begin+1+next);
   };
-  for(const job of ['checks','deploy','database-activate','database-direct-preflight','database-prepare']) {
+  for(const job of ['checks','deploy','database-direct-preflight','database-prepare']) {
     assert.match(portion(job),/inputs\.database_restore_approved != true/);
   }
   const recovery = portion('database-restore');
@@ -119,8 +119,7 @@ test('protected recovery is exclusive with every other release/activation/prepar
     "inputs.worker == 'database-mcp-worker'", 'inputs.database_restore_approved == true',
     "inputs.database_restore_expected_version != ''", 'inputs.deploy_to_production == false',
     'inputs.database_prepare_approved != true', 'inputs.database_direct_preflight_approved != true',
-    'inputs.database_activation_approved != true', "inputs.database_activation_id == ''",
-    "inputs.database_activation_revision == ''", 'inputs.openlist_portal_registration != true',
+ 'inputs.openlist_portal_registration != true',
     'name: database-mcp-worker', 'group: worker-release-database-mcp-worker',
     'git ls-remote origin refs/heads/main',
     'run: node scripts/database-legacy-restore-344.mjs'

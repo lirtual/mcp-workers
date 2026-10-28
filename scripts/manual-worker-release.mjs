@@ -141,7 +141,8 @@ export function verifyDatabaseCutoverSource(conf) {
   const databases = conf.d1_databases;
   invariant(Array.isArray(databases) && databases.length === 1 &&
     databases[0]?.binding === "DB" &&
-    databases[0]?.database_name === "database-mcp-db" &&
+    databases[0]?.database_name === "database-mcp-registry" &&
+    databases[0]?.database_id === "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a" &&
     databases[0]?.migrations_dir === "migrations" &&
     /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(databases[0]?.database_id ?? ""),
     "Database dedicated production D1 not bound or not approved");

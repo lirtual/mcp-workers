@@ -22,20 +22,11 @@ test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace('inputs.database_restore_approved != true &&', 'true &&'), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
 
-test('database activation is Owner-gated, non-deploying and serialized with Worker release', () => {
+test('historical registry activation job is retired and cannot be dispatched', () => {
   assert.doesNotThrow(() => verifyDatabaseActivationGate(release));
-  const activationOnly = (before, after) => {
-    const start = release.indexOf('\n  database-activate:\n');
-    const end = release.indexOf('\n  database-direct-preflight:\n', start);
-    return release.slice(0,start) + release.slice(start,end).replace(before,after) + release.slice(end);
-  };
-  for (const degraded of [
-    activationOnly("github.actor == 'lirtual' &&", 'true &&'),
-    activationOnly("inputs.database_activation_approved == true &&", 'true &&'),
-    activationOnly("inputs.deploy_to_production == false &&", 'true &&'),
-    activationOnly("inputs.database_activation_id != '' &&", 'true &&'),
-    activationOnly('group: worker-release-database-mcp-worker', 'group: insecure-activation')
-  ]) assert.throws(() => verifyDatabaseActivationGate(degraded), /Unsafe|must never|missing/);
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n  database-activate:\n'), /Historical Database activation/);
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n      database_activation_id:\n'), /Historical Database activation/);
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n        run: node scripts/activate-database-hyperdrive.mjs\n'), /Historical Database activation/);
 });
 
 test('existing static reusable workflows and local scripts pass', () => {

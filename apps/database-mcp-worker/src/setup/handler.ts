@@ -1,7 +1,7 @@
 import { getRuntimeLimits } from '../config.js';
 import { healthCheck } from '../db/index.js';
 import { PublicError, toPublicError } from '../errors.js';
-import { isStagedOriginalIdentity, requireAvailableMode } from '../registry/availability.js';
+import { requireAvailableMode } from '../registry/availability.js';
 import { openConnectionConfig, sealConnectionConfig } from '../registry/crypto.js';
 import { validatePublicEndpoint } from '../registry/endpoint.js';
 import { createRegistryConnection, deleteRegistryConnection, getRegistryConnection,
@@ -105,13 +105,6 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
     const action = path.slice('/setup/'.length);
-    // Treat partial cutover as a frozen *catalog*, not merely a frozen row:
-    // no Owner write may mutate the active half while the other is staged.
-    const metadata = await listRegistryConnections(env.DB);
-    if (metadata.some(isStagedOriginalIdentity)) {
-      throw new PublicError('CONFIGURATION_UNAVAILABLE',
-        'The original migration inventory is frozen until protected atomic activation.');
-    }
     if (action === 'rotate') {
       const rotated = await rotateRegistryKeys(env.DB, env);
       return setupResult(`Rotated ${rotated.rotated}; remaining ${rotated.pending}. Keep historical keys until snapshots and backups expire.`);

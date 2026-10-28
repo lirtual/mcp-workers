@@ -61,8 +61,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "database-mcp-db",
-      "database_id": "8853a6ac-beaa-45aa-bdb2-0867e6f3df6d",
+      "database_name": "database-mcp-registry",
+      "database_id": "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a",
       "migrations_dir": "migrations"
     }
   ]

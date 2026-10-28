@@ -110,7 +110,7 @@ test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable 
 
 test("Database production release verifies D1 before the first Wrangler deploy", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const a = workflow.indexOf("Verify Database D1 schema and legacy IDs before publication (read-only)");
+  const a = workflow.indexOf("Verify Database D1 schema and fresh registry before publication (read-only)");
   const b = workflow.indexOf("Publish exactly selected Worker", a);
   assert.ok(a > 0 && b > a, "Database D1 guard must run before publish");
   const step = workflow.slice(a, b);
@@ -118,13 +118,13 @@ test("Database production release verifies D1 before the first Wrangler deploy",
   assert.match(step, /database-d1-sql database-mcp-worker/);
   assert.match(step, /database-d1-check database-mcp-worker/);
   assert.doesNotMatch(step, /DATABASE_CUTOVER_EXPECTED_IDS/, 'fixed original IDs require no extra Variable');
-  assert.match(step, /wrangler d1 execute database-mcp-db --remote --json/);
+  assert.match(step, /wrangler d1 execute database-mcp-registry --remote --json/);
   assert.doesNotMatch(step, /\bmigrations apply\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b/i);
 });
 
 test("Database release must inspect an exact-email Cloudflare Access policy before publish", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const d1 = workflow.indexOf("Verify Database D1 schema and legacy IDs before publication");
+  const d1 = workflow.indexOf("Verify Database D1 schema and fresh registry before publication");
   const access = workflow.indexOf("Verify Database Owner Access policy before publication");
   const publish = workflow.indexOf("Publish exactly selected Worker");
   assert.ok(d1 > 0 && access > d1 && publish > access);
@@ -225,8 +225,8 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
     name: "database-mcp-worker", main: "src/index.ts",
     secrets: { required: ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"] },
     workers_dev: true, preview_urls: false,
-    d1_databases: [{ binding: "DB", database_name: "database-mcp-db",
-      database_id: "7e6251e5-ac52-4f1e-8e8e-bcf14c12c428", migrations_dir: "migrations" }],
+    d1_databases: [{ binding: "DB", database_name: "database-mcp-registry",
+      database_id: "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a", migrations_dir: "migrations" }],
     vars: { DATABASE_SETUP_HOST: "database-owner.example.com" },
     routes: [{ pattern: "database-owner.example.com", custom_domain: true }],
     ratelimits: [

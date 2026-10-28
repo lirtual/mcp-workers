@@ -129,77 +129,17 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).not.toContain('action="/setup/edit"');
     vi.unstubAllGlobals();
   });
-  it('freezes the two staged original identities and the initial catalog until protected atomic cutover', async () => {
+  it('shows the Owner add form when starting from an empty fresh directory', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
     const { jwt, certificates } = await auth();
-    const original = 'mysql://reader:fixture@db.example.net/catalog';
-    for (const id of ['b2b', 'scrape_relay']) {
-      const { sealConnectionConfig } = await import('../../src/registry/crypto.js');
-      const sealed = await sealConnectionConfig(env, id, 'mysql', { url: original });
-      sqlite.prepare(`INSERT INTO database_connections
-        (id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at)
-        VALUES (?,'mysql','direct','disabled',?,'key-one',1,1,1)`).run(id, sealed.ciphertext);
-    }
     const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     expect(page.status).toBe(200);
     const html = await page.text();
-    expect(html).toContain('protected atomic activation');
-    for (const endpoint of ['/setup/add', '/setup/edit', '/setup/enable', '/setup/delete', '/setup/disable', '/setup/rotate']) {
-      expect(html).not.toContain(`action="${endpoint}"`);
-    }
-    // Staged records hide all mutating forms; forged-POST negatives still
-    // require a syntactically valid cookie-bound CSRF token.
-    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
-    const csrf = cookie.slice('database_setup_csrf='.length);
-    expect(csrf).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    const post = async (action: string, values: Record<string, string>) => handleSetup(new Request(pageUrl + '/' + action, {
-      method: 'POST', headers: { 'cf-access-jwt-assertion': jwt, origin: 'https://db-owner.example.net', cookie,
-        'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ csrf, ...values })
-    }), env, certificates);
-    const before = sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all();
-    const mockCount = fakeHealth.mock.calls.length;
-    for (const id of ['b2b', 'scrape_relay']) {
-      for (const [action, values] of [
-        ['enable', { revision: '1', plaintext_ack: '1' }],
-        ['disable', { revision: '1' }],
-        ['edit', { revision: '1', credential_mode: 'keep' }],
-        ['delete', { revision: '1', confirm_id: id }]
-      ] as const) {
-        const response = await post(action, { id, ...values });
-        expect(response.status, `staged ${id} ${action}`).toBe(503);
-      }
-    }
-    expect((await post('add', { id: 'third', dialect: 'mysql', transport: 'direct',
-      plaintext_ack: '1', url: original })).status).toBe(503);
-    expect((await post('rotate', {})).status).toBe(503);
-    expect(sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all()).toEqual(before);
-    expect(fakeHealth.mock.calls.length).toBe(mockCount);
-    // A partial/mixed state is NOT a completed migration: even its active
-    // half must remain frozen, including forged valid-CSRF management POSTs.
-    sqlite.prepare("UPDATE database_connections SET status='active',revision=2 WHERE id='b2b'").run();
-    const partialSnapshot = sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all();
-    const partialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
-    const partialHtml = await partialPage.text();
-    for (const endpoint of ['/setup/add','/setup/edit','/setup/enable','/setup/delete','/setup/disable','/setup/rotate']) {
-      expect(partialHtml).not.toContain(`action="${endpoint}"`);
-    }
-    expect((await post('disable', { id: 'b2b', revision: '2' })).status).toBe(503);
-    expect((await post('edit', { id: 'b2b', revision: '2', credential_mode: 'keep' })).status).toBe(503);
-    expect((await post('add', { id: 'extra', dialect: 'mysql', transport: 'direct',
-      plaintext_ack: '1', url: original })).status).toBe(503);
-    expect((await post('rotate', {})).status).toBe(503);
-    expect(sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all())
-      .toEqual(partialSnapshot);
-    expect(fakeHealth.mock.calls.length).toBe(mockCount);
-    // Only a separately controlled transition of BOTH originals to active/2
-    // unfreezes normal Owner management. Offline test fixture only.
-    sqlite.prepare("UPDATE database_connections SET status='active',revision=2 WHERE id='scrape_relay'").run();
-    const after = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
-    const afterHtml = await after.text();
-    expect(afterHtml).toContain('action="/setup/add"');
-    expect(afterHtml).toContain('action="/setup/rotate"');
-    expect(afterHtml).toContain('action="/setup/disable"');
+    expect(html).toContain('No database connections configured');
+    expect(html).toContain('action="/setup/add"');
+    expect(html).toContain('action="/setup/rotate"');
+    expect(html).not.toContain('protected atomic activation');
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
   });
 
 });

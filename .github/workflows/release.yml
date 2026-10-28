@@ -28,23 +28,8 @@ on:
         required: true
         type: boolean
         default: false
-      database_activation_id:
-        description: 'Database only: disabled Hyperdrive connection ID (no deployment)'
-        required: false
-        type: string
-        default: ''
-      database_activation_revision:
-        description: 'Database only: expected D1 revision; stale values fail'
-        required: false
-        type: string
-        default: ''
-      database_activation_approved:
-        description: 'Database only: explicit Owner approval for bounded live activation'
-        required: false
-        type: boolean
-        default: false
       database_prepare_approved:
-        description: 'Database only: prepare two disabled D1 legacy IDs; no Worker deployment'
+        description: 'Database only: create fresh D1 schema; never import credentials or deploy Worker'
         required: false
         type: boolean
         default: false
@@ -74,7 +59,7 @@ env:
 jobs:
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -86,7 +71,6 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
-          inputs.database_activation_id == '' &&
           inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
@@ -424,7 +408,7 @@ jobs:
 
       # Strictly read-only. A selected Database release cannot proceed if the
       # approved D1 schema is missing; migration/import are separate actions.
-      - name: Verify Database D1 schema and legacy IDs before publication (read-only)
+      - name: Verify Database D1 schema and fresh registry before publication (read-only)
         if: inputs.worker == 'database-mcp-worker'
         shell: bash
         env:
@@ -434,7 +418,7 @@ jobs:
           set -euo pipefail
           query="$(node scripts/manual-worker-release.mjs database-d1-sql database-mcp-worker)"
           (cd apps/database-mcp-worker &&
-            pnpm exec wrangler d1 execute database-mcp-db --remote --json --command "$query") |
+            pnpm exec wrangler d1 execute database-mcp-registry --remote --json --command "$query") |
             node scripts/manual-worker-release.mjs database-d1-check database-mcp-worker
 
       # Fail closed before first D1-backed publication if the original Worker
@@ -447,21 +431,18 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-legacy-restore-preflight-344.mjs
 
-      # Initial D1 cutover: status alone is not enough; authenticate every
-      # encrypted legacy URL against the reviewed GitHub source before deploy.
-      # Never publish with an unreadable key or a substituted connection.
-      - name: Verify first cutover Direct identity or post-cutover registry decryption (read-only)
+      # Verify the new registry is empty before first publication. Later
+      # releases authenticate every Owner-managed Direct credential (read-only).
+      - name: Verify fresh Database D1 and existing registry (read-only)
         if: inputs.worker == 'database-mcp-worker'
         env:
-          DATABASE_DIRECT_PREFLIGHT_PHASE: release
-          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
           DATABASE_ENCRYPTION_PREVIOUS_KEY: ${{ secrets.DATABASE_ENCRYPTION_PREVIOUS_KEY }}
           DATABASE_PREVIOUS_KEY_ID: ${{ vars.DATABASE_PREVIOUS_KEY_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/database-direct-preflight-344.mjs
+        run: node scripts/database-fresh-readiness-344.mjs
 
       # Read-only Hyperdrive API check against immutable reviewed source.
       # Never log the response body (origin identity may be sensitive).
@@ -693,9 +674,6 @@ jobs:
           inputs.deploy_to_production == false &&
           inputs.database_prepare_approved != true &&
           inputs.database_direct_preflight_approved != true &&
-          inputs.database_activation_approved != true &&
-          inputs.database_activation_id == '' &&
-          inputs.database_activation_revision == '' &&
           inputs.openlist_portal_registration != true }}
     runs-on: ubuntu-latest
     environment:
@@ -727,56 +705,9 @@ jobs:
           DATABASE_RESTORE_EXPECTED_VERSION: ${{ inputs.database_restore_expected_version }}
         run: node scripts/database-legacy-restore-344.mjs
 
-  database-activate:
-    name: Protected Database Hyperdrive activation (no deployment)
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' &&
-          inputs.worker == 'database-mcp-worker' &&
-          inputs.deploy_to_production == false &&
-          inputs.database_activation_approved == true &&
-          inputs.database_activation_id != '' &&
-          inputs.database_activation_revision != '' &&
-          inputs.database_direct_preflight_approved != true &&
-          inputs.database_restore_approved != true }}
-    runs-on: ubuntu-latest
-    environment:
-      name: database-mcp-worker
-    concurrency:
-      group: worker-release-database-mcp-worker
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Verify Owner, protected source and explicit activation scope
-        shell: bash
-        env:
-          DATABASE_PREPARE_APPROVED: ${{ inputs.database_prepare_approved }}
-        run: |
-          set -euo pipefail
-          [[ "$DATABASE_PREPARE_APPROVED" != "true" ]]
-          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Attest deployed Binding and strict TLS, then CAS-enable and verify live MCP health
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
-          DATABASE_ACTIVATION_ID: ${{ inputs.database_activation_id }}
-          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_activation_revision }}
-        run: node scripts/activate-database-hyperdrive.mjs
-
   # Optional read-only Direct preflight; no activation, D1 mutation or Worker release.
   database-direct-preflight:
-    name: Verify two encrypted legacy Direct identities without writes
+    name: Verify fresh or managed registry without writes
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
@@ -785,8 +716,6 @@ jobs:
           inputs.database_direct_preflight_approved == true &&
           inputs.deploy_to_production == false &&
           inputs.database_prepare_approved != true &&
-          inputs.database_activation_approved != true &&
-          inputs.database_activation_id == '' &&
           inputs.database_restore_approved != true }}
     runs-on: ubuntu-latest
     environment:
@@ -810,14 +739,13 @@ jobs:
           [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - name: Verify Direct source metadata and encrypted credentials (read-only)
+      - name: Verify fresh or managed D1 rows (read-only)
         env:
-          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/database-direct-preflight-344.mjs
+        run: node scripts/database-fresh-readiness-344.mjs
       - name: Verify original Database Worker recovery target (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -826,7 +754,7 @@ jobs:
 
   # One-time D1 preparation; no change to the active Database MCP Worker.
   database-prepare:
-    name: Prepare two disabled Database D1 records without deployment
+    name: Apply fresh Database D1 schema without import or deployment
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
@@ -834,8 +762,6 @@ jobs:
           inputs.worker == 'database-mcp-worker' &&
           inputs.database_prepare_approved == true &&
           inputs.deploy_to_production == false &&
-          inputs.database_activation_id == '' &&
-          inputs.database_activation_approved != true &&
           inputs.database_direct_preflight_approved != true &&
           inputs.database_restore_approved != true }}
     runs-on: ubuntu-latest
@@ -868,15 +794,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Install reviewed dependencies without lifecycle scripts
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Validate import input, key and untouched D1 (read-only)
-        env:
-          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
-          DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
-          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/database-prep-344.mjs validate
-      - name: Recheck main, apply reviewed additive D1 migration, never deploy Worker
+      - name: Recheck approved main and apply new D1 schema only
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -884,17 +802,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          trap 'rm -f apps/database-mcp-worker/.db344-prep.generated.json' EXIT
-          node scripts/database-prep-344.mjs config
-          (
-            cd apps/database-mcp-worker
-            pnpm exec wrangler d1 migrations apply database-mcp-db --remote --config .db344-prep.generated.json
-          )
-      - name: Import and read back two encrypted, disabled D1 records
-        env:
-          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
-          DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
-          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/database-prep-344.mjs import
+          (cd apps/database-mcp-worker &&
+            pnpm exec wrangler d1 migrations apply database-mcp-registry --remote)
+          # Historical D1 and the deployed legacy Worker are not modified.

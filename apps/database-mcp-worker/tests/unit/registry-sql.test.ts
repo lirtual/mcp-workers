@@ -142,28 +142,20 @@ describe('bounded and resumable registry key rotation', () => {
   });
 });
 
-describe('first-cutover key rotation freeze', () => {
-  it('refuses all rotation while either original identity is disabled at revision 1', async () => {
+describe('Owner-managed registry rotation without migration locks', () => {
+  it('rotates new disabled connections independently and never activates them', async () => {
     const f = fixture(); all.push(f.sqlite);
     const old = { DATABASE_ENCRYPTION_KEY: btoa('a'.repeat(32)), DATABASE_KEY_ID: 'old' };
     const next = { DATABASE_ENCRYPTION_KEY: btoa('b'.repeat(32)), DATABASE_KEY_ID: 'new',
       DATABASE_ENCRYPTION_PREVIOUS_KEY: old.DATABASE_ENCRYPTION_KEY, DATABASE_PREVIOUS_KEY_ID: 'old' };
-    for (const id of ['b2b', 'scrape_relay', 'another']) {
+    for (const id of ['sample_a', 'sample_b']) {
       const sealed = await sealConnectionConfig(old, id, 'mysql', { url: 'mysql://reader@db.example.net/catalog' });
       await createRegistryConnection(f.db, { id, dialect: 'mysql', ciphertext: sealed.ciphertext, keyId: sealed.keyId });
     }
-    const before = f.sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all();
-    await expect(rotateRegistryKeys(f.db, next)).rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
-    expect(f.sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all()).toEqual(before);
-    // A later independently approved transition may make both records active;
-    // the key rotation operation itself is not an activation pathway.
-    await setRegistryConnectionStatus(f.db, 'b2b', 1, 'active');
-    const partial = f.sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all();
-    await expect(rotateRegistryKeys(f.db, next)).rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
-    expect(f.sqlite.prepare('SELECT id,status,revision,ciphertext,key_id FROM database_connections ORDER BY id').all())
-      .toEqual(partial);
-    await setRegistryConnectionStatus(f.db, 'scrape_relay', 1, 'active');
-    expect(await rotateRegistryKeys(f.db, next, 10)).toEqual({ rotated: 3, pending: 0 });
+    expect(await rotateRegistryKeys(f.db, next, 10)).toEqual({ rotated: 2, pending: 0 });
+    const rows = f.sqlite.prepare('SELECT status, revision, key_id FROM database_connections ORDER BY id').all();
+    expect(rows).toEqual([{ status: 'disabled', revision: 2, key_id: 'new' },
+      { status: 'disabled', revision: 2, key_id: 'new' }]);
   });
 });
 

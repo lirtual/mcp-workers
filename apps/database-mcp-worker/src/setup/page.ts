@@ -1,5 +1,5 @@
 import type { RegistryMetadata } from '../registry/store.js';
-import { isAvailableMode, isStagedOriginalIdentity } from '../registry/availability.js';
+import { isAvailableMode } from '../registry/availability.js';
 import { csrfCookie } from './access.js';
 
 function escape(value: unknown): string {
@@ -31,9 +31,7 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
 }
 const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="1">I understand Direct sends database passwords and queries without TLS; traffic may be intercepted.</label>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
-  const firstCutoverPending = rows.some(isStagedOriginalIdentity);
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
-    (firstCutoverPending ? '<p>Initial migration pending protected atomic activation. Editing, enabling and deleting are unavailable.</p>' :
     (row.status === 'active' ? action(row, csrf, 'disable') :
       (isAvailableMode(row.transport, row.dialect) ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
     (!isAvailableMode(row.transport, row.dialect) ? '<p>This connection mode is not enabled in the current release. Existing records cannot be enabled or edited.</p>' :
@@ -42,11 +40,10 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<label>Replacement URL (never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
     plaintextAck +
     (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
-    '<button type="submit">Test and save edit</button></form></details>')) + '</li>').join('');
+    '<button type="submit">Test and save edit</button></form></details>') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p>Owner-only. Passwords and origin URLs are never displayed. At most 10 connections; removed IDs are never reused.</p>' +
     '<p><strong>Available now:</strong> MySQL Direct plaintext only (explicit consent). PostgreSQL Direct and Hyperdrive require separate acceptance before activation. No fallback.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
-    (firstCutoverPending ? '<p>New connections and key rotation are paused until protected first-cutover activation.</p>' :
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Immutable ID<input name="id" maxlength="64" required></label>' +
     '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option></select></label>' +
@@ -56,7 +53,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<label><input type="checkbox" name="allow_disabled" value="1">Save Direct candidate disabled if unreachable</label>' +
     '<button type="submit">Validate and add</button></form></fieldset>' +
     '<fieldset><legend>Direct key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +
-    '<button type="submit">Rotate next bounded batch</button></form></fieldset>'), csrf);
+    '<button type="submit">Rotate next bounded batch</button></form></fieldset>', csrf);
 }
 export function setupFailure(code: string, status: number): Response {
   return htmlResponse(`<h1>Request rejected</h1><p>${escape(code)}</p><a href="/setup">Back to connections</a>`, undefined, status);

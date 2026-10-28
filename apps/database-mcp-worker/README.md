@@ -4,11 +4,11 @@ Cloudflare MCP Worker for bounded MySQL/PostgreSQL reads, schema inspection, str
 
 ## Delivery boundary
 
-**Production migration and release: BLOCKED.** The currently deployed Worker still uses its pre-cutover `DATABASE_CONFIG` Secret. Do not overwrite/delete that Secret, modify production D1, probe business databases, or publish this code without separate explicit authorization and the full acceptance matrix. The earlier Aiven Hyperdrive `SELECT 1` evidence is only partial.
+**Release status: Draft / not deployed.** Owner has superseded legacy data migration with a **fresh empty registry**. The new D1 `database-mcp-registry` will receive schema only; after release the Owner must manually configure connections. The old Worker, `DATABASE_CONFIG` and historical imported D1 remain unchanged. See [current release plan](../../docs/database-cutover-344.md).
 
 The new D1 `database_connections` registry supports 0–10 configured logical connections; disabled rows count. IDs and dialect/transport are immutable, revisions are CAS-checked, and `retired_connection_ids` prevents ID reuse on normal delete. A historical whole-D1 restore can roll back that retirement history: freeze changes and reconcile against independently retained identity evidence before allowing adds/enables.
 
-`migrations/0001_connections.sql` is unchanged. **Additive `0002_transport_and_retired_ids.sql` has not been applied to production.** It preserves existing encrypted Direct ciphertext while **disabling all migrated connections and incrementing revisions** to prohibit automatic old TLS → new plaintext downgrade; explicit risk confirmation is required before later enabling. Hyperdrive references are added without storing origin credentials.
+`migrations/0001_connections.sql` and `0002_transport_and_retired_ids.sql` remain the reviewed additive schema. They must be applied to the **new empty** D1 only. Do not import historical ciphertext or activate preloaded old records.
 
 ## Transport contracts
 
