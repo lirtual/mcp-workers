@@ -461,6 +461,10 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
     }
     check(afterDisabled?.disabled===true,'high_risk_disable_readback');
     await publicShare('disabled');
+    // A later enable starts a NEW publicly accessible period. Permit exactly
+    // one fresh safety-disable in its own failure path, but never replay the
+    // earlier disable for the prior period.
+    disableDispatched=false;
     const enabled=await mcp('openlist_share_enable',{id:newId});
     check(enabled.observed_state?.disabled===false,'high_risk_enable');
     let afterEnabled;
