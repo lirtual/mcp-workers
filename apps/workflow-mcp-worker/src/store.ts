@@ -50,7 +50,8 @@ export type Env = {
   WEIXIN_ACTION_DEPLOYMENT_ID?: string;
   WEIXIN_ACTION_PROVIDER?: {
     getBinding():Promise<{generation:number;ready:boolean}>;
-    sendText(input:{invocation_id:string;binding_generation:number;session_url:string}):Promise<{status:string;input_digest:string}>;
+    getContract():Promise<{deployment_id:string;contract_digest:string}>;
+    sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
   };
 
@@ -357,6 +358,12 @@ export class WorkflowService {
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
       const contract=await cloudflareActionManifest();
+      // A manually staged Version ID is not proof of the bound Worker's version.
+      let live;
+      try{live=await this.env.WEIXIN_ACTION_PROVIDER.getContract();}
+      catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
+      if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
+        throw new StateError('cloudflare_provider_identity_mismatch');
       cloudflareGrants=[{executor:'cloudflare',provider:'weixin',
         action:'weixin.send_text',contract_digest:contract.contract_digest,
         deployment_id:deployment}];

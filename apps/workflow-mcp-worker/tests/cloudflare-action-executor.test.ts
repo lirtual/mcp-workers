@@ -53,8 +53,10 @@ async function fixture(t:test.TestContext){
  let failSend=false;
  const provider={
   getBinding:async()=>({generation:1,ready:true}),
-  async sendText(input:{invocation_id:string;binding_generation:number;session_url:string}){
+  getContract:async()=>({deployment_id:version,contract_digest:m.contract_digest}),
+  async sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}){
    sends++;assert.equal(input.binding_generation,1);assert.equal(input.session_url,url);
+   assert.equal(input.deployment_id,version);assert.equal(input.contract_digest,m.contract_digest);
    if(failSend)throw Error('secret! must not be logged');
    return {status:upstreamStatus,input_digest:bodyHash};
   },
@@ -167,4 +169,14 @@ test('public workflow_cancel after a send reservation cannot claim external retr
  assert.equal(result.physical_terminated,false);
  assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'succeeded');
  assert.equal(f.sends(),1);
+});
+
+test('unreviewed live Provider Version ID fails before Workflow reserves a send',async t=>{
+ const f=await fixture(t);
+ f.env.WEIXIN_ACTION_PROVIDER!.getContract=async()=>({
+  deployment_id:'44444444-4444-4444-8444-444444444444',
+  contract_digest:(await cloudflareActionManifest()).contract_digest});
+ const x=await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect);
+ assert.equal(x.status,'failed');assert.equal(f.sends(),0);
+ assert.equal(f.sql.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations').get()!.n,0);
 });

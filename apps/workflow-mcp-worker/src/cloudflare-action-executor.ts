@@ -63,6 +63,14 @@ export async function runPublishedCloudflareAction(
       return uncertain('cloudflare_invocation_conflict');
     return recover(env,prior);
   }
+  // Independently identify the live bound Worker before first dispatch.
+  // The Provider repeats this pin check inside sendText against its own
+  // runtime Version Metadata to close the read-then-dispatch deployment race.
+  let boundIdentity;
+  try{boundIdentity=await provider.getContract();}
+  catch{return denied('cloudflare_provider_identity_unconfirmed');}
+  if(boundIdentity.deployment_id!==version||boundIdentity.contract_digest!==manifest.contract_digest)
+    return denied('cloudflare_provider_identity_mismatch');
   const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref
    FROM session_executions s JOIN step_attempts a
     ON a.run_id=s.run_id AND a.step_id=s.step_id
@@ -114,7 +122,8 @@ export async function runPublishedCloudflareAction(
   }
   try{
    const value=await provider.sendText({invocation_id:identity,
-    binding_generation:binding.generation,session_url:current.session_url});
+    binding_generation:binding.generation,session_url:current.session_url,
+    deployment_id:version,contract_digest:manifest.contract_digest});
    if(value.input_digest!==inputDigest)return uncertain('weixin_receipt_conflict');
    return receipt(value.status);
   }catch{return recover(env,{invocation_id:identity,source_attempt_id:current.attempt_id,

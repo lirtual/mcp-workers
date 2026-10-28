@@ -21,10 +21,14 @@ execution shape; the old `github.run` Published Plan, digest, OIDC, Attempt,
 Ready and physical Session lifecycle remain unchanged. The new spelling does
 **not** grant execution or make a discovered Action runnable automatically.
 
-Cloudflare `action.run` is **not available** in this implementation slice:
-it fails validation until separate exact Provider grants, trusted OpenList
-Ready reference, durable Invocation reservation and read-only recovery logic
-are implemented. No public Weixin MCP write is exposed as a shortcut.
+Cloudflare `action.run` currently accepts only the reviewed `weixin.send_text`
+Provider and a verified same-Run OpenList Session Ready. Publish requires
+separate explicit grants, the exact contract digest and Worker Version ID;
+the internal Service Binding must independently report that live identity.
+The Provider also checks those pins against Worker Version Metadata inside
+every side-effecting RPC. D1 grants a single first-dispatch right; recovery
+queries historical receipts only. No public Weixin MCP write is used.
+This source is staged in Draft PRs; no production cutover is implied.
 
 ## Runtime
 
