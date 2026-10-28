@@ -38,6 +38,9 @@ function invariant(value, message) {
   if (!value) throw new Error(message);
 }
 
+// Original identities prepared and imported under the separately approved Spec #344 job.
+const REQUIRED_LEGACY_IDS = Object.freeze(['b2b', 'scrape_relay']);
+
 /** Cutover must preserve the explicitly reviewed logical connection IDs.
  * Never query the upstream databases or expose decrypted URLs/CA material. */
 export function parseDatabaseCutoverIds(raw) {
@@ -924,12 +927,12 @@ async function main() {
   invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check", "database-d1-sql", "database-d1-check"].includes(mode), "Unknown release validation mode");
   if (mode === "database-d1-sql") {
     invariant(worker === "database-mcp-worker", "Database SQL readiness target mismatch");
-    console.log(databaseD1ReadinessSql(parseDatabaseCutoverIds(process.env.DATABASE_CUTOVER_EXPECTED_IDS)));
+    console.log(databaseD1ReadinessSql(REQUIRED_LEGACY_IDS));
     return;
   }
   if (mode === "database-d1-check") {
     invariant(worker === "database-mcp-worker", "Database D1 readiness target mismatch");
-    const expected = parseDatabaseCutoverIds(process.env.DATABASE_CUTOVER_EXPECTED_IDS);
+    const expected = REQUIRED_LEGACY_IDS;
     const counts = verifyDatabaseD1Readiness(JSON.parse(await readFile("/dev/stdin", "utf8")),
       expected.length);
     console.log("Database production D1 schema and encrypted-row shape: PASS; records=" +
