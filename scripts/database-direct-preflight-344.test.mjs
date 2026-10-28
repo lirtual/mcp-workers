@@ -376,6 +376,20 @@ test('post-cutover read-only release gate permits retired IDs but rejects identi
     state.rows = [more];
     assert.deepEqual(await checkReadOnlyD1(env),
       { valid: true, records: 1, direct: 1, hyperdrive: 0, status: 'registry', workerChanged: true });
+    // A disabled, authentic future-mode record may remain pending. An
+    // ACTIVE deferred mode must fail the release, even if otherwise valid.
+    const pg = { ...more, id: 'new_pg', dialect: 'postgres', status: 'disabled', revision: 1,
+      ciphertext: await syntheticCipher('new_pg', 'postgres',
+        'postgres://synthetic:example@pg.example.net:5432/db', encryptionKey) };
+    state.rows = [pg];
+    assert.deepEqual(await checkReadOnlyD1(env),
+      { valid: true, records: 1, direct: 1, hyperdrive: 0, status: 'registry', workerChanged: true });
+    state.rows = [{ ...pg, status: 'active', revision: 2 }];
+    await assert.rejects(checkReadOnlyD1(env), /preflight failed/);
+    // Existing ordinary MySQL Direct connections remain available.
+    state.rows = [{ ...more, status: 'active', revision: 5 }];
+    assert.deepEqual(await checkReadOnlyD1(env),
+      { valid: true, records: 1, direct: 1, hyperdrive: 0, status: 'registry', workerChanged: true });
     assert.equal(calls.every(c => c.method === 'GET' || c.method === 'POST'), true);
     await assert.rejects(checkReadOnlyD1({ ...env, DATABASE_DIRECT_PREFLIGHT_PHASE: 'staged' }),
       /preflight failed/);

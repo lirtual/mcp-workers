@@ -216,6 +216,12 @@ export async function checkReadOnlyD1(env = process.env) {
   const manifest = JSON.parse(await readFile(new URL(
     '../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
   const result = await verifyRegistryReadiness(rows, env, manifest);
+  // The phased initial Worker release admits only MySQL Direct. A later
+  // publication must not quietly accept an active D1 row the runtime itself
+  // refuses, even if its ciphertext or Hyperdrive manifest is otherwise valid.
+  // Disabled future-mode metadata may remain safely staged for later review.
+  if (rows.some(row => row.status === 'active' &&
+      (row.transport !== 'direct' || row.dialect !== 'mysql'))) blocked();
   return { ...result, status: 'registry', workerChanged: true };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

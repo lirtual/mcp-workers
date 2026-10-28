@@ -15,8 +15,11 @@ The first-release Worker enforces the accepted-mode boundary in code, not via
 an environment switch: **only MySQL Direct is admitted**. The Owner form
 cannot add, enable or edit PostgreSQL Direct or Hyperdrive references; MCP
 admission rejects even unexpected pre-existing active D1 rows of those modes.
-Disabling and auditing unexpected rows remains possible. Enabling deferred
-modes requires a separately reviewed subsequent code release, actual mode-
+Disabling and auditing unexpected rows remains possible. The protected
+read-only Worker publication gate also refuses any **active** deferred-mode
+record in post-cutover D1, while allowing disabled metadata awaiting a future
+review; this prevents a release marked healthy when MCP admission would fail.
+Enabling deferred modes requires a separately reviewed subsequent code release, actual mode-
 specific evidence, and production authorization. Historical real Hyperdrive
 MySQL 11/11 and PostgreSQL 13/13 core evidence remains valid but does not
 replace missing source-origin TLS negatives, lifecycle checks or future
