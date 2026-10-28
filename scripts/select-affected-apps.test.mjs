@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { selectAffectedApps, selectionDetails } from './select-affected-apps.mjs';
+import { selectAffectedApps, selectionDetails, APPLICATIONS, RELEASE_WORKERS } from './select-affected-apps.mjs';
 
 test('an ssh-mcp-worker-only change selects and schedules its app check', () => {
   const selection = selectionDetails(['apps/ssh-mcp-worker/src/hosts.ts']);
@@ -83,22 +83,18 @@ test('HTTP MCP is CI-selected',()=>{
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
 });
 
-test('Weixin stays CI-testable but is no longer an old production release target', async () => {
-  assert.deepEqual(selectAffectedApps(['apps/weixin-mcp-worker/poc/protocol.mjs']), ['weixin-mcp-worker']);
-  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('weixin-mcp-worker'));
-  const run=(ref)=>execFileSync(process.execPath, ['scripts/select-affected-apps.mjs'], {
-    cwd: new URL('../', import.meta.url),
-    env: { ...process.env, EVENT_NAME: 'workflow_dispatch', MANUAL_WORKER: 'weixin-mcp-worker', MANUAL_REF: ref },
-    encoding: 'utf8'
-  });
-  const release=await readFile(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  assert.ok(!release.includes('\n          - weixin-mcp-worker\n'));
-  assert.throws(()=>run('refs/heads/main'),/Unsupported manual Worker selection/);
-  assert.throws(()=>run('refs/heads/draft'),/Unsupported manual Worker selection/);
-  const ci=execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
-    cwd:new URL('../',import.meta.url),
-    env:{...process.env,EVENT_NAME:'workflow_call',REUSABLE_WORKER:'weixin-mcp-worker'},
-    encoding:'utf8',
-  });
-  assert.match(ci,/Selected applications: weixin-mcp-worker/);
+test('retired Weixin Worker is neither test-selected nor deployable',async()=>{
+ assert.ok(!APPLICATIONS.includes('weixin-mcp-worker'));
+ assert.ok(!RELEASE_WORKERS.includes('weixin-mcp-worker'));
+ assert.deepEqual(selectAffectedApps(['apps/weixin-mcp-worker/poc/protocol.mjs']),[]);
+ const run=(event)=>execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
+  cwd:new URL('../',import.meta.url),
+  env:{...process.env,EVENT_NAME:event,MANUAL_WORKER:'weixin-mcp-worker',
+    REUSABLE_WORKER:event==='workflow_call'?'weixin-mcp-worker':'',
+    MANUAL_REF:'refs/heads/main'},encoding:'utf8'
+ });
+ assert.throws(()=>run('workflow_dispatch'),/Unsupported manual Worker selection/);
+ assert.throws(()=>run('workflow_call'),/Unsupported reusable Worker selection/);
+ const release=await readFile(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ assert.ok(!release.includes('\n          - weixin-mcp-worker\n'));
 });

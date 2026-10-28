@@ -160,7 +160,6 @@ importers:
         specifier: 4.130.0
         version: 4.130.0(@cloudflare/workers-types@5.20260911.1)
 
-
   apps/ima-mcp-worker:
     dependencies:
       '@mcp-workers/portal-auth':
@@ -272,18 +271,6 @@ importers:
         specifier: 4.130.0
         version: 4.130.0(@cloudflare/workers-types@5.20261006.1)
 
-  apps/remote-control-agent:
-    devDependencies:
-      '@types/node':
-        specifier: 24.19.2
-        version: 24.19.2
-      playwright-core:
-        specifier: 1.64.1
-        version: 1.64.1
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-
   apps/remote-control-mcp-worker:
     dependencies:
       '@mcp-workers/portal-auth':
@@ -333,37 +320,6 @@ importers:
       ssh2:
         specifier: 1.17.0
         version: 1.17.0
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      wrangler:
-        specifier: 4.130.0
-        version: 4.130.0(@cloudflare/workers-types@5.20260911.1)
-
-  apps/weixin-mcp-worker:
-    dependencies:
-      '@mcp-workers/portal-auth':
-        specifier: workspace:*
-        version: link:../../packages/portal-auth
-      '@modelcontextprotocol/server':
-        specifier: 2.0.0
-        version: 2.0.0
-      zod:
-        specifier: 4.6.2
-        version: 4.6.2
-      qrcode-generator:
-        specifier: 2.0.4
-        version: 2.0.4
-    devDependencies:
-      '@cloudflare/workers-types':
-        specifier: 5.20260911.1
-        version: 5.20260911.1
-      '@types/node':
-        specifier: 24.19.2
-        version: 24.19.2
-      miniflare:
-        specifier: 5.20260908.0-alpha
-        version: 5.20260908.0-alpha
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -3048,11 +3004,6 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
-  playwright-core@1.64.1:
-    resolution: {integrity: sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ==}
-    engines: {node: '>=20'}
-    hasBin: true
-
   pluralize@8.0.0:
     resolution: {integrity: sha512-Nc3IT5yHzflTfbjgqWcCPpo7DaKy4FnpB0l/zCAW0Tc7jxAiuqSxHasntB3D7887LSrA93kDJ9IXovxJYxyLCA==}
     engines: {node: '>=4'}
@@ -3658,9 +3609,6 @@ packages:
 
   zod@4.6.2:
     resolution: {integrity: sha512-lh5RCAGFa1Cm2hjtNwLQhSs/AsqdWnTQaBER9fEwN/88pSh7KOtJavtBx/0VlkN/uFd61SwYmljLMDAsHlvzBQ==}
-
-  qrcode-generator@2.0.4:
-    resolution: {integrity: sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==}
 
 snapshots:
 
@@ -6093,8 +6041,6 @@ snapshots:
 
   pkce-challenge@5.0.1: {}
 
-  playwright-core@1.64.1: {}
-
   pluralize@8.0.0: {}
 
   postal-mime@4.1.4: {}
@@ -6792,5 +6738,3 @@ snapshots:
   zod@4.4.3: {}
 
   zod@4.6.2: {}
-
-  qrcode-generator@2.0.4: {}

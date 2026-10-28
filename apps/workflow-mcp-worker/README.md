@@ -12,7 +12,7 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 No arbitrary shell input or unreviewed repository dispatch is allowed. Workflow cancellation of approved GitHub Actions is separate from stopping admission; native GitHub Run state is reconciled before a physical termination is declared.
 
 
-### Unified Action syntax (Spec #392, partial)
+### Unified Action syntax (Spec #392)
 
 New GitHub Task/Session Drafts can use `action.run` with `with.executor: github` and
 all existing `github.action` identity fields and explicit Publish grants. The
@@ -305,6 +305,6 @@ is collected. No extra Worker, cleanup Cron, queue, or auth service is introduce
 
 The `action.run` Cloudflare source may only reference an upstream `lirtual/session-actions` OpenList Session Step in the same Run. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
 
-The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the transitional `weixin-mcp-worker` WorkerEntrypoint, not public MCP HTTP. The release operator must first verify and configure `WEIXIN_ACTION_DEPLOYMENT_ID` to the authorized Worker Version ID; it is not inferred from a Provider self-report. The D1 0013 migration is additive and retains all historical Plans. Do not deploy until the Provider has its own exclusive production publisher and compatible rollback baseline. No production resources/credentials have been changed by these source edits.
+The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the independent `cloudflare-actions` Provider using the unchanged physical Worker name `weixin-mcp-worker`. Production release and version pin are verified separately; no public Weixin MCP ingress remains. D1 migration 0013 is additive and retains immutable historical Plans.
 
 A physically running GitHub Attempt and signed Ready callback are checked immediately before the D1 first-dispatch fence. The frozen Invocation ID, input digest, source Attempt and binding generation are stored without message text/URL. Once reservation succeeds, retries and recovery call `getReceipt` only. Missing receipts remain indeterminate; handset delivery is separately observed. Cancelling after reservation cannot retract a possible send. Session termination and capacity release use the existing GitHub lifecycle, not notification success.
