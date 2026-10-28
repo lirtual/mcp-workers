@@ -106,8 +106,11 @@ jobs:
 
       - name: Validate current trusted main without deployment credentials
         shell: bash
+        env:
+          DATABASE_PREPARE_APPROVED: ${{ inputs.database_prepare_approved }}
         run: |
           set -euo pipefail
+          [[ "$DATABASE_PREPARE_APPROVED" != "true" ]]
           [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
@@ -622,8 +625,11 @@ jobs:
           fetch-depth: 0
       - name: Verify Owner, protected source and explicit activation scope
         shell: bash
+        env:
+          DATABASE_PREPARE_APPROVED: ${{ inputs.database_prepare_approved }}
         run: |
           set -euo pipefail
+          [[ "$DATABASE_PREPARE_APPROVED" != "true" ]]
           [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
