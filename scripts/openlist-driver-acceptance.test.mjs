@@ -17,10 +17,11 @@ const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
-  permanentLink = true, rejectFinite = false, failPublic = false} = {}) {
+  permanentLink = true, rejectFinite = false, failPublic = false,
+  staleRevokedReads = 0, malformedPassword = false} = {}) {
   const requests = [];
   let made = false, uploaded = false, deleted = false;
-  let highShare = null;
+  let highShare = null, justRevoked = null;
   const highId='1234567890abcdef';
   const highPwd='b'.repeat(48);
   let publicReads=0;
@@ -213,11 +214,18 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       assert.equal(highShare,null);
       highShare={id:highId,files:[file],disabled:false,max_accessed:3,
         expires:'2026-10-28T13:00:00.000Z'};
-      return response(name,highId,{...highShare,password_once:highPwd});
+      return response(name,highId,{...highShare,
+        password_once:malformedPassword?'invalid-secret':highPwd});
     }
     if(name==='openlist_share_get') {
       assert.ok([highId,'mcp_spec309_no_such_share'].includes(args.id));
-      if(!highShare || args.id!==highId)return response(name,args.id,undefined,true,'NOT_FOUND');
+      if(!highShare || args.id!==highId){
+        if(!highShare && justRevoked && args.id===highId && staleRevokedReads>0){
+          staleRevokedReads--;
+          return response(name,highId,{...justRevoked});
+        }
+        return response(name,args.id,undefined,true,'NOT_FOUND');
+      }
       return response(name,highId,{...highShare});
     }
     if(name==='openlist_share_update') {
@@ -244,6 +252,7 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
     if(name==='openlist_share_revoke') {
       assert.equal(args.id,highId);
       assert.ok(highShare);
+      justRevoked={...highShare};
       highShare=null;
       return response(name,highId,{revoked:true});
     }
@@ -386,11 +395,30 @@ test('high-risk manual E2E is first-attempt only and runs only on newly created 
   assert.equal(result.tested.includes('single_file_delete'),true);
   assert.equal(requests.filter(x=>x==='openlist_share_create').length,2);
   assert.equal(requests.filter(x=>x==='openlist_share_update').length,2);
-  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,2,
+    'one disable after first public access and one after re-enabled access');
   assert.equal(requests.filter(x=>x==='openlist_share_enable').length,1);
   assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
   assert.equal(requests.filter(x=>x==='openlist_delete').length,2);
-  assert.equal(requests.filter(x=>x==='public_share_get').length,3);
+  assert.equal(requests.filter(x=>x==='public_share_get').length,4);
+});
+test('revoke readback tolerates bounded stale disabled record without replaying revoke',async()=>{
+  const {transport,requests}=fakeTransport({staleRevokedReads:2});
+  const result=await runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport);
+  assert.ok(result.tested.includes('share_revoke'));
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,2);
+});
+test('bad password metadata after owned share creation invokes fail-safe once',async()=>{
+  const {transport,requests}=fakeTransport({malformedPassword:true});
+  await assert.rejects(runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport),
+    /openlist_driver_e2e_high_risk_create_uncertain/);
+  assert.equal(requests.filter(x=>x==='openlist_share_create').length,2);
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_delete').length,1);
 });
 test('high-risk E2E failure after creating one synthetic share performs a single fail-safe disable and revoke',async()=>{
   const {transport,requests}=fakeTransport({failPublic:true});
