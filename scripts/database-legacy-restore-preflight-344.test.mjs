@@ -83,3 +83,23 @@ test('current release workflow runs recovery attestation before first Database p
   ]) assert.ok(fragment.includes(text), 'Missing protected recovery check: ' + text);
   assert.doesNotMatch(fragment, /run:.*(?:wrangler (?:deploy|rollback)|POST.*deployments)/i);
 });
+
+test('existing read-only Direct staging workflow checks recovery target without publish', () => {
+  const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const start = source.indexOf('\n  database-direct-preflight:\n');
+  const end = source.indexOf('\n  database-prepare:\n', start);
+  const check = source.indexOf('Verify original Database Worker recovery target (read-only)');
+  assert.ok(start > 0 && check > start && end > check);
+  const fragment = source.slice(check, end);
+  for (const text of [
+    'CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}',
+    'CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}',
+    'node scripts/database-legacy-restore-preflight-344.mjs'
+  ]) assert.ok(fragment.includes(text), 'Missing protected recovery check: ' + text);
+  assert.doesNotMatch(fragment, /run:.*(?:wrangler (?:deploy|rollback)|POST.*deployments)/i);
+  const job = source.slice(start, end);
+  assert.match(job, /inputs.worker == 'database-mcp-worker'/);
+  assert.match(job, /inputs.deploy_to_production == false/);
+  assert.match(job, /inputs.database_direct_preflight_approved == true/);
+  assert.match(job, /inputs.database_prepare_approved != true/);
+});

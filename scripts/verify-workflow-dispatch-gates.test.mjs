@@ -96,7 +96,7 @@ test('release documentation contracts reject wrong Worker and Secret/Variable dr
 });
 
 test('retired Weixin publishing is impossible through the old manual release', () => {
-  assert.ok(APPLICATIONS.includes('weixin-mcp-worker'), 'Keep Weixin source under CI');
+  assert.ok(!APPLICATIONS.includes('weixin-mcp-worker'), 'Retired Weixin app is absent from CI');
   assert.ok(!RELEASE_WORKERS.includes('weixin-mcp-worker'), 'Retire Weixin as an old release target');
   assert.doesNotMatch(release, /weixin-mcp-worker/, 'No Weixin Worker target, D1 migration, or smoke step in old release');
   assert.match(release, /GITHUB_SHA.*git ls-remote origin refs\/heads\/main/, 'Historical reruns must compare to current main');

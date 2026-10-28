@@ -503,18 +503,6 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /Unexpected unauthenticated MCP status/);
 });
 
-test("Weixin is absent from old release ingress and publisher", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const config = JSON.parse(readFileSync(new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  const start = workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials");
-  const end = workflow.indexOf("      - name: Register production HTTP MCP with existing One-MCP Portal", start);
-  assert.ok(start >= 0 && end > start);
-  const check = workflow.slice(start, end);
-  assert.equal(config.workers_dev, false);
-  assert.ok(!check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
-  assert.ok(!check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
-  assert.match(check, /401\|403\)/, "unauthenticated requests must remain denied");
-});
 
 test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
   const worker = "github-actions-mcp-worker";
@@ -1094,20 +1082,6 @@ test("worker release documentation stays aligned with the selected-Worker contra
   assert.match(ingress, /workers_dev: false/);
 });
 
-test("Weixin production preflight requires private invocation logs, without relaxing other Workers", () => {
-  const path = new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url);
-  const config = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(config.observability.logs.invocation_logs, false);
-  assert.equal(readConfiguration("weixin-mcp-worker", JSON.stringify(config)).name, "weixin-mcp-worker");
-  const logging = structuredClone(config);
-  logging.observability.logs.invocation_logs = true;
-  assert.throws(() => readConfiguration("weixin-mcp-worker", JSON.stringify(logging)),
-    /Source Invocation Logs setting differs from production/);
-  const wrongD1 = structuredClone(config);
-  wrongD1.d1_databases[0].database_id = "00000000-0000-0000-0000-000000000000";
-  assert.throws(() => readConfiguration("weixin-mcp-worker", JSON.stringify(wrongD1)),
-    /Weixin approved production D1 drift/);
-});
 
 
 test("Database Hyperdrive mapping requires exactly matching unique Wrangler IDs", () => {

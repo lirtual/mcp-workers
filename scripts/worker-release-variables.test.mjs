@@ -189,14 +189,6 @@ test('OpenList roots must exactly satisfy the Worker runtime canonical path rule
   }
 });
 
-test("Weixin production owner Access metadata comes solely from reviewed Wrangler config",()=>{
-  assert.deepEqual(WORKER_VARIABLES["weixin-mcp-worker"],[]);
-  assert.deepEqual(collectWorkerVars("weixin-mcp-worker",{
-    MCP_HOST:"evil.invalid",OWNER_EMAIL:"attacker@example.org",
-    ACCESS_AUD:"forged",WEIXIN_ENCRYPTION_KEY:"must-not-log"
-  }),[]);
-});
-
 test("Workflow Provider version variable accepts one reviewed immutable Worker Version ID only",()=>{
  const good="33333333-3333-4333-8333-333333333333";
  const values=collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",

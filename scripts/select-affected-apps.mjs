@@ -14,12 +14,11 @@ export const APPLICATIONS = [
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
   'workflow-mcp-worker',
-  'weixin-mcp-worker',
 ];
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
 // Weixin is published only by cloudflare-actions after the separately authorized handoff.
-export const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'weixin-mcp-worker');
+export const RELEASE_WORKERS = [...APPLICATIONS];
 
 function requiresAllApps(file) {
   return file === 'package.json'

@@ -12,7 +12,6 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"],
   "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
-  "weixin-mcp-worker": ["MCP_ACCESS_TOKEN", "WEIXIN_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -75,14 +74,6 @@ export function collectBootstrapSecrets(worker, env) {
         Buffer.from(key, "base64").length !== 32 ||
         Buffer.from(key, "base64").toString("base64") !== key)
       throw new Error("MAIL_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
-  }
-  if (worker === "weixin-mcp-worker") {
-    const key = payload.WEIXIN_ENCRYPTION_KEY;
-    if (!/^[A-Za-z0-9+/]{43}=$/.test(key) ||
-        Buffer.from(key, "base64").length !== 32 ||
-        Buffer.from(key, "base64").toString("base64") !== key) {
-      throw new Error("WEIXIN_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
-    }
   }
   if (worker === "workflow-mcp-worker") {
     const key = payload.SESSION_RUNTIME_DATA_KEY;

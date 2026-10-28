@@ -1,6 +1,6 @@
 # 手动发布 MCP Workers：全局配置 + Worker 独立配置空间
 
-**Spec #392 发布权交接**：`weixin-mcp-worker` 保留源码、既有 D1、绑定、Portal 与离线测试，但不再是本仓库 `Release Worker` 的可部署目标。微信生产发布必须通过独立 [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) 的手动流程，且仅在旧发布路径停用、专用凭证与兼容回滚条件核验后才可执行。下文同名旧 Environment 配置仅为历史记录，不应继续用于微信发布。
+**Spec #392 退役说明**：微信源码与发布流程已迁至独立 [cloudflare-actions](https://github.com/lirtual/cloudflare-actions)；本仓库不再部署、注册或测试旧微信 MCP。原生产 D1、密文和 Owner Access 由独立 Provider 维护，不能从本仓库恢复旧 MCP。
 
 本项目没有 staging/production 等多环境运行模式。每个 Worker 使用一个**同名 GitHub Environment**，只作为 Secrets / Variables 的独立配置空间；部署目标仍是唯一的 Cloudflare Worker，入口为 GitHub Actions → Release Worker → Run workflow（必须选 `main`）。
 
@@ -28,7 +28,6 @@
 | --- | --- | --- |
 | `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）**，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
 | `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
-| `weixin-mcp-worker` | `WEIXIN_ENCRYPTION_KEY` | 无（Access 与双域名由 Wrangler 固定） |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
@@ -44,7 +43,6 @@
 
 **Database MCP Spec #344 尚未切换生产。** 上表为 Draft 分支拟采用的 GitHub 发布配置契约，并非当前线上 Worker 已迁移。现网原有 `DATABASE_CONFIG` Secret 必须保留，直到真实 Cloudflare Workers MySQL/PostgreSQL TLS、专用 D1、独立 Owner Access、迁移完整性及回滚均经独立验收并取得生产切换授权。Draft 分支发布门禁明确禁止把旧完整 JSON 重新写入运行时。不要复制旧业务数据库凭据到测试实例，也不要提前运行 Database Worker 生产发布。参见 [Spec #344 切换与回滚清单](./database-cutover-344.md)。
 
-Weixin 的 `WEIXIN_ENCRYPTION_KEY` 必须是规范的 **32 字节 Base64**，只能保存在该 Worker 同名 GitHub Environment Secret；不可复用 Email、SSH 或其他加密密钥。`weixin-mcp-db` 为独立正式 D1，管理入口 `weixin.lirtual.dpdns.org` 需要 Owner-only Cloudflare Access，MCP 入口 `weixin-mcp.lirtual.dpdns.org` 使用 Bearer。仅完成配置不代表扫码或发送验收通过。
 
 当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
 
