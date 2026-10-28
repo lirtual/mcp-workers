@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { findDatabaseOwnerApp, findDatabaseOwnerOtpProvider, verifyDatabaseOwnerPolicy,
-  verifyDatabaseOwnerAccessCloudflare, AccessInventoryHttpError } from "./database-owner-access.mjs";
+  verifyDatabaseOwnerAccessCloudflare, AccessInventoryHttpError,
+  AccessInventoryStageError, safeDatabaseOwnerAccessDiagnostic } from "./database-owner-access.mjs";
 
 const host = "owner.example.net";
 const audience = "a".repeat(64);
@@ -105,6 +106,41 @@ test("Owner Access HTTP errors expose only the request stage and status", async 
       assert.equal(error.message, "Database Owner Access inventory request failed");
       assert.doesNotMatch(JSON.stringify({ stage: error.stage, status: error.status, message: error.message }),
         /very-sensitive-secret|secret-should-not-leak/);
+      return true;
+    });
+  }
+});
+
+test("Safe Owner Access diagnostics classify validation failures without exposing arbitrary errors", () => {
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access validation environment missing")), " (check=env)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access applications inventory unavailable or incomplete")), " (check=apps_inventory)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access OTP session configuration drift")), " (check=app_session)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access policy must allow exactly the designated email")), " (check=policy_email)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error("token-and-owner-secret")),
+    " (check=unknown)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new AccessInventoryHttpError("policies", 403)),
+    " (stage=policies; http=403)");
+});
+
+test("Owner Access transport and JSON errors expose only fixed stage and kind", async () => {
+  const config = { vars: { DATABASE_SETUP_HOST: host } };
+  const env = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "secret-token",
+    ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
+  for (const [transport, kind] of [
+    [async () => { throw new Error("secret-transport-details"); }, "transport"],
+    [async () => new Response("secret-invalid-json", { status: 200 }), "json"]
+  ]) {
+    await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, env, transport), error => {
+      assert.ok(error instanceof AccessInventoryStageError);
+      assert.equal(error.stage, "idps");
+      assert.equal(error.kind, kind);
+      const diagnostic = safeDatabaseOwnerAccessDiagnostic(error);
+      assert.equal(diagnostic, " (stage=idps; kind=" + kind + ")");
+      assert.doesNotMatch(diagnostic, /secret/);
       return true;
     });
   }
