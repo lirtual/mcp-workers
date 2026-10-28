@@ -373,3 +373,94 @@ test('high-risk tools require exact arguments and reject forbidden targets befor
     assert.equal(writes,0);
   }finally {await client.close();}
 });
+
+
+test('isolated MCP lifecycle exercises all five native high-risk tools without touching existing user objects', async () => {
+  const file='/Koofr/safe/spec309-new-only.txt';
+  let fileExists=true;
+  let share: Record<string,unknown>|undefined;
+  const writes:string[]=[];
+  const upstream=async (request: Request):Promise<Response> => {
+    assert.equal(request.headers.get('authorization'),'upstream-fixture');
+    const url=new URL(request.url);
+    const route=url.pathname;
+    if (route==='/api/fs/get') {
+      const data=await request.json() as {path:string};
+      assert.equal(data.path,file);
+      return fileExists
+        ? Response.json({code:200,data:{name:'spec309-new-only.txt',path:file,is_dir:false,size:8}})
+        : Response.json({code:404,data:null});
+    }
+    if (route==='/api/share/get') {
+      if (!share) return Response.json({code:404,data:null});
+      assert.equal(url.searchParams.get('id'),share.id);
+      return Response.json({code:200,data:{...share,creator:'hidden',pwd:'hidden'}});
+    }
+    assert.equal(request.method,'POST');
+    writes.push(route);
+    if (route==='/api/share/create') {
+      assert.equal(share,undefined);
+      const data=await request.json() as Record<string,unknown>;
+      assert.deepEqual(data.files,[file]);
+      assert.match(String(data.pwd),/^[a-f0-9]{48}$/);
+      assert.equal(data.max_accessed,2);
+      assert.equal(data.disabled,false);
+      share={id:data.id,files:data.files,expires:data.expires,
+        max_accessed:data.max_accessed,disabled:data.disabled};
+    } else if (route==='/api/share/update') {
+      assert.ok(share);
+      const data=await request.json() as Record<string,unknown>;
+      assert.equal(data.id,share.id);
+      assert.equal(data.max_accessed,3);
+      share={...share,expires:data.expires,max_accessed:data.max_accessed};
+    } else if (route==='/api/share/disable') {
+      assert.equal(url.searchParams.get('id'),share?.id);
+      share={...share,disabled:true};
+    } else if (route==='/api/share/enable') {
+      assert.equal(url.searchParams.get('id'),share?.id);
+      share={...share,disabled:false};
+    } else if (route==='/api/share/delete') {
+      assert.equal(url.searchParams.get('id'),share?.id);
+      share=undefined;
+    } else if (route==='/api/fs/remove') {
+      assert.deepEqual(await request.json(),{dir:'/Koofr/safe',names:['spec309-new-only.txt']});
+      assert.equal(fileExists,true);
+      fileExists=false;
+    } else assert.fail('unexpected native route '+route);
+    return Response.json({code:200,data:null});
+  };
+  const client=await clientFor(settings(upstream));
+  const call=async (name:string, args:Record<string,unknown>) => {
+    const response=await client.callTool({name,arguments:args});
+    const record=JSON.parse((response.content[0] as {text:string}).text);
+    assert.notEqual(response.isError,true,name+' unexpected tool error');
+    assert.equal(record.status,'succeeded',name+' should have observed native state');
+    return record;
+  };
+  try {
+    const created=await call('openlist_share_create',{
+      files:[file],expires_hours:1,max_accessed:2});
+    assert.match(created.target,/^[a-f0-9]{16}$/);
+    assert.match(created.observed_state.password_once,/^[a-f0-9]{48}$/);
+    assert.ok(!JSON.stringify(created).includes('hidden'));
+    const id=created.target as string;
+    const updated=await call('openlist_share_update',{
+      id,expires_hours:2,max_accessed:3});
+    assert.equal(updated.observed_state.max_accessed,3);
+    const disabled=await call('openlist_share_disable',{id});
+    assert.equal(disabled.observed_state.disabled,true);
+    const enabled=await call('openlist_share_enable',{id});
+    assert.equal(enabled.observed_state.disabled,false);
+    const revoked=await call('openlist_share_revoke',{id});
+    assert.equal(revoked.observed_state.revoked,true);
+    assert.equal(share,undefined);
+    assert.equal(fileExists,true,'share revoke must preserve the source file');
+    const deleted=await call('openlist_delete',{path:file});
+    assert.equal(deleted.observed_state.deleted,true);
+    assert.equal(fileExists,false);
+    assert.deepEqual(writes,[
+      '/api/share/create','/api/share/update','/api/share/disable',
+      '/api/share/enable','/api/share/delete','/api/fs/remove',
+    ]);
+  } finally {await client.close();}
+});
