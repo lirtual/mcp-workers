@@ -54,3 +54,23 @@ test('ciphertext is compatible with v1 AES-GCM AAD and carries no URL in clear',
 test('reject malformed encryption key before any D1 network request', async () => {
   await assert.rejects(encryptDirect('b2b', 'mysql://x:y@db.example.net/a', 'invalid'));
 });
+
+test('existing release job blocks mixed-action dispatch before credentials are staged', async () => {
+  const { readFileSync } = await import('node:fs');
+  const yaml = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const publishBlock = yaml.slice(yaml.indexOf('\n  deploy:\n'), yaml.indexOf('\n  database-activate:\n'));
+  const activationBlock = yaml.slice(yaml.indexOf('\n  database-activate:\n'), yaml.indexOf('\n  database-prepare:\n'));
+  const preparationBlock = yaml.slice(yaml.indexOf('\n  database-prepare:\n'));
+  assert.match(publishBlock, /DATABASE_PREPARE_APPROVED:[^\n]*inputs\.database_prepare_approved/);
+  assert.match(activationBlock, /DATABASE_PREPARE_APPROVED:[^\n]*inputs\.database_prepare_approved/);
+  for (const body of [publishBlock, activationBlock]) {
+    assert.match(body, /\[\[ "\$DATABASE_PREPARE_APPROVED" != "true" \]\]/);
+  }
+  for (const required of [
+    "github.actor == 'lirtual'", "github.ref == 'refs/heads/main'",
+    "inputs.deploy_to_production == false", "inputs.database_prepare_approved == true",
+    'environment:', 'group: worker-release-database-mcp-worker',
+    'database-prep-344.mjs validate', 'database-prep-344.mjs import'
+  ]) assert.ok(preparationBlock.includes(required), 'Database preparation scope drift: ' + required);
+  assert.doesNotMatch(preparationBlock, /wrangler deploy|Publish exactly selected Worker|activate-database-hyperdrive\.mjs/);
+});
