@@ -26,7 +26,7 @@
 
 | Environment 名称 | Environment Secrets（不含继承的 `MCP_ACCESS_TOKEN`） | Environment Variables |
 | --- | --- | --- |
-| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_KEY_ID`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`、`DATABASE_PREVIOUS_KEY_ID`） | **`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）**、`DATABASE_CUTOVER_EXPECTED_IDS`（切换门禁）及 `MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
+| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）**，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
 | `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
 | `weixin-mcp-worker` | `WEIXIN_ENCRYPTION_KEY` | 无（Access 与双域名由 Wrangler 固定） |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
@@ -38,7 +38,7 @@
 | `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
-表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、OpenList 的 `OPENLIST_ALLOWED_ROOTS`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_CUTOVER_EXPECTED_IDS` 是 GitHub 发布门禁变量，不作为 Worker Runtime Variable 下发。其余列出的 Variables 为可选。HTTP 的 `HTTP_CREDENTIALS_JSON` 是可选 Secret，未配置时不要提交空占位值。
+表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、OpenList 的 `OPENLIST_ALLOWED_ROOTS`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，原有 `b2b`、`scrape_relay` 身份已由发布门禁固定校验，不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。HTTP 的 `HTTP_CREDENTIALS_JSON` 是可选 Secret，未配置时不要提交空占位值。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
@@ -56,7 +56,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 
 - Raindrop：`RAINDROP_RATE_LIMIT_MAX_RETRIES`（0–10）。
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
-- Database：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（Owner Access 必填）；`DATABASE_CUTOVER_EXPECTED_IDS`（发布门禁必填、不会下发到 Worker）；`MAX_ROWS`（1–5000）、`MAX_RESULT_BYTES`（1–8388608）、`MAX_SCHEMA_BYTES`（1–4194304）、`QUERY_TIMEOUT_MS`（1–60000）、`MAX_WRITE_AFFECTED_ROWS`（1–100）。
+- Database：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（Owner Access 必填）；`DATABASE_KEY_ID`（Environment Variable，必填）；`MAX_ROWS`（1–5000）、`MAX_RESULT_BYTES`（1–8388608）、`MAX_SCHEMA_BYTES`（1–4194304）、`QUERY_TIMEOUT_MS`（1–60000）、`MAX_WRITE_AFFECTED_ROWS`（1–100）。
 - Email：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（三者必填，必须是已批准的 Access 生产身份值）。
 - OpenList：`OPENLIST_ALLOWED_ROOTS`（必填，1–16 个经运行时路径解析器验证的绝对路径 JSON 数组）。
 - Workflow：`MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `GITHUB_ACTION_APPROVED_REPOSITORIES`）。
