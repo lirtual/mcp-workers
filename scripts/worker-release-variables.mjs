@@ -90,7 +90,11 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);
-    variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin);
+    variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin,
+      // Pinned non-secret Cloudflare Access identity for owner-only approval.
+      "REMOTE_CONTROL_UPGRADE_ACCESS_TEAM_DOMAIN:lirtualzero.cloudflareaccess.com",
+      "REMOTE_CONTROL_UPGRADE_ACCESS_AUD:1ca01c2e83c08bfefb4912da62f2531924b5e26c07cb375e8da7df64f72d213b",
+      "REMOTE_CONTROL_UPGRADE_OWNER_EMAIL:lirtual@outlook.com");
   }
   for (const name of allowed) {
     const value = env[name];
