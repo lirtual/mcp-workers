@@ -433,9 +433,13 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_ENCRYPTION_KEY", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
+  assert.ok(secretStep.includes("vars.DATABASE_KEY_ID"),
+    "Database key identifier must come from a GitHub Environment Variable");
+  assert.equal(secretStep.includes("secrets.DATABASE_KEY_ID"), false,
+    "Database key identifier is public metadata, not a GitHub Secret");
   assert.equal(secretStep.includes("secrets.DATABASE_CONFIG"), false,
     "releases must never restage the retired whole-catalog Secret");
   assert.equal(secretStep.includes("secrets.IMA_CLIENT_ID"), false,
