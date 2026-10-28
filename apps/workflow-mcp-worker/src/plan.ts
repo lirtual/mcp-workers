@@ -1,11 +1,12 @@
 import YAML from 'yaml';
+import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {isForeachTaskInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
-export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run'] as const;
+export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run'] as const;
 export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300,maxEventWaitSeconds:3600});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
@@ -17,7 +18,7 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown;
 };
@@ -30,7 +31,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:'weixin';action:'weixin.send_text';contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -337,8 +338,19 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       const source=object(candidate.items,'invalid_foreach_items');
       if(Object.keys(source).length!==1||typeof source.ref!=='string')
         throw new PlanError('invalid_foreach_items',path+'/items');
-      const templ=object(candidate.template,'invalid_foreach_template');
+      const templ={...object(candidate.template,'invalid_foreach_template')};
       keys(templ,['steps'],path+'/template');
+      // Preserve existing foreach Task identity, grants and Run behavior.
+      // Cloudflare actions remain rejected in every template shape.
+      if(Array.isArray(templ.steps))templ.steps=templ.steps.map((entry,index)=>{
+        const child=object(entry,'invalid_foreach_template');
+        if(child.uses!=='action.run')return child;
+        const input=object(child.with,'invalid_step_arguments');
+        const target=path+'/template/steps/'+index+'/with';
+        keys(input,['executor','capability','action'],target);
+        if(input.executor!=='github')throw new PlanError('unsupported_foreach_executor',target+'/executor');
+        return {...child,uses:'github.run',with:{capability:input.capability,action:input.action}};
+      });
       if(!Array.isArray(templ.steps)||templ.steps.length<1||
          templ.steps.length>PLAN_LIMITS.maxForeachTemplateSteps)
         throw new PlanError('unsupported_foreach_template',path+'/template/steps');
@@ -478,6 +490,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     keys(template,['uses','with','if'],path+'/template');
     if(!isSupportedStepUse(template.uses))
       throw new PlanError('unsupported_capability',path+'/template/uses');
+    if(template.uses==='action.run' &&
+       (template.with as {executor?:unknown}|undefined)?.executor==='cloudflare')
+      throw new PlanError('unsupported_cloudflare_composition',path+'/template/uses');
     const originalNeeds=candidate.needs===undefined?[]:candidate.needs;
     if(!Array.isArray(originalNeeds)||originalNeeds.some(x=>typeof x!=='string'||!SAFE_ID.test(x))||
        new Set(originalNeeds).size!==originalNeeds.length)
@@ -509,11 +524,30 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   },0);
   if(totalWaitSeconds>PLAN_LIMITS.maxWaitSeconds)
     throw new PlanError('wait_budget_exceeded','/steps');
+  // Current reviewed Provider is one notification from one physical OpenList Session.
+  if(expanded.filter(x=>(x as {uses?:unknown;with?:{executor?:unknown}}).uses==='action.run'&&
+      (x as {with?:{executor?:unknown}}).with?.executor==='cloudflare').length>1)
+    throw new PlanError('multiple_cloudflare_actions_unsupported','/steps');
   const steps:Step[]=[];
   const ids=new Set<string>();
   for(const s0 of expanded){
-    const s=object(s0,'invalid_step');
+    const sourceStep=object(s0,'invalid_step');
     const stepPath='/steps/'+steps.length;
+    // The source-level unified GitHub spelling reuses the mature dispatch,
+    // OIDC, terminal-state and grant machinery. Do not touch old Plan JSON.
+    // Cloudflare actions remain distinct and require audited grants and receipts;
+    // never reinterpret their source as GitHub dispatch.
+    const s:Record<string,unknown>=sourceStep.uses==='action.run'?(()=>{
+      const withData=object(sourceStep.with,'invalid_step_arguments');
+      keys(withData,withData.executor==='cloudflare'?['executor','provider','action','contract_digest','input']:['executor','capability','action'],stepPath+'/with');
+      if(withData.executor==='cloudflare'){
+        return sourceStep; // Never reinterpret Cloudflare as a GitHub dispatch.
+      }
+      if(withData.executor!=='github')
+        throw new PlanError('unsupported_executor',stepPath+'/with/executor');
+      return {...sourceStep,uses:'github.run',
+        with:{capability:withData.capability,action:withData.action}};
+    })():sourceStep;
     keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
@@ -535,6 +569,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['duration_seconds'],stepPath+'/with');
     }else if(s.uses==='flow.wait_event'){
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
+    }else if(s.uses==='action.run'){
+      keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
+      const manifest=await cloudflareActionManifest();
+      if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
+         withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
+        throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
+      const input=object(withData.input,'invalid_cloudflare_input');
+      keys(input,['session_step_id'],stepPath+'/with/input');
+      if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
+        throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
     }else if(s.uses==='github.run'){
       checkGitHubActionWith(withData,stepPath+'/with');
     }else if(s.uses==='mcp.call'){
@@ -556,6 +600,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
   }
   for(const s of steps){
+    if(s.uses==='action.run'){
+      // Provider URL and recipient never come from a Draft or ordinary Step output.
+      const source=(s.with.input as {session_step_id:string}).session_step_id;
+      const upstream=steps.find(x=>x.id===source);
+      const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+      if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
+         action?.repository!=='lirtual/session-actions'||
+         action?.workflowPath!=='.github/workflows/openlist.yml'||
+         action?.type!=='session')
+        throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+    }
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     if(s.uses==='flow.wait'){
       if(!Number.isSafeInteger(s.with.duration_seconds)||Number(s.with.duration_seconds)<1||

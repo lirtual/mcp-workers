@@ -2,10 +2,14 @@
 // Only run from the protected database-mcp-worker GitHub Environment on main.
 // Legacy URLs and encryption keys exist only as process Environment Secrets.
 import { webcrypto } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
+// The existing D1 resource is not a Worker binding or deployment dependency in main.
+const D1_ID = '8853a6ac-beaa-45aa-bdb2-0867e6f3df6d';
+const D1_NAME = 'database-mcp-db';
+const CONFIG_FILE = new URL('../apps/database-mcp-worker/.db344-prep.generated.json', import.meta.url);
 const IDS = ['b2b', 'scrape_relay'];
 const MAX_PLAINTEXT = 24545;
 const MAX_CIPHERTEXT = 32768;
@@ -86,21 +90,33 @@ async function state(dbId, stage) {
 }
 async function main() {
   const mode = process.argv[2];
-  if (!['validate', 'import'].includes(mode)) fail();
+  if (!['validate', 'import', 'config'].includes(mode)) fail();
   if (process.env.GITHUB_REF !== 'refs/heads/main' || process.env.GITHUB_ACTOR !== 'lirtual' ||
       !/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA || '')) fail();
-  const expected = JSON.parse(required('DATABASE_CUTOVER_EXPECTED_IDS'));
-  if (!sameIds(expected)) fail();
+  if (mode === 'config') {
+    // This ephemeral Wrangler configuration is created and removed in one
+    // protected runner step; never change the production Worker's Wrangler source.
+    const config = {
+      name: 'database-mcp-worker',
+      main: 'src/index.ts',
+      compatibility_date: '2026-09-12',
+      d1_databases: [{
+        binding: 'DB',
+        database_name: D1_NAME,
+        database_id: D1_ID,
+        migrations_dir: 'migrations'
+      }]
+    };
+    await writeFile(CONFIG_FILE, JSON.stringify(config), { flag: 'wx', mode: 0o600 });
+    console.log('Database #344 ephemeral migration config generated (no Worker deployment).');
+    return;
+  }
   const catalog = parseLegacyImport(required('DATABASE_CONFIG'));
   const key = required('DATABASE_ENCRYPTION_KEY');
   const keyId = required('DATABASE_KEY_ID');
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(keyId)) fail();
-  const configured = JSON.parse(await readFile(new URL('../apps/database-mcp-worker/wrangler.jsonc', import.meta.url), 'utf8'));
-  const db = configured.d1_databases?.[0];
-  if (configured.name !== 'database-mcp-worker' || configured.main !== 'src/index.ts' ||
-      configured.d1_databases?.length !== 1 || db?.binding !== 'DB' ||
-      db?.database_name !== 'database-mcp-db' || !/^[a-f0-9-]{36}$/i.test(db.database_id || '') ||
-      !/^[a-f0-9]{32}$/i.test(required('CLOUDFLARE_ACCOUNT_ID'))) fail();
+  if (!/^[a-f0-9]{32}$/i.test(required('CLOUDFLARE_ACCOUNT_ID'))) fail();
+  const db = { database_id: D1_ID };
   // Fully encrypt and self-decrypt both before any mutation, so bad keys fail first.
   const records = await Promise.all(catalog.map(async item =>
     ({ id: item.id, sealed: await encryptDirect(item.id, item.url, key) })));

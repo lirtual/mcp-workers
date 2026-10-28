@@ -18,7 +18,6 @@ on:
           - http-mcp-worker
           - openlist-mcp-worker
           - workflow-mcp-worker
-          - weixin-mcp-worker
       openlist_portal_registration:
         description: 'OpenList only: separately accept live driver E2E before attaching Portal'
         required: false
@@ -84,8 +83,7 @@ jobs:
            inputs.worker == 'github-actions-mcp-worker' ||
            inputs.worker == 'http-mcp-worker' ||
            inputs.worker == 'openlist-mcp-worker' ||
-           inputs.worker == 'workflow-mcp-worker' ||
-           inputs.worker == 'weixin-mcp-worker') }}
+           inputs.worker == 'workflow-mcp-worker') }}
     runs-on: ubuntu-latest
     # A GitHub Environment is a Worker-scoped configuration namespace, not a
     # staging/production selector. Only manual dispatch on main can deploy.
@@ -154,7 +152,6 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           OPENLIST_API_TOKEN: ${{ inputs.worker == 'openlist-mcp-worker' && secrets.OPENLIST_API_TOKEN || '' }}
           MAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}
-          WEIXIN_ENCRYPTION_KEY: ${{ secrets.WEIXIN_ENCRYPTION_KEY }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_ENCRYPTION_KEY: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_ENCRYPTION_KEY || '' }}
@@ -183,6 +180,8 @@ jobs:
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           OPENLIST_ALLOWED_ROOTS: ${{ inputs.worker == 'openlist-mcp-worker' && vars.OPENLIST_ALLOWED_ROOTS || '' }}
           MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
+          # Independent Provider Worker Version ID must be approved before any Workflow release.
+          WEIXIN_ACTION_DEPLOYMENT_ID: ${{ vars.WEIXIN_ACTION_DEPLOYMENT_ID }}
           MAX_ROWS: ${{ vars.MAX_ROWS }}
           MAX_RESULT_BYTES: ${{ vars.MAX_RESULT_BYTES }}
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
@@ -207,6 +206,31 @@ jobs:
             exit 1
           }
 
+      # One known October 26 history record retains indeterminate business
+      # outcome. Verify *live* native Cloudflare + GitHub physical termination
+      # and exact D1 identity before excluding it from migration counters.
+      # Do not include any other Run; no business history is rewritten.
+      - name: Verify historical terminal Run proof (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        id: terminal
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
+            SELECT id,outcome,start_state,error_code FROM runs
+              WHERE id='47739981-0534-4966-8034-1e79c1d17481';
+            SELECT run_id,step_id,status,error_code FROM run_steps
+              WHERE run_id='47739981-0534-4966-8034-1e79c1d17481';
+            SELECT run_id,step_id,state FROM session_executions
+              WHERE run_id='47739981-0534-4966-8034-1e79c1d17481';
+            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
+              FROM step_attempts WHERE run_id='47739981-0534-4966-8034-1e79c1d17481'
+          ") | node scripts/workflow-terminal-run-exception.mjs
+
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
@@ -214,6 +238,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
+          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
@@ -232,6 +257,9 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
              (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
+             (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_invocations') AS invocations_table,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_cancellations') AS cloudflare_cancel_table,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
@@ -249,7 +277,7 @@ jobs:
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS active_runs,
+             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
              (SELECT count(*) FROM runs) AS run_count,
              (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -277,31 +305,6 @@ jobs:
               console.log("Email production D1 schema verified; no mailbox rows read");
             });'
 
-      - name: Apply Weixin production D1 schema and verify required constraints
-        if: inputs.worker == 'weixin-mcp-worker'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          (cd apps/weixin-mcp-worker && pnpm exec wrangler d1 migrations apply weixin-mcp-db --remote)
-          output="$(cd apps/weixin-mcp-worker && pnpm exec wrangler d1 execute weixin-mcp-db --remote --json --command "SELECT
-            (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='weixin_binding') AS binding_table,
-            (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='weixin_pairing') AS pairing_table,
-            (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='weixin_send_receipts') AS receipt_table,
-            (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_weixin_request_id_global') AS unique_index,
-            (SELECT COUNT(*) FROM weixin_binding WHERE id=1) AS singleton")"
-          printf '%s' "$output" | node -e '
-            let raw=""; process.stdin.on("data",c=>raw+=c).on("end",()=>{
-              const r=JSON.parse(raw);
-              const row=r?.[0]?.results?.[0];
-              if (!Array.isArray(r)||r.length!==1||!r[0].success||!row||
-                  !["binding_table","pairing_table","receipt_table","unique_index","singleton"].every(k=>row[k]===1))
-                process.exit(1);
-              console.log("Weixin production D1 schema and permanent request-ID index verified");
-            });'
-
       # Only the existing production release lock and GitHub Environment can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
@@ -312,6 +315,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'
+          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -332,6 +336,9 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
              (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
+             (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_invocations') AS invocations_table,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_cancellations') AS cloudflare_cancel_table,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
@@ -349,7 +356,7 @@ jobs:
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
               (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS active_runs,
+              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
               (SELECT count(*) FROM runs) AS run_count,
               (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -361,6 +368,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
         run: |
           set -euo pipefail
           query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
@@ -423,7 +431,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|openlist-mcp-worker|workflow-mcp-worker|weixin-mcp-worker) ;;
+            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|openlist-mcp-worker|workflow-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -645,9 +653,9 @@ jobs:
           DATABASE_ACTIVATION_REVISION: ${{ inputs.database_activation_revision }}
         run: node scripts/activate-database-hyperdrive.mjs
 
-  # One-time D1 preparation, isolated from the actual Worker publish job.
+  # One-time D1 preparation; no change to the active Database MCP Worker.
   database-prepare:
-    name: Prepare Database D1 legacy IDs without release
+    name: Prepare two disabled Database D1 records without deployment
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
@@ -669,10 +677,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Verify approved main source and exact commit
+      - name: Check reviewed main source and dispatch identity
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
       - uses: pnpm/action-setup@v4
@@ -686,34 +695,33 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Install reviewed dependencies without lifecycle scripts
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Validate legacy Secret, encryption key and untouched D1 (read-only)
+      - name: Validate import input, key and untouched D1 (read-only)
         env:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
-          DATABASE_CUTOVER_EXPECTED_IDS: ${{ vars.DATABASE_CUTOVER_EXPECTED_IDS }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-prep-344.mjs validate
-      - name: Confirm the dispatch source is still main before mutation
+      - name: Recheck main, apply reviewed additive D1 migration, never deploy Worker
         shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - name: Apply reviewed additive Database D1 migration; no Worker publish
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          cd apps/database-mcp-worker
-          pnpm exec wrangler d1 migrations apply database-mcp-db --remote
-      - name: Import and read back exactly two disabled Direct records
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          trap 'rm -f apps/database-mcp-worker/.db344-prep.generated.json' EXIT
+          node scripts/database-prep-344.mjs config
+          (
+            cd apps/database-mcp-worker
+            pnpm exec wrangler d1 migrations apply database-mcp-db --remote --config .db344-prep.generated.json
+          )
+      - name: Import and read back two encrypted, disabled D1 records
         env:
           DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
-          DATABASE_CUTOVER_EXPECTED_IDS: ${{ vars.DATABASE_CUTOVER_EXPECTED_IDS }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/database-prep-344.mjs import

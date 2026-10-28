@@ -4,6 +4,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
+import { TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker", "weixin-mcp-worker"]);
 const REQUIRED_SECRETS = {
@@ -93,11 +94,11 @@ export function verifyDatabaseD1Readiness(response, expectedCount) {
     "Database D1 record inventory invalid");
   invariant(row.record_count >= expectedCount && row.preserved_count === expectedCount,
     "Database D1 missing reviewed legacy logical connection IDs");
-  // Migration 0002 deliberately disables every legacy row to prevent an
-  // implicit TLS→plaintext downgrade. Requiring active rows here deadlocks
-  // the first authorized deployment; explicit Owner enable is a later gate.
-  invariant(row.active_count <= row.preserved_count,
-    "Database D1 active connection count exceeds reviewed inventory");
+  // Never deploy the D1-only Worker with disabled legacy IDs: it would
+  // instantly break existing consumers. Enabling is a separate authorized
+  // D1-only cutover operation before the Worker source is published.
+  invariant(row.active_count === expectedCount,
+    "Database production release blocked: reviewed legacy connections are disabled");
   return { record_count: row.record_count, preserved_count: row.preserved_count,
     active_count: row.active_count };
 }
@@ -257,6 +258,12 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
         !secretNames.has("MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
+      const providerVersion=find("WEIXIN_ACTION_DEPLOYMENT_ID","plain_text");
+      invariant(bindings.filter(x=>x.name==="WEIXIN_ACTION_DEPLOYMENT_ID").length===1 &&
+        typeof providerVersion?.text==="string" &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(providerVersion.text) &&
+        !secretNames.has("WEIXIN_ACTION_DEPLOYMENT_ID"),
+        "Workflow reviewed Weixin Provider Version ID drift");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -393,7 +400,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   const allowed = new Set(worker === "workflow-mcp-worker"
-    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] : ["DB", "WORKFLOW"]) :
+    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER"]) :
     worker === "openlist-mcp-worker" ? ["OPENLIST"] :
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "weixin-mcp-worker" ? ["DB"] :
@@ -406,6 +413,11 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         ? (options.mode === "preflight"
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
           : ["DEVICE_COORDINATOR"]) : []);
+  if (worker === "workflow-mcp-worker" && options.mode === "readback") {
+    invariant(bindings.filter(x=>x.name === "WEIXIN_ACTION_PROVIDER").length === 1 &&
+      !!find("WEIXIN_ACTION_PROVIDER", "service"),
+      "Workflow reviewed Weixin Service Binding missing after release");
+  }
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
       // Source manifest controls the new bindings; a production preflight may
@@ -439,7 +451,12 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-orchestrator" &&
     conf.workflows[0]?.class_name === "WorkflowOrchestrator",
     "Workflow binding drift");
-  invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
+  invariant(conf.services?.length === 1 &&
+    conf.services[0]?.binding === "WEIXIN_ACTION_PROVIDER" &&
+    conf.services[0]?.service === "weixin-mcp-worker" &&
+    conf.services[0]?.entrypoint === "WeixinActionProvider" &&
+    Object.keys(conf.services[0]).sort().join(",") === "binding,entrypoint,service",
+    "Workflow reviewed Weixin Service Binding drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
@@ -447,6 +464,17 @@ export function verifyWorkflowReleaseConfig(conf) {
   invariant(!(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
     "Workflow must never enable or import MCP dynamic-target behavior");
   return true;
+}
+
+function reviewedTerminalRunSql(sql) {
+  if (process.env.WORKFLOW_TERMINAL_RUN_ID !== TERMINAL_RUN_ID) return sql;
+  return sql.replace(
+    "outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs",
+    "outcome NOT IN ('succeeded','failed','cancelled') AND id<>'" + TERMINAL_RUN_ID + "') AS nonterminal_runs"
+  ).replace(
+    "status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps",
+    "status NOT IN ('succeeded','failed','skipped') AND run_id<>'" + TERMINAL_RUN_ID + "') AS unresolved_steps"
+  );
 }
 
 export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false) {
@@ -506,9 +534,14 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   // requires the exact v12 receipt table + migration record.
   const completeV11 = row?.migration_count === 11 &&
     row?.migration_v12 === 0 && row?.event_receipts_table === 0 && fullV11Schema;
-  const complete = row?.migration_count === 12 &&
-    row?.migration_v12 === 1 && row?.event_receipts_table === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || complete)),
+  const completeV12 = row?.migration_count === 12 &&
+    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
+    row?.migration_v13 !== 1 && fullV11Schema;
+  const complete = row?.migration_count === 13 &&
+    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
+    row?.migration_v13 === 1 && row?.invocations_table === 1 &&
+    row?.cloudflare_cancel_table === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -535,7 +568,7 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
    '0008_session_locator.sql','0009_fixed_sessions.sql',
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
-   '0012_event_wait_receipts.sql')) AS expected_migrations,
+   '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -575,8 +608,9 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant(row.migration_count === 12 && row.expected_migrations === 12,
-    "Workflow migration requires the exact twelve reviewed D1 migrations");
+  invariant((row.migration_count === 12 || row.migration_count === 13) &&
+    row.expected_migrations === row.migration_count,
+    "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
@@ -609,7 +643,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===12 && row.expected_migrations===12,
+  invariant(row.migration_count===13 && row.expected_migrations===13,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
@@ -904,7 +938,7 @@ async function main() {
   }
   if (mode === "migration-sql") {
     invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
-    console.log(WORKFLOW_MIGRATION_READINESS_SQL);
+    console.log(reviewedTerminalRunSql(WORKFLOW_MIGRATION_READINESS_SQL));
     return;
   }
   if (mode === "code-release-check") {
@@ -972,14 +1006,15 @@ async function main() {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
     });
-    // Compare the active deployment inside the existing retry loop. Cloudflare
-    // may briefly serve the previous version after Wrangler reports success.
-    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker'))
+    // Compare active deployments inside the existing bounded retry loop.
+    // Cloudflare may briefly serve an old version, including for OpenList releases.
+    // Keep identity and binding drift failures fatal.
+    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker' || worker === 'openlist-mcp-worker'))
       verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     return observed;
   };
   const observed = !exists ? { mode: "bootstrap" }
-    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker")
+    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker" || worker === "openlist-mcp-worker")
       ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });

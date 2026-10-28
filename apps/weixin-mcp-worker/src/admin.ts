@@ -14,7 +14,7 @@ function html(body:string,csrf?:string,status=200):Response{
   const headers=new Headers({
     'content-type':'text/html; charset=utf-8','cache-control':'no-store',
     'content-security-policy':CSP,'x-content-type-options':'nosniff',
-    'x-frame-options':'DENY','referrer-policy':'no-referrer',
+    'x-frame-options':'DENY','referrer-policy':'same-origin',
   });
   if(csrf)headers.set('set-cookie',csrfCookie(csrf));
   return new Response('<!doctype html><html lang="en"><meta charset="utf-8">'+

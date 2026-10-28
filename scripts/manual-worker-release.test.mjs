@@ -157,10 +157,10 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
     /missing reviewed legacy/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, preserved_count: 1 }), 2),
     /missing reviewed legacy/);
-  assert.deepEqual(verifyDatabaseD1Readiness(result({ ...valid, active_count: 0 }), 2),
-    { record_count: 2, preserved_count: 2, active_count: 0 });
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, active_count: 3 }), 2),
-    /active connection count/);
+  for (const active_count of [0, 1, 3]) {
+    assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, active_count }), 2),
+      /release blocked: reviewed legacy connections are disabled/);
+  }
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 }), 2),
     /migration not applied/);
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 11 }), 2),
@@ -187,8 +187,8 @@ test("generated Database D1 release SQL executes against actual SQLite schema", 
     add.run("source_pg", "postgres", "disabled", "y".repeat(48), "key_v1");
     const query = databaseD1ReadinessSql(["source_mysql", "source_pg"]);
     const execute = () => [{ success: true, results: [sql.prepare(query).get()] }];
-    assert.deepEqual(verifyDatabaseD1Readiness(execute(), 2),
-      { record_count: 2, preserved_count: 2, active_count: 1 });
+    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2),
+      /release blocked: reviewed legacy connections are disabled/);
     sql.prepare("UPDATE database_connections SET status='active' WHERE id=?").run("source_pg");
     assert.deepEqual(verifyDatabaseD1Readiness(execute(), 2),
       { record_count: 2, preserved_count: 2, active_count: 2 });
@@ -503,6 +503,19 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /Unexpected unauthenticated MCP status/);
 });
 
+test("Weixin is absent from old release ingress and publisher", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const config = JSON.parse(readFileSync(new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
+  const start = workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials");
+  const end = workflow.indexOf("      - name: Register production HTTP MCP with existing One-MCP Portal", start);
+  assert.ok(start >= 0 && end > start);
+  const check = workflow.slice(start, end);
+  assert.equal(config.workers_dev, false);
+  assert.ok(!check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
+  assert.ok(!check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
+  assert.match(check, /401\|403\)/, "unauthenticated requests must remain denied");
+});
+
 test("GitHub Actions deploy requires only one PAT Secret and no repository lists", () => {
   const worker = "github-actions-mcp-worker";
   const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "ACTIONS_GITHUB_DISPATCH_TOKENS" }];
@@ -545,7 +558,10 @@ test("Workflow production release must preserve exact reviewed resource and runt
   const brokenOwners = [
     [{ ...owner, routes: [{ pattern: "wrong.lirtual.dpdns.org", custom_domain: true }] }, /public route/],
     [{ ...owner, d1_databases: [{ ...owner.d1_databases[0], database_id: "00000000-0000-0000-0000-000000000000" }] }, /production D1/],
-    [{ ...owner, services: [{binding:"UNEXPECTED",service:"fake"}] }, /Service Bindings/],
+    [{ ...owner, services: [] }, /Service Binding/],
+    [{ ...owner, services: [{binding:"UNEXPECTED",service:"fake"}] }, /Service Binding/],
+    [{ ...owner, services: [{...owner.services[0],entrypoint:"UnreviewedEntrypoint"}] }, /Service Binding/],
+    [{ ...owner, services: [...owner.services,{...owner.services[0],binding:"SECOND"}] }, /Service Binding/],
     [{ ...owner, workflows: [] }, /Workflow binding/],
     [{ ...owner, secrets: { required: [] } }, /Secret/],
     [{ ...owner, vars: { MCP_CALL_ENABLED: "true" } }, /MCP/],
@@ -577,6 +593,8 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     capacity_column:1,parent_column:1,parent_step_column:1,child_index:1,child_cancel_table:1,
     child_terminate_fence_column:1,capacity_guard_trigger:1};
   const latest = {...previousComplete,migration_count:12,migration_v12:1,event_receipts_table:1};
+  const cloudflareComplete = {...latest,migration_count:13,migration_v13:1,
+    invocations_table:1,cloudflare_cancel_table:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
@@ -585,7 +603,14 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(upgraded),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(previousComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(latest),false,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
+  for(const row of [
+    {...cloudflareComplete,migration_count:12},
+    {...cloudflareComplete,migration_v13:0},
+    {...cloudflareComplete,invocations_table:0},
+    {...cloudflareComplete,cloudflare_cancel_table:0},
+  ]) assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(previousComplete),false,true),/schema migrations/);
   for(const row of [baseline,partial,current,completed,oldComplete,upgraded]){
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
@@ -630,7 +655,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
       /schema migrations/);
   }
-  assert.equal(verifyWorkflowD1Readiness(result({...latest,run_count:3,
+  assert.equal(verifyWorkflowD1Readiness(result({...cloudflareComplete,run_count:3,
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
@@ -639,7 +664,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
     /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...latest,active_sessions:1}),false,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result({...cloudflareComplete,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
@@ -680,7 +705,7 @@ test("Workflow migration preflight requires all independent physical states sett
   for (const wrong of [{migration_count:9},{migration_count:11},
     {expected_migrations:11}]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,...wrong})), /exact twelve reviewed/);
+      response({...ready,...wrong})), /exact reviewed/);
   }
   for (const invalid of [null,NaN,1.5,"0",true]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
@@ -694,6 +719,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/state != 'terminated'/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0012_event_wait_receipts.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
 });
 
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
@@ -709,7 +735,7 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:12,expected_migrations:12,
+    migration_count:13,expected_migrations:13,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
@@ -725,7 +751,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
   })),{confirmed_ready_sessions:0});
   for(const broken of [
-    {migration_count:11},{expected_migrations:11},
+    {migration_count:12},{expected_migrations:12},
     {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},
@@ -744,6 +770,8 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
+    {name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"},
+    {name:"WEIXIN_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -753,6 +781,8 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  assert.throws(()=>check(bindings.filter(x=>x.name!=="WEIXIN_ACTION_DEPLOYMENT_ID")),/Provider Version ID/);
+  assert.throws(()=>check(bindings.map(x=>x.name==="WEIXIN_ACTION_DEPLOYMENT_ID"?{...x,text:"latest"}:x)),/Provider Version ID/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"}]),/Unexpected production resource binding/);
   assert.throws(()=>check(bindings.filter(x=>x.name!=="GITHUB_ACTION_OIDC_AUDIENCE")),
     /Action OIDC audience/);
@@ -809,6 +839,8 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
+    {name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"},
+    {name:"WEIXIN_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -833,6 +865,8 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
+    {name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"},
+    {name:"WEIXIN_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -930,6 +964,32 @@ test("HTTP readback tolerates only bounded optional Secret inventory propagation
  assert.deepEqual(result,{version_id:"new-version"});
 });
 
+test("OpenList release retries version propagation but never tolerates unrelated drift", async () => {
+  const source = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
+  assert.match(source, /worker === 'openlist-mcp-worker'\)\)\s*verifyPublishedVersion/);
+  assert.match(source, /worker === "openlist-mcp-worker"\)\s*\? await retryReleaseReadback\(read\)/);
+  const expected = "11111111-1111-4111-8111-111111111111";
+  const previous = {mode:"update",version_id:"00000000-0000-4000-8000-000000000000",
+    deployment_id:"before"};
+  let count=0;
+  const actual=await retryReleaseReadback(async()=>{
+    count++;
+    const observed=count===1
+      ? {version_id:previous.version_id,deployment_id:"before"}
+      : {version_id:expected,deployment_id:"after"};
+    verifyPublishedVersion(previous,observed,expected);
+    return observed;
+  },async()=>{});
+  assert.equal(count,2);
+  assert.equal(actual.version_id,expected);
+  let attempts=0;
+  await assert.rejects(retryReleaseReadback(async()=>{
+    attempts++;
+    throw Error("OpenList upstream KV binding drift");
+  },async()=>{throw Error("unrelated drift must not retry");}),/KV binding drift/);
+  assert.equal(attempts,1);
+});
+
 test('OpenList release readback rejects roots that the runtime cannot accept', () => {
   const secrets = ['MCP_ACCESS_TOKEN','OPENLIST_API_TOKEN'].map(name => ({name}));
   const base = [
@@ -998,8 +1058,10 @@ test("worker release documentation stays aligned with the selected-Worker contra
   const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+openlist_portal_registration:/);
   assert.ok(options, "missing worker release choice options");
   const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-mcp-worker)$/gm)].map(m => m[1]).sort();
-  assert.deepEqual(selected, Object.keys(BOOTSTRAP_SECRETS).sort());
-  assert.deepEqual(selected, Object.keys(WORKER_VARIABLES).sort());
+  const { RELEASE_WORKERS } = await import("./select-affected-apps.mjs");
+  assert.deepEqual(selected, [...RELEASE_WORKERS].sort());
+  assert.ok(selected.every(worker => Object.hasOwn(BOOTSTRAP_SECRETS, worker)));
+  assert.ok(selected.every(worker => Object.hasOwn(WORKER_VARIABLES, worker)));
 
   for (const path of ["../docs/MANUAL-WORKER-BOOTSTRAP.md",
     "../docs/runtime-configuration.md", "../docs/mcp-shared-token-runbook.md",

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { runOpenListProductionReadSmoke, OPENLIST_MCP_URL } from './openlist-production-read-smoke.mjs';
+import { runOpenListProductionReadSmoke, runOpenListHistoricalShareRead, OPENLIST_MCP_URL } from './openlist-production-read-smoke.mjs';
 
 const roots=['/Koofr/mcp-test','/OneDrive/safe'];
 const validEnv = {
@@ -137,4 +137,103 @@ test('release runs positive OpenList read smoke after version + anonymous denial
   assert.match(release.slice(step,step+440),/node scripts\/openlist-production-read-smoke\.mjs/);
   assert.match(ci,/node --test scripts\/openlist-production-read-smoke\.test\.mjs/);
   assert.equal((release.match(/node scripts\/openlist-production-read-smoke\.mjs/g)||[]).length,1);
+});
+
+const knownShare = 'mcp_spec309_40493124967_1';
+const knownFile = '/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt';
+const shareEnv = {
+  ...validEnv,
+  OPENLIST_ALLOWED_ROOTS:JSON.stringify(['/Koofr/Downloads']),
+  OPENLIST_HISTORICAL_SHARE_READ:'true',
+};
+const shareResult = (state, isError = false) => response({
+  jsonrpc:'2.0',id:1,result:{...(isError?{isError:true}:{}),content:[{
+    type:'text',text:JSON.stringify({
+      operation:'openlist_share_get',target:knownShare,...state,
+    }),
+  }]},
+});
+const checkedShareTransport = (responseValue) => async req => {
+  assert.equal(req.url,OPENLIST_MCP_URL);
+  assert.equal(req.method,'POST');
+  assert.equal(req.redirect,'manual');
+  assert.equal(req.headers.get('authorization'),'Bearer synthetic-release-ingress-token');
+  const rpc=await req.json();
+  assert.deepEqual({method:rpc.method,name:rpc.params?.name,args:rpc.params?.arguments},
+    {method:'tools/call',name:'openlist_share_get',args:{id:knownShare}});
+  return responseValue.clone();
+};
+
+test('explicitly gated old synthetic share is queried once read-only and no secrets appear in result',async()=>{
+  let calls=0;
+  const expires='2026-10-27T13:55:00.000Z';
+  const result=await runOpenListHistoricalShareRead(shareEnv,async req=>{
+    calls++;
+    return checkedShareTransport(shareResult({
+      status:'succeeded',code:'OK',
+      observed_state:{id:knownShare,files:[knownFile],disabled:false,
+        expires,max_accessed:1},
+    }))(req);
+  });
+  assert.equal(calls,1);
+  assert.deepEqual(result,{present:true,disabled:false,expired:true,expires});
+});
+
+test('already disabled old synthetic share is only reported, never mutated',async()=>{
+  const r=await runOpenListHistoricalShareRead(shareEnv,checkedShareTransport(
+    shareResult({status:'succeeded',code:'OK',
+      observed_state:{id:knownShare,files:[knownFile],disabled:true}})));
+  assert.deepEqual(r,{present:true,disabled:true,expired:null,expires:null});
+});
+
+test('confirmed explicit missing share ID is read as absent; other upstream errors are inconclusive',async()=>{
+  const absent=await runOpenListHistoricalShareRead(shareEnv,checkedShareTransport(
+    shareResult({status:'not_executed',code:'NOT_FOUND'},true)));
+  assert.deepEqual(absent,{present:false});
+  for(const code of ['UPSTREAM_UNAVAILABLE','UPSTREAM_UNCERTAIN','OUT_OF_SCOPE']){
+    await assert.rejects(runOpenListHistoricalShareRead(shareEnv,
+      checkedShareTransport(shareResult({status:'not_executed',code},true))),
+      /openlist_smoke_share_read_unverified/);
+  }
+});
+
+test('share read refuses any other files, extra metadata, mismatched ID, malformed or missing expiry',async()=>{
+  const base={id:knownShare,files:[knownFile],disabled:false};
+  for(const invalid of [
+    {...base,id:'other'},
+    {...base,files:['/Koofr/Downloads/user-file.txt']},
+    {...base,files:[knownFile,knownFile]},
+    {...base,disabled:'false'},
+    {...base,pwd:'sensitive'},
+    {...base,expires:'garbage'},
+    {...base,max_accessed:-1},
+  ]){
+    await assert.rejects(runOpenListHistoricalShareRead(shareEnv,
+      checkedShareTransport(shareResult({status:'succeeded',code:'OK',
+        observed_state:invalid}))),/^Error: openlist_smoke_/);
+  }
+});
+
+test('read-only approval and configured exact root fail before network',async()=>{
+  let calls=0;
+  for(const override of [
+    {OPENLIST_HISTORICAL_SHARE_READ:'false'},
+    {OPENLIST_ALLOWED_ROOTS:JSON.stringify(['/Koofr/other'])},
+    {OPENLIST_ALLOWED_ROOTS:'not-json'},
+    {MCP_ACCESS_TOKEN:''},
+  ]){
+    await assert.rejects(runOpenListHistoricalShareRead({...shareEnv,...override},
+      async()=>{calls++;throw Error('network forbidden')}),/^Error: openlist_smoke_/);
+  }
+  assert.equal(calls,0);
+});
+
+test('share-read workflow is mutually exclusive with write and Portal modes',async()=>{
+  const workflow=await readFile(new URL('../.github/workflows/openlist-acceptance.yml',import.meta.url),'utf8');
+  assert.match(workflow,/confirm_historical_share_read:/);
+  assert.match(workflow,/APPROVE_SHARE_READ: \${{ inputs.confirm_historical_share_read }}/);
+  assert.match(workflow,/\$APPROVE_SHARE_READ" == "true"/);
+  assert.match(workflow,/OPENLIST_HISTORICAL_SHARE_READ: "true"/);
+  assert.match(workflow,/name: Read only exact historical synthetic share/);
+  assert.match(workflow,/inputs.confirm_historical_share_read == true/);
 });

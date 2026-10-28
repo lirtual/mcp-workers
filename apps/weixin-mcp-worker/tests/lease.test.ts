@@ -169,3 +169,39 @@ test('successful empty poll updates last_sync_at without rewriting encrypted cur
   assert.ok(Number(row.last_sync_at)>1000000000);
   assert.equal(row.lease_holder,null);
 });
+
+test('verified owner inbound refreshes encrypted context without storing message bodies',async()=>{
+  const {db,env}=await setup();
+  const result=await syncCursorOnce(env,async()=>({
+    get_updates_buf:'cursor-2',
+    msgs:[
+      {from_user_id:'attacker',to_user_id:'bot',message_type:1,context_token:'attacker-context'},
+      {from_user_id:'owner',to_user_id:'bot',message_type:1,group_id:'group',context_token:'group-context'},
+      {from_user_id:'owner',to_user_id:'bot',message_type:1,context_token:'fresh-context',
+        item_list:[{text_item:{text:'private incoming message'}}]}
+    ]
+  }));
+  assert.equal(result,'updated');
+  const row=db.sql.prepare('SELECT * FROM weixin_binding').get()!;
+  const session=await decrypt<IlinkSession>(env,'weixin:owner:binding:1',
+    row.session_ciphertext as string,row.session_key_id as string);
+  assert.equal(session.contextToken,'fresh-context');
+  assert.equal(session.cursor,'cursor-2');
+  assert.ok(Number(row.last_verified_context_at)>1000000000);
+  assert.doesNotMatch(JSON.stringify(row),/private incoming message|fresh-context|attacker-context/);
+});
+test('owner context updates even when cursor remains unchanged; unrelated messages cannot replace it',async()=>{
+  const {db,env,session}=await setup();
+  assert.equal(await syncCursorOnce(env,async()=>({
+    get_updates_buf:session.cursor,
+    msgs:[{from_user_id:'owner',to_user_id:'bot',message_type:1,context_token:'new-context'}]
+  })),'updated');
+  assert.equal(await syncCursorOnce(env,async()=>({
+    get_updates_buf:session.cursor,
+    msgs:[{from_user_id:'someone-else',to_user_id:'bot',message_type:1,context_token:'evil'}]
+  })),'unchanged');
+  const row=db.sql.prepare('SELECT * FROM weixin_binding').get()!;
+  const saved=await decrypt<IlinkSession>(env,'weixin:owner:binding:1',
+    row.session_ciphertext as string,row.session_key_id as string);
+  assert.equal(saved.contextToken,'new-context');
+});

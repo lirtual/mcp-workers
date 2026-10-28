@@ -26,6 +26,8 @@ export interface Config {
 }
 const MAX_RESULT_BYTES = 256 * 1024;
 const MAX_TEXT_BYTES = 256 * 1024;
+// Existing verified Cloudflare Workers Route, not a user-controlled redirect target.
+const OPENLIST_PUBLIC_ORIGIN = 'https://openlist.lirtual.dpdns.org';
 const MAX_SEGMENT = 255;
 
 export function canonicalPath(value: unknown): string {
@@ -214,8 +216,8 @@ export class OpenListApi {
     // Upstream total counts unfiltered matches; entries may be fewer after scope validation.
     return { entries, total, page, per_page: perPage, has_more: page * perPage < total };
   }
-  // Gated candidate only: do NOT register as an MCP tool until real
-  // OpenList driver and Portal acceptance. Never query the global share list.
+  // Explicit-ID, read-only share metadata. Publication still requires separate
+  // approval and real client acceptance. Never query the global share list.
   async getShare(id: string): Promise<Record<string, unknown>> {
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
       throw new OpenListError('INVALID_INPUT');
@@ -254,6 +256,433 @@ export class OpenListApi {
       result.max_accessed = share.max_accessed;
     }
     return result;
+  }
+
+
+  // Non-public adapters for Spec #309: existing upstream APIs only.
+  // External exposure and irreversible revocation require trusted user approval
+  // before corresponding MCP tools can be registered.
+  async createShare(files: string[], expiresHours: number, maxAccessed: number): Promise<OperationResult> {
+    if (!Array.isArray(files) || files.length < 1 || files.length > 8 ||
+        !Number.isInteger(expiresHours) || expiresHours < 1 || expiresHours > 168 ||
+        !Number.isInteger(maxAccessed) || maxAccessed < 1 || maxAccessed > 100)
+      throw new OpenListError('INVALID_INPUT');
+    const checked = files.map(f => this.check(f));
+    if (new Set(checked).size !== checked.length) throw new OpenListError('INVALID_INPUT');
+    const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    const pwd = Array.from(crypto.getRandomValues(new Uint8Array(24)),
+      n => n.toString(16).padStart(2, '0')).join('');
+    const expires = new Date(Date.now() + expiresHours * 3600 * 1000).toISOString();
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      for (const f of checked) {
+        const meta = await this.get(f);
+        if (typeof meta.is_dir !== 'boolean') throw new OpenListError('UPSTREAM_UNAVAILABLE');
+      }
+      try {
+        await this.getShare(id);
+        throw new OpenListError('CONFLICT');
+      } catch (error) {
+        if (!(error instanceof OpenListError) || error.code !== 'NOT_FOUND') throw error;
+      }
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/create',
+        { id, files: checked, pwd, expires, max_accessed: maxAccessed, disabled: false },
+        undefined, true);
+      const after = await this.getShare(id);
+      if (after.disabled !== false || after.expires !== expires ||
+          after.max_accessed !== maxAccessed ||
+          JSON.stringify(after.files) !== JSON.stringify(checked))
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      // The creator receives the generated password once. No other share query
+      // returns credentials; do not log this result or publish without consent.
+      return { operation: 'openlist_share_create', status: 'succeeded', code: 'OK',
+        message: 'Password-protected share created using native non-atomic API. Credentials are one-time secrets.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: { ...after, password_once: pwd,
+          share_url: 'https://openlist.lirtual.dpdns.org/@s/' + encodeURIComponent(id) } };
+    } catch (error) {
+      return { operation: 'openlist_share_create',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Share creation uncertain; never retry automatically.' :
+          'No external share created.', request_id, target: id };
+    }
+  }
+
+  async updateShare(id: string, expiresHours?: number, maxAccessed?: number): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id) ||
+        (expiresHours === undefined && maxAccessed === undefined) ||
+        (expiresHours !== undefined &&
+          (!Number.isInteger(expiresHours) || expiresHours < 1 || expiresHours > 168)) ||
+        (maxAccessed !== undefined &&
+          (!Number.isInteger(maxAccessed) || maxAccessed < 1 || maxAccessed > 100)))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.getShare(id);
+      const changes: Record<string, unknown> = { id };
+      if (expiresHours !== undefined)
+        changes.expires = new Date(Date.now() + expiresHours * 3600 * 1000).toISOString();
+      if (maxAccessed !== undefined) changes.max_accessed = maxAccessed;
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/update', changes, undefined, true);
+      const after = await this.getShare(id);
+      if (JSON.stringify(after.files) !== JSON.stringify(before.files) ||
+          after.disabled !== before.disabled ||
+          (changes.expires !== undefined && after.expires !== changes.expires) ||
+          (changes.max_accessed !== undefined && after.max_accessed !== changes.max_accessed))
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_update', status: 'succeeded', code: 'OK',
+        message: 'Share policy observed after non-atomic native update.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: after };
+    } catch (error) {
+      return { operation: 'openlist_share_update',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Update uncertain; never retry automatically.' :
+          'No share update dispatched.', request_id, target: id };
+    }
+  }
+
+  async enableShare(id: string): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.getShare(id);
+      if (before.disabled === false)
+        return { operation: 'openlist_share_enable', status: 'not_executed',
+          code: 'ALREADY_ENABLED', message: 'No mutation dispatched.',
+          request_id, target: id, observed_state: { disabled: false } };
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/enable?id=' +
+        encodeURIComponent(id), undefined, undefined, true);
+      const after = await this.getShare(id);
+      if (after.disabled !== false || JSON.stringify(after.files) !== JSON.stringify(before.files) ||
+          after.expires !== before.expires || after.max_accessed !== before.max_accessed)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_enable', status: 'succeeded', code: 'OK',
+        message: 'Share observed enabled after non-atomic native operation.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: { disabled: false } };
+    } catch (error) {
+      return { operation: 'openlist_share_enable',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Enable uncertain; never retry automatically.' :
+          'No share enable dispatched.', request_id, target: id };
+    }
+  }
+
+  async revokeShare(id: string): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      await this.getShare(id);
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/delete?id=' +
+        encodeURIComponent(id), undefined, undefined, true);
+      try {
+        await this.getShare(id);
+      } catch (error) {
+        if (error instanceof OpenListError && error.code === 'NOT_FOUND')
+          return { operation: 'openlist_share_revoke', status: 'succeeded', code: 'OK',
+            message: 'Share ID absent after native revoke; source files are not deleted.',
+            request_id, target: id, evidence: { business_code: reply.code },
+            observed_state: { revoked: true } };
+        throw error;
+      }
+      throw new OpenListError('UPSTREAM_UNCERTAIN');
+    } catch (error) {
+      return { operation: 'openlist_share_revoke',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Revoke uncertain; never retry automatically.' :
+          'No share revoke dispatched.', request_id, target: id };
+    }
+  }
+
+  async deleteFile(path: string): Promise<OperationResult> {
+    const target = this.check(path, true);
+    const dir = target.slice(0, target.lastIndexOf('/'));
+    const name = target.slice(target.lastIndexOf('/') + 1);
+    this.check(dir);
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.get(target);
+      if (before.is_dir !== false) throw new OpenListError('NOT_SUPPORTED');
+      dispatched = true;
+      const reply = await this.request('POST', '/api/fs/remove',
+        { dir, names: [name] }, undefined, true);
+      let absent = false;
+      try {
+        await this.get(target);
+      } catch (error) {
+        if (error instanceof OpenListError && error.code === 'NOT_FOUND') {
+          absent = true;
+        } else if (error instanceof OpenListError && error.code === 'UPSTREAM_UNAVAILABLE') {
+          // Koofr can return /api/fs/get 500 for a removed file. The error alone
+          // is not absence evidence: refresh and verify a complete parent page.
+          const { content, total } = collectEntries((await this.request(
+            'POST', '/api/fs/list',
+            { path: dir, page: 1, per_page: 100, refresh: true })).data);
+          if (total > 100 || content.length !== total)
+            throw new OpenListError('UPSTREAM_UNCERTAIN');
+          const names = new Set<string>();
+          for (const item of content) {
+            if (!isObject(item)) throw new OpenListError('UPSTREAM_UNCERTAIN');
+            const childName = canonicalName(item.name);
+            if (names.has(childName) ||
+                (item.path !== undefined && item.path !== dir + '/' + childName))
+              throw new OpenListError('UPSTREAM_UNCERTAIN');
+            names.add(childName);
+          }
+          absent = !names.has(name);
+        } else {
+          throw error;
+        }
+      }
+      if (!absent) throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_delete', status: 'succeeded', code: 'OK',
+        message: 'One file absent after native non-atomic delete.',
+        request_id, target, evidence: { business_code: reply.code },
+        observed_state: { deleted: true } };
+    } catch (error) {
+      return { operation: 'openlist_delete',
+        status: dispatched ? 'unknown' : 'not_executed',
+        code: dispatched ? 'UPSTREAM_UNCERTAIN' :
+          error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE',
+        message: dispatched ? 'Delete outcome uncertain; never retry automatically.' :
+          'No deletion dispatched.', request_id, target };
+    }
+  }
+
+  // Uses only existing non-atomic upstream Share API semantics, as approved by
+  // Spec #309 Owner. Scope is an MCP preflight, not an atomic upstream guarantee.
+  async disableShare(id: string): Promise<OperationResult> {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
+      throw new OpenListError('INVALID_INPUT');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      // getShare verifies the exact ID and every referenced path before a write.
+      const before = await this.getShare(id);
+      if (before.disabled === true)
+        return { operation: 'openlist_share_disable', status: 'not_executed',
+          code: 'ALREADY_DISABLED', message: 'No mutation dispatched.',
+          request_id, target: id, observed_state: { disabled: true } };
+
+      dispatched = true;
+      const reply = await this.request('POST', '/api/share/disable?id=' +
+        encodeURIComponent(id), undefined, undefined, true);
+      // Upstream reports code:200 even when the share no longer exists.
+      // Require an independent scoped readback with unchanged share identity.
+      const after = await this.getShare(id);
+      if (after.disabled !== true ||
+          JSON.stringify(after.files) !== JSON.stringify(before.files) ||
+          after.expires !== before.expires ||
+          after.max_accessed !== before.max_accessed)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_share_disable', status: 'succeeded',
+        code: 'OK', message: 'Share observed disabled; upstream mutation is not atomic.',
+        request_id, target: id, evidence: { business_code: reply.code },
+        observed_state: { disabled: true } };
+    } catch (error) {
+      // After dispatch, even an HTTP 200 or 404 cannot prove an exact outcome.
+      // Never replay a potentially effected mutation.
+      const code = dispatched ? 'UPSTREAM_UNCERTAIN' :
+        error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      return { operation: 'openlist_share_disable',
+        status: dispatched ? 'unknown' : 'not_executed', code,
+        message: dispatched ? 'Outcome uncertain; do not retry automatically.' :
+          'No upstream mutation dispatched.',
+        request_id, target: id };
+    }
+  }
+  async uploadSmall(path: string, content: string, encoding: 'utf8' | 'base64'): Promise<OperationResult> {
+    const target = this.check(path, true);
+    const parent = target.slice(0, target.lastIndexOf('/'));
+    this.check(parent);
+    if (typeof content !== 'string' || !['utf8','base64'].includes(encoding))
+      throw new OpenListError('INVALID_INPUT');
+    const MAX_UPLOAD_BYTES = 1024 * 1024;
+    let bytes: Uint8Array;
+    if (encoding === 'utf8') {
+      bytes = new TextEncoder().encode(content);
+    } else {
+      // Strict canonical Base64 avoids multiple textual forms of the same payload.
+      if (content.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(content))
+        throw new OpenListError('INVALID_INPUT');
+      let binary: string;
+      try { binary = atob(content); }
+      catch { throw new OpenListError('INVALID_INPUT'); }
+      bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+      if (btoa(binary) !== content) throw new OpenListError('INVALID_INPUT');
+    }
+    if (bytes.byteLength > MAX_UPLOAD_BYTES)
+      throw new OpenListError('LIMIT_EXCEEDED');
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      // OpenList PUT has native overwrite behavior. Do not promise no-overwrite.
+      dispatched = true;
+      const reply = await this.request('PUT', '/api/fs/put', bytes,
+        { 'File-Path': encodeURIComponent(target), 'Content-Type': 'application/octet-stream' }, true);
+      const after = await this.get(target);
+      if (after.is_dir !== false || after.size !== bytes.byteLength)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_upload_small', status: 'succeeded', code: 'OK',
+        message: 'Native OpenList PUT accepted; destination observed with matching size. May overwrite, not atomic.',
+        request_id, target, evidence: { business_code: reply.code },
+        observed_state: { size: bytes.byteLength, native_may_overwrite: true } };
+    } catch (error) {
+      const code = dispatched ? 'UPSTREAM_UNCERTAIN' :
+        error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      return { operation: 'openlist_upload_small',
+        status: dispatched ? 'unknown' : 'not_executed', code,
+        message: dispatched ? 'Upload outcome uncertain; do not retry automatically.' :
+          'No upload dispatched.', request_id, target };
+    }
+  }
+  // The native OpenList file APIs may overwrite existing destinations. This
+  // MCP adapter never asserts an atomic no-overwrite or durable transaction.
+  private async performFileMutation(kind: 'rename' | 'copy' | 'move',
+      sourcePath: string, destination: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const dest = this.check(destination, true);
+    const srcParent = source.slice(0, source.lastIndexOf('/'));
+    const dstParent = dest.slice(0, dest.lastIndexOf('/'));
+    const srcName = source.slice(source.lastIndexOf('/') + 1);
+    const destName = dest.slice(dest.lastIndexOf('/') + 1);
+    this.check(srcParent);
+    this.check(dstParent);
+    if (source === dest || dest.startsWith(source + '/'))
+      throw new OpenListError('INVALID_PATH');
+    if (kind === 'rename' && dstParent !== srcParent)
+      throw new OpenListError('INVALID_INPUT');
+    if (kind !== 'rename' && destName !== srcName)
+      throw new OpenListError('INVALID_INPUT');
+
+    const operation = 'openlist_' + kind;
+    const request_id = crypto.randomUUID();
+    let dispatched = false;
+    try {
+      const before = await this.get(source);
+      if (typeof before.is_dir !== 'boolean')
+        throw new OpenListError('UPSTREAM_UNAVAILABLE');
+      // OpenList's built-in copy/move API accepts an array of names; always
+      // submit exactly one canonical target. Native overwrite is possible.
+      const data = kind === 'rename' ? { path: source, name: destName } :
+        { src_dir: srcParent, dst_dir: dstParent, names: [srcName] };
+      dispatched = true;
+      const reply = await this.request('POST', '/api/fs/' + kind, data, undefined, true);
+      const after = await this.get(dest);
+      if (after.path !== dest || after.is_dir !== before.is_dir)
+        throw new OpenListError('UPSTREAM_UNCERTAIN');
+      // For move/rename, a preexisting destination can make a false success
+      // appear if the upstream operation did nothing. Check source absence too.
+      if (kind !== 'copy') {
+        let sourceAbsent = false;
+        try { await this.get(source); }
+        catch (error) {
+          if (error instanceof OpenListError && error.code === 'NOT_FOUND') {
+            sourceAbsent = true;
+          } else if (error instanceof OpenListError && error.code === 'UPSTREAM_UNAVAILABLE') {
+            // The existing upstream /api/fs/get can respond with code=500 when
+            // a removed source no longer exists. Do not interpret 500 itself
+            // as proof of absence; verify a fresh, complete parent listing.
+            const { content, total } = collectEntries((await this.request(
+              'POST', '/api/fs/list',
+              { path: srcParent, page: 1, per_page: 100, refresh: true })).data);
+            if (total > 100 || content.length !== total)
+              throw new OpenListError('UPSTREAM_UNCERTAIN');
+            const names = new Set<string>();
+            for (const item of content) {
+              if (!isObject(item)) throw new OpenListError('UPSTREAM_UNCERTAIN');
+              const name = canonicalName(item.name);
+              if (names.has(name) ||
+                  (item.path !== undefined && item.path !== srcParent + '/' + name))
+                throw new OpenListError('UPSTREAM_UNCERTAIN');
+              names.add(name);
+            }
+            sourceAbsent = !names.has(srcName);
+          } else {
+            throw error;
+          }
+        }
+        if (!sourceAbsent) throw new OpenListError('UPSTREAM_UNCERTAIN');
+      }
+      return { operation, status: 'succeeded', code: 'OK',
+        message: 'Destination was observed after the native OpenList operation; upstream may overwrite and is not atomic.',
+        request_id, target: source, evidence: { business_code: reply.code },
+        observed_state: { destination: dest, is_dir: after.is_dir,
+          native_may_overwrite: true } };
+    } catch (error) {
+      const code = dispatched ? 'UPSTREAM_UNCERTAIN' :
+        error instanceof OpenListError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      return { operation, status: dispatched ? 'unknown' : 'not_executed',
+        code, message: dispatched ?
+          'Native operation dispatched; result uncertain, do not retry automatically.' :
+          'No upstream mutation dispatched.',
+        request_id, target: source };
+    }
+  }
+  async renameFile(sourcePath: string, newName: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const name = canonicalName(newName);
+    const parent = source.slice(0, source.lastIndexOf('/'));
+    return this.performFileMutation('rename', source, parent + '/' + name);
+  }
+  async copyFile(sourcePath: string, destinationDir: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const dir = this.check(destinationDir);
+    const name = source.slice(source.lastIndexOf('/') + 1);
+    return this.performFileMutation('copy', source, dir + '/' + name);
+  }
+  async moveFile(sourcePath: string, destinationDir: string): Promise<OperationResult> {
+    const source = this.check(sourcePath, true);
+    const dir = this.check(destinationDir);
+    const name = source.slice(source.lastIndexOf('/') + 1);
+    return this.performFileMutation('move', source, dir + '/' + name);
+  }
+  async downloadLink(path: string): Promise<Record<string, unknown>> {
+    const file = this.check(path);
+    // Only the existing fixed OpenList API produces the signature. Never
+    // forward its raw_url, storage provider URL, headers or admin credential.
+    const raw = (await this.request('POST', '/api/fs/get', { path: file })).data;
+    const meta = targetMetadata(raw, file);
+    if (meta.is_dir !== false || !isObject(raw) || typeof raw.sign !== 'string')
+      throw new OpenListError('NOT_SUPPORTED');
+    const match = /^(0|[1-9][0-9]{1,12})\.[a-f0-9]{64}$/.exec(raw.sign);
+    if (!match) throw new OpenListError('NOT_SUPPORTED');
+    const expires = Number(match[1]);
+    // The upstream may issue a non-expiring bearer signature (timestamp 0).
+    // Never return it through MCP; changing upstream's global link policy
+    // would also alter unrelated OpenList web downloads.
+    if (expires === 0) throw new OpenListError('NOT_SUPPORTED');
+    if (!Number.isSafeInteger(expires) ||
+        expires <= Math.floor(Date.now() / 1000) ||
+        !Number.isFinite(expires * 1000) || expires * 1000 > 8.64e15)
+      throw new OpenListError('NOT_SUPPORTED');
+    const route = '/api/p/' + file.slice(1).split('/').map(encodeURIComponent).join('/');
+    const url = OPENLIST_PUBLIC_ORIGIN + route + '?sign=' + encodeURIComponent(raw.sign);
+    return { path: file, url, access: 'signed_bearer_link',
+      permanent: false,
+      expires_at: new Date(expires * 1000).toISOString(),
+      warning: 'Anyone holding this signed URL may access the file until its upstream expiry.' };
   }
   async readText(path: string): Promise<{ path: string; text: string }> {
     const file = this.check(path);

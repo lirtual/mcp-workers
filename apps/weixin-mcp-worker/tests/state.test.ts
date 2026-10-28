@@ -103,3 +103,17 @@ test('input boundaries fail before any upstream write',async()=>{
   }
   assert.equal(attempts,0);
 });
+
+test('duplicate receipts never poll, new requests fail closed on unavailable sync',async()=>{
+  const {env,bindReady,db}=fixture();await bindReady();
+  let polls=0,dispatches=0;
+  const sync=async()=>{polls++;};
+  const send=async()=>{dispatches++;return 'unknown' as const;};
+  assert.equal((await sendOnce(env,'hello',id,send,sync)).status,'unknown');
+  assert.equal((await sendOnce(env,'hello',id,send,async()=>{throw new Error('unexpected poll');})).duplicate,true);
+  assert.equal(polls,1);
+  assert.equal(dispatches,1);
+  await assert.rejects(()=>sendOnce(env,'new text',second,send,async()=>{polls++;throw new Error('poll unavailable');}),/poll unavailable/);
+  assert.equal(dispatches,1);
+  assert.equal(db.sql.prepare('SELECT count(*) AS n FROM weixin_send_receipts').get()?.n,1);
+});

@@ -28,7 +28,24 @@ const env = {
   CLOUDFLARE_API_TOKEN:'synthetic-cloudflare-token',
   MCP_ACCESS_TOKEN:'synthetic-worker-bearer',
 };
-test('OpenList Portal is attached only after verified exact 6-tool inventory and preserves mappings', async () => {
+test('OpenList Portal is attached only after verified exact 13-tool inventory and preserves mappings', async () => {
+  assert.deepEqual(OPENLIST_TOOLS, [
+    'openlist_capabilities',
+    'openlist_copy',
+    'openlist_create_folder',
+    'openlist_download_link',
+    'openlist_get_file',
+    'openlist_list_files',
+    'openlist_move',
+    'openlist_read_text',
+    'openlist_rename',
+    'openlist_search_files',
+    'openlist_share_disable',
+    'openlist_share_get',
+    'openlist_upload_small',
+    'openlist_delete','openlist_share_create','openlist_share_update',
+    'openlist_share_enable','openlist_share_revoke',
+  ].sort());
   const state = portal(), originally = structuredClone(state.servers);
   let server = null, created = 0, synced = 0, puts = 0;
   const transport = async request => {
@@ -71,7 +88,7 @@ test('OpenList Portal is attached only after verified exact 6-tool inventory and
 });
 test('unauthorized credential, renamed tools or mismatched existing hostname fail before Portal attachment', async () => {
   await assert.rejects(() => attachOpenListPortal({...env,MCP_ACCESS_TOKEN:''}),/portal_worker_token_missing/);
-  for (const bad of ['inventory','origin']) {
+  for (const bad of ['inventory','stale-seven','origin']) {
     const state = portal();let wrote=false;
     const transport = async request => {
       const path = new URL(request.url).pathname.split('/access/ai-controls/mcp')[1];
@@ -86,7 +103,11 @@ test('unauthorized credential, renamed tools or mismatched existing hostname fai
       else if (request.method === 'GET' && path === '/servers/openlist')
         result={id:'openlist',status:'ready',auth_type:'bearer',
           hostname:'https://openlist-mcp-worker.aiyaya.workers.dev/mcp',
-          tools:[{name:'openlist_delete'}]};
+          tools:bad === 'stale-seven' ? [
+            'openlist_capabilities','openlist_list_files','openlist_get_file',
+            'openlist_search_files','openlist_read_text','openlist_share_get',
+            'openlist_create_folder',
+          ].map(name=>({name})) : [{name:'openlist_delete'}]};
       else if (request.method === 'PUT') {wrote=true;throw Error('not allowed');}
       else throw Error('unexpected route '+path);
       return Response.json({success:true,result});
@@ -107,8 +128,8 @@ test('manual-release registration happens after deployed version readback and is
   const deny = release.indexOf('name: Check unauthenticated MCP surface without credentials');
   const attach = release.indexOf('name: Register production OpenList MCP with existing One-MCP Portal');
   assert.ok(verify >= 0 && deny > verify && attach > deny);
-  // The first deployment can verify binding/read scope without publishing six
-  // unaccepted tools to Portal. Human approval after live driver E2E is separate.
+  // A deployment can verify binding/read scope before separately approving
+  // an expanded tool inventory in Portal. Human approval after live driver E2E is separate.
   assert.match(release,/openlist_portal_registration:\s*\n\s*description:.*live driver E2E/);
   assert.match(release,/openlist_portal_registration:[\s\S]*?type: boolean\s*\n\s*default: false/);
   assert.match(release.slice(attach,attach+400),
@@ -147,4 +168,42 @@ test('missing Access policies block attaching the newly synced OpenList server',
   await assert.rejects(()=>attachOpenListPortal(env,transport),/portal_access_policy_missing/);
   assert.equal(putCount,0);
   assert.deepEqual(state.servers,portal().servers);
+});
+
+
+test('Worker and Portal both stage exactly eighteen bounded operations with risk annotations', async()=>{
+  const {readFile}=await import('node:fs/promises');
+  const source=await readFile(
+    new URL('../apps/openlist-mcp-worker/src/tools.ts',import.meta.url),'utf8');
+  const registered=[...source.matchAll(/server\.registerTool\('([^']+)'/g)]
+    .map(match=>match[1]).sort();
+  assert.equal(registered.length,18,
+    'candidate tool surface must remain exactly the reviewed 18');
+  assert.equal(new Set(registered).size,registered.length);
+  assert.deepEqual(registered,[...OPENLIST_TOOLS].sort(),
+    'a Worker-only tool bypasses the vetted Portal inventory or vice versa');
+  const gated=[
+    'openlist_delete','openlist_share_create','openlist_share_update',
+    'openlist_share_enable','openlist_share_revoke',
+  ];
+  for(const name of gated) {
+    assert.ok(registered.includes(name),name+' must be in candidate inventory');
+    const start=source.indexOf("server.registerTool('"+name+"'");
+    const next=source.indexOf("server.registerTool('",start+1);
+    const section=source.slice(start,next<0?undefined:next);
+    assert.match(section,/destructiveHint:\s*true/,name+' risk annotation');
+    assert.match(section,/annotations:\s*\{\s*\.\.\.annotationsWrite/,name+' write annotation');
+    assert.doesNotMatch(section,/confirm_approved|confirmation_token|approval_secret/,
+      'model-provided confirmation field must never be mistaken for trusted approval');
+  }
+  const shareDisable=source.slice(
+    source.indexOf("server.registerTool('openlist_share_disable'"),
+    source.indexOf("server.registerTool('openlist_upload_small'"));
+  assert.match(shareDisable,/destructiveHint:\s*true/);
+  assert.match(shareDisable,/readOnlyHint:\s*false|annotations:\s*\{\s*\.\.\.annotationsWrite/);
+  const download=source.slice(
+    source.indexOf("server.registerTool('openlist_download_link'"),
+    source.indexOf("server.registerTool('openlist_share_disable'"));
+  assert.match(download,/Permanently valid signatures \(link_expiration=0\) are rejected as NOT_SUPPORTED/);
+  assert.match(download,/openWorldHint:\s*true/);
 });

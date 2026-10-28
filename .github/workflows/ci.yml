@@ -54,6 +54,8 @@ jobs:
         run: node --test scripts/register-http-portal.test.mjs
       - name: Verify OpenList Portal registration contract (offline)
         run: node --test scripts/register-openlist-portal.test.mjs
+      - name: Verify Weixin Portal registration contract (offline)
+        run: node --test scripts/register-weixin-portal.test.mjs
       - name: Verify shared MCP Access policy registration gate (offline)
         run: node --test scripts/verify-mcp-access-policies.test.mjs
       - name: Verify OpenList read-only release acceptance contract (offline)
@@ -112,7 +114,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/manual-worker-release.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/database-prep-344.test.mjs
+        run: node --test scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/database-prep-344.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
@@ -122,7 +124,7 @@ jobs:
         if: steps.scope.outputs.remote_control_changed == 'true'
         run: |
           set -euo pipefail
-          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "0ef431c6d370ba993a35002efb5b35ffcbc78eb4"
+          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "3ef5a9c4d8741cba89b28f525dab4692826482f8"
           # Public Agent native tests belong to the upstream immutable release CI.
           # Run private Worker compatibility checks exactly once in the
           # existing affected-application `remote-control-mcp-worker check`.

@@ -32,10 +32,10 @@ const exposed=async(env:Record<string,unknown>)=>
   (await request(env,"tools/list")).result?.tools?.map(t=>t.name)
     .filter(n=>n.startsWith("browser_"))??[];
 
-test("Preview with a paired owner advertises browser and handoff tools without approval configuration",async()=>{
+test("Preview with a paired owner advertises ten browser tools without approval configuration",async()=>{
   assert.deepEqual((await exposed(preview)).sort(),
     [...BROWSER_TOOLS.map(t=>t.name)].sort());
-  assert.equal(BROWSER_TOOLS.length,13);
+  assert.equal(BROWSER_TOOLS.length,10);
   for(const overrides of [
     {REMOTE_CONTROL_V2_PREVIEW_ONLY:"false"},
     {V2_OWNER:undefined},

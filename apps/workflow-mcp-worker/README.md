@@ -11,6 +11,25 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 
 No arbitrary shell input or unreviewed repository dispatch is allowed. Workflow cancellation of approved GitHub Actions is separate from stopping admission; native GitHub Run state is reconciled before a physical termination is declared.
 
+
+### Unified Action syntax (Spec #392, partial)
+
+New GitHub Task/Session Drafts can use `action.run` with `with.executor: github` and
+all existing `github.action` identity fields and explicit Publish grants. The
+compiler deliberately normalizes this to the **unchanged internal** GitHub
+execution shape; the old `github.run` Published Plan, digest, OIDC, Attempt,
+Ready and physical Session lifecycle remain unchanged. The new spelling does
+**not** grant execution or make a discovered Action runnable automatically.
+
+Cloudflare `action.run` currently accepts only the reviewed `weixin.send_text`
+Provider and a verified same-Run OpenList Session Ready. Publish requires
+separate explicit grants, the exact contract digest and Worker Version ID;
+the internal Service Binding must independently report that live identity.
+The Provider also checks those pins against Worker Version Metadata inside
+every side-effecting RPC. D1 grants a single first-dispatch right; recovery
+queries historical receipts only. No public Weixin MCP write is used.
+This source is staged in Draft PRs; no production cutover is implied.
+
 ## Runtime
 
 The owner-facing endpoint is `https://workflow.lirtual.dpdns.org/mcp`. The existing production Portal endpoint is `https://mcp.lirtual.dpdns.org/mcp`. The Worker's MCP endpoint requires the existing Portal bearer authentication; GitHub callbacks use GitHub-issued OIDC, not the Portal bearer. External Webhooks require a distinct, scoped random Bearer token; never send the MCP owner credential to a Webhook producer.
@@ -281,3 +300,11 @@ but **not production acceptance**: only a real, approved temporary Windows Sessi
 can prove UI collection, renewal, rotation, invalidation and normal cleanup. Keep
 the implementation PR Draft and leave the Spec open until that end-to-end evidence
 is collected. No extra Worker, cleanup Cron, queue, or auth service is introduced.
+
+### Cloudflare Provider candidate (Spec #392; not deployed)
+
+The `action.run` Cloudflare source may only reference an upstream `lirtual/session-actions` OpenList Session Step in the same Run. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
+
+The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the transitional `weixin-mcp-worker` WorkerEntrypoint, not public MCP HTTP. The release operator must first verify and configure `WEIXIN_ACTION_DEPLOYMENT_ID` to the authorized Worker Version ID; it is not inferred from a Provider self-report. The D1 0013 migration is additive and retains all historical Plans. Do not deploy until the Provider has its own exclusive production publisher and compatible rollback baseline. No production resources/credentials have been changed by these source edits.
+
+A physically running GitHub Attempt and signed Ready callback are checked immediately before the D1 first-dispatch fence. The frozen Invocation ID, input digest, source Attempt and binding generation are stored without message text/URL. Once reservation succeeds, retries and recovery call `getReceipt` only. Missing receipts remain indeterminate; handset delivery is separately observed. Cancelling after reservation cannot retract a possible send. Session termination and capacity release use the existing GitHub lifecycle, not notification success.

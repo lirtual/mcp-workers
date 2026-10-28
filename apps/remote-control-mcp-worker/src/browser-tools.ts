@@ -5,7 +5,7 @@ export const BROWSER_EFFECT_TOOLS = new Set([
   "browser_start", "browser_navigate", "browser_close", "browser_tabs",
   "browser_click", "browser_fill", "browser_press_key", "browser_select_option",
 ]);
-export const BROWSER_READ_TOOLS = new Set(["browser_status", "browser_snapshot", "browser_tabs", "browser_handoff_request", "browser_handoff_status", "browser_handoff_return"]);
+export const BROWSER_READ_TOOLS = new Set(["browser_status", "browser_snapshot", "browser_tabs"]);
 const device = {type:"string"} as const;
 const operation = {type:"string",minLength:1,maxLength:128} as const;
 const session = {type:"string"} as const;
@@ -16,24 +16,6 @@ function schema(properties: Record<string, unknown>, required: string[]) {
   return {type:"object",properties:{device_id:device,...properties},required:["device_id",...required],additionalProperties:false};
 }
 export const BROWSER_TOOLS = [
-  {
-    name:"browser_handoff_request",title:"Request browser handoff",
-    description:"Two-phase protected Windows browser handoff. First call synchronously blocks all device tools and quickly returns preparing; poll browser_handoff_status (never contains a URL). After link_ready, call browser_handoff_request again with the SAME session_id to claim a one-time URL from Agent memory. A failed or abandoned preparation remains blocked until explicit browser_handoff_return. Expiry/reconnect never automatically restores AI control. A claimed URL contains a secret visible to this conversation; Link Ready alone never proves OTP or human input succeeded.",
-    inputSchema:schema({session_id:session},["session_id"]),
-    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},
-  },
-  {
-    name:"browser_handoff_status",title:"Browser handoff status",
-    description:"Read only redacted control state, remaining lifetime and safe failure reason. Contains no page data or previous temporary link.",
-    inputSchema:schema({},[]),
-    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
-  },
-  {
-    name:"browser_handoff_return",title:"Explicitly return browser control",
-    description:"Explicit owner-directed return. During preparing, first return cancels in-flight setup; remain blocked until cleanup completes and a subsequent explicit return confirms state ai. Revoke human access and verify cleanup before admitting AI tools. Refresh tab identities and observe a new snapshot before continuing. Expiry, disconnect and restart never return control automatically.",
-    inputSchema:schema({},[]),
-    annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},
-  },
   {
     name:"browser_start",title:"Start or reuse automation browser",
     description:"Start or reuse the selected device's headed Chrome/Edge automation context. Preserve operation_id on timeouts.",
@@ -113,7 +95,7 @@ export function parseBrowserCall(tool: string, input: unknown): Parsed | null {
   if (tabs && !["list","select","new","close"].includes(String(action))) return null;
   const effect = BROWSER_EFFECT_TOOLS.has(tool) && (!tabs || action!=="list");
   const keys = ["device_id",...(effect?["operation_id"]:[]),
-    ...(!["browser_start","browser_status","browser_handoff_status","browser_handoff_return"].includes(tool)?["session_id"]:[]),
+    ...(!["browser_start","browser_status"].includes(tool)?["session_id"]:[]),
     ...(tool==="browser_navigate"?["url","tab_id","snapshot_version"]:[]),
     ...(tool==="browser_snapshot" && Object.hasOwn(input,"offset")?["offset"]:[]),
     ...(tabs?["action",...(["select","close"].includes(String(action))?["tab_id"]:[])]:[]),

@@ -1,5 +1,13 @@
 # Database MCP Spec #344 — production cutover / rollback
 
+## Current production evidence (2026-10-28)
+
+One-time D1 preparation **completed** via GitHub Actions run #40651848593. Production D1 now has both reviewed migrations and exactly two **disabled, encrypted** MySQL Direct identities: `b2b` and `scrape_relay` (key ID `db344-20261028`). **Do not rerun the importer.** The deployed legacy Worker still serves both connections from its original `DATABASE_CONFIG` and has no D1 binding. The Owner waived an independent encryption-key backup: keep the existing key stable and preserve the original connection configuration; losing the key makes existing ciphertext irrecoverable.
+
+**P0 production release block:** The new Worker rejects disabled connections. Its release preflight must require **all** reviewed legacy IDs to be active in D1, not merely present, before any new Worker publication. Today both are disabled, so publishing PR #345 would interrupt existing consumers. Direct enablement requires a separate controlled D1-only pre-cutover authorization, explicit plaintext-risk acceptance, and verified rollback before release. None of those operations is implicitly authorized by this PR. The approved preparation workflow cannot be rerun after successful import.
+
+The remaining checklist is for a future separately approved cutover; older pre-preparation directions below are historical and must not be executed again.
+
 **BLOCKED; this checklist is not production, D1 migration, credential, or Hyperdrive resource authorization.** The existing deployed Worker and its whole-catalog `DATABASE_CONFIG` Secret remain unchanged. Do not connect to or probe `scrape_relay` or `b2b` without separate express Owner approval.
 
 ## One-time protected D1 preparation (not a production cutover)

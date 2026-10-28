@@ -18,7 +18,8 @@ export const APPLICATIONS = [
 ];
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
-export const RELEASE_WORKERS = [...APPLICATIONS];
+// Weixin is published only by cloudflare-actions after the separately authorized handoff.
+export const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'weixin-mcp-worker');
 
 function requiresAllApps(file) {
   return file === 'package.json'
@@ -65,7 +66,7 @@ function main(env = process.env) {
   let selected;
   let changedFiles;
   if (env.REUSABLE_WORKER) {
-    if (!RELEASE_WORKERS.includes(env.REUSABLE_WORKER)) {
+    if (!APPLICATIONS.includes(env.REUSABLE_WORKER)) {
       throw new Error(`Unsupported reusable Worker selection: ${env.REUSABLE_WORKER}`);
     }
     selected = [env.REUSABLE_WORKER];

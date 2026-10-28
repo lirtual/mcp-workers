@@ -83,7 +83,9 @@ test('workerd runs MCP ingress and private Service Binding to an isolated upstre
     assert.equal(list.status,200);
     const inventory = await list.text();
     assert.match(inventory,/openlist_list_files/);
-    assert.doesNotMatch(inventory,/openlist_delete/);
+    for(const name of ['openlist_delete','openlist_share_create',
+      'openlist_share_update','openlist_share_enable','openlist_share_revoke'])
+      assert.match(inventory,new RegExp(name));
     const call = await invoke(mf,'tools/call',{name:'openlist_list_files',
       arguments:{path:'/Koofr/safe',page:1,per_page:10}},portal);
     assert.equal(call.status,200);
