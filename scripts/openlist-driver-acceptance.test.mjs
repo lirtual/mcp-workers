@@ -19,7 +19,11 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
   permanentLink = true, rejectFinite = false} = {}) {
   const requests = [];
-  let made = false, uploaded = false;
+  let made = false, uploaded = false, deleted = false;
+  let highShare = null;
+  const highId='1234567890abcdef';
+  const highPwd='b'.repeat(48);
+  let publicReads=0;
   let staleReads = staleUploadedListingReads;
   const nativeSource = `${folder}/native-${env.GITHUB_RUN_ID}-1.txt`;
   const nativeDir = `${folder}/native-copies`;
@@ -59,6 +63,18 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       staleReads=0;
       return Response.json({code:200,data:{content:[
         {name:file.split('/').at(-1),is_dir:false}],total:1}});
+    }
+    if(url.pathname === '/api/fs/get' && req.headers.get('authorization')===null) {
+      requests.push('public_share_get');
+      assert.equal(req.method,'POST');
+      const args=await req.json();
+      assert.deepEqual(args,{path:'/@s/'+highId,password:highPwd});
+      if(!highShare) return Response.json({code:404,message:'share not found'}, {status:404});
+      if(highShare.disabled)return Response.json({code:400,
+        message:'share has been disabled'},{status:400});
+      publicReads++;
+      return Response.json({code:200,data:{
+        name:file.split('/').at(-1),size:new TextEncoder().encode(fixture).length,is_dir:false}});
     }
     if(url.pathname === '/api/fs/get') {
       requests.push('upstream_sign_check');
@@ -123,7 +139,7 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
     if(name==='openlist_get_file') {
       if(args.path===folder && made)
         return response(name,folder,{path:folder,name:folder.split('/').at(-1),is_dir:true});
-      if(args.path===file && uploaded)
+      if(args.path===file && uploaded && !deleted)
         return response(name,file,{path:file,name:file.split('/').at(-1),is_dir:false,
           size:new TextEncoder().encode(fixture).length});
       if(nativeFiles.has(args.path)) return response(name,args.path,{
@@ -177,6 +193,56 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       nativeFiles.set(nativeDest,nativeFiles.get(nativeSource));
       nativeFiles.delete(nativeSource);
       return response(name,nativeSource,{destination:nativeDest,native_may_overwrite:true});
+    }
+    if(name==='openlist_delete') {
+      if(args.path.startsWith('/__openlist_e2e_prohibited/'))
+        return response(name,args.path,undefined,true,'OUT_OF_SCOPE');
+      assert.equal(args.path,file);
+      assert.equal(uploaded,true);
+      assert.equal(deleted,false);
+      deleted=true;
+      return response(name,file,{deleted:true});
+    }
+    if(name==='openlist_share_create') {
+      if(args.files[0]?.startsWith('/__openlist_e2e_prohibited/'))
+        return response(name,args.files[0],undefined,true,'OUT_OF_SCOPE');
+      assert.deepEqual(args,{files:[file],expires_hours:1,max_accessed:3});
+      assert.equal(highShare,null);
+      highShare={id:highId,files:[file],disabled:false,max_accessed:3,
+        expires:'2026-10-28T13:00:00.000Z'};
+      return response(name,highId,{...highShare,password_once:highPwd});
+    }
+    if(name==='openlist_share_get') {
+      assert.ok([highId,'mcp_spec309_no_such_share'].includes(args.id));
+      if(!highShare || args.id!==highId)return response(name,args.id,undefined,true,'NOT_FOUND');
+      return response(name,highId,{...highShare});
+    }
+    if(name==='openlist_share_update') {
+      if(args.id==='mcp_spec309_no_such_share')
+        return response(name,args.id,undefined,true,'NOT_FOUND');
+      assert.equal(args.id,highId);
+      assert.equal(args.expires_hours,2);
+      assert.equal(args.max_accessed,4);
+      highShare={...highShare,max_accessed:4,expires:'2026-10-28T14:00:00.000Z'};
+      return response(name,highId,{...highShare});
+    }
+    if(name==='openlist_share_disable') {
+      assert.equal(args.id,highId);
+      assert.equal(highShare.disabled,false);
+      highShare={...highShare,disabled:true};
+      return response(name,highId,{disabled:true});
+    }
+    if(name==='openlist_share_enable') {
+      assert.equal(args.id,highId);
+      assert.equal(highShare.disabled,true);
+      highShare={...highShare,disabled:false};
+      return response(name,highId,{disabled:false});
+    }
+    if(name==='openlist_share_revoke') {
+      assert.equal(args.id,highId);
+      assert.ok(highShare);
+      highShare=null;
+      return response(name,highId,{revoked:true});
     }
     if(name==='openlist_download_link'){
       assert.equal(args.path,nativeDest);
@@ -310,6 +376,32 @@ test('expanded native E2E requires a separate explicit opt-in and only mutates t
   assert.equal(requests.includes('openlist_delete'),false);
 });
 
+test('high-risk manual E2E is first-attempt only and runs only on newly created synthetic file/share',async()=>{
+  const {transport,requests}=fakeTransport();
+  const result=await runOpenListDriverAcceptance({
+    ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true'},transport);
+  assert.equal(result.tested.includes('single_file_delete'),true);
+  assert.equal(requests.filter(x=>x==='openlist_share_create').length,2);
+  assert.equal(requests.filter(x=>x==='openlist_share_update').length,2);
+  assert.equal(requests.filter(x=>x==='openlist_share_disable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_enable').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_share_revoke').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_delete').length,2);
+  assert.equal(requests.filter(x=>x==='public_share_get').length,3);
+});
+test('high-risk manual E2E refuses replay and conflicting native approval without network',async()=>{
+  for(const overrides of [
+    {GITHUB_RUN_ATTEMPT:'2'},
+    {OPENLIST_NATIVE_E2E_APPROVED:'true'},
+    {OPENLIST_DRIVER_E2E_APPROVED:'false'},
+  ]){
+    const {transport,requests}=fakeTransport();
+    await assert.rejects(runOpenListDriverAcceptance({
+      ...env,OPENLIST_HIGH_RISK_E2E_APPROVED:'true',...overrides},transport),
+      /openlist_driver_e2e_high_risk_approval_invalid|openlist_driver_e2e_not_approved/);
+    assert.equal(requests.length,0);
+  }
+});
 test('native signed-link E2E still fetches and verifies finite-expiry URL when upstream issues it',async()=>{
   const {transport,requests}=fakeTransport({permanentLink:false});
   const result=await runOpenListDriverAcceptance(
