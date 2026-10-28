@@ -24,8 +24,12 @@ destructive changes or external sharing; do not expose these simply to reach
   read-only historical-share inspection; the single-use test
   [PR #379](https://github.com/lirtual/mcp-workers/pull/379) was followed by
   [PR #380](https://github.com/lirtual/mcp-workers/pull/380), which removed
-  its consumed write entrypoint. Verified `main` as of this review:
-  `7c0960b6407dfae703ebb71a754a9bfb675b527a`.
+  its consumed write entrypoint. A separately authorized active-share test
+  [PR #381](https://github.com/lirtual/mcp-workers/pull/381) passed and its
+  single-use mode was retired in
+  [PR #382](https://github.com/lirtual/mcp-workers/pull/382).
+  Verified `main` as of this review:
+  `7749ff2dab742fd0cd5349f88fada8d747394acb`.
 - Existing manual single-Worker [production release #40606014736](https://github.com/lirtual/mcp-workers/actions/runs/40606014736)
   passed active-version, Service Binding, KV/storage, health, anonymous denial
   and scoped read-only MCP checks; **Portal re-registration was skipped**.
@@ -49,6 +53,23 @@ destructive changes or external sharing; do not expose these simply to reach
   unexpired public share. The single-use write mode was removed in #380;
   only the bounded historical **read-only** lookup remains. Do not repeat
   the already applied write.
+- **Active public-share disable E2E passed:** existing 50-byte isolated
+  Koofr file used to create one new, random-ID/password share
+  `mcp_spec309_live_2f0e0f2e28024a64` with 1-hour expiry and one access.
+  [Manual production workflow #40612383719](https://github.com/lirtual/mcp-workers/actions/runs/40612383719)
+  **Success**: wrong password denied, correct password accepted **before**
+  disable, exactly one MCP `openlist_share_disable` returned `succeeded`,
+  a separate `openlist_share_get` confirmed `disabled=true`, and a
+  subsequent unauthenticated public API call returned the specific reason
+  **`share has been disabled`**. This distinction matters: the single
+  pre-disable access may have exhausted the `max_accessed=1` allowance;
+  a generic 400/quota error alone would not prove revocation. Observed
+  request-to-readback interval was **1,175 ms for this run**, not a
+  guaranteed upper latency. The temporary workflow mode and scripts were
+  removed after [CI #40612583981](https://github.com/lirtual/mcp-workers/actions/runs/40612583981)
+  and #382; **no general share-create tool was enabled**. The original
+  file remains intact; this test does **not** establish strong atomicity,
+  concurrent revoke behavior or all failure-mode outcomes.
 - **Open lifetime risk:** upstream `sign_all=true` and
   `link_expiration=0` yield a **non-expiring bearer signed URL**.
   `openlist_download_link` correctly reports `permanent:true` and
@@ -66,9 +87,9 @@ destructive changes or external sharing; do not expose these simply to reach
 
 **Status:** Spec [#309](https://github.com/lirtual/mcp-workers/issues/309)
 remains **Open**. Native Koofr file operations have real end-to-end evidence;
-full 18-tool completion, immediate share-disable readback/public-access
-acceptance, short-link guarantees and separate high-risk authorization are
-**not** established.
+full 18-tool completion, guaranteed immediate/concurrent share-disable
+consistency, short-link guarantees and separate high-risk authorization
+are **not** established. One unexpired public-share acceptance has passed.
 
 This is a fail-closed MCP adapter to the existing OpenList REST API over
 Cloudflare **Service Binding**, not a second store/proxy/deployment path.
@@ -90,6 +111,14 @@ depends on its configured persistence backend. These mechanisms are
 immediate acceptance read; the sanitized job log does not reveal the exact
 post-write response. Avoid treating one 200 or same-request cache hit as
 proof of global, immediate share revocation.
+
+A new, unexpired synthetic share was subsequently tested in
+[one-shot run #40612383719](https://github.com/lirtual/mcp-workers/actions/runs/40612383719),
+which passed both immediate independent metadata readback and an explicit
+public **disabled** rejection. That success **narrows** the previous
+acceptance gap; it does not explain the older unknown outcome or prove
+cross-instance read-after-write latency bounds. Its one-shot mutation
+entrypoint has been removed from the manual workflow.
 
 For any *future separately authorized* share-disable acceptance, require
 exact ID and file-scope preflight, at most one write, an independent
