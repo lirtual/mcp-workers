@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { findDatabaseOwnerApp, findDatabaseOwnerOtpProvider, verifyDatabaseOwnerPolicy,
-  verifyDatabaseOwnerAccessCloudflare } from "./database-owner-access.mjs";
+  verifyDatabaseOwnerAccessCloudflare, AccessInventoryHttpError } from "./database-owner-access.mjs";
 
 const host = "owner.example.net";
 const audience = "a".repeat(64);
@@ -83,4 +83,29 @@ test("Release checks real OTP, Access app and app policies without logging crede
   await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, env,
     async () => Response.json({ success: false, result: [] }, { status: 403 })),
   /request failed/);
+});
+
+
+test("Owner Access HTTP errors expose only the request stage and status", async () => {
+  const config = { vars: { DATABASE_SETUP_HOST: host } };
+  const e = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "secret-should-not-leak",
+    ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
+  for (const [target, expected] of [
+    ["identity_providers", "idps"], ["/apps?", "apps"], ["/policies?", "policies"]
+  ]) {
+    const transport = async url => {
+      if (url.includes(target)) return Response.json({ errors: [{ message: "very-sensitive-secret" }] }, { status: 403 });
+      return Response.json(url.includes("identity_providers") ? envelope([{ id: otpId, type: "onetimepin" }]) :
+        url.includes("/policies?") ? envelope([allowed]) : envelope([app]));
+    };
+    await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, e, transport), error => {
+      assert.ok(error instanceof AccessInventoryHttpError);
+      assert.equal(error.stage, expected);
+      assert.equal(error.status, 403);
+      assert.equal(error.message, "Database Owner Access inventory request failed");
+      assert.doesNotMatch(JSON.stringify({ stage: error.stage, status: error.status, message: error.message }),
+        /very-sensitive-secret|secret-should-not-leak/);
+      return true;
+    });
+  }
 });
