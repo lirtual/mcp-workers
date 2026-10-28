@@ -426,17 +426,39 @@ export class OpenListApi {
       dispatched = true;
       const reply = await this.request('POST', '/api/fs/remove',
         { dir, names: [name] }, undefined, true);
+      let absent = false;
       try {
         await this.get(target);
       } catch (error) {
-        if (error instanceof OpenListError && error.code === 'NOT_FOUND')
-          return { operation: 'openlist_delete', status: 'succeeded', code: 'OK',
-            message: 'One file absent after native non-atomic delete.',
-            request_id, target, evidence: { business_code: reply.code },
-            observed_state: { deleted: true } };
-        throw error;
+        if (error instanceof OpenListError && error.code === 'NOT_FOUND') {
+          absent = true;
+        } else if (error instanceof OpenListError && error.code === 'UPSTREAM_UNAVAILABLE') {
+          // Koofr can return /api/fs/get 500 for a removed file. The error alone
+          // is not absence evidence: refresh and verify a complete parent page.
+          const { content, total } = collectEntries((await this.request(
+            'POST', '/api/fs/list',
+            { path: dir, page: 1, per_page: 100, refresh: true })).data);
+          if (total > 100 || content.length !== total)
+            throw new OpenListError('UPSTREAM_UNCERTAIN');
+          const names = new Set<string>();
+          for (const item of content) {
+            if (!isObject(item)) throw new OpenListError('UPSTREAM_UNCERTAIN');
+            const childName = canonicalName(item.name);
+            if (names.has(childName) ||
+                (item.path !== undefined && item.path !== dir + '/' + childName))
+              throw new OpenListError('UPSTREAM_UNCERTAIN');
+            names.add(childName);
+          }
+          absent = !names.has(name);
+        } else {
+          throw error;
+        }
       }
-      throw new OpenListError('UPSTREAM_UNCERTAIN');
+      if (!absent) throw new OpenListError('UPSTREAM_UNCERTAIN');
+      return { operation: 'openlist_delete', status: 'succeeded', code: 'OK',
+        message: 'One file absent after native non-atomic delete.',
+        request_id, target, evidence: { business_code: reply.code },
+        observed_state: { deleted: true } };
     } catch (error) {
       return { operation: 'openlist_delete',
         status: dispatched ? 'unknown' : 'not_executed',
