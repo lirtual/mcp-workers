@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      confirm_historical_share_read:
+        description: Read-only inspection of historical synthetic share mcp_spec309_40493124967_1 (no changes)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,10 +43,15 @@ jobs:
           APPROVE_FIXTURE_WRITE: ${{ inputs.confirm_disposable_write }}
           APPROVE_NATIVE: ${{ inputs.confirm_native_tool_tests }}
           APPROVE_PORTAL: ${{ inputs.confirm_portal_registration }}
+          APPROVE_SHARE_READ: ${{ inputs.confirm_historical_share_read }}
         run: |
           set -euo pipefail
           [[ "$CURRENT_REF" == "refs/heads/main" ]] || exit 1
-          if [[ "$APPROVE_PORTAL" == "true" ]]; then
+          if [[ "$APPROVE_SHARE_READ" == "true" ]]; then
+            [[ "$APPROVE_FIXTURE_WRITE" == "false" &&
+               "$APPROVE_NATIVE" == "false" &&
+               "$APPROVE_PORTAL" == "false" ]] || exit 1
+          elif [[ "$APPROVE_PORTAL" == "true" ]]; then
             [[ "$APPROVE_FIXTURE_WRITE" == "false" &&
                "$APPROVE_NATIVE" == "false" ]] || exit 1
           else
@@ -86,6 +96,40 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           OPENLIST_API_TOKEN: ${{ secrets.OPENLIST_API_TOKEN }}
         run: node scripts/openlist-driver-acceptance.mjs
+
+  historical-share-read:
+    name: Read only exact historical synthetic share (no deploy or mutations)
+    needs: selection-gate
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirm_historical_share_read == true && inputs.confirm_disposable_write != true && inputs.confirm_native_tool_tests != true && inputs.confirm_portal_registration != true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: openlist-mcp-worker
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Confirm exact current main and read-only tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git refs/heads/main | cut -f1)" ]]
+          node --check scripts/openlist-production-read-smoke.mjs
+          node --test scripts/openlist-production-read-smoke.test.mjs
+      - name: Read sanitized state of exact historical share
+        shell: bash
+        env:
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          OPENLIST_ALLOWED_ROOTS: ${{ vars.OPENLIST_ALLOWED_ROOTS }}
+          OPENLIST_HISTORICAL_SHARE_READ: "true"
+        run: node scripts/openlist-production-read-smoke.mjs
 
   portal-checks:
     name: Required checks before OpenList Portal registration
