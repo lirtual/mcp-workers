@@ -91,7 +91,7 @@ async function main() {
       !/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA || '')) fail();
   const expected = JSON.parse(required('DATABASE_CUTOVER_EXPECTED_IDS'));
   if (!sameIds(expected)) fail();
-  const catalog = parseLegacyImport(required('DATABASE_LEGACY_IMPORT_CONFIG'));
+  const catalog = parseLegacyImport(required('DATABASE_CONFIG'));
   const key = required('DATABASE_ENCRYPTION_KEY');
   const keyId = required('DATABASE_KEY_ID');
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(keyId)) fail();
