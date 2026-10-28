@@ -281,7 +281,7 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
         .catch(() => stop('native_link_signer_unavailable'));
       check(native?.code === 200 && native.data?.name === moved.split('/').at(-1) &&
         native.data?.path === moved && native.data?.is_dir === false &&
-        /^0\\.[a-f0-9]{64}$/.test(native.data?.sign),
+        /^0\.[a-f0-9]{64}$/.test(native.data?.sign),
         'native_link_policy_unverified');
       linkCheck = 'permanent_signed_link_refused';
     } else {
@@ -289,47 +289,47 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
         'native_link_policy');
       const signed = linkReply.observed_state;
 
-    // The signed URL is bearer-sensitive; never print it to logs or artifacts.
-    let parsed;
-    try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
-    check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
-      parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
-      typeof parsed.searchParams.get('sign') === 'string' &&
-      parsed.searchParams.get('sign').length > 0 &&
-      signed.permanent === false &&
-      typeof signed.expires_at === 'string' &&
-      Number.isFinite(Date.parse(signed.expires_at)) &&
-      Date.parse(signed.expires_at) > Date.now(), 'native_link_invalid');
-    // Verify the actual signed public route with a tiny exact synthetic file,
-    // not just the URL's appearance. No credential is forwarded or logged.
-    let publicResponse;
-    try {
-      publicResponse = await transport(new Request(signed.url,{
-        method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
-        headers:{ accept:'text/plain' },
-      }));
-    } catch { stop('native_link_transport'); }
-    check(publicResponse.status === 200 && !publicResponse.redirected &&
-      !publicResponse.headers.has('location'), 'native_link_status');
-    let publicBytes;
-    try {
-      const reader=publicResponse.body?.getReader();
-      check(reader,'native_link_body');
-      const chunks=[];let total=0;
-      for (;;) {
-        const {done,value}=await reader.read();
-        if (done) break;
-        total+=value.byteLength;
-        check(total<=4096,'native_link_oversize');
-        chunks.push(value);
-      }
-      publicBytes=new Uint8Array(total);let offset=0;
-      for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
-    } catch {stop('native_link_body');}
-    let publicText;
-    try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
-    catch { stop('native_link_invalid_utf8'); }
-    check(publicText===nativeContent,'native_link_content');
+      // The signed URL is bearer-sensitive; never print it to logs or artifacts.
+      let parsed;
+      try { parsed = new URL(signed?.url); } catch { stop('native_link_invalid'); }
+      check(parsed.origin === 'https://openlist.lirtual.dpdns.org' &&
+        parsed.pathname === '/api/p/' + moved.slice(1).split('/').map(encodeURIComponent).join('/') &&
+        typeof parsed.searchParams.get('sign') === 'string' &&
+        parsed.searchParams.get('sign').length > 0 &&
+        signed.permanent === false &&
+        typeof signed.expires_at === 'string' &&
+        Number.isFinite(Date.parse(signed.expires_at)) &&
+        Date.parse(signed.expires_at) > Date.now(), 'native_link_invalid');
+      // Verify the actual signed public route with a tiny exact synthetic file,
+      // not just the URL's appearance. No credential is forwarded or logged.
+      let publicResponse;
+      try {
+        publicResponse = await transport(new Request(signed.url,{
+          method:'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
+          headers:{ accept:'text/plain' },
+        }));
+      } catch { stop('native_link_transport'); }
+      check(publicResponse.status === 200 && !publicResponse.redirected &&
+        !publicResponse.headers.has('location'), 'native_link_status');
+      let publicBytes;
+      try {
+        const reader=publicResponse.body?.getReader();
+        check(reader,'native_link_body');
+        const chunks=[];let total=0;
+        for (;;) {
+          const {done,value}=await reader.read();
+          if (done) break;
+          total+=value.byteLength;
+          check(total<=4096,'native_link_oversize');
+          chunks.push(value);
+        }
+        publicBytes=new Uint8Array(total);let offset=0;
+        for(const chunk of chunks) {publicBytes.set(chunk,offset);offset+=chunk.length;}
+      } catch {stop('native_link_body');}
+      let publicText;
+      try { publicText=new TextDecoder('utf-8',{fatal:true}).decode(publicBytes); }
+      catch { stop('native_link_invalid_utf8'); }
+      check(publicText===nativeContent,'native_link_content');
       linkCheck = 'finite_signed_download_link';
     }
     const forbiddenNative = await mcp('openlist_move',{
