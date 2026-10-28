@@ -2,102 +2,69 @@
 
 ## Verified production status (2026-10-28)
 
-**Partial delivery — 13 of 18 candidate MCP tools exposed; five high-risk tools disabled.**
-The actual authenticated production `openlist_capabilities` response lists these
-13 operations: `openlist_capabilities`, `openlist_list_files`,
-`openlist_get_file`, `openlist_search_files`, `openlist_read_text`,
-`openlist_share_get`, `openlist_download_link`, `openlist_share_disable`,
-`openlist_upload_small`, `openlist_rename`, `openlist_copy`,
-`openlist_move`, `openlist_create_folder`. Only
-`/Koofr/Downloads` is in the production allowed-root list.
+**Completed: 18/18 MCP tools active; 0 disabled.** Allowed logical root:
+`/Koofr/Downloads`. All five formerly gated native operations
+(`openlist_delete`, `openlist_share_create`, `openlist_share_update`,
+`openlist_share_enable`, `openlist_share_revoke`) are registered and
+production-tested. This MCP Worker uses the existing OpenList REST APIs
+through Cloudflare Service Binding. The upstream `lirtual/OpenList-Worker`
+Fork remains unchanged.
 
-The **five still unregistered** tools are `openlist_delete`,
-`openlist_share_create`, `openlist_share_update`,
-`openlist_share_enable`, and `openlist_share_revoke`. Internal API
-adapters do **not** satisfy the trusted-client human approval gate for
-destructive changes or external sharing; do not expose these simply to reach
-18 tools. The upstream `lirtual/OpenList-Worker` Fork is read-only.
+### Verified production evidence
 
-- [PR #371](https://github.com/lirtual/mcp-workers/pull/371) through
-  [PR #376](https://github.com/lirtual/mcp-workers/pull/376) are merged.
-  [PR #378](https://github.com/lirtual/mcp-workers/pull/378) enabled
-  read-only historical-share inspection; the single-use test
-  [PR #379](https://github.com/lirtual/mcp-workers/pull/379) was followed by
-  [PR #380](https://github.com/lirtual/mcp-workers/pull/380), which removed
-  its consumed write entrypoint. A separately authorized active-share test
-  [PR #381](https://github.com/lirtual/mcp-workers/pull/381) passed and its
-  single-use mode was retired in
-  [PR #382](https://github.com/lirtual/mcp-workers/pull/382).
-  Verified `main` as of this review:
-  `7749ff2dab742fd0cd5349f88fada8d747394acb`.
-- Existing manual single-Worker [production release #40606014736](https://github.com/lirtual/mcp-workers/actions/runs/40606014736)
-  passed active-version, Service Binding, KV/storage, health, anonymous denial
-  and scoped read-only MCP checks; **Portal re-registration was skipped**.
-  This is not authorization to change Portal mappings.
-- Controlled real [Koofr driver E2E #40606166139](https://github.com/lirtual/mcp-workers/actions/runs/40606166139)
-  passed **13 acceptance steps** (fixture creation, scoped reads,
-  upload/copy/rename/move, signed-link fetch, denial checks). This does
-  **not** mean 13 public tools each had independent live acceptance.
-- **P1 partially verified:** a single authorized real
-  `openlist_share_disable` call targeted only the expired synthetic share
-  `mcp_spec309_40493124967_1`. The preflight
-  [read-only run #40609056573](https://github.com/lirtual/mcp-workers/actions/runs/40609056573)
-  showed `disabled=false`. [One-write run #40609655831](https://github.com/lirtual/mcp-workers/actions/runs/40609655831)
-  **failed its extra immediate readback** with
-  `openlist_smoke_share_disable_readback_unknown` — do not mark that
-  workflow as Pass. **No write retry occurred.** An independent later
-  [read-only run #40609731190](https://github.com/lirtual/mcp-workers/actions/runs/40609731190)
-  confirmed `disabled=true` and the same ID, exact file and expiry; the
-  original 50-byte file remains intact. This proves the observed state
-  transition, **not** immediate consistency or invalidation of an
-  unexpired public share. The single-use write mode was removed in #380;
-  only the bounded historical **read-only** lookup remains. Do not repeat
-  the already applied write.
-- **Active public-share disable E2E passed:** existing 50-byte isolated
-  Koofr file used to create one new, random-ID/password share
-  `mcp_spec309_live_2f0e0f2e28024a64` with 1-hour expiry and one access.
-  [Manual production workflow #40612383719](https://github.com/lirtual/mcp-workers/actions/runs/40612383719)
-  **Success**: wrong password denied, correct password accepted **before**
-  disable, exactly one MCP `openlist_share_disable` returned `succeeded`,
-  a separate `openlist_share_get` confirmed `disabled=true`, and a
-  subsequent unauthenticated public API call returned the specific reason
-  **`share has been disabled`**. This distinction matters: the single
-  pre-disable access may have exhausted the `max_accessed=1` allowance;
-  a generic 400/quota error alone would not prove revocation. Observed
-  request-to-readback interval was **1,175 ms for this run**, not a
-  guaranteed upper latency. The temporary workflow mode and scripts were
-  removed after [CI #40612583981](https://github.com/lirtual/mcp-workers/actions/runs/40612583981)
-  and #382; **no general share-create tool was enabled**. The original
-  file remains intact; this test does **not** establish strong atomicity,
-  concurrent revoke behavior or all failure-mode outcomes.
-- **Open lifetime risk:** upstream `sign_all=true` and
-  `link_expiration=0` yield a **non-expiring bearer signed URL**.
-  `openlist_download_link` correctly reports `permanent:true` and
-  `expires_at:null`; a successful signed-link download is **not**
-  proof of short-lived access. Owner acceptance of this permanent-link
-  risk remains **undocumented / pending**, not implicitly accepted.
-  Do not silently alter global upstream settings.
-- Seven retained isolated `mcp-spec309-e2e-*` directories are visible
-  under `/Koofr/Downloads` as of this review. They include failed-run
-  fixtures; **no automatic cleanup, deletion or write replay** is allowed.
-  Exact-path cleanup requires independent approval.
-- Automatic production release remains disabled. Keep using the existing
-  manual GitHub Actions checks; absent verified `main` branch protection,
-  do not enable automatic production releases.
+- Initial 18-tool release and Portal registration: existing manual
+  [release #40620850171](https://github.com/lirtual/mcp-workers/actions/runs/40620850171).
+- [PR #405](https://github.com/lirtual/mcp-workers/pull/405) hardened the
+  acceptance script against replaying an uncertain final disable.
+  [PR #406](https://github.com/lirtual/mcp-workers/pull/406) fixed Koofr
+  delete postflight: a successful native removal followed by exact
+  absence in a complete, refreshed parent listing can confirm deletion
+  when missing-file GET fails. An unknown write result is never replayed.
+  The existing manual [release #40629725043](https://github.com/lirtual/mcp-workers/actions/runs/40629725043)
+  **succeeded** with KV/storage, Service Binding, health and anonymous
+  denial checks; no Portal re-registration.
+- Full isolated real share/delete lifecycle:
+  [E2E #40629908697](https://github.com/lirtual/mcp-workers/actions/runs/40629908697)
+  **Success** (13 steps); create, update, disable, enable, second
+  disable, revoke, public access/denial and exact single-file deletion.
+  An independent production directory listing confirmed `total=0`.
+- Permanent-signature refusal:
+  [E2E #40630366024](https://github.com/lirtual/mcp-workers/actions/runs/40630366024)
+  **Success** (13 steps). The upstream supplied a non-expiring
+  `0.<signature>` for an isolated test file, and production MCP
+  `openlist_download_link` returned `NOT_SUPPORTED` rather than a
+  permanent bearer URL. The test did not run real share lifecycle
+  operations. Disposable native file fixtures remain for separately
+  authorized cleanup.
 
-**Status:** Spec [#309](https://github.com/lirtual/mcp-workers/issues/309)
-remains **Open**. Native Koofr file operations have real end-to-end evidence;
-full 18-tool completion, guaranteed immediate/concurrent share-disable
-consistency, short-link guarantees and separate high-risk authorization
-are **not** established. One unexpired public-share acceptance has passed.
+### Actual safety boundaries
 
-This is a fail-closed MCP adapter to the existing OpenList REST API over
-Cloudflare **Service Binding**, not a second store/proxy/deployment path.
-The rest of this README documents the implementation and historical
-security analysis; prior "Draft/seven tools" status descriptions are
-superseded by this verified section.
+- The upstream token remains administrator-equivalent; root filtering is
+  **logical**, not physical storage isolation. Native operations remain
+  non-atomic; unknown dispatched writes must not automatically retry.
+- ChatGPT's `Always ask` and MCP tool annotations are **client-side**
+  approval mechanisms, not unbypassable human authorization attested by
+  the Worker.
+- Permanent-signature blocking is **MCP-only**. OpenList upstream still
+  uses `sign_all=true` and `link_expiration=0`, and can issue permanent
+  URLs directly. This policy does not revoke previously issued links.
+- Historical isolated test folders remain unless separately approved
+  for precise cleanup. No new Worker, deployment system, CI, staging
+  environment or Fork modification was introduced.
 
-## Five high-risk native tools — implementation candidate (NOT released)
+See [Spec #309](https://github.com/lirtual/mcp-workers/issues/309)
+for the original decisions, audit history and failure evidence.
+
+---
+
+## Historical implementation and security notes (superseded)
+
+The following sections preserve intermediate 13/18-tool states and
+earlier candidate designs for traceability. Statements describing tools
+as still unregistered or MCP as returning permanent links refer to
+**historical stages**, not the verified current deployment above.
+
+## Historical: five high-risk tool candidate (subsequently released)
 
 The Owner approved using ChatGPT's OpenList-specific **Always ask** app permission
 and existing MCP identity, logical root checks, bounded native REST arguments,
@@ -191,7 +158,7 @@ immediately before Wrangler publication. Production functionality is verified
 directly through the existing ChatGPT OpenList MCP; no scheduled acceptance
 or automatic storage repair is configured.
 
-## Exposed tools
+## Historical: 13-tool inventory (superseded)
 
 `openlist_capabilities`, `openlist_list_files`, `openlist_get_file`,
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
@@ -218,7 +185,7 @@ its own authorized checks.
 
 Folder creation first checks a complete bounded parent listing for collisions, then verifies the created directory via a separate read. This is **not an atomic no-overwrite guarantee**. Missing preflight evidence prevents dispatch; post-dispatch uncertainty is never treated as a confirmed success or retried automatically. Mutations are non-atomic. UTF-8 file reads disallow redirects, require byte-for-byte agreement with upstream file metadata size, and are bound to supported text types and a 256 KiB maximum. Search reconstructs result paths from the upstream `parent` + `name` fields, never from unverified `path` or raw provider URLs. Pagination returns `total` (the **unfiltered upstream** count), `page`, `per_page`, and `has_more` (based on upstream total); after path/scope filtering, `entries.length` may be smaller than the upstream count. `get_file`, `read_text` and listing responses verify that any upstream name/path identity matches the explicitly requested file or immediate child before exposing metadata or content.
 
-## P1 write candidates: upstream overwrite gate (2026-10-27)
+## Historical: P1 write candidates and overwrite audit (2026-10-27)
 
 The scoped Koofr acceptance mount was previously reported by the real upstream as a
 WebDAV provider. Its prior upload/overwrite audit did not run a collision or
@@ -256,7 +223,7 @@ controlled share-create/get evidence is not a substitute. The temporary
 `openlist_share_create` acceptance route has been retired; do not
 re-enable it solely for this test.
 
-## Native signed download URL (production; lifetime risk open)
+## Historical: native signed-link lifetime risk
 
 The existing Cloudflare Route `openlist.lirtual.dpdns.org/*` was verified to
 point at `openlist-tsworkers`, and anonymous GET of public settings returned
@@ -274,7 +241,7 @@ anyone with this bearer URL can access the file. No silent conversion to a
 short-lived credential is claimed. The synthetic signed-link fetch passed in real Koofr E2E #40606166139 without exposing its signature in logs. This does not provide a finite expiry when upstream returns `link_expiration=0`; formal acceptance of the non-expiring bearer risk remains pending.
 
 
-### Candidate MCP-only safeguard — not yet deployed
+### Historical proposal: MCP-only safeguard (now deployed)
 
 This combined #387 candidate's fail-closed change to `openlist_download_link` rejects an upstream
 `0.<signature>` (non-expiring) token with `NOT_SUPPORTED` **before** a public
@@ -409,7 +376,7 @@ approval and ChatGPT Portal acceptance are still required before linking the
 Worker to One-MCP; a green acceptance run does not automatically release,
 register, enable gated tools or close Issue #309.
 
-## Remaining five native API adapters (unregistered)
+## Historical: five API adapters before production registration
 
 The Worker also implements internal `createShare`, `updateShare`, `enableShare`,
 `revokeShare` and `deleteFile` methods against existing OpenList REST APIs.
@@ -426,7 +393,7 @@ not a model-supplied boolean. CI tests the internal adapters and confirms forged
 MCP `tools/call` messages cannot dispatch these actions. No real share or file
 is mutated in offline acceptance. This does not require modifying the Fork.
 
-## Portal registration inventory gate for the 13-tool production contract
+## Historical: former 13-tool Portal inventory gate
 
 The existing `scripts/register-openlist-portal.mjs` and its offline regression
 contract requires exactly the thirteen production MCP tools; a stale seven-tool deployment fails before any Portal mutation. This keeps the existing
