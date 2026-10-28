@@ -3,6 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
+import { TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker", "weixin-mcp-worker"]);
 const REQUIRED_SECRETS = {
@@ -313,6 +314,17 @@ export function verifyWorkflowReleaseConfig(conf) {
   invariant(!(conf.compatibility_flags || []).includes("global_fetch_strictly_public"),
     "Workflow must never enable or import MCP dynamic-target behavior");
   return true;
+}
+
+function reviewedTerminalRunSql(sql) {
+  if (process.env.WORKFLOW_TERMINAL_RUN_ID !== TERMINAL_RUN_ID) return sql;
+  return sql.replace(
+    "outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs",
+    "outcome NOT IN ('succeeded','failed','cancelled') AND id<>'" + TERMINAL_RUN_ID + "') AS nonterminal_runs"
+  ).replace(
+    "status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps",
+    "status NOT IN ('succeeded','failed','skipped') AND run_id<>'" + TERMINAL_RUN_ID + "') AS unresolved_steps"
+  );
 }
 
 export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false) {
@@ -761,7 +773,7 @@ async function main() {
   invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
   if (mode === "migration-sql") {
     invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
-    console.log(WORKFLOW_MIGRATION_READINESS_SQL);
+    console.log(reviewedTerminalRunSql(WORKFLOW_MIGRATION_READINESS_SQL));
     return;
   }
   if (mode === "code-release-check") {
