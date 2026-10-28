@@ -70,7 +70,8 @@ function parseRpc(response, text, expectError = false) {
     }
   } catch { fail('invalid_rpc_json'); }
   if (!value || value.jsonrpc !== '2.0' || value.id !== 1 || value.error ||
-      !value.result || (expectError ? value.result.isError !== true : value.result.isError === true) ||
+      !value.result || (expectError === 'either' ? false : expectError ?
+        value.result.isError !== true : value.result.isError === true) ||
       !Array.isArray(value.result.content) || value.result.content.length !== 1 ||
       value.result.content[0]?.type !== 'text' ||
       typeof value.result.content[0].text !== 'string')
@@ -78,6 +79,8 @@ function parseRpc(response, text, expectError = false) {
   let body;
   try { body = JSON.parse(value.result.content[0].text); }
   catch { fail('invalid_tool_json'); }
+  if (expectError === 'either' && ((value.result.isError === true) ===
+      (body.status === 'succeeded'))) fail('share_rpc_inconsistent');
   return body;
 }
 
@@ -150,9 +153,83 @@ export async function runOpenListProductionReadSmoke(env, transport = fetch) {
   return roots.length;
 }
 
+
+const HISTORICAL_SHARE_ID = 'mcp_spec309_40493124967_1';
+const HISTORICAL_SHARE_FILE =
+  '/Koofr/Downloads/mcp-spec309-e2e-40493124967-1/sample-40493124967-1.txt';
+
+// Read-only manual acceptance of one specifically approved historical fixture.
+// Never enumerate shares, mutate share state, follow a URL or log credentials.
+export async function runOpenListHistoricalShareRead(env, transport = fetch) {
+  if (env.OPENLIST_HISTORICAL_SHARE_READ !== 'true')
+    fail('share_read_not_approved');
+  const token = env.MCP_ACCESS_TOKEN;
+  if (typeof token !== 'string' || !token || token.trim() !== token ||
+      /[\\r\\n]/.test(token)) fail('missing_token');
+  try { collectWorkerVars('openlist-mcp-worker', env); }
+  catch { fail('invalid_roots'); }
+  let roots;
+  try { roots = JSON.parse(env.OPENLIST_ALLOWED_ROOTS); }
+  catch { fail('invalid_roots'); }
+  if (!Array.isArray(roots) || roots.length !== 1 ||
+      roots[0] !== '/Koofr/Downloads') fail('invalid_roots');
+
+  const body = JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',
+    params:{name:'openlist_share_get',arguments:{id:HISTORICAL_SHARE_ID}}});
+  let response;
+  try {
+    response = await transport(new Request(OPENLIST_MCP_URL,{
+      method:'POST',redirect:'manual',signal:AbortSignal.timeout(20000),
+      headers:{authorization:'Bearer '+token,'content-type':'application/json',
+        accept:'application/json, text/event-stream'},body,
+    }));
+  } catch { fail('share_read_unreachable'); }
+  if (response.status !== 200 || response.redirected ||
+      response.headers.has('location')) fail('share_read_transport');
+  const result = parseRpc(response, await boundedText(response), 'either');
+  if (result?.operation !== 'openlist_share_get' ||
+      result.target !== HISTORICAL_SHARE_ID)
+    fail('share_read_wrong_target');
+  if (result.status === 'not_executed' && result.code === 'NOT_FOUND')
+    return {present:false};
+  if (result.status !== 'succeeded' || result.code !== 'OK')
+    fail('share_read_unverified');
+  const state = result.observed_state;
+  if (!state || typeof state !== 'object' || Array.isArray(state) ||
+      Object.keys(state).some(k=>!['id','files','disabled','expires','max_accessed'].includes(k)) ||
+      state.id !== HISTORICAL_SHARE_ID ||
+      !Array.isArray(state.files) ||
+      state.files.length !== 1 ||
+      state.files[0] !== HISTORICAL_SHARE_FILE ||
+      typeof state.disabled !== 'boolean' ||
+      (state.max_accessed !== undefined &&
+        (!Number.isSafeInteger(state.max_accessed) || state.max_accessed < 0)))
+    fail('share_read_unsafe_state');
+  const expires = state.expires;
+  const expirationKnown = typeof expires === 'string' &&
+    /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z$/.test(expires) &&
+    Number.isFinite(Date.parse(expires));
+  if (expires !== undefined && expires !== null &&
+      !expirationKnown) fail('share_read_bad_expiry');
+  return {present:true,disabled:state.disabled,
+    expired:expirationKnown ? Date.parse(expires) <= Date.now() : null,
+    expires:expirationKnown ? expires : null};
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  runOpenListProductionReadSmoke(process.env)
-    .then(count => console.log('OPENLIST_PRODUCTION_READ_OK verified_roots='+count))
+  (process.env.OPENLIST_HISTORICAL_SHARE_READ === 'true'
+    ? runOpenListHistoricalShareRead(process.env)
+    : runOpenListProductionReadSmoke(process.env))
+    .then(value => {
+      if (process.env.OPENLIST_HISTORICAL_SHARE_READ === 'true') {
+        console.log('OPENLIST_HISTORICAL_SHARE_READ_OK id='+HISTORICAL_SHARE_ID+
+          ' present='+value.present+
+          (value.present ? ' disabled='+value.disabled+
+            ' expired='+value.expired+' expires='+value.expires : ''));
+      } else {
+        console.log('OPENLIST_PRODUCTION_READ_OK verified_roots='+value);
+      }
+    })
     .catch(error => {
       const code = typeof error?.message === 'string' &&
         /^openlist_smoke_[a-z0-9_]+$/.test(error.message) ?
