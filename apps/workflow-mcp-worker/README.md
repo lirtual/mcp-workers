@@ -28,7 +28,7 @@ the internal Service Binding must independently report that live identity.
 The Provider also checks those pins against Worker Version Metadata inside
 every side-effecting RPC. D1 grants a single first-dispatch right; recovery
 queries historical receipts only. No public Weixin MCP write is used.
-This source is staged in Draft PRs; no production cutover is implied.
+The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
 ## Runtime
 

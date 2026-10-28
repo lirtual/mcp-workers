@@ -143,11 +143,22 @@ test('recovery rejects a previously frozen different deployment identity',async 
  const x=await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect);
  assert.equal(x.status,'indeterminate');assert.equal(f.sends(),1);assert.equal(f.receipts(),0);
 });
-test('signed Ready callback URL must be canonical before any send reservation',async t=>{
+test('bare Quick Tunnel root URL normalizes for Provider without altering signed D1 evidence',async t=>{
  const f=await fixture(t);
  f.sql.prepare("UPDATE session_executions SET session_url='https://safe.trycloudflare.com'").run();
  const x=await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect);
- assert.equal(x.status,'failed');assert.equal(f.sends(),0);
+ assert.equal(x.status,'succeeded');assert.equal(f.sends(),1);
+ assert.equal(f.sql.prepare('SELECT input_digest FROM cloudflare_action_invocations').get()!.input_digest,bodyHash);
+ assert.equal(f.sql.prepare('SELECT session_url FROM session_executions').get()!.session_url,'https://safe.trycloudflare.com');
+});
+test('non-root, invalid or ambiguous Quick Tunnel URLs are rejected before send',async t=>{
+ for(const bad of ['https://safe.trycloudflare.com//','https://safe.trycloudflare.com/?k=v',
+  'https://safe.trycloudflare.com/path','https://evil.example/','http://safe.trycloudflare.com/']){
+  const f=await fixture(t);
+  f.sql.prepare('UPDATE session_executions SET session_url=?').run(bad);
+  const x=await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect);
+  assert.equal(x.status,'failed');assert.equal(f.sends(),0);
+ }
 });
 
 test('public workflow_cancel durably blocks unsent Cloudflare Action and preserves physical Session',async t=>{
