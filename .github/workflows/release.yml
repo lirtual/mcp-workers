@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: false
+      database_direct_preflight_approved:
+        description: 'Database only: read-only verification of two existing encrypted D1 rows'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,7 +49,7 @@ env:
 jobs:
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_direct_preflight_approved != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -56,6 +61,7 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
+          inputs.database_direct_preflight_approved != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
@@ -576,6 +582,48 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-openlist-portal.mjs
 
+  # Read-only staging attestation; never import again, enable rows or publish a Worker.
+  database-direct-preflight:
+    name: Verify two encrypted disabled Direct identities (read-only)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' &&
+          inputs.worker == 'database-mcp-worker' &&
+          inputs.database_direct_preflight_approved == true &&
+          inputs.deploy_to_production == false &&
+          inputs.database_prepare_approved != true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify Owner, exact reviewed main SHA, and no release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Verify original Direct encrypted D1 records without mutation
+        env:
+          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
+          DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
+          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/database-direct-preflight-344.mjs
+
   # One-time D1 preparation; no change to the active Database MCP Worker.
   database-prepare:
     name: Prepare two disabled Database D1 records without deployment
@@ -585,6 +633,7 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.worker == 'database-mcp-worker' &&
           inputs.database_prepare_approved == true &&
+          inputs.database_direct_preflight_approved != true &&
           inputs.deploy_to_production == false }}
     runs-on: ubuntu-latest
     environment:
