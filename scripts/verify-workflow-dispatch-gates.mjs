@@ -34,7 +34,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
 export function verifyDatabaseActivationGate(source) {
   const activation = job(source, 'database-activate');
   const gate = activation.gate.replace(/\s+/g, ' ').trim();
-  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_activation_approved == true && inputs.database_activation_id != '' && inputs.database_activation_revision != '' }}";
+  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_activation_approved == true && inputs.database_activation_id != '' && inputs.database_activation_revision != '' && inputs.database_direct_preflight_approved != true }}";
   assert.equal(gate, expected, 'Unsafe Database activation gate');
   const checkStart = source.indexOf('\n  checks:\n');
   const deployStart = source.indexOf('\n  deploy:\n');
