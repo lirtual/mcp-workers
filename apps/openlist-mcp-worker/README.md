@@ -100,7 +100,7 @@ or automatic storage repair is configured.
 `openlist_search_files`, `openlist_read_text`, `openlist_share_get`,
 `openlist_download_link`, `openlist_share_disable`, `openlist_rename`,
 `openlist_copy`, `openlist_move`, `openlist_upload_small`,
-`openlist_create_folder` (**thirteen on this Draft; seven deployed**).
+`openlist_create_folder` (**thirteen registered and deployed**).
 
 `openlist_share_get` accepts one explicit ID and requires **every** file
 in the share to remain within allowed roots before returning only allowlisted,
@@ -114,7 +114,7 @@ were verified in [#40507586080](https://github.com/lirtual/mcp-workers/actions/r
 and one access. The live create/get proof succeeded; the tool and temporary
 acceptance code have since been removed. The previously created share record
 may remain expired upstream, but cleanup is out of scope. The five remaining
-candidates stay disabled on this Draft branch pending real driver/conflict, scope, approval, and
+candidates stay disabled in production pending real driver/conflict, scope, approval, and
 share-lifecycle safety evidence. Do not infer physical storage confinement from
 the admin-equivalent upstream token. Every future production release requires
 its own authorized checks.
@@ -312,7 +312,7 @@ is mutated in offline acceptance. This does not require modifying the Fork.
 ## Portal registration inventory gate for the 13-tool production contract
 
 The existing `scripts/register-openlist-portal.mjs` and its offline regression
-contract require exactly the thirteen production MCP tools; a stale seven-tool deployment fails before any Portal mutation. This keeps the existing
+contract requires exactly the thirteen production MCP tools; a stale seven-tool deployment fails before any Portal mutation. This keeps the existing
 fail-closed Portal inventory check: a stale 7-tool deployment or an unexpected
 extra destructive tool **fails before changing Portal mappings**. The five
 internal-only share/delete adapters remain absent from this inventory.
