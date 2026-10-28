@@ -118,8 +118,8 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
           return response(name,args.path,{total:0,page:1,entries:[]});
         }
         return response(name,args.path,{
-        total:uploaded?1:0,page:1,
-        entries:uploaded?[{name:file.split('/').at(-1),is_dir:false,size:new TextEncoder().encode(fixture).length}]:[]});
+        total:uploaded && !deleted?1:0,page:1,
+        entries:uploaded && !deleted?[{name:file.split('/').at(-1),is_dir:false,size:new TextEncoder().encode(fixture).length}]:[]});
       }
       throw Error('unexpected_list_path');
     }
