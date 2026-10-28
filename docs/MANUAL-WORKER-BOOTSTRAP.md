@@ -1,5 +1,7 @@
 # 手动发布 MCP Workers：全局配置 + Worker 独立配置空间
 
+**Spec #392 发布权交接**：`weixin-mcp-worker` 保留源码、既有 D1、绑定、Portal 与离线测试，但不再是本仓库 `Release Worker` 的可部署目标。微信生产发布必须通过独立 [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) 的手动流程，且仅在旧发布路径停用、专用凭证与兼容回滚条件核验后才可执行。下文同名旧 Environment 配置仅为历史记录，不应继续用于微信发布。
+
 本项目没有 staging/production 等多环境运行模式。每个 Worker 使用一个**同名 GitHub Environment**，只作为 Secrets / Variables 的独立配置空间；部署目标仍是唯一的 Cloudflare Worker，入口为 GitHub Actions → Release Worker → Run workflow（必须选 `main`）。
 
 > **迁移提醒**：旧 GitHub `production` Environment 不会被代码自动删除，也不会自动迁移其 Secrets。迁移并确认新配置完整前请保留它，**不要运行任何新版手动部署**。本次代码变更不会部署 Worker。

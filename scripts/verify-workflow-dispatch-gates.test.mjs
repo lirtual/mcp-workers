@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { RELEASE_WORKERS } from './select-affected-apps.mjs';
+import { APPLICATIONS, RELEASE_WORKERS } from './select-affected-apps.mjs';
 import { verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
 
 const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
@@ -82,4 +82,12 @@ test('release documentation contracts reject wrong Worker and Secret/Variable dr
   assert.throws(() => verifyDocumentationContracts({
     ...docs, githubActionsReadme: 'inputs={"worker":"remote-control-mcp-worker","deploy_to_production":"true"}',
   }), /GitHub Actions MCP example must select its own Worker/);
+});
+
+test('retired Weixin publishing is impossible through the old manual release', () => {
+  assert.ok(APPLICATIONS.includes('weixin-mcp-worker'), 'Keep Weixin source under CI');
+  assert.ok(!RELEASE_WORKERS.includes('weixin-mcp-worker'), 'Retire Weixin as an old release target');
+  assert.doesNotMatch(release, /weixin-mcp-worker/, 'No Weixin Worker target, D1 migration, or smoke step in old release');
+  assert.match(release, /GITHUB_SHA.*git ls-remote origin refs\/heads\/main/, 'Historical reruns must compare to current main');
+  assert.match(release, /Stage selected Worker Secrets for every release/);
 });

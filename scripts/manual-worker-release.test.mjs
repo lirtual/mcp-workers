@@ -355,7 +355,7 @@ test("first GitHub Actions Worker release retries only transient 404s without we
   assert.match(step, /Unexpected unauthenticated MCP status/);
 });
 
-test("Weixin manual release probes its configured custom-domain MCP ingress", () => {
+test("Weixin is absent from old release ingress and publisher", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const config = JSON.parse(readFileSync(new URL("../apps/weixin-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
   const start = workflow.indexOf("      - name: Check unauthenticated MCP surface without credentials");
@@ -363,8 +363,8 @@ test("Weixin manual release probes its configured custom-domain MCP ingress", ()
   assert.ok(start >= 0 && end > start);
   const check = workflow.slice(start, end);
   assert.equal(config.workers_dev, false);
-  assert.ok(check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
-  assert.ok(check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
+  assert.ok(!check.includes('elif [[ "$SELECTED_WORKER" == "weixin-mcp-worker" ]]; then'));
+  assert.ok(!check.includes('mcp_endpoint="https://' + config.vars.MCP_HOST + '/mcp"'));
   assert.match(check, /401\|403\)/, "unauthenticated requests must remain denied");
 });
 
@@ -889,8 +889,10 @@ test("worker release documentation stays aligned with the selected-Worker contra
   const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+openlist_portal_registration:/);
   assert.ok(options, "missing worker release choice options");
   const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-mcp-worker)$/gm)].map(m => m[1]).sort();
-  assert.deepEqual(selected, Object.keys(BOOTSTRAP_SECRETS).sort());
-  assert.deepEqual(selected, Object.keys(WORKER_VARIABLES).sort());
+  const { RELEASE_WORKERS } = await import("./select-affected-apps.mjs");
+  assert.deepEqual(selected, [...RELEASE_WORKERS].sort());
+  assert.ok(selected.every(worker => Object.hasOwn(BOOTSTRAP_SECRETS, worker)));
+  assert.ok(selected.every(worker => Object.hasOwn(WORKER_VARIABLES, worker)));
 
   for (const path of ["../docs/MANUAL-WORKER-BOOTSTRAP.md",
     "../docs/runtime-configuration.md", "../docs/mcp-shared-token-runbook.md",
