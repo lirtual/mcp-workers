@@ -69,6 +69,7 @@ test('standalone D1 preparation never publishes a Worker or changes legacy runti
   assert.equal(runtimeConf.d1_databases, undefined);
   assert.equal((prepare.match(/DATABASE_CONFIG: \$\{\{ secrets\.DATABASE_CONFIG \}\}/g) || []).length, 2);
   assert.match(prepSource, /parseLegacyImport\(required\('DATABASE_CONFIG'\)\)/);
+  assert.doesNotMatch(prepare + prepSource, /DATABASE_CUTOVER_EXPECTED_IDS/);
   for (const marker of [
     "github.actor == 'lirtual'", "github.ref == 'refs/heads/main'",
     "inputs.worker == 'database-mcp-worker'", "inputs.database_prepare_approved == true",
