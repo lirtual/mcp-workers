@@ -1,4 +1,5 @@
 import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
+import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
@@ -218,12 +219,17 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
       scope:{const:'read'},arguments:{type:'object'},
       input_schema:{type:'object'},output_schema:{type:'object'},
     }},
-  'action.run':{type:'object',additionalProperties:false,
-    required:['executor','capability','action'],properties:{
-      executor:{const:'github'},
-      capability:{const:'github.action'},
-      action:{type:'object'},
-    }},
+  'action.run':{oneOf:[
+    {type:'object',additionalProperties:false,required:['executor','capability','action'],
+     properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
+    {type:'object',additionalProperties:false,
+     required:['executor','provider','action','contract_digest','input'],properties:{
+       executor:{const:'cloudflare'},provider:{const:'weixin'},action:{const:'weixin.send_text'},
+       contract_digest:{type:'string',pattern:'^[a-f0-9]{64}$'},
+       input:{type:'object',additionalProperties:false,required:['session_step_id'],
+         properties:{session_step_id:{type:'string'}}},
+     }},
+  ]},
   'github.run':{type:'object',additionalProperties:false,
     required:['capability','action'],properties:{
       capability:{const:'github.action'},
@@ -379,7 +385,9 @@ const entries=[
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
-   description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare executor is not enabled until its separate authorization and receipts are implemented.'},
+   description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
+  {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
+   description:'One reviewed Weixin Owner send from a signed, physically running OpenList Session in the same Run. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
   {id:'action.github.run',kind:'action',availability:'supported_with_grant',
    description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
   {id:'flow.static_dag',kind:'flow',availability:'supported',
@@ -428,7 +436,7 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'>,
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'WEIXIN_ACTION_DEPLOYMENT_ID'|'WEIXIN_ACTION_PROVIDER'>,
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
@@ -437,12 +445,14 @@ export async function workflowCapabilities(env:Pick<Env,
     githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
+  const cloudflareReady=!!env.WEIXIN_ACTION_PROVIDER&&!!env.WEIXIN_ACTION_DEPLOYMENT_ID&&githubReady;
   const availability=(entry:Entry)=>
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
+    entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.mcp.call','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.run.cloudflare','action.mcp.call','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -468,6 +478,7 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
+    ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],reviewed_manifest:await cloudflareActionManifest(),deployment_id:env.WEIXIN_ACTION_DEPLOYMENT_ID??null}:{}),
   };
   if(id==='trigger.webhook'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;

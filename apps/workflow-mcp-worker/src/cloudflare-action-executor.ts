@@ -1,0 +1,124 @@
+import type {Env} from './store.ts';
+import type {Plan,Step} from './plan.ts';
+import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
+
+type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:{status:string}};
+type Frozen={invocation_id:string;source_attempt_id:string;input_digest:string;
+ binding_generation:number;contract_digest:string;deployment_id:string};
+type Source={attempt_id:string;session_url:string;repository:string;workflow_ref:string};
+const URL_PATTERN=/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/;
+const denied=(code:string):Result=>({status:'failed',error_code:code});
+const uncertain=(code='cloudflare_outcome_unknown'):Result=>({status:'indeterminate',error_code:code});
+const digest=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest(
+ 'SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
+const receipt=(status:unknown):Result=>
+ status==='accepted'?{status:'succeeded',output:{status:'accepted'}}:
+ status==='rejected'?{status:'failed',error_code:'weixin_rejected'}:uncertain();
+
+/** Historical receipt query is pure even after unbind. Missing is unknown. */
+async function recover(env:Env,row:Frozen):Promise<Result>{
+ try{
+  const value=await env.WEIXIN_ACTION_PROVIDER!.getReceipt({invocation_id:row.invocation_id,
+   binding_generation:row.binding_generation,input_digest:row.input_digest});
+  return receipt(value.status);
+ }catch{return uncertain('cloudflare_receipt_unconfirmed');}
+}
+
+/** At-most-one side-effecting RPC per Run Step. First reserve in D1, then send.
+ * On crash/replay never send again. No plaintext URL is checkpointed.
+ */
+export async function runPublishedCloudflareAction(
+ env:Env,plan:Plan,action:Step,runId:string,
+ inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
+):Promise<Result>{
+ const provider=env.WEIXIN_ACTION_PROVIDER,version=env.WEIXIN_ACTION_DEPLOYMENT_ID;
+ const manifest=await cloudflareActionManifest();
+ const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&
+   g.provider===manifest.provider&&g.action===manifest.action&&
+   g.contract_digest===manifest.contract_digest&&g.deployment_id===version);
+ if(plan.cloudflare_execution_approved!==true||action.uses!=='action.run'||
+    action.with.executor!=='cloudflare'||action.with.provider!==manifest.provider||
+    action.with.action!==manifest.action||action.with.contract_digest!==manifest.contract_digest||
+    !grant)return denied('cloudflare_action_approval_required');
+ if(!provider||!version)return denied('cloudflare_provider_not_configured');
+ const sourceId=(action.with.input as {session_step_id?:unknown}|undefined)?.session_step_id;
+ const source=plan.steps.find(x=>x.id===sourceId);
+ const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+ if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
+   source?.uses!=='github.run'||pinned?.repository!=='lirtual/session-actions'||
+   pinned.workflowPath!=='.github/workflows/openlist.yml'||pinned.type!=='session')
+  return denied('untrusted_session_reference');
+ const db=env.DB;
+ const existing=()=>db.prepare(`SELECT invocation_id,source_attempt_id,input_digest,
+  binding_generation,contract_digest,deployment_id
+  FROM cloudflare_action_invocations WHERE run_id=? AND step_id=?`)
+  .bind(runId,action.id).first<Frozen>();
+ try{
+  const prior=await existing();
+  if(prior){
+    if(prior.contract_digest!==manifest.contract_digest||prior.deployment_id!==version||
+       !/^[a-f0-9]{64}$/.test(prior.input_digest)||!Number.isSafeInteger(prior.binding_generation)||
+       prior.binding_generation<1||!/^[0-9a-f-]{36}$/i.test(prior.source_attempt_id))
+      return uncertain('cloudflare_invocation_conflict');
+    return recover(env,prior);
+  }
+  const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref
+   FROM session_executions s JOIN step_attempts a
+    ON a.run_id=s.run_id AND a.step_id=s.step_id
+   WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
+    AND a.capability_id='github.action' AND a.state='claimed'
+    AND a.owner_run_id=a.candidate_run_id AND a.owner_run_attempt=a.candidate_run_attempt
+    AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+      WHERE c.attempt_id=a.attempt_id)`)
+   .bind(runId,sourceId).first<Source>();
+  if(!current||typeof current.session_url!=='string'||
+    !URL_PATTERN.test(current.session_url)||current.session_url.length>180||
+    new URL(current.session_url).href!==current.session_url||
+    current.repository!=='lirtual/session-actions'||
+    !current.workflow_ref.startsWith('lirtual/session-actions/.github/workflows/openlist.yml@'))
+   return denied('session_ready_not_trusted');
+  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return denied('session_physical_unconfirmed');
+  let live;
+  try{live=await inspect(db,current.attempt_id,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);}
+  catch{return denied('session_physical_unconfirmed');}
+  if(live.state!=='running')return denied('session_physical_unconfirmed');
+  let binding;
+  try{binding=await provider.getBinding();}catch{return denied('weixin_binding_unconfirmed');}
+  if(!binding?.ready||!Number.isSafeInteger(binding.generation)||binding.generation<1)
+   return denied('weixin_binding_not_ready');
+  const inputDigest=await digest('OpenList Session Ready\n'+current.session_url);
+  const identity=crypto.randomUUID();
+  const admitted=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
+   (run_id,step_id,invocation_id,source_attempt_id,input_digest,
+    binding_generation,contract_digest,deployment_id,created_at)
+   SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(
+     SELECT 1 FROM runs WHERE id=? AND outcome='running')
+   AND EXISTS(SELECT 1 FROM session_executions s JOIN step_attempts a
+      ON a.run_id=s.run_id AND a.step_id=s.step_id
+      WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
+       AND s.session_url=? AND a.attempt_id=? AND a.state='claimed'
+       AND a.capability_id='github.action'
+       AND a.repository='lirtual/session-actions'
+       AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/openlist.yml@')=1
+       AND a.owner_run_id=a.candidate_run_id AND a.owner_run_attempt=a.candidate_run_attempt
+       AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id))
+   AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
+      WHERE c.run_id=? AND c.step_id=?)`)
+   .bind(runId,action.id,identity,current.attempt_id,inputDigest,binding.generation,
+     manifest.contract_digest,version,Date.now(),runId,runId,sourceId,
+     current.session_url,current.attempt_id,runId,action.id).run();
+  if(admitted.meta.changes!==1){
+    const raced=await existing();
+    return raced?recover(env,raced):denied('cloudflare_dispatch_not_admitted');
+  }
+  try{
+   const value=await provider.sendText({invocation_id:identity,
+    binding_generation:binding.generation,session_url:current.session_url});
+   if(value.input_digest!==inputDigest)return uncertain('weixin_receipt_conflict');
+   return receipt(value.status);
+  }catch{return recover(env,{invocation_id:identity,source_attempt_id:current.attempt_id,
+    input_digest:inputDigest,binding_generation:binding.generation,
+    contract_digest:manifest.contract_digest,deployment_id:version});}
+ }catch{return uncertain('cloudflare_dispatch_unconfirmed');}
+}

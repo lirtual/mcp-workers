@@ -1,3 +1,4 @@
+import {runPublishedCloudflareAction} from './cloudflare-action-executor.ts';
 import {watchPersistedSessions} from './github-action-session-watch.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
@@ -654,7 +655,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     let failed=false;
     let uncertain=false;
     let uncertainCode:string|null=null;
-    const hasEventWait=plan.steps.some(s=>s.uses==='flow.wait_event');
+    const hasEventWait=plan.steps.some(s=>s.uses==='flow.wait_event'||s.uses==='action.run');
     try{
       while(pending.size){
         // Cancellation can commit after the native event was received but
@@ -689,6 +690,17 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
+            : s.uses==='action.run'
+            ? await step.do('workflow-'+s.id,
+              {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},async():Promise<Outcome>=>{
+                try{
+                  await db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'running',?) ON CONFLICT(run_id,step_id) DO NOTHING")
+                    .bind(id,s.id,now()).run();
+                  if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+                  if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
+                  return await runPublishedCloudflareAction(this.env,plan,s,id);
+                }catch{return {status:'indeterminate',error_code:'cloudflare_dispatch_unconfirmed'};}
+              })
             : s.uses==='github.run'
             ? await (async()=>{
               try{
