@@ -48,7 +48,7 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false, l
         success: true, results: [{ ...row }]
       }]);
       if (sql.sql.startsWith('SELECT status')) return response([{
-        success: true, results: [{ status: row.status }]
+        success: true, results: [{ ...row }]
       }]);
       if (sql.sql.startsWith('UPDATE database_connections')) {
         if (lostBeforeWrite && sql.sql.includes("SET status='active'")) throw Error('simulated network outage');
