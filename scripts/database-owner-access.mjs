@@ -67,6 +67,16 @@ export function findDatabaseOwnerApp(inventory, host) {
   return matches[0];
 }
 
+// An intentionally narrow error: permits diagnosis of a missing API permission
+// without logging URLs, credentials, emails, response bodies or request headers.
+export class AccessInventoryHttpError extends Error {
+  constructor(stage, status) {
+    super("Database Owner Access inventory request failed");
+    this.stage = stage;
+    this.status = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+  }
+}
+
 export async function verifyDatabaseOwnerAccessCloudflare(config, environment, transport = fetch) {
   const host = config?.vars?.DATABASE_SETUP_HOST;
   const audience = environment.ACCESS_AUD;
@@ -80,17 +90,19 @@ export async function verifyDatabaseOwnerAccessCloudflare(config, environment, t
     typeof apiToken === "string" && apiToken.length > 0,
     "Database Owner Access validation environment missing");
   const url = "https://api.cloudflare.com/client/v4/accounts/" + account + "/access/apps";
-  const get = async path => {
+  const get = async (path, stage) => {
     const response = await transport(path, { headers: {
       Authorization: "Bearer " + apiToken, Accept: "application/json"
     }, signal: AbortSignal.timeout(15000) });
-    requireCondition(response.ok, "Database Owner Access inventory request failed");
-    return response.json();
+    if (!response.ok) throw new AccessInventoryHttpError(stage, response.status);
+    const body = await response.json();
+    if (body?.success !== true) throw new AccessInventoryHttpError(stage, response.status);
+    return body;
   };
   const otpId = findDatabaseOwnerOtpProvider(await get(
-    "https://api.cloudflare.com/client/v4/accounts/" + account + "/access/identity_providers?per_page=100"));
-  const app = findDatabaseOwnerApp(await get(url + "?per_page=100"), host);
-  const policies = ensureList(await get(url + "/" + encodeURIComponent(app.id) + "/policies?per_page=100"),
+    "https://api.cloudflare.com/client/v4/accounts/" + account + "/access/identity_providers?per_page=100", "idps"));
+  const app = findDatabaseOwnerApp(await get(url + "?per_page=100", "apps"), host);
+  const policies = ensureList(await get(url + "/" + encodeURIComponent(app.id) + "/policies?per_page=100", "policies"),
     "policies");
   return verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId });
 }
@@ -103,9 +115,12 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => {
-    // Never echo potentially sensitive Cloudflare response bodies or HTTP errors.
-    console.error("Database Owner Cloudflare Access gate: BLOCKED");
+  main().catch(error => {
+    // Print only a static stage code and numeric HTTP status, not sensitive
+    // Cloudflare errors, response bodies, URL, request metadata or credentials.
+    const classification = error instanceof AccessInventoryHttpError
+      ? ` (stage=${error.stage}; http=${error.status})` : "";
+    console.error("Database Owner Cloudflare Access gate: BLOCKED" + classification);
     process.exitCode = 1;
   });
 }
