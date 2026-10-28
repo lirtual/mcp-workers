@@ -19,16 +19,22 @@ test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'openlist-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+  assert.throws(() => verifyReleaseWorkers(release.replace('inputs.database_restore_approved != true &&', 'true &&'), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
 
 test('database activation is Owner-gated, non-deploying and serialized with Worker release', () => {
   assert.doesNotThrow(() => verifyDatabaseActivationGate(release));
+  const activationOnly = (before, after) => {
+    const start = release.indexOf('\n  database-activate:\n');
+    const end = release.indexOf('\n  database-direct-preflight:\n', start);
+    return release.slice(0,start) + release.slice(start,end).replace(before,after) + release.slice(end);
+  };
   for (const degraded of [
-    release.replace("github.actor == 'lirtual' &&", 'true &&'),
-    release.replace("inputs.database_activation_approved == true &&", 'true &&'),
-    release.replace("inputs.deploy_to_production == false &&", 'true &&'),
-    release.replace("inputs.database_activation_id == '' &&", 'true &&'),
-    release.replace('group: worker-release-database-mcp-worker', 'group: insecure-activation')
+    activationOnly("github.actor == 'lirtual' &&", 'true &&'),
+    activationOnly("inputs.database_activation_approved == true &&", 'true &&'),
+    activationOnly("inputs.deploy_to_production == false &&", 'true &&'),
+    activationOnly("inputs.database_activation_id != '' &&", 'true &&'),
+    activationOnly('group: worker-release-database-mcp-worker', 'group: insecure-activation')
   ]) assert.throws(() => verifyDatabaseActivationGate(degraded), /Unsafe|must never|missing/);
 });
 

@@ -53,6 +53,16 @@ on:
         required: false
         type: boolean
         default: false
+      database_restore_approved:
+        description: 'Database only: separately approved restore of exact legacy Worker version'
+        required: false
+        type: boolean
+        default: false
+      database_restore_expected_version:
+        description: 'Database restore only: exact currently active Worker version UUID'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -64,7 +74,7 @@ env:
 jobs:
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && inputs.database_direct_preflight_approved != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -77,7 +87,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
           inputs.database_activation_id == '' &&
-          inputs.database_direct_preflight_approved != true &&
+          inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
@@ -669,6 +679,54 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-openlist-portal.mjs
 
+  # Recovery is never part of an ordinary release or Direct D1 activation.
+  # Execution requires a NEW independent, explicit Owner dispatch on main.
+  database-restore:
+    name: Protected Database legacy Worker recovery (future separate approval)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' &&
+          inputs.worker == 'database-mcp-worker' &&
+          inputs.database_restore_approved == true &&
+          inputs.database_restore_expected_version != '' &&
+          inputs.deploy_to_production == false &&
+          inputs.database_prepare_approved != true &&
+          inputs.database_direct_preflight_approved != true &&
+          inputs.database_activation_approved != true &&
+          inputs.database_activation_id == '' &&
+          inputs.database_activation_revision == '' &&
+          inputs.openlist_portal_registration != true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify approved owner, exact main source, and isolated recovery scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == "lirtual" && "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Restore only pinned original Worker version, then read back (no D1 changes)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_RESTORE_APPROVED: ${{ inputs.database_restore_approved }}
+          DATABASE_RESTORE_EXPECTED_VERSION: ${{ inputs.database_restore_expected_version }}
+        run: node scripts/database-legacy-restore-344.mjs
+
   database-activate:
     name: Protected Database Hyperdrive activation (no deployment)
     if: >-
@@ -680,7 +738,8 @@ jobs:
           inputs.database_activation_approved == true &&
           inputs.database_activation_id != '' &&
           inputs.database_activation_revision != '' &&
-          inputs.database_direct_preflight_approved != true }}
+          inputs.database_direct_preflight_approved != true &&
+          inputs.database_restore_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -727,7 +786,8 @@ jobs:
           inputs.deploy_to_production == false &&
           inputs.database_prepare_approved != true &&
           inputs.database_activation_approved != true &&
-          inputs.database_activation_id == '' }}
+          inputs.database_activation_id == '' &&
+          inputs.database_restore_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -776,7 +836,8 @@ jobs:
           inputs.deploy_to_production == false &&
           inputs.database_activation_id == '' &&
           inputs.database_activation_approved != true &&
-          inputs.database_direct_preflight_approved != true }}
+          inputs.database_direct_preflight_approved != true &&
+          inputs.database_restore_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
