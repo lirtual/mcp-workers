@@ -137,6 +137,8 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       return response(name,folder,{is_dir:true});
     }
     if(name==='openlist_get_file') {
+      if(args.path===file && deleted)
+        return response(name,file,undefined,true,'NOT_FOUND');
       if(args.path===folder && made)
         return response(name,folder,{path:folder,name:folder.split('/').at(-1),is_dir:true});
       if(args.path===file && uploaded && !deleted)
