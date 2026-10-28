@@ -1,7 +1,7 @@
 import { getRuntimeLimits } from '../config.js';
 import { healthCheck } from '../db/index.js';
 import { PublicError, toPublicError } from '../errors.js';
-import { requireAvailableMode } from '../registry/availability.js';
+import { isStagedOriginalIdentity, requireAvailableMode } from '../registry/availability.js';
 import { openConnectionConfig, sealConnectionConfig } from '../registry/crypto.js';
 import { validatePublicEndpoint } from '../registry/endpoint.js';
 import { createRegistryConnection, deleteRegistryConnection, getRegistryConnection,
@@ -105,6 +105,15 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
     const action = path.slice('/setup/'.length);
+    // Frozen first import: generic add or key rotation must not alter the
+    // exact two-identity inventory before the protected atomic activation.
+    if (action === 'add' || action === 'rotate') {
+      const metadata = await listRegistryConnections(env.DB);
+      if (metadata.some(isStagedOriginalIdentity)) {
+        throw new PublicError('CONFIGURATION_UNAVAILABLE',
+          'The original migration inventory is frozen until protected atomic activation.');
+      }
+    }
     if (action === 'rotate') {
       const rotated = await rotateRegistryKeys(env.DB, env);
       return setupResult(`Rotated ${rotated.rotated}; remaining ${rotated.pending}. Keep historical keys until snapshots and backups expire.`);
@@ -142,6 +151,10 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
     }
     const version = revision(form);
     const row = await requiredRow(env, id);
+    if (isStagedOriginalIdentity(row)) {
+      throw new PublicError('CONFIGURATION_UNAVAILABLE',
+        'The original migration connection requires independently protected atomic activation.');
+    }
     if (action === 'disable') {
       await setRegistryConnectionStatus(env.DB, id, version, 'disabled');
       return setupResult('Connection disabled for new operations.');

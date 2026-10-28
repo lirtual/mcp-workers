@@ -1,5 +1,6 @@
 import { PublicError } from '../errors.js';
 import type { Dialect } from '../types.js';
+import { isStagedOriginalIdentity } from './availability.js';
 import { openConnectionConfig, sealConnectionConfig, type EncryptionKeys } from './crypto.js';
 
 interface RotationRow { id: string; dialect: Dialect; revision: number; ciphertext: string; key_id: string }
@@ -10,6 +11,11 @@ export async function rotateRegistryKeys(db: D1Database, keys: EncryptionKeys, b
   if (!db || !Number.isInteger(batchSize) || batchSize < 1 || batchSize > 10 ||
     !keys.DATABASE_KEY_ID || !/^[A-Za-z0-9_-]{1,32}$/.test(keys.DATABASE_KEY_ID)) fail();
   try {
+    // A rotation during first migration would change the frozen ciphertext/
+    // revision and defeat the protected two-identity activation contract.
+    const staged = await db.prepare("SELECT id,status,revision FROM database_connections WHERE id IN ('b2b','scrape_relay')")
+      .all<{ id: string; status: string; revision: number }>();
+    if (staged.results.some(isStagedOriginalIdentity)) fail();
     // Preflight every historic key identifier, not just the next batch.
     const distinct = await db.prepare("SELECT DISTINCT key_id FROM database_connections WHERE transport='direct' AND key_id<>?")
       .bind(keys.DATABASE_KEY_ID).all<{ key_id: string }>();
@@ -29,7 +35,8 @@ export async function rotateRegistryKeys(db: D1Database, keys: EncryptionKeys, b
       if (JSON.stringify(readback) !== JSON.stringify(plaintext)) fail();
       const result = await db.prepare(`UPDATE database_connections
         SET ciphertext=?,key_id=?,revision=revision+1,updated_at=?
-        WHERE id=? AND dialect=? AND revision=? AND ciphertext=? AND key_id=?`)
+        WHERE id=? AND dialect=? AND revision=? AND ciphertext=? AND key_id=?
+          AND NOT (id IN ('b2b','scrape_relay') AND status='disabled' AND revision=1)`)
         .bind(updated.ciphertext, updated.keyId, Date.now(), row.id, row.dialect,
           row.revision, row.ciphertext, row.key_id).run();
       if (result.meta.changes === 1) rotated++;

@@ -23,6 +23,17 @@ replace missing source-origin TLS negatives, lifecycle checks or future
 Hyperdrive release checks. Q41 is revised only in **delivery sequence**, not
 in the validity of unrun tests.
 
+**Frozen original-inventory guard (Draft only):** A disabled revision-1
+`b2b` or `scrape_relay` row means the two-ID cutover has not completed.
+Ordinary Owner setup cannot enable, disable, edit, delete or retire such a
+record; while either one remains staged, adding connections and rotating keys
+are also refused. The setup page hides those actions and explains the pending
+protected activation. The key rotation routine independently refuses staged
+original records and its CAS write excludes them. This is a one-way prevention
+of accidental or forged Owner mutations, **not** an activation executor or
+approval to perform any live D1 write. After independently verified cutover,
+ordinary Owner management can resume without a permanent compatibility switch.
+
 **No change in P0 cutover safety:** the Direct activation production executor
 was previously blocked by safety review and must not be recreated via another
 API or direct SQL. Both original D1 records remain disabled until a separately

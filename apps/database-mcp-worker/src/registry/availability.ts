@@ -13,3 +13,13 @@ export function requireAvailableMode(transport: DatabaseTransport, dialect: Dial
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'This connection mode is not enabled for this release.');
   }
 }
+
+// Initial imported records are revision-1 and disabled until the independently
+// authorized two-ID atomic cutover. Normal Owner CRUD/rotation cannot change
+// their ciphertext, revision, status or retirement state in this phase.
+export function isStagedOriginalIdentity(row: {
+  id: string; status: string; revision: number;
+}): boolean {
+  return (row.id === 'b2b' || row.id === 'scrape_relay') &&
+    row.status === 'disabled' && row.revision === 1;
+}
