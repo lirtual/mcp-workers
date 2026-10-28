@@ -16,7 +16,8 @@ const file = `${folder}/sample-${env.GITHUB_RUN_ID}-1.txt`;
 const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
-  authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false} = {}) {
+  authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
+  permanentLink = true, rejectFinite = false} = {}) {
   const requests = [];
   let made = false, uploaded = false;
   let staleReads = staleUploadedListingReads;
@@ -26,6 +27,8 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   const renamedDest = `${nativeDir}/renamed-${env.GITHUB_RUN_ID}-1.txt`;
   const nativeData = `OpenList native MCP E2E ${env.GITHUB_RUN_ID}-1\n`;
   const nativeFiles=new Map();
+  const finiteExpiration = Math.floor(Date.now()/1000)+3600;
+  const signature = (permanentLink ? '0' : String(finiteExpiration))+'.'+'a'.repeat(64);
   let nativeFolder=false;
   const response = (name, target, observed_state, isError = false, code = 'OK') =>
     Response.json({jsonrpc:'2.0',id:1,result:{ ...(isError ? {isError:true} : {}),
@@ -57,13 +60,22 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       return Response.json({code:200,data:{content:[
         {name:file.split('/').at(-1),is_dir:false}],total:1}});
     }
+    if(url.pathname === '/api/fs/get') {
+      requests.push('upstream_sign_check');
+      assert.equal(req.method,'POST');
+      assert.equal(url.origin,'https://openlist.lirtual.dpdns.org');
+      assert.equal(req.headers.get('authorization'),authEnv.OPENLIST_API_TOKEN);
+      assert.deepEqual(await req.json(),{path:nativeDest});
+      return Response.json({code:200,data:{name:nativeDest.split('/').at(-1),
+        path:nativeDest,is_dir:false,sign:signature}});
+    }
     if(url.pathname.startsWith('/api/p/')) {
       requests.push('signed_get');
       assert.equal(req.method,'GET');
       assert.equal(url.origin,'https://openlist.lirtual.dpdns.org');
       assert.equal(req.headers.get('authorization'),null);
       assert.equal(url.pathname,'/api/p/'+nativeDest.slice(1));
-      assert.equal(url.searchParams.get('sign'),'0.'+'a'.repeat(64));
+      assert.equal(url.searchParams.get('sign'),signature);
       return new Response(nativeFiles.get(nativeDest),{
         status:200,headers:{'content-type':'text/plain'}});
     }
@@ -168,8 +180,11 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
     }
     if(name==='openlist_download_link'){
       assert.equal(args.path,nativeDest);
-      return response(name,nativeDest,{permanent:true,expires_at:null,url:
-        'https://openlist.lirtual.dpdns.org/api/p/'+nativeDest.slice(1)+'?sign=0.'+'a'.repeat(64)});
+      if(permanentLink || rejectFinite)
+        return response(name,nativeDest,null,true,'NOT_SUPPORTED');
+      return response(name,nativeDest,{permanent:false,
+        expires_at:new Date(finiteExpiration*1000).toISOString(),
+        url:'https://openlist.lirtual.dpdns.org/api/p/'+nativeDest.slice(1)+'?sign='+signature});
     }
     throw Error('unexpected_tool');
   }
@@ -283,15 +298,34 @@ test('expanded native E2E requires a separate explicit opt-in and only mutates t
   assert.equal(result.folder,folder.split('/').at(-1));
   assert.deepEqual(result.tested.slice(6),[
     'upload_small','copy','rename','move','read_native_text',
-    'signed_download_link','native_scope_denial']);
+    'permanent_signed_link_refused','native_scope_denial']);
   assert.equal(requests.filter(x=>x==='upload').length,1);
   assert.equal(requests.filter(x=>x==='openlist_upload_small').length,1);
   assert.equal(requests.filter(x=>x==='openlist_copy').length,1);
   assert.equal(requests.filter(x=>x==='openlist_rename').length,1);
   assert.equal(requests.filter(x=>x==='openlist_move').length,2);
-  assert.equal(requests.filter(x=>x==='signed_get').length,1);
+  assert.equal(requests.filter(x=>x==='signed_get').length,0);
+  assert.equal(requests.filter(x=>x==='upstream_sign_check').length,1);
   assert.equal(requests.includes('openlist_share_disable'),false);
   assert.equal(requests.includes('openlist_delete'),false);
+});
+
+test('native signed-link E2E still fetches and verifies finite-expiry URL when upstream issues it',async()=>{
+  const {transport,requests}=fakeTransport({permanentLink:false});
+  const result=await runOpenListDriverAcceptance(
+    {...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport);
+  assert.ok(result.tested.includes('finite_signed_download_link'));
+  assert.equal(requests.filter(x=>x==='signed_get').length,1);
+  assert.equal(requests.filter(x=>x==='upstream_sign_check').length,0);
+});
+
+test('native E2E does not confuse unrelated NOT_SUPPORTED with permanent-link policy refusal',async()=>{
+  const {transport,requests}=fakeTransport({permanentLink:false,rejectFinite:true});
+  await assert.rejects(runOpenListDriverAcceptance(
+    {...env,OPENLIST_NATIVE_E2E_APPROVED:'true'},transport),
+    /openlist_driver_e2e_native_link_policy_unverified/);
+  assert.equal(requests.filter(x=>x==='upstream_sign_check').length,1);
+  assert.equal(requests.filter(x=>x==='signed_get').length,0);
 });
 
 test('native move error is classified without leaking payloads or replaying the write',async()=>{
