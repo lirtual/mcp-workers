@@ -18,10 +18,14 @@ adapters do **not** satisfy the trusted-client human approval gate for
 destructive changes or external sharing; do not expose these simply to reach
 18 tools. The upstream `lirtual/OpenList-Worker` Fork is read-only.
 
-- [PR #371](https://github.com/lirtual/mcp-workers/pull/371) and subsequent
-  corrections through [PR #376](https://github.com/lirtual/mcp-workers/pull/376)
-  are merged. The verified `main` commit is
-  `9b66d619fa93030a32ba6b1359dc4b869cf115d3`.
+- [PR #371](https://github.com/lirtual/mcp-workers/pull/371) through
+  [PR #376](https://github.com/lirtual/mcp-workers/pull/376) are merged.
+  [PR #378](https://github.com/lirtual/mcp-workers/pull/378) enabled
+  read-only historical-share inspection; the single-use test
+  [PR #379](https://github.com/lirtual/mcp-workers/pull/379) was followed by
+  [PR #380](https://github.com/lirtual/mcp-workers/pull/380), which removed
+  its consumed write entrypoint. Verified `main` as of this review:
+  `7c0960b6407dfae703ebb71a754a9bfb675b527a`.
 - Existing manual single-Worker [production release #40606014736](https://github.com/lirtual/mcp-workers/actions/runs/40606014736)
   passed active-version, Service Binding, KV/storage, health, anonymous denial
   and scoped read-only MCP checks; **Portal re-registration was skipped**.
@@ -30,11 +34,21 @@ destructive changes or external sharing; do not expose these simply to reach
   passed **13 acceptance steps** (fixture creation, scoped reads,
   upload/copy/rename/move, signed-link fetch, denial checks). This does
   **not** mean 13 public tools each had independent live acceptance.
-- **Open P1:** `openlist_share_disable` is already public but has **no
-  separate successful real disable + independent status readback** against
-  an explicitly authorized, isolated share. Do not infer it from file E2E
-  or synthetic/unit tests. Never disable an existing share without explicit
-  share-ID-scoped approval.
+- **P1 partially verified:** a single authorized real
+  `openlist_share_disable` call targeted only the expired synthetic share
+  `mcp_spec309_40493124967_1`. The preflight
+  [read-only run #40609056573](https://github.com/lirtual/mcp-workers/actions/runs/40609056573)
+  showed `disabled=false`. [One-write run #40609655831](https://github.com/lirtual/mcp-workers/actions/runs/40609655831)
+  **failed its extra immediate readback** with
+  `openlist_smoke_share_disable_readback_unknown` — do not mark that
+  workflow as Pass. **No write retry occurred.** An independent later
+  [read-only run #40609731190](https://github.com/lirtual/mcp-workers/actions/runs/40609731190)
+  confirmed `disabled=true` and the same ID, exact file and expiry; the
+  original 50-byte file remains intact. This proves the observed state
+  transition, **not** immediate consistency or invalidation of an
+  unexpired public share. The single-use write mode was removed in #380;
+  only the bounded historical **read-only** lookup remains. Do not repeat
+  the already applied write.
 - **Open lifetime risk:** upstream `sign_all=true` and
   `link_expiration=0` yield a **non-expiring bearer signed URL**.
   `openlist_download_link` correctly reports `permanent:true` and
@@ -52,14 +66,38 @@ destructive changes or external sharing; do not expose these simply to reach
 
 **Status:** Spec [#309](https://github.com/lirtual/mcp-workers/issues/309)
 remains **Open**. Native Koofr file operations have real end-to-end evidence;
-full 18-tool completion, share-disable acceptance, short-link guarantees and
-separate high-risk authorization are **not** established.
+full 18-tool completion, immediate share-disable readback/public-access
+acceptance, short-link guarantees and separate high-risk authorization are
+**not** established.
 
 This is a fail-closed MCP adapter to the existing OpenList REST API over
 Cloudflare **Service Binding**, not a second store/proxy/deployment path.
 The rest of this README documents the implementation and historical
 security analysis; prior "Draft/seven tools" status descriptions are
 superseded by this verified section.
+
+## Share-disable consistency: evidence and safe interpretation
+
+The deployed native `/api/share/disable` handler changes one record then
+writes it through `saveDb`; `/api/share/get` reads from `getDb` (official
+[OpenList share handler](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/server/share.ts)).
+The upstream model has an internal **1,000 ms database cache** and refreshes
+its same-request cache on writes
+([upstream model](https://github.com/OpenListTeam/OpenList-Worker/blob/29b7a8eb687aa5daf6cd2158fa27d83232ebae6f/src/backend/internal/model/db.ts)).
+Whether another Worker instance reads a current value immediately also
+depends on its configured persistence backend. These mechanisms are
+**possible contributors**, not a demonstrated root cause of the failed
+immediate acceptance read; the sanitized job log does not reveal the exact
+post-write response. Avoid treating one 200 or same-request cache hit as
+proof of global, immediate share revocation.
+
+For any *future separately authorized* share-disable acceptance, require
+exact ID and file-scope preflight, at most one write, an independent
+post-write state check, and a clear `unknown` / non-retry result when
+verification fails. Read-only follow-up is safe; another effectful write
+is not. The historical test share was **already expired**, so it does not
+verify active public-link invalidation or latency. No Fork, storage
+backend, Portal or global link-expiration setting was changed here.
 
 ## Configuration
 
