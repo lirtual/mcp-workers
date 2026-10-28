@@ -204,6 +204,6 @@ test('Worker and Portal both stage exactly eighteen bounded operations with risk
   const download=source.slice(
     source.indexOf("server.registerTool('openlist_download_link'"),
     source.indexOf("server.registerTool('openlist_share_disable'"));
-  assert.match(download,/Native signature expiry may be permanent/);
+  assert.match(download,/Permanently valid signatures \(link_expiration=0\) are rejected as NOT_SUPPORTED/);
   assert.match(download,/openWorldHint:\s*true/);
 });
