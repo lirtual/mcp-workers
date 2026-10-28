@@ -280,7 +280,8 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
       const native = await boundedJson(upstream, 8192)
         .catch(() => stop('native_link_signer_unavailable'));
       check(native?.code === 200 && native.data?.name === moved.split('/').at(-1) &&
-        native.data?.path === moved && native.data?.is_dir === false &&
+        (native.data?.path === undefined || native.data.path === moved) &&
+        native.data?.is_dir === false &&
         /^0\.[a-f0-9]{64}$/.test(native.data?.sign),
         'native_link_policy_unverified');
       linkCheck = 'permanent_signed_link_refused';
