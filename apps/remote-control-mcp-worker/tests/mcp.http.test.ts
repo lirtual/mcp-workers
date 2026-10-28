@@ -91,6 +91,20 @@ test("production tools require explicit device_id and retain owner controls", as
   assert.equal(f.calls.length, 0);
 });
 
+test("retired MCP Agent upgrade and owner-approval URL cannot dispatch",async()=>{
+  const f=fixture(async()=>{throw new Error("No upgrade dispatch allowed");});
+  const listed=await rpc(f.env,"tools/list",{});
+  assert.ok(!(listed.body.result?.tools??[]).some(t=>t.name==="upgrade_agent"));
+  const call=await rpc(f.env,"tools/call",{name:"upgrade_agent",arguments:{
+    device_id:deviceId,operation_id:"retired",target_version:"v0.1.34"
+  }});
+  assert.equal(call.body.result?.isError,true);
+  const page=await worker.fetch(new Request(
+    "https://production.test/upgrade-approve/retired/"+("0".repeat(64))),f.env);
+  assert.equal(page.status,404);
+  assert.equal(f.calls.length,0);
+});
+
 test("unscoped, invalid and obsolete v1 calls reject without dispatch or hanging", async () => {
   const f = fixture(async () => { throw new Error("unexpected DO call"); });
   for (const [name, args] of [
