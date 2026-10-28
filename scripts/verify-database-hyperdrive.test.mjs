@@ -7,13 +7,13 @@ const caId = 'abcd1234-0000-1111-2222-123456789abc';
 const manifest = [{
   binding: 'HYPERDRIVE_MYSQL', id: configId, dialect: 'mysql',
   origin_host: 'mysql.example.net', origin_port: 3306,
-  origin_database: 'customer', ca_certificate_id: caId
+  origin_database: 'customer', origin_user: 'test-reader', ca_certificate_id: caId
 }];
 const source = { hyperdrive: [{ binding: manifest[0].binding, id: manifest[0].id }] };
 const cloudConfig = {
   id: configId, caching: { disabled: true },
   mtls: { sslmode: 'VERIFY_IDENTITY', ca_certificate_id: caId },
-  origin: { scheme: 'mysql', host: 'mysql.example.net', port: 3306, database: 'customer' }
+  origin: { scheme: 'mysql', host: 'mysql.example.net', port: 3306, database: 'customer', user: 'test-reader' }
 };
 const options = {
   source, manifest, accountId: '11111111111111111111111111111111', token: 'fixture-token',
@@ -42,6 +42,8 @@ test('does not trust wrong Cloudflare TLS mode, CA, cache, dialect, origin or co
     { ...cloudConfig, origin: { ...cloudConfig.origin, host: 'attacker.example.org' } },
     { ...cloudConfig, origin: { ...cloudConfig.origin, port: 3307 } },
     { ...cloudConfig, origin: { ...cloudConfig.origin, database: 'wrong' } },
+    { ...cloudConfig, origin: { ...cloudConfig.origin, user: 'privileged' } },
+    { ...cloudConfig, origin: { ...cloudConfig.origin, user: undefined } },
     { ...cloudConfig, origin: { ...cloudConfig.origin, scheme: 'postgres' } },
     { ...cloudConfig, id: 'different-config-id' }
   ]) assert.throws(() => verifyCloudflareHyperdriveConfig(manifest[0], observed), /verification failed/);
@@ -52,6 +54,7 @@ test('requires an approved host and strict postgres verify-full', () => {
     ...cloudConfig, mtls: { ...cloudConfig.mtls, sslmode: 'verify-full' },
     origin: { ...cloudConfig.origin, scheme: 'postgres' }
   }), true);
+  assert.throws(() => verifyCloudflareHyperdriveConfig({ ...postgres, origin_user: undefined }, cloudConfig));
   for (const host of ['localhost', '127.0.0.1', 'internal', 'bad..example.com']) {
     assert.throws(() => verifyCloudflareHyperdriveConfig({ ...manifest[0], origin_host: host }, cloudConfig));
   }

@@ -50,6 +50,23 @@ describe('transport security semantics', () => {
     await mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' });
     expect(calls).toEqual(['begin', "SHOW SESSION VARIABLES LIKE 'sql_mode'", 'SELECT /*+ MAX_EXECUTION_TIME(2000) */ 1', 'rollback', 'end']);
   });
+  it('validates the named sql_mode field in mysql2 object rows', async () => {
+    const seen: string[] = [];
+    mysqlConnect.mockResolvedValueOnce({
+      beginTransaction: async () => { seen.push('begin'); },
+      query: async (sql: string) => {
+        seen.push(sql);
+        return sql.startsWith('SHOW SESSION VARIABLES')
+          ? [[{ Variable_name: 'sql_mode', Value: 'STRICT_TRANS_TABLES' }], []]
+          : [[{ probe: 1 }], []];
+      },
+      rollback: async () => { seen.push('rollback'); },
+      end: async () => undefined
+    });
+    await mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' });
+    expect(seen).toEqual(['begin', "SHOW SESSION VARIABLES LIKE 'sql_mode'",
+      'SELECT /*+ MAX_EXECUTION_TIME(2000) */ 1', 'rollback']);
+  });
   it('rejects NO_BACKSLASH_ESCAPES within the execution transaction', async () => {
     const calls: string[] = [];
     mysqlConnect.mockResolvedValueOnce({

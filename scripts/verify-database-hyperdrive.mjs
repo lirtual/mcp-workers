@@ -27,6 +27,8 @@ export function verifyCloudflareHyperdriveConfig(expected, observed) {
     expected.origin_port > 0 && expected.origin_port <= 65535 &&
     typeof expected.origin_database === 'string' &&
     expected.origin_database.length > 0 && expected.origin_database.length <= 128 &&
+    typeof expected.origin_user === 'string' &&
+    expected.origin_user.length > 0 && expected.origin_user.length <= 128 &&
     typeof expected.ca_certificate_id === 'string' &&
     /^[a-zA-Z0-9-]{8,128}$/.test(expected.ca_certificate_id),
     'invalid approved source metadata');
@@ -43,6 +45,7 @@ export function verifyCloudflareHyperdriveConfig(expected, observed) {
     origin.host === expected.origin_host &&
     origin.port === expected.origin_port &&
     origin.database === expected.origin_database &&
+    origin.user === expected.origin_user &&
     !origin.service_id && !origin.access_client_id, 'origin identity differs from reviewed source');
   return true;
 }
