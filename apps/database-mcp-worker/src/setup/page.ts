@@ -1,4 +1,5 @@
 import type { RegistryMetadata } from '../registry/store.js';
+import { isAvailableMode } from '../registry/availability.js';
 import { csrfCookie } from './access.js';
 
 function escape(value: unknown): string {
@@ -32,8 +33,8 @@ const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
     (row.status === 'active' ? action(row, csrf, 'disable') :
-      (row.transport === 'direct' ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
-    (row.transport !== 'direct' ? '<p>Hyperdrive origin/CA/credentials are Cloudflare-managed. Disable before external updates; restart the pool, then use the protected GitHub Actions activation gate. Owner-page enabling is intentionally unavailable.</p>' :
+      (isAvailableMode(row.transport, row.dialect) ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
+    (!isAvailableMode(row.transport, row.dialect) ? '<p>This connection mode is not enabled in the current release. Existing records cannot be enabled or edited.</p>' :
     `<details><summary>Edit or replace Direct credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credential mode<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
     '<label>Replacement URL (never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
@@ -41,16 +42,14 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
     '<button type="submit">Test and save edit</button></form></details>') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p>Owner-only. Passwords and origin URLs are never displayed. At most 10 connections; removed IDs are never reused.</p>' +
-    '<p><strong>Direct:</strong> plaintext TCP (insecure, explicit consent required). <strong>Hyperdrive:</strong> strict upstream CA and hostname TLS managed externally, cached queries disabled, dedicated binding published via protected Actions. No fallback.</p>' +
+    '<p><strong>Available now:</strong> MySQL Direct plaintext only (explicit consent). PostgreSQL Direct and Hyperdrive require separate acceptance before activation. No fallback.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Immutable ID<input name="id" maxlength="64" required></label>' +
-    '<label>Dialect<select name="dialect"><option value="postgres">PostgreSQL</option><option value="mysql">MySQL</option></select></label>' +
-    '<label>Transport<select name="transport"><option value="direct">Direct plaintext</option><option value="hyperdrive">Hyperdrive strict TLS</option></select></label>' +
+    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option></select></label>' +
+    '<label>Transport<select name="transport"><option value="direct">Direct plaintext</option></select></label>' +
     '<label>Direct URL (password is not prefilled)<input type="password" name="url" maxlength="8192" autocomplete="off"></label>' +
     plaintextAck +
-    '<label>Hyperdrive dedicated Cloudflare config ID<input name="config_id" maxlength="64" autocomplete="off"></label>' +
-    '<label>Release binding name (HYPERDRIVE_...)<input name="binding_name" maxlength="64" autocomplete="off"></label>' +
     '<label><input type="checkbox" name="allow_disabled" value="1">Save Direct candidate disabled if unreachable</label>' +
     '<button type="submit">Validate and add</button></form></fieldset>' +
     '<fieldset><legend>Direct key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +

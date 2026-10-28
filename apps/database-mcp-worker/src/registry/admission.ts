@@ -2,6 +2,7 @@ import { getRuntimeLimits, getMaxWriteAffectedRows } from '../config.js';
 import { PublicError } from '../errors.js';
 import type { EffectiveConnection, EffectiveWriteConnection, Env } from '../types.js';
 import { resolveHyperdriveConnection } from '../db/hyperdrive.js';
+import { requireAvailableMode } from './availability.js';
 import { openConnectionConfig } from './crypto.js';
 import { validatePublicEndpoint } from './endpoint.js';
 import { getRegistryConnection, listRegistryConnections } from './store.js';
@@ -28,6 +29,7 @@ export async function admitConnection(env: Env, requestedId?: string): Promise<E
   const row = await getRegistryConnection(db, id);
   if (!row) throw new PublicError('CONNECTION_NOT_FOUND', 'The requested logical connection does not exist.');
   if (row.status !== 'active') throw new PublicError('CONNECTION_DISABLED', 'The requested connection is disabled.');
+  requireAvailableMode(row.transport, row.dialect);
   if (row.transport === 'hyperdrive') return resolveHyperdriveConnection(env, row);
   const payload = await openConnectionConfig(env, row.id, row.dialect, {
     keyId: row.key_id, ciphertext: row.ciphertext

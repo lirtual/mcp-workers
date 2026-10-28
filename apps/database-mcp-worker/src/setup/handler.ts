@@ -1,6 +1,7 @@
 import { getRuntimeLimits } from '../config.js';
 import { healthCheck } from '../db/index.js';
 import { PublicError, toPublicError } from '../errors.js';
+import { requireAvailableMode } from '../registry/availability.js';
 import { openConnectionConfig, sealConnectionConfig } from '../registry/crypto.js';
 import { validatePublicEndpoint } from '../registry/endpoint.js';
 import { createRegistryConnection, deleteRegistryConnection, getRegistryConnection,
@@ -113,6 +114,8 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       const dialect = required(form, 'dialect');
       if (dialect !== 'mysql' && dialect !== 'postgres') invalid();
       const transport = required(form, 'transport');
+      if (transport !== 'direct' && transport !== 'hyperdrive') invalid();
+      requireAvailableMode(transport, dialect);
       if (transport === 'hyperdrive') {
         // The binding and Cloudflare-managed credential/CA must already be configured
         // through the separately authorized protected release before activation.
@@ -153,6 +156,7 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       return setupResult('Disabled connection record retired. No upstream database was altered.');
     }
     if (action === 'enable') {
+      requireAvailableMode(row.transport, row.dialect);
       if (row.status !== 'disabled') invalid();
       // Runtime proxy fields cannot attest Cloudflare CA/identity/cache settings.
       // Hyperdrive is activated only by the protected Owner-triggered Actions gate.
@@ -168,6 +172,7 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
       return setupResult('Connection checked and enabled.');
     }
     if (action === 'edit') {
+      requireAvailableMode(row.transport, row.dialect);
       if (row.transport !== 'direct') invalid(); // Cloudflare-managed Hyperdrive refs are immutable.
       const mode = required(form, 'credential_mode');
       if (mode !== 'keep' && mode !== 'replace') invalid();

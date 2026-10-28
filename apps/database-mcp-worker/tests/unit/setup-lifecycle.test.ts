@@ -65,9 +65,9 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
         'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ csrf, ...values })
     }), env, certificates);
-    const original = 'postgres://reader:pass@db.example.net/catalog';
-    expect((await post('add', { id: 'bad', dialect: 'postgres', transport: 'direct', plaintext_ack: '1', url: original, ca: 'not a certificate' })).status).toBe(422);
-    expect((await post('add', { id: 'main', dialect: 'postgres', transport: 'direct', plaintext_ack: '1', url: original })).status).toBe(200);
+    const original = 'mysql://reader:pass@db.example.net/catalog';
+    expect((await post('add', { id: 'bad', dialect: 'mysql', transport: 'direct', plaintext_ack: '1', url: original, ca: 'not a certificate' })).status).toBe(422);
+    expect((await post('add', { id: 'main', dialect: 'mysql', transport: 'direct', plaintext_ack: '1', url: original })).status).toBe(200);
     const listing = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const listingHtml = await listing.text();
     expect(listingHtml).not.toContain(original);
@@ -75,10 +75,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(row).toMatchObject({ status: 'active', revision: 2 });
     const ciphertext = row.ciphertext;
     expect(fakeHealth.mock.lastCall?.[0]).not.toHaveProperty('ca');
-    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext})).ca).toBeUndefined();
+    expect((await openConnectionConfig(env, 'main', 'mysql', {keyId: 'key-one', ciphertext})).ca).toBeUndefined();
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unavailable'));
     expect((await post('edit', { id: 'main', revision: '2', credential_mode: 'replace', plaintext_ack: '1',
-      url: 'postgres://reader:changed@db.example.net/catalog' })).status).toBe(422);
+      url: 'mysql://reader:changed@db.example.net/catalog' })).status).toBe(422);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
     expect(row).toMatchObject({ status: 'active', revision: 2, ciphertext });
     expect((await post('delete', { id: 'main', revision: '2', confirm_id: 'main' })).status).toBe(422);
@@ -87,11 +87,11 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     // making it active. An active connection must never accept failed edits.
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unreachable fixture'));
     expect((await post('edit', { id: 'main', revision: '3', credential_mode: 'replace', plaintext_ack: '1',
-      url: 'postgres://reader:replacement@db.example.net/catalog', allow_disabled: '1' })).status).toBe(200);
+      url: 'mysql://reader:replacement@db.example.net/catalog', allow_disabled: '1' })).status).toBe(200);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
     expect(row.status).toBe('disabled');
     expect(row.revision).toBe(4);
-    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
+    expect((await openConnectionConfig(env, 'main', 'mysql', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
     expect((await post('enable', { id: 'main', revision: '4' })).status).toBe(422);
     expect((await post('enable', { id: 'main', revision: '4', plaintext_ack: '1' })).status).toBe(200);
     expect(fakeHealth.mock.lastCall?.[0]).not.toHaveProperty('ca');
@@ -99,20 +99,34 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect((await post('edit', { id: 'main', revision: '6', credential_mode: 'keep' })).status).toBe(200);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as typeof row;
     expect(row.revision).toBe(7);
-    expect((await openConnectionConfig(env, 'main', 'postgres', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
+    expect((await openConnectionConfig(env, 'main', 'mysql', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
 
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'other' })).status).toBe(422);
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'main' })).status).toBe(200);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
-    expect((await post('add', { id: 'cloud_ref', dialect: 'postgres', transport: 'hyperdrive',
-      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
-    expect((await post('enable', { id: 'cloud_ref', revision: '1' })).status).toBe(503);
-    expect(sqlite.prepare('SELECT status, revision FROM database_connections WHERE id=?').get('cloud_ref'))
+    expect((await post('add', { id: 'cloud_ref', dialect: 'mysql', transport: 'hyperdrive',
+      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(503);
+    expect((await post('add', { id: 'pg_direct', dialect: 'postgres', transport: 'direct',
+      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(503);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
+    // Already-present deferred records cannot be enabled or edited by forged
+    // Owner POSTs; rejection happens before any credential or origin access.
+    sqlite.prepare(`INSERT INTO database_connections
+      (id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at)
+      VALUES ('deferred_pg','postgres','direct','disabled','opaque','key-one',1,1,1)`).run();
+    const checkedBefore = fakeHealth.mock.calls.length;
+    expect((await post('enable', { id: 'deferred_pg', revision: '1', plaintext_ack: '1' })).status).toBe(503);
+    expect((await post('edit', { id: 'deferred_pg', revision: '1', credential_mode: 'keep' })).status).toBe(503);
+    expect(fakeHealth.mock.calls.length).toBe(checkedBefore);
+    expect(sqlite.prepare("SELECT status,revision FROM database_connections WHERE id='deferred_pg'").get())
       .toMatchObject({ status: 'disabled', revision: 1 });
-    const hyperdrivePage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
-    expect((await hyperdrivePage.text())).toContain('protected GitHub Actions activation gate');
-    expect((await post('delete', { id: 'cloud_ref', revision: '1', confirm_id: 'cloud_ref' })).status).toBe(422);
-    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 1 });
+    const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    const initialPageHtml = await initialPage.text();
+    expect(initialPageHtml).toContain('MySQL Direct plaintext only');
+    expect(initialPageHtml).not.toContain('<option value="postgres">');
+    expect(initialPageHtml).not.toContain('<option value="hyperdrive">');
+    expect(initialPageHtml).not.toContain('action="/setup/enable"');
+    expect(initialPageHtml).not.toContain('action="/setup/edit"');
     vi.unstubAllGlobals();
   });
 });

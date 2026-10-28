@@ -1,5 +1,36 @@
 # Database MCP Spec #344 — production cutover / rollback
 
+## Owner-selected initial delivery scope · Option B (2026-10-28)
+
+The Owner explicitly chose **phased delivery** rather than making all four
+Direct/Hyperdrive × MySQL/PostgreSQL paths an unconditional first-release gate.
+The **first migration** is limited to the two existing `b2b` and
+`scrape_relay` MySQL Direct identities at unchanged transport, endpoint and
+credentials. No other D1 identity is added during the cutover. After an
+independently authorized successful release, the Owner may use the existing
+incremental management flow for new **MySQL Direct** connections, subject to
+its explicit plaintext acknowledgement, endpoint checks and normal protections.
+
+The first-release Worker enforces the accepted-mode boundary in code, not via
+an environment switch: **only MySQL Direct is admitted**. The Owner form
+cannot add, enable or edit PostgreSQL Direct or Hyperdrive references; MCP
+admission rejects even unexpected pre-existing active D1 rows of those modes.
+Disabling and auditing unexpected rows remains possible. Enabling deferred
+modes requires a separately reviewed subsequent code release, actual mode-
+specific evidence, and production authorization. Historical real Hyperdrive
+MySQL 11/11 and PostgreSQL 13/13 core evidence remains valid but does not
+replace missing source-origin TLS negatives, lifecycle checks or future
+Hyperdrive release checks. Q41 is revised only in **delivery sequence**, not
+in the validity of unrun tests.
+
+**No change in P0 cutover safety:** the Direct activation production executor
+was previously blocked by safety review and must not be recreated via another
+API or direct SQL. Both original D1 records remain disabled until a separately
+approved, security-permitted operation verifies and atomically enables them;
+the new Worker must not be released before that proof, a verified old-version
+recovery option, and an independently approved cutover decision. This Draft
+change does not deploy, merge, change production D1 or grant business-DB access.
+
 ## Current production evidence (2026-10-28)
 
 One-time D1 preparation **completed** via GitHub Actions run #40651848593. Production D1 now has both reviewed migrations and exactly two **disabled, encrypted** MySQL Direct identities: `b2b` and `scrape_relay` (key ID `db344-20261028`). **Do not rerun the importer.** The deployed legacy Worker still serves both connections from its original `DATABASE_CONFIG` and has no D1 binding. The Owner waived an independent encryption-key backup: keep the existing key stable and preserve the original connection configuration; losing the key makes existing ciphertext irrecoverable.

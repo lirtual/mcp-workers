@@ -92,17 +92,33 @@ describe('fresh admission of a validated connection', () => {
     const f = fixture(); all.push(f.sqlite);
     const env = { DB: f.db, DATABASE_ENCRYPTION_KEY: btoa('q'.repeat(32)), DATABASE_KEY_ID: 'key1',
       RATE_LIMITER: { async limit() { return { success: true }; } } };
-    const sealed = await sealConnectionConfig(env, 'main', 'postgres', { url: 'postgres://u@db.example.net/catalog' });
-    await createRegistryConnection(f.db, { id: 'main', dialect: 'postgres', ciphertext: sealed.ciphertext, keyId: sealed.keyId });
+    const sealed = await sealConnectionConfig(env, 'main', 'mysql', { url: 'mysql://u@db.example.net/catalog' });
+    await createRegistryConnection(f.db, { id: 'main', dialect: 'mysql', ciphertext: sealed.ciphertext, keyId: sealed.keyId });
     await setRegistryConnectionStatus(f.db, 'main', 1, 'active');
     const previous = globalThis.fetch;
     globalThis.fetch = async () => Response.json({ Status: 0, Answer: [{ type: 1, data: '1.1.1.1' }] });
     try {
       const admitted = await admitConnection(env, 'main');
-      expect(admitted).toMatchObject({ dialect: 'postgres', host: 'db.example.net', transport: 'direct' });
+      expect(admitted).toMatchObject({ dialect: 'mysql', host: 'db.example.net', transport: 'direct' });
       await setRegistryConnectionStatus(f.db, 'main', 2, 'disabled');
       await expect(admitConnection(env, 'main')).rejects.toMatchObject({ code: 'CONNECTION_DISABLED' });
     } finally { globalThis.fetch = previous; }
+  });
+});
+
+describe('phased first release mode enforcement', () => {
+  it('rejects already-active PostgreSQL Direct and Hyperdrive rows before credentials or binding access', async () => {
+    const f = fixture(); all.push(f.sqlite);
+    const env = { DB: f.db } as Parameters<typeof admitConnection>[0];
+    await createRegistryConnection(f.db, input('pg_active'));
+    await setRegistryConnectionStatus(f.db, 'pg_active', 1, 'active');
+    await expect(admitConnection(env, 'pg_active'))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    await createRegistryConnection(f.db, { id: 'hyperdrive_active', dialect: 'mysql', transport: 'hyperdrive',
+      configId: '11111111-2222-3333-4444-555555555555', bindingName: 'HYPERDRIVE_MYSQL' });
+    await setRegistryConnectionStatus(f.db, 'hyperdrive_active', 1, 'active');
+    await expect(admitConnection(env, 'hyperdrive_active'))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
   });
 });
 
