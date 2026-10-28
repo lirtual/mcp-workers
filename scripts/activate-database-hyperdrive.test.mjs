@@ -51,7 +51,7 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false } 
         success: true, results: [{ status: row.status }]
       }]);
       if (sql.sql.startsWith('UPDATE database_connections')) {
-        const enabling = sql.sql.includes("status='active'");
+        const enabling = sql.sql.includes("SET status='active'");
         const expected = Number(sql.params[2]);
         if (row.revision === expected && row.status === (enabling ? 'disabled' : 'active')) {
           row.status = enabling ? 'active' : 'disabled';
