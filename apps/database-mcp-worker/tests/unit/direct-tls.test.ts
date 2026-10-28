@@ -42,25 +42,43 @@ describe('transport security semantics', () => {
       beginTransaction: async () => { calls.push('begin'); },
       query: async (sql: string) => {
         calls.push(sql);
-        return sql.startsWith('SELECT @@SESSION.sql_mode') ? [[['STRICT_TRANS_TABLES']], []] : [[['1']], []];
+        return sql.startsWith('SHOW SESSION VARIABLES') ? [[['sql_mode','STRICT_TRANS_TABLES']], []] : [[['1']], []];
       },
       rollback: async () => { calls.push('rollback'); },
       end: async () => { calls.push('end'); }
     });
     await mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' });
-    expect(calls).toEqual(['begin', 'SELECT @@SESSION.sql_mode AS mode', 'SELECT /*+ MAX_EXECUTION_TIME(2000) */ 1', 'rollback', 'end']);
+    expect(calls).toEqual(['begin', "SHOW SESSION VARIABLES LIKE 'sql_mode'", 'SELECT /*+ MAX_EXECUTION_TIME(2000) */ 1', 'rollback', 'end']);
   });
   it('rejects NO_BACKSLASH_ESCAPES within the execution transaction', async () => {
     const calls: string[] = [];
     mysqlConnect.mockResolvedValueOnce({
       beginTransaction: async () => { calls.push('begin'); },
-      query: async () => [[['STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES']], []],
+      query: async () => [[['sql_mode','STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES']], []],
       rollback: async () => { calls.push('rollback'); },
       end: async () => undefined
     });
     await expect(mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' }))
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
     expect(calls).toEqual(['begin','rollback']);
+  });
+  it('supports mysql2 object-row metadata without trusting an arbitrary row', async () => {
+    const sqlMode = async (row: unknown) => {
+      mysqlConnect.mockResolvedValueOnce({
+        beginTransaction: async () => undefined,
+        query: async () => [[row], []],
+        rollback: async () => undefined,
+        end: async () => undefined
+      });
+      return mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive' });
+    };
+    // The first query is the mode check; subsequent health read uses the same mock.
+    await expect(sqlMode({Variable_name:'not_sql_mode',Value:'STRICT_TRANS_TABLES'}))
+      .rejects.toMatchObject({code:'CONFIGURATION_UNAVAILABLE'});
+    await expect(sqlMode({Variable_name:'sql_mode',Value:'NO_BACKSLASH_ESCAPES'}))
+      .rejects.toMatchObject({code:'CONFIGURATION_UNAVAILABLE'});
+    await expect(sqlMode({Variable_name:'sql_mode',Value:null}))
+      .rejects.toMatchObject({code:'CONFIGURATION_UNAVAILABLE'});
   });
   it('fails closed when Hyperdrive returns an empty SQL-mode result set', async () => {
     const calls: string[] = [];

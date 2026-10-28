@@ -19,15 +19,21 @@ export function mysqlSafeParams(values: readonly unknown[]): SqlPrimitive[] {
  */
 export async function assertMysqlHyperdriveSqlMode(client: Connection, connection: EffectiveConnection): Promise<void> {
   if (connection.transport !== 'hyperdrive') return;
-  const [rows] = await withTimeout(client.query('SELECT @@SESSION.sql_mode AS mode'),
+  // Cloudflare Hyperdrive may return zero rows for SELECT @@SESSION.sql_mode;
+  // SHOW SESSION VARIABLES produces a row within the pinned transaction.
+  const [rows] = await withTimeout(client.query("SHOW SESSION VARIABLES LIKE 'sql_mode'"),
     Math.min(connection.limits.queryTimeoutMs, 5_000), () => client.destroy());
   if (!Array.isArray(rows) || rows.length !== 1) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'MySQL SQL mode could not be verified.');
   }
   const first: unknown = rows[0];
-  const mode: unknown = Array.isArray(first) ? first[0]
-    : first && typeof first === 'object' ? (first as Record<string, unknown>).mode : undefined;
-  if (typeof mode !== 'string' || mode.toUpperCase().split(',').some(x => x.trim() === 'NO_BACKSLASH_ESCAPES')) {
+  const name: unknown = Array.isArray(first) ? first[0]
+    : first && typeof first === 'object' ? (first as Record<string, unknown>).Variable_name : undefined;
+  const mode: unknown = Array.isArray(first) ? first[1]
+    : first && typeof first === 'object' ? (first as Record<string, unknown>).Value : undefined;
+  if (typeof name !== 'string' || name.toLowerCase() !== 'sql_mode' ||
+      typeof mode !== 'string' ||
+      mode.toUpperCase().split(',').some(x => x.trim() === 'NO_BACKSLASH_ESCAPES')) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'MySQL escaping is incompatible with this session.');
   }
 }
