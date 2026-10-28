@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 const ROOT = '/Koofr/Downloads';
 const MCP = 'https://openlist-mcp-worker.aiyaya.workers.dev/mcp';
 const UPSTREAM = 'https://openlist.lirtual.dpdns.org/api/fs/put';
+const UPSTREAM_LIST = 'https://openlist.lirtual.dpdns.org/api/fs/list';
 
 function stop(code) { throw Error('openlist_driver_e2e_' + code); }
 function check(condition, code) { if (!condition) stop(code); }
@@ -163,18 +164,39 @@ export async function runOpenListDriverAcceptance(env, transport = fetch) {
   const meta = (await mcp('openlist_get_file',{path:file})).observed_state;
   check(meta?.path === file && meta.name === filename && meta.is_dir === false &&
     meta.size === new TextEncoder().encode(content).byteLength, 'file_metadata');
-  // An immediately cached empty listing can lag a confirmed fixture upload.
-  // Retry only the read, briefly and with a hard bound; never repeat a write.
-  // Any unexpected entry or malformed listing still fails closed immediately.
-  let listing;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    listing = (await mcp('openlist_list_files',
-      {path:folder,page:1,per_page:100})).observed_state;
-    if (listing?.total === 1 && listing.entries?.length === 1 &&
-        listing.entries[0]?.name === filename) break;
-    check(listing?.total === 0 && Array.isArray(listing.entries) &&
-      listing.entries.length === 0 && listing.page === 1, 'file_listing');
-    if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000));
+  // A cached empty directory can outlive a confirmed upload. Upstream /list
+  // accepts refresh:true; use it once, only for this freshly created fixture,
+  // after an exactly empty MCP listing. Never repeat a file mutation.
+  let listing = (await mcp('openlist_list_files',
+    {path:folder,page:1,per_page:100})).observed_state;
+  if (listing?.total === 0 && listing.page === 1 &&
+      Array.isArray(listing.entries) && listing.entries.length === 0) {
+    let refreshed;
+    try {
+      refreshed = await transport(new Request(UPSTREAM_LIST, {
+        method:'POST', redirect:'manual', signal:AbortSignal.timeout(12000),
+        headers:{ authorization:env.OPENLIST_API_TOKEN,
+          'content-type':'application/json' },
+        body:JSON.stringify({path:folder,page:1,per_page:100,refresh:true}),
+      }));
+    } catch { stop('file_listing_refresh_unknown'); }
+    check(refreshed.status === 200 && !refreshed.redirected &&
+      !refreshed.headers.has('location'), 'file_listing_refresh_unknown');
+    const refreshedResult = await boundedJson(refreshed, 8192)
+      .catch(() => stop('file_listing_refresh_unknown'));
+    check(refreshedResult?.code === 200, 'file_listing_refresh_unknown');
+    // Refresh is a read-only cache invalidation, not permission to create
+    // more files or to weaken the exact one-file confirmation.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      listing = (await mcp('openlist_list_files',
+        {path:folder,page:1,per_page:100})).observed_state;
+      if (listing?.total === 1 && listing.entries?.length === 1 &&
+          listing.entries[0]?.name === filename) break;
+      check(listing?.total === 0 && listing.page === 1 &&
+        Array.isArray(listing.entries) && listing.entries.length === 0,
+        'file_listing');
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   }
   check(listing?.total === 1 && listing.entries?.length === 1 &&
     listing.entries[0]?.name === filename, 'file_listing');
