@@ -135,6 +135,12 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
         !secretNames.has("MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
+      const providerVersion=find("WEIXIN_ACTION_DEPLOYMENT_ID","plain_text");
+      invariant(bindings.filter(x=>x.name==="WEIXIN_ACTION_DEPLOYMENT_ID").length===1 &&
+        typeof providerVersion?.text==="string" &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(providerVersion.text) &&
+        !secretNames.has("WEIXIN_ACTION_DEPLOYMENT_ID"),
+        "Workflow reviewed Weixin Provider Version ID drift");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -245,7 +251,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   const allowed = new Set(worker === "workflow-mcp-worker"
-    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY"] : ["DB", "WORKFLOW"]) :
+    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER"]) :
     worker === "openlist-mcp-worker" ? ["OPENLIST"] :
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "weixin-mcp-worker" ? ["DB"] :
@@ -257,6 +263,11 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         ? (options.mode === "preflight"
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
           : ["DEVICE_COORDINATOR"]) : []);
+  if (worker === "workflow-mcp-worker" && options.mode === "readback") {
+    invariant(bindings.filter(x=>x.name === "WEIXIN_ACTION_PROVIDER").length === 1 &&
+      !!find("WEIXIN_ACTION_PROVIDER", "service"),
+      "Workflow reviewed Weixin Service Binding missing after release");
+  }
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
       // Source manifest controls the new bindings; a production preflight may
@@ -289,7 +300,12 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-orchestrator" &&
     conf.workflows[0]?.class_name === "WorkflowOrchestrator",
     "Workflow binding drift");
-  invariant(!conf.services?.length, "Workflow must not retain Service Bindings");
+  invariant(conf.services?.length === 1 &&
+    conf.services[0]?.binding === "WEIXIN_ACTION_PROVIDER" &&
+    conf.services[0]?.service === "weixin-mcp-worker" &&
+    conf.services[0]?.entrypoint === "WeixinActionProvider" &&
+    Object.keys(conf.services[0]).sort().join(",") === "binding,entrypoint,service",
+    "Workflow reviewed Weixin Service Binding drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
@@ -356,9 +372,14 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   // requires the exact v12 receipt table + migration record.
   const completeV11 = row?.migration_count === 11 &&
     row?.migration_v12 === 0 && row?.event_receipts_table === 0 && fullV11Schema;
-  const complete = row?.migration_count === 12 &&
-    row?.migration_v12 === 1 && row?.event_receipts_table === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || complete)),
+  const completeV12 = row?.migration_count === 12 &&
+    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
+    row?.migration_v13 !== 1 && fullV11Schema;
+  const complete = row?.migration_count === 13 &&
+    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
+    row?.migration_v13 === 1 && row?.invocations_table === 1 &&
+    row?.cloudflare_cancel_table === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -385,7 +406,7 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
    '0008_session_locator.sql','0009_fixed_sessions.sql',
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
-   '0012_event_wait_receipts.sql')) AS expected_migrations,
+   '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -425,8 +446,9 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant(row.migration_count === 12 && row.expected_migrations === 12,
-    "Workflow migration requires the exact twelve reviewed D1 migrations");
+  invariant((row.migration_count === 12 || row.migration_count === 13) &&
+    row.expected_migrations === row.migration_count,
+    "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
@@ -459,7 +481,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===12 && row.expected_migrations===12,
+  invariant(row.migration_count===13 && row.expected_migrations===13,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",

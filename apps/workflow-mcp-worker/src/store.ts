@@ -12,6 +12,7 @@ import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
+import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 function draftName(definition:string):string {
   if(!definition || new TextEncoder().encode(definition).byteLength>32768)throw new StateError('definition_too_large');
   try {
@@ -45,6 +46,14 @@ export type Env = {
   GITHUB_ACTION_OIDC_AUDIENCE?: string;
   // Canonical 256-bit AES-GCM key for short-lived Session data.
   SESSION_RUNTIME_DATA_KEY?: string;
+  // The Worker Version ID is pinned by the separately authorized release.
+  WEIXIN_ACTION_DEPLOYMENT_ID?: string;
+  WEIXIN_ACTION_PROVIDER?: {
+    getBinding():Promise<{generation:number;ready:boolean}>;
+    getContract():Promise<{deployment_id:string;contract_digest:string}>;
+    sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
+    getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
+  };
 
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
@@ -244,6 +253,11 @@ export class WorkflowService {
     try {
       const {digest,plan}=await compilePlan(definition);
       const reviewed_actions=await this.checkedGitHubActions(plan);
+      const manifest=await cloudflareActionManifest();
+      const reviewed_cloudflare_actions=plan.steps.some(s=>s.uses==='action.run')
+        ?[{executor:'cloudflare' as const,provider:'weixin' as const,
+          action:'weixin.send_text' as const,contract_digest:manifest.contract_digest,
+          deployment_id:this.env.WEIXIN_ACTION_DEPLOYMENT_ID??null}]:[];
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
@@ -251,8 +265,11 @@ export class WorkflowService {
       })).values()];
       return {valid:true,digest,steps:plan.steps.length,issues:[],
         ...(required_children.length?{required_children}:{}),
-        contract_validation:required_approvals.length?'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
+        contract_validation:reviewed_cloudflare_actions.length?
+          'cloudflare_contract_pinned_provider_unverified':required_approvals.length?
+          'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
+        ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
         ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
@@ -302,7 +319,9 @@ export class WorkflowService {
         ...(suggestion?{suggestion}:{})}]};
     }
   }
-  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[]){
+  async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
+    approved_cloudflare_actions:Array<{executor:'cloudflare';provider:'weixin';action:'weixin.send_text';contract_digest:string;deployment_id:string}>=[],
+    approve_cloudflare_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -331,12 +350,37 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
+    const hasCloudflare=plan.steps.some(s=>s.uses==='action.run');
+    let cloudflareGrants:typeof approved_cloudflare_actions=[];
+    if(hasCloudflare){
+      const deployment=this.env.WEIXIN_ACTION_DEPLOYMENT_ID;
+      if(!this.env.WEIXIN_ACTION_PROVIDER||typeof deployment!=='string'||
+         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
+        throw new StateError('cloudflare_provider_not_configured');
+      const contract=await cloudflareActionManifest();
+      // A manually staged Version ID is not proof of the bound Worker's version.
+      let live;
+      try{live=await this.env.WEIXIN_ACTION_PROVIDER.getContract();}
+      catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
+      if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
+        throw new StateError('cloudflare_provider_identity_mismatch');
+      cloudflareGrants=[{executor:'cloudflare',provider:'weixin',
+        action:'weixin.send_text',contract_digest:contract.contract_digest,
+        deployment_id:deployment}];
+      if(approve_cloudflare_execution!==true||
+         JSON.stringify(approved_cloudflare_actions)!==JSON.stringify(cloudflareGrants))
+        throw new StateError('cloudflare_action_approval_required');
+    }else if(approved_cloudflare_actions.length || approve_cloudflare_execution)
+      throw new StateError('unexpected_cloudflare_approval');
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
     const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
     const actionPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
-    const publishedPlan:Plan=children.length?{...actionPlan,child_approvals:children}:actionPlan;
+    const withCloudflare:Plan=hasCloudflare?{
+      ...actionPlan,cloudflare_execution_approved:true,
+      cloudflare_action_approvals:cloudflareGrants}:actionPlan;
+    const publishedPlan:Plan=children.length?{...withCloudflare,child_approvals:children}:withCloudflare;
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
@@ -372,6 +416,29 @@ export class WorkflowService {
     if(planRow){
       let published:Plan|null=null;
       try{published=JSON.parse(planRow.plan) as Plan;}catch{}
+      const cloudflare=published?.steps.find(s=>s.id===step_id&&s.uses==='action.run');
+      if(cloudflare){
+        if(force)throw new StateError('cloudflare_force_not_supported');
+        // Both cancellation and first dispatch compete on D1 durable rows.
+        // After reservation we cannot promise that an external send is revoked.
+        await this.db.prepare(`INSERT OR IGNORE INTO cloudflare_action_cancellations
+          (run_id,step_id,created_at) SELECT ?,?,? FROM runs
+          WHERE id=? AND outcome IN ('queued','running')`)
+          .bind(run_id,step_id,now(),run_id).run();
+        const reserved=await this.db.prepare(`SELECT 1 AS present FROM cloudflare_action_invocations
+          WHERE run_id=? AND step_id=?`).bind(run_id,step_id)
+          .first<{present:number}>();
+        if(!reserved){
+          await this.db.prepare(`UPDATE runs SET outcome='cancelled',
+            error_code='cloudflare_action_cancel_requested',updated_at=?
+            WHERE id=? AND outcome IN ('queued','running')
+            AND NOT EXISTS(SELECT 1 FROM cloudflare_action_invocations
+              WHERE run_id=? AND step_id=?)`)
+            .bind(now(),run_id,run_id,step_id).run();
+        }
+        return {run_id,step_id,cancellation:reserved?'dispatched_may_complete':'requested',
+          physical_terminated:false};
+      }
       const child=published?.steps.find(s=>s.id===step_id&&s.uses==='flow.child');
       const waiting=published?.steps.find(s=>s.id===step_id&&s.uses==='flow.wait_event');
       if(waiting){

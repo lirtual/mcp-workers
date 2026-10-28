@@ -153,6 +153,8 @@ jobs:
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           OPENLIST_ALLOWED_ROOTS: ${{ inputs.worker == 'openlist-mcp-worker' && vars.OPENLIST_ALLOWED_ROOTS || '' }}
           MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
+          # Independent Provider Worker Version ID must be approved before any Workflow release.
+          WEIXIN_ACTION_DEPLOYMENT_ID: ${{ vars.WEIXIN_ACTION_DEPLOYMENT_ID }}
           MAX_ROWS: ${{ vars.MAX_ROWS }}
           MAX_RESULT_BYTES: ${{ vars.MAX_RESULT_BYTES }}
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
@@ -202,6 +204,9 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
              (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
+             (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_invocations') AS invocations_table,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_cancellations') AS cloudflare_cancel_table,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
@@ -277,6 +282,9 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
              (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
+             (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_invocations') AS invocations_table,
+             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_cancellations') AS cloudflare_cancel_table,
              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
               (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
               (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
