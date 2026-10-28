@@ -688,7 +688,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Validate legacy Secret, encryption key and untouched D1 (read-only)
         env:
-          DATABASE_LEGACY_IMPORT_CONFIG: ${{ secrets.DATABASE_LEGACY_IMPORT_CONFIG }}
+          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ secrets.DATABASE_KEY_ID }}
           DATABASE_CUTOVER_EXPECTED_IDS: ${{ vars.DATABASE_CUTOVER_EXPECTED_IDS }}
@@ -710,7 +710,7 @@ jobs:
           pnpm exec wrangler d1 migrations apply database-mcp-db --remote
       - name: Import and read back exactly two disabled Direct records
         env:
-          DATABASE_LEGACY_IMPORT_CONFIG: ${{ secrets.DATABASE_LEGACY_IMPORT_CONFIG }}
+          DATABASE_CONFIG: ${{ secrets.DATABASE_CONFIG }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
           DATABASE_KEY_ID: ${{ secrets.DATABASE_KEY_ID }}
           DATABASE_CUTOVER_EXPECTED_IDS: ${{ vars.DATABASE_CUTOVER_EXPECTED_IDS }}
