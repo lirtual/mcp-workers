@@ -308,3 +308,17 @@ The `action.run` Cloudflare source may only reference an upstream `lirtual/sessi
 The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the independent `cloudflare-actions` Provider using the unchanged physical Worker name `weixin-mcp-worker`. Production release and version pin are verified separately; no public Weixin MCP ingress remains. D1 migration 0013 is additive and retains immutable historical Plans.
 
 A physically running GitHub Attempt and signed Ready callback are checked immediately before the D1 first-dispatch fence. The frozen Invocation ID, input digest, source Attempt and binding generation are stored without message text/URL. Once reservation succeeds, retries and recovery call `getReceipt` only. Missing receipts remain indeterminate; handset delivery is separately observed. Cancelling after reservation cannot retract a possible send. Session termination and capacity release use the existing GitHub lifecycle, not notification success.
+
+### Historical terminal-Run release guard (2026-10-29)
+
+The 2026-10-28 Owner-confirmed OpenList → Weixin Run
+`9da5816a-e7d9-481a-8203-3a2036534563` remains machine
+`indeterminate`/`cloudflare_outcome_unknown`. Its GitHub Job
+`40722496262` and physical Session terminated, and Provider Invocation
+`223af10e-dcf4-48c3-8c06-a39e60fa758b` retains a persisted
+`unknown` machine receipt. Before any Workflow code-only release, the
+manual main-only workflow independently verifies exact D1 Run/Steps/Session/
+Attempt/Invocation identity plus native Cloudflare completion and GitHub
+physical cancellation. Only that exact Run ID is excluded from the bounded
+release counters after proof; unrelated nonterminal Runs still block release.
+This changes no runtime business result, public API, history or send behavior.
