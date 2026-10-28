@@ -248,6 +248,21 @@ jobs:
               };
             } finally { await c.end().catch(()=>undefined); }
           }
+          async function mysqlDdlPermissionSummary(hd: HD):Promise<Record<string,boolean|number>> {
+            const c=await mysqlConnect({host:hd.host,user:hd.user,password:hd.password,database:hd.database,
+              port:hd.port,disableEval:true,connectTimeout:12000});
+            try {
+              const [raw]=await c.query('SHOW GRANTS');
+              const grants=Array.isArray(raw)
+                ? raw.flatMap(row=>row&&typeof row==='object'?Object.values(row):[]).filter((v):v is string=>typeof v==='string')
+                : [];
+              const allowed=/\b(?:ALL PRIVILEGES|CREATE)\b/i;
+              const ddlGrant=grants.some(text=>allowed.test(text));
+              const scopeGrants=grants.some(text=>text.includes(hd.database)||/ON\s+\*\.\*/i.test(text));
+              const [tables]=await c.query("SHOW TABLES LIKE 'db344_%'");
+              return {grantsReadable:true,ddlGrant,scopeGrants,existingProbeTableCount:Array.isArray(tables)?tables.length:-1};
+            } finally {await c.end().catch(()=>undefined);}
+          }
           export default {
             async fetch(req: Request, env: Env): Promise<Response> {
               if (req.method !== 'POST' || new URL(req.url).pathname !== '/run')
@@ -266,9 +281,11 @@ jobs:
                     ? String((e as {code:unknown}).code) : 'unknown';
                   const phase = e && typeof e === 'object' && 'phase' in e
                     ? String((e as {phase:unknown}).phase) : 'unknown';
-                  const modeDiagnostic = name === 'mysql'
+                  const modeDiagnostic = name === 'mysql' && phase==='health'
                     ? await inspectMysqlMode(hd).catch(() => ({ modeProbeUnavailable:true }))
-                    : {};
+                    : name === 'mysql' && phase==='ddl_create'
+                      ? await mysqlDdlPermissionSummary(hd).catch(() => ({grantProbeUnavailable:true}))
+                      : {};
                   summary[name] = {
                     errorCode: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown',
                     phase: /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown',
