@@ -1,5 +1,7 @@
 # Cloudflare runtime configuration
 
+**Spec #392 handoff:** `weixin-mcp-worker` remains in this repository for source/CI and backward compatibility, but is excluded from its production release target list. The dedicated `cloudflare-actions` manual release owns future Weixin deployments only after credential isolation and authorized cutover. The Weixin row below is retained as historical runtime configuration, not as authority to deploy from here.
+
 The eleven independently managed MCP Workers share an MCP-entry Secret **name**, not a uniform hostname, credential or logging policy. Authoritative release contracts: `.github/workflows/release.yml`, `scripts/bootstrap-worker-secrets.mjs`, `scripts/worker-release-variables.mjs`, `scripts/manual-worker-release.mjs` and each app's `wrangler.jsonc`.
 
 ## Source of truth
