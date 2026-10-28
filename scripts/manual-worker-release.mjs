@@ -4,7 +4,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
-import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
 const REQUIRED_SECRETS = {
@@ -458,6 +458,7 @@ function reviewedTerminalRunSql(sql) {
   const exclusions=[
     [process.env.WORKFLOW_TERMINAL_RUN_ID,TERMINAL_RUN_ID],
     [process.env.WORKFLOW_SECOND_TERMINAL_RUN_ID,SECOND_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_THIRD_TERMINAL_RUN_ID,THIRD_TERMINAL_RUN_ID],
   ].filter(([supplied,exact])=>supplied===exact).map(([,exact])=>exact);
   if(exclusions.length===0)return sql;
   const sqlIds=exclusions.map(id=>"'"+id+"'").join(",");
