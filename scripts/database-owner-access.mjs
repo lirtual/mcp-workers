@@ -77,6 +77,41 @@ export class AccessInventoryHttpError extends Error {
   }
 }
 
+// Only fixed local codes may be logged; never log source exceptions.
+export class AccessInventoryStageError extends Error {
+  constructor(stage, kind) {
+    super("Database Owner Access inventory transport or response failure");
+    this.stage = stage;
+    this.kind = kind;
+  }
+}
+
+const safeValidationCodes = Object.freeze({
+  "Database Owner Access validation environment missing": "env",
+  "Database Owner Access identity providers inventory unavailable or incomplete": "idps_inventory",
+  "Database Owner One-time PIN provider missing or ambiguous": "idps_otp",
+  "Database Owner Access applications inventory unavailable or incomplete": "apps_inventory",
+  "Database Owner Access application missing or ambiguous": "apps_match",
+  "Database Owner Access policies inventory unavailable or incomplete": "policies_inventory",
+  "Database Owner Access app identity or host mismatch": "app_identity",
+  "Database Owner Access OTP session configuration drift": "app_session",
+  "Database Owner Access must restrict login to the One-time PIN identity provider": "app_otp",
+  "Database Owner must have one restricted Access policy": "policy_count",
+  "Database Owner Access policy must allow exactly the designated email": "policy_email"
+});
+
+export function safeDatabaseOwnerAccessDiagnostic(error) {
+  if (error instanceof AccessInventoryHttpError) {
+    return " (stage=" + error.stage + "; http=" + error.status + ")";
+  }
+  if (error instanceof AccessInventoryStageError) {
+    return " (stage=" + error.stage + "; kind=" + error.kind + ")";
+  }
+  const code = error instanceof Error && Object.hasOwn(safeValidationCodes, error.message)
+    ? safeValidationCodes[error.message] : "unknown";
+  return " (check=" + code + ")";
+}
+
 export async function verifyDatabaseOwnerAccessCloudflare(config, environment, transport = fetch) {
   const host = config?.vars?.DATABASE_SETUP_HOST;
   const audience = environment.ACCESS_AUD;
@@ -91,11 +126,21 @@ export async function verifyDatabaseOwnerAccessCloudflare(config, environment, t
     "Database Owner Access validation environment missing");
   const url = "https://api.cloudflare.com/client/v4/accounts/" + account + "/access/apps";
   const get = async (path, stage) => {
-    const response = await transport(path, { headers: {
-      Authorization: "Bearer " + apiToken, Accept: "application/json"
-    }, signal: AbortSignal.timeout(15000) });
+    let response;
+    try {
+      response = await transport(path, { headers: {
+        Authorization: "Bearer " + apiToken, Accept: "application/json"
+      }, signal: AbortSignal.timeout(15000) });
+    } catch {
+      throw new AccessInventoryStageError(stage, "transport");
+    }
     if (!response.ok) throw new AccessInventoryHttpError(stage, response.status);
-    const body = await response.json();
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      throw new AccessInventoryStageError(stage, "json");
+    }
     if (body?.success !== true) throw new AccessInventoryHttpError(stage, response.status);
     return body;
   };
@@ -118,9 +163,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   main().catch(error => {
     // Print only a static stage code and numeric HTTP status, not sensitive
     // Cloudflare errors, response bodies, URL, request metadata or credentials.
-    const classification = error instanceof AccessInventoryHttpError
-      ? ` (stage=${error.stage}; http=${error.status})` : "";
-    console.error("Database Owner Cloudflare Access gate: BLOCKED" + classification);
+    console.error("Database Owner Cloudflare Access gate: BLOCKED" +
+      safeDatabaseOwnerAccessDiagnostic(error));
     process.exitCode = 1;
   });
 }
