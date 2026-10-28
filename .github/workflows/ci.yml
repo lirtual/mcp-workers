@@ -124,7 +124,7 @@ jobs:
         if: steps.scope.outputs.remote_control_changed == 'true'
         run: |
           set -euo pipefail
-          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "50e30be1c14f80327e0b183cbf4172ffa537ef91"
+          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "2f06bb18e760ac24e8c30fb286d87eed3f14aea7"
           # Public Agent native tests belong to the upstream immutable release CI.
           # Run private Worker compatibility checks exactly once in the
           # existing affected-application `remote-control-mcp-worker check`.
