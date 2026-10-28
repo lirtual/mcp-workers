@@ -17,6 +17,7 @@ const fixture = `OpenList MCP Spec309 disposable E2E ${env.GITHUB_RUN_ID}-1\n`;
 
 function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
   authEnv = env,nativeMoveError,staleUploadedListingReads = 0,failRefresh = false,
+  postRefreshStaleListingReads = 0,
   permanentLink = true, rejectFinite = false, failPublic = false,
   staleRevokedReads = 0, malformedPassword = false,
   failAfterReenable = false, staleCreatedReads = 0} = {}) {
@@ -62,7 +63,7 @@ function fakeTransport({rootEntries = [],rootReportedTotal,failUpload = false,
       });
       if(failRefresh) return Response.json({code:500,data:null},{status:500});
       assert.equal(uploaded,true);
-      staleReads=0;
+      staleReads=postRefreshStaleListingReads;
       return Response.json({code:200,data:{content:[
         {name:file.split('/').at(-1),is_dir:false}],total:1}});
     }
@@ -293,6 +294,16 @@ test('cached empty listing triggers one read-only refresh, not a second upload',
   assert.equal(requests.filter(x=>x==='openlist_create_folder').length,2);
 });
 
+test('post-refresh eventual listing visibility uses reads only, never repeats fixture PUT',async()=>{
+  const {transport,requests}=fakeTransport({
+    staleUploadedListingReads:8,postRefreshStaleListingReads:5,
+  });
+  const result=await runOpenListDriverAcceptance(env,transport);
+  assert.ok(result.tested.includes('read_text'));
+  assert.equal(requests.filter(x=>x==='upload').length,1);
+  assert.equal(requests.filter(x=>x==='refresh_listing').length,1);
+  assert.equal(requests.filter(x=>x==='openlist_list_files').length,9);
+});
 test('failed read-only refresh stops before any native write and is never retried',async()=>{
   const {transport,requests}=fakeTransport({
     staleUploadedListingReads:8,failRefresh:true,
