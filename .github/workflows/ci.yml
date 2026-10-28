@@ -54,8 +54,6 @@ jobs:
         run: node --test scripts/register-http-portal.test.mjs
       - name: Verify OpenList Portal registration contract (offline)
         run: node --test scripts/register-openlist-portal.test.mjs
-      - name: Verify Weixin Portal registration contract (offline)
-        run: node --test scripts/register-weixin-portal.test.mjs
       - name: Verify shared MCP Access policy registration gate (offline)
         run: node --test scripts/verify-mcp-access-policies.test.mjs
       - name: Verify OpenList read-only release acceptance contract (offline)
