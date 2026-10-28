@@ -1,4 +1,4 @@
-name: One-time Aiven Hyperdrive approved-schema identity proof 344
+name: One-time Aiven Hyperdrive verified-origin MySQL core 344
 on:
   push:
     branches: [feat/database-spec-344]
@@ -85,57 +85,158 @@ jobs:
           set -euo pipefail
           cd apps/database-mcp-worker
           cat > src/hyperdrive-tmp344.ts <<'TS'
-          import { createConnection } from 'mysql2/promise';
-          interface HD { host:string;port:number;user:string;password:string;database:string;connectionString:string; }
-          interface Env { MYSQL:HD; PROBE_TOKEN:string; }
-          function classify(v:unknown):string {
-           if(v==='database-mcp-test-mysql')return 'approved_test_database';
-           if(v==='defaultdb')return 'defaultdb';
-           if(v===null)return 'none';
-           return typeof v==='string'?'other_database':'unavailable';
+          import { Client as PgClient } from 'pg';
+          import { createConnection as mysqlConnect } from 'mysql2/promise';
+          import {
+            healthCheck, queryRead, explainRead, inspectSchema,
+            createTable, alterTable, createIndex, dropIndex, dropTable,
+            insertRows, updateRows, deleteRows
+          } from './db/index.js';
+          import type { Dialect, EffectiveConnection, EffectiveWriteConnection } from './types.js';
+          import { mysqlHyperdriveSchema } from './db/hyperdrive.js';
+
+          interface HD { connectionString: string; host: string; port: number; user: string; password: string; database: string; }
+          interface Env { PROBE_TOKEN: string; POSTGRES: HD; MYSQL: HD; }
+          type Check = Record<string, boolean>;
+          const limits = { maxRows: 10, maxResultBytes: 50000, maxSchemaBytes: 50000, queryTimeoutMs: 12000 };
+          function identity(dialect: Dialect, hd: HD): EffectiveConnection {
+            return {
+              config: { id: 'isolated_acceptance_' + dialect, transport: 'hyperdrive',
+                configId: 'test-only', bindingName: dialect.toUpperCase() },
+              transport: 'hyperdrive', dialect,
+              connectionString: hd.connectionString, host: hd.host, port: hd.port,
+              user: hd.user, password: hd.password,
+              ...(dialect==='mysql' ? mysqlHyperdriveSchema(hd.database, 'database-mcp-test-mysql') : {database:hd.database}), limits
+            };
           }
-          export default {async fetch(req:Request,env:Env):Promise<Response>{
-           if(req.method!=='POST'||new URL(req.url).pathname!=='/run')return new Response('Not found',{status:404});
-           if(!env.PROBE_TOKEN || req.headers.get('authorization')!=='Bearer '+env.PROBE_TOKEN)return new Response('Forbidden',{status:403});
-           const hd=env.MYSQL;
-           const out:Record<string,unknown>={
-            bindingDatabaseClass:classify(hd.database),
-            bindingDatabaseExpected:hd.database==='database-mcp-test-mysql'
-           };
-           let c:Awaited<ReturnType<typeof createConnection>>|undefined;
-           try {
-            c=await createConnection({host:hd.host,port:hd.port,user:hd.user,password:hd.password,
-             database:hd.database,disableEval:true,rowsAsArray:false,connectTimeout:10000});
-            const [all]=await c.query('SHOW DATABASES');
-            const schemas=Array.isArray(all)?all.flatMap(v=>v&&typeof v==='object'?Object.values(v):[])
-             .filter((v):v is string=>typeof v==='string'):[];
-            out.schemaCount=schemas.length;
-            out.expectedSchemaVisible=schemas.includes('database-mcp-test-mysql');
-            out.defaultdbVisible=schemas.includes('defaultdb');
-            out.otherNonSystemSchemas=schemas.filter(v=>!['database-mcp-test-mysql','defaultdb','information_schema','mysql','performance_schema','sys'].includes(v)).length;
-            try{
-              const [rows]=await c.query('SELECT DATABASE() AS db');
-              const v=Array.isArray(rows)&&rows.length===1&&rows[0]&&typeof rows[0]==='object'
-                ?(rows[0] as Record<string,unknown>).db:undefined;
-              out.selectedSchemaClass=classify(v);
-              out.selectedSchemaExact=typeof v==='string'&&v===hd.database;
-              out.selectedSchemaQueryRows=Array.isArray(rows)?rows.length:-1;
-            }catch{out.selectedSchemaQueryError=true;}
-            try{
-              const [rows]=await c.query('SELECT schema_name FROM information_schema.schemata WHERE schema_name = ?', ['database-mcp-test-mysql']);
-              out.informationSchemaExpectedExists=Array.isArray(rows)&&rows.length===1;
-              out.informationSchemaQueryRows=Array.isArray(rows)?rows.length:-1;
-            }catch{out.informationSchemaQueryError=true;}
-            try{
-              const [rows]=await c.query("SHOW TABLES LIKE 'db344_%'");
-              out.orphanProbeTableCount=Array.isArray(rows)?rows.length:-1;
-            }catch{out.orphanProbeTableScanUnavailable=true;}
-           }catch(e){
-            const code=e&&typeof e==='object'&&'code' in e?String((e as {code:unknown}).code):'unknown';
-            out.errorCode=/^[A-Z0-9_]{1,50}$/.test(code)?code:'unknown';
-           }finally{if(c)await c.end().catch(()=>undefined);}
-           return Response.json({mysql:out},{headers:{'Cache-Control':'no-store'}});
-          }};
+          async function tlsProof(dialect: Dialect, hd: HD): Promise<boolean> {
+            if (dialect === 'postgres') {
+              const client = new PgClient({
+                host: hd.host, user: hd.user, password: hd.password, database: hd.database,
+                port: hd.port, ssl: false, connectionTimeoutMillis: 12000
+              });
+              try {
+                await client.connect();
+                const result = await client.query<{ssl: boolean}>(
+                  'SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()'
+                );
+                return result.rows[0]?.ssl === true;
+              } finally { await client.end().catch(() => undefined); }
+            }
+            const client = await mysqlConnect({
+              host:hd.host, user:hd.user, password:hd.password, database:hd.database, port:hd.port,
+              disableEval:true,connectTimeout:12000
+            });
+            try {
+              const [rows] = await client.query("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
+              return !!(Array.isArray(rows) && (rows as Array<{Value:string}>)[0]?.Value);
+            } finally { await client.end().catch(() => undefined); }
+          }
+          async function runDialect(dialect: Dialect, hd: HD): Promise<Check> {
+            const result: Check = {
+              query: false, tls: false, health: false, read: false, explain: false,
+              schema: false, ddl: false, insert: false, rollback: false, update: false, remove: false
+            };
+            const connection = identity(dialect, hd);
+            const write: EffectiveWriteConnection = { ...connection, maxAffectedRows: 20 };
+            const guarded: EffectiveWriteConnection = { ...connection, maxAffectedRows: 1 };
+            const schema = dialect === 'postgres' ? 'public' : undefined;
+            const table = 'db344_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16);
+            let created = false;
+            let stage = 'tls';
+            try {
+              result.tls = await tlsProof(dialect, hd);
+              stage = 'health';
+              result.health = (await healthCheck(connection)).ok;
+              stage = 'read';
+              const read = await queryRead(connection, 'SELECT 1 AS probe', [], 3);
+              result.query = read.rowCount === 1 && Number(read.rows[0]?.[0]) === 1;
+              result.read = result.query;
+              stage = 'explain';
+              result.explain = (await explainRead(connection, 'SELECT 1 AS probe', [])) != null;
+              if (dialect === 'postgres') {
+                result.schema = !!(await inspectSchema(connection, 'public'));
+                // The existing dedicated PostgreSQL test role lacks CREATE privileges.
+                // This test does not escalate access or attempt any persistent DDL.
+                return result;
+              }
+              // DDL scoped to one unique disposable table on dedicated test DB.
+              stage = 'ddl_create';
+              await createTable(connection, schema, table, [
+                {name:'id', type:'integer', primaryKey:true},
+                {name:'value', type:'varchar', length:80, nullable:false}
+              ]);
+              created = true;
+              stage = 'schema';
+              const description = await inspectSchema(connection, schema, table);
+              result.schema = description.columns?.some(column => column.name === 'value') === true;
+              stage = 'ddl_index';
+              await createIndex(connection, schema, table, ['value'], false, 'db344_value_index');
+              await dropIndex(connection, schema, table, 'db344_value_index');
+              stage = 'ddl_alter';
+              await alterTable(connection, schema, table, {
+                action:'add_column', column:{name:'flag',type:'integer',default:1}
+              });
+              result.ddl = true;
+              stage = 'insert';
+              const inserted = await insertRows(write, schema, table,
+                [{id:1,value:'start'}, {id:2,value:"quote' and \\ slash"}]);
+              result.insert = inserted.affectedRows === 2;
+              stage = 'read_special';
+              const special = await queryRead(connection,
+                dialect === 'postgres'
+                  ? 'SELECT value FROM "'+table+'" WHERE id = $1'
+                  : 'SELECT value FROM `'+table+'` WHERE id = ?',
+                [2], 3);
+              result.insert = result.insert && special.rowCount === 1 &&
+                special.rows[0]?.[0] === "quote' and \\ slash";
+              stage = 'rollback_mutation';
+              let denied = false;
+              try {
+                await updateRows(guarded, schema, table, {value:'blocked'},
+                  {id:{in:[1,2]}});
+              } catch (e) {
+                denied = !!(e && typeof e === 'object' && 'code' in e &&
+                  (e as {code:unknown}).code === 'WRITE_LIMIT_EXCEEDED');
+              }
+              stage = 'rollback_verify';
+              const values = await queryRead(connection,
+                dialect === 'postgres'
+                  ? 'SELECT value FROM "'+table+'" WHERE id IN ($1,$2) ORDER BY id'
+                  : 'SELECT value FROM `'+table+'` WHERE id IN (?,?) ORDER BY id',
+                [1,2], 3);
+              result.rollback = denied && values.rowCount === 2 &&
+                values.rows[0]?.[0] === 'start' && values.rows[1]?.[0] === "quote' and \\ slash";
+              stage = 'update';
+              result.update = (await updateRows(guarded,schema,table,{value:'changed'},{id:1}))
+                .affectedRows === 1;
+              stage = 'remove';
+              result.remove = (await deleteRows(guarded,schema,table,{id:1})).affectedRows === 1;
+            } catch(e) {
+              const code = e && typeof e === 'object' && 'code' in e ?
+                String((e as {code: unknown}).code) : 'unknown';
+              throw { phase: stage, code: /^[A-Z0-9_]{1,50}$/.test(code) ? code : 'unknown' };
+            } finally {
+              if (created) await dropTable(connection,schema,table).catch(() => undefined);
+            }
+            return result;
+          }
+
+          export default {
+            async fetch(req:Request,env:Env):Promise<Response>{
+              if(req.method!=='POST'||new URL(req.url).pathname!=='/run')return new Response('Not found',{status:404});
+              if(!env.PROBE_TOKEN||req.headers.get('authorization')!=='Bearer '+env.PROBE_TOKEN)return new Response('Forbidden',{status:403});
+              const results:Record<string,unknown>={};
+              try{results.mysql=await runDialect('mysql',env.MYSQL);}
+              catch(e){
+                const code=e&&typeof e==='object'&&'code' in e?String((e as {code:unknown}).code):'unknown';
+                const phase=e&&typeof e==='object'&&'phase' in e?String((e as {phase:unknown}).phase):'unknown';
+                results.mysql={errorCode:/^[A-Z0-9_]{1,50}$/.test(code)?code:'unknown',
+                  phase:/^[a-z_]{1,50}$/.test(phase)?phase:'unknown'};
+              }
+              return Response.json(results,{headers:{'Cache-Control':'no-store'}});
+            }
+          };
           TS
           node --input-type=module <<'NODE'
           import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';
@@ -182,7 +283,7 @@ jobs:
           for(const dialect of ['mysql']){
             const result=body[dialect];
             console.log('AIVEN_TEST_QUERY',JSON.stringify({dialect,...result}));
-            if(!result || (dialect==='mysql' && !Number.isInteger(result.schemaCount)))process.exitCode=1;
+            if(!result || Object.keys(result).length!==11 || Object.values(result).some(value=>value!==true))process.exitCode=1;
           }
           NODE
       - name: Always delete disposable Worker and Hyperdrive configs and temporary runner secrets

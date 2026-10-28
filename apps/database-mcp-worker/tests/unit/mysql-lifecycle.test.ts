@@ -12,6 +12,7 @@ vi.mock('mysql2/promise', () => ({
 }));
 
 import { mysqlHealthCheck } from '../../src/db/mysql.js';
+import { createMysqlClient } from '../../src/db/clients.js';
 
 const connection: EffectiveConnection = {
   config: {
@@ -39,6 +40,19 @@ describe('MySQL connection lifecycle', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it('connects through the proxy database, not the reviewed origin schema', async () => {
+    const client = { end: vi.fn().mockResolvedValue(undefined) } as unknown as Connection;
+    createConnectionMock.mockResolvedValue(client);
+    await createMysqlClient({
+      ...connection, transport: 'hyperdrive',
+      proxyDatabase: 'opaque-hyperdrive-proxy',
+      database: 'database-mcp-test-mysql'
+    });
+    expect(createConnectionMock).toHaveBeenCalledWith(
+      expect.objectContaining({database: 'opaque-hyperdrive-proxy'})
+    );
   });
 
   it('destroys a connection that succeeds after the connection timeout', async () => {

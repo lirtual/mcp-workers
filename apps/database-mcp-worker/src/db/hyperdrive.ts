@@ -4,7 +4,7 @@ import type { Env, Dialect, EffectiveConnection, HyperdriveBinding } from '../ty
 import type { HyperdriveRegistryRow } from '../registry/store.js';
 import { getRuntimeLimits } from '../config.js';
 
-interface BindingManifestEntry { binding: string; id: string; dialect: Dialect }
+interface BindingManifestEntry { binding: string; id: string; dialect: Dialect; origin_database: string }
 // Versioned nonsecret source, checked against Wrangler and live Cloudflare by protected Actions.
 // This file is deliberately empty until a separately reviewed Binding release.
 const entries = manifest as BindingManifestEntry[];
@@ -22,12 +22,27 @@ export function resolveHyperdriveConnection(env: Env, row: HyperdriveRegistryRow
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive dialect differs from approved release metadata.');
   }
   const parsed = hyperdriveProxyFields(env[row.binding_name]);
-  // Proxy credentials are scoped to this Worker instance. Never reparse a URL
-  // (or forward URL TLS overrides) when Cloudflare exposes exact driver fields.
+  const mysqlOrigin = row.dialect === 'mysql'
+    ? mysqlHyperdriveSchema(parsed.database, declared.origin_database)
+    : {};
+  // Proxy credentials and proxy database are used only to connect to
+  // Cloudflare. Never use the proxy database as the origin SQL schema.
   return {
     config: { id: row.id, transport: 'hyperdrive', configId: row.config_id, bindingName: row.binding_name },
-    transport: 'hyperdrive', dialect: row.dialect, ...parsed, limits: getRuntimeLimits(env)
+    transport: 'hyperdrive', dialect: row.dialect, ...parsed, ...mysqlOrigin,
+    limits: getRuntimeLimits(env)
   };
+}
+
+/** A reviewed origin schema, separate from Cloudflare's opaque proxy DB. */
+export function mysqlHyperdriveSchema(proxyDatabase: string, originDatabase: unknown):
+  Pick<EffectiveConnection, 'database' | 'proxyDatabase'> {
+  if (typeof proxyDatabase !== 'string' || proxyDatabase.length === 0 ||
+      typeof originDatabase !== 'string' ||
+      !/^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,63}$/.test(originDatabase)) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'MySQL Hyperdrive origin schema is not approved.');
+  }
+  return { database: originDatabase, proxyDatabase };
 }
 
 /** Canonical Worker→Hyperdrive fields; TLS is verified from Hyperdrive to origin. */

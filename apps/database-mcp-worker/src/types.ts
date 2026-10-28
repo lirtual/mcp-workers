@@ -65,6 +65,9 @@ export interface EffectiveConnection {
   user: string;
   password: string;
   database: string;
+  // Hyperdrive MySQL uses a proxy database for the driver handshake, which
+  // may differ from the reviewed origin schema used in SQL identifiers.
+  proxyDatabase?: string;
   port: number;
   ca?: string;
   limits: RuntimeLimits;

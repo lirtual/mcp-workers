@@ -24,11 +24,13 @@ export async function createMysqlClient(connection: EffectiveConnection, rowsAsA
   const timeout = Math.min(connection.limits.queryTimeoutMs, 5_000);
   // TLS is terminated and verified upstream by Hyperdrive; Direct is expressly plaintext.
   // Never send a fake client CA to either driver.
+  const driverDatabase = connection.transport === 'hyperdrive'
+    ? (connection.proxyDatabase ?? connection.database) : connection.database;
   const pending = createConnection({
     host: connection.host,
     user: connection.user,
     password: connection.password,
-    ...(connection.database.length === 0 ? {} : { database: connection.database }),
+    ...(driverDatabase.length === 0 ? {} : { database: driverDatabase }),
     port: connection.port,
     // mysql2 must verify both the trust chain and the DNS identity of the peer.
     disableEval: true,
