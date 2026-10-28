@@ -36,7 +36,9 @@ export async function rotateRegistryKeys(db: D1Database, keys: EncryptionKeys, b
       const result = await db.prepare(`UPDATE database_connections
         SET ciphertext=?,key_id=?,revision=revision+1,updated_at=?
         WHERE id=? AND dialect=? AND revision=? AND ciphertext=? AND key_id=?
-          AND NOT (id IN ('b2b','scrape_relay') AND status='disabled' AND revision=1)`)
+          AND NOT EXISTS (SELECT 1 FROM database_connections AS frozen
+            WHERE frozen.id IN ('b2b','scrape_relay')
+              AND frozen.status='disabled' AND frozen.revision=1)`)
         .bind(updated.ciphertext, updated.keyId, Date.now(), row.id, row.dialect,
           row.revision, row.ciphertext, row.key_id).run();
       if (result.meta.changes === 1) rotated++;

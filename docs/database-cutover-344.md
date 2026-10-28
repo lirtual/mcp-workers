@@ -25,11 +25,12 @@ in the validity of unrun tests.
 
 **Frozen original-inventory guard (Draft only):** A disabled revision-1
 `b2b` or `scrape_relay` row means the two-ID cutover has not completed.
-Ordinary Owner setup cannot enable, disable, edit, delete or retire such a
-record; while either one remains staged, adding connections and rotating keys
-are also refused. The setup page hides those actions and explains the pending
-protected activation. The key rotation routine independently refuses staged
-original records and its CAS write excludes them. This is a one-way prevention
+While **either** original record remains staged, the **entire Owner catalog**
+is frozen, including any already-active other half of a partial migration:
+Owner setup cannot add, enable, disable, edit, delete or retire any record, and
+key rotation is refused. The setup page hides all the mutating controls and
+explains the pending protected activation. The key rotation routine independently refuses staged
+original records and its CAS write excludes any rotation during a partial cutover. This is a one-way prevention
 of accidental or forged Owner mutations, **not** an activation executor or
 approval to perform any live D1 write. After independently verified cutover,
 ordinary Owner management can resume without a permanent compatibility switch.

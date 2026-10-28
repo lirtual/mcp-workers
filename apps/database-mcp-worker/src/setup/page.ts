@@ -33,7 +33,7 @@ const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
   const firstCutoverPending = rows.some(isStagedOriginalIdentity);
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
-    (isStagedOriginalIdentity(row) ? '<p>Initial migration pending protected atomic activation. Editing, enabling and deleting are unavailable.</p>' :
+    (firstCutoverPending ? '<p>Initial migration pending protected atomic activation. Editing, enabling and deleting are unavailable.</p>' :
     (row.status === 'active' ? action(row, csrf, 'disable') :
       (isAvailableMode(row.transport, row.dialect) ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
     (!isAvailableMode(row.transport, row.dialect) ? '<p>This connection mode is not enabled in the current release. Existing records cannot be enabled or edited.</p>' :
