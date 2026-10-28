@@ -244,13 +244,13 @@ test('reviewed Linux and Windows v0.1.35 public installers pin immutable local u
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.34/);
+  assert.match(shell, /remote-control-agent-v0\.1\.35/);
   assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
   assert.match(shell, /"\$@" < \/dev\/tty/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /v0\.1\.34/);
+  assert.match(ps1, /v0\.1\.35/);
   assert.match(ps1, /3ef5a9c4d8741cba89b28f525dab4692826482f8/);
   assert.match(ps1, /4ba573a57d72c306e8e40aea203ced037550913d3f7a3782edadb04fadc04b84/);
   assert.match(ps1, /0ee9b58b8a5972ea8ac5497e35765798d7e293f4e104f4050b4cea2a2fd4561c/);
