@@ -2,8 +2,10 @@ import type { Env } from '../types.js';
 import { PublicError } from '../errors.js';
 function fail(code: string): never {
   if (code === 'not_found') throw new PublicError('ACCESS_DENIED', 'Owner setup is unavailable on this host.');
-  if (code === 'auth_misconfigured' || code === 'auth_unavailable')
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner authentication is unavailable.');
+  if (code === 'auth_misconfigured')
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner authentication configuration is incomplete.');
+  if (code === 'auth_unavailable')
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner Access signing certificates are unavailable.');
   if (code === 'csrf_rejected') throw new PublicError('ACCESS_DENIED', 'Invalid form origin or CSRF token.');
   throw new PublicError('AUTH_REQUIRED', 'Cloudflare Access authentication is required.');
 }

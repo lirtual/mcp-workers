@@ -76,6 +76,19 @@ async function requiredRow(env: Env, id: string) {
   if (!row) throw new PublicError('CONNECTION_NOT_FOUND', 'Connection does not exist.');
   return row;
 }
+// Fixed Owner-facing references only; never include upstream errors, keys, URLs, SQL or identities.
+export function setupFailureReference(error: PublicError): string | undefined {
+  if (error.code !== 'CONFIGURATION_UNAVAILABLE') return undefined;
+  const known: Record<string, string> = {
+    'Owner authentication configuration is incomplete.': 'auth_configuration',
+    'Owner Access signing certificates are unavailable.': 'auth_certificates',
+    'Owner setup is not configured.': 'runtime_bindings',
+    'The database registry is unavailable.': 'registry_read',
+    'The database registry is invalid.': 'registry_shape'
+  };
+  return known[error.message] ?? 'other';
+}
+
 function status(error: PublicError): number {
   if (error.code === 'AUTH_REQUIRED') return 401;
   if (error.code === 'ACCESS_DENIED') return 403;
@@ -198,6 +211,6 @@ export async function handleSetup(request: Request, env: Env, requestFetch: type
     return setupFailure('not_found', 404);
   } catch (error) {
     const safe = toPublicError(error);
-    return setupFailure(safe.code.toLowerCase(), status(safe));
+    return setupFailure(safe.code.toLowerCase(), status(safe), setupFailureReference(safe));
   }
 }

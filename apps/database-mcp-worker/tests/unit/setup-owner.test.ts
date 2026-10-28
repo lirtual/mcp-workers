@@ -62,6 +62,25 @@ describe('Cloudflare Access signed JWT enforcement', () => {
     }, SETUP_RATE_LIMITER: { limit: async () => ({ success: true }) } } as unknown as Env;
     const page = await handleSetup(req(valid), validEnv, mock);
     expect(page.status).toBe(200);
+    const missingDbEnv = { ...validEnv };
+    delete missingDbEnv.DB;
+    const missingBinding = await handleSetup(req(valid), missingDbEnv, mock);
+    expect(missingBinding.status).toBe(503);
+    expect(await missingBinding.text()).toContain('Diagnostic: runtime_bindings');
+    const unavailableCerts = await handleSetup(req(valid), validEnv, async () => {
+      throw new Error('never expose secret credentials or URL');
+    });
+    expect(unavailableCerts.status).toBe(503);
+    const certHtml = await unavailableCerts.text();
+    expect(certHtml).toContain('Diagnostic: auth_certificates');
+    expect(certHtml).not.toContain('never expose');
+    const unavailableRegistry = await handleSetup(req(valid), { ...validEnv,
+      DB: { prepare: () => ({ all: async () => { throw new Error('private SQL'); } }) }
+    } as unknown as Env, mock);
+    expect(unavailableRegistry.status).toBe(503);
+    const registryHtml = await unavailableRegistry.text();
+    expect(registryHtml).toContain('Diagnostic: registry_read');
+    expect(registryHtml).not.toContain('private SQL');
     const html = await page.text();
     expect(html).toContain('No database connections configured');
     const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
