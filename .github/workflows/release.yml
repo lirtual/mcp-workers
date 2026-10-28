@@ -64,7 +64,7 @@ env:
 jobs:
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_activation_id == '' && inputs.database_direct_preflight_approved != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -77,6 +77,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.deploy_to_production == true &&
           inputs.database_activation_id == '' &&
+          inputs.database_direct_preflight_approved != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
@@ -623,7 +624,8 @@ jobs:
           inputs.deploy_to_production == false &&
           inputs.database_activation_approved == true &&
           inputs.database_activation_id != '' &&
-          inputs.database_activation_revision != '' }}
+          inputs.database_activation_revision != '' &&
+          inputs.database_direct_preflight_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -713,7 +715,8 @@ jobs:
           inputs.database_prepare_approved == true &&
           inputs.deploy_to_production == false &&
           inputs.database_activation_id == '' &&
-          inputs.database_activation_approved != true }}
+          inputs.database_activation_approved != true &&
+          inputs.database_direct_preflight_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
