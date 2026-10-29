@@ -10,10 +10,10 @@ import { rotateRegistryKeys } from '../registry/rotation.js';
 import type { Dialect, Env } from '../types.js';
 import { validateCsrf, verifyAccess } from './access.js';
 import { dispatchHyperdriveAction, dispatchHyperdrivePrepare, dispatchHyperdriveApply, verifyGithubActionsDispatch,
-  verifyGithubPrCapability } from './github-actions.js';
+  verifyGithubPrCapability, readHyperdriveUnbindStatus } from './github-actions.js';
 import { previewHyperdriveCreation, createHyperdrivePreparation, listHyperdriveOperations,
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
-import { setupFailure, setupPage, setupResult } from './page.js';
+import { setupFailure, setupPage, setupResult, setupUnbindStatusResult } from './page.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
 function required(form: URLSearchParams, field: string): string {
@@ -165,7 +165,7 @@ export async function handleSetup(
       const operations = await listHyperdriveOperations(env.DB);
       return setupPage(connections, token, operations);
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|github-actions-check)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|hyperdrive-unbind-status|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
@@ -276,6 +276,10 @@ export async function handleSetup(
     }
     const version = revision(form);
     const row = await requiredRow(env, id);
+    if (action === 'hyperdrive-unbind-status') {
+      if (row.transport !== 'hyperdrive' || row.status !== 'disabled' || row.revision !== version) invalid();
+      return setupUnbindStatusResult(await readHyperdriveUnbindStatus(env, id, requestFetch));
+    }
     if (action === 'hyperdrive-action') {
       if (row.transport !== 'hyperdrive' || row.status !== 'disabled' || row.revision !== version) invalid();
       const operation = required(form, 'hyperdrive_action');

@@ -449,3 +449,62 @@ it('Owner final apply enforces CSRF, typed ID, explicit confirmation and one dis
   const after = await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,upstream);
   expect(await after.text()).not.toContain('action="/setup/hyperdrive-apply"');
 });
+
+it('Owner sees read-only staged unbinding status from /setup with CSRF and disabled revision gates', async () => {
+  const {sqlite,env}=fixture();instances.push(sqlite);
+  sqlite.prepare(`INSERT INTO database_connections
+    (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
+    VALUES ('safe_id','mysql','hyperdrive','disabled',
+      '11111111-2222-3333-4444-555555555555','HYPERDRIVE_SAFETY',4,1,1)`).run();
+  env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
+  const {jwt,certificates}=await auth();
+  let githubCalls=0;let branch='';let tampered=false;
+  const requestFetch:typeof fetch=async (url,options)=>{
+    if(String(url).includes('api.github.com')){
+      githubCalls++;
+      expect(options?.method).toBe('GET');
+      if(String(url).includes('/pulls?')){
+        branch=String(url).match(/head=lirtual%3A([^&]+)/)?.[1] ?? '';
+        return Response.json([{number:88}]);
+      }
+      if(String(url).endsWith('/pulls/88'))return Response.json({
+        number:88,state:'open',draft:true,changed_files:2,
+        head:{ref:tampered?'unrelated-branch':branch,repo:{full_name:'lirtual/mcp-workers'}},
+        base:{ref:'main',repo:{full_name:'lirtual/mcp-workers'}}
+      });
+      if(String(url).endsWith('/pulls/88/files?per_page=100'))return Response.json([
+        {filename:'apps/database-mcp-worker/wrangler.jsonc',status:'modified'},
+        {filename:'apps/database-mcp-worker/hyperdrive-bindings.json',status:'modified'}]);
+      throw Error('unexpected read');
+    }
+    return certificates();
+  };
+  const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+  expect(page.status).toBe(200);
+  const html=await page.text();
+  expect(html).toContain('action="/setup/hyperdrive-unbind-status"');
+  const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+  const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+  const post=(values:Record<string,string>)=>handleSetup(new Request(pageUrl+'/hyperdrive-unbind-status',{
+    method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+      cookie,'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({csrf,id:'safe_id',revision:'4',...values})
+  }),env,requestFetch);
+  expect((await post({csrf:'invalid'})).status).toBe(403);
+  expect((await post({revision:'5'})).status).toBe(422);
+  expect(githubCalls).toBe(0);
+  const response=await post({});
+  expect(response.status).toBe(200);
+  const result=await response.text();
+  expect(result).toContain('Open PR #88');
+  expect(result).toContain('Unbinding Draft PR is open');
+  expect(result).toContain('does not approve merge, start a release');
+  expect(githubCalls).toBe(3);
+  tampered=true;
+  const bad=await post({});
+  expect(bad.status).toBe(503);
+  expect(await bad.text()).not.toContain('Open PR #88');
+  expect(githubCalls).toBe(5);
+  expect(sqlite.prepare('SELECT revision,status FROM database_connections WHERE id=?').get('safe_id'))
+    .toMatchObject({revision:4,status:'disabled'});
+});

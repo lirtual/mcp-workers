@@ -74,7 +74,9 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
             '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
             '<input type="hidden" name="hyperdrive_action" value="retire">' +
             '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' +
-            '<button type="submit">Stage unbinding or verify retirement</button></form></details>'
+            '<button type="submit">Stage unbinding or verify retirement</button></form>' +
+            '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
+            '<button type="submit">Check unbinding PR (read-only)</button></form></details>'
           : '') +
         '<p class="muted">Password and CA changes are blocked until in-flight, shared and rollback isolation can be verified. Disable alone does not prove isolation. Existing config and CA remain intact.</p>' +
         '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View GitHub Actions results</a></p>'
@@ -133,4 +135,23 @@ export function setupFailure(code: string, status: number, reference?: string): 
 }
 export function setupResult(message: string): Response {
   return htmlResponse(`<h1>Connection management</h1><p>${escape(message)}</p><a href="/setup">Back to connections</a>`);
+}
+
+/** GitHub PR metadata is not a release, activation or D1 retirement receipt. */
+export function setupUnbindStatusResult(status: {
+  phase:'not_staged'|'draft_review'|'review_available'|'merged_unpublished'|'closed_unmerged';
+  prNumber?:number
+}): Response {
+  const text = {
+    not_staged:'No unbinding PR found for this connection. Check the staging Action run before trying again.',
+    draft_review:'Unbinding Draft PR is open. Review the exact diff and GitHub checks.',
+    review_available:'Unbinding PR is open for review. Merge and release are not verified.',
+    merged_unpublished:'Unbinding PR is reported merged. Production release, active version and D1 retirement are NOT verified.',
+    closed_unmerged:'Unbinding PR is closed without merge. No replacement is authorized automatically.'
+  }[status.phase];
+  const link = Number.isSafeInteger(status.prNumber) && status.prNumber! > 0
+    ? '<p><a rel="noreferrer" href="https://github.com/lirtual/mcp-workers/pull/' + status.prNumber + '">Open PR #' + status.prNumber + '</a></p>' : '';
+  return htmlResponse('<h1>Hyperdrive unbinding status</h1><p>'+escape(text)+'</p>'+link+
+    '<p>Read-only GitHub status only. This does not approve merge, start a release, prove deployed Binding removal or retire D1.</p>'+
+    '<a href="/setup">Back to connections</a>');
 }

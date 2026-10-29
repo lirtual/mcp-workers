@@ -227,3 +227,89 @@ test('unprotected main requires both explicit classic-protection 404 and an empt
       /required PR checks could not be verified/);
   }
 });
+
+test('Owner unbinding status is read-only and scoped to a single logical ID', async () => {
+  const { readHyperdriveUnbindStatus } = await import('../../src/setup/github-actions.js');
+  const seen: string[] = [];
+  const request = async (url: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(String(url));
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.redirect, 'manual');
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get('authorization'), 'Bearer '+token);
+    if(String(url).includes('/pulls?'))return Response.json([{number:73}]);
+    if(String(url).endsWith('/pulls/73'))return Response.json({number:73,state:'open',draft:true,
+      merged_at:null,changed_files:2,head:{ref:'db476-unbind-'+seen[0]!.match(/head=lirtual%3Adb476-unbind-([^&]+)/)?.[1],repo:{full_name:'lirtual/mcp-workers'}},
+      base:{ref:'main',repo:{full_name:'lirtual/mcp-workers'}}});
+    if(String(url).endsWith('/pulls/73/files?per_page=100'))return Response.json([
+      {filename:'apps/database-mcp-worker/wrangler.jsonc',status:'modified'},
+      {filename:'apps/database-mcp-worker/hyperdrive-bindings.json',status:'modified'}]);
+    throw Error('unexpected request');
+  };
+  assert.deepEqual(await readHyperdriveUnbindStatus(env(),'isolated',request as typeof fetch),
+    {phase:'draft_review',prNumber:73});
+  assert.equal(seen.length,3);
+  assert.match(seen[0]!,/head=lirtual%3Adb476-unbind-2feafc847b535bc95017b1ee/);
+  assert.ok(seen.every(x=>x.startsWith('https://api.github.com/repos/lirtual/mcp-workers/')));
+});
+test('Owner status fails closed for a duplicate or unexpected PR diff without writes', async () => {
+  const {readHyperdriveUnbindStatus}=await import('../../src/setup/github-actions.js');
+  for (const kind of ['duplicate','bad-files']){
+    let calls=0;
+    const request=async (url:RequestInfo|URL,init?:RequestInit)=>{
+      calls++;assert.equal(init?.method,'GET');
+      if(String(url).includes('/pulls?'))return Response.json(kind==='duplicate'?[{number:73},{number:74}]:[{number:73}]);
+      if(String(url).endsWith('/pulls/73'))return Response.json({number:73,state:'open',draft:true,
+        head:{ref:decodeURIComponent(String(url).split('unused:')[1]??'unused'),repo:{full_name:'other/repo'}},base:{ref:'main'}});
+      return Response.json([{filename:'unexpected',status:'modified'}]);
+    };
+    await assert.rejects(readHyperdriveUnbindStatus(env(),'isolated',request as typeof fetch),
+      /unbinding status could not be verified/i);
+    assert.ok(calls<=3);
+  }
+});
+
+test('unbinding PR status distinguishes no PR, merge from publication, and closed-unmerged',async()=>{
+  const {readHyperdriveUnbindStatus}=await import('../../src/setup/github-actions.js');
+  for(const [state,merged,expected] of [
+    ['open',null,'review_available'],['closed','2026-10-29T12:00:00Z','merged_unpublished'],
+    ['closed',null,'closed_unmerged']
+  ] as const){
+    let branch='';
+    const request=async(url:RequestInfo|URL,init?:RequestInit)=>{
+      assert.equal(init?.method,'GET');
+      if(String(url).includes('/pulls?')){branch=String(url).match(/head=lirtual%3A([^&]+)/)?.[1]??'';
+        return Response.json([{number:105}]);}
+      if(String(url).endsWith('/pulls/105'))return Response.json({number:105,state,draft:false,merged_at:merged,
+        changed_files:2,head:{ref:branch,repo:{full_name:'lirtual/mcp-workers'}},
+        base:{ref:'main',repo:{full_name:'lirtual/mcp-workers'}}});
+      if(String(url).endsWith('/pulls/105/files?per_page=100'))return Response.json([
+        {filename:'apps/database-mcp-worker/wrangler.jsonc',status:'modified'},
+        {filename:'apps/database-mcp-worker/hyperdrive-bindings.json',status:'modified'}]);
+      throw Error('unexpected');
+    };
+    assert.deepEqual(await readHyperdriveUnbindStatus(env(),'isolated',request as typeof fetch),
+      {phase:expected,prNumber:105});
+  }
+  const missing=async(url:RequestInfo|URL)=>{
+    assert.ok(String(url).includes('/pulls?'));
+    return Response.json([]);
+  };
+  assert.deepEqual(await readHyperdriveUnbindStatus(env(),'isolated',missing as typeof fetch),
+    {phase:'not_staged'});
+});
+
+test('read-only status does not leak GitHub response errors or query without scoped token',async()=>{
+  const {readHyperdriveUnbindStatus}=await import('../../src/setup/github-actions.js');
+  let called=0;
+  const upstream=async()=>{called++;return new Response('do-not-leak-upstream', {status:403});};
+  await assert.rejects(readHyperdriveUnbindStatus(env(''),'isolated',upstream as typeof fetch));
+  await assert.rejects(readHyperdriveUnbindStatus(env(),'../unsafe',upstream as typeof fetch));
+  assert.equal(called,0);
+  await assert.rejects(readHyperdriveUnbindStatus(env(),'isolated',upstream as typeof fetch),error=>{
+    assert.doesNotMatch(String(error),/do-not-leak-upstream/);
+    assert.match(String(error),/status could not be verified/);
+    return true;
+  });
+  assert.equal(called,1);
+});

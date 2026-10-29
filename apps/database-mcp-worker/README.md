@@ -146,6 +146,13 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   separately reviewed Owner release; final retirement still requires a second
   request and the original exhaustive rollback-version/100%-deployment proof.
   Draft PR creation does not prove safety to merge or absence of in-flight SQL.
+  `/setup` provides a separate **Check unbinding PR (read-only)** action for a
+  disabled Hyperdrive ID and expected revision. It looks up only the stable
+  branch in the same repository and allows only the two reviewed source-file
+  paths; the result distinguishes Draft, review-ready, merged and closed without
+  merge. A merged PR is **not** proof of an exact production release, active
+  binding removal or D1 retirement. No GitHub write, D1 mutation or deployment
+  is performed by the status check.
 - Enable/retire use shared `database_hyperdrive_id` and
   `database_hyperdrive_revision` inputs with their respective explicit approval flag.
   Release dispatch has exactly ten inputs; `database_hyperdrive_apply_id` is the only new input in this continuation. Retirement checks

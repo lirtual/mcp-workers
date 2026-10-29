@@ -212,3 +212,62 @@ export async function dispatchHyperdriveApply(
     database_hyperdrive_apply_id: operationId
   }, request);
 }
+
+/** Read-only Owner lookup for the exact #476 unbinding branch. PR metadata is
+ * status evidence, never approval to merge, publish or retire any resource. */
+export async function readHyperdriveUnbindStatus(
+  env: Env, id: string, request: typeof fetch = fetch
+): Promise<{phase:'not_staged'|'draft_review'|'review_available'|'merged_unpublished'|'closed_unmerged';prNumber?:number}> {
+  if (!ID.test(id)) throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive connection ID.');
+  const token = env.DATABASE_GITHUB_ACTIONS_TOKEN;
+  if (typeof token !== 'string' || token.length < 20) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch is not configured.');
+  }
+  const bytes = new TextEncoder().encode('db476:unbind:' + id);
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+    .map(x => x.toString(16).padStart(2,'0')).join('').slice(0,24);
+  const branch = 'db476-unbind-' + hash;
+  const base = 'https://api.github.com/repos/lirtual/mcp-workers';
+  const blocked = () => new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive unbinding status could not be verified.');
+  async function get(path:string): Promise<unknown> {
+    let response:Response;
+    try {
+      response = await request(base + path, {method:'GET',redirect:'manual',
+        headers: { Authorization:'Bearer '+token, Accept:'application/vnd.github+json',
+          'User-Agent':'lirtual-database-mcp-worker','X-GitHub-Api-Version':'2022-11-28' },
+        signal:AbortSignal.timeout(10_000)});
+    } catch { throw blocked(); }
+    if (response.status!==200) throw blocked();
+    try {return await response.json();} catch {throw blocked();}
+  }
+  const found = await get('/pulls?state=all&head=lirtual%3A'+branch+'&per_page=100');
+  if (!Array.isArray(found) || found.length>1) throw blocked();
+  if (found.length===0) return {phase:'not_staged'};
+  const number = (found[0] as {number?:unknown}).number;
+  if (!Number.isSafeInteger(number) || (number as number)<1) throw blocked();
+  const pr = await get('/pulls/'+number) as {
+    number?:number;state?:string;draft?:boolean;merged_at?:unknown;changed_files?:number;
+    head?:{ref?:string;repo?:{full_name?:string}};
+    base?:{ref?:string;repo?:{full_name?:string}};
+  };
+  if (pr?.number!==number || pr.head?.ref!==branch ||
+      pr.head.repo?.full_name!=='lirtual/mcp-workers' ||
+      pr.base?.ref!=='main' || pr.base.repo?.full_name!=='lirtual/mcp-workers' ||
+      pr.changed_files!==2 || !['open','closed'].includes(pr.state??'') ||
+      typeof pr.draft!=='boolean') throw blocked();
+  const files = await get('/pulls/'+number+'/files?per_page=100');
+  if (!Array.isArray(files) || files.length!==2 ||
+      !['apps/database-mcp-worker/wrangler.jsonc',
+        'apps/database-mcp-worker/hyperdrive-bindings.json'].every(path=>
+        files.filter((f:unknown)=>typeof f==='object' && f!==null &&
+          (f as {filename?:string}).filename===path &&
+          (f as {status?:string}).status==='modified').length===1)) throw blocked();
+  let phase:'draft_review'|'review_available'|'merged_unpublished'|'closed_unmerged';
+  if (pr.state==='open') {
+    if (pr.merged_at!=null) throw blocked();
+    phase=pr.draft?'draft_review':'review_available';
+  } else {
+    phase=pr.merged_at==null?'closed_unmerged':'merged_unpublished';
+  }
+  return {phase,prNumber:number as number};
+}
