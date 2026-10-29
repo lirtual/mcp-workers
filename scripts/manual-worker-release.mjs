@@ -11,7 +11,7 @@ const REQUIRED_SECRETS = {
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
-  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"],
+  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"],
   "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
@@ -138,7 +138,7 @@ export function verifyDatabaseCutoverSource(conf) {
   const secrets = conf.secrets?.required;
   invariant(Array.isArray(secrets) &&
     JSON.stringify([...secrets].sort()) ===
-    JSON.stringify(["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"].sort()),
+    JSON.stringify(["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"].sort()),
     "Database source must require D1 keys, never legacy DATABASE_CONFIG");
   const databases = conf.d1_databases;
   invariant(Array.isArray(databases) && databases.length === 1 &&

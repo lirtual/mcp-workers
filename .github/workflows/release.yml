@@ -305,6 +305,7 @@ jobs:
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           DATABASE_ENCRYPTION_KEY: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_ENCRYPTION_KEY || '' }}
+          DATABASE_GITHUB_ACTIONS_TOKEN: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_GITHUB_ACTIONS_TOKEN || '' }}
           DATABASE_KEY_ID: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_KEY_ID || '' }}
           DATABASE_ENCRYPTION_PREVIOUS_KEY: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_ENCRYPTION_PREVIOUS_KEY || '' }}
           DATABASE_PREVIOUS_KEY_ID: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_PREVIOUS_KEY_ID || '' }}

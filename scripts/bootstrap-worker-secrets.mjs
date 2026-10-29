@@ -11,7 +11,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
-  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"],
+  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"],
   "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
@@ -48,6 +48,10 @@ export function collectBootstrapSecrets(worker, env) {
     };
     canonicalKey(payload.DATABASE_ENCRYPTION_KEY, "DATABASE_ENCRYPTION_KEY");
     keyId(payload.DATABASE_KEY_ID, "DATABASE_KEY_ID");
+    if (payload.DATABASE_GITHUB_ACTIONS_TOKEN.length < 20 ||
+        payload.DATABASE_GITHUB_ACTIONS_TOKEN.length > 512 ||
+        /\s/.test(payload.DATABASE_GITHUB_ACTIONS_TOKEN))
+      throw new Error("Invalid DATABASE_GITHUB_ACTIONS_TOKEN");
     const previous = env.DATABASE_ENCRYPTION_PREVIOUS_KEY;
     const previousId = env.DATABASE_PREVIOUS_KEY_ID;
     if ((previous !== undefined && previous !== "") !==
