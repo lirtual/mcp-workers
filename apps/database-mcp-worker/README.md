@@ -26,6 +26,10 @@ Prior test-only Hyperdrive E2E evidence is retained
 PostgreSQL Hyperdrive E2E and PostgreSQL Direct plaintext E2E remain unperformed.
 Spec #344 remains **Open**.
 
+**Owner GitHub Actions production E2E (2026-10-29): PASS.** The Owner management page dispatched a verification-only, no-deploy request as [run #40850173389](https://github.com/lirtual/mcp-workers/actions/runs/40850173389). GitHub accepted the request and all five jobs were skipped, as designed. The existing protected release workflow now independently checks real dispatch permission before publishing the Database Worker. No further Owner interaction or credentials are required for this integration.
+
+**Acceptance boundary:** The three current MySQL logical connections passed live read-only health checks. A read-only check does not establish OpenList production writes, DDL, injection/escaping or rollback safety, deployed Hyperdrive TLS negatives, or managed-D1 snapshot/key recovery. The previous Aiven test origins and IDs are retired; do not recreate them merely for compliance. PostgreSQL Direct/Hyperdrive runtime E2E remains unperformed pending a genuinely needed, separately authorized isolated origin. Preserve existing production connections and do not infer full four-mode acceptance from the Owner dispatch smoke.
+
 The current managed D1 `database-mcp-registry` is the only registry.
 Legacy `DATABASE_CONFIG` Secrets and original D1 were removed and verified
 ([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6487209015));
