@@ -7,6 +7,10 @@ async function call(type,extra={}) {
 async function refresh() {
   try {
     const s=await call("status");
+    $("summary").textContent="Profile: "+(s.alias||"Not paired")+"\nAuthorization: "+s.authorization+
+      " · Connection: "+s.connection+
+      (s.pending_cloud_stop?"\nCloud Stop: NOT CONFIRMED":"");
+    $("pairing-details").open=!s.endpoint_id;
     $("status").textContent=[
       "Direct localhost/LAN: "+(s.sensitive_permissions?.lan?"ON":"OFF"),
       "Private/incognito: "+(s.sensitive_permissions?.private&&s.sensitive_permissions?.native_private?"ON":"OFF")+"; native permission: "+(s.sensitive_permissions?.native_private?"allowed":"DENIED / unavailable — enable Allow in Incognito/InPrivate in browser extension settings"),
@@ -25,19 +29,36 @@ async function refresh() {
       "Unknown: query browser_operation_status with the ORIGINAL intent_key; never create a new key to retry.",
       "Tab retention: explicit close only; Stop/disconnect/turn end never auto-close tabs.",
       "Unconfirmed cloud revocation ID: "+(s.pending_revocation_id||"None"),
-      "Scope: this Chrome/Edge profile; source supports permitted ordinary/private observations and explicit tab open/navigate/close. High-impact execution requires separately configured isolated owner approval; missing isolation is Blocked. Sensitive and ambiguous surfaces remain denied. No production release is authorized."
+      "Owner Approval: consequential actions require a separate, independently isolated owner approval. Authentication and sensitive surfaces stay denied."
     ].join("\n");
     for(const surface of ["lan","private"])$(surface).textContent=(s.sensitive_permissions?.[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
     $("service").value=typeof BROWSER_MCP_SERVICE_ORIGIN==="string"
       ? BROWSER_MCP_SERVICE_ORIGIN : "Not configured — release required";
     $("locate").disabled=!Number.isSafeInteger(s.last_observed_tab_id);
     if(s.alias)$("alias").value=s.alias;
-  } catch(e){$("status").textContent="Unable to read local status: "+e.message;}
+  } catch(e){
+    $("summary").textContent="Local status unavailable";
+    $("status").textContent="Unable to read local status: "+e.message;
+  }
 }
+let actionSequence=0;
 async function action(label,fn){
-  $("status").textContent=label+"…";
-  try {const r=await fn();if(r?.cloud_confirmed===false)alert("Local action completed; cloud revocation/stop is NOT confirmed. Use authenticated MCP to revoke if necessary.");}
-  catch(e){alert(e.message);}
+  // Stop must remain available even while Enable or another local action is pending.
+  const sequence=++actionSequence;
+  const feedback=$("action-feedback");
+  feedback.textContent=label+"…";
+  try {
+    const r=await fn();
+    if(sequence===actionSequence){
+      feedback.textContent=r===undefined?"Cancelled":
+        r?.cloud_confirmed===false?"Local change made; cloud confirmation is pending":
+        r?.authorization==="stopped"?"Stopped locally; cloud Stop confirmed":
+        r?.authorization==="enabled"?"Enabled locally":
+        label+": completed";
+    }
+  } catch(e){
+    if(sequence===actionSequence)feedback.textContent=label+" failed: "+(e?.message||"unavailable");
+  }
   await refresh();
 }
 $("pair").onclick=()=>action("Pairing",async()=>{
