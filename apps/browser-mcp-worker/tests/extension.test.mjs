@@ -81,6 +81,7 @@ test("fast WSS open authenticates before any asynchronous connection bookkeeping
     assert.equal(frames.length,1,"fast WSS open must not be lost while awaiting storage");
     assert.equal(frames[0].endpoint_id,id);
     assert.equal(frames[0].service_origin,service);
+    assert.equal(frames[0].owner_approval_protocol,1);
   } finally {await e.send("stop");}
 });
 

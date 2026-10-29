@@ -10,7 +10,7 @@ let sequence=0;
 export function intent(){const t=Date.now().toString(16).padStart(12,"0");return t.slice(0,8)+"-"+t.slice(8)+"-7000-8000-"+(++sequence).toString(16).padStart(12,"0");}
 // Public Chrome adapters only. Injected functions run serialized in a distinct
 // VM, exercising Chrome's no-closure scripting contract. No private entrypoints.
-export async function fixture(config={}){
+export async function fixture(config={},options={}){
   const db=new DatabaseSync(":memory:"),sockets=[],pending=[],effects=[],retired=[];
   const sql={exec(query,...args){const stmt=db.prepare(query);
     if(stmt.columns().length){const rows=stmt.all(...args);return {toArray:()=>rows,rowsWritten:0};}
@@ -35,7 +35,13 @@ export async function fixture(config={}){
         close:()=>{this.readyState=3;this.server.readyState=3;}};
       sockets.push(this.server);
     }
-    send(data){if(dropReceipt&&JSON.parse(data).type==="execute_result")return;enqueue(owner.webSocketMessage(this.server,data));}
+    send(data){
+      if(dropReceipt&&JSON.parse(data).type==="execute_result")return;
+      if(options.legacyOwnerProtocol&&JSON.parse(data).type==="authenticate"){
+        const frame=JSON.parse(data);delete frame.owner_approval_protocol;data=JSON.stringify(frame);
+      }
+      enqueue(owner.webSocketMessage(this.server,data));
+    }
     close(){this.readyState=3;this.server.readyState=3;}
   }
   const local={},session={};

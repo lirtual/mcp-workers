@@ -24,6 +24,8 @@ const failureActions:Record<string,string>={
   sensitive_surface:"blocked_sensitive_surface",
   stopped:"owner_must_resume_locally",
   approval_required:"wait_for_owner_approval",
+  preparation_unavailable:"extension_prepare_failed; confirm installed extension supports owner approval before a new intent",
+  approval_prepare_invalid:"owner_prepare_proof_rejected; confirm installed extension version before a new intent",
   capacity_exceeded:"review_operation_capacity",
   ordinary_window_required:"owner_must_open_ordinary_window"
 };
