@@ -52,6 +52,10 @@
       }
     }
   ],
+  "hyperdrive": [
+    { "binding": "HYPERDRIVE_AIVEN_MYSQL", "id": "31fc05c77ac042ff927a6d3cbf5bbb7d" },
+    { "binding": "HYPERDRIVE_AIVEN_POSTGRES", "id": "b2c7dab22f594bbca255827065e19bce" }
+  ],
   "routes": [
     {
       "pattern": "database.lirtual.dpdns.org",
