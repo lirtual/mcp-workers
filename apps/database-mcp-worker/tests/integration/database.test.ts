@@ -149,6 +149,40 @@ describeWriteIntegration('real database safe write integration', () => {
     expect((await queryRead(mysql.read, 'SELECT id FROM write_items WHERE id = ?', [301], 10)).rowCount).toBe(0);
   });
 
+  it('round-trips SQL-like strings through real MySQL Direct INSERT and UPDATE without executing them', async () => {
+    const id = 803344;
+    const original = "quoted ' and backslash \\ plus 中文 ; --";
+    const modified = "' OR 1=1 -- \\ ; DROP TABLE write_items; #";
+    await expect(insertRows(mysql.write, undefined, 'write_items', [{ id, value: original }]))
+      .resolves.toEqual({ affectedRows: 1 });
+    try {
+      expect((await queryRead(mysql.read, 'SELECT value FROM write_items WHERE id = ?', [id], 5)).rows)
+        .toEqual([[original]]);
+      await expect(updateRows(mysql.write, undefined, 'write_items', { value: modified }, { id }))
+        .resolves.toEqual({ affectedRows: 1 });
+      expect((await queryRead(mysql.read, 'SELECT value FROM write_items WHERE id = ?', [id], 5)).rows)
+        .toEqual([[modified]]);
+      expect((await queryRead(mysql.read, 'SELECT id FROM write_items WHERE value = ?', ["' OR 1=1 -- "], 5)).rows)
+        .toEqual([]);
+    } finally {
+      await deleteRows(mysql.write, undefined, 'write_items', { id });
+    }
+  });
+
+  it('rolls back a real MySQL Direct DELETE when more rows match than the guard permits', async () => {
+    const guarded = directWritableConnection('mysql_delete_guarded', mysqlWriteUrl!, 1);
+    const ids = [813344, 823344];
+    await insertRows(mysql.write, undefined, 'write_items', ids.map(id => ({ id, value: 'must-survive' })));
+    try {
+      await expect(deleteRows(guarded.write, undefined, 'write_items', { id: { in: ids } }))
+        .rejects.toMatchObject({ code: 'WRITE_LIMIT_EXCEEDED' });
+      expect((await queryRead(mysql.read, 'SELECT id, value FROM write_items WHERE id IN (?, ?) ORDER BY id', ids, 5)).rows)
+        .toEqual(ids.map(id => [id, 'must-survive']));
+    } finally {
+      await deleteRows(mysql.write, undefined, 'write_items', { id: { in: ids } });
+    }
+  });
+
   it('rolls back PostgreSQL and MySQL mutations that exceed the affected-row limit', async () => {
     const guardedPg = directWritableConnection('pg_guarded', pgWriteUrl!, 1);
     const guardedMysql = directWritableConnection('mysql_guarded', mysqlWriteUrl!, 1);
