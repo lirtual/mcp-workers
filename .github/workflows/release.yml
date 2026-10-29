@@ -743,6 +743,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-weixin-provider-pin.mjs recheck
 
+      # Exercise the exact GitHub Environment PAT on the real GitHub API before
+      # publishing the Database Worker. One no-deploy workflow_dispatch is safe:
+      # all mutating jobs are skipped, so this cannot recurse or alter databases.
+      # This prevents a Secret-presence-only CI pass masking 403 permissions.
+      - name: Verify Database Owner GitHub Actions dispatch before publication
+        if: inputs.worker == 'database-mcp-worker'
+        env:
+          DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
+        run: node scripts/probe-database-github-dispatch.mjs
+
       - name: Publish exactly selected Worker
         id: publish
         shell: bash
