@@ -247,7 +247,7 @@ function connect() {
         try {
           const permissionToken=await sensitiveToken();
           const check=await browserValidateMutation(message.command,message.approval_available===true);
-          if(check.error_code==="approval_required")proposal={error_code:"approval_required"};
+          if(check.error_code)proposal={error_code:check.error_code};
           const local=await state();
           if(check.ready&&permissionToken===await sensitiveToken()&&message.command?.endpoint_id===local.endpoint_id&&socket===ws&&local.authorization==="enabled"&&
               message.generation===currentGeneration){
@@ -323,7 +323,8 @@ function connect() {
             ws.send(JSON.stringify({type:"execute_result",operation_id:op,
               intent_key:message.intent_key,execute_token:message.execute_token,
               generation:currentGeneration,state:result.state,tab_id:result.tab_id??null,
-              ...(result.presentation_warning?{presentation_warning:result.presentation_warning}:{})}));
+              ...(result.presentation_warning?{presentation_warning:result.presentation_warning}:{}),
+              ...(result.state==="failed"&&result.error_code?{error_code:result.error_code}:{})}));
         } catch {/* failure after consumption is Unknown, never retry */}
         finally {executingOperations.delete(op);}
       } else if(message.type==="read_request") {
