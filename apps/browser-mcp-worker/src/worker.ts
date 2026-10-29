@@ -172,13 +172,18 @@ export default {
     if(url.pathname.startsWith("/owner/")) {
       const config=approvalConfig(env);
       if(!config)return ownerRejection(403,"Owner approval is not enabled.");
-      if(url.origin!==config.origin||url.search||(request.headers.has("origin")&&request.headers.get("origin")!==config.origin))return ownerRejection(403,"Owner request rejected.");
+      // ChatGPT can append this exact attribution when an Owner opens the independent
+      // review link. Only a signed, read-only GET may canonicalize it; never trust
+      // arbitrary query strings, redirects, POSTs, or cross-origin requests.
+      const attributionGet=request.method==="GET"&&url.search==="?utm_source=chatgpt.com";
+      if(url.origin!==config.origin||(url.search&&!attributionGet)||(request.headers.has("origin")&&request.headers.get("origin")!==config.origin))return ownerRejection(403,"Owner request rejected.");
       if(!await verifyOwner(request,env))return ownerRejection(401,"Owner identity not verified.");
       const approvalMatch=/^\/owner\/operations\/([a-f0-9-]{36})$/.exec(url.pathname);
       const unknownMatch=/^\/owner\/unknown\/([a-f0-9-]{36})$/.exec(url.pathname);
       const match=approvalMatch??unknownMatch;
       if(!match)return ownerRejection(404,"Owner operation not found.");
       if(request.method!=="GET"&&request.method!=="POST")return ownerRejection(405,"Owner method not allowed.");
+      if(attributionGet)return new Response(null,{status:303,headers:{...ownerHeaders,location:config.origin+url.pathname}});
       let body:Record<string,unknown>={operation_id:match[1]};
       if(request.method==="POST") {
         if(request.headers.get("origin")!==config.origin||request.headers.get("content-type")?.split(";")[0]!=="application/x-www-form-urlencoded")return ownerRejection(403,"Owner request rejected.");
