@@ -726,6 +726,16 @@ jobs:
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
         run: node scripts/database-owner-access.mjs
 
+      # Exercise the exact GitHub Environment PAT on the real GitHub API before
+      # publishing the Database Worker. One no-deploy workflow_dispatch is safe:
+      # all mutating jobs are skipped, so this cannot recurse or alter databases.
+      # This prevents a Secret-presence-only CI pass masking 403 permissions.
+      - name: Verify Database Owner GitHub Actions dispatch before publication
+        if: inputs.worker == 'database-mcp-worker'
+        env:
+          DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
+        run: node scripts/probe-database-github-dispatch.mjs
+
       # OpenList upstream's reviewed Wrangler config comments out the KV
       # binding. A past upstream Wrangler deploy removed the live binding.
       # Detect drift in the active Cloudflare version; do not modify the Fork.
