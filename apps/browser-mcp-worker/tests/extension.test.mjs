@@ -12,7 +12,7 @@ const mutations=fs.readFileSync(path.join(dirname,"../extension/mutations.js"),"
 const id="11111111-1111-4111-8111-111111111111";
 const credential="a".repeat(64);
 const service="https://browser-mcp-worker.invalid";
-async function setup(initial={},respond=async()=>{throw Error("network_offline");}) {
+async function setup(initial={},respond=async()=>{throw Error("network_offline");},options={}) {
   const local={...initial}; const session={}; const events=[]; const sockets=[];
   let handler, startup, installed, onRemoved;
   const chrome={
@@ -52,7 +52,7 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
       onInstalled:{addListener(fn){installed=fn;}}
     }
   };
-  class Socket {static OPEN=1;constructor(){this.readyState=0;this.OPEN=1;this.CLOSED=3;sockets.push(this);} send(data){events.push({type:"socket-send",data});} close(){this.readyState=3;}}
+  class Socket {static OPEN=1;constructor(){this.readyState=0;this.OPEN=1;this.CLOSED=3;sockets.push(this);if(options.fastOpen)queueMicrotask(()=>{this.readyState=1;this.onopen?.();});} send(data){events.push({type:"socket-send",data});} close(){this.readyState=3;}}
   const fetch=async(url,opts)=>{
     events.push({type:"fetch",url,body:JSON.parse(opts.body),localState:{...local}});
     return respond(url,opts,local);
@@ -72,6 +72,18 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
   const sendSpoof=(type,sender)=>new Promise(resolve=>handler({type},sender,resolve));
   return {local,session,events,send,sendSpoof,chrome,startup,installed,removed:tabId=>onRemoved(tabId),ctx,sockets};
 }
+test("fast WSS open authenticates before any asynchronous connection bookkeeping",async()=>{
+  const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{fastOpen:true});
+  try {
+    assert.equal(e.sockets.length,1);
+    const outbound=e.events.filter(x=>x.type==="socket-send").map(x=>JSON.parse(x.data));
+    const frames=outbound.filter(x=>x.type==="authenticate");
+    assert.equal(frames.length,1,"fast WSS open must not be lost while awaiting storage");
+    assert.equal(frames[0].endpoint_id,id);
+    assert.equal(frames[0].service_origin,service);
+  } finally {await e.send("stop");}
+});
+
 test("Stop on an unpaired Profile remains local and does not invent unconfirmed cloud work",async()=>{
   const env=await setup();
   const result=await env.send("stop");

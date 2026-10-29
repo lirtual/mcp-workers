@@ -227,7 +227,8 @@ function connect() {
     const wsUrl=s.service.replace(/^https:/,"wss:")+"/extension/socket";
     const ws=new WebSocket(wsUrl);
     socket=ws;
-    await persist({connection:"connecting"});
+    // state() derives connecting from this socket; no asynchronous storage write
+    // may delay registering handlers and lose a fast WSS open/authentication.
     ws.onopen=()=>{
       if(socket!==ws)return;
       ws.send(JSON.stringify({type:"authenticate",protocol:1,extension_version:"0.1.0",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
