@@ -104,7 +104,9 @@ export function parseDirectDatabaseUrl(raw: string, connectionId: string): Parse
   return {
     dialect,
     connectionString: raw,
-    host: url.hostname,
+    // WHATWG URL.hostname includes brackets for IPv6, but TCP drivers need the bare address.
+    host: url.hostname.startsWith('[') && url.hostname.endsWith(']')
+      ? url.hostname.slice(1, -1) : url.hostname,
     user: decodeUrlPart(url.username, connectionId),
     password: decodeUrlPart(url.password, connectionId),
     database,
