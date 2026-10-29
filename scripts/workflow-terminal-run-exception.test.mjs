@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {readFileSync} from "node:fs";
-import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifyPriorNativeProof, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const ok = () => ({
   d1:[
@@ -283,4 +283,38 @@ test("sixth exact Owner-delivered Run: immutable unknown result and independent 
   assert.throws(()=>verifySixthTerminalEvidence(data.d1,data.native,{...data.github,...patch}),/blocked/);
  const extra=structuredClone(data);extra.d1[4].results.push({...extra.d1[4].results[0]});
  assert.throws(()=>verifySixthTerminalEvidence(extra.d1,extra.native,extra.github),/blocked/);
+});
+
+// Cloudflare can return 404 for a formerly completed instance. Only the
+// exact successful, identity-pinned release with all six proof steps may
+// recover this historical evidence; no fake status/end timestamp is used.
+test("only previously audited immutable Release proves expired native history",()=>{
+  const head="85464b14040e174f3ea43f6e4acd92b29c523563";
+  const run={id:40871993462,workflow_id:394912681,head_sha:head,
+    event:"workflow_dispatch",status:"completed",conclusion:"success"};
+  const names=["Verify historical terminal Run proof (read-only)",
+    "Verify second terminal E2E Run proof (read-only)",
+    "Verify third terminal E2E Run proof (read-only)",
+    "Verify fourth terminal E2E Run proof (read-only)",
+    "Verify fifth terminal E2E Run proof (read-only)",
+    "Verify sixth terminal E2E Run proof (read-only)"];
+  const jobs={jobs:[{id:123441577953,name:"Manual selected Worker release",
+    status:"completed",conclusion:"success",head_sha:head,
+    steps:names.map(name=>({name,conclusion:"success"}))}]};
+  const certified=verifyPriorNativeProof(run,jobs);
+  assert.equal(verifyTerminalRunEvidence(ok().d1,certified,ok().github),TERMINAL_RUN_ID);
+  for(const patch of [{id:2},{head_sha:"0".repeat(40)},
+    {workflow_id:123},{event:"push"},{conclusion:"failure"},{status:"in_progress"}])
+    assert.throws(()=>verifyPriorNativeProof({...run,...patch},jobs),/blocked/);
+  for(const patch of [{id:5},{head_sha:"0".repeat(40)},
+    {status:"queued"},{conclusion:"failure"},{name:"untrusted release"}]){
+    const bad=structuredClone(jobs);Object.assign(bad.jobs[0],patch);
+    assert.throws(()=>verifyPriorNativeProof(run,bad),/blocked/);
+  }
+  for(let i=0;i<names.length;i++){
+    const bad=structuredClone(jobs);bad.jobs[0].steps[i].conclusion="skipped";
+    assert.throws(()=>verifyPriorNativeProof(run,bad),/blocked/);
+  }
+  assert.throws(()=>verifyPriorNativeProof(run,{jobs:[]}),/blocked/);
+  assert.throws(()=>verifyTerminalRunEvidence(ok().d1,{previously_verified_release:40871993462},ok().github),/blocked/);
 });
