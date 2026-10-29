@@ -49,7 +49,9 @@ export async function checkFreshRegistry(env = process.env, fetcher = fetch) {
   if (rows.length !== ledger[0].total) blocked();
   const manifest = JSON.parse(await readFile(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
   const verified = await verifyRegistryReadiness(rows, env, manifest);
-  if (rows.some(x => x.status === 'active' && (x.transport !== 'direct' || x.dialect !== 'mysql'))) blocked();
+  // Active Hyperdrive references are accepted only when their immutable
+  // config/binding/dialect pair matched the reviewed manifest above.
+  // Do not reintroduce an obsolete Direct-only restriction here.
   return { valid: true, phase: 'managed', records: verified.records };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
