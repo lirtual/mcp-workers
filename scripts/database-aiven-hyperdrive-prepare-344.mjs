@@ -45,7 +45,7 @@ export async function prepareAivenHyperdrive(env = process.env, transport = fetc
       mtls: { ca_certificate_id: CA_ID, sslmode: item.mode },
       caching: { disabled: true }, origin_connection_limit: 5 };
     const created = matches.length === 1 ? matches[0] : await cloud(base, 'POST', b);
-    if (!/^[a-f0-9-]{36}$/i.test(created?.id ?? '')) fail();
+    if (!/^[a-f0-9]{32}$/i.test(created?.id ?? '')) fail();
     const detail = await cloud(`${base}/${created.id}`);
     const expected = { binding: item.binding, id: created.id, dialect: item.dialect,
       origin_host: item.host, origin_port: 18691, origin_database: item.database,
