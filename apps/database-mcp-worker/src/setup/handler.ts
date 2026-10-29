@@ -112,7 +112,17 @@ export function setupFailureReference(error: PublicError): string | undefined {
     'Owner Access signing-key document was invalid.': 'auth_certs_json',
     'Owner setup is not configured.': 'runtime_bindings',
     'The database registry is unavailable.': 'registry_read',
-    'The database registry is invalid.': 'registry_shape'
+    'The database registry is invalid.': 'registry_shape',
+    'Protected GitHub Actions dispatch is not configured.': 'github_token_missing',
+    'GitHub Actions dispatch outcome unknown.': 'github_outcome_unknown',
+    'GitHub Actions dispatch receipt unavailable.': 'github_receipt_invalid',
+    'GitHub Actions dispatch unauthorized.': 'github_unauthorized',
+    'GitHub Actions dispatch forbidden.': 'github_forbidden',
+    'GitHub Actions workflow unavailable.': 'github_workflow_missing',
+    'GitHub Actions dispatch inputs rejected.': 'github_inputs_rejected',
+    'GitHub Actions dispatch rate limited.': 'github_rate_limited',
+    'GitHub Actions dispatch upstream unavailable.': 'github_upstream_unavailable',
+    'GitHub Actions dispatch HTTP rejected.': 'github_http_rejected'
   };
   return known[error.message] ?? 'other';
 }
@@ -160,8 +170,9 @@ export async function handleSetup(
       return setupResult(`Rotated ${rotated.rotated}; remaining ${rotated.pending}. Keep historical keys until snapshots and backups expire.`);
     }
     if (action === 'github-actions-check') {
-      await verifyGithubActionsDispatch(env, requestFetch);
-      return setupResult('GitHub accepted a verification-only, no-deploy workflow request. No database or Worker changes were requested. Check the Actions run result separately.');
+      const receipt = await verifyGithubActionsDispatch(env, requestFetch);
+      return setupResult('GitHub accepted a verification-only, no-deploy workflow request. No database or Worker changes were requested.' +
+        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Check the Actions run result separately.'));
     }
     const id = required(form, 'id');
     if (action === 'add') {
@@ -203,8 +214,9 @@ export async function handleSetup(
       const operation = required(form, 'hyperdrive_action');
       if (operation !== 'enable' && operation !== 'retire') invalid();
       if (operation === 'retire' && required(form, 'confirm_id') !== id) invalid();
-      await dispatchHyperdriveAction(env, operation, id, version, requestFetch);
-      return setupResult('Protected GitHub Actions request accepted. Review the workflow result before treating this connection as changed.');
+      const receipt = await dispatchHyperdriveAction(env, operation, id, version, requestFetch);
+      return setupResult('Protected GitHub Actions request accepted. Review the workflow result before treating this connection as changed.' +
+        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ''));
     }
     if (action === 'disable') {
       await setRegistryConnectionStatus(env.DB, id, version, 'disabled');
