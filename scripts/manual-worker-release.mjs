@@ -564,11 +564,17 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   const completeV12 = row?.migration_count === 12 &&
     row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
     row?.migration_v13 !== 1 && fullV11Schema;
-  const complete = row?.migration_count === 13 &&
+  const completeV13 = row?.migration_count === 13 &&
     row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
     row?.migration_v13 === 1 && row?.invocations_table === 1 &&
-    row?.cloudflare_cancel_table === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || complete)),
+    row?.cloudflare_cancel_table === 1 &&
+    row?.migration_v14 === 0 && row?.deleted_column === 0 && fullV11Schema;
+  const complete = row?.migration_count === 14 &&
+    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
+    row?.migration_v13 === 1 && row?.invocations_table === 1 &&
+    row?.cloudflare_cancel_table === 1 &&
+    row?.migration_v14 === 1 && row?.deleted_column === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
