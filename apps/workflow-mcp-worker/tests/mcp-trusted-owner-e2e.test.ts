@@ -98,6 +98,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     await client.connect(transport);
     const listed=await client.listTools();
     assert.ok(listed.tools.some(x=>x.name==='workflow_publish'));
+    const approvalTool=listed.tools.find(x=>x.name==='workflow_approval');
+    assert.ok(approvalTool,'runtime decisions must be discoverable over public MCP');
+    const decisionSchema=(approvalTool.inputSchema as any).properties;
+    assert.deepEqual(decisionSchema.decision.enum,['approve','deny']);
+    for(const key of ['run_id','step_id','published_version_id'])assert.ok(decisionSchema[key]);
     // The authenticated public MCP schema must not require a client refresh
     // each time a reviewed Cloudflare Provider/Action is registered.
     const publisher=listed.tools.find(x=>x.name==='workflow_publish')!;
@@ -132,6 +137,10 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const capabilities=await call('workflow_capabilities',{});
     assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.manual'&&x.availability==='supported'));
     assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.cron'&&x.availability==='supported'));
+    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='flow.approval_gate'));
+    const gate=await call('workflow_capabilities',{id:'flow.approval_gate'});
+    assert.equal(gate.approval_gate.timeout_seconds,600);
+    assert.equal(gate.approval_gate.decision_tool,'workflow_approval');
     const emitInfo=await call('workflow_capabilities',{id:'action.result.emit'});
     assert.equal(emitInfo.example.validation,'compiler_valid_only');
     assert.equal((await call('workflow_capabilities',{id:'legacy.tsrv'})).availability,'unknown');

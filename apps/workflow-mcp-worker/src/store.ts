@@ -13,6 +13,7 @@ import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {recordRuntimeApproval} from './runtime-approval.ts';
 function draftName(definition:string):string {
   if(!definition || new TextEncoder().encode(definition).byteLength>32768)throw new StateError('definition_too_large');
   try {
@@ -276,6 +277,7 @@ export class WorkflowService {
       })).values()];
       return {valid:true,digest,steps:plan.steps.length,issues:[],
         ...(required_children.length?{required_children}:{}),
+        ...(plan.steps.some(s=>s.approval?.required)?{approval_gates:plan.steps.filter(s=>s.approval?.required).map(s=>({step_id:s.id,when:'before_dispatch',binding:['run_id','step_id','published_version_id'],timeout_seconds:600}))}:{}),
         contract_validation:reviewed_cloudflare_actions.length?
           'cloudflare_contract_pinned_provider_unverified':required_approvals.length?
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
@@ -293,6 +295,7 @@ export class WorkflowService {
         code==='invalid_name'?'/name':
         code==='invalid_inputs'||code==='too_many_inputs'?'/inputs':
         ['invalid_step_count','invalid_step','invalid_step_id','unsupported_capability',
+         'approval_not_applicable','multiple_approval_gates_unsupported','invalid_runtime_approval',
          'invalid_step_arguments','invalid_dependencies','cyclic_dependencies',
          'excessive_parallelism','invalid_reference','invalid_step_reference'].includes(code)?'/steps':'/';
       const suggestion=['invalid_foreach_limit','invalid_foreach_items','invalid_foreach_template',
@@ -415,6 +418,46 @@ export class WorkflowService {
       throw new StateError('revision_conflict');
     }
     return {workflow_id,published_version_id:version,digest:plan_digest,state:row.state==='paused'?'paused':'active'};
+  }
+  /** The caller must explicitly record one decision; Publish cannot create it.
+   * This is an authenticated owner API assertion, not independent human proof.
+   * Durable D1 decides; native wake is best effort and never a dispatch grant.
+   */
+  async approve(run_id:string,step_id:string,published_version_id:string,decision:'approve'|'deny'){
+    assertId(run_id);assertId(step_id);assertId(published_version_id);
+    if(decision!=='approve'&&decision!=='deny')throw new StateError('invalid_approval_decision');
+    const run=await this.db.prepare('SELECT version_id,instance_id,outcome FROM runs WHERE id=?')
+      .bind(run_id).first<{version_id:string;instance_id:string;outcome:string}>();
+    if(!run)throw new StateError('run_not_found');
+    if(run.version_id!==published_version_id)throw new StateError('approval_binding_mismatch');
+    if(run.outcome!=='running')throw new StateError('approval_run_not_active');
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .bind(published_version_id).first<{plan:string}>();
+    if(!version)throw new StateError('version_missing');
+    const plan=JSON.parse(version.plan) as Plan;
+    if(!plan.steps.some(s=>s.id===step_id&&s.uses==='github.run'&&s.approval?.required===true))
+      throw new StateError('approval_not_required');
+    const gate=await this.db.prepare('SELECT version_id,deadline_at FROM runtime_approval_gates WHERE run_id=? AND step_id=?')
+      .bind(run_id,step_id).first<{version_id:string;deadline_at:number}>();
+    if(!gate||gate.deadline_at<=now())throw new StateError('approval_not_open');
+    if(gate.version_id!==published_version_id)throw new StateError('approval_binding_mismatch');
+    const status=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+      .bind(run_id,step_id).first<{status:string}>();
+    if(status?.status!=='waiting_approval')throw new StateError('approval_not_open');
+    const recorded=await recordRuntimeApproval(this.db,run_id,step_id,published_version_id,
+      decision==='approve'?'approved':'denied',now());
+    if(recorded.conflict)throw new StateError('approval_conflict');
+    if(recorded.repeated)throw new StateError('approval_already_recorded');
+    if(recorded.consumed)throw new StateError('approval_already_used');
+    // The 30-second durable wait polls D1 if sendEvent loses its ACK.
+    let wake:'sent'|'unknown'='sent';
+    try{
+      const native=await this.env.WORKFLOW.get(run.instance_id);
+      if(!native.sendEvent)throw Error('send_event_unavailable');
+      await native.sendEvent({type:'approval-'+step_id,payload:{run_id}});
+    }catch{wake='unknown';}
+    return {run_id,step_id,published_version_id,decision:recorded.decision,
+      recorded:true,wake,dispatch_confirmed:false};
   }
   /** Cancel one approved physical Task/Session Step by server-pinned Run identity.
    * Parent business results and physical Session slots remain independent:

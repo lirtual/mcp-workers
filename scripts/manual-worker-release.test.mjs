@@ -578,7 +578,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,deleted_column:0,event_receipts_table:0,runtime_table:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
     child_terminate_fence_column:0,capacity_guard_trigger:0,
     locator_column:0,fixed_column:0,fixed_index:0,
@@ -599,6 +599,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const cloudflareComplete = {...latest,migration_count:13,migration_v13:1,
     invocations_table:1,cloudflare_cancel_table:1};
   const deletedComplete = {...cloudflareComplete,migration_count:14,migration_v14:1,deleted_column:1};
+  const approvalComplete={...deletedComplete,migration_count:15,migration_v15:1,approval_gates_table:1,approvals_table:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
@@ -608,7 +609,9 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(previousComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(deletedComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
   for(const row of [
@@ -619,6 +622,9 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     {...deletedComplete,migration_count:13},
     {...deletedComplete,migration_v14:0},
     {...deletedComplete,deleted_column:0},
+    {...approvalComplete,migration_v15:0},
+    {...approvalComplete,approval_gates_table:0},
+    {...approvalComplete,approvals_table:0},
   ]) assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(previousComplete),false,true),/schema migrations/);
   for(const row of [baseline,partial,current,completed,oldComplete,upgraded]){
@@ -664,7 +670,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
       /schema migrations/);
   }
-  assert.equal(verifyWorkflowD1Readiness(result({...deletedComplete,run_count:3,
+  assert.equal(verifyWorkflowD1Readiness(result({...approvalComplete,run_count:3,
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
@@ -673,7 +679,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
     /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...deletedComplete,active_sessions:1}),false,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
@@ -745,7 +751,7 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:14,expected_migrations:14,
+    migration_count:15,expected_migrations:15,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
@@ -763,6 +769,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
   for(const broken of [
     {migration_count:12},{expected_migrations:12},
     {migration_count:13},{expected_migrations:13},
+    {migration_count:14},{expected_migrations:14},
     {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},

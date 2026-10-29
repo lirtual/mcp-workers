@@ -20,7 +20,7 @@ export class PlanError extends Error {
 export type Step = {
   id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
   needs_policy?: 'allow_skipped';
-  with: Record<string, unknown>; if?: unknown;
+  with: Record<string, unknown>; if?: unknown; approval?: {required:true};
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
@@ -524,6 +524,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(typeof id==='string'&&foreachChildren.has(id))
       throw new PlanError('invalid_step_id','/steps');
   }
+  if(expanded.filter(x=>(x as {approval?:unknown}).approval!==undefined).length>1)
+    throw new PlanError('multiple_approval_gates_unsupported','/steps');
   if(expanded.filter(x=>(x as {uses?:unknown}).uses==='flow.wait_event').length>1)
     throw new PlanError('multiple_event_wait_steps_unsupported','/steps');
   if(expanded.filter(x=>(x as {uses?:unknown}).uses==='flow.child').length>1)
@@ -558,7 +560,13 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       return {...sourceStep,uses:'github.run',
         with:{capability:withData.capability,action:withData.action}};
     })():sourceStep;
-    keys(s,['id','uses','needs','needs_policy','if','with'],stepPath);
+    keys(s,['id','uses','needs','needs_policy','if','with','approval'],stepPath);
+    if(s.approval!==undefined){
+      const a=object(s.approval,'invalid_runtime_approval');
+      keys(a,['required'],stepPath+'/approval');
+      if(a.required!==true||s.uses!=='github.run')
+        throw new PlanError('approval_not_applicable',stepPath+'/approval');
+    }
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
     if(!['flow.foreach','flow.child','flow.wait','flow.wait_event'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
@@ -627,7 +635,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     steps.push({id:s.id,uses:s.uses as Step['uses'],needs:needs as string[],
       ...(s.needs_policy==='allow_skipped'?{needs_policy:'allow_skipped' as const}:{}),
-      with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
+      with:compiledWith,...(s.if===undefined?{}:{if:s.if}),
+      ...(s.approval===undefined?{}:{approval:{required:true}})});
   }
   for(const s of steps){
     if(s.uses==='action.run'&&s.with.provider==='weixin'){
