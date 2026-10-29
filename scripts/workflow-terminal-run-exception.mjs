@@ -24,6 +24,12 @@ export const FIFTH_SESSION_GITHUB_RUN_ID = 40803663333;
 export const FIFTH_PROVIDER_INVOCATION_ID = "2adf4608-c075-425d-a93d-d7d74211a295";
 export const FIFTH_PROVIDER_DEPLOYMENT_ID = "3d61997c-eb30-46e3-b96f-334343d061af";
 
+// Sixth exact 2026-10-29 inspected ACK-shape E2E; machine result remains unknown.
+export const SIXTH_TERMINAL_RUN_ID = "3e312105-b40e-49ea-a037-c3359074be2b";
+export const SIXTH_SESSION_GITHUB_RUN_ID = 40806497790;
+export const SIXTH_PROVIDER_INVOCATION_ID = "83b722f0-4ed3-4a7d-838c-78613f5167f1";
+export const SIXTH_PROVIDER_DEPLOYMENT_ID = "aeed581e-2769-4cde-9f6a-236d6414b4a2";
+
 const WORKFLOW = "workflow-mcp-orchestrator";
 
 function requireValid(test, message) {
@@ -251,6 +257,53 @@ export function verifyFifthTerminalEvidence(d1,native,github) {
   return FIFTH_TERMINAL_RUN_ID;
 }
 
+// Fail-closed: only the sixth exact immutable 2026-10-29 terminated Run is exempted.
+export function verifySixthTerminalEvidence(d1,native,github) {
+  requireValid(Array.isArray(d1)&&d1.length===5&&
+    d1.every(z=>z?.success===true&&Array.isArray(z.results)),
+    "sixth Run D1 readback incomplete");
+  const [runs,steps,sessions,attempts,invocations]=d1.map(z=>z.results);
+  requireValid(runs.length===1&&runs[0].id===SIXTH_TERMINAL_RUN_ID&&
+    runs[0].outcome==="indeterminate"&&runs[0].start_state==="started"&&
+    runs[0].error_code==="cloudflare_outcome_unknown",
+    "sixth Run unknown outcome changed");
+  requireValid(steps.length===3&&
+    steps[0].run_id===SIXTH_TERMINAL_RUN_ID&&
+    steps[0].step_id==="notify"&&steps[0].status==="indeterminate"&&
+    steps[0].error_code==="cloudflare_outcome_unknown"&&
+    steps[1].run_id===SIXTH_TERMINAL_RUN_ID&&
+    steps[1].step_id==="openlist"&&steps[1].status==="succeeded"&&
+    steps[2].run_id===SIXTH_TERMINAL_RUN_ID&&
+    steps[2].step_id==="receipt"&&steps[2].status==="skipped",
+    "sixth Run Step result changed");
+  requireValid(sessions.length===1&&
+    sessions[0].run_id===SIXTH_TERMINAL_RUN_ID&&
+    sessions[0].step_id==="openlist"&&sessions[0].state==="terminated",
+    "sixth Run Session not terminated");
+  requireValid(attempts.length===1&&
+    attempts[0].run_id===SIXTH_TERMINAL_RUN_ID&&
+    attempts[0].step_id==="openlist"&&attempts[0].state==="cancelled"&&
+    attempts[0].repository==="lirtual/session-actions"&&
+    attempts[0].owner_run_id===SIXTH_SESSION_GITHUB_RUN_ID&&
+    attempts[0].candidate_run_id===SIXTH_SESSION_GITHUB_RUN_ID&&
+    attempts[0].owner_run_attempt===1&&
+    attempts[0].candidate_run_attempt===1,
+    "sixth Run GitHub Attempt not terminated");
+  requireValid(invocations.length===1&&
+    invocations[0].run_id===SIXTH_TERMINAL_RUN_ID&&
+    invocations[0].step_id==="notify"&&
+    invocations[0].invocation_id===SIXTH_PROVIDER_INVOCATION_ID&&
+    invocations[0].binding_generation===1&&
+    invocations[0].deployment_id===SIXTH_PROVIDER_DEPLOYMENT_ID,
+    "sixth Run Action identity changed");
+  requireValid(native?.status==="complete"&&native?.end,
+    "sixth native Cloudflare instance not complete");
+  requireValid(github?.id===SIXTH_SESSION_GITHUB_RUN_ID&&
+    github?.status==="completed"&&github?.conclusion==="cancelled",
+    "sixth GitHub Run not physically cancelled");
+  return SIXTH_TERMINAL_RUN_ID;
+}
+
 async function main() {
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
     "only the Workflow release may request this exception");
@@ -260,12 +313,13 @@ async function main() {
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
     "required read-only verification credentials missing");
   const kind=process.env.TERMINAL_PROOF_KIND;
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth",
+  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth",
     "unknown terminal proof kind");
   const second=kind==="second";
   const third=kind==="third";
   const fourth=kind==="fourth";
   const fifth=kind==="fifth";
+  const sixth=kind==="sixth";
   const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
   const get = async (url, token) => {
     const response = await fetch(url,{
@@ -277,21 +331,23 @@ async function main() {
   };
   const cf = await get("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
+    (sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
     process.env.CLOUDFLARE_API_TOKEN);
   requireValid(cf?.success === true && cf?.result,
     "native Cloudflare instance readback unavailable");
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
-    (fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
+    (sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-  if(fifth)verifyFifthTerminalEvidence(d1,cf.result,github);
+  if(sixth)verifySixthTerminalEvidence(d1,cf.result,github);
+  else if(fifth)verifyFifthTerminalEvidence(d1,cf.result,github);
   else if(fourth)verifyFourthTerminalEvidence(d1,cf.result,github);
   else if(third)verifyThirdTerminalEvidence(d1,cf.result,github);
   else if(second)verifySecondTerminalEvidence(d1,cf.result,github);
   else verifyTerminalRunEvidence(d1,cf.result,github);
   requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
   await appendFile(process.env.GITHUB_OUTPUT,
-    (fifth?"fifth_terminal_run_id="+FIFTH_TERMINAL_RUN_ID:
+    (sixth?"sixth_terminal_run_id="+SIXTH_TERMINAL_RUN_ID:
+      fifth?"fifth_terminal_run_id="+FIFTH_TERMINAL_RUN_ID:
       fourth?"fourth_terminal_run_id="+FOURTH_TERMINAL_RUN_ID:
       third?"third_terminal_run_id="+THIRD_TERMINAL_RUN_ID:
       second?"second_terminal_run_id="+SECOND_TERMINAL_RUN_ID:
