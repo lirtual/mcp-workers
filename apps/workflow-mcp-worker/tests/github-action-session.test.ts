@@ -120,8 +120,8 @@ test('Go OpenList conflict reports the shared reservation owner without dispatch
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
    GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
-  const outcome=await runPublishedGitHubActionSession(env,goPlan as Plan,
-   goPlan.steps[0] as Step,run(2),workflow,async()=>{
+  const outcome=await runPublishedGitHubActionSession(env,goPlan as unknown as Plan,
+   goPlan.steps[0] as unknown as Step,run(2),workflow,async()=>{
     requests++;throw Error('shared resource conflict must not dispatch');
    });
   assert.equal(outcome.status,'failed');
