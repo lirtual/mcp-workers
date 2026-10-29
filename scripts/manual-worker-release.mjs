@@ -66,8 +66,11 @@ export function databaseD1ReadinessSql(expectedIds) {
   // Only aggregate counts: no ciphertext, passwords, URLs or driver errors.
   return [
     "SELECT",
-    "  (SELECT COUNT(*) FROM d1_migrations WHERE name IN ('0001_connections.sql','0002_transport_and_retired_ids.sql')) AS migration_count,",
+    "  (SELECT COUNT(*) FROM d1_migrations WHERE name IN ('0001_connections.sql','0002_transport_and_retired_ids.sql','0003_hyperdrive_operations.sql')) AS migration_count,",
     "  (SELECT COUNT(*) FROM database_connections) AS record_count,",
+    "  (SELECT COUNT(*) FROM hyperdrive_operations WHERE action='create' AND phase IN ('pending','running','awaiting_confirmation','unknown')) AS reserved_count,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('hyperdrive_operations') WHERE name='resource_write_started_at') AS resource_claim_column,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('hyperdrive_operations') WHERE name='apply_run_id') AS apply_receipt_column,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ") AND status='active') AS active_count,",
     "  (SELECT COUNT(*) FROM retired_connection_ids) AS retired_count,",
@@ -88,10 +91,10 @@ export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cuto
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
   const row = response[0].results[0];
-  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count"])
+  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count", "reserved_count", "resource_claim_column", "apply_receipt_column"])
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
-  invariant(row.migration_count === 2, "Database D1 additive transport migration not applied");
+  invariant(row.migration_count === 3 && row.resource_claim_column === 1 && row.apply_receipt_column === 1, "Database D1 additive lifecycle migration not applied");
   // The separate, always-on encrypted Direct prepublication gate enforces
   // exact active revision-2 legacy records while the old Worker is deployed.
   // Once the D1-backed Worker is already live, requiring those IDs to remain
@@ -102,7 +105,7 @@ export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cuto
     invariant(row.active_count === expectedCount,
       "Database production release blocked: reviewed legacy connections are disabled");
   }
-  invariant(row.record_count <= 10 && row.reused_count === 0 && row.malformed_count === 0 &&
+  invariant(row.record_count + row.reserved_count <= 10 && row.reused_count === 0 && row.malformed_count === 0 &&
     row.preserved_count <= Math.min(row.record_count, expectedCount) &&
     row.active_count <= row.preserved_count,
     "Database D1 record inventory invalid");

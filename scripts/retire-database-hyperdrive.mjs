@@ -36,9 +36,13 @@ export async function retireDatabaseHyperdrive({
       method, headers: { authorization: 'Bearer ' + token, accept: 'application/json',
         ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(15000)
+      redirect: 'manual', signal: AbortSignal.timeout(15000)
     }); } catch { fail('Cloudflare API unavailable'); }
-    if (!response?.ok) fail('Cloudflare response rejected');
+    if (!response?.ok) {
+      const status = [400,401,403,404,409,429,500,502,503].includes(response?.status)
+        ? response.status : 'unknown';
+      fail('Cloudflare response rejected at ' + phase + ' (HTTP ' + status + ')');
+    }
     let envelope;
     try { envelope = await response.json(); } catch { fail('invalid Cloudflare response'); }
     if (!envelope || envelope.success !== true || envelope.result == null) fail('unconfirmed API result');
@@ -79,13 +83,27 @@ export async function retireDatabaseHyperdrive({
       deployedBindings.filter(x => x.id === e.id && x.name === e.binding).length !== 1)) {
     fail('deployed Hyperdrive manifest drift');
   }
+  // The deployable=true API explicitly ignores pagination and returns all
+  // rollback-eligible versions. Missing/ambiguous inventory cannot prove safety.
+  const rollback = await cloud('/workers/scripts/database-mcp-worker/versions?deployable=true');
+  if (!Array.isArray(rollback?.items) || rollback.items.length === 0 ||
+      rollback.items.length > 100 || new Set(rollback.items.map(v=>v.id)).size !== rollback.items.length) {
+    fail('rollback reference inventory unavailable');
+  }
+  for (const version of rollback.items) {
+    if (!/^[0-9a-f-]{36}$/i.test(version.id ?? '')) fail('rollback reference identity invalid');
+    const detail = await cloud('/workers/scripts/database-mcp-worker/versions/' + version.id);
+    if (detail?.id !== version.id || !Array.isArray(detail.resources?.bindings) ||
+        detail.resources.bindings.some(b=>b.type==='hyperdrive' &&
+          (b.id===row.config_id || b.name===row.binding_name))) fail('rollback version reference remains or is unconfirmed');
+  }
   const shared = await sql('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',
     [connectionId, row.config_id, row.binding_name]);
   if (shared.results?.[0]?.n !== 0) fail('another D1 connection references this config');
   // No upstream delete: older retained Worker versions, other apps, and shared
   // CA are outside this D1 CAS. They remain subject to separate human review.
   try {
-    const deleted = await sql("DELETE FROM database_connections WHERE id=? AND revision=? AND transport='hyperdrive' AND status='disabled' AND config_id=? AND binding_name=?",
+    const deleted = await sql("DELETE FROM database_connections WHERE id=? AND revision=? AND transport='hyperdrive' AND status='disabled' AND config_id=? AND binding_name=? AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations WHERE logical_id=database_connections.id AND phase IN ('pending','running','awaiting_confirmation','unknown'))",
       [connectionId, expectedRevision, row.config_id, row.binding_name]);
     if (deleted.meta?.changes !== 1) fail('stale revision or deletion conflict');
   } catch {

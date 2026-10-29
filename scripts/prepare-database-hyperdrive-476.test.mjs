@@ -1,0 +1,260 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { verifyGithubPrPreflight, verifyPrepareIdentity, patchSource, verifyPreparedPullRequest } from './prepare-database-hyperdrive-476.mjs';
+
+const sha='a'.repeat(40);
+const env={
+  GITHUB_REPOSITORY:'lirtual/mcp-workers',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ID:'42',
+  GITHUB_ACTOR:'lirtual',GITHUB_REF:'refs/heads/main',GITHUB_SHA:sha,
+  DATABASE_HYPERDRIVE_OPERATION_ID:'12345678-1234-1234-1234-123456789abc',
+  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'secret-test-cloud',
+  GITHUB_TOKEN:'secret-test-github',DATABASE_GITHUB_ACTIONS_TOKEN:'secret-owner',
+  DATABASE_ENCRYPTION_KEY:'test-key',DATABASE_KEY_ID:'key1'
+};
+test('only exact Owner/main operation with scoped credentials may prepare',()=>{
+  assert.equal(verifyPrepareIdentity(env),true);
+  for (const [field,bad] of [['GITHUB_ACTOR','attacker'],['GITHUB_REF','refs/heads/feat'],
+    ['GITHUB_REPOSITORY','lirtual/fork'],['GITHUB_EVENT_NAME','push'],['GITHUB_RUN_ID','0'],
+    ['DATABASE_HYPERDRIVE_OPERATION_ID','../nonsense'],['GITHUB_TOKEN',undefined],
+    ['DATABASE_GITHUB_ACTIONS_TOKEN',undefined],
+    ['DATABASE_KEY_ID','bad key']]) {
+    assert.throws(()=>verifyPrepareIdentity({...env,[field]:bad}), /preparation blocked/i);
+  }
+});
+test('permission unavailable blocks before any Cloudflare resource write',async()=>{
+  let requests=0;
+  await assert.rejects(verifyGithubPrPreflight({sourceSha:sha,token:'dummy',
+    request:async(url)=>{
+      requests++;
+      assert.match(String(url),/actions\/permissions\/workflow$/);
+      return Response.json({can_approve_pull_request_reviews:false});
+    }}),/preparation blocked/i);
+  assert.equal(requests,1);
+});
+test('even with PR setting, branch protection is not silently bypassed',async()=>{
+  const calls=[];
+  await assert.rejects(verifyGithubPrPreflight({sourceSha:sha,token:'dummy',
+    request:async(url)=>{
+      calls.push(String(url));
+      if(String(url).endsWith('actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:true});
+      if(String(url).endsWith('branches/main/protection'))return Response.json({required_status_checks:{}});
+      if(String(url).includes('/rulesets'))return Response.json([]);
+      throw Error('Unexpected upstream');
+    }}),/preparation blocked/i);
+  assert.equal(calls.length,3);
+});
+test('source changes are exactly the fixed binding and reviewed manifest; never secrets',()=>{
+  const input=readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
+  const manifest=JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json',import.meta.url),'utf8'));
+  const entry={binding:'HYPERDRIVE_NEW_12345678',id:'1234567890abcdef1234567890abcdef',dialect:'mysql',
+    origin_host:'host.example.net',origin_port:3306,origin_database:'catalog',
+    origin_user:'reader',ca_certificate_id:'12345678-1234-1234-1234-123456789abc'};
+  const files=patchSource(input,manifest,entry);
+  assert.deepEqual(Object.keys(files).sort(),[
+    'apps/database-mcp-worker/hyperdrive-bindings.json',
+    'apps/database-mcp-worker/wrangler.jsonc'
+  ]);
+  const config=JSON.parse(files['apps/database-mcp-worker/wrangler.jsonc']);
+  assert.equal(config.hyperdrive.length,2);
+  assert.equal(config.hyperdrive[1].binding,entry.binding);
+  assert.deepEqual(JSON.parse(files['apps/database-mcp-worker/hyperdrive-bindings.json']),[...manifest,entry]);
+  assert.ok(!JSON.stringify(files).includes('very-secret-password'));
+});
+
+test('only explicit unprotected main with eligible existing CI and exact SHA may prepare', async () => {
+  const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  for(const fault of [null,'403','rules','sha','ci-inactive','ci-content','ci-unknown']) {
+    const request=async(url)=>{
+      if(String(url).endsWith('/actions/permissions/workflow')) return Response.json({can_approve_pull_request_reviews:true});
+      if(String(url).endsWith('/branches/main/protection')) return new Response(null,{status:fault==='403'?403:404});
+      if(String(url).includes('/rulesets')) return Response.json(fault==='rules'?[{id:1}]:[]);
+      if(String(url).endsWith('/git/ref/heads/main')) return Response.json({object:{sha:fault==='sha'?'f'.repeat(40):sha}});
+      if(String(url).endsWith('/actions/workflows/ci.yml')) return Response.json({id:1,path:'.github/workflows/ci.yml',state:fault==='ci-inactive'?'disabled_manually':'active'});
+      if(String(url).includes('/contents/.github/workflows/ci.yml?ref='+sha)) {
+        if(fault==='ci-unknown')return new Response(null,{status:403});
+        return Response.json({path:'.github/workflows/ci.yml',type:'file',encoding:'base64',
+          content:Buffer.from(fault==='ci-content'?'unrelated workflow':ci).toString('base64')});
+      }
+      throw Error('unexpected request');
+    };
+    const action=()=>verifyGithubPrPreflight({sourceSha:sha,token:'dummy',request});
+    if(fault===null) assert.deepEqual(await action(),{unprotected:true});
+    else await assert.rejects(action(), /preparation blocked/i);
+  }
+});
+
+test('a protected policy must identify the existing CI workflow before preparation',async()=>{
+  const calls=[];
+  assert.deepEqual(await verifyGithubPrPreflight({token:'dummy',sourceSha:sha,request:async(url)=>{
+    calls.push(String(url));
+    if(String(url).endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:true});
+    if(String(url).endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+    if(String(url).includes('/rulesets'))return Response.json([]);
+    if(String(url).endsWith('/actions/workflows/ci.yml'))return Response.json({id:1,path:'.github/workflows/ci.yml',state:'active'});
+    if(String(url).endsWith('/git/ref/heads/main'))return Response.json({object:{sha}});
+    throw Error('unexpected request');
+  }}),{unprotected:false});
+  assert.equal(calls.length,5);
+});
+
+
+test('PR source verification rejects extra files, different parent, base advance and secret blob substitution',async()=>{
+  const operationId=env.DATABASE_HYPERDRIVE_OPERATION_ID,headSha='b'.repeat(40),blobSha='c'.repeat(40);
+  const files={'apps/database-mcp-worker/wrangler.jsonc':'safe binding',
+    'apps/database-mcp-worker/hyperdrive-bindings.json':'safe provenance'};
+  const good={number:3,state:'open',changed_files:2,commits:1,
+    head:{sha:headSha,ref:'db476-'+operationId,repo:{full_name:'lirtual/mcp-workers'}},
+    base:{sha,ref:'main',repo:{full_name:'lirtual/mcp-workers'}}};
+  for(const fault of [null,'extra','parent','base','secret']) {
+    const github=async(path)=>{
+      if(path==='/pulls/3')return fault==='base'?{...good,base:{...good.base,sha:'d'.repeat(40)}}:good;
+      if(path==='/git/commits/'+headSha)return {sha:headSha,parents:[{sha:fault==='parent'?'e'.repeat(40):sha}]};
+      if(path.includes('/files?'))return Object.keys(files).concat(fault==='extra'?['.github/workflows/ci.yml']:[])
+        .map(filename=>({filename,status:'modified',sha:blobSha}));
+      if(path==='/git/blobs/'+blobSha) {
+        // The two reads correspond to the two distinct generated source entries.
+        const content=Object.values(files)[reads++];
+        return {sha:blobSha,encoding:'base64',content:Buffer.from(fault==='secret'?'injected password':content).toString('base64')};
+      }
+      throw Error('unexpected read');
+    };
+    let reads=0;
+    const inspect=()=>verifyPreparedPullRequest({github,operationId,baseSha:sha,headSha,prNumber:3,files});
+    if(fault===null)assert.equal(await inspect(),true);
+    else await assert.rejects(inspect(),/preparation blocked/);
+  }
+});
+
+test('preparation entrypoint performs zero Cloudflare calls when PR creation is disabled',async()=>{
+  const {prepareDatabaseHyperdrive}=await import('./prepare-database-hyperdrive-476.mjs');
+  let calls=0;
+  await assert.rejects(prepareDatabaseHyperdrive(env,async(url)=>{
+    calls++;
+    assert.match(String(url),/^https:\/\/api.github.com\//);
+    return Response.json({can_approve_pull_request_reviews:false});
+  }),error=>error.reason==='github_pr_creation_disabled');
+  assert.equal(calls,1);
+});
+
+// Exercise the existing Actions entrypoint, real SQLite and Runner decryption.
+// Every upstream request below is synthetic; no real origin is contacted.
+test('PR confirmation renews a nonsecret seven-day review window but never the encrypted intake', async()=>{
+  const source=readFileSync(new URL('./prepare-database-hyperdrive-476.mjs',import.meta.url),'utf8');
+  assert.match(source,/const reviewExpiresAt = reviewedAt \+ 7 \* 24 \* 60 \* 60_000/);
+  assert.match(source,/SET phase='awaiting_confirmation',ciphertext=NULL,key_id=NULL/);
+  assert.match(source,/updated_at=\?,expires_at=\?,error_class='github_pr_ci_pending'/);
+  assert.match(source,/AND phase='running' AND expected_source_sha=\? AND expires_at>\?/);
+});
+for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected'])
+test('preparation preserves policy and resource receipt safety: '+mode,async()=>{
+  const {DatabaseSync}=await import('node:sqlite');
+  const {createCipheriv}=await import('node:crypto');
+  const {prepareDatabaseHyperdrive}=await import('./prepare-database-hyperdrive-476.mjs');
+  const db=new DatabaseSync(':memory:');
+  for(const name of ['0001_connections.sql','0002_transport_and_retired_ids.sql',
+    '0003_hyperdrive_operations.sql']) {
+    db.exec(readFileSync(new URL('../apps/database-mcp-worker/migrations/'+name,import.meta.url),'utf8'));
+  }
+  const key=Buffer.alloc(32,7),iv=Buffer.alloc(12,8),operationId=env.DATABASE_HYPERDRIVE_OPERATION_ID;
+  const candidate={id:'isolated',dialect:'mysql',host:'mysql.example.net',port:'3306',
+    database:'catalog',user:'reader',password:'synthetic-password',
+    caCertificateId:'b0e4a5d3-1665-4e3c-a0a0-28f9a2b9b1c0'};
+  const cipher=createCipheriv('aes-256-gcm',key,iv);
+  cipher.setAAD(Buffer.from('database-mcp:hyperdrive-operation:v1:'+operationId+':create:isolated:0'));
+  const encrypted=Buffer.concat([cipher.update(JSON.stringify(candidate)),cipher.final(),cipher.getAuthTag()]);
+  db.prepare(`INSERT INTO hyperdrive_operations
+    (operation_id,logical_id,action,expected_revision,phase,ciphertext,key_id,created_at,updated_at,expires_at)
+    VALUES (?,?,'create',0,'running',?,'key1',1,1,?)`)
+    .run(operationId,candidate.id,iv.toString('base64')+'.'+encrypted.toString('base64'),Date.now()+600000);
+  let creates=0;
+  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-');
+  const configId='1'.repeat(32), head='b'.repeat(40), blobs=new Map();
+  let createdConfig;
+  const request=async(url,init={})=>{
+    const path=new URL(url).pathname;
+    if(path.endsWith('/actions/permissions/workflow')){
+      assert.equal(init.headers.authorization,'Bearer secret-owner');
+      return Response.json({can_approve_pull_request_reviews:true});
+    }
+    if(path.endsWith('/branches/main/protection'))return unprotected?new Response(null,{status:404}):Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+    if(path.endsWith('/rulesets'))return Response.json([]);
+    if(path.endsWith('/actions/workflows/ci.yml'))return Response.json({id:1,path:'.github/workflows/ci.yml',state:'active'});
+    if(path.endsWith('/git/ref/heads/main'))return Response.json({object:{sha}});
+    if(path.endsWith('/contents/.github/workflows/ci.yml'))return Response.json({path:'.github/workflows/ci.yml',
+      type:'file',encoding:'base64',content:Buffer.from(readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8')).toString('base64')});
+    if(path.includes('/git/') || path.includes('/pulls')) {
+      const body=init.body?JSON.parse(init.body):undefined;
+      assert.ok(!JSON.stringify(body??'').includes(candidate.password));
+      if(path.endsWith('/git/commits/'+sha))return Response.json({sha,tree:{sha:'c'.repeat(40)}});
+      if(path.endsWith('/git/commits/'+head))return Response.json({sha:head,parents:[{sha}]});
+      if(path.endsWith('/git/blobs')&&init.method==='POST') {
+        const id=String(blobs.size+2).repeat(40);blobs.set(id,body.content);
+        return Response.json({sha:id});
+      }
+      if(path.includes('/git/blobs/')) {
+        const id=path.split('/').at(-1);return Response.json({sha:id,encoding:'base64',content:blobs.get(id)});
+      }
+      if(path.endsWith('/git/trees'))return Response.json({sha:'d'.repeat(40)});
+      if(path.endsWith('/git/commits'))return Response.json({sha:head});
+      if(path.endsWith('/git/refs'))return Response.json({});
+      if(path.endsWith('/pulls')&&init.method==='POST') {
+        assert.equal(body.draft,!unprotected);
+        return Response.json({number:3});
+      }
+      if(path.endsWith('/pulls/3'))return Response.json({number:3,state:'open',changed_files:2,commits:1,
+        head:{sha:head,ref:'db476-'+operationId,repo:{full_name:'lirtual/mcp-workers'}},
+        base:{sha,ref:'main',repo:{full_name:'lirtual/mcp-workers'}}});
+      if(path.endsWith('/pulls/3/files'))return Response.json([...blobs.keys()].map((id,index)=>({
+        filename:['apps/database-mcp-worker/wrangler.jsonc','apps/database-mcp-worker/hyperdrive-bindings.json'][index],
+        status:'modified',sha:id})));
+    }
+    if(path.endsWith('/query')) {
+      const {sql,params}=JSON.parse(init.body),statement=db.prepare(sql);
+      const result=sql.startsWith('SELECT')?{results:statement.all(...params)}:
+        {meta:{changes:Number(statement.run(...params).changes)}};
+      return Response.json({success:true,result:[{success:true,...result}]});
+    }
+    if(path.endsWith('/hyperdrive/configs') && init.method==='GET')return Response.json({success:true,result:[]});
+    if(path.endsWith('/hyperdrive/configs') && init.method==='POST') {
+      creates++;
+      const body=JSON.parse(init.body);
+      assert.equal(body.mtls.sslmode,'VERIFY_IDENTITY');
+      assert.equal(body.caching.disabled,true);
+      if(!success)throw Error('synthetic lost acknowledgment');
+      createdConfig={id:configId,...body};
+      return Response.json({success:true,result:createdConfig});
+    }
+    if(path.endsWith('/hyperdrive/configs/'+configId))return Response.json({success:true,result:createdConfig});
+    throw Error('Unexpected synthetic upstream');
+  };
+  try {
+    const runnerEnv={...env,DATABASE_ENCRYPTION_KEY:key.toString('base64'),GITHUB_RUN_ID:'42'};
+    if(success) {
+      const result=await prepareDatabaseHyperdrive(runnerEnv,request);
+      assert.equal(result.phase,'awaiting_confirmation');
+      assert.equal(creates,1);
+      assert.deepEqual({...db.prepare('SELECT phase,pr_number,head_sha,ciphertext,key_id FROM hyperdrive_operations').get()},
+        {phase:'awaiting_confirmation',pr_number:3,head_sha:head,ciphertext:null,key_id:null});
+      return;
+    }
+    await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>error.reason==='cloudflare_outcome_unknown');
+    assert.equal(creates,1);
+    const row=db.prepare('SELECT phase,error_class,resource_write_started_at FROM hyperdrive_operations').get();
+    assert.equal(row.phase,'unknown');
+    assert.equal(row.error_class,'preparation_requires_reconciliation');
+    assert.ok(row.resource_write_started_at>0);
+    await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>error.reason==='cloudflare_outcome_requires_reconciliation');
+    assert.equal(creates,1);
+  } finally {db.close();}
+});
+
+
+test('retired Aiven test provisioning entrypoints cannot return through CI',async()=>{
+  const {existsSync}=await import('node:fs');
+  assert.equal(existsSync(new URL('./database-aiven-hyperdrive-prepare-344.mjs',import.meta.url)),false);
+  const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  assert.doesNotMatch(ci+release,/database-aiven-hyperdrive-prepare-344/);
+  assert.match(ci,/retire-database-hyperdrive.test.mjs/);
+});

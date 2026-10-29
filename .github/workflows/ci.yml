@@ -5,6 +5,18 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Spec 476 candidate checks only
+        required: true
+        type: choice
+        options:
+          - database-mcp-worker
+      candidate_sha:
+        description: Exact prepared candidate commit
+        required: true
+        type: string
   workflow_call:
     inputs:
       worker:
@@ -26,6 +38,8 @@ env:
 jobs:
   checks:
     name: Application checks
+    # Reusable CI inherits the caller event (including manual release dispatch).
+    if: ${{ github.event_name != 'workflow_dispatch' || !contains(github.workflow_ref, '/.github/workflows/ci.yml@') || (github.repository == 'lirtual/mcp-workers' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && startsWith(github.ref, 'refs/heads/db476-')) }}
     concurrency:
       group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}-${{ inputs.worker || 'affected' }}
       cancel-in-progress: true
@@ -37,6 +51,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify candidate provenance
+        if: github.event_name == 'workflow_dispatch' && contains(github.workflow_ref, '/.github/workflows/ci.yml@')
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" =~ ^refs/heads/db476-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" == "$CANDIDATE_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA" ]]
+          # Before running any candidate scripts, prove they and this workflow
+          # are unchanged from current main; only two non-executable blobs differ.
+          git fetch --no-tags origin main
+          parent=$(git rev-parse refs/remotes/origin/main)
+          [[ "$(git show -s --format=%P HEAD)" == "$parent" ]]
+          expected=$'M\tapps/database-mcp-worker/hyperdrive-bindings.json\nM\tapps/database-mcp-worker/wrangler.jsonc'
+          [[ "$(git diff --no-renames --name-status "$parent" HEAD)" == "$expected" ]]
+          for file in apps/database-mcp-worker/{hyperdrive-bindings.json,wrangler.jsonc}; do
+            [[ "$(git ls-tree HEAD -- "$file")" == 100644* ]]
+          done
 
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs
@@ -65,7 +101,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MANUAL_WORKER: ${{ inputs.worker }}
-          REUSABLE_WORKER: ${{ inputs.worker }}
+          REUSABLE_WORKER: ${{ !contains(github.workflow_ref, '/.github/workflows/ci.yml@') && inputs.worker || '' }}
           MANUAL_REF: ${{ github.ref }}
         run: node scripts/select-affected-apps.mjs
 
@@ -106,7 +142,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/reviewed-weixin-provider-pin.test.mjs scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/database-registry-readiness-344.test.mjs scripts/database-fresh-readiness-344.test.mjs scripts/probe-database-github-dispatch.test.mjs
+        run: node --test scripts/reviewed-weixin-provider-pin.test.mjs scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/prepare-database-hyperdrive-476.test.mjs scripts/apply-database-hyperdrive-476.test.mjs scripts/finalize-database-hyperdrive-476.test.mjs scripts/retire-database-hyperdrive.test.mjs scripts/database-registry-readiness-344.test.mjs scripts/database-fresh-readiness-344.test.mjs scripts/probe-database-github-dispatch.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'

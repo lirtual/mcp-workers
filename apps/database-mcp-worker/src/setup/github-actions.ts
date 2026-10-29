@@ -106,12 +106,109 @@ export async function dispatchHyperdriveAction(
   };
   if (action === 'enable') {
     inputs.database_hyperdrive_enable_approved = 'true';
-    inputs.database_hyperdrive_enable_id = id;
-    inputs.database_hyperdrive_enable_revision = String(revision);
+    inputs.database_hyperdrive_id = id;
+    inputs.database_hyperdrive_revision = String(revision);
   } else {
     inputs.database_hyperdrive_retire_approved = 'true';
-    inputs.database_hyperdrive_retire_id = id;
-    inputs.database_hyperdrive_retire_revision = String(revision);
+    inputs.database_hyperdrive_id = id;
+    inputs.database_hyperdrive_revision = String(revision);
   }
   return dispatchWorkflow(env, inputs, request);
+}
+
+/** Only a bounded operation ID crosses into protected Actions; origin secrets remain encrypted in D1. */
+export async function dispatchHyperdrivePrepare(
+  env: Env, operationId: string, request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId)) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive operation ID.');
+  }
+  return dispatchWorkflow(env, {
+    worker: 'database-mcp-worker',
+    deploy_to_production: 'false',
+    database_hyperdrive_prepare_id: operationId
+  }, request);
+}
+
+/** Read-only Owner preflight before reserving D1 or dispatching any external mutation. */
+export async function verifyGithubPrCapability(
+  env: Env, request: typeof fetch = fetch
+): Promise<void> {
+  const token = env.DATABASE_GITHUB_ACTIONS_TOKEN;
+  if (typeof token !== 'string' || token.length < 20) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch is not configured.');
+  }
+  let response: Response;
+  try {
+    response = await request('https://api.github.com/repos/lirtual/mcp-workers/actions/permissions/workflow', {
+      method: 'GET', redirect: 'manual', headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'lirtual-database-mcp-worker',
+        'X-GitHub-Api-Version': '2022-11-28'
+      }, signal: AbortSignal.timeout(10000)
+    });
+  } catch {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
+  }
+  if (response.status !== 200) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
+  }
+  let enabled: unknown;
+  try {
+    enabled = ((await response.json()) as {can_approve_pull_request_reviews?: unknown})
+      .can_approve_pull_request_reviews;
+  } catch {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
+  }
+  if (enabled !== true) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub Actions PR creation is disabled.');
+  }
+  await verifyGithubRequiredChecks(env, request);
+}
+
+/** A classic 404 permits the no-protection path only after separately checking inherited rulesets. */
+export async function verifyGithubRequiredChecks(env: Env, request: typeof fetch = fetch): Promise<void> {
+  const headers = {
+    Authorization: 'Bearer ' + env.DATABASE_GITHUB_ACTIONS_TOKEN,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'lirtual-database-mcp-worker',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
+  try {
+    const classic = await request('https://api.github.com/repos/lirtual/mcp-workers/branches/main/protection', {
+      method: 'GET', redirect: 'manual', headers, signal: AbortSignal.timeout(10000)
+    });
+    if (classic.status === 200) {
+      const policy = await classic.json() as {required_status_checks?: {strict?: unknown; contexts?: unknown}};
+      if (policy.required_status_checks?.strict === true &&
+        Array.isArray(policy.required_status_checks.contexts) &&
+        policy.required_status_checks.contexts.includes('Required checks gate')) return;
+      throw Error('unconfirmed classic PR checks');
+    }
+    if (classic.status !== 404) throw Error('classic protection unknown');
+    // The alternative is an explicitly unprotected main, not a substitute
+    // for mandatory checks. Unknown/inherited rulesets must fail closed.
+    const rules = await request('https://api.github.com/repos/lirtual/mcp-workers/rulesets?includes_parents=true&per_page=100', {
+      method: 'GET', redirect: 'manual', headers, signal: AbortSignal.timeout(10000)
+    });
+    if (rules.status !== 200) throw Error('rulesets unavailable');
+    const inventory: unknown = await rules.json();
+    if (!Array.isArray(inventory) || inventory.length !== 0) throw Error('rulesets unknown or present');
+  } catch {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub required PR checks could not be verified.');
+  }
+}
+
+/** Final apply dispatch carries only the immutable operation UUID. */
+export async function dispatchHyperdriveApply(
+  env: Env, operationId: string, request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(operationId)) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive operation ID.');
+  }
+  return dispatchWorkflow(env, {
+    worker: 'database-mcp-worker', deploy_to_production: 'false',
+    database_hyperdrive_apply_id: operationId
+  }, request);
 }

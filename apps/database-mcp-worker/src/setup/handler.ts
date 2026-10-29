@@ -9,7 +9,10 @@ import { createRegistryConnection, deleteRegistryConnection, getRegistryConnecti
 import { rotateRegistryKeys } from '../registry/rotation.js';
 import type { Dialect, Env } from '../types.js';
 import { validateCsrf, verifyAccess } from './access.js';
-import { dispatchHyperdriveAction, verifyGithubActionsDispatch } from './github-actions.js';
+import { dispatchHyperdriveAction, dispatchHyperdrivePrepare, dispatchHyperdriveApply, verifyGithubActionsDispatch,
+  verifyGithubPrCapability } from './github-actions.js';
+import { previewHyperdriveCreation, createHyperdrivePreparation, listHyperdriveOperations,
+  recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
 import { setupFailure, setupPage, setupResult } from './page.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
@@ -123,7 +126,12 @@ export function setupFailureReference(error: PublicError): string | undefined {
     'GitHub Actions dispatch rate limited.': 'github_rate_limited',
     'GitHub Actions dispatch redirect rejected.': 'github_redirect_rejected',
     'GitHub Actions dispatch upstream unavailable.': 'github_upstream_unavailable',
-    'GitHub Actions dispatch HTTP rejected.': 'github_http_rejected'
+    'GitHub Actions dispatch HTTP rejected.': 'github_http_rejected',
+    'GitHub PR permissions could not be verified.': 'github_pr_permission_unknown',
+    'GitHub Actions PR creation is disabled.': 'github_pr_creation_disabled',
+    'GitHub required PR checks could not be verified.': 'github_required_checks_unknown',
+    'Hyperdrive CA upload permission has not been verified.': 'cloudflare_ca_permission_unknown',
+    'Hyperdrive credential isolation could not be verified.': 'hyperdrive_isolation_unknown'
   };
   return known[error.message] ?? 'other';
 }
@@ -153,13 +161,16 @@ export async function handleSetup(
     if (request.method === 'GET' && path === '/setup') {
       const raw = crypto.getRandomValues(new Uint8Array(32));
       const token = btoa(String.fromCharCode(...raw)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
-      return setupPage(await listRegistryConnections(env.DB), token);
+      const connections = await listRegistryConnections(env.DB);
+      const operations = await listHyperdriveOperations(env.DB);
+      return setupPage(connections, token, operations);
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|github-actions-check)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
     const action = path.slice('/setup/'.length);
+    await expireHyperdrivePreparations(env.DB);
     if (action === 'rotate') {
       // The Worker cannot inspect the private key material of rollback-eligible
       // versions or historical D1 backups. Require an explicit Owner attestation
@@ -175,6 +186,65 @@ export async function handleSetup(
       return setupResult('GitHub accepted a verification-only, no-deploy workflow request. No database or Worker changes were requested.' +
         (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Check the Actions run result separately.'));
     }
+    if (action === 'hyperdrive-apply') {
+      const operationId = required(form, 'operation_id');
+      const id = required(form, 'confirm_id');
+      if (required(form, 'confirm_apply') !== '1') invalid();
+      await claimHyperdriveApply(env.DB, operationId, id);
+      let runId: number | undefined;
+      try { runId = (await dispatchHyperdriveApply(env, operationId, requestFetch)).runId; }
+      catch (error) {
+        await recordHyperdriveApplyDispatch(env.DB, operationId);
+        throw error;
+      }
+      await recordHyperdriveApplyDispatch(env.DB, operationId, runId);
+      return setupResult('Final apply request accepted. Operation ID: ' + operationId +
+        (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
+        '. Merge, release and activation remain subject to protected verification.');
+    }
+    if (action === 'hyperdrive-preview' || action === 'hyperdrive-prepare') {
+      const dialect = required(form, 'dialect');
+      if (dialect !== 'mysql' && dialect !== 'postgres') invalid();
+      for (const field of ['id','dialect','origin_host','origin_port','origin_database',
+        'origin_user','origin_password','ca_certificate_id','ca_pem']) {
+        if (form.getAll(field).length > 1) invalid();
+      }
+      const candidate: HyperdriveCandidate = {
+        id: required(form, 'id'), dialect,
+        host: required(form, 'origin_host'), port: required(form, 'origin_port'),
+        database: required(form, 'origin_database'), user: required(form, 'origin_user'),
+        password: required(form, 'origin_password'),
+        caCertificateId: form.get('ca_certificate_id') || undefined,
+        caPem: form.get('ca_pem') || undefined
+      };
+      const preview = previewHyperdriveCreation(candidate);
+      if (action === 'hyperdrive-preview') {
+        return setupResult('Preview only (no resources changed): ' + preview.id + ' · ' +
+          preview.dialect + ' · ' + preview.host + ':' + preview.port + '/' + preview.database +
+          ' · strict ' + preview.tls + ' · caching disabled · CA ' + preview.caSource +
+          '. Return to /setup and separately confirm Prepare with your credentials.');
+      }
+      if (form.getAll('confirm_prepare').length !== 1 || form.get('confirm_prepare') !== '1') invalid();
+      await verifyGithubPrCapability(env, requestFetch);
+      if (candidate.caPem) throw new PublicError('CONFIGURATION_UNAVAILABLE',
+        'Hyperdrive CA upload permission has not been verified.');
+      const prepared = await createHyperdrivePreparation(env.DB, env, candidate);
+      await claimHyperdriveDispatch(env.DB, prepared.operationId);
+      let runId: number | undefined;
+      try {
+        const receipt = await dispatchHyperdrivePrepare(env, prepared.operationId, requestFetch);
+        runId = receipt.runId;
+      } catch (error) {
+        // The upstream may have accepted an operation before the HTTP failure.
+        // Preserve its unique D1 identity; never auto-retry a possible Cloudflare mutation.
+        await recordHyperdriveDispatch(env.DB, prepared.operationId);
+        throw error;
+      }
+      await recordHyperdriveDispatch(env.DB, prepared.operationId, runId);
+      return setupResult('Preparation request accepted. Operation ID: ' + prepared.operationId +
+        (runId ? '. GitHub Run ID: ' + runId : '. GitHub run receipt unknown; reconcile before retry.') +
+        '. This is not a Hyperdrive configuration or deployment confirmation.');
+    }
     const id = required(form, 'id');
     if (action === 'add') {
       const dialect = required(form, 'dialect');
@@ -183,12 +253,10 @@ export async function handleSetup(
       if (transport !== 'direct' && transport !== 'hyperdrive') invalid();
       requireAvailableMode(transport, dialect);
       if (transport === 'hyperdrive') {
-        // The binding and Cloudflare-managed credential/CA must already be configured
-        // through the separately authorized protected release before activation.
-        await createRegistryConnection(env.DB, {
-          id, dialect, transport, configId: required(form, 'config_id'), bindingName: required(form, 'binding_name')
-        });
-        return setupResult('Hyperdrive reference saved disabled. Publish and verify its dedicated binding and strict TLS before enabling.');
+        // Only the protected post-release finalizer can create a Hyperdrive D1
+        // reference after exact Worker version, binding, origin and TLS readback.
+        throw new PublicError('CONFIGURATION_UNAVAILABLE',
+          'Create Hyperdrive through the reviewed Prepare and final Apply lifecycle.');
       }
       if (transport !== 'direct' || formCa(form)) invalid();
       if (form.get('plaintext_ack') !== '1')
@@ -250,7 +318,8 @@ export async function handleSetup(
     }
     if (action === 'edit') {
       requireAvailableMode(row.transport, row.dialect);
-      if (row.transport !== 'direct') invalid(); // Cloudflare-managed Hyperdrive refs are immutable.
+      if (row.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE',
+        'Hyperdrive credential isolation could not be verified.');
       const mode = required(form, 'credential_mode');
       if (mode !== 'keep' && mode !== 'replace') invalid();
       // Any sensitive Direct update is a new explicit acceptance of plaintext risk.

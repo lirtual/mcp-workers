@@ -1,4 +1,6 @@
+import { canApplyHyperdrive } from './hyperdrive-operations.js';
 import type { RegistryMetadata } from '../registry/store.js';
+import type { HyperdriveOperationSummary } from './hyperdrive-operations.js';
 import { isAvailableMode } from '../registry/availability.js';
 import { csrfCookie } from './access.js';
 
@@ -37,7 +39,25 @@ const plaintextAckRequired = '<label class="check"><input type="checkbox" name="
 const directUrlHint = '<details><summary>URL format help</summary><p class="muted">' +
   '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code>. ' +
   'Use a public IP or hostname; no URL query parameters. Direct is unencrypted.</p></details>';
-export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
+function hyperdriveForm(csrf: string, route: 'hyperdrive-preview' | 'hyperdrive-prepare'): string {
+  const confirm = route === 'hyperdrive-prepare';
+  return '<form method="post" action="/setup/' + route + '">' + token(csrf) +
+    '<label>Logical ID<input name="id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required></label>' +
+    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
+    '<label>Origin hostname<input name="origin_host" maxlength="253" autocomplete="off" required></label>' +
+    '<label>Port<input name="origin_port" type="number" min="1" max="65535" required></label>' +
+    '<label>Database<input name="origin_database" maxlength="128" required></label>' +
+    '<label>Username<input name="origin_user" maxlength="128" required></label>' +
+    '<label>Password<input name="origin_password" type="password" maxlength="2048" autocomplete="off" required></label>' +
+    '<p class="muted">' + (confirm ? 'Preparation currently requires an existing CA ID. CA upload is blocked until its permission and reconciliation contract are verified.' : 'Preview accepts one existing CA ID or CA PEM. The secret is never echoed.') + '</p>' +
+    '<label>Existing CA certificate ID<input name="ca_certificate_id" maxlength="128"></label>' +
+    (confirm ? '' : '<label>CA PEM (preview only)<textarea name="ca_pem" rows="3" maxlength="16384"></textarea></label>') +
+    (confirm ? '<label class="check"><input type="checkbox" name="confirm_prepare" value="1" required>' +
+      'I authorize an unbound Cloudflare resource preparation. This does not enable the connection.</label>' : '') +
+    '<button type="submit">' + (confirm ? 'Confirm Prepare' : 'Preview (read-only)') + '</button></form>';
+}
+export function setupPage(rows: RegistryMetadata[], csrf: string,
+  operations: HyperdriveOperationSummary[] = []): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} / ${escape(row.transport)} · ${escape(row.status)}</span>` +
     (row.status === 'active' ? action(row, csrf, 'disable') :
       row.transport === 'direct' && isAvailableMode(row.transport, row.dialect)
@@ -56,6 +76,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
             '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' +
             '<button type="submit">Request retirement</button></form></details>'
           : '') +
+        '<p class="muted">Password and CA changes are blocked until in-flight, shared and rollback isolation can be verified. Disable alone does not prove isolation. Existing config and CA remain intact.</p>' +
         '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View GitHub Actions results</a></p>'
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
     `<details><summary>Edit connection</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
@@ -65,6 +86,18 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     plaintextAck +
     (row.status === 'disabled' ? '<label class="check"><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
     '<button type="submit">Test and save</button></form></details>') + '</li>').join('');
+  const history = operations.map(op => '<li><strong>' + escape(op.logical_id) + '</strong> · ' +
+    escape(op.action) + ' · ' + escape(op.phase) + ' · operation ' + escape(op.operation_id) +
+    (op.pr_number ? ' · <a rel="noreferrer" href="https://github.com/lirtual/mcp-workers/pull/' + op.pr_number + '">PR ' + op.pr_number + '</a>' : '') +
+    [op.prepare_run_id,op.apply_run_id,op.ci_run_id,op.release_run_id].filter(Boolean).map(run => ' · <a rel="noreferrer" href="https://github.com/lirtual/mcp-workers/actions/runs/' + run + '">Run ' + run + '</a>').join('') +
+    (op.error_class ? ' · ' + escape(op.error_class) : '') +
+    (op.error_class === 'postrelease_disabled' ? ' · Published reference stored disabled at revision 1. Use protected activation below; live health must pass before SQL is enabled.' : '') +
+    (canApplyHyperdrive(op) ? '<form method="post" action="/setup/hyperdrive-apply">' + token(csrf) +
+      '<input type="hidden" name="operation_id" value="' + escape(op.operation_id) + '">' +
+      '<label>Type logical ID ' + escape(op.logical_id) + '<input name="confirm_id" required autocomplete="off"></label>' +
+      '<label class="check"><input type="checkbox" name="confirm_apply" value="1" required>Confirm final apply: merge reviewed source and request protected production release</label>' +
+      '<p>PR must be ready for review with required reviews and checks satisfied. Acceptance does not confirm release or activation.</p>' +
+      '<button type="submit">Confirm final apply</button></form>' : '') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections. Credentials are never displayed.</p>' +
     `<ul class="connections">${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add Direct connection</legend><form method="post" action="/setup/add">' + token(csrf) +
@@ -76,14 +109,12 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<details><summary>Advanced options</summary><label class="check"><input type="checkbox" name="allow_disabled" value="1">Save disabled if connection test fails</label>' +
     '<p class="muted">A disabled connection cannot be used until it passes a connection check.</p></details>' +
     '<button type="submit">Add Direct connection</button></form></fieldset>' +
-    '<details><summary>Add Hyperdrive reference</summary><p class="muted">First create a dedicated Hyperdrive config with strict CA/hostname verification and caching disabled. The reference starts disabled; only protected Actions may activate it.</p>' +
-    '<form method="post" action="/setup/add">' + token(csrf) +
-    '<input type="hidden" name="transport" value="hyperdrive">' +
-    '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
-    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
-    '<label>Cloudflare config ID<input name="config_id" maxlength="64" required></label>' +
-    '<label>Binding name<input name="binding_name" pattern="HYPERDRIVE_[A-Z0-9_]{1,54}" maxlength="65" required></label>' +
-    '<button type="submit">Save disabled reference</button></form></details>' +
+    '<fieldset><legend>Hyperdrive lifecycle</legend>' +
+    '<p class="muted">Step 1: Preview without changes. Step 2: separately re-enter credentials and confirm Prepare. No logical connection is enabled until a reviewed binding is published and verified.</p>' +
+    '<details><summary>Preview new Hyperdrive</summary>' + hyperdriveForm(csrf, 'hyperdrive-preview') + '</details>' +
+    '<p class="muted">After preparation, review the exact nonsecret PR and required checks. Return to Operation status for a separate final Apply confirmation. Only the verified release and disabled D1 handoff count as completion.</p>' +
+    '<details><summary>Prepare unbound Hyperdrive</summary>' + hyperdriveForm(csrf, 'hyperdrive-prepare') + '</details>' +
+    '<details><summary>Operation status</summary><ul>' + (history || '<li>No operations</li>') + '</ul></details></fieldset>' +
     '<details class="maintenance"><summary>Maintenance</summary>' +
     '<p class="muted">Test GitHub Actions dispatch without deploying a Worker or changing any database connection. This only confirms GitHub accepted the request; check the workflow run separately.</p>' +
     '<form method="post" action="/setup/github-actions-check">' + token(csrf) +

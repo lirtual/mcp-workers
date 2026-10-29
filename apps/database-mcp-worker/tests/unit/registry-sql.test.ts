@@ -13,6 +13,7 @@ function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../../migrations/0002_transport_and_retired_ids.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../migrations/0003_hyperdrive_operations.sql', import.meta.url), 'utf8'));
   function statement(sql: string, args: unknown[] = []) {
     const prepared = sqlite.prepare(sql);
     return {

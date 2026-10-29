@@ -28,7 +28,7 @@ is **out of delivery scope** under the latest Owner three-mode decision (not mer
 waiting for a fixture). Spec #344 remains **Open** for the remaining accepted-mode
 security and live-E2E evidence.
 
-**Owner GitHub Actions production E2E (2026-10-29): PASS.** The Owner management page dispatched a verification-only, no-deploy request as [run #40850173389](https://github.com/lirtual/mcp-workers/actions/runs/40850173389). GitHub accepted the request and all five jobs were skipped, as designed. The existing protected release workflow now independently checks real dispatch permission before publishing the Database Worker. No further Owner interaction or credentials are required for this integration.
+**Owner GitHub Actions dispatch acceptance (historical 2026-10-29 evidence only).** The Owner management page dispatched a verification-only, no-deploy request as [run #40850173389](https://github.com/lirtual/mcp-workers/actions/runs/40850173389). GitHub accepted the request and all five jobs were skipped, as designed. The existing protected release workflow now independently checks real dispatch permission before publishing the Database Worker. This proves dispatch acceptance only. It does not prove Spec #476 lifecycle completion or current PR/check permissions.
 
 **Acceptance boundary:** The three current MySQL logical connections passed live read-only health checks. A read-only check does not establish OpenList production writes, DDL, injection/escaping or rollback safety, deployed Hyperdrive TLS negatives, or managed-D1 snapshot/key recovery. The previous Aiven test origins and IDs are retired; do not recreate them merely for compliance. PostgreSQL Hyperdrive runtime E2E remains unperformed pending a genuinely needed, separately authorized isolated origin. PostgreSQL Direct is unsupported at Owner configuration and MCP admission. Preserve existing production connections and do not infer complete three-mode acceptance from the Owner dispatch smoke.
 
@@ -39,7 +39,103 @@ the original flat-catalog Worker is no longer a supported recovery target.
 
 The new D1 `database_connections` registry supports 0–10 configured logical connections; disabled rows count. IDs, database targets and dialect/transport are immutable (credential-only URL edits; new target requires a new ID), revisions are CAS-checked, and `retired_connection_ids` prevents ID reuse on normal delete. A historical whole-D1 restore can roll back that retirement history: freeze changes and reconcile against independently retained identity evidence before allowing adds/enables.
 
-`migrations/0001_connections.sql` and `0002_transport_and_retired_ids.sql` remain the reviewed additive schema. They were applied to the **new initially empty** D1 only. Do not import historical ciphertext or activate preloaded old records.
+`migrations/0001_connections.sql` and `0002_transport_and_retired_ids.sql` are the applied baseline schema. They were applied to the **new initially empty** D1 only. Do not import historical ciphertext or activate preloaded old records.
+
+## Spec #476 implementation boundary
+
+This local phase adds encrypted, expiring creation operations and protected unbound
+candidate/allowlisted PR preparation, plus Owner final confirmation and protected apply. It does **not** complete the lifecycle. No production
+API, D1 migration, deployment, database probe or lifecycle E2E was performed in this phase.
+The three connection baseline and OpenList CA above are prior evidence, not a fresh readback.
+
+- Preview is read-only. Prepare requires separate confirmation, Access/CSRF and
+  verified Actions PR permission plus either a strict required-check policy or explicit
+  unprotected main (classic protection HTTP 404, independently empty inherited rulesets,
+  exact current main SHA and active existing CI with the expected candidate-dispatch
+  definition). Unknown/403 policy responses, ambiguous rules or ineligible CI block.
+  Current reported `can_approve_pull_request_reviews=false` still blocks before **any
+  Cloudflare call**; only the Owner may separately enable it. No setting changes occur
+  automatically. Do not broaden the existing Actions-only Owner PAT.
+- `0003_hyperdrive_operations.sql` is the single additive migration (including apply run receipts), **not applied** here. Ordinary Database releases now fail their read-only
+  schema gate until this migration is independently authorized and applied.
+  Existing migrations, bindings and provenance are retained.
+- Encrypted intake expires after 15 minutes; only after verified preparation erases the ciphertext does the nonsecret PR review window extend to seven days. Explicit Apply confirmation renews the seven-day window for CI and release. Stale or unknown side effects never retry automatically.
+- The legacy direct `/setup/add` Hyperdrive reference form is removed. New Hyperdrive D1 references are created only by the protected post-release finalizer after exact version, Binding and strict TLS readback. Existing Hyperdrive references remain manageable.
+- Pending adds reserve capacity against the ten-connection limit. Dispatch is claimed
+  before I/O. An unknown resource creation is never replayed, even if inventory later
+  appears empty. Expiry erases ciphertext; only an undispatched pending request releases
+  its reservation. Unknown effects retain the ID for independent reconciliation.
+  Pending operations block registry encryption-key rotation.
+- Preparation verifies strict TLS/CA/cache, exact generated source and PR parent/base/head,
+  both allowlisted file contents and GitHub readbacks. The PR remains
+  `awaiting_confirmation` with `github_pr_ci_pending`; no merge or publication occurs.
+  Protected policies retain draft PRs; confirmed unprotected main creates a ready PR,
+  with the same mandatory Owner final confirmation in `/setup` and no invented reviewer.
+  A bot-created PR may need human workflow approval. A dispatch result cannot substitute
+  for real required PR Checks or reviews.
+- CA PEM is preview-only; preparation requires an existing CA ID. Upload and password/CA
+  updates are blocked until permission, write-only password reconciliation and shared,
+  in-flight and rollback isolation can be established. Disabling new SQL does not drain
+  existing SQL. No nonfunctional password/CA apply controls are exposed.
+- `/setup/hyperdrive-apply` requires Owner Access, CSRF, the exact typed logical ID,
+  immutable operation UUID and explicit final confirmation checkbox. Only unexpired
+  `awaiting_confirmation` creations expose it. D1 claims the dispatch before GitHub I/O;
+  duplicate submissions, reruns and ambiguous outcomes never replay the action.
+- The dedicated apply job in existing `release.yml` requires Owner/main, the Database
+  Environment, `deploy_to_production=false`, no competing flags, and the existing release
+  concurrency lock. It uses job-scoped contents/PR write and checks/statuses read; the
+  existing Owner PAT dispatches only existing CI (when unprotected) and the explicit
+  production release. The apply job also has `actions: read` for evidence readbacks.
+  Unknown protection, unsupported rulesets, missing protected-policy admin enforcement,
+  draft PRs, missing required reviews, stale main/HEAD and incomplete checks fail closed.
+  For protected main, `workflow_dispatch` never satisfies required PR Checks; actual
+  PR-associated checks and GitHub merge eligibility remain mandatory.
+- For explicitly unprotected main, apply dispatches **existing `ci.yml`**, once, on
+  `db476-<operation UUID>` with exact candidate SHA. CI restricts Owner/repository and
+  Database Worker. Caller workflow context distinguishes direct dispatch from reusable
+  release/acceptance CI (which inherits the caller's event), preserving those routes.
+  Before candidate scripts run it verifies HEAD is a direct child of current main with exactly the two modified regular files. It has read-only contents,
+  ephemeral integration databases and no production secrets or Environment.
+  Apply records `ci_run_id`, verifies workflow ID/path, event, repository, Owner actor
+  and triggering actor, attempt 1, exact branch/head SHA, and successful **Application
+  checks, Database integration and Required checks gate** jobs. Waiting is bounded to
+  60 reads, five seconds apart, within a five-minute polling window (each API read has
+  its own timeout). A 204/no valid Run ID or dispatch timeout is unknown, never retried.
+  Queued/incomplete CI exhausts the wait as `apply_ci_pending`; failed/skipped/missing
+  or ambiguous jobs block. The page exposes the validated CI receipt and sanitized
+  reason, not a completion claim. Source, main and policy/merge eligibility are re-read
+  before merge; newly required PR Checks cannot be bypassed by the dispatch result.
+- Apply verifies the exact two nonsecret files (ordinary blob modes, no renames),
+  contents, immutable parent/base/head and current Cloudflare origin/TLS/CA/cache.
+  Only an eligible PR can merge using the job token with expected head SHA. Before
+  dispatch, the **actual** merge receipt, merged PR, commit parents/tree and main must
+  prove one exact SHA. The pre-merge test commit is never a production SHA substitute.
+  Only existing `release.yml` deploys, with `database_expected_release_sha` pinned to
+  that proven SHA; its ordinary full CI and production readbacks remain authoritative.
+- A verified release Run receipt is recorded as `running/apply_release_pending`, never
+  completed or active; 204, timeouts or invalid receipts leave `unknown`. The shared
+  concurrency lock prevents waiting for the queued release from within apply.
+- The existing release dispatch carries that same operation ID as its tenth input.
+  Its dependent `database-hyperdrive-finalize` job runs only after successful actual
+  deployment, under the existing Environment/concurrency lock. It verifies Owner/main,
+  the exact merged SHA and release Run, successful deploy job, the publish step's exact
+  version at 100%, current settings and version-specific DB/all reviewed Hyperdrive
+  bindings, and strict Cloudflare origin/TLS/CA/cache against the pinned manifest.
+- Only that proof permits the 0003 reservation handoff: insert an immutable metadata
+  reference at disabled revision 1, then complete the creation operation and erase
+  ciphertext. Completion means **disabled reference handoff**, never active SQL.
+  Lost D1 acknowledgements require exact row/operation readback before any retry;
+  a matching prior insert can finish, while conflicts, expired/unknown operations or
+  missing evidence fail closed. No rollback, overwrite or automatic activation occurs.
+  Use the existing protected `/setup` activation on the new disabled ID/revision;
+  live health must pass. Failed reconciliation leaves the deployment intact. Inspect
+  the failed release job and operation receipts; never discard its reservation.
+- Enable/retire use shared `database_hyperdrive_id` and
+  `database_hyperdrive_revision` inputs with their respective explicit approval flag.
+  Release dispatch has exactly ten inputs; `database_hyperdrive_apply_id` is the only new input in this continuation. Retirement checks
+  every returned deployable rollback version before D1 CAS/tombstone and always retains
+  upstream Hyperdrive/CA. Unconfirmed rollback inventory blocks retirement; shared CA
+  deletion is never inferred from removal of one logical connection.
 
 ## Transport contracts
 
@@ -58,7 +154,7 @@ Cloudflare Binding and mode-specific live E2E before acceptance.
 
 The existing Owner-only `/setup` page can request `enable` or `retire` for a **disabled** Hyperdrive D1 reference. Each request is gated by the existing exact Owner Access identity, Origin and CSRF checks, revision validation, and exact ID confirmation for retirement. The Worker calls only the allowlisted `release.yml` GitHub `workflow_dispatch` endpoint on `main` with `deploy_to_production=false`. The existing protected Action independently verifies `github.actor=lirtual`, immutable main, Cloudflare binding/origin/CA/cache, live health or unbinding evidence, and D1 CAS. A GitHub HTTP 204 (no body) or validated HTTP 200 (Workflow Run ID included) confirms **request acceptance only**, not workflow completion. GitHub REST requires a valid `User-Agent` header, explicitly set to `lirtual-database-mcp-worker` on both Worker and Runner paths (otherwise GitHub can reply 403 even when the PAT is valid). Cloudflare Workers does **not** support Fetch `redirect: 'error'` (it throws before I/O); the dispatcher uses `redirect: 'manual'`, rejects all HTTP 3xx without forwarding the PAT, and has a workerd-like regression test in the existing unit suite. The dispatcher opts into `return_run_details`, displays a numeric run ID when supplied, and classifies 401/403/404/422/429/5xx, network ambiguity, and invalid receipts using fixed redacted diagnostics; it never reflects provider response bodies or token values. Do not automatically retry an ambiguous dispatch: inspect Actions history first. The Owner Maintenance section also offers **Check GitHub Actions connection**: a CSRF-protected, non-destructive dispatch with `worker=database-mcp-worker`, `deploy_to_production=false` and all other approval flags false, so none of the existing `release.yml` jobs runs. This checks the deployed PAT's actual GitHub dispatch permission without modifying D1, any database, Hyperdrive, or the Worker. A 200 run ID makes it possible to match a specific received request against the GitHub Actions run log. The Owner should inspect the GitHub Actions run separately; the page does not claim an end-to-end workflow success solely from 204.
 
-The Owner page uses the **GitHub Environment Secret** `DATABASE_GITHUB_ACTIONS_TOKEN` under environment `database-mcp-worker`: a fine-grained, Owner-owned GitHub PAT restricted to repository `lirtual/mcp-workers` with only `Actions: Read and write`. The existing `release.yml` job uses `environment: database-mcp-worker`, stages this secret with the other selected-Worker credentials, and publishes it via Wrangler `--secrets-file`; it also verifies the required Cloudflare Secret binding after deployment. The PAT must not be separately maintained in the Cloudflare Dashboard. Never put this PAT into D1, public variables, page fields, logs, repository files, or GitHub workflow inputs. Missing or invalid credentials prevent the deployment before publication; a revoked or unauthorized token also fails closed at dispatch time, while existing SQL operations remain unaffected. This token can dispatch any permitted workflow within its repository scope, so limit and rotate its grant carefully. The existing Database Worker release now gates publication on **one actual non-destructive GitHub dispatch using the same Environment PAT** (no-deploy/no-approval flags, so all mutation jobs are skipped). A denied request fails before publishing and reports a fixed sanitized cause such as `token_missing_actions_write_or_repo_scope`; no provider response text, headers, or token is logged. This prevents another apparent CI pass based only on the presence of a secret without proof that the owner workflow can actually be dispatched. Passwords, CA PEM, TLS and database target changes remain Cloudflare-managed and out of scope for webpage dispatch. Binding removal requires a reviewed source change plus ordinary release **before** retirement is requested; the retirement job never removes Worker bindings or Cloudflare resources itself.
+The Owner page uses the **GitHub Environment Secret** `DATABASE_GITHUB_ACTIONS_TOKEN` under environment `database-mcp-worker`: a fine-grained, Owner-owned GitHub PAT restricted to repository `lirtual/mcp-workers` with only `Actions: Read and write`. The existing `release.yml` job uses `environment: database-mcp-worker`, stages this secret with the other selected-Worker credentials, and publishes it via Wrangler `--secrets-file`; it also verifies the required Cloudflare Secret binding after deployment. The PAT must not be separately maintained in the Cloudflare Dashboard. Never put this PAT into D1, public variables, page fields, logs, repository files, or GitHub workflow inputs. Missing or invalid credentials prevent the deployment before publication; a revoked or unauthorized token also fails closed at dispatch time, while existing SQL operations remain unaffected. This token can dispatch any permitted workflow within its repository scope, so limit and rotate its grant carefully. The existing Database Worker release now gates publication on **one actual non-destructive GitHub dispatch using the same Environment PAT** (no-deploy/no-approval flags, so all mutation jobs are skipped). A denied request fails before publishing and reports a fixed sanitized cause such as `token_missing_actions_write_or_repo_scope`; no provider response text, headers, or token is logged. This prevents another apparent CI pass based only on the presence of a secret without proof that the owner workflow can actually be dispatched. The incremental #476 preparation path below stages encrypted origin input; password/CA updates and post-release activation remain blocked as described above. Binding removal requires a reviewed source change plus ordinary release **before** retirement is requested; the retirement job never removes Worker bindings or Cloudflare resources itself.
 
 The Owner `/setup` page uses Cloudflare Access exact-email OTP, native Access identity with strict signed-JWT fallback, Origin/CSRF checks and throttling. Direct creation and sensitive credential edits require plaintext-risk acceptance. A logical ID must keep the same host/IP, port and database; changing target requires a new ID. Passwords, URLs, CA, keys and ciphertext are never displayed. Direct supports only MySQL, with explicit plaintext-risk acceptance; PostgreSQL Direct requests fail closed. Hyperdrive references enter D1 **disabled** and require protected Owner/main GitHub Actions activation with Cloudflare readback and a signed, bounded read-only Worker preflight **before** D1 becomes active. The private `/internal/hyperdrive-health` route requires existing MCP bearer auth plus a short-lived HKDF-derived HMAC proof from the existing Owner Actions encryption-key Secret; it accepts only a disabled Hyperdrive ID and exact revision, runs health only, never writes D1, and returns no secrets. Failed probes leave D1 disabled. MySQL Hyperdrive `aiven_mysql_openlist` is active; no PostgreSQL Hyperdrive connection is currently configured. PostgreSQL Hyperdrive acceptance remains unperformed.
 
@@ -74,7 +170,7 @@ Direct public-host/DNS/address checks are retained, with documented DNS rebindin
 
 The Worker requires `MCP_ACCESS_TOKEN`, `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, `DATABASE_GITHUB_ACTIONS_TOKEN`, a dedicated D1 `DB` binding, `RATE_LIMITER`, `SETUP_RATE_LIMITER`, and the existing Owner Access Variables. Bounded CAS key rotation applies **only to encrypted Direct records**; retained rollback versions and backups must be compatible with both current and historic encryption keys.
 
-For subsequent releases use only existing protected GitHub Actions with read-only D1/Access/binding gates and exact active-version checks; the old importer and legacy rollback dispatch are retired. For a sensitive Hyperdrive Cloudflare change: disable the logical connection, change the dedicated upstream config with approved access, restart/drain its native pool, verify **new connections** and TLS/caching/binding provenance, then explicitly enable. Failures remain disabled. To retire a Hyperdrive record, first disable it, review older rollback-version and external consumers, remove its Binding and manifest entry in a reviewed GitHub release, verify that release in production, then dispatch the existing protected Release Worker with `database_hyperdrive_retire_approved`, exact ID and revision. The guarded job verifies unbound current production, CAS-deletes only the disabled D1 record, and confirms permanent ID retirement; it never deletes Cloudflare config/CA. The Owner separately reviews old versions, other consumers and CA dependencies before any upstream resource deletion. Do not add auto-cleanup or another orchestrator.
+For subsequent releases use only existing protected GitHub Actions with read-only D1/Access/binding gates and exact active-version checks; the old importer and legacy rollback dispatch are retired. For a sensitive Hyperdrive Cloudflare change: disable the logical connection, change the dedicated upstream config with approved access, restart/drain its native pool, verify **new connections** and TLS/caching/binding provenance, then explicitly enable. Failures remain disabled. To retire a Hyperdrive record, first disable it, review older rollback-version and external consumers, remove its Binding and manifest entry in a reviewed GitHub release, verify that release in production, then dispatch the existing protected Release Worker with `database_hyperdrive_retire_approved=true`, `database_hyperdrive_id` and `database_hyperdrive_revision`. The guarded job verifies unbound current production, CAS-deletes only the disabled D1 record, and confirms permanent ID retirement; it never deletes Cloudflare config/CA. The Owner separately reviews old versions, other consumers and CA dependencies before any upstream resource deletion. Do not add auto-cleanup or another orchestrator.
 
 ```bash
 pnpm --filter database-mcp-worker check

@@ -116,3 +116,87 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /GITHUB_SHA.*git ls-remote origin refs\/heads\/main/, 'Historical reruns must compare to current main');
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
+
+test('Database lifecycle dispatch stays within ten inputs and production pins Owner-reviewed SHA',()=>{
+  const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
+  const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
+  assert.ok(names.length===10,'release workflow_dispatch must have exactly ten inputs');
+  assert.equal(new Set(names).size,names.length);
+  assert.ok(names.includes('database_expected_release_sha'));
+  const deploy=release.slice(release.indexOf('\n  deploy:\n'));
+  assert.match(deploy,/github.actor == 'lirtual'/);
+  assert.match(deploy,/GITHUB_ACTOR.*lirtual/);
+  assert.match(deploy,/GITHUB_SHA.*DATABASE_EXPECTED_RELEASE_SHA/);
+  assert.match(deploy,/DATABASE_EXPECTED_RELEASE_SHA.*\^\[a-f0-9\]\{40\}/);
+});
+
+
+test('final apply job enforces exact gate, scopes, permissions and no conflicting deployment',async()=>{
+  const {verifyDatabaseApplyGate}=await import('./verify-workflow-dispatch-gates.mjs');
+  verifyDatabaseApplyGate(release);
+  for(const [from,to] of [["inputs.database_hyperdrive_apply_id != ''","true"],
+    ['checks: read','checks: write'],['statuses: read',''],
+    ['group: worker-release-database-mcp-worker','group: another-lock'],
+    ["inputs.database_hyperdrive_apply_id == ''",'true']]) {
+    assert.throws(()=>verifyDatabaseApplyGate(release.replaceAll(from,to)));
+  }
+});
+
+
+test('postrelease requires successful deploy and its pinned published version with read-only GitHub scope',async()=>{
+  const {verifyDatabaseFinalizeGate}=await import('./verify-workflow-dispatch-gates.mjs');
+  verifyDatabaseFinalizeGate(release);
+  for(const [from,to] of [["needs.deploy.result == 'success'",'true'],
+    ['needs: deploy','needs: checks'],['needs.deploy.outputs.version_id','steps.preflight.outputs.version_id'],
+    ['steps.publish.outputs.version_id','steps.preflight.outputs.version_id'],
+    ['actions: read','actions: write'],['ref: ${{ github.sha }}','ref: main'],
+    ["inputs.deploy_to_production == true && needs.deploy.result", "inputs.deploy_to_production == false && needs.deploy.result"]])
+    assert.throws(()=>verifyDatabaseFinalizeGate(release.replaceAll(from,to)));
+});
+
+
+test('existing CI candidate dispatch retains Owner/repo/provenance gates and no production secrets',async()=>{
+  const {verifyCandidateCiGate}=await import('./verify-workflow-dispatch-gates.mjs');
+  const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  verifyCandidateCiGate(ci);
+  for(const [before,after] of [["github.actor == 'lirtual'",'true'],
+    ["github.repository == 'lirtual/mcp-workers'",'true'],
+    ['git diff --no-renames --name-status','git diff --stat'],
+    ['git show -s --format=%P HEAD','git show -s --format=%H HEAD'],
+    ['"$GITHUB_SHA" == "$CANDIDATE_SHA"','true'],
+    ['contents: read','contents: write']]) {
+    assert.throws(()=>verifyCandidateCiGate(ci.replace(before,after)));
+  }
+  assert.throws(()=>verifyCandidateCiGate(ci+'\n  environment: database-mcp-worker\n'));
+  assert.throws(()=>verifyCandidateCiGate(ci+'\n  token: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}\n'));
+});
+
+
+test('candidate guards preserve reusable CI under manual release and acceptance caller events',()=>{
+  const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  const job=ci.match(/    if: \$\{\{ (.+) \}\}/)[1];
+  const provenance=ci.match(/        if: (github.event_name == 'workflow_dispatch'.+)/)[1];
+  const reusable=ci.match(/REUSABLE_WORKER: \$\{\{ (.+) \}\}/)[1];
+  const evaluate=(expr,github,inputs)=>Function('github','inputs','contains','startsWith','return '+expr)(
+    github,inputs,(value,part)=>value.includes(part),(value,part)=>value.startsWith(part));
+  const github={repository:'lirtual/mcp-workers',actor:'lirtual',event_name:'workflow_dispatch',
+    ref:'refs/heads/main',workflow_ref:'lirtual/mcp-workers/.github/workflows/release.yml@refs/heads/main'};
+  for(const caller of ['release.yml','acceptance.yml','openlist-acceptance.yml']) {
+    const context={...github,workflow_ref:'lirtual/mcp-workers/.github/workflows/'+caller+'@refs/heads/main'};
+    const inputs={worker:'database-mcp-worker'};
+    assert.equal(evaluate(job,context,inputs),true);
+    assert.equal(evaluate(provenance,context,inputs),false);
+    assert.equal(evaluate(reusable,context,inputs),'database-mcp-worker');
+  }
+  const direct={...github,workflow_ref:'lirtual/mcp-workers/.github/workflows/ci.yml@refs/heads/main'};
+  assert.equal(evaluate(job,direct,{worker:'database-mcp-worker'}),false);
+  const candidate={...direct,ref:'refs/heads/db476-12345678-1234-1234-1234-123456789abc'};
+  assert.equal(evaluate(job,candidate,{worker:'database-mcp-worker'}),true);
+  assert.equal(evaluate(provenance,candidate,{}),true);
+  assert.equal(evaluate(reusable,candidate,{worker:'database-mcp-worker'}),'');
+  assert.equal(evaluate(job,{...candidate,actor:'attacker'},{worker:'database-mcp-worker'}),false);
+  assert.equal(evaluate(job,{...candidate,repository:'lirtual/fork'},{worker:'database-mcp-worker'}),false);
+  assert.equal(evaluate(job,candidate,{worker:'email-mcp-worker'}),false);
+  for(const event_name of ['push','pull_request'])
+    assert.equal(evaluate(job,{...direct,event_name},{}),true);
+});

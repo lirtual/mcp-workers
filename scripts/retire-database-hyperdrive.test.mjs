@@ -25,6 +25,8 @@ function fixture({ active = false, bound = false, lostAck = false, stale = false
   async function request(url, init) {
     calls.push({ url, method: init.method });
     const response = result => ({ ok: true, json: async () => ({ success: true, result }) });
+    if(url.endsWith('/versions?deployable=true')) return response({items:[{id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]});
+    if(url.endsWith('/versions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')) return response({id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',resources:{bindings:[]}});
     if (url.endsWith('/deployments')) return response({ deployments: [{ versions: splitTraffic
       ? [{ percentage: 50 }, { percentage: 50 }] : [{ percentage: 100 }] }] });
     if (url.endsWith('/settings')) return response({ bindings: [
@@ -112,4 +114,15 @@ test('retirement rejects Cloudflare D1 access failure with bounded stage label',
     assert.doesNotMatch(error.message, /private-database-credential/);
     return true;
   });
+});
+
+test('retained rollback version blocks tombstone before D1 deletion',async()=>{
+  const f=fixture();
+  const request=async(url,init)=>{
+    if(url.endsWith('/versions?deployable=true')) return {ok:true,json:async()=>({success:true,result:{items:[{id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'}]}})};
+    if(url.endsWith('/versions/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')) return {ok:true,json:async()=>({success:true,result:{id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',resources:{bindings:[{type:'hyperdrive',name:binding,id:configId}]}}})};
+    return f.request(url,init);
+  };
+  await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/rollback.*reference/);
+  assert.equal(f.state.writes,0);
 });

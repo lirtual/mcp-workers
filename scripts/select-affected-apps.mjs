@@ -62,10 +62,16 @@ function changedFilesForCurrentEvent(env) {
   return execFileSync('git', ['diff', '--name-only', base, env.GITHUB_SHA], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
 }
 
-function main(env = process.env) {
+export function selectionForEvent(env) {
   let selected;
   let changedFiles;
-  if (env.REUSABLE_WORKER) {
+  if (env.EVENT_NAME === 'workflow_dispatch' &&
+      env.MANUAL_WORKER === 'database-mcp-worker' &&
+      /^refs\/heads\/db476-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(env.MANUAL_REF ?? '') &&
+      env.GITHUB_REPOSITORY === 'lirtual/mcp-workers' && env.GITHUB_ACTOR === 'lirtual') {
+    selected = ['database-mcp-worker'];
+    changedFiles = [];
+  } else if (env.REUSABLE_WORKER) {
     if (!RELEASE_WORKERS.includes(env.REUSABLE_WORKER)) {
       throw new Error(`Unsupported reusable Worker selection: ${env.REUSABLE_WORKER}`);
     }
@@ -84,6 +90,11 @@ function main(env = process.env) {
     selected = selectAffectedApps(changedFiles);
   }
 
+  return {selected, changedFiles};
+}
+
+function main(env = process.env) {
+  const {selected, changedFiles} = selectionForEvent(env);
   process.stdout.write(`Changed files:\n${changedFiles.map(file => `  ${file}\n`).join('')}`);
   const details = selectionDetails(changedFiles);
   details.apps = selected;

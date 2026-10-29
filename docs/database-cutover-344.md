@@ -47,8 +47,9 @@ requirements. Do not add a compatibility flag or a new test environment.
 ## Routine release and recovery
 
 1. Use only the existing GitHub Actions **Release Worker** workflow on reviewed
-   current `main`, selecting `database-mcp-worker` and explicitly approving
-   `deploy_to_production`. Do not introduce another deployment system.
+   current `main`, selecting `database-mcp-worker`, explicitly approving
+   `deploy_to_production`, and setting `database_expected_release_sha` to that exact
+   reviewed SHA. A later main advance blocks publication. Do not introduce another deployment system.
 2. The normal release enforces application/database integration CI, approved
    exact source and Owner Access, the required Secrets and D1 binding, a
    read-only registry/migrations/retired-ID check, authenticated decryptability
@@ -86,8 +87,8 @@ Historical managed-D1 snapshot recovery was **not performed**, not PASS.
 For Hyperdrive logical-ID retirement, disable first; remove the reviewed Binding
 and source manifest, publish the normal production release and independently
 confirm unbinding and rollback-eligible version restrictions. Dispatch the same
-Release Worker with `database_hyperdrive_retire_approved` and the exact disabled
-ID/revision only after that release. The protected action verifies current active
+Release Worker with `database_hyperdrive_retire_approved=true`,
+`database_hyperdrive_id` and `database_hyperdrive_revision` for the exact disabled ID only after that release. The protected action verifies current active
 production bindings, D1 identity/revision and sharing, CAS-deletes the disabled
 row and confirms the retired-ID ledger. It does **not** delete the upstream
 Hyperdrive config or CA; independently establish other-service/old-version/CA
@@ -103,7 +104,7 @@ resource recreation is needed solely to eliminate it from the supported modes.
 This section records prior Aiven test-origin evidence only; those test services were subsequently deleted and must not be re-provisioned for this runbook.
 The original plan was to provision two named test Hyperdrive configurations through the existing
 protected Release Worker workflow and existing GitHub Secrets; do not log passwords.
-The Owner page may save an unverified Hyperdrive reference only as **disabled**.
+The Owner page may save an unverified Hyperdrive reference only as **disabled**. This is historical behavior; the new Spec #476 path blocks manual Hyperdrive `/setup/add` and permits only the verified post-release disabled-reference handoff.
 A protected activation must verify the dedicated Cloudflare binding, exact origin,
 strict CA/hostname mode, disabled caching and real deployed Worker health **while
 D1 remains disabled**, through the private signed `/internal/hyperdrive-health`
@@ -125,3 +126,53 @@ project CA/hostname combination succeeded, while wrong-CA and wrong-hostname
 cases failed certificate verification. These are **origin-side negative tests**,
 not the pending Cloudflare Workers→Hyperdrive full negative matrix. No
 production configuration was modified for these tests.
+
+
+## Spec #476 local implementation boundary (not production acceptance)
+
+See the [Database README](../apps/database-mcp-worker/README.md#spec-476-implementation-boundary)
+for the current capability and blocking conditions. The single additive operation ledger migration
+`0003_hyperdrive_operations.sql` (including apply run receipts) has not been applied by this phase. The existing release performs read-only
+schema validation and will block until a separately authorized migration applies it;
+it does not auto-migrate this production registry. Existing Worker connections and CA
+were not modified or freshly tested here.
+
+Preparation stops at a verified allowlisted PR (draft under protected policies). Owner final apply now claims a D1 operation
+before dispatch and verifies exact source/main and GitHub merge eligibility before a
+job-token merge. Protected main requires real PR checks/reviews. Only explicit classic
+protection 404 plus independently empty rulesets permits Owner dispatch of existing
+`ci.yml` on the deterministic `db476-<UUID>` branch with exact candidate SHA. Its
+Application checks, Database integration and Required checks gate must all succeed;
+actor, workflow, branch, SHA and real Run/job receipts are checked. No production
+secrets enter that CI. Read-only polling is bounded; 204/no Run ID, unknown dispatch,
+queued timeout or failed/skipped/ambiguous jobs never merge or request deployment.
+The recorded CI Run remains inspectable; no automatic redispatch follows ambiguity. It proves the actual merged SHA from GitHub before requesting the
+existing protected production release with that exact pin. Unknown outcomes cannot
+be retried automatically. `apply_policy_unavailable` includes unreadable protection;
+no credential or repository setting changes are authorized to bypass this gate.
+
+A verified release Run ID is only `running/apply_release_pending`, not publication or
+activation. The dependent protected reconciliation job in `release.yml` consumes
+`needs.deploy.outputs.version_id` only after deploy success. It verifies the exact
+Run/SHA, 100% version, current and version-specific bindings and strict Cloudflare
+configuration, then hands off the reservation to a disabled revision-1 D1 reference.
+The operation's `completed/postrelease_disabled` status confirms only this handoff.
+Activation still requires the existing protected `/setup` health gate. Lost D1 write
+acknowledgements are reconciled by exact readback; ambiguous evidence stops without
+retry, deployment rollback or automatic SQL enablement. 0003 includes the constrained
+handoff trigger and immutable nonsecret target metadata; it remains unapplied here.
+The reported disabled
+Actions PR setting still blocks before any Cloudflare call, even when main is
+explicitly unprotected. Enabling it is a separate Owner setting action, not performed
+by these scripts. A 403 or unknown protection policy still blocks; an empty ruleset
+list alone is insufficient. Do not dispatch a lifecycle release based on draft PR creation or the
+historical no-deploy dispatch smoke. Do not add credentials or weaken protections to
+work around these blocks.
+
+For an unknown operation, inspect exact Run/PR/config receipts read-only. The
+`resource_write_started_at` marker prohibits automatic retry of a possibly accepted
+Cloudflare POST. Expired ciphertext is erased but unknown identity reservations stay
+locked; no manual row deletion/recreation is authorized by this runbook. The old Aiven
+test provisioning script is retired and must not return; deleted test databases stay
+deleted. Retirement retains Cloudflare resources and shared CA, and now refuses D1
+retirement while any enumerated rollback version still references its config or binding.

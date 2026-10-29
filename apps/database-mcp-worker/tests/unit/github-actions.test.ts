@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { dispatchHyperdriveAction, verifyGithubActionsDispatch } from '../../src/setup/github-actions.js';
+import { dispatchHyperdriveAction, verifyGithubPrCapability, verifyGithubActionsDispatch } from '../../src/setup/github-actions.js';
 import type { Env } from '../../src/types.js';
 
 const token = 'github_pat_synthetic_test_token_never_real';
@@ -25,8 +25,8 @@ test('Owner dispatch uses exactly one pinned GitHub workflow with bounded enable
       return_run_details: true,
       inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false',
         database_hyperdrive_enable_approved: 'true',
-        database_hyperdrive_enable_id: 'openlist',
-        database_hyperdrive_enable_revision: '3' }
+        database_hyperdrive_id: 'openlist',
+        database_hyperdrive_revision: '3' }
     });
     return new Response(null, { status: 204 });
   };
@@ -43,8 +43,8 @@ test('retirement dispatch does not request deployment or ever include credential
   await dispatchHyperdriveAction(env(), 'retire', 'retired_id', 2, mocked as typeof fetch);
   assert.deepEqual(payload, { ref: 'main', return_run_details: true,
     inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false',
-      database_hyperdrive_retire_approved: 'true', database_hyperdrive_retire_id: 'retired_id',
-      database_hyperdrive_retire_revision: '2' } });
+      database_hyperdrive_retire_approved: 'true', database_hyperdrive_id: 'retired_id',
+      database_hyperdrive_revision: '2' } });
 });
 
 test('invalid input or absent scoped secret rejects without a network call', async () => {
@@ -180,4 +180,50 @@ test('workerd GitHub REST contract includes mandatory User-Agent on every action
   assert.deepEqual(await dispatchHyperdriveAction(env(), 'enable', 'openlist', 1, strictGithub as typeof fetch),
     { runId: 40850012345 });
   assert.equal(accepted, 2);
+});
+
+
+test('missing required-check evidence blocks even when Actions PR creation is enabled',async()=>{
+  for(const status of [403,500]) {
+    const calls:string[]=[];
+    const request:typeof fetch=async(url,init)=>{
+      calls.push(String(url));
+      assert.equal(init?.method,'GET');
+      assert.equal(init?.redirect,'manual');
+      return String(url).endsWith('/actions/permissions/workflow')
+        ? Response.json({can_approve_pull_request_reviews:true})
+        : new Response(null,{status});
+    };
+    await assert.rejects(verifyGithubPrCapability(env(),request),/required PR checks could not be verified/);
+    assert.equal(calls.length,2);
+  }
+});
+
+test('unprotected main requires both explicit classic-protection 404 and an empty inherited ruleset inventory', async () => {
+  const calls: string[] = [];
+  const request: typeof fetch = async (url, init) => {
+    calls.push(String(url));
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.redirect, 'manual');
+    if (String(url).endsWith('/actions/permissions/workflow'))
+      return Response.json({can_approve_pull_request_reviews: true});
+    if (String(url).endsWith('/branches/main/protection'))
+      return new Response(null, {status: 404});
+    if (String(url).includes('/rulesets?'))
+      return Response.json([]);
+    throw Error('unexpected GitHub API call');
+  };
+  await verifyGithubPrCapability(env(), request);
+  assert.equal(calls.length, 3);
+  for (const rulesets of [[{id: 123, enforcement:'active'}], null, {error:'unauthorized'}]) {
+    const guarded: typeof fetch = async (url) => {
+      if (String(url).endsWith('/actions/permissions/workflow'))
+        return Response.json({can_approve_pull_request_reviews: true});
+      if (String(url).endsWith('/branches/main/protection'))
+        return new Response(null, {status: 404});
+      return Response.json(rulesets);
+    };
+    await assert.rejects(verifyGithubPrCapability(env(),guarded),
+      /required PR checks could not be verified/);
+  }
 });

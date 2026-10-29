@@ -12,6 +12,7 @@ function fixture() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../../migrations/0001_connections.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../../migrations/0002_transport_and_retired_ids.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../../migrations/0003_hyperdrive_operations.sql', import.meta.url), 'utf8'));
   const prepare = (sql: string, args: unknown[] = []) => {
     const stmt = sqlite.prepare(sql);
     return {
@@ -138,19 +139,25 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'other' })).status).toBe(422);
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'main' })).status).toBe(200);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
-    // Hyperdrive references never trigger origin connection attempts and are disabled.
+    // Hyperdrive creation cannot bypass the reviewed exact-version release by writing D1 directly.
     const checkedBeforeCloud = fakeHealth.mock.calls.length;
     expect((await post('add', { id: 'cloud_ref', dialect: 'mysql', transport: 'hyperdrive',
-      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
+      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(503);
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
-    expect(sqlite.prepare("SELECT status,transport,revision FROM database_connections WHERE id='cloud_ref'").get())
-      .toMatchObject({ status: 'disabled', transport: 'hyperdrive', revision: 1 });
+    expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='cloud_ref'").get()).toBeUndefined();
+    // Existing Hyperdrive references remain manageable, without requiring a new creation.
+    sqlite.prepare(`INSERT INTO database_connections
+      (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
+      VALUES ('cloud_ref','mysql','hyperdrive','disabled',
+        '11111111-2222-3333-4444-555555555555','HYPERDRIVE_TEST',1,1,1)`).run();
     expect((await post('enable', { id: 'cloud_ref', revision: '1' })).status).toBe(503);
     expect((await post('hyperdrive-action', { id: 'cloud_ref', revision: '1',
       hyperdrive_action: 'enable' })).status).toBe(503); // Owner dispatch secret not configured.
     expect((await post('hyperdrive-action', { id: 'cloud_ref', revision: '1',
       hyperdrive_action: 'retire', confirm_id: 'wrong' })).status).toBe(422);
-    expect((await post('edit', { id: 'cloud_ref', revision: '1', credential_mode: 'keep' })).status).toBe(422);
+    const unsafeEdit = await post('edit', { id: 'cloud_ref', revision: '1', credential_mode: 'keep' });
+    expect(unsafeEdit.status).toBe(503);
+    expect(await unsafeEdit.text()).toContain('hyperdrive_isolation_unknown');
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
     // PostgreSQL Direct is excluded from the approved three modes, even with plaintext acknowledgment.
     const healthBeforeUnsupportedMode = fakeHealth.mock.calls.length;
@@ -169,7 +176,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
-    expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
+    expect(initialPageHtml).not.toContain('name="transport" value="hyperdrive"');
     expect(initialPageHtml).toContain('Hyperdrive actions run in protected GitHub Actions');
     expect(initialPageHtml).toContain('action="/setup/hyperdrive-action"');
     expect(initialPageHtml).toContain('Request enable');
@@ -177,6 +184,62 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).not.toContain('name="ciphertext"');
     expect(initialPageHtml).not.toContain('reader:pass');
     vi.unstubAllGlobals();
+  });
+  it('Owner Hyperdrive preview is read-only and Prepare requires distinct explicit confirmation', async () => {
+    const { sqlite, env } = fixture(); instances.push(sqlite);
+    const { jwt, certificates } = await auth();
+    const dispatches: string[] = [];
+    env.DATABASE_GITHUB_ACTIONS_TOKEN = 't'.repeat(40);
+    const requestFetch: typeof fetch = async (url, options) => {
+      if (String(url).endsWith('/branches/main/protection')) {
+        return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+      }
+      if (String(url).endsWith('/actions/permissions/workflow')) {
+        return Response.json({can_approve_pull_request_reviews:true});
+      }
+      if (String(url).endsWith('/actions/workflows/release.yml/dispatches')) {
+        dispatches.push(String(options?.body ?? ''));
+        return new Response(null, {status: 204});
+      }
+      return certificates();
+    };
+    const page = await handleSetup(new Request(pageUrl, {
+      headers: { 'cf-access-jwt-assertion': jwt }
+    }), env, requestFetch);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain('action="/setup/hyperdrive-preview"');
+    expect(html).toContain('action="/setup/hyperdrive-prepare"');
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+    const submit = (action: string, params: Record<string,string>) => handleSetup(new Request(pageUrl + '/' + action, {
+      method:'POST', headers: { 'cf-access-jwt-assertion':jwt,
+        origin:'https://db-owner.example.net', cookie,
+        'content-type':'application/x-www-form-urlencoded' },
+      body:new URLSearchParams({csrf,...params})
+    }), env, requestFetch);
+    const fields = {id:'brand_new',dialect:'postgres',
+      origin_host:'pg.example.net',origin_port:'5432',origin_database:'app',
+      origin_user:'owner',origin_password:'highly-sensitive-secret',
+      ca_certificate_id:'11111111-2222-3333-4444-555555555555'};
+    const preview = await submit('hyperdrive-preview', fields);
+    expect(preview.status).toBe(200);
+    expect(await preview.text()).not.toContain(fields.origin_password);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toMatchObject({n:0});
+    expect(dispatches).toHaveLength(0);
+    expect((await submit('hyperdrive-prepare',fields)).status).toBe(422);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toMatchObject({n:0});
+    const result = await submit('hyperdrive-prepare',{...fields,confirm_prepare:'1'});
+    expect(result.status).toBe(200);
+    expect(await result.text()).not.toContain(fields.origin_password);
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).not.toContain(fields.origin_password);
+    expect(JSON.parse(dispatches[0]!).inputs).toHaveProperty('database_hyperdrive_prepare_id');
+    expect(sqlite.prepare('SELECT phase,key_id FROM hyperdrive_operations').get())
+      .toMatchObject({phase:'unknown',key_id:'key-one'});
+    const replay = await submit('hyperdrive-prepare',{...fields,confirm_prepare:'1'});
+    expect(replay.status).toBe(409);
+    expect(dispatches).toHaveLength(1);
   });
   it('requires explicit rollback and retained-key confirmation before Owner key rotation', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
@@ -262,7 +325,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('<option value="mysql">');
     expect(html).toContain('<option value="postgres">');
     expect(html).toContain('name="transport" value="direct"');
-    expect(html).toContain('name="transport" value="hyperdrive"');
+    expect(html).not.toContain('name="transport" value="hyperdrive"');
     expect(html).not.toContain('placeholder="b2b"');
     expect(html).toContain('<select name="dialect">');
     expect(html).not.toContain('<select name="transport">');
@@ -272,6 +335,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('Save disabled if connection test fails');
     expect(html).not.toContain('Owner-only. Passwords and origin URLs');
     expect(html).not.toContain('protected atomic activation');
+    expect(html).not.toContain('Final apply from this page is blocked until');
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
   });
 
@@ -328,4 +392,51 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
   });
 
+});
+
+it('Owner final apply enforces CSRF, typed ID, explicit confirmation and one dispatch with unknown receipt', async () => {
+  const { sqlite, env } = fixture(); instances.push(sqlite);
+  env.DATABASE_GITHUB_ACTIONS_TOKEN = 'synthetic-owner-token-at-least-20';
+  const operationId = '12345678-1234-1234-1234-123456789abc';
+  sqlite.prepare(`INSERT INTO hyperdrive_operations(operation_id,logical_id,action,expected_revision,phase,
+    expected_source_sha,head_sha,config_id,binding_name,pr_number,created_at,updated_at,expires_at)
+    VALUES (?,'new_owner','create',0,'awaiting_confirmation',?,?,?,'HYPERDRIVE_NEW_OWNER_12345678',3,1,1,?)`)
+    .run(operationId,'a'.repeat(40),'b'.repeat(40),'c'.repeat(32),Date.now()+600000);
+  const { jwt, certificates } = await auth();
+  let dispatches = 0;
+  const upstream: typeof fetch = async (url, init) => {
+    if (String(url).includes('certs')) return certificates();
+    dispatches++;
+    expect(init?.redirect).toBe('manual');
+    expect(JSON.parse(String(init?.body))).toEqual({ref:'main',return_run_details:true,inputs:{
+      worker:'database-mcp-worker',deploy_to_production:'false',database_hyperdrive_apply_id:operationId
+    }});
+    // Claim is visible before any external request.
+    expect(sqlite.prepare('SELECT phase,error_class FROM hyperdrive_operations').get())
+      .toMatchObject({phase:'running',error_class:'github_apply_dispatch_inflight'});
+    return new Response(null,{status:204});
+  };
+  const page = await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,upstream);
+  const html = await page.text();
+  expect(html).toContain('action="/setup/hyperdrive-apply"');
+  const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)![1]!;
+  const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+  const post = (values: Record<string,string>, ownerEnv = env) => handleSetup(new Request(pageUrl+'/hyperdrive-apply',{
+    method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',cookie,
+      'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({csrf,operation_id:operationId,confirm_id:'new_owner',confirm_apply:'1',...values})
+  }),ownerEnv,upstream);
+  expect((await post({csrf:'wrong'})).status).toBe(403);
+  expect((await post({confirm_id:'other'})).status).toBe(409);
+  expect((await post({confirm_apply:''})).status).toBe(422);
+  expect((await post({}, {...env,OWNER_EMAIL:'someone-else@example.net'})).status).toBe(401);
+  expect(dispatches).toBe(0);
+  expect((await post({})).status).toBe(200);
+  expect(dispatches).toBe(1);
+  expect(sqlite.prepare('SELECT phase,apply_run_id FROM hyperdrive_operations').get())
+    .toMatchObject({phase:'unknown',apply_run_id:null});
+  expect((await post({})).status).toBe(409);
+  expect(dispatches).toBe(1);
+  const after = await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,upstream);
+  expect(await after.text()).not.toContain('action="/setup/hyperdrive-apply"');
 });
