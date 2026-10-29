@@ -120,7 +120,12 @@ export class BrowserOwner implements DurableObject {
         typeof auth.last_seen==="number"&&Date.now()-auth.last_seen<60000&&sock.readyState===WebSocket.OPEN;
     });
     const expire=()=>{this.intents.approvalState(row.endpoint_id,row.intent_key,"expired");return json(this.intents.status(row.endpoint_id,row.intent_key));};
-    if(!socket)return expire();
+    // A temporary transport failure must not consume a still-valid owner proposal.
+    // Never return a review nonce or execute a command without a fresh extension check.
+    const retryView=()=>a.expires_at<=Date.now()?expire():json({operation_id:row.operation_id,
+      state:"pending_approval",expires_at:a.expires_at,error_code:"owner_transport_unavailable",
+      safe_next_action:"retry_same_owner_link_before_expiry"},503);
+    if(!socket)return decide?expire():retryView();
     if(decide){
       if(this.admittingEndpoints.has(e.id)||this.intents.hasDispatching(e.id)||[...this.pendingReads.values()].some(p=>p.endpoint_id===e.id)||[...this.pendingMutations.values()].some(p=>p.endpoint_id===e.id))return expire();
       this.admittingEndpoints.add(e.id);
@@ -133,6 +138,9 @@ export class BrowserOwner implements DurableObject {
         try{socket.send(JSON.stringify({type:"approval_request",request_id,operation_id:row.operation_id,generation:e.generation}));}
         catch{clearTimeout(timer);this.approvalReads.delete(request_id);resolve(null);}
       });
+      // A lost response is not proof the bound command or consent changed.
+      // A concrete mismatching response still expires the unsafe proposal.
+      if(!proposal&&!decide)return retryView();
       const command=proposal?.command as Command|undefined;
       if(!command||proposal?.run_id!==a.run_id||proposal.expires_at!==a.expires_at||
          proposal.ready!==true||JSON.stringify(command).length>65536||!await this.intents.matchesCommand(command,row.operation_id)||

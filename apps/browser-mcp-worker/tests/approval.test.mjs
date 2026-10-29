@@ -132,6 +132,39 @@ test('prepare never executes; independent owner can approve once, deny, and quer
   }finally{await f.close();}
 });
 
+test('temporary owner-view transport loss is retryable on the same proposal, without authorization or execution',async()=>{
+  const f=await fixture(config);try{
+    const op=await pending(f),restore=f.transientDisconnect();
+    const response=await view(f,op.operation_id);
+    assert.equal(response.status,503);
+    const text=await response.text();
+    assert.match(text,/owner_transport_unavailable/);
+    assert.doesNotMatch(text,/name=\"nonce\"/);
+    assert.equal((await status(f,op.args)).state,'pending_approval');
+    assert.equal(f.effects.length,0);
+    restore();
+    const p=await proposal(f,op.operation_id);assert.ok(p.nonce);
+    await decide(f,op.operation_id,p.nonce,'deny');await f.flush();
+    assert.equal((await status(f,op.args)).state,'denied');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
+test('lost extension review response cannot mint a nonce, execute, or expire an otherwise valid intent',async()=>{
+  const f=await fixture(config);try{
+    const op=await pending(f);f.dropNextApprovalReply();
+    const response=await view(f,op.operation_id);
+    assert.equal(response.status,503);
+    assert.match(await response.text(),/owner_transport_unavailable/);
+    assert.equal((await status(f,op.args)).state,'pending_approval');
+    assert.equal(f.effects.length,0);
+    const p=await proposal(f,op.operation_id);assert.ok(p.nonce);
+    await decide(f,op.operation_id,p.nonce,'deny');await f.flush();
+    assert.equal((await status(f,op.args)).state,'denied');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
 test('pending metadata survives DO recreation; session-command loss expires without recovery/replay',async()=>{
   for(const loseCommand of [false,true]){
     const f=await fixture(config);try{

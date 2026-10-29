@@ -17,7 +17,7 @@ export async function fixture(config={},options={}){
     return {toArray:()=>[],rowsWritten:Number(stmt.run(...args).changes)};
   }};
   const state={storage:{sql},getWebSockets:()=>sockets};
-  let owner=new BrowserOwner(state,config),receiver,ws,dropReceipt=false,holdExecute=false,held;
+  let owner=new BrowserOwner(state,config),receiver,ws,dropReceipt=false,dropApprovalReply=false,holdExecute=false,held;
   const env={...config,MCP_ACCESS_TOKEN:"test-token",BROWSER_OWNER:{idFromName:()=>"owner",get:()=>({fetch:(url,init)=>owner.fetch(new Request(url,init))})}};
   async function rpc(name,args={},method="tools/call"){
     const r=await worker.fetch(new Request(service+"/mcp",{method:"POST",headers:{authorization:"Bearer test-token","content-type":"application/json"},
@@ -37,6 +37,7 @@ export async function fixture(config={},options={}){
     }
     send(data){
       if(dropReceipt&&JSON.parse(data).type==="execute_result")return;
+      if(dropApprovalReply&&JSON.parse(data).type==="approval_result"){dropApprovalReply=false;return;}
       if(options.legacyOwnerProtocol&&JSON.parse(data).type==="authenticate"){
         const frame=JSON.parse(data);delete frame.owner_approval_protocol;data=JSON.stringify(frame);
       }
@@ -123,6 +124,8 @@ export async function fixture(config={},options={}){
     pauseNextScript:()=>{let enter,release;const entered=new Promise(resolve=>{enter=resolve;});const ready=new Promise(resolve=>{release=resolve;});scriptGate={enter,ready};return {entered,release};},
     http:(path,init={})=>worker.fetch(new Request(new URL(path,service),init),env),
     drop:()=>{dropReceipt=true;},hold:()=>{holdExecute=true;},release:async()=>{if(held)await ws.onmessage({data:held});},
+    transientDisconnect:()=>{const live=sockets.filter(socket=>socket.readyState===1);assert.ok(live.length);for(const socket of live)socket.readyState=3;return ()=>{for(const socket of live)socket.readyState=1;};},
+    dropNextApprovalReply:()=>{dropApprovalReply=true;},
     restart:()=>{retired.push(owner);owner=new BrowserOwner(state,config);},
     doRequest:async body=>(await owner.fetch(new Request("https://owner.internal/mutate",{method:"POST",body:JSON.stringify(body)}))).json(),
     close:async()=>{await popup("stop");await flush();for(const id of intervals)clearInterval(id);for(const prior of retired)for(const socket of sockets)prior.webSocketClose(socket,1000,"test cleanup",true);db.close();}};
