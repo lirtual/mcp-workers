@@ -50,7 +50,7 @@ test('invalid input or absent scoped secret rejects without a network call', asy
     calls++;
     throw Error('should not be called');
   };
-  await assert.rejects(dispatchHyperdriveAction(env(undefined), 'enable', 'safe', 1, mocked as typeof fetch), /not configured/);
+  await assert.rejects(dispatchHyperdriveAction(env(''), 'enable', 'safe', 1, mocked as typeof fetch), /not configured/);
   await assert.rejects(dispatchHyperdriveAction(env(), 'enable', '../unsafe', 1, mocked as typeof fetch));
   await assert.rejects(dispatchHyperdriveAction(env(), 'enable', 'safe', 0, mocked as typeof fetch));
   assert.equal(calls, 0);
