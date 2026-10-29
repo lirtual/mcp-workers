@@ -11,7 +11,7 @@
 - 每个 Worker 使用与脚本同名的 GitHub Environment，例如 `ima-mcp-worker`。Actions 自动选择该名称，无须维护 `WORKER_CONFIG_SCOPE`。GitHub 可能自动建立尚不存在的空 Environment，应事先配置 Worker 专属 Secrets、审批与分支保护；每次手动部署缺少必需密钥都必须在上传前失败。
 - Repository Secrets 放 `CLOUDFLARE_API_TOKEN`、默认的 `MCP_ACCESS_TOKEN`；Repository Variable 放 `CLOUDFLARE_ACCOUNT_ID`。Worker 自己的 Environment 保存其余敏感字段。对应同名 Environment Secret 可覆盖全局 Portal Token。
 - **仅对仍使用旧 `production` Environment 的部署**，先将其必需密钥与保护规则迁移到对应 Worker Environment，并完成读回核对；在此之前不要启动新的手动发布，也不要删除旧 Environment。已完成迁移的 Worker 无需重复执行。所有敏感值不得出现在代码/日志/PR 中。
-- 发布前检查当前 `main` SHA，校验 Cloudflare 状态及 Worker 是否存在；首次发布还须满足对应 Worker 的专项前置检查（例如 OpenList 要求既有 `openlist-tsworkers` 上游）；不能将不存在的 Worker 或自动创建的空 Environment 当作部署许可。
+- 发布前检查当前 `main` SHA，校验 Cloudflare 状态及 Worker 是否存在；首次发布还须满足对应 Worker 的专项前置检查；不能将不存在的 Worker 或自动创建的空 Environment 当作部署许可。
 - 首次部署及后续每次手动发布，均通过 `wrangler deploy --secrets-file` 同步被选 Worker 的全部必需 GitHub Secrets；缺失或空值则拒绝发布，不再静默沿用现网旧值。其他 Worker、`edgessh` 不受该次发布影响。
 - 受管 Worker 使用 `keep_vars: false`；运行时普通 Variables 仅来自 Wrangler 配置默认值及被选 GitHub Environment 白名单覆盖，不再保留 Dashboard 临时配置。凭据必须使用 Secret，不以 Variable 传递；IMA 的 `IMA_CLIENT_ID` 和 Workflow 的 `MCP_PORTAL_CLIENT_ID` 是明确允许的非秘密标识符 Variable。
 

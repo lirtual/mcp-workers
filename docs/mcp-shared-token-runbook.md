@@ -12,10 +12,9 @@ Every maintained MCP Worker in this repository uses runtime Secret **name** `MCP
 | `remote-control-mcp-worker` | `MCP_ACCESS_TOKEN` | 无 |
 | `github-actions-mcp-worker` | `MCP_ACCESS_TOKEN` | `ACTIONS_GITHUB_DISPATCH_TOKENS` |
 | `http-mcp-worker` | `MCP_ACCESS_TOKEN` | `HTTP_CREDENTIALS_JSON` |
-| `openlist-mcp-worker` | `MCP_ACCESS_TOKEN` | `OPENLIST_API_TOKEN` |
 | `workflow-mcp-worker` | `MCP_ACCESS_TOKEN` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` |
 
-`HTTP_CREDENTIALS_JSON` is optional. Additional required **non-secret** Variables are Email's `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`; IMA's `IMA_CLIENT_ID`; OpenList's `OPENLIST_ALLOWED_ROOTS`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
+`HTTP_CREDENTIALS_JSON` is optional. Additional required **non-secret** Variables are Email's `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`; IMA's `IMA_CLIENT_ID`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
 
 ## Rotation and verification
 

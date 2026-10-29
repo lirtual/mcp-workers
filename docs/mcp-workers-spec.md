@@ -18,7 +18,6 @@
 | 来源仓库 | 应用目录/Worker 名称 | 目标 Portal Server ID |
 | --- | --- | --- |
 | lirtual/ima-mcp-worker | apps/ima-mcp-worker | ima |
-| lirtual/openlist-mcp-worker | apps/openlist-mcp-worker | openlist |
 | lirtual/weread-mcp-worker | apps/weread-mcp-worker | weread |
 | lirtual/database-mcp-worker | apps/database-mcp-worker | database |
 | lirtual/raindrop-mcp-worker | apps/raindrop-mcp-worker | raindrop |

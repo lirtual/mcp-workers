@@ -16,7 +16,7 @@ test('a missing or duplicated manual Worker choice fails', () => {
 });
 
 test('a missing allowed Worker or an unsafe gate bypass fails', () => {
-  assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'openlist-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
+  assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'http-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
