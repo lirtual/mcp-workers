@@ -472,7 +472,7 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now(),approval_origin:v.service_origin===approvalConfig(this.env)?.origin?v.service_origin as string:undefined} satisfies SocketAuth);
+      socket.serializeAttachment({authenticated:true,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now(),approval_origin:v.owner_approval_protocol===1&&v.service_origin===approvalConfig(this.env)?.origin?v.service_origin as string:undefined} satisfies SocketAuth);
       socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:1}));
       return;
     }
@@ -504,7 +504,9 @@ export class BrowserOwner implements DurableObject {
            (v.expires_at as number)>Date.now()+300000||(v.expires_at as number)<=Date.now()||
            !v.command||!v.context||JSON.stringify(v.context).length>8192||JSON.stringify(v.command).length>65536||
            !await this.intents.matchesCommand(v.command as Command,v.operation_id)){
-          this.terminateMutation(v.operation_id);return;
+          this.terminateMutation(v.operation_id);
+          this.sql.exec("UPDATE browser_intents SET result_code='approval_prepare_invalid' WHERE operation_id=? AND state='failed'",v.operation_id);
+          return;
         }
         const current=this.endpoint(e.id);
         const count=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM browser_intents WHERE endpoint_id=? AND state='pending_approval'",e.id).toArray()[0]?.n??0;
@@ -524,7 +526,7 @@ export class BrowserOwner implements DurableObject {
       if(v.accepted!==true){
         this.intents.abort(e.id,v.intent_key);
         const denial=v.error_code==="approval_required"?"approval_blocked":safeFailureCode(v.error_code);
-        if(denial)this.sql.exec("UPDATE browser_intents SET result_code=? WHERE operation_id=? AND state='failed'",denial,v.operation_id);
+        this.sql.exec("UPDATE browser_intents SET result_code=? WHERE operation_id=? AND state='failed'",denial??"preparation_unavailable",v.operation_id);
         if(pending){clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);}
         return;
       }

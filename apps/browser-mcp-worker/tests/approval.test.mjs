@@ -203,6 +203,62 @@ test('identified consequential URL is pending, meaningful destination is transie
   }finally{await f.close();}
 });
 
+test('production-style consequential delete URL receives a denial-only owner proposal, without opening a tab',async()=>{
+  const f=await fixture(config);try{
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/spec418-owner-deny-check-20261029-v3'};
+    const admitted=await f.rpc('browser_tab_open',args);await f.flush();
+    const result=await status(f,args);
+    assert.equal(result.state,'pending_approval',JSON.stringify({admitted,result}));
+    assert.equal(f.effects.length,0);
+    const page=await proposal(f,result.operation_id);
+    assert.ok(page.nonce);
+    assert.match(page.html,/spec418-owner-deny-check-20261029-v3/);
+    await decide(f,result.operation_id,page.nonce,'deny');await f.flush();
+    assert.equal((await status(f,args)).state,'denied');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
+test('a stale extension without the owner approval handshake is blocked, never dispatched',async()=>{
+  const f=await fixture(config,{legacyOwnerProtocol:true});try{
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/legacy-client-check'};
+    await f.rpc('browser_tab_open',args);await f.flush();
+    const result=await status(f,args);
+    assert.equal(result.state,'failed');
+    assert.equal(result.error_code,'approval_blocked');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
+test('preparation storage failure yields a stable safe receipt, never a website effect',async()=>{
+  const f=await fixture(config);try{
+    const storage=f.chrome.storage.session;
+    const originalSet=storage.set;
+    storage.set=async data=>{
+      if(Object.keys(data).some(k=>k.startsWith('browser_prepare_')))throw Error('simulated confidential storage failure');
+      return originalSet(data);
+    };
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/storage-check'};
+    await f.rpc('browser_tab_open',args);await f.flush();
+    const result=await status(f,args);
+    assert.equal(result.state,'failed');
+    assert.equal(result.error_code,'preparation_unavailable');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
+test('malformed approval run proof produces a safe fixed failure code',async()=>{
+  const f=await fixture(config);try{
+    f.session.browser_approval_run='not-a-valid-uuid';
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/invalid-proof'};
+    await f.rpc('browser_tab_open',args);await f.flush();
+    const result=await status(f,args);
+    assert.equal(result.state,'failed');
+    assert.equal(result.error_code,'approval_prepare_invalid');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
 test('an embedded document is excluded from snapshot and indirect interaction',async()=>{
   const f=await fixture(config);try{
     const args=await f.command('click',e=>e.tag==='button');f.pageState.embedded=true;
