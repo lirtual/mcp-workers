@@ -165,6 +165,23 @@ test('lost extension review response cannot mint a nonce, execute, or expire an 
   }finally{await f.close();}
 });
 
+test('owner expiry exposes only fixed reasons for deadline, endpoint change, or extension context loss',async()=>{
+  for(const [cause,expected] of [['deadline','approval_deadline_expired'],['generation','approval_endpoint_changed'],['missing_prepare','approval_extension_context_invalid']]){
+    const f=await fixture(config);try{
+      const op=await pending(f);
+      if(cause==='deadline')f.db.prepare('UPDATE browser_approvals SET expires_at=? WHERE operation_id=?').run(Date.now()-1,op.operation_id);
+      if(cause==='generation')f.db.prepare('UPDATE endpoints SET generation=generation+1').run();
+      if(cause==='missing_prepare')delete f.session['browser_prepare_'+op.operation_id];
+      const review=await proposal(f,op.operation_id);
+      assert.equal(review.nonce,undefined);
+      assert.equal((await status(f,op.args)).state,'expired');
+      assert.equal((await status(f,op.args)).error_code,expected,cause);
+      assert.ok(review.html.includes(expected));
+      assert.equal(f.effects.length,0);
+    }finally{await f.close();}
+  }
+});
+
 test('pending metadata survives DO recreation; session-command loss expires without recovery/replay',async()=>{
   for(const loseCommand of [false,true]){
     const f=await fixture(config);try{

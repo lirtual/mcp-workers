@@ -70,7 +70,8 @@ export class BrowserOwner implements DurableObject {
       const row=this.intents.byOperation(a.operation_id);if(!row)continue;
       const e=this.endpoint(row.endpoint_id);
       if(row.state==="pending_approval"&&(a.expires_at<=now||!e||e.state!=="enabled"||e.generation!==row.generation||e.revision!==row.prepared_revision||!approvalConfig(this.env)))
-        this.intents.approvalState(row.endpoint_id,row.intent_key,"expired");
+        this.intents.approvalState(row.endpoint_id,row.intent_key,"expired",
+          a.expires_at<=now?"approval_deadline_expired":"approval_endpoint_changed");
     }
     this.sql.exec("DELETE FROM browser_approvals WHERE expires_at<?",now-7*86400000);
   }
@@ -119,10 +120,13 @@ export class BrowserOwner implements DurableObject {
       return auth?.authenticated&&auth.endpoint_id===e.id&&auth.generation===e.generation&&
         typeof auth.last_seen==="number"&&Date.now()-auth.last_seen<60000&&sock.readyState===WebSocket.OPEN;
     });
-    const expire=()=>{this.intents.approvalState(row.endpoint_id,row.intent_key,"expired");return json(this.intents.status(row.endpoint_id,row.intent_key));};
+    const expire=(reason:"approval_deadline_expired"|"approval_endpoint_changed"|"approval_extension_context_invalid"="approval_extension_context_invalid")=>{
+      this.intents.approvalState(row.endpoint_id,row.intent_key,"expired",reason);
+      return json(this.intents.status(row.endpoint_id,row.intent_key));
+    };
     // A temporary transport failure must not consume a still-valid owner proposal.
     // Never return a review nonce or execute a command without a fresh extension check.
-    const retryView=()=>a.expires_at<=Date.now()?expire():json({operation_id:row.operation_id,
+    const retryView=()=>a.expires_at<=Date.now()?expire("approval_deadline_expired"):json({operation_id:row.operation_id,
       state:"pending_approval",expires_at:a.expires_at,error_code:"owner_transport_unavailable",
       safe_next_action:"retry_same_owner_link_before_expiry"},503);
     if(!socket)return decide?expire():retryView();
@@ -147,11 +151,11 @@ export class BrowserOwner implements DurableObject {
          await this.approvalBinding(command,a.run_id,e.generation,e.revision,a.expires_at,proposal.context)!==a.binding)return expire();
       this.expireApprovals();
       const current=this.endpoint(e.id);
-      if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||!current||current.state!=="enabled"||current.generation!==e.generation||current.revision!==e.revision)return expire();
+      if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||!current||current.state!=="enabled"||current.generation!==e.generation||current.revision!==e.revision)return expire("approval_endpoint_changed");
       if(!decide){
         const nonce=secret();
         const nonceHash=await hash(nonce);
-        if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||a.expires_at<=Date.now())return expire();
+        if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||a.expires_at<=Date.now())return expire("approval_deadline_expired");
         this.sql.exec("UPDATE browser_approvals SET nonce_hash=? WHERE operation_id=?",nonceHash,row.operation_id);
         return json({operation_id:row.operation_id,state:"pending_approval",expires_at:a.expires_at,
           endpoint_id:e.id,run_id:a.run_id,frame_id:0,command,context:proposal.context,nonce});
