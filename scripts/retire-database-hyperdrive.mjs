@@ -71,6 +71,13 @@ export async function retireDatabaseHyperdrive({
   if (!Array.isArray(versions) || versions.length !== 1 || versions[0].percentage !== 100) {
     fail('current production deployment is not a single version');
   }
+  // `version_id` is the live deployment API field. Settings alone can be
+  // newer than the version actually receiving traffic; verify its immutable
+  // resources before permitting the D1 tombstone.
+  const activeVersionId = versions[0].version_id;
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(activeVersionId ?? '')) {
+    fail('active production version ID unconfirmed');
+  }
   const settings = await cloud('/workers/scripts/database-mcp-worker/settings');
   const bindings = settings?.bindings;
   if (!Array.isArray(bindings) || bindings.filter(x => x.type === 'd1' &&
@@ -90,16 +97,40 @@ export async function retireDatabaseHyperdrive({
       rollback.items.length > 100 || new Set(rollback.items.map(v=>v.id)).size !== rollback.items.length) {
     fail('rollback reference inventory unavailable');
   }
+  if (!rollback.items.some(v => v.id === activeVersionId)) {
+    fail('active production version absent from rollback inventory');
+  }
+  let verifiedLive = false;
   for (const version of rollback.items) {
     if (!/^[0-9a-f-]{36}$/i.test(version.id ?? '')) fail('rollback reference identity invalid');
     const detail = await cloud('/workers/scripts/database-mcp-worker/versions/' + version.id);
     if (detail?.id !== version.id || !Array.isArray(detail.resources?.bindings) ||
         detail.resources.bindings.some(b=>b.type==='hyperdrive' &&
           (b.id===row.config_id || b.name===row.binding_name))) fail('rollback version reference remains or is unconfirmed');
+    if (version.id === activeVersionId) {
+      const liveBindings = detail.resources.bindings;
+      const remaining = liveBindings.filter(b=>b.type==='hyperdrive');
+      if (liveBindings.filter(b=>b.type==='d1' && b.name==='DB' &&
+          (b.database_id===REGISTRY || b.id===REGISTRY)).length!==1 ||
+          remaining.length!==expectedBindings.length || expectedBindings.some(e=>
+            remaining.filter(b=>b.id===e.id && b.name===e.binding).length!==1)) {
+        fail('live production version binding inventory differs from reviewed release');
+      }
+      verifiedLive = true;
+    }
   }
+  if (!verifiedLive) fail('active version was not verified');
   const shared = await sql('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',
     [connectionId, row.config_id, row.binding_name]);
   if (shared.results?.[0]?.n !== 0) fail('another D1 connection references this config');
+  // Close an avoidable time-of-check-to-deletion window if another release
+  // changed the live Worker while rollback resources were being examined.
+  const liveAgain = await cloud('/workers/scripts/database-mcp-worker/deployments');
+  if (liveAgain?.deployments?.[0]?.versions?.length!==1 ||
+      liveAgain.deployments[0].versions[0].percentage!==100 ||
+      liveAgain.deployments[0].versions[0].version_id!==activeVersionId) {
+    fail('live production deployment changed during retirement verification');
+  }
   // No upstream delete: older retained Worker versions, other apps, and shared
   // CA are outside this D1 CAS. They remain subject to separate human review.
   try {

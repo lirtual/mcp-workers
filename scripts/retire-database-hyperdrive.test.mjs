@@ -14,7 +14,7 @@ const inputs = {
   token: 'synthetic-test-only', source, manifest: []
 };
 function fixture({ active = false, bound = false, lostAck = false, stale = false, shared = false,
-  splitTraffic = false, inFlight = false } = {}) {
+  splitTraffic = false, inFlight = false, unknownActive = false, currentDrift = false } = {}) {
   const state = {
     record: { id: 'retire_test', dialect: 'mysql', transport: 'hyperdrive',
       status: active ? 'active' : 'disabled', revision: stale ? 5 : 4,
@@ -25,10 +25,10 @@ function fixture({ active = false, bound = false, lostAck = false, stale = false
   async function request(url, init) {
     calls.push({ url, method: init.method });
     const response = result => ({ ok: true, json: async () => ({ success: true, result }) });
-    if(url.endsWith('/versions?deployable=true')) return response({items:[{id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]});
-    if(url.endsWith('/versions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')) return response({id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',resources:{bindings:[]}});
+    if(url.endsWith('/versions?deployable=true')) return response({items:[{id:unknownActive?'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb':'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}]});
+    if(url.endsWith('/versions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')) return response({id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',resources:{bindings:currentDrift?[{type:'hyperdrive',name:'HYPERDRIVE_UNREVIEWED',id:'cccccccccccccccccccccccccccccccc'}]:[{type:'d1',name:'DB',database_id:registry}]}});
     if (url.endsWith('/deployments')) return response({ deployments: [{ versions: splitTraffic
-      ? [{ percentage: 50 }, { percentage: 50 }] : [{ percentage: 100 }] }] });
+      ? [{ version_id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',percentage: 50 }, { version_id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',percentage: 50 }] : [{ version_id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',percentage: 100 }] }] });
     if (url.endsWith('/settings')) return response({ bindings: [
       { type: 'd1', name: 'DB', id: registry },
       ...(bound ? [{ type: 'hyperdrive', name: binding, id: configId }] : [])
@@ -119,10 +119,43 @@ test('retirement rejects Cloudflare D1 access failure with bounded stage label',
 test('retained rollback version blocks tombstone before D1 deletion',async()=>{
   const f=fixture();
   const request=async(url,init)=>{
-    if(url.endsWith('/versions?deployable=true')) return {ok:true,json:async()=>({success:true,result:{items:[{id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'}]}})};
+    if(url.endsWith('/versions?deployable=true')) return {ok:true,json:async()=>({success:true,result:{items:[{id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'},{id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'}]}})};
     if(url.endsWith('/versions/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')) return {ok:true,json:async()=>({success:true,result:{id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',resources:{bindings:[{type:'hyperdrive',name:binding,id:configId}]}}})};
     return f.request(url,init);
   };
   await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/rollback.*reference/);
+  assert.equal(f.state.writes,0);
+});
+
+test('unknown active version or mismatched live resources block D1 retirement', async()=>{
+  for (const option of [{unknownActive:true},{currentDrift:true}]){
+    const f=fixture(option);
+    await assert.rejects(retireDatabaseHyperdrive({...inputs,request:f.request}),/retirement blocked/);
+    assert.equal(f.state.writes,0);
+  }
+});
+test('missing current version UUID blocks before any D1 retirement',async()=>{
+ const f=fixture();const request=async(url,init)=>{
+   if(url.endsWith('/deployments'))return {ok:true,json:async()=>({success:true,result:{deployments:[{versions:[{percentage:100}]}]}})};
+   return f.request(url,init);
+ };
+ await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/retirement blocked/);
+ assert.equal(f.state.writes,0);
+});
+
+test('a changed live deployment during final readback is rejected without D1 write',async()=>{
+  const f=fixture();let deployments=0;
+  const request=async(url,init)=>{
+    if(url.endsWith('/deployments')){
+      deployments++;
+      return {ok:true,json:async()=>({success:true,result:{deployments:[{versions:[{
+        version_id:deployments===1?'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa':'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        percentage:100
+      }]}]}})};
+    }
+    return f.request(url,init);
+  };
+  await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/deployment changed/);
+  assert.equal(deployments,2);
   assert.equal(f.state.writes,0);
 });

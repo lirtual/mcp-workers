@@ -169,6 +169,13 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   immutable retired-ID tombstones. The existing production release's read-only
   D1 schema preflight now also requires the counter column and both triggers;
   this gate cannot apply migrations automatically.
+  The isolated in-process MCP HTTP protocol tests exercise read, health and
+  structured-write tool calls (explicit and implicit ID), including disable
+  races and uncertain completion; they do not claim production Worker/SQL E2E.
+  Final D1 retirement additionally checks the precise live 100%-traffic
+  `version_id` in the rollback inventory, validates its immutable D1 and
+  Hyperdrive binding resources, then rechecks the live deployment before the
+  D1 CAS. Unverifiable active or rollback versions block retirement.
   The CI release contract deliberately refuses automatic unbinding PR merge or
   release from the retirement staging job: neither the disabled D1 flag nor
   the bounded 60-second SQL query timeout alone is a verified global in-flight
@@ -184,7 +191,7 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   is performed by the status check.
 - Enable/retire use shared `database_hyperdrive_id` and
   `database_hyperdrive_revision` inputs with their respective explicit approval flag.
-  Release dispatch has exactly ten inputs; `database_hyperdrive_apply_id` is the only new input in this continuation. Retirement checks
+  Release dispatch has exactly nine inputs; `database_hyperdrive_apply_id` is the only new input in this continuation. Retirement checks
   every returned deployable rollback version before D1 CAS/tombstone and always retains
   upstream Hyperdrive/CA. Unconfirmed rollback inventory blocks retirement; shared CA
   deletion is never inferred from removal of one logical connection.
