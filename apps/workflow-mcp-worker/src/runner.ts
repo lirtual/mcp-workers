@@ -698,7 +698,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                     .bind(id,s.id,now()).run();
                   if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
                   if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'};
-                  return await runPublishedCloudflareAction(this.env,plan,s,id);
+                  return await runPublishedCloudflareAction(this.env,plan,s,id,undefined,ctx);
                 }catch{return {status:'indeterminate',error_code:'cloudflare_dispatch_unconfirmed'};}
               })
             : s.uses==='github.run'

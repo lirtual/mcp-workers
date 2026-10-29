@@ -1,3 +1,4 @@
+import {runBarkAction} from './bark-action-executor.ts';
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
@@ -31,7 +32,9 @@ async function recover(env:Env,row:Frozen):Promise<Result>{
 export async function runPublishedCloudflareAction(
  env:Env,plan:Plan,action:Step,runId:string,
  inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
+ ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
 ):Promise<Result>{
+ if(action.with.provider==='bark')return runBarkAction(env,plan,action,runId,ctx);
  const provider=env.WEIXIN_ACTION_PROVIDER,version=env.WEIXIN_ACTION_DEPLOYMENT_ID;
  const manifest=await cloudflareActionManifest();
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&

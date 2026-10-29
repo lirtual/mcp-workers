@@ -13,7 +13,10 @@
       "database_id": "a4a477cd-6339-478c-ab7c-f7d87bb0d772", "migrations_dir": "migrations" }
   ],
   "triggers": { "crons": ["* * * * *"] },
-  "services": [{ "binding": "WEIXIN_ACTION_PROVIDER", "service": "weixin-mcp-worker", "entrypoint": "WeixinActionProvider" }],
+  "services": [
+    { "binding": "WEIXIN_ACTION_PROVIDER", "service": "weixin-mcp-worker", "entrypoint": "WeixinActionProvider" },
+    { "binding": "BARK_ACTION_PROVIDER", "service": "bark-provider", "entrypoint": "BarkActionProvider" }
+  ],
   "workflows": [
     { "name": "workflow-mcp-orchestrator", "binding": "WORKFLOW", "class_name": "WorkflowOrchestrator" }
   ],

@@ -14,6 +14,8 @@ The active repository contains independently owned MCP Worker bounded contexts:
 
 - [Remote Control MCP](./docs/remote-control/CONTEXT.md) (`apps/remote-control-mcp-worker` and `apps/remote-control-agent`): owns the authenticated Portal ingress and signed per-device relay for Windows x64 and Linux x64/ARM64 Agents (including WSL2). Its curated tools cover files, Shell, managed sessions, paired devices, and ten Agent-owned browser operations with device-grant checks and operation receipts. Browser Handoff (Spec #280) and MCP-initiated Agent upgrades are retired; Agent upgrades use owner-interactive local installers.
 
+- [Bark Action Provider](https://github.com/lirtual/cloudflare-actions/tree/main/apps/bark-provider): owns a private single-device AES-256-GCM Bark send RPC; the Workflow consumer alone owns review grants, version pins and durable at-most-once admission. No Bark-specific database or receipt lookup.
+
 - [Weixin Action Provider](https://github.com/lirtual/cloudflare-actions/tree/main/apps/weixin-mcp-worker): independently owns the original Weixin Worker, encrypted owner binding, D1 receipts and private RPC. The public MCP ingress and this repository's Weixin release path were retired by Spec #392.
 
 Each context maintains its own application contract, upstream credentials, deployment lifecycle, and runtime behavior. The shared `packages/portal-auth` package is limited to the MCP ingress authentication boundary and does not centralize application business logic.

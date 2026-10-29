@@ -47,6 +47,12 @@ export type Env = {
   // Canonical 256-bit AES-GCM key for short-lived Session data.
   SESSION_RUNTIME_DATA_KEY?: string;
   // The Worker Version ID is pinned by the separately authorized release.
+  BARK_ACTION_DEPLOYMENT_ID?: string;
+  BARK_ACTION_PROVIDER?: {
+    getContract():Promise<{deployment_id:string;contract_digest:string}>;
+    sendNotification(input:{invocation_id:string;deployment_id:string;contract_digest:string;
+      input_digest:string;notification:Record<string,unknown>}):Promise<{status:string;input_digest:string}>;
+  };
   WEIXIN_ACTION_DEPLOYMENT_ID?: string;
   WEIXIN_ACTION_PROVIDER?: {
     getBinding():Promise<{generation:number;ready:boolean}>;
@@ -255,11 +261,14 @@ export class WorkflowService {
     try {
       const {digest,plan}=await compilePlan(definition);
       const reviewed_actions=await this.checkedGitHubActions(plan);
-      const manifest=await cloudflareActionManifest();
-      const reviewed_cloudflare_actions=plan.steps.some(s=>s.uses==='action.run')
-        ?[{executor:'cloudflare' as const,provider:'weixin' as const,
-          action:'weixin.send_text' as const,contract_digest:manifest.contract_digest,
-          deployment_id:this.env.WEIXIN_ACTION_DEPLOYMENT_ID??null}]:[];
+      const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
+        .map(async s=>{
+          const bark=s.with.provider==='bark';
+          const manifest=await cloudflareActionManifest(bark?'bark':'weixin');
+          return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
+            contract_digest:manifest.contract_digest,deployment_id:
+              (bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID)??null};
+        }));
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
@@ -322,7 +331,7 @@ export class WorkflowService {
     }
   }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
-    approved_cloudflare_actions:Array<{executor:'cloudflare';provider:'weixin';action:'weixin.send_text';contract_digest:string;deployment_id:string}>=[],
+    approved_cloudflare_actions:Array<{executor:'cloudflare';provider:'weixin'|'bark';action:'weixin.send_text'|'bark.send_notification';contract_digest:string;deployment_id:string}>=[],
     approve_cloudflare_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
@@ -355,19 +364,22 @@ export class WorkflowService {
     const hasCloudflare=plan.steps.some(s=>s.uses==='action.run');
     let cloudflareGrants:typeof approved_cloudflare_actions=[];
     if(hasCloudflare){
-      const deployment=this.env.WEIXIN_ACTION_DEPLOYMENT_ID;
-      if(!this.env.WEIXIN_ACTION_PROVIDER||typeof deployment!=='string'||
+      const step=plan.steps.find(s=>s.uses==='action.run')!;
+      const bark=step.with.provider==='bark';
+      const deployment=bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID;
+      const provider=bark?this.env.BARK_ACTION_PROVIDER:this.env.WEIXIN_ACTION_PROVIDER;
+      if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest();
-      // A manually staged Version ID is not proof of the bound Worker's version.
+      const contract=await cloudflareActionManifest(bark?'bark':'weixin');
+      // A staged Version ID is not proof of the bound Worker's version.
       let live;
-      try{live=await this.env.WEIXIN_ACTION_PROVIDER.getContract();}
+      try{live=await provider.getContract();}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
       if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
         throw new StateError('cloudflare_provider_identity_mismatch');
-      cloudflareGrants=[{executor:'cloudflare',provider:'weixin',
-        action:'weixin.send_text',contract_digest:contract.contract_digest,
+      cloudflareGrants=[{executor:'cloudflare',provider:contract.provider,
+        action:contract.action,contract_digest:contract.contract_digest,
         deployment_id:deployment}];
       if(approve_cloudflare_execution!==true||
          JSON.stringify(approved_cloudflare_actions)!==JSON.stringify(cloudflareGrants))

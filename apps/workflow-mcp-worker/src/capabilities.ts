@@ -224,10 +224,13 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
      properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
     {type:'object',additionalProperties:false,
      required:['executor','provider','action','contract_digest','input'],properties:{
-       executor:{const:'cloudflare'},provider:{const:'weixin'},action:{const:'weixin.send_text'},
+       executor:{const:'cloudflare'},provider:{enum:['weixin','bark']},action:{enum:['weixin.send_text','bark.send_notification']},
        contract_digest:{type:'string',pattern:'^[a-f0-9]{64}$'},
-       input:{type:'object',additionalProperties:false,required:['session_step_id'],
+       input:{oneOf:[
+        {type:'object',additionalProperties:false,required:['session_step_id'],
          properties:{session_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['notification'],
+         properties:{notification:{type:'object'}}}]},
      }},
   ]},
   'github.run':{type:'object',additionalProperties:false,
@@ -388,7 +391,7 @@ const entries=[
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
    description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
   {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
-   description:'One reviewed Weixin Owner send from a signed, physically running OpenList Session in the same Run. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
+   description:'One explicitly approved, version-pinned Weixin Session Ready or Bark encrypted Owner notification per Plan. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
   {id:'action.github.run',kind:'action',availability:'supported_with_grant',
    description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
   {id:'flow.static_dag',kind:'flow',availability:'supported',
@@ -437,7 +440,7 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'WEIXIN_ACTION_DEPLOYMENT_ID'|'WEIXIN_ACTION_PROVIDER'>,
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'WEIXIN_ACTION_DEPLOYMENT_ID'|'WEIXIN_ACTION_PROVIDER'|'BARK_ACTION_DEPLOYMENT_ID'|'BARK_ACTION_PROVIDER'>,
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
@@ -446,7 +449,8 @@ export async function workflowCapabilities(env:Pick<Env,
     githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
-  const cloudflareReady=!!env.WEIXIN_ACTION_PROVIDER&&!!env.WEIXIN_ACTION_DEPLOYMENT_ID&&githubReady;
+  const cloudflareReady=(!!env.WEIXIN_ACTION_PROVIDER&&!!env.WEIXIN_ACTION_DEPLOYMENT_ID&&githubReady)||
+    (!!env.BARK_ACTION_PROVIDER&&!!env.BARK_ACTION_DEPLOYMENT_ID);
   const availability=(entry:Entry)=>
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
@@ -479,7 +483,11 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
-    ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],reviewed_manifest:await cloudflareActionManifest(),deployment_id:env.WEIXIN_ACTION_DEPLOYMENT_ID??null}:{}),
+    ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
+      reviewed_manifest:await cloudflareActionManifest(),
+      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('bark')],
+      deployment_id:env.WEIXIN_ACTION_DEPLOYMENT_ID??null,
+      bark_deployment_id:env.BARK_ACTION_DEPLOYMENT_ID??null}:{}),
   };
   if(id==='trigger.webhook'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;

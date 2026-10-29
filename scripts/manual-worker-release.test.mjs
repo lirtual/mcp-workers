@@ -783,6 +783,8 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"},
     {name:"WEIXIN_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
+    {name:"BARK_ACTION_PROVIDER",type:"service",service:"bark-provider"},
+    {name:"BARK_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -852,6 +854,8 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"},
     {name:"WEIXIN_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
+    {name:"BARK_ACTION_PROVIDER",type:"service",service:"bark-provider"},
+    {name:"BARK_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -878,6 +882,8 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"},
     {name:"WEIXIN_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
+    {name:"BARK_ACTION_PROVIDER",type:"service",service:"bark-provider"},
+    {name:"BARK_ACTION_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];

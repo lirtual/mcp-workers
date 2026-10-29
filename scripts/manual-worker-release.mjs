@@ -274,6 +274,12 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(providerVersion.text) &&
         !secretNames.has("WEIXIN_ACTION_DEPLOYMENT_ID"),
         "Workflow reviewed Weixin Provider Version ID drift");
+      const barkVersion=find("BARK_ACTION_DEPLOYMENT_ID","plain_text");
+      invariant(bindings.filter(x=>x.name==="BARK_ACTION_DEPLOYMENT_ID").length===1 &&
+        typeof barkVersion?.text==="string" &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(barkVersion.text) &&
+        !secretNames.has("BARK_ACTION_DEPLOYMENT_ID"),
+        "Workflow reviewed Bark Provider Version ID drift");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -419,7 +425,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Browser namespace changed; preserve pairing and Unknown receipts");
   }
   const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER"] : worker === "workflow-mcp-worker"
-    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER"]) :
+    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER"]) :
     worker === "openlist-mcp-worker" ? ["OPENLIST"] :
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
@@ -435,6 +441,9 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(bindings.filter(x=>x.name === "WEIXIN_ACTION_PROVIDER").length === 1 &&
       !!find("WEIXIN_ACTION_PROVIDER", "service"),
       "Workflow reviewed Weixin Service Binding missing after release");
+    invariant(bindings.filter(x=>x.name === "BARK_ACTION_PROVIDER").length === 1 &&
+      !!find("BARK_ACTION_PROVIDER", "service"),
+      "Workflow reviewed Bark Service Binding missing after release");
   }
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
@@ -469,12 +478,15 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-orchestrator" &&
     conf.workflows[0]?.class_name === "WorkflowOrchestrator",
     "Workflow binding drift");
-  invariant(conf.services?.length === 1 &&
+  invariant(conf.services?.length === 2 &&
     conf.services[0]?.binding === "WEIXIN_ACTION_PROVIDER" &&
     conf.services[0]?.service === "weixin-mcp-worker" &&
     conf.services[0]?.entrypoint === "WeixinActionProvider" &&
-    Object.keys(conf.services[0]).sort().join(",") === "binding,entrypoint,service",
-    "Workflow reviewed Weixin Service Binding drift");
+    conf.services[1]?.binding === "BARK_ACTION_PROVIDER" &&
+    conf.services[1]?.service === "bark-provider" &&
+    conf.services[1]?.entrypoint === "BarkActionProvider" &&
+    conf.services.every(x=>Object.keys(x).sort().join(",")==="binding,entrypoint,service"),
+    "Workflow reviewed Cloudflare Service Bindings drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
