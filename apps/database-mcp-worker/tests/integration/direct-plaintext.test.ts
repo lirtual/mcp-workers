@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deleteRows, healthCheck, insertRows, queryRead } from '../../src/db/index.js';
+import { deleteRows, healthCheck, insertRows, queryRead, updateRows } from '../../src/db/index.js';
 import { createMysqlClient, createPostgresClient } from '../../src/db/clients.js';
 import { parseDatabaseConfig } from '../helpers/catalog.js';
 import { resolveConnection } from '../../src/config.js';
@@ -58,6 +58,71 @@ hyperdriveAdapter('MySQL Hyperdrive adapter using local plaintext proxy SIMULATI
         .toEqual([]);
     } finally {
       await deleteRows(writer, undefined, 'write_items', { id });
+    }
+  });
+});
+
+
+const readPostgres = process.env.TEST_POSTGRES_READ_URL;
+const writePostgres = process.env.TEST_POSTGRES_WRITE_URL;
+const postgresHyperdriveAdapter = readPostgres && writePostgres ? describe : describe.skip;
+postgresHyperdriveAdapter('PostgreSQL Hyperdrive adapter over local plaintext proxy SIMULATION (not real Cloudflare)', () => {
+  if (!readPostgres || !writePostgres) {
+    it.skip('requires isolated PostgreSQL read and write fixture URLs', () => {});
+    return;
+  }
+  const reader = { ...connection('simulated_pg_proxy_reader', readPostgres), transport: 'hyperdrive' as const };
+  const writer = {
+    ...connection('simulated_pg_proxy_writer', writePostgres),
+    transport: 'hyperdrive' as const,
+    maxAffectedRows: 1
+  };
+  const cleanupWriter = { ...writer, maxAffectedRows: 20 };
+
+  it('performs a health check and parameterized reads while preserving PostgreSQL RLS', async () => {
+    await expect(healthCheck(reader)).resolves.toMatchObject({ ok: true });
+    expect((await queryRead(reader, 'SELECT id, tenant_id FROM public.users WHERE id = $1', [1], 5)).rows)
+      .toEqual([[1, 1]]);
+    expect((await queryRead(reader, 'SELECT id, tenant_id FROM public.users WHERE id = $1', [2], 5)).rows)
+      .toEqual([]);
+  });
+
+  it('round-trips quotes, backslashes, Unicode, and SQL-like input through parameterized writes', async () => {
+    const id = 933344;
+    const original = "quote ' and backslash \\ 中文 ; --";
+    const updated = "' OR TRUE -- ; DROP TABLE write_items; \\";
+    await expect(insertRows(writer, 'public', 'write_items', [{ id, value: original }]))
+      .resolves.toEqual({ affectedRows: 1 });
+    try {
+      expect((await queryRead(reader, 'SELECT value FROM public.write_items WHERE id = $1', [id], 5)).rows)
+        .toEqual([[original]]);
+      await expect(updateRows(writer, 'public', 'write_items', { value: updated }, { id }))
+        .resolves.toEqual({ affectedRows: 1 });
+      expect((await queryRead(reader, 'SELECT value FROM public.write_items WHERE id = $1', [id], 5)).rows)
+        .toEqual([[updated]]);
+    } finally {
+      await deleteRows(cleanupWriter, 'public', 'write_items', { id });
+    }
+  });
+
+  it('rolls back PostgreSQL UPDATE and DELETE exceeding the affected-row cap', async () => {
+    const ids = [943344, 953344];
+    await insertRows(cleanupWriter, 'public', 'write_items',
+      ids.map(id => ({ id, value: 'before' })));
+    try {
+      await expect(updateRows(writer, 'public', 'write_items', { value: 'after' }, { id: { in: ids } }))
+        .rejects.toMatchObject({ code: 'WRITE_LIMIT_EXCEEDED' });
+      expect((await queryRead(reader,
+        'SELECT id, value FROM public.write_items WHERE id IN ($1, $2) ORDER BY id', ids, 5)).rows)
+        .toEqual(ids.map(id => [id, 'before']));
+
+      await expect(deleteRows(writer, 'public', 'write_items', { id: { in: ids } }))
+        .rejects.toMatchObject({ code: 'WRITE_LIMIT_EXCEEDED' });
+      expect((await queryRead(reader,
+        'SELECT id, value FROM public.write_items WHERE id IN ($1, $2) ORDER BY id', ids, 5)).rows)
+        .toEqual(ids.map(id => [id, 'before']));
+    } finally {
+      await deleteRows(cleanupWriter, 'public', 'write_items', { id: { in: ids } });
     }
   });
 });
