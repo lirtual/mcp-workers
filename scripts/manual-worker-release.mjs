@@ -71,6 +71,9 @@ export function databaseD1ReadinessSql(expectedIds) {
     "  (SELECT COUNT(*) FROM hyperdrive_operations WHERE action='create' AND phase IN ('pending','running','awaiting_confirmation','unknown')) AS reserved_count,",
     "  (SELECT COUNT(*) FROM pragma_table_info('hyperdrive_operations') WHERE name='resource_write_started_at') AS resource_claim_column,",
     "  (SELECT COUNT(*) FROM pragma_table_info('hyperdrive_operations') WHERE name='apply_run_id') AS apply_receipt_column,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('database_connections') WHERE name='in_flight_count' AND type='INTEGER' AND \"notnull\"=1) AS inflight_column,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_inflight_delete') AS inflight_delete_trigger,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_inflight_rebind') AS inflight_rebind_trigger,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ") AND status='active') AS active_count,",
     "  (SELECT COUNT(*) FROM retired_connection_ids) AS retired_count,",
@@ -91,10 +94,12 @@ export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cuto
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
   const row = response[0].results[0];
-  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count", "reserved_count", "resource_claim_column", "apply_receipt_column"])
+  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count", "reserved_count", "resource_claim_column", "apply_receipt_column", "inflight_column", "inflight_delete_trigger", "inflight_rebind_trigger"])
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
-  invariant(row.migration_count === 3 && row.resource_claim_column === 1 && row.apply_receipt_column === 1, "Database D1 additive lifecycle migration not applied");
+  invariant(row.migration_count === 3 && row.resource_claim_column === 1 && row.apply_receipt_column === 1 &&
+    row.inflight_column === 1 && row.inflight_delete_trigger === 1 && row.inflight_rebind_trigger === 1,
+    "Database D1 additive lifecycle migration not applied (including in-flight fence)");
   // The separate, always-on encrypted Direct prepublication gate enforces
   // exact active revision-2 legacy records while the old Worker is deployed.
   // Once the D1-backed Worker is already live, requiring those IDs to remain

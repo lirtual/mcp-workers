@@ -162,7 +162,13 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   claim/release adds two writes for instrumented Hyperdrive executions; Direct
   has no counter mutations. Do not apply this unpublished migration to the
   production registry or release the Worker until isolated E2E and migration
-  ordering are verified.
+  ordering are verified. An isolated Wrangler **local** D1 regression in the
+  existing Database integration CI uses a synthetic UUID and temporary local
+  persistence (never `--remote`) to prove all three migrations, disabled
+  admission rejection, persistent in-flight delete/rebind triggers and
+  immutable retired-ID tombstones. The existing production release's read-only
+  D1 schema preflight now also requires the counter column and both triggers;
+  this gate cannot apply migrations automatically.
   The CI release contract deliberately refuses automatic unbinding PR merge or
   release from the retirement staging job: neither the disabled D1 flag nor
   the bounded 60-second SQL query timeout alone is a verified global in-flight

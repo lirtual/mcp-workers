@@ -244,6 +244,9 @@ jobs:
       - name: Run database integration tests
         run: pnpm --filter database-mcp-worker run test:integration
 
+      - name: Verify isolated Wrangler D1 lifecycle and in-flight protection
+        run: node --test apps/database-mcp-worker/scripts/d1-drain-wrangler.test.mjs
+
 
   release-gate:
     name: Required checks gate
