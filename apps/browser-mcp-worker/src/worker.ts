@@ -161,27 +161,33 @@ async function handleExtension(request:Request,env:Env,path:string) {
   const headers=new Headers(result.headers);headers.set("access-control-allow-origin",request.headers.get("origin")!);headers.set("vary","Origin");headers.set("cache-control","no-store");
   return new Response(result.body,{status:result.status,headers});
 }
+// Explicit inline text response for fail-closed owner errors. Without a content type,
+// mobile browsers may download the /owner/operations/<uuid> path as a file.
+const ownerRejection = (status:number,message:string):Response => new Response(message,{
+  status,headers:{...ownerHeaders,"content-type":"text/plain; charset=utf-8"}
+});
 export default {
   async fetch(request:Request,env:Env):Promise<Response> {
     const url=new URL(request.url);
     if(url.pathname.startsWith("/owner/")) {
       const config=approvalConfig(env);
-      if(!config||url.origin!==config.origin||url.search||(request.headers.has("origin")&&request.headers.get("origin")!==config.origin))return new Response(null,{status:403,headers:ownerHeaders});
-      if(!await verifyOwner(request,env))return new Response(null,{status:401,headers:ownerHeaders});
+      if(!config)return ownerRejection(403,"Owner approval is not enabled.");
+      if(url.origin!==config.origin||url.search||(request.headers.has("origin")&&request.headers.get("origin")!==config.origin))return ownerRejection(403,"Owner request rejected.");
+      if(!await verifyOwner(request,env))return ownerRejection(401,"Owner identity not verified.");
       const approvalMatch=/^\/owner\/operations\/([a-f0-9-]{36})$/.exec(url.pathname);
       const unknownMatch=/^\/owner\/unknown\/([a-f0-9-]{36})$/.exec(url.pathname);
       const match=approvalMatch??unknownMatch;
-      if(!match)return new Response(null,{status:404,headers:ownerHeaders});
-      if(request.method!=="GET"&&request.method!=="POST")return new Response(null,{status:405,headers:ownerHeaders});
+      if(!match)return ownerRejection(404,"Owner operation not found.");
+      if(request.method!=="GET"&&request.method!=="POST")return ownerRejection(405,"Owner method not allowed.");
       let body:Record<string,unknown>={operation_id:match[1]};
       if(request.method==="POST") {
-        if(request.headers.get("origin")!==config.origin||request.headers.get("content-type")?.split(";")[0]!=="application/x-www-form-urlencoded")return new Response(null,{status:403,headers:ownerHeaders});
+        if(request.headers.get("origin")!==config.origin||request.headers.get("content-type")?.split(";")[0]!=="application/x-www-form-urlencoded")return ownerRejection(403,"Owner request rejected.");
         try {
           const form=new URLSearchParams(await boundedText(request,1024));
           const field=unknownMatch?"outcome":"decision";
           if([...form.keys()].length!==2||!form.has("nonce")||!form.has(field))throw Error();
           body={...body,nonce:form.get("nonce"),[field]:form.get(field)};
-        }catch{return new Response(null,{status:400,headers:ownerHeaders});}
+        }catch{return ownerRejection(400,"Invalid owner request.");}
       }
       try {
         const route=unknownMatch?(request.method==="GET"?"owner-unknown-view":"owner-unknown-report"):
@@ -191,7 +197,7 @@ export default {
         const page=unknownMatch?ownerUnknownPage(result.data as Record<string,unknown>,match[1]!):
           ownerPage(result.data as Record<string,unknown>,match[1]!);
         return new Response(page.body,{status:result.status,headers:page.headers});
-      }catch{return new Response("Unavailable",{status:503,headers:ownerHeaders});}
+      }catch{return ownerRejection(503,"Owner approval temporarily unavailable.");}
     }
     if(url.pathname==="/mcp")return handleMcp(request,env);
     if(url.pathname.startsWith("/extension/"))return handleExtension(request,env,url.pathname.slice("/extension/".length));

@@ -34,6 +34,20 @@ async function pending(f){
 }
 async function status(f,args){return f.rpc('browser_operation_status',{endpoint_id:args.endpoint_id,intent_key:args.intent_key});}
 
+test('unavailable owner approval displays a safe inline error instead of a downloadable UUID',async()=>{
+  for(const env of [{},config]){
+    const f=await fixture(env);try{
+      const response=await f.http(path('00000000-0000-0000-0000-000000000000'));
+      assert.equal(response.status,Object.keys(env).length?401:403);
+      assert.equal(response.headers.get('content-type'),'text/plain; charset=utf-8');
+      assert.equal(response.headers.get('content-disposition'),null);
+      assert.equal(response.headers.get('cache-control'),'no-store');
+      assert.match(await response.text(),/Owner/);
+      assert.equal(f.effects.length,0);
+    }finally{await f.close();}
+  }
+});
+
 test('owner HTTP requires cryptographic Access identity, canonical host, aud, issuer, expiry and exact mailbox',async()=>{
   const f=await fixture(config);try{
     const op=await pending(f);
