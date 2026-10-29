@@ -16,6 +16,11 @@ type Answer = {operation_id?:string;state?:State;tab_id?:number|null;error_code?
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const endpoint=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const sevenDays=7*86400000, fiveMinutes=5*60000;
+type ApprovalExpiryReason = "approval_deadline_expired" | "approval_endpoint_changed" | "approval_extension_context_invalid";
+const approvalExpiryReasons:ReadonlySet<string>=new Set<ApprovalExpiryReason>([
+  "approval_deadline_expired","approval_endpoint_changed","approval_extension_context_invalid"
+]);
+
 // Only these static, non-content-bearing denial codes may enter durable receipts.
 const failureActions:Record<string,string>={
   forbidden:"blocked_forbidden_target",
@@ -85,6 +90,7 @@ export class IntentLedger {
       ...(row.result_code==="capacity_exceeded"?{error_code:"capacity_exceeded"}:{}),
       ...(row.result_code==="approval_blocked"?{error_code:"approval_blocked",safe_next_action:"Blocked: independent owner approval is unavailable"}:{}),
       ...(row.state==="failed"&&safeFailureCode(row.result_code)?{error_code:row.result_code!,safe_next_action:failureActions[row.result_code!]}:{}),
+      ...(row.state==="expired"&&row.result_code&&approvalExpiryReasons.has(row.result_code)?{error_code:row.result_code}:{}),
       ...(row.result_code==="tab_group_unavailable"?{presentation_warning:row.result_code}:{})};
   }
   private async commitment(command:Command) {
@@ -102,8 +108,9 @@ export class IntentLedger {
     const row=this.row(command.endpoint_id,command.intent_key);
     return !!row&&row.operation_id===operation_id&&row.commitment===await this.commitment(command);
   }
-  approvalState(endpoint_id:string,intent_key:string,state:"pending_approval"|"denied"|"expired"|"admitted",now=Date.now()) {
-    this.sql.exec("UPDATE browser_intents SET state=?,updated_at=? WHERE endpoint_id=? AND intent_key=? AND state IN ('admitted','pending_approval')",state,now,endpoint_id,intent_key);
+  approvalState(endpoint_id:string,intent_key:string,state:"pending_approval"|"denied"|"expired"|"admitted",reason?:ApprovalExpiryReason,now=Date.now()) {
+    this.sql.exec("UPDATE browser_intents SET state=?,updated_at=?,result_code=CASE WHEN ?='expired' THEN ? ELSE result_code END WHERE endpoint_id=? AND intent_key=? AND state IN ('admitted','pending_approval')",
+      state,now,state,reason??null,endpoint_id,intent_key);
   }
   byOperation(operation_id:string):Row|undefined {
     return this.sql.exec<Row>("SELECT * FROM browser_intents WHERE operation_id=?",operation_id).toArray()[0];
