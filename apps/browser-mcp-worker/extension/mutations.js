@@ -158,7 +158,12 @@ function browserPageInteraction(mode,command,expectedUrl) {
   if(command.action!=="scroll"&&consequential.test([el.textContent,el.getAttribute("aria-label"),el.id,el.getAttribute("name"),...Array.from(el.labels||[],l=>l.textContent)].join(" ")))
     needsApproval=true;
   const controlLabel=(el.getAttribute("aria-label")||Array.from(el.labels||[],l=>l.textContent).join(" ")||el.textContent||"").trim();
-  if(command.action==="click" && !(tag==="SUMMARY"&&el.parentElement?.tagName==="DETAILS"&&controlLabel ||
+  // An explicit disclosure ARIA toggle is a bounded ordinary UI interaction.
+  // All consequential labels above still require independent approval.
+  const disclosureToggle=tag==="BUTTON"&&["true","false"].includes(el.getAttribute("aria-expanded"))&&
+    /^[A-Za-z][A-Za-z0-9_:-]{0,63}$/.test(el.getAttribute("aria-controls")||"");
+  if(command.action==="click" && !(disclosureToggle ||
+      tag==="SUMMARY"&&el.parentElement?.tagName==="DETAILS"&&controlLabel ||
       tag==="INPUT"&&["checkbox","radio"].includes(type)&&
       /^(?:(?:show|hide|display|filter|expand|collapse)\b|显示|隐藏|筛选)/i.test(controlLabel)))needsApproval=true;
   if(["fill","keypress"].includes(command.action) && !(tag==="TEXTAREA"||tag==="INPUT"&&["text","search"].includes(type)))

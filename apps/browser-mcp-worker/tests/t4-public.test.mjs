@@ -79,3 +79,22 @@ test("exception after a DOM effect is Unknown and cannot repeat the effect",asyn
     assert.equal((await f.perform("click",args)).result.state,"unknown");assert.equal((await f.rpc("browser_click",args)).state,"unknown");await f.flush();assert.equal(f.effects.length,1);
   }finally{await f.close();}
 });
+
+// Public MCP → extension behavior seam: expandable UI controls should not require
+// the independent owner approval reserved for consequential actions.
+test("ordinary disclosure button works once without approval, but payment control stays blocked",async()=>{
+  const f=await fixture();try {
+    const button=f.nodes[4];
+    button.attrs["aria-expanded"]="false";button.attrs["aria-controls"]="details-panel";
+    button.textContent="Show details";button.attrs.label="Show details";
+    const args=await f.command("click",e=>e.tag==="button");
+    assert.equal((await f.perform("click",args)).result.state,"completed");
+    assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
+    assert.equal((await f.rpc("browser_click",args)).state,"completed");
+    assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
+    button.textContent="Pay now";button.attrs.label="Pay now";
+    const dangerous=await f.command("click",e=>e.tag==="button");
+    assert.equal((await f.perform("click",dangerous)).result.state,"failed");
+    assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
+  }finally{await f.close();}
+});
