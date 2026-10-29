@@ -11,7 +11,14 @@ vi.mock('../../src/db/hyperdrive.js', () => ({ resolveHyperdriveConnection: vi.f
 vi.mock('../../src/db/index.js', () => ({ healthCheck: vi.fn(async () => ({ ok: true, latencyMs: 1 })) }));
 
 const secret = Buffer.alloc(32, 11).toString('base64');
-const env = { DATABASE_ENCRYPTION_KEY: secret, DB: {} } as Env;
+const fencedWrites: string[] = [];
+const env = { DATABASE_ENCRYPTION_KEY: secret, DB: {
+  prepare(sql: string) {return {
+    bind(..._args: unknown[]) { return {
+      async run() { fencedWrites.push(sql); return {meta:{changes:1}}; }
+    }; }
+  }; }
+} } as unknown as Env;
 const row = { id: 'test_pg', dialect: 'postgres', transport: 'hyperdrive',
   status: 'disabled', revision: 3, config_id: 'test-config', binding_name: 'HYPERDRIVE_TEST' };
 
@@ -33,7 +40,7 @@ function request(overrides: { id?: string; revision?: number; timestamp?: number
 
 describe('protected disabled Hyperdrive preflight', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.clearAllMocks();fencedWrites.length=0;
     vi.mocked(getRegistryConnection).mockResolvedValue(row as never);
     vi.mocked(healthCheck).mockResolvedValue({ ok: true, latencyMs: 1 });
   });
@@ -42,6 +49,9 @@ describe('protected disabled Hyperdrive preflight', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, connection: 'test_pg',
       dialect: 'postgres', transport: 'hyperdrive', revision: 3 });
+    expect(fencedWrites).toHaveLength(2);
+    expect(fencedWrites[0]).toContain('in_flight_count=in_flight_count+1');
+    expect(fencedWrites[1]).toContain('in_flight_count=in_flight_count-1');
     expect(resolveHyperdriveConnection).toHaveBeenCalledOnce();
     expect(healthCheck).toHaveBeenCalledOnce();
     expect(getRegistryConnection).toHaveBeenCalledWith(env.DB, 'test_pg');

@@ -19,6 +19,7 @@ import { getSchemaContext } from './db/schema-context.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
 import { clampRequestedLimit, jsonSafe } from './result.js';
+import {withHyperdriveExecutionFence} from './registry/inflight.js';
 import type { Env } from './types.js';
 
 interface ToolContextLike {
@@ -82,7 +83,8 @@ async function runTool<T>(options: ToolRunOptions<T>): Promise<ToolResult> {
   try {
     principalId = principal(options.ctx);
     await enforceRateLimit(options.env, principalId, options.connectionId ?? '__catalog__');
-    const value = await options.run();
+    const value = options.tool === 'list_connections' ? await options.run() :
+      await withHyperdriveExecutionFence(options.env,options.connectionId,options.run);
     const sqlFields = options.sql ? await sqlLogFields(options.sql) : {};
     emitLog({
       event: 'mcp_tool',

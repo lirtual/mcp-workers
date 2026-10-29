@@ -102,3 +102,24 @@ WHEN EXISTS (SELECT 1 FROM hyperdrive_operations WHERE logical_id=OLD.id
 BEGIN
   SELECT RAISE(ABORT, 'hyperdrive reservation conflict');
 END;
+
+-- One durable, conservative execution counter per connection (not a new queue
+-- or service). Count is acquired atomically before any Hyperdrive SQL and
+-- released only after a confirmed successful completion. Ambiguous/unobserved
+-- completions intentionally retain a nonzero counter and block retirement.
+-- Migration 0003 is not deployed; never edit it after production application.
+ALTER TABLE database_connections ADD COLUMN in_flight_count INTEGER NOT NULL DEFAULT 0
+  CHECK(in_flight_count >= 0);
+
+-- Defense in depth: no SQL/DDL path may remove or rebind a still-reserved
+-- Hyperdrive reference while any counted execution remains unresolved.
+CREATE TRIGGER database_connection_blocks_inflight_delete
+BEFORE DELETE ON database_connections
+WHEN OLD.in_flight_count > 0
+BEGIN SELECT RAISE(ABORT, 'hyperdrive execution still in flight'); END;
+CREATE TRIGGER database_connection_blocks_inflight_rebind
+BEFORE UPDATE OF config_id,binding_name,transport ON database_connections
+WHEN OLD.in_flight_count > 0 AND
+ (NEW.config_id IS NOT OLD.config_id OR NEW.binding_name IS NOT OLD.binding_name OR
+  NEW.transport IS NOT OLD.transport)
+BEGIN SELECT RAISE(ABORT, 'hyperdrive execution still in flight'); END;

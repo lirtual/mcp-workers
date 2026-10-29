@@ -146,6 +146,23 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   separately reviewed Owner release; final retirement still requires a second
   request and the original exhaustive rollback-version/100%-deployment proof.
   Draft PR creation does not prove safety to merge or absence of in-flight SQL.
+  The unpublished migration `0003` adds a conservative D1 `in_flight_count`
+  column (no additional D1 table). Every MCP operation on a Hyperdrive ID
+  atomically increments it before database work and decrements only after
+  confirmed successful completion; protected disabled health probes also
+  count. Disabling prevents new active MCP claims but does not cancel existing
+  ones. A failed, interrupted or ambiguous operation intentionally leaves a
+  positive counter; **never automatically expire or reset this counter**.
+  DB-level triggers and final D1 retirement prevent deletion/rebinding while
+  it is positive. This is a conservative safety signal, not a proven global
+  drain: earlier Worker/rollback versions without instrumentation, pending
+  backend work after a timeout, and newly initiated disabled Owner probes
+  require additional version/fencing evidence. Counter zero by itself is not
+  sufficient to enable automated unbinding or upstream cleanup. Per-query D1
+  claim/release adds two writes for instrumented Hyperdrive executions; Direct
+  has no counter mutations. Do not apply this unpublished migration to the
+  production registry or release the Worker until isolated E2E and migration
+  ordering are verified.
   The CI release contract deliberately refuses automatic unbinding PR merge or
   release from the retirement staging job: neither the disabled D1 flag nor
   the bounded 60-second SQL query timeout alone is a verified global in-flight

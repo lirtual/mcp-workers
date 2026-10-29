@@ -54,12 +54,12 @@ export async function retireDatabaseHyperdrive({
     if (!Array.isArray(result) || result.length !== 1 || result[0]?.success !== true) fail('D1 query rejected');
     return result[0];
   }
-  const readSql = 'SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?';
+  const readSql = 'SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?';
   const initial = await sql(readSql, [connectionId]);
   if (initial.results?.length !== 1) fail('logical connection absent');
   const row = initial.results[0];
   if (row.id !== connectionId || row.transport !== 'hyperdrive' || row.status !== 'disabled' ||
-      row.revision !== Number(expectedRevision) || typeof row.config_id !== 'string' ||
+      row.revision !== Number(expectedRevision) || row.in_flight_count !== 0 || typeof row.config_id !== 'string' ||
       typeof row.binding_name !== 'string') fail('connection is active, stale or invalid');
   // Release source and *deployed* Worker must no longer contain either ref.
   if (manifest.some(x => x.id === row.config_id || x.binding === row.binding_name) ||
@@ -103,7 +103,7 @@ export async function retireDatabaseHyperdrive({
   // No upstream delete: older retained Worker versions, other apps, and shared
   // CA are outside this D1 CAS. They remain subject to separate human review.
   try {
-    const deleted = await sql("DELETE FROM database_connections WHERE id=? AND revision=? AND transport='hyperdrive' AND status='disabled' AND config_id=? AND binding_name=? AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations WHERE logical_id=database_connections.id AND phase IN ('pending','running','awaiting_confirmation','unknown'))",
+    const deleted = await sql("DELETE FROM database_connections WHERE id=? AND revision=? AND transport='hyperdrive' AND status='disabled' AND in_flight_count=0 AND config_id=? AND binding_name=? AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations WHERE logical_id=database_connections.id AND phase IN ('pending','running','awaiting_confirmation','unknown'))",
       [connectionId, expectedRevision, row.config_id, row.binding_name]);
     if (deleted.meta?.changes !== 1) fail('stale revision or deletion conflict');
   } catch {

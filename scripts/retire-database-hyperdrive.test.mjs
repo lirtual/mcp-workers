@@ -14,11 +14,11 @@ const inputs = {
   token: 'synthetic-test-only', source, manifest: []
 };
 function fixture({ active = false, bound = false, lostAck = false, stale = false, shared = false,
-  splitTraffic = false } = {}) {
+  splitTraffic = false, inFlight = false } = {}) {
   const state = {
     record: { id: 'retire_test', dialect: 'mysql', transport: 'hyperdrive',
       status: active ? 'active' : 'disabled', revision: stale ? 5 : 4,
-      config_id: configId, binding_name: binding },
+      config_id: configId, binding_name: binding, in_flight_count: inFlight ? 1 : 0 },
     retired: false, writes: 0
   };
   const calls = [];
@@ -45,7 +45,7 @@ function fixture({ active = false, bound = false, lostAck = false, stale = false
       if (sql.startsWith('DELETE')) {
         state.writes++;
         if (!state.record || state.record.status !== 'disabled' ||
-            state.record.revision !== Number(params[1])) return response([{ success: true, meta: { changes: 0 } }]);
+            state.record.revision !== Number(params[1]) || state.record.in_flight_count !== 0) return response([{ success: true, meta: { changes: 0 } }]);
         state.record = null;
         state.retired = true;
         if (lostAck) throw Error('simulated lost ack');
@@ -69,7 +69,7 @@ test('retire disabled unbound D1 identity after source and deployed readback', a
 
 test('no write when record active, stale, bound, shared, or production split', async () => {
   for (const option of [{ active: true }, { stale: true }, { bound: true },
-    { shared: true }, { splitTraffic: true }]) {
+    { shared: true }, { splitTraffic: true }, { inFlight: true }]) {
     const f = fixture(option);
     await assert.rejects(retireDatabaseHyperdrive({ ...inputs, request: f.request }), /retirement blocked/);
     assert.equal(f.state.writes, 0);
