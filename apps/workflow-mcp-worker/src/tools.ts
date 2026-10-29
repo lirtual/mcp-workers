@@ -10,7 +10,8 @@ const id=z.string().uuid();
 const revision=z.number().int().positive();
 const readonlyOperation=z.object({endpoint:z.string().url(),tool:z.string().min(1).max(128),scope:z.literal('read'),schema_digest:z.string().regex(/^[0-9a-f]{64}$/)}).strict();
 const approvedCloudflareAction=z.object({executor:z.literal('cloudflare'),
- provider:z.enum(['weixin','bark']),action:z.enum(['weixin.send_text','bark.send_notification']),
+ provider:z.string().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/),
+ action:z.string().min(1).max(128).regex(/^[a-z][a-z0-9_.-]*$/),
  contract_digest:z.string().regex(/^[a-f0-9]{64}$/),deployment_id:z.string().uuid()}).strict();
 const reviewedChild=z.object({workflow_id:z.string().uuid(),version_id:z.string().uuid(),digest:z.string().regex(/^[0-9a-f]{64}$/)}).strict();
 const reviewedAction=z.object({repository:z.string(),repositoryId:z.number().int().positive(),workflowId:z.number().int().positive(),workflowPath:z.string(),commitSha:z.string().regex(/^[a-f0-9]{40}$/i),type:z.enum(['task','session']),contractDigest:z.string().regex(/^[a-f0-9]{64}$/i)}).strict();
