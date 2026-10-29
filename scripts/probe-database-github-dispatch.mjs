@@ -39,6 +39,7 @@ export async function checkOwnerDispatch(token, request = fetch) {
       redirect: 'manual',
       headers: {
         'Authorization': 'Bearer ' + token,
+        'User-Agent': 'lirtual-database-mcp-worker',
         'Accept': 'application/vnd.github+json',
         'Content-Type': 'application/json',
         'X-GitHub-Api-Version': '2022-11-28'
