@@ -1,6 +1,7 @@
 // Owner-triggered Hyperdrive activation in the existing protected release workflow.
 // Never import a Cloudflare management token into the Worker; never print API payloads.
 import { readFile } from 'node:fs/promises';
+import { createHmac, hkdfSync } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readConfiguration, verifyDatabaseHyperdriveSource } from './manual-worker-release.mjs';
@@ -15,7 +16,7 @@ const accountPattern = /^[a-f0-9]{32}$/i;
 const REGISTRY_D1_ID = 'cbfe6a05-4979-4e6a-9cc2-4f6468586e4a';
 
 export async function activateDatabaseHyperdrive({
-  connectionId, expectedRevision, accountId, token, portalToken, actor, ref, sourceSha,
+  connectionId, expectedRevision, accountId, token, portalToken, encryptionKey, actor, ref, sourceSha,
   source, manifest, request = fetch
 }) {
   requireGate(actor === 'lirtual' && ref === 'refs/heads/main' && /^[a-f0-9]{40}$/.test(sourceSha ?? ''),
@@ -115,6 +116,50 @@ export async function activateDatabaseHyperdrive({
     'connection state, revision, or approved Binding has changed');
   await verifyCloudAndBinding();
 
+  // Probe the real Worker while D1 remains disabled. A domain-separated HMAC
+  // derived from the existing release encryption Secret prevents arbitrary
+  // bearer-token callers from probing a disabled upstream connection.
+  requireGate(typeof encryptionKey === 'string' && encryptionKey.length > 0,
+    'protected preflight key is unavailable');
+  let rawKey;
+  try {
+    rawKey = Buffer.from(encryptionKey, 'base64');
+    requireGate(rawKey.length === 32 && rawKey.toString('base64') === encryptionKey,
+      'invalid preflight key');
+  } catch { throw Error('Database activation blocked: invalid preflight key'); }
+  const signingKey = hkdfSync('sha256', rawKey,
+    'database-mcp:preflight:salt:v1', 'database-mcp:hyperdrive-health:v1', 32);
+  const timestamp = Date.now();
+  const probeBody = JSON.stringify({ id: connectionId, revision: Number(expectedRevision), timestamp });
+  const signature = createHmac('sha256', signingKey).update(probeBody).digest('base64url');
+  const probeUrl = 'https://database-mcp-worker.aiyaya.workers.dev/internal/hyperdrive-health';
+  let probe;
+  try {
+    probe = await request(probeUrl, {
+      method: 'POST', headers: {
+        Authorization: 'Bearer ' + portalToken, Accept: 'application/json',
+        'Content-Type': 'application/json', 'X-Database-Hyperdrive-Proof': signature
+      }, body: probeBody, signal: AbortSignal.timeout(12000)
+    });
+  } catch { throw Error('Database activation blocked: live preflight unavailable'); }
+  requireGate(probe?.ok === true, 'live disabled-connection preflight rejected');
+  let proof;
+  try { proof = await probe.json(); }
+  catch { throw Error('Database activation blocked: invalid preflight response'); }
+  requireGate(proof?.ok === true && proof.connection === row.id &&
+    proof.dialect === row.dialect && proof.transport === 'hyperdrive' &&
+    proof.revision === Number(expectedRevision), 'live preflight did not verify approved origin');
+  // Guard against a Cloudflare/Owner D1 change between the probe and CAS.
+  await verifyCloudAndBinding();
+  const beforeActivation = await sql(
+    'SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?',
+    [connectionId]);
+  const current = beforeActivation.results?.length === 1 ? beforeActivation.results[0] : null;
+  requireGate(current?.id === row.id && current.dialect === row.dialect &&
+    current.transport === row.transport && current.status === 'disabled' &&
+    current.revision === Number(expectedRevision) && current.config_id === row.config_id &&
+    current.binding_name === row.binding_name, 'preflight identity or revision drifted');
+
   let update;
   try {
     update = await sql("UPDATE database_connections SET status='active',revision=revision+1,updated_at=? WHERE id=? AND status='disabled' AND revision=? AND transport='hyperdrive' AND dialect=? AND config_id=? AND binding_name=?",
@@ -126,53 +171,21 @@ export async function activateDatabaseHyperdrive({
       : 'Database activation unsafe: ambiguous D1 write and disabled state unconfirmed; manual intervention required');
   }
   requireGate(update.meta?.changes === 1, 'activation revision conflict');
-
   try {
-    // The only supported health path needs a D1-active connection. Keep this
-    // bounded; on failure immediately CAS-disable rather than leave it enabled.
-    const healthUrl = 'https://database-mcp-worker.aiyaya.workers.dev/mcp';
-    let response;
-    try {
-      response = await request(healthUrl, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + portalToken, Accept: 'application/json, text/event-stream',
-          'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-          params: { name: 'health_check', arguments: { connection: connectionId } } }),
-        signal: AbortSignal.timeout(12000)
-      });
-    } catch { throw Error('MCP health request failed'); }
-    requireGate(response?.ok === true, 'live MCP health was rejected');
-    const raw = await response.text();
-    requireGate(raw.length > 0 && raw.length <= 16384, 'invalid bounded MCP health result');
-    let message;
-    try {
-      const frames = response.headers?.get?.('content-type')?.includes('text/event-stream')
-        ? raw.split('\n').filter(line => line.startsWith('data: ')).map(line => line.slice(6))
-        : [raw];
-      message = frames.map(v => JSON.parse(v)).find(v => v?.id === 1);
-    } catch { throw Error('Unrecognized MCP health response'); }
-    const tool = message?.result;
-    let value = tool?.structuredContent;
-    if (!value && Array.isArray(tool?.content)) {
-      try { value = JSON.parse(tool.content.find(c => c.type === 'text')?.text); } catch { /* fail below */ }
-    }
-    requireGate(!message?.error && !tool?.isError && value?.ok === true &&
-      value?.connection === connectionId && value?.transport === 'hyperdrive' &&
-      value?.dialect === row.dialect, 'live MCP health did not verify approved origin');
-    await verifyCloudAndBinding();
-    const confirmed = await sql('SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?', [connectionId]);
+    const confirmed = await sql(
+      'SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?',
+      [connectionId]);
     const final = confirmed.results?.length === 1 ? confirmed.results[0] : null;
     requireGate(final?.id === connectionId && final.dialect === row.dialect &&
       final.transport === 'hyperdrive' && final.status === 'active' &&
       final.revision === Number(expectedRevision) + 1 &&
       final.config_id === row.config_id && final.binding_name === row.binding_name,
-      'post-health active state was not confirmed');
+      'post-activation readback failed');
   } catch {
     const disabled = await confirmDisabledAfterAttempt(row);
     throw Error(disabled
-      ? 'Database activation blocked: health/readback failed; connection CAS-disabled'
-      : 'Database activation unsafe: post-check failed and disabled state unconfirmed; manual intervention required');
+      ? 'Database activation blocked: readback failed; connection CAS-disabled'
+      : 'Database activation unsafe: readback failed and disabled state unconfirmed; manual intervention required');
   }
   return { activated: true, connectionId, revision: Number(expectedRevision) + 1 };
 }
@@ -188,6 +201,7 @@ export async function main() {
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
     token: process.env.CLOUDFLARE_API_TOKEN,
     portalToken: process.env.MCP_ACCESS_TOKEN,
+    encryptionKey: process.env.DATABASE_ENCRYPTION_KEY,
     actor: process.env.GITHUB_ACTOR,
     ref: process.env.GITHUB_REF,
     sourceSha: process.env.GITHUB_SHA,

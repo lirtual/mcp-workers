@@ -13,6 +13,7 @@ function connection(id: string, raw: string) {
   return resolveConnection(env, parseDatabaseConfig(JSON.stringify({ [id]: raw })), id);
 }
 enabled('Direct plaintext fixture integration (NOT a deployed Workers acceptance)', () => {
+  if (!postgres || !mysql) { it.skip('requires plaintext fixture URLs', () => {}); return; }
   const pg = connection('pg', postgres!);
   const my = connection('my', mysql!);
   it('runs both health checks without transport TLS', async () => {
@@ -41,6 +42,7 @@ enabled('Direct plaintext fixture integration (NOT a deployed Workers acceptance
 const writeMysql = process.env.TEST_MYSQL_WRITE_URL;
 const hyperdriveAdapter = writeMysql ? describe : describe.skip;
 hyperdriveAdapter('MySQL Hyperdrive adapter using local plaintext proxy SIMULATION (not real Cloudflare)', () => {
+  if (!writeMysql) { it.skip('requires isolated MySQL proxy fixture URL', () => {}); return; }
   const local = connection('simulated_mysql_proxy', writeMysql!);
   const proxy = { ...local, transport: 'hyperdrive' as const };
   const writer = { ...proxy, maxAffectedRows: 20 };

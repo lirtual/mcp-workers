@@ -19,13 +19,14 @@ const config = { id: configId, mtls: { sslmode: 'VERIFY_IDENTITY', ca_certificat
     database: 'approved', user: 'test' } };
 const good = {
   connectionId: 'test_mysql', expectedRevision: '1', accountId: 'a'.repeat(32),
-  token: 'cloudflare-secret', portalToken: 'portal-secret', actor: 'lirtual',
+  token: 'cloudflare-secret', portalToken: 'portal-secret', encryptionKey: Buffer.alloc(32, 7).toString('base64'), actor: 'lirtual',
   ref: 'refs/heads/main', sourceSha: 'b'.repeat(40), source, manifest
 };
-function fixture({ wrongCA = false, healthOk = true, differentBinding = false, lostActivationAck = false, lostBeforeWrite = false, lostDisableAck = false, disableRejected = false, externalDisableOnHealth = false } = {}) {
+function fixture({ wrongCA = false, healthOk = true, differentBinding = false, lostActivationAck = false, lostBeforeWrite = false, lostDisableAck = false, disableRejected = false, externalDisableOnHealth = false, postActivationMismatch = false } = {}) {
   const row = { id: 'test_mysql', dialect: 'mysql', transport: 'hyperdrive',
     status: 'disabled', revision: 1, config_id: configId, binding_name: binding };
   const calls = [];
+  let mismatched = false;
   const response = result => ({ ok: true, json: async () => ({ success: true, result }) });
   async function request(url, init) {
     calls.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : null });
@@ -44,9 +45,13 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false, l
       if (sql.sql.includes('FROM d1_migrations')) return response([{
         success: true, results: [{ n: 1 }]
       }]);
-      if (sql.sql.startsWith('SELECT id,')) return response([{
-        success: true, results: [{ ...row }]
-      }]);
+      if (sql.sql.startsWith('SELECT id,')) {
+        if (postActivationMismatch && row.status === 'active' && !mismatched) {
+          mismatched = true;
+          return response([{ success: true, results: [{ ...row, config_id: 'wrong-config' }] }]);
+        }
+        return response([{ success: true, results: [{ ...row }] }]);
+      }
       if (sql.sql.startsWith('SELECT status')) return response([{
         success: true, results: [{ ...row }]
       }]);
@@ -66,16 +71,15 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false, l
       }
       throw Error('Unexpected D1 query');
     }
-    if (url.endsWith('/mcp')) {
-      if (externalDisableOnHealth) { row.status = 'disabled'; row.revision++; }
-      return {
-      ok: true, headers: { get: () => 'application/json' },
-      text: async () => JSON.stringify({
-        jsonrpc: '2.0', id: 1, result: { structuredContent: {
-          connection: 'test_mysql', dialect: 'mysql', transport: 'hyperdrive', ok: healthOk
-        }}
-      })
-    };
+    if (url.endsWith('/internal/hyperdrive-health')) {
+      assert.equal(row.status, 'disabled', 'live preflight must precede any activation');
+      assert.equal(init.method, 'POST');
+      assert.match(init.headers['X-Database-Hyperdrive-Proof'], /^[A-Za-z0-9_-]{43}$/);
+      if (externalDisableOnHealth) row.revision++;
+      return { ok: true, json: async () => ({
+        ok: healthOk, connection: 'test_mysql', dialect: 'mysql',
+        transport: 'hyperdrive', revision: 1
+      }) };
     }
     throw Error('Unexpected remote request: ' + url);
   }
@@ -97,14 +101,14 @@ test('cannot target the deleted legacy D1 or an unreviewed registry', async () =
   }
 });
 
-test('protected activation checks binding, CA and CAS before live MCP health', async () => {
+test('protected activation probes a disabled Hyperdrive before CAS-enabling', async () => {
   const f = fixture();
   assert.deepEqual(await activateDatabaseHyperdrive({ ...good, request: f.request }), {
     activated: true, connectionId: 'test_mysql', revision: 2
   });
   assert.equal(f.row.status, 'active');
   assert.equal(f.row.revision, 2);
-  assert.equal(f.calls.filter(x => x.url.endsWith('/mcp')).length, 1);
+  assert.equal(f.calls.filter(x => x.url.endsWith('/internal/hyperdrive-health')).length, 1);
 });
 test('invalid CA or deployed Binding cannot activate or mutate D1', async () => {
   for (const opts of [{ wrongCA: true }, { differentBinding: true }]) {
@@ -115,11 +119,12 @@ test('invalid CA or deployed Binding cannot activate or mutate D1', async () => 
     assert.equal(f.calls.some(x => x.method === 'POST' && x.body?.sql?.startsWith('UPDATE')), false);
   }
 });
-test('failed post-activation MCP health CAS-disables the connection', async () => {
+test('failed pre-activation health never enables the connection', async () => {
   const f = fixture({ healthOk: false });
-  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /CAS-disabled/);
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /preflight did not verify/);
   assert.equal(f.row.status, 'disabled');
-  assert.equal(f.row.revision, 3);
+  assert.equal(f.row.revision, 1);
+  assert.equal(f.calls.some(x => x.body?.sql?.startsWith('UPDATE')), false);
 });
 test('rejects unauthorized actor, ref, stale/non-numeric revision before network', async () => {
   for (const bad of [
@@ -133,7 +138,7 @@ test('rejects unauthorized actor, ref, stale/non-numeric revision before network
   }
 });
 
-test('lost acknowledgment after successful D1 CAS is recovered and disabled before MCP health', async () => {
+test('lost acknowledgment after successful D1 CAS is recovered and disabled after preflight', async () => {
   const f = fixture({ lostActivationAck: true });
   await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
     /ambiguous D1 write; connection confirmed disabled/);
@@ -142,7 +147,7 @@ test('lost acknowledgment after successful D1 CAS is recovered and disabled befo
   assert.equal(f.calls.filter(x => x.url.endsWith('/mcp')).length, 0);
 });
 
-test('D1 outage before write leaves connection disabled, with no MCP health', async () => {
+test('D1 outage before write leaves connection disabled after successful preflight', async () => {
   const f = fixture({ lostBeforeWrite: true });
   await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
     /ambiguous D1 write; connection confirmed disabled/);
@@ -151,21 +156,30 @@ test('D1 outage before write leaves connection disabled, with no MCP health', as
   assert.equal(f.calls.filter(x => x.url.endsWith('/mcp')).length, 0);
 });
 
-test('lost compensation acknowledgement is independently confirmed disabled', async () => {
-  const f = fixture({ healthOk: false, lostDisableAck: true });
-  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /CAS-disabled/);
+test('post-activation readback mismatch is compensated and reported', async () => {
+  const f = fixture({ postActivationMismatch: true });
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
+    /readback failed; connection CAS-disabled/);
   assert.equal(f.row.status, 'disabled');
   assert.equal(f.row.revision, 3);
 });
-test('rejected compensation never claims a successful disable', async () => {
-  const f = fixture({ healthOk: false, disableRejected: true });
+test('lost compensation acknowledgment is independently confirmed', async () => {
+  const f = fixture({ lostActivationAck: true, lostDisableAck: true });
   await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }),
-    /disabled state unconfirmed; manual intervention required/);
-  assert.equal(f.row.status, 'active');
-  assert.equal(f.row.revision, 2);
+    /ambiguous D1 write; connection confirmed disabled/);
+  assert.equal(f.row.status, 'disabled');
 });
-test('concurrent external disable cannot be reported as successful activation', async () => {
+
+test('concurrent D1 change after preflight is rejected before activation', async () => {
   const f = fixture({ externalDisableOnHealth: true });
-  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /CAS-disabled/);
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, request: f.request }), /revision drifted/);
+  assert.equal(f.row.status, 'disabled');
+  assert.equal(f.calls.some(x => x.body?.sql?.startsWith('UPDATE')), false);
+});
+
+test('missing preflight key fails closed before D1 activation', async () => {
+  const f = fixture();
+  await assert.rejects(activateDatabaseHyperdrive({ ...good, encryptionKey: undefined, request: f.request }),
+    /preflight key is unavailable/);
   assert.equal(f.row.status, 'disabled');
 });

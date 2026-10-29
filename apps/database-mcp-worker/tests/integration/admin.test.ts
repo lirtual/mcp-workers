@@ -33,6 +33,7 @@ const mysqlRootUrl = process.env.TEST_MYSQL_ADMIN_URL;
 const enabled = pgRootUrl && mysqlRootUrl ? describe : describe.skip;
 
 enabled('real database Safe Admin/DDL integration', () => {
+  if (!pgRootUrl || !mysqlRootUrl) { it.skip('requires isolated Admin test database URLs', () => {}); return; }
   const pgAdminUrl = limitedUrl(pgRootUrl!, 'mcp_admin', 'admin');
   const mysqlAdminUrl = limitedUrl(mysqlRootUrl!, 'mcp_admin', 'admin');
   const pg = adminConnection('pg_admin', pgAdminUrl);

@@ -67,6 +67,16 @@ remained healthy. Do not recreate them for compatibility with the retired
 flat-catalog Worker. The current D1 encryption keys remain required.
 Historical managed-D1 snapshot recovery was **not performed**, not PASS.
 
+For Hyperdrive logical-ID retirement, disable first; remove the reviewed Binding
+and source manifest, publish the normal production release and independently
+confirm unbinding and rollback-eligible version restrictions. Dispatch the same
+Release Worker with `database_hyperdrive_retire_approved` and the exact disabled
+ID/revision only after that release. The protected action verifies current active
+production bindings, D1 identity/revision and sharing, CAS-deletes the disabled
+row and confirms the retired-ID ledger. It does **not** delete the upstream
+Hyperdrive config or CA; independently establish other-service/old-version/CA
+non-use before any separately authorized Cloudflare deletion.
+
 Full four-mode Spec #344 stays open for PostgreSQL Hyperdrive activation/E2E,
 PostgreSQL Direct plaintext E2E and deployed Hyperdrive TLS negatives.
 
@@ -77,8 +87,13 @@ Provision only the two named test Hyperdrive configurations through the existing
 protected Release Worker workflow and existing GitHub Secrets; do not log passwords.
 The Owner page may save an unverified Hyperdrive reference only as **disabled**.
 A protected activation must verify the dedicated Cloudflare binding, exact origin,
-strict CA/hostname mode, disabled caching and real deployed Worker health before
-enabling. A successful synthetic test, local CI or Cloudflare config GET is not a
+strict CA/hostname mode, disabled caching and real deployed Worker health **while
+D1 remains disabled**, through the private signed `/internal/hyperdrive-health`
+preflight. The existing release encryption Secret is HKDF-separated into a
+short-lived proof key in Owner Actions and the Worker; bearer token alone cannot
+probe disabled connections. The protected action rechecks D1 revision and Cloudflare
+binding, then CAS-enables only after the successful read-only Worker probe.
+Failed probes never expose an unverified active connection. A successful synthetic test, local CI or Cloudflare config GET is not a
 substitute for real TLS-negative, Safe Write, DDL and rollback acceptance.
 PostgreSQL Direct remains intentionally **plaintext** and requires a separately
 authorized reachable plaintext origin; the TLS-only Aiven PostgreSQL service is

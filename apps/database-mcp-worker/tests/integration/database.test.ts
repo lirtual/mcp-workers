@@ -39,6 +39,7 @@ const describeReadIntegration = pgReadUrl && mysqlReadUrl ? describe : describe.
 const describeWriteIntegration = pgWriteUrl && mysqlWriteUrl ? describe : describe.skip;
 
 describeReadIntegration('real database read-only integration', () => {
+  if (!pgReadUrl || !mysqlReadUrl) { it.skip('requires isolated read fixture URLs', () => {}); return; }
   const pg = directConnection('pg', pgReadUrl!);
   const mysql = directConnection('mysql', mysqlReadUrl!);
 
@@ -101,6 +102,7 @@ describeReadIntegration('real database read-only integration', () => {
 });
 
 describeWriteIntegration('real database safe write integration', () => {
+  if (!pgWriteUrl || !mysqlWriteUrl) { it.skip('requires isolated write fixture URLs', () => {}); return; }
   const pg = directWritableConnection('pg_write', pgWriteUrl!);
   const mysql = directWritableConnection('mysql_write', mysqlWriteUrl!);
 
