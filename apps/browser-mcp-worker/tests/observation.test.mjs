@@ -6,7 +6,7 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 
 const source=fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../extension/observation.js"),"utf8");
-function browserFixture({tabs=[],frame=null,scriptResult=null,afterFrame=null}={}){
+function browserFixture({tabs=[],frame=null,scriptResult=null,afterFrame=null,scriptHandler=null}={}){
   const calls=[];
   const grants={};
   const chrome={
@@ -17,9 +17,9 @@ function browserFixture({tabs=[],frame=null,scriptResult=null,afterFrame=null}={
       async get(tabId){calls.push(["tabs.get",tabId]);return tabs.find(t=>t.id===tabId)??null;}
     },
     webNavigation:{async getFrame(request){calls.push(["getFrame",request.tabId]);return calls.filter(c=>c[0]==="getFrame").length===1?frame:afterFrame??frame;}},
-    scripting:{async executeScript(options){calls.push(["executeScript",options.target]);return scriptResult??[];}}
+    scripting:{async executeScript(options){calls.push(["executeScript",options.target]);return scriptHandler?scriptHandler(options):scriptResult??[];}}
   };
-  const ctx=vm.createContext({URL,chrome,BROWSER_MCP_SERVICE_ORIGIN:"https://browser-mcp-worker.invalid"});
+  const ctx=vm.createContext({URL,chrome,setTimeout,clearTimeout,BROWSER_MCP_SERVICE_ORIGIN:"https://browser-mcp-worker.invalid"});
   vm.runInContext(source,ctx);
   return {ctx,calls,grants,read:(tool,tabId,scopes)=>vm.runInContext(`executeBrowserRead(${JSON.stringify(tool)},${JSON.stringify(tabId)},${JSON.stringify(scopes)})`,ctx)};
 }
@@ -69,6 +69,21 @@ test("explicit background tab snapshot binds document ID and blocks navigation r
     url:"https://example.com/route-changed",documentId:frame.documentId,documentLifecycle:"active"},
     scriptResult:[{frameId:0,documentId:frame.documentId,result:{text:"new-page",truncated:false}}]});
   assert.equal((await spa.read("snapshot",41)).error_code,"stale_target");
+});
+
+test("slow optional element references cannot hold a safe visible-text snapshot past the read deadline",async()=>{
+  const tab={id:49,url:"https://example.com/public",windowId:1,active:true,incognito:false};
+  const frame={url:tab.url,documentLifecycle:"active",documentId:"doc-49"};
+  const f=browserFixture({tabs:[tab],frame,scriptHandler:options=>
+    options.func.name==="extractVisibleText"
+      ? [{frameId:0,documentId:frame.documentId,result:{text:"Public content",truncated:false}}]
+      : new Promise(()=>{})});
+  f.ctx.browserPageInteraction=()=>{};
+  const outcome=await Promise.race([f.read("snapshot",49),new Promise(resolve=>setTimeout(()=>resolve({error_code:"test_deadline"}),2500))]);
+  assert.equal(outcome.text,"Public content");
+  assert.equal(outcome.document_id,frame.documentId);
+  assert.deepEqual(Array.from(outcome.elements),[]);
+  assert.equal(f.calls.filter(c=>c[0]==="executeScript").length,2);
 });
 
 test("local/private policy gates both scopes independently and never permits metadata targets",async()=>{

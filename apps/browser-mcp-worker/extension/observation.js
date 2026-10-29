@@ -139,12 +139,19 @@ async function browserSnapshot(tabId,authorized=async()=>true) {
   // References are optional; a failed reference extraction never invents targets.
   if(!await authorized()||!await browserAccessTab(await chrome.tabs.get(tabId)))return {error_code:"forbidden"};
   if(typeof browserPageInteraction==="function"){
+    let timer;
     try {
-      const refs=await chrome.scripting.executeScript({target:{tabId,documentIds:[initial.documentId]},
-        world:"ISOLATED",func:browserPageInteraction,args:["snapshot",null,initial.url]});
-      if(refs.length===1&&refs[0].frameId===0&&refs[0].documentId===initial.documentId&&Array.isArray(refs[0].result?.elements))
+      // Element references are optional. A complex page must not stall an
+      // otherwise valid text snapshot past the five-second read deadline.
+      const refs=await Promise.race([
+        chrome.scripting.executeScript({target:{tabId,documentIds:[initial.documentId]},
+          world:"ISOLATED",func:browserPageInteraction,args:["snapshot",null,initial.url]}),
+        new Promise(resolve=>{timer=setTimeout(()=>resolve(null),1000);})
+      ]);
+      if(refs?.length===1&&refs[0].frameId===0&&refs[0].documentId===initial.documentId&&Array.isArray(refs[0].result?.elements))
         elements=refs[0].result.elements;
     } catch { /* text observation remains available, without actionable references */ }
+    finally {clearTimeout(timer);}
   }
   const latest=await chrome.webNavigation.getFrame({tabId,frameId:0});
   if(!latest || latest.documentId!==initial.documentId || !await browserAccessUrl(latest.url) ||
