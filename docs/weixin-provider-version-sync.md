@@ -1,87 +1,59 @@
-# Reviewed Weixin Provider → Workflow version synchronization
+# Weixin Provider version pin — no additional credentials
 
-This is an **approved, event-driven pin synchronization**, not an additional
-Cloudflare publisher or a generic send endpoint. Both repositories keep their
-existing production release authority.
+The independent `lirtual/cloudflare-actions` Provider keeps its existing
+main-only, approved `Release Weixin Provider` publisher. This Workflow
+consumer requires **zero new GitHub Secrets** and **no cross-repository
+dispatch**. It never automatically deploys a Worker after a Provider release.
 
-## Trust boundaries
+## Routine manual Workflow release
 
-1. `lirtual/cloudflare-actions` alone publishes `weixin-mcp-worker` through
-   the existing main-only `Release Weixin Provider` workflow.
-2. The notification-only provider handoff verifies the latest successful
-   manual release and current Cloudflare Version ID, then issues one
-   `reviewed_weixin_provider_release` event.
-3. `.github/workflows/weixin-provider-pin-sync.yml` executes **only** on
-   the consumer's default main inside GitHub Environment
-   `workflow-mcp-worker`. Configure a **required reviewer** in that
-   Environment; without this policy, the sync deliberately fails.
-4. `scripts/sync-reviewed-weixin-provider.mjs` independently checks the
-   payload against the private provider's latest successful release run,
-   source commit, pinned workflow identity, current 100% Cloudflare
-   deployment, original D1 and encryption Secret, and the consuming
-   environment's current pin. It never trusts the event payload alone.
-5. After approval, it updates **only** existing GitHub Environment
-   variable `WEIXIN_ACTION_DEPLOYMENT_ID`, reads it back, and uses the
-   native `GITHUB_TOKEN` to dispatch the **unchanged**
-   `.github/workflows/release.yml` with the single
-   `worker=workflow-mcp-worker` target. No direct Cloudflare publish
-   or bypass of D1, live Session, historic unknown, native Cloudflare
-   and GitHub release proofs occurs.
-6. If the runtime binding and GitHub Environment variable already match,
-   the event performs no mutation and no repeat release. If the release
-   fails after changing the variable, do **not** infer successful cutover:
-   inspect that release, leave the old runtime binding and historical
-   `unknown` receipts intact, and use a separately reviewed rerun.
+1. Review and publish `weixin-mcp-worker` through its existing protected
+   main-only GitHub Actions release. Confirm the Provider deployment readback.
+2. Start the existing `lirtual/mcp-workers` **Release Worker** workflow,
+   with `worker=workflow-mcp-worker` and
+   `deploy_to_production=true`. Existing GitHub Environment approvals
+   still apply. Other Workers are unchanged.
+3. Under the approved Worker release, the new
+   `scripts/reviewed-weixin-provider-pin.mjs` queries Cloudflare with
+   **the existing CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID**.
+   The script accepts only one 100% active Provider Version ID, the original
+   Provider D1 and Owner management host, original encryption Secret,
+   CF version metadata, and absence of retired Bearer/host bindings.
+   It stages one exact `WEIXIN_ACTION_DEPLOYMENT_ID` non-secret variable
+   into Wrangler's protected temporary variable file; it **does not**
+   write GitHub Environment variables.
+4. Immediately before the existing Wrangler deploy, the release checks that
+   the Provider has not changed. After the existing readback confirms the
+   Workflow's deployed version and bindings, an additional check confirms
+   that the live Workflow pin **equals** the checked current Provider version.
+   Any mismatch blocks the release; it never retries a message or rewrites D1.
+5. Existing historical `unknown` evidence checks, Github Session physical
+   termination checks, migration safety, Environment approval and original
+   main-only publication controls remain intact.
 
-The receiving workflow's successful dispatch confirms only *queuing* of
-the existing release. The existing release's own readback confirms runtime
-cutover. This automation never starts OpenList, calls Weixin, retries a
-previous unknown invocation, overwrites business receipts, or modifies
-the original encryption Secret.
+The old GitHub Environment variable `WEIXIN_ACTION_DEPLOYMENT_ID` is
+**no longer used as an input** to the Worker release. It may be removed in
+a separately approved GitHub Settings cleanup, but its presence cannot
+override the Cloudflare-read version. The variable **still exists in the
+deployed Worker runtime** as an exact immutable version pin.
 
-## One-time GitHub Environment Secrets
+## Safety and limitations
 
-Configure these using **GitHub Settings → Environments** (not in a commit
-or a chat message).
+This chooses the active Provider at the time of the **manually approved**
+Workflow release. It therefore relies on Cloudflare's deployed-version
+integrity and the existing Provider publishing approval. This is less
+independent than verifying Provider source SHA with a separate GitHub
+read-only token; reviewers should confirm the Provider version was
+deployed through the trusted publisher before approving Workflow release.
 
-| Repository / Environment | Secret | Minimum scope |
-|---|---|---|
-| `cloudflare-actions` / `weixin-provider` | `WEIXIN_WORKFLOW_DISPATCH_TOKEN` | Fine-grained PAT or GitHub App token, `mcp-workers` **Contents: write** (repository_dispatch) |
-| `mcp-workers` / `workflow-mcp-worker` | `WEIXIN_PROVIDER_PROOF_TOKEN` | Fine-grained token, `cloudflare-actions` **Actions: read** |
-| `mcp-workers` / `workflow-mcp-worker` | `WEIXIN_ENVIRONMENT_WRITE_TOKEN` | Fine-grained token, `mcp-workers` **Environments: write** |
+A new Provider version does not retroactively modify already published
+Workflow grants, frozen immutable versions, or historical invocation
+receipts. A workflow compiled with the previous Provider grant still needs
+a reviewed new published version with the exact grant to execute. No
+message is sent automatically during either release.
 
-The consumer's existing `CLOUDFLARE_API_TOKEN` (read access for both
-Workers), `CLOUDFLARE_ACCOUNT_ID`, and job-scoped `GITHUB_TOKEN`
-with `actions: write` are reused. Do not replace the existing
-`WEIXIN_ACTION_DEPLOYMENT_ID` manually once the automatic path is
-approved and functioning; keep it as an auditable exact-version pin.
-
-These are three **distinct, least-privilege** credentials, not a single
-omnibus GitHub PAT. Enforce reviewer separation and protect the production
-main branches. The provider handoff also uses its existing protected
-`weixin-provider` Environment.
-
-## Activation and acceptance
-
-- Merge the provider and consumer PRs after CI. Merely merging does **not**
-  activate a successful cross-repo handoff without the three Secrets
-  and required reviewer protection.
-- To catch up an earlier successful Provider publication without another
-  live send or redeploy, use the provider's
-  `Hand off reviewed Weixin Provider Version` workflow_dispatch with
-  the **exact original successful release run ID** (for the 2026-10-29
-  release, `40796327454`).
-- Approve the protected consumer sync only after verifying release ID,
-  SHA and Provider Version. Inspect its audited environment variable
-  write/readback and the subsequently dispatched
-  `Release Worker (workflow-mcp-worker)` run.
-- The original consumer release must pass **all** active-session,
-  historical indeterminate Run, physical termination, D1 and live
-  deployment readback gates. If blocked, stop and investigate—never
-  rewrite `unknown` or disable the gate.
-- A **new** handset E2E test is separate and explicitly authorized.
-  Keep machine accepted/unknown and owner-confirmed receipt distinct.
-
-An unknown upstream result is not fixed by version synchronization.
-This only removes routine copy/paste while preserving the strict
-reviewed-Provider-Version trust boundary.
+This is the source-only replacement for the unactivated PR #441 three-Secret
+cross-repository handoff. Do **not** create `WEIXIN_WORKFLOW_DISPATCH_TOKEN`,
+`WEIXIN_PROVIDER_PROOF_TOKEN`, or `WEIXIN_ENVIRONMENT_WRITE_TOKEN`.
+No Cloudflare Worker, Owner binding, D1 data, or existing Secret is changed
+by removing the unused handoff.
