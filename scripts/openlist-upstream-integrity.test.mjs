@@ -139,5 +139,12 @@ test('OpenList production uses no scheduled acceptance; KV gate remains just bef
   const deploy = release.indexOf('- name: Publish exactly selected Worker');
   assert.ok(gate > 0 && deploy > gate);
   assert.ok(release.slice(gate, deploy).includes('run: node scripts/openlist-upstream-integrity.mjs'));
-  assert.equal(release.slice(0, deploy).lastIndexOf('      - name: '), gate - 6);
+  // A conditional Workflow-only Provider pin check may sit between the
+  // OpenList KV gate and the common publisher, but must not run for OpenList.
+  const between=release.slice(gate,deploy);
+  const next=between.indexOf('      - name: ',1);
+  const remaining=between.slice(next);
+  assert.match(remaining,/^      - name: Recheck Weixin Provider Version before Workflow publication \(read-only\)\n        if: inputs\.worker == 'workflow-mcp-worker'/);
+  assert.equal(remaining.match(/      - name: /g)?.length,1);
+  assert.ok(next>0);
 });
