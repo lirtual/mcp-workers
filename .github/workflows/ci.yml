@@ -142,7 +142,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/reviewed-weixin-provider-pin.test.mjs scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/prepare-database-hyperdrive-476.test.mjs scripts/apply-database-hyperdrive-476.test.mjs scripts/finalize-database-hyperdrive-476.test.mjs scripts/retire-database-hyperdrive.test.mjs scripts/database-registry-readiness-344.test.mjs scripts/database-fresh-readiness-344.test.mjs scripts/probe-database-github-dispatch.test.mjs
+        run: node --test scripts/reviewed-weixin-provider-pin.test.mjs scripts/manual-worker-release.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/database-owner-access.test.mjs scripts/activate-database-hyperdrive.test.mjs scripts/prepare-database-hyperdrive-476.test.mjs scripts/prepare-database-hyperdrive-unbind-476.test.mjs scripts/apply-database-hyperdrive-476.test.mjs scripts/finalize-database-hyperdrive-476.test.mjs scripts/retire-database-hyperdrive.test.mjs scripts/database-registry-readiness-344.test.mjs scripts/database-fresh-readiness-344.test.mjs scripts/probe-database-github-dispatch.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'

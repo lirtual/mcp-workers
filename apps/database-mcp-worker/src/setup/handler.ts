@@ -282,7 +282,7 @@ export async function handleSetup(
       if (operation !== 'enable' && operation !== 'retire') invalid();
       if (operation === 'retire' && required(form, 'confirm_id') !== id) invalid();
       const receipt = await dispatchHyperdriveAction(env, operation, id, version, requestFetch);
-      return setupResult('Protected GitHub Actions request accepted. Review the workflow result before treating this connection as changed.' +
+      return setupResult('Protected GitHub Actions request accepted. For retirement, a Draft unbinding PR may be staged instead of deleting D1. Review the Run and do not treat dispatch as completion.' +
         (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ''));
     }
     if (action === 'disable') {

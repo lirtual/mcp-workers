@@ -168,14 +168,20 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(503);
     expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='pg_direct'").get()).toBeUndefined();
     expect(fakeHealth.mock.calls.length).toBe(healthBeforeUnsupportedMode);
-    // PostgreSQL Hyperdrive remains supported as a disabled reference, never auto-activated.
+    // PostgreSQL Hyperdrive remains supported, but new D1 refs require the
+    // protected publication/disabled finalizer rather than direct form writes.
     expect((await post('add', { id: 'pg_proxy', dialect: 'postgres', transport: 'hyperdrive',
-      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' })).status).toBe(200);
+      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' })).status).toBe(503);
+    expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='pg_proxy'").get()).toBeUndefined();
+    sqlite.prepare(`INSERT INTO database_connections
+      (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
+      VALUES ('pg_proxy','postgres','hyperdrive','disabled',
+        'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee','HYPERDRIVE_PG',1,1,1)`).run();
     expect(sqlite.prepare("SELECT status,transport,dialect FROM database_connections WHERE id='pg_proxy'").get())
       .toMatchObject({ status: 'disabled', transport: 'hyperdrive', dialect: 'postgres' });
     const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const initialPageHtml = await initialPage.text();
-    expect(initialPageHtml.split('<details><summary>Add Hyperdrive reference</summary>')[0]).not.toContain('<option value="postgres">');
+    expect(initialPageHtml.split('<fieldset><legend>Hyperdrive lifecycle</legend>')[0]).not.toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
@@ -183,7 +189,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).toContain('Hyperdrive actions run in protected GitHub Actions');
     expect(initialPageHtml).toContain('action="/setup/hyperdrive-action"');
     expect(initialPageHtml).toContain('Request enable');
-    expect(initialPageHtml).toContain('Request retirement');
+    expect(initialPageHtml).toContain('Stage unbinding or verify retirement');
     expect(initialPageHtml).not.toContain('name="ciphertext"');
     expect(initialPageHtml).not.toContain('reader:pass');
     vi.unstubAllGlobals();
@@ -324,7 +330,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('action="/setup/rotate"');
     expect(html).toContain('action="/setup/github-actions-check"');
     expect(html).toContain('<input type="hidden" name="dialect" value="mysql">');
-    expect(html.split('<details><summary>Add Hyperdrive reference</summary>')[0]).not.toContain('<option value="postgres">');
+    expect(html.split('<fieldset><legend>Hyperdrive lifecycle</legend>')[0]).not.toContain('<option value="postgres">');
     expect(html).toContain('<option value="mysql">');
     expect(html).toContain('<option value="postgres">');
     expect(html).toContain('name="transport" value="direct"');

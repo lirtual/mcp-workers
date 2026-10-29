@@ -67,14 +67,14 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
       ? '<p class="muted">Hyperdrive actions run in protected GitHub Actions after exact binding, CA and cache verification. A successful request does not confirm completion.</p>' +
         (row.status === 'disabled'
           ? '<details><summary>Manage Hyperdrive via GitHub Actions</summary>' +
-            '<p class="muted">Enable requires a published, reviewed binding. Retirement requires a prior unbinding release and no remaining rollback dependency.</p>' +
+            '<p class="muted">Enable requires a published, reviewed binding. Retirement first stages a Draft unbinding PR if still bound; final D1 retirement requires a separately approved exact release and no remaining rollback dependency.</p>' +
             '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
             '<input type="hidden" name="hyperdrive_action" value="enable">' +
             '<button type="submit">Request enable</button></form>' +
             '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
             '<input type="hidden" name="hyperdrive_action" value="retire">' +
             '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' +
-            '<button type="submit">Request retirement</button></form></details>'
+            '<button type="submit">Stage unbinding or verify retirement</button></form></details>'
           : '') +
         '<p class="muted">Password and CA changes are blocked until in-flight, shared and rollback isolation can be verified. Disable alone does not prove isolation. Existing config and CA remain intact.</p>' +
         '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View GitHub Actions results</a></p>'
