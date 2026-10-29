@@ -35,8 +35,7 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
 const plaintextAck = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1">I accept unencrypted Direct transport.</label>';
 const plaintextAckRequired = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>';
 const directUrlHint = '<details><summary>URL format help</summary><p class="muted">' +
-  '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code> or ' +
-  '<code>postgres://USER:PASSWORD@HOST:5432/DATABASE</code>. ' +
+  '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code>. ' +
   'Use a public IP or hostname; no URL query parameters. Direct is unencrypted.</p></details>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} / ${escape(row.transport)} · ${escape(row.status)}</span>` +
@@ -71,7 +70,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<fieldset><legend>Add Direct connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
     '<input type="hidden" name="transport" value="direct">' +
-    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
+    '<input type="hidden" name="dialect" value="mysql"><p class="muted">Direct supports MySQL only.</p>' +
     '<label>Database URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
     directUrlHint + plaintextAckRequired +
     '<details><summary>Advanced options</summary><label class="check"><input type="checkbox" name="allow_disabled" value="1">Save disabled if connection test fails</label>' +

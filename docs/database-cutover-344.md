@@ -1,12 +1,20 @@
 # Database MCP #344 — production release and recovery (managed D1 only)
 
-## Current authoritative state (2026-10-29, after Owner Actions E2E)
+## Current authoritative state (2026-10-29, three-mode scope approved)
+
+**Current Owner scope:** exactly three combinations — MySQL Direct, MySQL Hyperdrive,
+PostgreSQL Hyperdrive. PostgreSQL Direct is no longer a delivery requirement or
+enabled Owner/MCP mode. PostgreSQL SQL/RLS/transactions/DDL are validated through
+Hyperdrive; real deployed PostgreSQL Hyperdrive E2E and `verify-full` CA/hostname
+negative tests remain required *before* claiming that mode accepted. Preserve
+past Q1–Q46/four-mode notes below as historical decisions, not current release
+requirements. Do not add a compatibility flag or a new test environment.
 
 - Live Database MCP registry lists exactly three active connections: `b2b` and `scrape_relay` (MySQL Direct), plus `aiven_mysql_openlist` (MySQL Hyperdrive). All three passed fresh health checks and the OpenList Hyperdrive passed bounded `SELECT 1`. The previously used `aiven_mysql_test` and `aiven_pg_test` IDs, databases and dedicated Hyperdrive configurations have been retired; **do not recreate them**.
 - The Owner management page's real verification-only GitHub Actions dispatch [#40850173389](https://github.com/lirtual/mcp-workers/actions/runs/40850173389) was accepted; all five jobs were skipped as intended. No database or Worker change was requested. The existing protected release now checks actual GitHub dispatch authorization before publication.
 - Production Worker version `b1130c66-a961-4034-b4ca-f73da8e73d1b` was verified at 100% traffic. The managed D1 is the sole authoritative registry; the old flat configuration and original D1 were retired.
-- Acceptance **not performed** on current origins: OpenList production Safe Write/DDL/escaping/rollback, deployed Hyperdrive TLS failure negatives, actual managed D1 backup/encryption-key restoration, and PostgreSQL Direct/Hyperdrive E2E (no authorized isolated PostgreSQL source currently exists). Historical test-origin successes do not substitute for these checks.
-- Keep the three working connections unchanged. Do not run writes on business data, restore old test databases, or add a separate CI or deployment architecture simply to close Spec #344. Overall issue scope remains open unless a separate Owner decision revises the four-mode acceptance criteria.
+- Acceptance **not performed** on current origins: OpenList production Safe Write/DDL/escaping/rollback, deployed Hyperdrive TLS failure negatives, actual managed D1 backup/encryption-key restoration, and PostgreSQL Hyperdrive deployed E2E (no authorized isolated PostgreSQL origin currently exists). Historical test-origin successes do not substitute for these checks.
+- Keep the three working connections unchanged. Do not run writes on business data, restore old test databases, or add a separate CI or deployment architecture simply to close Spec #344. The Owner has revised the four-mode requirement to three modes; the Issue stays open for remaining accepted-mode real E2E/security evidence.
 
 ## Previous test-origin state (historical; not current production inventory)
 
@@ -85,8 +93,10 @@ row and confirms the retired-ID ledger. It does **not** delete the upstream
 Hyperdrive config or CA; independently establish other-service/old-version/CA
 non-use before any separately authorized Cloudflare deletion.
 
-Full four-mode Spec #344 stays open for PostgreSQL Hyperdrive activation/E2E,
-PostgreSQL Direct plaintext E2E and deployed Hyperdrive TLS negatives.
+Current three-mode Spec #344 stays open for PostgreSQL Hyperdrive activation/E2E,
+deployed Hyperdrive TLS negatives, and outstanding current-origin safety evidence.
+PostgreSQL Direct is not an acceptance gate. No production migration or
+resource recreation is needed solely to eliminate it from the supported modes.
 
 ## Historical four-mode staged enablement (old test origins now retired)
 
