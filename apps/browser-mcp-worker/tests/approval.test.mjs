@@ -48,6 +48,27 @@ test('unavailable owner approval displays a safe inline error instead of a downl
   }
 });
 
+test('exact ChatGPT attribution on signed owner GET redirects to canonical URL, never broadens authority',async()=>{
+  const f=await fixture(config);try{
+    const op=await pending(f),token=await jwt(),route=path(op.operation_id);
+    const tagged=route+'?utm_source=chatgpt.com';
+    assert.equal((await f.http(tagged)).status,401,'attribution never bypasses owner identity');
+    const redirected=await f.http(tagged,{headers:{'cf-access-jwt-assertion':token}});
+    assert.equal(redirected.status,303);
+    assert.equal(redirected.headers.get('location'),origin+route);
+    assert.equal(redirected.headers.get('cache-control'),'no-store');
+    assert.equal((await view(f,op.operation_id,token)).status,200);
+    for(const query of ['?decision=approve','?utm_source=evil.example','?utm_source=chatgpt.com&decision=approve'])
+      assert.equal((await f.http(route+query,{headers:{'cf-access-jwt-assertion':token}})).status,403);
+    assert.equal((await f.http(tagged,{headers:{'cf-access-jwt-assertion':token,origin:'https://evil.example'}})).status,403);
+    const p=await proposal(f,op.operation_id);
+    assert.ok(p.nonce);
+    assert.equal((await f.http(tagged,{method:'POST',headers:{'cf-access-jwt-assertion':token,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({nonce:p.nonce,decision:'deny'})})).status,403);
+    assert.equal((await status(f,op.args)).state,'pending_approval');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
 test('owner HTTP requires cryptographic Access identity, canonical host, aud, issuer, expiry and exact mailbox',async()=>{
   const f=await fixture(config);try{
     const op=await pending(f);
