@@ -222,3 +222,14 @@ test('Hyperdrive retirement cannot merge or release a staged unbinding without s
     stage.replace("draft:true,body:","draft:false,body:")
   ])assert.throws(()=>verifyDatabaseRetireStagingGate(release,badScript));
 });
+
+test('Database CI preserves local-only Wrangler D1 drain regression without a second pipeline', () => {
+  const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  const testSource=readFileSync(new URL('../apps/database-mcp-worker/scripts/d1-drain-wrangler.test.mjs',import.meta.url),'utf8');
+  assert.match(ci,/name: Verify isolated Wrangler D1 lifecycle and in-flight protection/);
+  assert.match(ci,/run: node --test apps\/database-mcp-worker\/scripts\/d1-drain-wrangler\.test\.mjs/);
+  assert.match(testSource,/'--local'/);
+  assert.match(testSource,/syntheticId='00000000-0000-4000-8000-000000000476'/);
+  assert.doesNotMatch(testSource,/'--remote'/);
+  assert.match(release,/name: Verify Database D1 schema and fresh registry before publication \(read-only\)/);
+});
