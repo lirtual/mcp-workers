@@ -358,7 +358,10 @@ export async function runPublishedGitHubActionSession(
  if(dispatched.status==='quota_full')
   return {status:'failed',error_code:'github_session_capacity_exceeded'};
  if(dispatched.status==='fixed_conflict'){
-  const key=String(identity.repositoryId)+':'+identity.workflowPath;
+  const key=String(identity.repositoryId)+
+   (identity.repository==='lirtual/session-actions'&&
+    identity.workflowPath==='.github/workflows/openlist.yml'
+     ?':go-openlist':':'+identity.workflowPath);
   const holder=await db.prepare(`SELECT run_id,step_id FROM session_executions
    WHERE fixed_key=? AND state!='terminated' LIMIT 1`)
    .bind(key).first<{run_id:string;step_id:string}>();
