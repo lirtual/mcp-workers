@@ -16,6 +16,19 @@ type Answer = {operation_id?:string;state?:State;tab_id?:number|null;error_code?
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const endpoint=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const sevenDays=7*86400000, fiveMinutes=5*60000;
+// Only these static, non-content-bearing denial codes may enter durable receipts.
+const failureActions:Record<string,string>={
+  forbidden:"blocked_forbidden_target",
+  stale_target:"reobserve_target_before_new_intent",
+  stale_element:"reobserve_target_before_new_intent",
+  sensitive_surface:"blocked_sensitive_surface",
+  stopped:"owner_must_resume_locally",
+  approval_required:"wait_for_owner_approval",
+  capacity_exceeded:"review_operation_capacity",
+  ordinary_window_required:"owner_must_open_ordinary_window"
+};
+export const safeFailureCode=(value:unknown):string|undefined=>
+  typeof value==="string"&&Object.hasOwn(failureActions,value)?value:undefined;
 const random=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),v=>v.toString(16).padStart(2,"0")).join("");
 function validCommand(value: Command) {
   if(isInteraction(value.action))return validInteraction(value);
@@ -65,6 +78,7 @@ export class IntentLedger {
       ...(row.state==="owner_reported_resolution"?{safe_next_action:"owner_report_recorded; no automatic execution or confirmed website result"}:{}),
       ...(row.result_code==="capacity_exceeded"?{error_code:"capacity_exceeded"}:{}),
       ...(row.result_code==="approval_blocked"?{error_code:"approval_blocked",safe_next_action:"Blocked: independent owner approval is unavailable"}:{}),
+      ...(row.state==="failed"&&safeFailureCode(row.result_code)?{error_code:row.result_code!,safe_next_action:failureActions[row.result_code!]}:{}),
       ...(row.result_code==="tab_group_unavailable"?{presentation_warning:row.result_code}:{})};
   }
   private async commitment(command:Command) {
@@ -201,7 +215,7 @@ export class IntentLedger {
     return r.rowsWritten;
   }
   async finalize(endpoint_id:string,intent_key:string,execute_token:string,generation:number,
-    result:"completed"|"failed"|"unknown",tab_id:number|null,now=Date.now(),presentation_warning?:string):Promise<Answer>{
+    result:"completed"|"failed"|"unknown",tab_id:number|null,now=Date.now(),presentation_warning?:string,failureCode?:string):Promise<Answer>{
     const row=this.row(endpoint_id,intent_key);
     if(!row)return {error_code:"not_found"};
     if(row.state!=="dispatching" && row.state!=="unknown" &&
@@ -212,10 +226,11 @@ export class IntentLedger {
       (result==="completed" && tab_id===null) ||
       (tab_id!==null && (!Number.isSafeInteger(tab_id)||tab_id<0)) ||
       (presentation_warning!==undefined &&
-       (result!=="completed"||row.action!=="tab_open"||presentation_warning!=="tab_group_unavailable")))
+       (result!=="completed"||row.action!=="tab_open"||presentation_warning!=="tab_group_unavailable")) ||
+      (failureCode!==undefined && (result!=="failed"||!safeFailureCode(failureCode))))
       return {error_code:"invalid_arguments"};
     this.sql.exec("UPDATE browser_intents SET state=?,updated_at=?,tab_id=?,result_code=? WHERE endpoint_id=? AND intent_key=? AND state IN ('dispatching','unknown','owner_reported_resolution')",
-      result,now,tab_id,presentation_warning??null,endpoint_id,intent_key);
+      result,now,tab_id,presentation_warning??failureCode??null,endpoint_id,intent_key);
     const stored=this.row(endpoint_id,intent_key);
     if(!stored||stored.state!==result||stored.updated_at!==now||stored.tab_id!==tab_id)
       return {error_code:"not_dispatching"};

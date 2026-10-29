@@ -1,6 +1,6 @@
 import { approvalConfig, type ApprovalEnv } from "./approval-auth.ts";
 import { isInteraction, validInteraction, interactionExtra } from "./interactions.ts";
-import { type Command, IntentLedger } from "./intents.ts";
+import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
 type Endpoint = {
   id: string; alias: string; state: "stopped" | "enabled" | "revoked";
   generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number;
@@ -523,7 +523,8 @@ export class BrowserOwner implements DurableObject {
       }
       if(v.accepted!==true){
         this.intents.abort(e.id,v.intent_key);
-        if(v.error_code==="approval_required"||v.error_code==="capacity_exceeded")this.sql.exec("UPDATE browser_intents SET result_code=? WHERE operation_id=? AND state='failed'",v.error_code==="approval_required"?"approval_blocked":"capacity_exceeded",v.operation_id);
+        const denial=v.error_code==="approval_required"?"approval_blocked":safeFailureCode(v.error_code);
+        if(denial)this.sql.exec("UPDATE browser_intents SET result_code=? WHERE operation_id=? AND state='failed'",denial,v.operation_id);
         if(pending){clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);}
         return;
       }
@@ -557,7 +558,8 @@ export class BrowserOwner implements DurableObject {
       const original=this.intents.status(e.id,v.intent_key);
       if(original.operation_id!==v.operation_id)return;
       const result=await this.intents.finalize(e.id,v.intent_key,v.execute_token,
-        e.generation,v.state,v.tab_id as number|null,Date.now(),v.presentation_warning as string|undefined);
+        e.generation,v.state,v.tab_id as number|null,Date.now(),v.presentation_warning as string|undefined,
+        v.state==="failed"?safeFailureCode(v.error_code):undefined);
       if(result.error_code)return;
       const pending=this.pendingMutations.get(v.operation_id);
       if(pending && pending.socket===socket){

@@ -98,3 +98,26 @@ test("ordinary disclosure button works once without approval, but payment contro
     assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
   }finally{await f.close();}
 });
+
+test("failed operation receipts preserve safe denial codes across prepare and execute",async()=>{
+  for(const afterPrepare of [false,true]){
+    const f=await fixture();
+    try {
+      const args=await f.command("scroll",e=>e.tag==="body",{delta_y:120});
+      if(afterPrepare){
+        f.hold();
+        await f.perform("scroll",args);
+      }
+      f.pageState.text="Enter password";
+      if(afterPrepare){await f.release();await f.flush();}
+      else await f.perform("scroll",args);
+      const receipt=await f.rpc("browser_operation_status",{endpoint_id:args.endpoint_id,intent_key:args.intent_key});
+      assert.equal(receipt.state,"failed");
+      assert.equal(receipt.error_code,"sensitive_surface");
+      assert.equal(receipt.safe_next_action,"blocked_sensitive_surface");
+      const stored=JSON.stringify(f.db.prepare("SELECT * FROM browser_intents").all());
+      assert.ok(!stored.includes("Enter password"));
+      assert.equal(f.effects.length,0);
+    }finally{await f.close();}
+  }
+});
