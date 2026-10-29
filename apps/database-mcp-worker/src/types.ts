@@ -26,6 +26,7 @@ export interface Env {
   DATABASE_ENCRYPTION_PREVIOUS_KEY?: string;
   DATABASE_PREVIOUS_KEY_ID?: string;
   MCP_ACCESS_TOKEN?: string;
+  DATABASE_GITHUB_ACTIONS_TOKEN?: string;
   MAX_ROWS?: string;
   MAX_RESULT_BYTES?: string;
   MAX_SCHEMA_BYTES?: string;
