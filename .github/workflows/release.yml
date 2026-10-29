@@ -180,8 +180,8 @@ jobs:
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           OPENLIST_ALLOWED_ROOTS: ${{ inputs.worker == 'openlist-mcp-worker' && vars.OPENLIST_ALLOWED_ROOTS || '' }}
           MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
-          # Independent Provider Worker Version ID must be approved before any Workflow release.
-          WEIXIN_ACTION_DEPLOYMENT_ID: ${{ vars.WEIXIN_ACTION_DEPLOYMENT_ID }}
+          # The Provider pin is resolved read-only after the existing environment approval,
+          # not copied from a potentially stale GitHub Environment variable.
           MAX_ROWS: ${{ vars.MAX_ROWS }}
           MAX_RESULT_BYTES: ${{ vars.MAX_RESULT_BYTES }}
           MAX_SCHEMA_BYTES: ${{ vars.MAX_SCHEMA_BYTES }}
@@ -194,6 +194,13 @@ jobs:
           set -euo pipefail
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
+
+      - name: Stage exact current reviewed Weixin Provider Version (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/reviewed-weixin-provider-pin.mjs stage
 
       - name: Recheck current main inside acquired release lock
         shell: bash
@@ -532,6 +539,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/openlist-upstream-integrity.mjs
 
+      - name: Recheck Weixin Provider Version before Workflow publication (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/reviewed-weixin-provider-pin.mjs recheck
+
       - name: Publish exactly selected Worker
         id: publish
         shell: bash
@@ -586,6 +600,17 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
+
+      - name: Verify published Workflow pin still matches current Provider (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/reviewed-weixin-provider-pin.mjs postflight
+
+      - name: Remove temporary Provider pin proof
+        if: always() && inputs.worker == 'workflow-mcp-worker'
+        run: rm -f "$RUNNER_TEMP/weixin-provider-version.txt"
 
       - name: Verify Database Hyperdrive TLS, CA, origin and cache after publication
         if: inputs.worker == 'database-mcp-worker'
