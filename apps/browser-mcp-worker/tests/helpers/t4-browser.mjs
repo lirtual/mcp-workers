@@ -94,8 +94,10 @@ export async function fixture(config={},options={}){
   };
   const intervals=new Set();
   let ctx;
+  // Simulate independent Chrome and Worker wall clocks without changing the host clock.
+  const ExtensionDate=class extends Date {static now(){return Date.now()+(options.extensionClockOffsetMs??0);}};
   function loadExtension(){
-  ctx=vm.createContext({chrome,crypto,URL,Date,Math,JSON,Promise,TextEncoder,setTimeout,clearTimeout,setInterval:(fn,ms)=>{const id=setInterval(fn,ms);intervals.add(id);return id;},clearInterval,WebSocket:Socket,
+  ctx=vm.createContext({chrome,crypto,URL,Date:ExtensionDate,Math,JSON,Promise,TextEncoder,setTimeout,clearTimeout,setInterval:(fn,ms)=>{const id=setInterval(fn,ms);intervals.add(id);return id;},clearInterval,WebSocket:Socket,
     BROWSER_MCP_SERVICE_ORIGIN:service,
     fetch:(url,opts)=>worker.fetch(new Request(url,{...opts,headers:{...opts.headers,origin:extensionOrigin}}),env)});
   ctx.importScripts=name=>{if(name!=="config.js")vm.runInContext(fs.readFileSync(new URL("../../extension/"+name,import.meta.url),"utf8"),ctx);};

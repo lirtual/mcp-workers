@@ -203,6 +203,24 @@ test('identified consequential URL is pending, meaningful destination is transie
   }finally{await f.close();}
 });
 
+test('minor Chrome/Worker clock skew leaves approval preparation usable without widening the five-minute limit',async()=>{
+  for(const offset of [-20000,-10000,0,10000]){
+    const f=await fixture(config,{extensionClockOffsetMs:offset});try{
+      const started=Date.now();const op=await pending(f);
+      assert.ok(op.expires_at>started+235000,'approval should remain usable, clock offset '+offset);
+      assert.ok(op.expires_at<=Date.now()+270000,'approval must retain a bounded shorter deadline');
+      assert.equal(f.effects.length,0);
+    }finally{await f.close();}
+  }
+  const f=await fixture(config,{extensionClockOffsetMs:-45000});try{
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/clock-offset-denied'};
+    await f.rpc('browser_tab_open',args);await f.flush();
+    const result=await status(f,args);
+    assert.equal(result.state,'failed');assert.equal(result.error_code,'prepare_expired');
+    assert.equal(f.effects.length,0,'larger skew must fail closed without a browser effect');
+  }finally{await f.close();}
+});
+
 test('production-style consequential delete URL receives a denial-only owner proposal, without opening a tab',async()=>{
   const f=await fixture(config);try{
     const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/spec418-owner-deny-check-20261029-v3'};
