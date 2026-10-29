@@ -13,12 +13,11 @@ export function mysqlSafeParams(values: readonly unknown[]): SqlPrimitive[] {
     throw new PublicError('INVALID_INPUT', 'Hyperdrive MySQL parameters must be primitive values.');
   });
 }
-/**
- * Called AFTER BEGIN and BEFORE parameter interpolation on the same pinned
- * transaction/session. A one-time setup check is not safe with transaction pooling.
+/** Check the actual MySQL session before client-side parameter interpolation.
+ * Hyperdrive calls this inside its pinned transaction. Direct uses a dedicated
+ * TCP connection, so the checked session is also the execution session.
  */
-export async function assertMysqlHyperdriveSqlMode(client: Connection, connection: EffectiveConnection): Promise<void> {
-  if (connection.transport !== 'hyperdrive') return;
+export async function assertMysqlInterpolationSqlMode(client: Connection, connection: EffectiveConnection): Promise<void> {
   // Cloudflare Hyperdrive may return zero rows for SELECT @@SESSION.sql_mode;
   // SHOW SESSION VARIABLES produces a row within the pinned transaction.
   const [rows] = await withTimeout(client.query("SHOW SESSION VARIABLES LIKE 'sql_mode'"),
@@ -36,4 +35,10 @@ export async function assertMysqlHyperdriveSqlMode(client: Connection, connectio
       mode.toUpperCase().split(',').some(x => x.trim() === 'NO_BACKSLASH_ESCAPES')) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'MySQL escaping is incompatible with this session.');
   }
+}
+
+/** Hyperdrive only: caller pins the backend with BEGIN before checking. */
+export async function assertMysqlHyperdriveSqlMode(client: Connection, connection: EffectiveConnection): Promise<void> {
+  if (connection.transport !== 'hyperdrive') return;
+  await assertMysqlInterpolationSqlMode(client, connection);
 }
