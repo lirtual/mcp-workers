@@ -53,8 +53,7 @@
     }
   ],
   "hyperdrive": [
-    { "binding": "HYPERDRIVE_AIVEN_MYSQL", "id": "31fc05c77ac042ff927a6d3cbf5bbb7d" },
-    { "binding": "HYPERDRIVE_AIVEN_POSTGRES", "id": "b2c7dab22f594bbca255827065e19bce" }
+    { "binding": "HYPERDRIVE_AIVEN_OPENLIST", "id": "135ef2e15db049c68e99b0849f9a3da0" }
   ],
   "routes": [
     {
