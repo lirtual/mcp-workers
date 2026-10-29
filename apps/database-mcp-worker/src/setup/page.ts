@@ -14,9 +14,12 @@ export function htmlResponse(body: string, csrf?: string, status = 200): Respons
   });
   if (csrf) headers.set('set-cookie', csrfCookie(csrf));
   return new Response('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<title>Database MCP connections</title><style>html{color-scheme:light dark}body{max-width:840px;margin:24px auto;padding:0 16px;font:16px/1.5 system-ui}' +
-    'fieldset{margin:20px 0;border:1px solid #999;border-radius:8px;padding:16px}form{display:grid;gap:10px;margin:12px 0}' +
-    'input,select,textarea,button{padding:8px;font:inherit}label{display:grid;gap:4px}details{margin:12px 0}li{margin:20px 0}</style><main>' + body + '</main></html>',
+    '<title>Database MCP connections</title><style>html{color-scheme:light dark}body{max-width:720px;margin:24px auto;padding:0 16px;font:16px/1.5 system-ui}' +
+    'h1{margin:0 0 6px}p{margin:8px 0}.muted,.meta{opacity:.72;font-size:.9em}fieldset{margin:18px 0;padding:16px;border:1px solid #888;border-radius:8px}' +
+    'form{display:grid;gap:12px;margin:12px 0}input,select,button{padding:8px;font:inherit;border-radius:5px}label{display:grid;gap:4px}' +
+    'label:not(.check)>input{box-sizing:border-box;width:100%}.check{display:flex;align-items:center;gap:8px}.check input{margin:0;width:17px;height:17px;flex:none}' +
+    'button{justify-self:start;cursor:pointer;padding:8px 16px}summary{cursor:pointer}details{margin:10px 0}.connections{padding-left:22px}' +
+    '.connections li{margin:12px 0;padding:0 0 12px;border-bottom:1px solid #7775}.connections form{margin:8px 0}.maintenance{margin:16px 0}</style><main>' + body + '</main></html>',
     { status, headers });
 }
 function token(csrf: string): string { return `<input type="hidden" name="csrf" value="${escape(csrf)}">`; }
@@ -26,39 +29,38 @@ function ids(row: RegistryMetadata): string {
 function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' | 'delete'): string {
   return `<form action="/setup/${verb}" method="post">${token(csrf)}${ids(row)}` +
     (verb === 'delete' ? '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' : '') +
-    (verb === 'enable' && row.transport === 'direct' ? '<label><input type="checkbox" name="plaintext_ack" value="1" required>I accept that enabling Direct sends credentials and SQL over plaintext TCP.</label>' : '') +
+    (verb === 'enable' && row.transport === 'direct' ? '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>' : '') +
     `<button type="submit">${verb}</button></form>`;
 }
-const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="1">I understand Direct sends database passwords and queries without TLS; traffic may be intercepted.</label>';
-const plaintextAckRequired = '<label><input type="checkbox" name="plaintext_ack" value="1" required>I explicitly accept unencrypted Direct transport.</label>';
-const directUrlHint = '<p>URL format: <code>mysql://USERNAME:PASSWORD@db.yourdomain.com:3306/DATABASE</code>. ' +
-  'Use a public DNS hostname or globally routable public IP (no localhost or private/reserved address). ' +
-  'Do not append query parameters. Percent-encode URL-reserved characters in usernames or passwords.</p>';
+const plaintextAck = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1">I accept unencrypted Direct transport.</label>';
+const plaintextAckRequired = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>';
+const directUrlHint = '<details><summary>URL format help</summary><p class="muted">' +
+  '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code>. HOST can be a public IP or hostname. ' +
+  'Encode special characters in credentials; no URL query parameters.</p></details>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
-  const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
+  const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} · ${escape(row.status)}</span>` +
     (row.status === 'active' ? action(row, csrf, 'disable') :
       (isAvailableMode(row.transport, row.dialect) ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
-    (!isAvailableMode(row.transport, row.dialect) ? '<p>This connection mode is not enabled in the current release. Existing records cannot be enabled or edited.</p>' :
-    `<details><summary>Edit or replace Direct credentials</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
-    '<label>Credential mode<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
-    '<label>Replacement URL (never prefilled)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
+    (!isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
+    `<details><summary>Edit connection</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
+    '<label>Credentials<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
+    '<label>New URL (only when replacing)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
     plaintextAck +
-    (row.status === 'disabled' ? '<label><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
-    '<button type="submit">Test and save edit</button></form></details>') + '</li>').join('');
-  return htmlResponse('<h1>Database connections</h1><p>Owner-only. Passwords and origin URLs are never displayed. At most 10 connections; removed IDs are never reused.</p>' +
-    '<p><strong>Available now:</strong> MySQL Direct plaintext only (explicit consent). PostgreSQL Direct and Hyperdrive require separate acceptance before activation. No fallback.</p>' +
-    `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
+    (row.status === 'disabled' ? '<label class="check"><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
+    '<button type="submit">Test and save</button></form></details>') + '</li>').join('');
+  return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections. Credentials are never displayed.</p>' +
+    `<ul class="connections">${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
-    '<label>Immutable ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required placeholder="b2b"></label>' +
-    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option></select></label>' +
-    '<label>Transport<select name="transport"><option value="direct">Direct plaintext</option></select></label>' +
-    directUrlHint +
-    '<label>Direct URL (credentials are never displayed)<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
-    plaintextAckRequired +
-    '<label><input type="checkbox" name="allow_disabled" value="1">Save Direct candidate disabled if unreachable</label>' +
-    '<button type="submit">Validate and add</button></form></fieldset>' +
-    '<fieldset><legend>Direct key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +
-    '<button type="submit">Rotate next bounded batch</button></form></fieldset>', csrf);
+    '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
+    '<input type="hidden" name="dialect" value="mysql"><input type="hidden" name="transport" value="direct">' +
+    '<label>MySQL URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
+    directUrlHint + plaintextAckRequired +
+    '<details><summary>Advanced options</summary><label class="check"><input type="checkbox" name="allow_disabled" value="1">Save disabled if connection test fails</label>' +
+    '<p class="muted">A disabled connection cannot be used until it passes a connection check.</p></details>' +
+    '<button type="submit">Add connection</button></form></fieldset>' +
+    '<details class="maintenance"><summary>Maintenance</summary><p class="muted">Re-encrypt saved connections when changing encryption keys; this does not change MySQL passwords.</p>' +
+    '<form method="post" action="/setup/rotate">' + token(csrf) +
+    '<button type="submit">Rotate encryption keys</button></form></details>', csrf);
 }
 export function setupFailure(code: string, status: number, reference?: string): Response {
   // References are fixed internal codes supplied by the handler, never raw exceptions.
