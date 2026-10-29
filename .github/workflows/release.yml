@@ -358,6 +358,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-weixin-provider-pin.mjs stage
 
+      - name: Stage exact current reviewed Bark Provider Version (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/reviewed-bark-provider-pin.mjs stage
+
       - name: Recheck current main inside acquired release lock
         shell: bash
         run: |
@@ -774,6 +781,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-weixin-provider-pin.mjs recheck
 
+      - name: Recheck Bark Provider Version before Workflow publication (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/reviewed-bark-provider-pin.mjs recheck
+
       - name: Publish exactly selected Worker
         id: publish
         shell: bash
@@ -837,9 +851,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-weixin-provider-pin.mjs postflight
 
+      - name: Verify published Bark Provider Version is still pinned (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/reviewed-bark-provider-pin.mjs postflight
+
       - name: Remove temporary Provider pin proof
         if: always() && inputs.worker == 'workflow-mcp-worker'
-        run: rm -f "$RUNNER_TEMP/weixin-provider-version.txt"
+        run: rm -f "$RUNNER_TEMP/weixin-provider-version.txt" "$RUNNER_TEMP/bark-provider-version.txt"
 
       - name: Verify Database Hyperdrive TLS, CA, origin and cache after publication
         if: inputs.worker == 'database-mcp-worker'

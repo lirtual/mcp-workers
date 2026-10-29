@@ -31,7 +31,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:'weixin';action:'weixin.send_text';contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:'weixin'|'bark';action:'weixin.send_text'|'bark.send_notification';contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -581,14 +581,24 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest();
+      const manifest=await cloudflareActionManifest(withData.provider==='bark'?'bark':'weixin');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
       const input=object(withData.input,'invalid_cloudflare_input');
-      keys(input,['session_step_id'],stepPath+'/with/input');
-      if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
-        throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
+      if(manifest.provider==='bark'){
+        keys(input,['notification'],stepPath+'/with/input');
+        const notification=object(input.notification,'invalid_bark_notification');
+        const allowed=Object.keys(manifest.input_schema.properties);
+        keys(notification,allowed,stepPath+'/with/input/notification');
+        if(!Object.hasOwn(notification,'body'))throw new PlanError('missing_bark_body',stepPath+'/with/input/notification');
+        if(typeof notification.body==='string'&&notification.body.length>2400)
+          throw new PlanError('bark_body_too_large',stepPath+'/with/input/notification');
+      }else{
+        keys(input,['session_step_id'],stepPath+'/with/input');
+        if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
+          throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
+      }
     }else if(s.uses==='github.run'){
       checkGitHubActionWith(withData,stepPath+'/with');
       const action=withData.action as Record<string,unknown>;
@@ -620,7 +630,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       with:compiledWith,...(s.if===undefined?{}:{if:s.if})});
   }
   for(const s of steps){
-    if(s.uses==='action.run'){
+    if(s.uses==='action.run'&&s.with.provider==='weixin'){
       // Provider URL and recipient never come from a Draft or ordinary Step output.
       const source=(s.with.input as {session_step_id:string}).session_step_id;
       const upstream=steps.find(x=>x.id===source);
@@ -696,6 +706,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(key==='inputs') expression(value,s,0,true);
         else if(typeof value==='string'&&value.includes('\${{'))throw new PlanError('dynamic_github_identity');
       }
+    } else if(s.uses==='action.run'&&s.with.provider==='bark') {
+      expression((s.with.input as {notification:unknown}).notification,s,0,true);
     } else expression(s.with,s);
     if(s.if!==undefined){
       expression(s.if,s);

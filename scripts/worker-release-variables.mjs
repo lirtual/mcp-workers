@@ -33,7 +33,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "github-actions-mcp-worker": [],
   "http-mcp-worker": [],
   "openlist-mcp-worker": ["OPENLIST_ALLOWED_ROOTS"],
-  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "WEIXIN_ACTION_DEPLOYMENT_ID"],
+  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "WEIXIN_ACTION_DEPLOYMENT_ID", "BARK_ACTION_DEPLOYMENT_ID"],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -139,9 +139,9 @@ export function collectWorkerVars(worker, env, options = {}) {
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: " + name);
     }
-    if(name==="WEIXIN_ACTION_DEPLOYMENT_ID" && value!=null && value!=="" &&
+    if(["WEIXIN_ACTION_DEPLOYMENT_ID","BARK_ACTION_DEPLOYMENT_ID"].includes(name) && value!=null && value!=="" &&
        (typeof value!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value)))
-      throw new Error("Invalid WEIXIN_ACTION_DEPLOYMENT_ID");
+      throw new Error("Invalid "+name);
     if (value == null || value === "") continue;
     if (typeof value !== "string") throw new Error("Invalid Worker Variable: " + name);
     if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
