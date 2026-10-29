@@ -161,8 +161,9 @@ async function main() {
   const config = worker === "remote-control-mcp-worker"
     ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, "")) : undefined;
-  if(worker==="workflow-mcp-worker" && !process.env.WEIXIN_ACTION_DEPLOYMENT_ID)
-    throw new Error("Missing WEIXIN_ACTION_DEPLOYMENT_ID: reviewed Provider release required");
+  // The protected release stages WEIXIN_ACTION_DEPLOYMENT_ID from the live,
+  // independently checked Provider after staging other non-secret variables.
+  // Do not require the obsolete manual Environment variable here.
   const flags = collectWorkerVars(worker, process.env, { config });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",
     { flag: "wx", mode: 0o600 });
