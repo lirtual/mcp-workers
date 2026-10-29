@@ -121,6 +121,7 @@ export function setupFailureReference(error: PublicError): string | undefined {
     'GitHub Actions workflow unavailable.': 'github_workflow_missing',
     'GitHub Actions dispatch inputs rejected.': 'github_inputs_rejected',
     'GitHub Actions dispatch rate limited.': 'github_rate_limited',
+    'GitHub Actions dispatch redirect rejected.': 'github_redirect_rejected',
     'GitHub Actions dispatch upstream unavailable.': 'github_upstream_unavailable',
     'GitHub Actions dispatch HTTP rejected.': 'github_http_rejected'
   };

@@ -16,6 +16,7 @@ function rejectedStatus(status: number): string {
   if (status === 404) return 'GitHub Actions workflow unavailable.';
   if (status === 422) return 'GitHub Actions dispatch inputs rejected.';
   if (status === 429) return 'GitHub Actions dispatch rate limited.';
+  if (status >= 300 && status < 400) return 'GitHub Actions dispatch redirect rejected.';
   if (status >= 500 && status <= 599) return 'GitHub Actions dispatch upstream unavailable.';
   return 'GitHub Actions dispatch HTTP rejected.';
 }
@@ -32,7 +33,10 @@ async function dispatchWorkflow(
   let response: Response;
   try {
     response = await request(WORKFLOW_URL, {
-      method: 'POST', redirect: 'error',
+      // Cloudflare Workers does not implement Fetch redirect: 'error'; that
+      // throws before network I/O and used to cause github_outcome_unknown.
+      // 'manual' prevents following 3xx redirects with the Owner PAT.
+      method: 'POST', redirect: 'manual',
       headers: {
         Authorization: 'Bearer ' + token,
         Accept: 'application/vnd.github+json',
