@@ -4,16 +4,21 @@ Cloudflare MCP Worker for bounded SQL reads, schema inspection, structured Safe 
 
 ## Delivery boundary
 
-**Production status (2026-10-29):** MySQL Direct (`b2b`, `scrape_relay`)
-and MySQL Hyperdrive (`aiven_mysql_test`) are **active**. The latter passed
-live health, bounded SELECT, isolated Safe Write, DDL, rollback and verified
-cleanup ([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6488549684)).
-The protected [Release Worker #40818135359](https://github.com/lirtual/mcp-workers/actions/runs/40818135359)
-published both Aiven bindings. PostgreSQL Hyperdrive `aiven_pg_test` is
-**disabled**: Cloudflare config, CA, strict `verify-full` and binding are
-verified but its activation was blocked by a platform safety check; live E2E
-is **Not performed**. PostgreSQL Direct is implemented but no separate
-plaintext test source was accepted. Spec #344 remains **Open**.
+**Current transition (2026-10-29):** MySQL Direct (`b2b`, `scrape_relay`) remain active and unchanged.
+Legacy Aiven test references `aiven_mysql_test` and `aiven_pg_test` were independently
+CAS-disabled before removing their Worker bindings. The new dedicated Hyperdrive
+`aiven-mysql-openlist` connects to the `openlist` MySQL database as `avnadmin`
+under `HYPERDRIVE_AIVEN_OPENLIST` and must remain disabled in D1 until protected
+owner activation passes Cloudflare strict `VERIFY_IDENTITY`, CA provenance, cache-off,
+deployed binding, and live health checks. This change does not claim any production
+OpenList SQL write/DDL acceptance. Both obsolete logical IDs must be retired after
+the release using the existing protected `database_hyperdrive_retire_approved` workflow
+and must never be reused. The old Cloudflare Hyperdrive configs and shared CA must
+only be deleted after verifying other consumers and rollback-version dependencies.
+Prior `aiven_mysql_test` full E2E evidence remains available
+([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6488549684)).
+PostgreSQL Hyperdrive E2E and PostgreSQL Direct plaintext E2E remain unperformed.
+Spec #344 remains **Open**.
 
 The current managed D1 `database-mcp-registry` is the only registry.
 Legacy `DATABASE_CONFIG` Secrets and original D1 were removed and verified
