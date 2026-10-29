@@ -26,6 +26,8 @@ CREATE TABLE hyperdrive_operations (
   updated_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   resource_write_started_at INTEGER,
+  ca_write_started_at INTEGER,
+  ca_certificate_id TEXT,
   CHECK ((ciphertext IS NULL AND key_id IS NULL) OR (ciphertext IS NOT NULL AND key_id IS NOT NULL))
 );
 -- Pending/unknown operations exclude other changes to the same immutable ID,

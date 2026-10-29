@@ -131,6 +131,61 @@ function openPayload(row, keyBase64) {
     fail('ciphertext_invalid');
   }
 }
+/** CA uploads are unbound and uniquely named. A lost POST receipt is reconciled
+ * by exact GET/list, never by attempting a second write with the same name. */
+async function certificateForCandidate({candidate,row,operationId,sourceSha,runId,cloud,sql}) {
+  const base = '/mtls_certificates';
+  if (!candidate.caPem) {
+    requireGate(caPattern.test(candidate.caCertificateId ?? ''), 'ca_reference_invalid');
+    const cert = await cloud(base + '/' + candidate.caCertificateId);
+    requireGate(cert?.id === candidate.caCertificateId && cert.ca === true, 'ca_reference_invalid');
+    return candidate.caCertificateId;
+  }
+  requireGate(!candidate.caCertificateId && typeof candidate.caPem === 'string' &&
+    candidate.caPem.length <= 16384 &&
+    /^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/.test(candidate.caPem),
+    'ca_reference_invalid');
+  const name = 'db476-' + operationId + '-ca';
+  const all = await cloud(base);
+  requireGate(Array.isArray(all) && all.length < 100, 'ca_inventory_incomplete');
+  const matches = all.filter(c => c.name === name);
+  requireGate(matches.length <= 1, 'ca_inventory_ambiguous');
+  const verify = async id => {
+    requireGate(caPattern.test(id ?? ''), 'ca_receipt_invalid');
+    const cert = await cloud(base + '/' + id);
+    requireGate(cert?.id === id && cert?.ca === true && cert?.name === name &&
+      typeof cert.certificates === 'string' &&
+      cert.certificates.replaceAll('\r\n', '\n').trim() ===
+        candidate.caPem.replaceAll('\r\n', '\n').trim(), 'ca_content_mismatch');
+    return id;
+  };
+  let id;
+  if (row.ca_write_started_at != null) {
+    requireGate(matches.length === 1 &&
+      (row.ca_certificate_id == null || matches[0].id === row.ca_certificate_id),
+      'ca_outcome_requires_reconciliation');
+    id = await verify(matches[0].id);
+  } else {
+    // Do not repurpose another operation's asset even if its name collides.
+    requireGate(matches.length === 0, 'ca_name_collision');
+    const claim = await sql(`UPDATE hyperdrive_operations SET ca_write_started_at=?,updated_at=?
+      WHERE operation_id=? AND phase='running' AND expected_source_sha=?
+      AND ca_write_started_at IS NULL AND resource_write_started_at IS NULL
+      AND prepare_run_id=? AND expires_at>?`,
+    [Date.now(),Date.now(),operationId,sourceSha,Number(runId),Date.now()]);
+    requireGate(claim.meta?.changes === 1, 'ca_write_claim_failed');
+    const cert = await cloud(base,'POST',{name,ca:true,certificates:candidate.caPem});
+    id = await verify(cert?.id);
+  }
+  if (row.ca_certificate_id == null) {
+    const stored = await sql(`UPDATE hyperdrive_operations SET ca_certificate_id=?,updated_at=?
+      WHERE operation_id=? AND phase='running' AND expected_source_sha=?
+      AND ca_certificate_id IS NULL AND ca_write_started_at IS NOT NULL`,
+    [id,Date.now(),operationId,sourceSha]);
+    requireGate(stored.meta?.changes === 1, 'ca_receipt_unknown');
+  }
+  return id;
+}
 function fixedBinding(candidate, operationId) {
   return 'HYPERDRIVE_' + candidate.id.replace(/-/g, '_').toUpperCase().slice(0, 38) +
     '_' + operationId.slice(0, 8).toUpperCase();
@@ -198,9 +253,13 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
       response = await request(cloudBase + path, {method, headers: {...cfHeaders,
         ...(body ? {'content-type':'application/json'} : {})},
         ...(body ? {body: JSON.stringify(body)} : {}), redirect:'manual',signal:AbortSignal.timeout(15000)});
+      if (!response.ok && path.startsWith('/mtls_certificates')) {
+        fail(response.status === 401 || response.status === 403 ?
+          'ca_permission_denied' : 'ca_upstream_unavailable');
+      }
       requireGate(response.ok, 'cloudflare_permission_or_status');
       data = await response.json();
-      if (method === 'GET' && path === '/hyperdrive/configs') {
+      if (method === 'GET' && (path === '/hyperdrive/configs' || path === '/mtls_certificates')) {
         requireGate((data.result_info?.total_pages ?? 1) <= 1 &&
           (!data.result_info?.total_count || data.result_info.total_count <= data.result?.length),
           'cloudflare_inventory_incomplete');
@@ -235,7 +294,7 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
     new URL('../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
   const operationId = env.DATABASE_HYPERDRIVE_OPERATION_ID;
   try {
-  const rows = await sql('SELECT operation_id,logical_id,action,expected_revision,phase,ciphertext,key_id,expires_at,prepare_run_id,resource_write_started_at FROM hyperdrive_operations WHERE operation_id=?', [operationId]);
+  const rows = await sql('SELECT operation_id,logical_id,action,expected_revision,phase,ciphertext,key_id,expires_at,prepare_run_id,resource_write_started_at,ca_write_started_at,ca_certificate_id FROM hyperdrive_operations WHERE operation_id=?', [operationId]);
   requireGate(rows.results?.length === 1, 'operation_not_found');
   const row = rows.results[0];
   requireGate(['pending','running','unknown'].includes(row.phase) &&
@@ -250,22 +309,6 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
     'logical_id_unavailable');
   const candidate = openPayload(row, env.DATABASE_ENCRYPTION_KEY);
   const binding = checkedManifestSource(source, manifest, candidate, operationId);
-  // CA upload must have a readback/reconciliation contract before it is allowed.
-  // Existing CA ID can be safely read back without any upload/write.
-  requireGate(!candidate.caPem, 'ca_upload_not_available');
-  requireGate(caPattern.test(candidate.caCertificateId ?? ''), 'ca_reference_invalid');
-  const name = 'db476-' + operationId;
-  const base = '/hyperdrive/configs';
-  const configs = await cloud(base);
-  requireGate(Array.isArray(configs) && configs.length < 100, 'cloudflare_inventory_incomplete');
-  const matches = configs.filter(item => item.name === name);
-  requireGate(matches.length === 0, 'cloudflare_existing_candidate_requires_reconciliation');
-  const expected = {
-    binding, dialect:candidate.dialect,
-    origin_host:candidate.host.toLowerCase(), origin_port:Number(candidate.port),
-    origin_database:candidate.database, origin_user:candidate.user,
-    ca_certificate_id:candidate.caCertificateId
-  };
   // Before Cloudflare POST: CAS the operation and source identity. Unknown
   // outcomes must be reconciled using the deterministic name rather than retried.
   const reservation = await sql(`UPDATE hyperdrive_operations SET phase='running',
@@ -274,6 +317,22 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
     AND (expected_source_sha IS NULL OR expected_source_sha=?)`,
     [env.GITHUB_SHA,env.GITHUB_RUN_ID,Date.now(),operationId,env.GITHUB_SHA]);
   requireGate(reservation.meta?.changes === 1, 'operation_cas_failed');
+  // Validate the candidate's certificate independently before any config write.
+  // Upload is separately claimed in D1 and never repeated after an unknown POST.
+  const name = 'db476-' + operationId;
+  const base = '/hyperdrive/configs';
+  const configs = await cloud(base);
+  requireGate(Array.isArray(configs) && configs.length < 100, 'cloudflare_inventory_incomplete');
+  const matches = configs.filter(item => item.name === name);
+  requireGate(matches.length === 0, 'cloudflare_existing_candidate_requires_reconciliation');
+  const certificateId = await certificateForCandidate({candidate,row,operationId,
+    sourceSha:env.GITHUB_SHA,runId:env.GITHUB_RUN_ID,cloud,sql});
+  const expected = {
+    binding, dialect:candidate.dialect,
+    origin_host:candidate.host.toLowerCase(), origin_port:Number(candidate.port),
+    origin_database:candidate.database, origin_user:candidate.user,
+    ca_certificate_id:certificateId
+  };
   // Claim the external write exactly once, including across re-runs whose POST
   // timed out. Inventory name matching cannot verify a write-only password.
   const claimed = await sql(`UPDATE hyperdrive_operations SET resource_write_started_at=?,
@@ -287,7 +346,7 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
       name,origin:{scheme:candidate.dialect,host:expected.origin_host,port:expected.origin_port,
         database:candidate.database,user:candidate.user,password:candidate.password},
       mtls:{sslmode:candidate.dialect==='mysql'?'VERIFY_IDENTITY':'verify-full',
-        ca_certificate_id:candidate.caCertificateId},
+        ca_certificate_id:certificateId},
       caching:{disabled:true}, origin_connection_limit:5
     });
   }
@@ -344,10 +403,15 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
   } catch (error) {
     // Preserve a receipt even if Cloudflare/GitHub accepted a write whose
     // response was lost. Do not release this ID or replay an external step.
+    const safeClasses = new Set(['ca_permission_denied','ca_upstream_unavailable',
+      'ca_inventory_incomplete','ca_inventory_ambiguous','ca_name_collision',
+      'ca_content_mismatch','ca_outcome_requires_reconciliation','ca_receipt_unknown',
+      'ca_reference_invalid','ca_receipt_invalid','ca_write_claim_failed']);
     await sql(`UPDATE hyperdrive_operations SET phase='unknown',
-      error_class='preparation_requires_reconciliation',updated_at=?
+      error_class=?,updated_at=?
       WHERE operation_id=? AND phase IN ('pending','running','unknown')`,
-      [Date.now(),operationId]).catch(()=>undefined);
+      [safeClasses.has(error?.reason) ? error.reason : 'preparation_requires_reconciliation',
+        Date.now(),operationId]).catch(()=>undefined);
     throw error;
   }
 }

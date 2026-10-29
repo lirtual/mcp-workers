@@ -73,8 +73,12 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   with the same mandatory Owner final confirmation in `/setup` and no invented reviewer.
   A bot-created PR may need human workflow approval. A dispatch result cannot substitute
   for real required PR Checks or reviews.
-- CA PEM is preview-only; preparation requires an existing CA ID. Upload and password/CA
-  updates are blocked until permission, write-only password reconciliation and shared,
+- CA PEM upload is supported only in separately approved **unbound Prepare**, using the existing
+  Environment Cloudflare Token (Account: SSL and Certificates Write), a single D1 CA-write
+  claim, deterministic certificate name and strict CA PEM content/ID readback. Lost upload
+  acknowledgements are reconciled by read-only inventory, not a second POST. Existing CA IDs
+  are verified read-only. Neither case changes the current OpenList CA or live configs.
+  Password/CA rotations remain blocked until write-only password reconciliation and shared,
   in-flight and rollback isolation can be established. Disabling new SQL does not drain
   existing SQL. No nonfunctional password/CA apply controls are exposed.
 - `/setup/hyperdrive-apply` requires Owner Access, CSRF, the exact typed logical ID,

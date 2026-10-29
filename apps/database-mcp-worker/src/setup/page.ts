@@ -49,9 +49,9 @@ function hyperdriveForm(csrf: string, route: 'hyperdrive-preview' | 'hyperdrive-
     '<label>Database<input name="origin_database" maxlength="128" required></label>' +
     '<label>Username<input name="origin_user" maxlength="128" required></label>' +
     '<label>Password<input name="origin_password" type="password" maxlength="2048" autocomplete="off" required></label>' +
-    '<p class="muted">' + (confirm ? 'Preparation currently requires an existing CA ID. CA upload is blocked until its permission and reconciliation contract are verified.' : 'Preview accepts one existing CA ID or CA PEM. The secret is never echoed.') + '</p>' +
+    '<p class="muted">' + (confirm ? 'Use an existing CA ID or upload a CA PEM. Upload requires Account: SSL and Certificates Write and remains unbound until reviewed release.' : 'Provide one existing CA ID or CA PEM. Preview does not upload or expose the certificate.') + '</p>' +
     '<label>Existing CA certificate ID<input name="ca_certificate_id" maxlength="128"></label>' +
-    (confirm ? '' : '<label>CA PEM (preview only)<textarea name="ca_pem" rows="3" maxlength="16384"></textarea></label>') +
+    '<label>CA PEM<textarea name="ca_pem" rows="3" maxlength="16384"></textarea></label>' +
     (confirm ? '<label class="check"><input type="checkbox" name="confirm_prepare" value="1" required>' +
       'I authorize an unbound Cloudflare resource preparation. This does not enable the connection.</label>' : '') +
     '<button type="submit">' + (confirm ? 'Confirm Prepare' : 'Preview (read-only)') + '</button></form>';

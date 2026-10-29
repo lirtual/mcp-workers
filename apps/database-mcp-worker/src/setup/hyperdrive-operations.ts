@@ -142,7 +142,11 @@ export async function listHyperdriveOperations(db: D1Database): Promise<Hyperdri
         !['pending','running','awaiting_confirmation','completed','failed','unknown'].includes(row.phase) ||
         [row.pr_number,row.prepare_run_id,row.apply_run_id,row.ci_run_id,row.release_run_id].some(n =>
           n !== null && (!Number.isSafeInteger(n) || n < 1))) unavailable();
-      if (row.error_class !== null && !['github_dispatch_inflight','github_receipt_unknown',
+      if (row.error_class !== null && !['ca_permission_denied','ca_upstream_unavailable',
+        'ca_inventory_incomplete','ca_inventory_ambiguous','ca_name_collision',
+        'ca_content_mismatch','ca_outcome_requires_reconciliation','ca_receipt_unknown',
+        'ca_reference_invalid','ca_receipt_invalid','ca_write_claim_failed',
+        'github_dispatch_inflight','github_receipt_unknown',
         'preparation_expired','preparation_requires_reconciliation','github_pr_ci_pending',
         'github_apply_dispatch_inflight','github_apply_accepted','github_apply_receipt_unknown',
         'postrelease_verified','postrelease_disabled','apply_verifying','apply_merge_started','apply_release_failed','apply_release_dispatching','apply_release_pending','apply_verification_blocked',

@@ -146,7 +146,7 @@ test('PR confirmation renews a nonsecret seven-day review window but never the e
   assert.match(source,/updated_at=\?,expires_at=\?,error_class='github_pr_ci_pending'/);
   assert.match(source,/AND phase='running' AND expected_source_sha=\? AND expires_at>\?/);
 });
-for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected'])
+for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected'])
 test('preparation preserves policy and resource receipt safety: '+mode,async()=>{
   const {DatabaseSync}=await import('node:sqlite');
   const {createCipheriv}=await import('node:crypto');
@@ -159,7 +159,8 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
   const key=Buffer.alloc(32,7),iv=Buffer.alloc(12,8),operationId=env.DATABASE_HYPERDRIVE_OPERATION_ID;
   const candidate={id:'isolated',dialect:'mysql',host:'mysql.example.net',port:'3306',
     database:'catalog',user:'reader',password:'synthetic-password',
-    caCertificateId:'b0e4a5d3-1665-4e3c-a0a0-28f9a2b9b1c0'};
+    ...(mode.startsWith('ca-') ? {caPem:'-----BEGIN CERTIFICATE-----\nQUJDRA==\n-----END CERTIFICATE-----'} :
+      {caCertificateId:'b0e4a5d3-1665-4e3c-a0a0-28f9a2b9b1c0'})};
   const cipher=createCipheriv('aes-256-gcm',key,iv);
   cipher.setAAD(Buffer.from('database-mcp:hyperdrive-operation:v1:'+operationId+':create:isolated:0'));
   const encrypted=Buffer.concat([cipher.update(JSON.stringify(candidate)),cipher.final(),cipher.getAuthTag()]);
@@ -167,8 +168,9 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
     (operation_id,logical_id,action,expected_revision,phase,ciphertext,key_id,created_at,updated_at,expires_at)
     VALUES (?,?,'create',0,'running',?,'key1',1,1,?)`)
     .run(operationId,candidate.id,iv.toString('base64')+'.'+encrypted.toString('base64'),Date.now()+600000);
-  let creates=0;
-  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-');
+  let creates=0, caUploads=0, caWritten=false;
+  const isCa=mode.startsWith('ca-');
+  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-') || mode.startsWith('ca-success');
   const configId='1'.repeat(32), head='b'.repeat(40), blobs=new Map();
   let createdConfig;
   const request=async(url,init={})=>{
@@ -215,13 +217,31 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
         {meta:{changes:Number(statement.run(...params).changes)}};
       return Response.json({success:true,result:[{success:true,...result}]});
     }
+    if(path.endsWith('/mtls_certificates') && init.method==='GET' && mode==='ca-permission-unprotected')return new Response(null,{status:403});
+    if(path.endsWith('/mtls_certificates') && init.method==='GET')return Response.json({success:true,
+      result:mode==='ca-duplicate-unprotected'?[{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true},
+      {id:'7'.repeat(36),name:'db476-'+operationId+'-ca',ca:true}]:
+      caWritten?[{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true,certificates:candidate.caPem}]:[],
+      result_info:{total_pages:1,total_count:mode==='ca-duplicate-unprotected'?2:(caWritten?1:0)}});
+    if(path.endsWith('/mtls_certificates') && init.method==='POST') {
+      caUploads++;
+      const body=JSON.parse(init.body);
+      assert.equal(body.ca,true);
+      assert.equal(body.certificates,candidate.caPem);
+      assert.equal(body.name,'db476-'+operationId+'-ca');
+      caWritten=true;
+      if(mode.startsWith('ca-lost'))throw Error('synthetic CA response lost');
+      return Response.json({success:true,result:{id:'6'.repeat(36),name:body.name,ca:true,certificates:body.certificates}});
+    }
+    if(path.endsWith('/mtls_certificates/'+'6'.repeat(36)))return Response.json({success:true,result:{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true,certificates:mode==='ca-wrong-pem-unprotected'?'mismatched':candidate.caPem}});
+    if(path.endsWith('/mtls_certificates/'+candidate.caCertificateId))return Response.json({success:true,result:{id:candidate.caCertificateId,ca:true}});
     if(path.endsWith('/hyperdrive/configs') && init.method==='GET')return Response.json({success:true,result:[]});
     if(path.endsWith('/hyperdrive/configs') && init.method==='POST') {
       creates++;
       const body=JSON.parse(init.body);
       assert.equal(body.mtls.sslmode,'VERIFY_IDENTITY');
       assert.equal(body.caching.disabled,true);
-      if(!success)throw Error('synthetic lost acknowledgment');
+      if(!success && !isCa)throw Error('synthetic lost acknowledgment');
       createdConfig={id:configId,...body};
       return Response.json({success:true,result:createdConfig});
     }
@@ -230,12 +250,35 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
   };
   try {
     const runnerEnv={...env,DATABASE_ENCRYPTION_KEY:key.toString('base64'),GITHUB_RUN_ID:'42'};
+    if(['ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected'].includes(mode)) {
+      await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>
+        error.reason===(mode==='ca-duplicate-unprotected'?'ca_inventory_ambiguous':
+          mode==='ca-permission-unprotected'?'ca_permission_denied':'ca_content_mismatch'));
+      assert.equal(creates,0);
+      assert.equal(caUploads,mode==='ca-wrong-pem-unprotected'?1:0);
+      if(mode==='ca-permission-unprotected') {
+        assert.equal(db.prepare('SELECT error_class FROM hyperdrive_operations').get().error_class,
+          'ca_permission_denied');
+      }
+      return;
+    }
     if(success) {
       const result=await prepareDatabaseHyperdrive(runnerEnv,request);
       assert.equal(result.phase,'awaiting_confirmation');
       assert.equal(creates,1);
+      if(isCa){assert.equal(caUploads,1);assert.equal(createdConfig.mtls.ca_certificate_id,'6'.repeat(36));}
       assert.deepEqual({...db.prepare('SELECT phase,pr_number,head_sha,ciphertext,key_id FROM hyperdrive_operations').get()},
         {phase:'awaiting_confirmation',pr_number:3,head_sha:head,ciphertext:null,key_id:null});
+      return;
+    }
+    if(isCa){
+      await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>error.reason==='cloudflare_outcome_unknown');
+      assert.equal(caUploads,1);
+      assert.equal(creates,0);
+      const repaired=await prepareDatabaseHyperdrive(runnerEnv,request);
+      assert.equal(repaired.phase,'awaiting_confirmation');
+      assert.equal(creates,1);
+      assert.equal(caUploads,1);
       return;
     }
     await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>error.reason==='cloudflare_outcome_unknown');

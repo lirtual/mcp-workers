@@ -226,8 +226,6 @@ export async function handleSetup(
       }
       if (form.getAll('confirm_prepare').length !== 1 || form.get('confirm_prepare') !== '1') invalid();
       await verifyGithubPrCapability(env, requestFetch);
-      if (candidate.caPem) throw new PublicError('CONFIGURATION_UNAVAILABLE',
-        'Hyperdrive CA upload permission has not been verified.');
       const prepared = await createHyperdrivePreparation(env.DB, env, candidate);
       await claimHyperdriveDispatch(env.DB, prepared.operationId);
       let runId: number | undefined;

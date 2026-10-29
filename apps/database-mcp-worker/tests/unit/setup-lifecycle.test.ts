@@ -58,7 +58,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     fakeHealth.mockResolvedValue({ latencyMs: 2 });
     const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     expect(page.status).toBe(200);
-    const csrf = (await page.text()).match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    const markup = await page.text();
+    expect(markup).toContain('CA PEM<textarea name="ca_pem"');
+    expect(markup).toContain('Account: SSL and Certificates Write');
+    const csrf = markup.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
     expect(csrf).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
     const post = async (action: string, values: Record<string, string>) => handleSetup(new Request(pageUrl + '/' + action, {
