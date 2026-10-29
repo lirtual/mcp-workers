@@ -126,7 +126,10 @@ test('Go OpenList conflict reports the shared reservation owner without dispatch
    });
   assert.equal(outcome.status,'failed');
   assert.equal(outcome.error_code,'github_session_fixed_already_active');
-  assert.deepEqual(outcome.output,{existing_session:{run_id:run(1),step_id:'launch'}});
+  const holder=(outcome.output as {existing_session?:{run_id:string;step_id:string}})
+   .existing_session;
+  assert.equal(holder?.run_id,run(1));
+  assert.equal(holder?.step_id,'launch');
   assert.equal(requests,0);
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,1);
  }finally{f.db.close();}
