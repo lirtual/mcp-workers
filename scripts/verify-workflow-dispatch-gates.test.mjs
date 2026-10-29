@@ -40,6 +40,7 @@ test('historical registry activation job is retired and cannot be dispatched', (
   }
   for (const retired of [
     '      database_restore_approved:', '  database-restore:',
+    '      database_aiven_provision_approved:', '  database-aiven-provision:',
     '  database-prepare:', '  database-direct-preflight:'
   ]) assert.throws(() => verifyDatabaseActivationGate(release + '\n' + retired + '\n'),
     /Retired Database compatibility/);
