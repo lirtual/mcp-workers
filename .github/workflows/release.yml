@@ -24,11 +24,6 @@ on:
         required: false
         type: boolean
         default: false
-      database_aiven_provision_approved:
-        description: 'Database only: configure existing Aiven Hyperdrive test services without deployment'
-        required: false
-        type: boolean
-        default: false
       database_hyperdrive_enable_approved:
         description: 'Database only: protected strict-TLS Hyperdrive activation after binding and Owner disabled reference'
         required: false
@@ -73,53 +68,13 @@ env:
   HUSKY: "0"
 
 jobs:
-  database-aiven-provision:
-    name: One-time Aiven Hyperdrive test configuration (no Worker deploy)
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
-          inputs.database_aiven_provision_approved == true && inputs.deploy_to_production == false &&
-          inputs.database_hyperdrive_enable_approved != true &&
-          inputs.database_hyperdrive_retire_approved != true }}
-    runs-on: ubuntu-latest
-    environment:
-      name: database-mcp-worker
-    concurrency:
-      group: worker-release-database-mcp-worker
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Check exact reviewed main without credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Provision only approved existing Aiven Hyperdrive test fixtures
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          DATABASE_TEST_MYSQL_PASSWORD: ${{ secrets.DATABASE_TEST_MYSQL_PASSWORD }}
-          DATABASE_TEST_POSTGRES_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
-          DATABASE_AIVEN_PROVISION_APPROVED: ${{ inputs.database_aiven_provision_approved }}
-        run: node scripts/database-aiven-hyperdrive-prepare-344.mjs
-
   database-hyperdrive-enable:
     name: Protected Hyperdrive Owner activation (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
           inputs.database_hyperdrive_enable_approved == true &&
-          inputs.deploy_to_production == false && inputs.database_aiven_provision_approved != true &&
+          inputs.deploy_to_production == false &&
           inputs.database_hyperdrive_retire_approved != true &&
           inputs.database_hyperdrive_enable_id != '' && inputs.database_hyperdrive_enable_revision != '' }}
     runs-on: ubuntu-latest
@@ -161,7 +116,7 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
           inputs.database_hyperdrive_retire_approved == true &&
-          inputs.deploy_to_production == false && inputs.database_aiven_provision_approved != true &&
+          inputs.deploy_to_production == false &&
           inputs.database_hyperdrive_enable_approved != true &&
           inputs.database_hyperdrive_retire_id != '' && inputs.database_hyperdrive_retire_revision != '' }}
     runs-on: ubuntu-latest
