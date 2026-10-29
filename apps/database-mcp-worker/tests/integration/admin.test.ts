@@ -2,7 +2,7 @@ import { Client as PgClient } from 'pg';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { resolveAdminConnection } from '../../src/admin-config.js';
-import { parseDatabaseConfig } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
 import {
   alterTable,
   createIndex,

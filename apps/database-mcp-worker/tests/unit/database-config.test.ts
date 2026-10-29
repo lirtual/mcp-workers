@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseDatabaseConfig, resolveConnection, resolveConnectionDialect, resolveWriteConnection } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
+import { resolveConnection, resolveConnectionDialect, resolveWriteConnection } from '../../src/config.js';
 import { resolveAdminConnection } from '../../src/admin-config.js';
 import { PublicError } from '../../src/errors.js';
 import type { Env } from '../../src/types.js';
@@ -9,7 +10,7 @@ const baseEnv = (extra: Record<string, unknown> = {}): Env => ({
   ...extra
 });
 
-describe('flat DATABASE_CONFIG', () => {
+describe('isolated catalog fixtures', () => {
   it('maps connection ids directly to URLs and uses one principal for read, write, and direct DDL', () => {
     const catalog = parseDatabaseConfig(JSON.stringify({ primary: 'mysql://role:secret@db.example.com/app' }));
     const read = resolveConnection(baseEnv(), catalog);

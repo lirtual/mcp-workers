@@ -22,7 +22,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_direct_preflight_approved != true && inputs.database_restore_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -38,6 +38,13 @@ export function verifyDatabaseActivationGate(source) {
     !source.includes('database_activation_revision:') &&
     !source.includes('node scripts/activate-database-hyperdrive.mjs'),
     'Historical Database activation input or script remains exposed');
+  for (const legacy of [
+    'database_prepare_approved:', 'database_direct_preflight_approved:',
+    'database_restore_approved:', 'database_restore_expected_version:',
+    '\n  database-prepare:\n', '\n  database-direct-preflight:\n',
+    '\n  database-restore:\n', 'node scripts/database-legacy-restore-',
+    'node scripts/database-prep-344.mjs', 'node scripts/database-direct-preflight-344.mjs'
+  ]) assert.ok(!source.includes(legacy), 'Retired Database compatibility entry remains: ' + legacy);
 }
 
 // This is deliberately not a YAML or shell interpreter. It recognizes only

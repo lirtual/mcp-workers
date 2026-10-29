@@ -10,7 +10,7 @@ Destructive DDL names its target explicitly and publishes truthful MCP risk anno
 
 ## Connection and transport
 
-`DATABASE_CONFIG` is a flat map from logical connection IDs to SQL URL strings or strict `{ "hyperdrive": "BINDING", "dialect": "mysql|postgres" }` objects. Reads, structured writes, and DDL use the same selected identity. Hyperdrive DDL fails closed with `ADMIN_OPERATION_NOT_SUPPORTED` and never falls back to a direct URL.
+Logical connection identities and encrypted Direct credentials are managed in the dedicated D1 `database-mcp-registry` through the Owner setup page. Reads, structured writes, and DDL use the same selected principal. Hyperdrive DDL fails closed with `ADMIN_OPERATION_NOT_SUPPORTED` and never falls back to a direct URL.
 
 ## Database privilege guidance
 

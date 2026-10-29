@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAdminConnection } from '../../src/admin-config.js';
-import { parseDatabaseConfig } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
 import { PublicError } from '../../src/errors.js';
 import type { Env } from '../../src/types.js';
 
