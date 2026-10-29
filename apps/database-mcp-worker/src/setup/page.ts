@@ -75,6 +75,10 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
             '<input type="hidden" name="hyperdrive_action" value="retire">' +
             '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' +
             '<button type="submit">Stage unbinding or verify retirement</button></form>' +
+            '<form method="post" action="/setup/hyperdrive-rotation-check">' + token(csrf) + ids(row) +
+            '<label>Rotation readiness<select name="rotation_mode"><option value="credentials">Password</option><option value="ca">CA certificate</option></select></label>' +
+            '<p class="muted">Only checks whether an in-place rotation might be isolated. No password or CA material is submitted. Existing rollback versions may block this check.</p>' +
+            '<button type="submit">Check rotation isolation (read-only)</button></form>' +
             '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
             '<button type="submit">Check unbinding PR (read-only)</button></form></details>'
           : '') +

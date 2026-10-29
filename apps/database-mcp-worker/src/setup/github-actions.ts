@@ -116,6 +116,22 @@ export async function dispatchHyperdriveAction(
   return dispatchWorkflow(env, inputs, request);
 }
 
+/** Owner-only read-only check. Sends no password, CA PEM, or write approval. */
+export async function dispatchHyperdriveRotationCheck(
+  env: Env, mode: 'credentials' | 'ca', id: string, revision: number,
+  request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+  if ((mode !== 'credentials' && mode !== 'ca') || !ID.test(id) ||
+      !Number.isSafeInteger(revision) || revision < 1) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive rotation check.');
+  }
+  return dispatchWorkflow(env, {
+    worker: 'database-mcp-worker', deploy_to_production: 'false',
+    database_hyperdrive_rotation_mode: mode, database_hyperdrive_id: id,
+    database_hyperdrive_revision: String(revision)
+  }, request);
+}
+
 /** Only a bounded operation ID crosses into protected Actions; origin secrets remain encrypted in D1. */
 export async function dispatchHyperdrivePrepare(
   env: Env, operationId: string, request: typeof fetch = fetch

@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { dispatchHyperdriveAction, verifyGithubPrCapability, verifyGithubActionsDispatch } from '../../src/setup/github-actions.js';
+import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, verifyGithubPrCapability, verifyGithubActionsDispatch } from '../../src/setup/github-actions.js';
 import type { Env } from '../../src/types.js';
 
 const token = 'github_pat_synthetic_test_token_never_real';
@@ -312,4 +312,26 @@ test('read-only status does not leak GitHub response errors or query without sco
     return true;
   });
   assert.equal(called,1);
+});
+
+test('rotation readiness dispatch is bounded and contains no secret or mutation intent',async()=>{
+ for(const mode of ['credentials','ca'] as const){
+  let calls=0;
+  const request=async(_url:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
+   calls++;
+   assert.deepEqual(JSON.parse(String(init?.body)),{ref:'main',return_run_details:true,inputs:{
+    worker:'database-mcp-worker',deploy_to_production:'false',database_hyperdrive_rotation_mode:mode,
+    database_hyperdrive_id:'disabled_hd',database_hyperdrive_revision:'2'
+   }});
+   return Response.json({workflow_run_id:123});
+  };
+  assert.deepEqual(await dispatchHyperdriveRotationCheck(env(),mode,'disabled_hd',2,request as typeof fetch),{runId:123});
+  assert.equal(calls,1);
+ }
+ let called=false;
+ const deny=async()=>{called=true;throw Error('network must not be reached')};
+ for(const [mode,id,revision] of [['ca','../other',2],['unsafe','safe',2],['credentials','safe',0]] as const){
+  await assert.rejects(dispatchHyperdriveRotationCheck(env(),mode as 'credentials',id,revision,deny as typeof fetch));
+ }
+ assert.equal(called,false);
 });

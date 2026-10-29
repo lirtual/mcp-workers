@@ -9,7 +9,7 @@ import { createRegistryConnection, deleteRegistryConnection, getRegistryConnecti
 import { rotateRegistryKeys } from '../registry/rotation.js';
 import type { Dialect, Env } from '../types.js';
 import { validateCsrf, verifyAccess } from './access.js';
-import { dispatchHyperdriveAction, dispatchHyperdrivePrepare, dispatchHyperdriveApply, verifyGithubActionsDispatch,
+import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, dispatchHyperdrivePrepare, dispatchHyperdriveApply, verifyGithubActionsDispatch,
   verifyGithubPrCapability, readHyperdriveUnbindStatus } from './github-actions.js';
 import { previewHyperdriveCreation, createHyperdrivePreparation, listHyperdriveOperations,
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
@@ -165,12 +165,12 @@ export async function handleSetup(
       const operations = await listHyperdriveOperations(env.DB);
       return setupPage(connections, token, operations);
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|hyperdrive-unbind-status|github-actions-check)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
     const action = path.slice('/setup/'.length);
-    if (action !== 'hyperdrive-unbind-status') await expireHyperdrivePreparations(env.DB);
+    if (action !== 'hyperdrive-unbind-status' && action !== 'hyperdrive-rotation-check') await expireHyperdrivePreparations(env.DB);
     if (action === 'rotate') {
       // The Worker cannot inspect the private key material of rollback-eligible
       // versions or historical D1 backups. Require an explicit Owner attestation
@@ -279,6 +279,15 @@ export async function handleSetup(
     if (action === 'hyperdrive-unbind-status') {
       if (row.transport !== 'hyperdrive' || row.status !== 'disabled' || row.revision !== version) invalid();
       return setupUnbindStatusResult(await readHyperdriveUnbindStatus(env, id, requestFetch));
+    }
+    if (action === 'hyperdrive-rotation-check') {
+      if (row.transport !== 'hyperdrive' || row.status !== 'disabled' ||
+          row.revision !== version) invalid();
+      const mode = required(form, 'rotation_mode');
+      if (mode !== 'credentials' && mode !== 'ca') invalid();
+      const receipt = await dispatchHyperdriveRotationCheck(env, mode, id, version, requestFetch);
+      return setupResult('Read-only Hyperdrive rotation isolation check accepted. Review the protected GitHub Run. No password, CA, Worker, or D1 changes requested.' +
+        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Dispatch is not an eligibility receipt.'));
     }
     if (action === 'hyperdrive-action') {
       if (row.transport !== 'hyperdrive' || row.status !== 'disabled' || row.revision !== version) invalid();

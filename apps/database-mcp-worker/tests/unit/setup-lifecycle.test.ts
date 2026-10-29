@@ -514,3 +514,46 @@ it('Owner sees read-only staged unbinding status from /setup with CSRF and disab
   expect(sqlite.prepare('SELECT phase,updated_at FROM hyperdrive_operations WHERE logical_id=?').get('expired_candidate'))
     .toMatchObject({phase:'pending',updated_at:1});
 });
+
+it('Owner rotation readiness is read-only in D1 and rejects stale, invalid or missing authority',async()=>{
+ const {sqlite,env}=fixture();instances.push(sqlite);
+ sqlite.prepare(`INSERT INTO database_connections
+   (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
+   VALUES ('pending_hd','mysql','hyperdrive','disabled',
+     '11111111222233334444555555555555','HYPERDRIVE_TEST',4,1,1)`).run();
+ const {jwt,certificates}=await auth();
+ const dispatched:unknown[]=[];
+ const requestFetch:typeof fetch=async(input,init)=>{
+  if(String(input).includes('api.github.com')){
+   dispatched.push(JSON.parse(String(init?.body)));
+   return Response.json({workflow_run_id:475});
+  }
+  return certificates();
+ };
+ const open=()=>handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+ const page=await open();expect(page.status).toBe(200);
+ const html=await page.text();
+ expect(html).toContain('action="/setup/hyperdrive-rotation-check"');
+ const rotationForm=html.split('action="/setup/hyperdrive-rotation-check"')[1]?.split('</form>')[0]??'';
+ expect(rotationForm).not.toContain('name="origin_password"');
+ const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+ const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+ const post=(values:Record<string,string>)=>handleSetup(new Request(pageUrl+'/hyperdrive-rotation-check',{
+  method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+   cookie,'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({csrf,id:'pending_hd',revision:'4',rotation_mode:'credentials',...values})
+ }),env,requestFetch);
+ expect((await post({csrf:'invalid'})).status).toBe(403);
+ expect((await post({revision:'5'})).status).toBe(422);
+ expect((await post({rotation_mode:'apply'})).status).toBe(422);
+ expect(dispatched).toHaveLength(0);
+ env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
+ const answer=await post({});expect(answer.status).toBe(200);
+ expect(await answer.text()).toContain('Workflow Run ID: 475');
+ expect(dispatched).toHaveLength(1);
+ expect(dispatched[0]).toMatchObject({inputs:{database_hyperdrive_rotation_mode:'credentials',
+  database_hyperdrive_id:'pending_hd',database_hyperdrive_revision:'4',deploy_to_production:'false'}});
+ expect(sqlite.prepare("SELECT status,revision,updated_at FROM database_connections WHERE id='pending_hd'").get())
+  .toEqual({status:'disabled',revision:4,updated_at:1});
+ expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toEqual({n:0});
+});

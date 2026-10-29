@@ -117,10 +117,10 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
 
-test('Database lifecycle dispatch stays within nine inputs and production pins Owner-reviewed SHA',()=>{
+test('Database lifecycle dispatch stays within ten inputs and production pins Owner-reviewed SHA',()=>{
   const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
   const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
-  assert.ok(names.length===9,'release workflow_dispatch must have exactly nine inputs');
+  assert.ok(names.length===10,'release workflow_dispatch must have exactly ten inputs');
   assert.equal(new Set(names).size,names.length);
   assert.ok(names.includes('database_expected_release_sha'));
   const deploy=release.slice(release.indexOf('\n  deploy:\n'));
@@ -232,4 +232,19 @@ test('Database CI preserves local-only Wrangler D1 drain regression without a se
   assert.match(testSource,/syntheticId='00000000-0000-4000-8000-000000000476'/);
   assert.doesNotMatch(testSource,/'--remote'/);
   assert.match(release,/name: Verify Database D1 schema and fresh registry before publication \(read-only\)/);
+});
+
+test('Hyperdrive credentials and CA checks cannot mutate or start any other release job',async()=>{
+  const {verifyDatabaseRotationGate}=await import('./verify-workflow-dispatch-gates.mjs');
+  const script=readFileSync(new URL('./check-database-hyperdrive-rotation-476.mjs',import.meta.url),'utf8');
+  verifyDatabaseRotationGate(release,script);
+  const mutations=[
+    release.replace("inputs.database_hyperdrive_rotation_mode == 'ca'", "inputs.database_hyperdrive_rotation_mode == 'unsafe'"),
+    release.replace('run: node scripts/check-database-hyperdrive-rotation-476.mjs','run: node scripts/apply-database-hyperdrive-476.mjs'),
+    release.replace("inputs.deploy_to_production == false &&\n          (inputs.database_hyperdrive_rotation_mode", "inputs.deploy_to_production == true &&\n          (inputs.database_hyperdrive_rotation_mode"),
+    release.replace('name: Check Hyperdrive rotation safety (read-only, no deployment)','name: Check Hyperdrive rotation safety (read-only, no deployment)\n    permissions:\n      contents: write')
+  ];
+  for(const bad of mutations)assert.throws(()=>verifyDatabaseRotationGate(bad,script));
+  assert.throws(()=>verifyDatabaseRotationGate(release,script+"\nconst bad={method:'PATCH'};"));
+  assert.throws(()=>verifyDatabaseRotationGate(release,script+"\nawait query('DELETE FROM database_connections');"));
 });

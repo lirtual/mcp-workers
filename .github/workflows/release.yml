@@ -48,6 +48,11 @@ on:
         required: false
         type: string
         default: ''
+      database_hyperdrive_rotation_mode:
+        description: 'Database only: Owner read-only rotation eligibility (credentials or ca), no writes'
+        required: false
+        type: string
+        default: ''
       database_expected_release_sha:
         description: 'Database production release: exact Owner-reviewed main commit SHA'
         required: false
@@ -74,7 +79,7 @@ jobs:
           github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id != '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_enable_approved != true &&
-          inputs.database_hyperdrive_retire_approved != true }}
+          inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_rotation_mode == '' }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -119,7 +124,7 @@ jobs:
           inputs.database_hyperdrive_prepare_id == '' &&
           inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true &&
           inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' &&
-          inputs.database_expected_release_sha == '' }}
+          inputs.database_expected_release_sha == '' && inputs.database_hyperdrive_rotation_mode == '' }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -164,7 +169,7 @@ jobs:
           inputs.database_hyperdrive_enable_approved == true &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_retire_approved != true &&
-          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' }}
+          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' && inputs.database_hyperdrive_rotation_mode == '' }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -198,6 +203,49 @@ jobs:
           DATABASE_ACTIVATION_REVISION: ${{ inputs.database_hyperdrive_revision }}
         run: node scripts/activate-database-hyperdrive.mjs
 
+  database-hyperdrive-rotation-check:
+    name: Check Hyperdrive rotation safety (read-only, no deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false &&
+          (inputs.database_hyperdrive_rotation_mode == 'credentials' || inputs.database_hyperdrive_rotation_mode == 'ca') &&
+          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' &&
+          inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_expected_release_sha == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to current reviewed main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Inspect disabled D1, current Workers and rollback references only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_ROTATION_MODE: ${{ inputs.database_hyperdrive_rotation_mode }}
+          DATABASE_ROTATION_ID: ${{ inputs.database_hyperdrive_id }}
+          DATABASE_ROTATION_REVISION: ${{ inputs.database_hyperdrive_revision }}
+        run: node scripts/check-database-hyperdrive-rotation-476.mjs
+
   database-hyperdrive-retire:
     name: Protected Hyperdrive D1 identity retirement (no Worker deployment)
     if: >-
@@ -206,7 +254,7 @@ jobs:
           inputs.database_hyperdrive_retire_approved == true &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_enable_approved != true &&
-          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' }}
+          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' && inputs.database_hyperdrive_rotation_mode == '' }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -252,7 +300,7 @@ jobs:
 
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_rotation_mode == '' }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -268,7 +316,7 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' &&
+          needs.checks.outputs.release_ready == 'true' && inputs.database_hyperdrive_rotation_mode == '' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
@@ -1071,7 +1119,7 @@ jobs:
           inputs.database_hyperdrive_apply_id != '' && inputs.database_expected_release_sha != '' &&
           inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true &&
           inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' &&
-          inputs.database_hyperdrive_revision == '' }}
+          inputs.database_hyperdrive_revision == '' && inputs.database_hyperdrive_rotation_mode == '' }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker

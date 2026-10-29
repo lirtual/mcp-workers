@@ -197,6 +197,25 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   operation census. Until an independently checkable drain/isolation contract
   exists, maintain the separate GitHub PR review and pinned manual release
   path. Never infer safe deletion or rollback from a clean Draft PR.
+  Credential and CA rotation now have an **isolation preflight only** in the
+  existing protected `release.yml` (`database-hyperdrive-rotation-check`) and
+  Owner `/setup`. It accepts a disabled ID, exact revision, and one of
+  `credentials` or `ca`, with **no passwords, CA PEM, resource writes or
+  deployment**. The Runner reads D1 status/in-flight/unfinished operations,
+  current CA/TLS/cache config, all current account Worker settings, and each
+  Worker's deployable version bindings including active-version receipts.
+  Any referenced version, incomplete inventory, shared registry, stale D1,
+  source Binding, version drift or missing migration blocks the check. The
+  single optional rotation mode brings existing `release.yml` to ten inputs;
+  all other lifecycle and production jobs explicitly reject a rotation mode.
+  Passing this preliminary check is neither a mutation approval nor a global
+  drain certificate: repeat evidence under a separately reviewed write
+  action, reconcile unknown outcomes, and retain the old CA/version until
+  safety is proven. **The password/CA write phase is not implemented.**
+  Production `0003` is still unapplied and the 13 retained-version references
+  block in-place changes. Do not disable production connections merely to
+  make this readiness check pass. An isolated independent Hyperdrive candidate
+  plus reviewed binding switch remains the safe option for shared configs.
   `/setup` provides a separate **Check unbinding PR (read-only)** action for a
   disabled Hyperdrive ID and expected revision. It looks up only the stable
   branch in the same repository and allows only the two reviewed source-file
@@ -206,7 +225,7 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   is performed by the status check.
 - Enable/retire use shared `database_hyperdrive_id` and
   `database_hyperdrive_revision` inputs with their respective explicit approval flag.
-  Release dispatch has exactly nine inputs; `database_hyperdrive_apply_id` is the only new input in this continuation. Retirement checks
+  Release dispatch has exactly ten inputs; `database_hyperdrive_apply_id` is the only new input in this continuation. Retirement checks
   every returned deployable rollback version before D1 CAS/tombstone and always retains
   upstream Hyperdrive/CA. Unconfirmed rollback inventory blocks retirement; shared CA
   deletion is never inferred from removal of one logical connection.
