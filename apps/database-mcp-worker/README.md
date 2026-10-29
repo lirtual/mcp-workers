@@ -4,18 +4,24 @@ Cloudflare MCP Worker for bounded SQL reads, schema inspection, structured Safe 
 
 ## Delivery boundary
 
-**Current transition (2026-10-29):** MySQL Direct (`b2b`, `scrape_relay`) remain active and unchanged.
-Legacy Aiven test references `aiven_mysql_test` and `aiven_pg_test` were independently
-CAS-disabled before removing their Worker bindings. The new dedicated Hyperdrive
-`aiven-mysql-openlist` connects to the `openlist` MySQL database as `avnadmin`
-under `HYPERDRIVE_AIVEN_OPENLIST` and must remain disabled in D1 until protected
-owner activation passes Cloudflare strict `VERIFY_IDENTITY`, CA provenance, cache-off,
-deployed binding, and live health checks. This change does not claim any production
-OpenList SQL write/DDL acceptance. Both obsolete logical IDs must be retired after
-the release using the existing protected `database_hyperdrive_retire_approved` workflow
-and must never be reused. The old Cloudflare Hyperdrive configs and shared CA must
-only be deleted after verifying other consumers and rollback-version dependencies.
-Prior `aiven_mysql_test` full E2E evidence remains available
+**Production state (2026-10-29):** MySQL Direct `b2b` and `scrape_relay` remain active and
+unchanged. The dedicated MySQL Hyperdrive logical connection `aiven_mysql_openlist` is
+**active**, using Cloudflare Hyperdrive `aiven-mysql-openlist` for the Aiven `openlist`
+database as `avnadmin`; protected activation
+([Action #40834639046](https://github.com/lirtual/mcp-workers/actions/runs/40834639046))
+and live read-only health / `SELECT 1` passed. Real OpenList production write and DDL
+acceptance was **not performed**.
+
+Legacy D1 test IDs `aiven_mysql_test` and `aiven_pg_test` were CAS-disabled, unbound in
+[PR #460](https://github.com/lirtual/mcp-workers/pull/460), independently retired through
+protected Actions, confirmed in `retired_connection_ids`, and their dedicated Cloudflare
+Hyperdrive configurations removed after verifying none of the 20 current Workers refer
+to them. Historical test IDs must never be reused. The Aiven project CA remains valid
+and in use by the active OpenList Hyperdrive; it retains its legacy human-readable
+test-oriented name because Cloudflare rejects duplicate certificate uploads (1471),
+deletion while in use (1476), and updates with invalid substitute CA (2015).
+Do not delete the CA or downgrade `VERIFY_IDENTITY` merely to change its name.
+Prior test-only Hyperdrive E2E evidence is retained
 ([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6488549684)).
 PostgreSQL Hyperdrive E2E and PostgreSQL Direct plaintext E2E remain unperformed.
 Spec #344 remains **Open**.
@@ -35,6 +41,12 @@ The new D1 `database_connections` registry supports 0–10 configured logical co
 |---|---|---|---|
 | **Direct** | AES-256-GCM encrypted URL per D1 row | **Plaintext TCP**, explicitly insecure; credentials and SQL can be intercepted | Direct records may be changed individually with no Worker release |
 | **Hyperdrive** | Nonsecret config ID and binding name in D1; origin password and CA only in Cloudflare | **Must be separately proven** strict chain/hostname TLS and disabled caching at the Hyperdrive → origin boundary | Dedicated Cloudflare config and versioned Worker binding through the existing protected GitHub Actions release |
+
+## Owner-triggered Hyperdrive Actions
+
+The existing Owner-only `/setup` page can request `enable` or `retire` for a **disabled** Hyperdrive D1 reference. Each request is gated by the existing exact Owner Access identity, Origin and CSRF checks, revision validation, and exact ID confirmation for retirement. The Worker calls only the allowlisted `release.yml` GitHub `workflow_dispatch` endpoint on `main` with `deploy_to_production=false`. The existing protected Action independently verifies `github.actor=lirtual`, immutable main, Cloudflare binding/origin/CA/cache, live health or unbinding evidence, and D1 CAS. A GitHub 204 response confirms **request acceptance only**, not completion.
+
+The feature requires an **optional Worker Secret** `DATABASE_GITHUB_ACTIONS_TOKEN`: a fine-grained, Owner-owned GitHub PAT restricted to repository `lirtual/mcp-workers` with only `Actions: Read and write`. Never put this PAT into D1, public variables, page fields, logs, the repository or GitHub workflow inputs. If it is absent or invalid, the Owner action fails closed and existing Direct/SQL/Hyperdrive connections continue unaffected. This token can dispatch any permitted workflow at the GitHub account level, so its scope and lifecycle must be reviewed carefully. Passwords, CA PEM, TLS and database target changes remain Cloudflare-managed and out of scope for webpage dispatch. Binding removal requires a reviewed source change plus ordinary release **before** retirement is requested; the retirement job never removes Worker bindings or Cloudflare resources itself.
 
 The Owner `/setup` page uses Cloudflare Access exact-email OTP, native Access identity with strict signed-JWT fallback, Origin/CSRF checks and throttling. Direct creation and sensitive credential edits require plaintext-risk acceptance. A logical ID must keep the same host/IP, port and database; changing target requires a new ID. Passwords, URLs, CA, keys and ciphertext are never displayed. PostgreSQL Direct requires explicit plaintext acceptance; live E2E remains unverified. Hyperdrive references enter D1 **disabled** and require protected Owner/main GitHub Actions activation with Cloudflare readback and a signed, bounded read-only Worker preflight **before** D1 becomes active. The private `/internal/hyperdrive-health` route requires existing MCP bearer auth plus a short-lived HKDF-derived HMAC proof from the existing Owner Actions encryption-key Secret; it accepts only a disabled Hyperdrive ID and exact revision, runs health only, never writes D1, and returns no secrets. Failed probes leave D1 disabled. MySQL Hyperdrive is now active; PostgreSQL Hyperdrive is still disabled.
 

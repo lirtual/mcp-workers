@@ -146,6 +146,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(sqlite.prepare("SELECT status,transport,revision FROM database_connections WHERE id='cloud_ref'").get())
       .toMatchObject({ status: 'disabled', transport: 'hyperdrive', revision: 1 });
     expect((await post('enable', { id: 'cloud_ref', revision: '1' })).status).toBe(503);
+    expect((await post('hyperdrive-action', { id: 'cloud_ref', revision: '1',
+      hyperdrive_action: 'enable' })).status).toBe(503); // Owner dispatch secret not configured.
+    expect((await post('hyperdrive-action', { id: 'cloud_ref', revision: '1',
+      hyperdrive_action: 'retire', confirm_id: 'wrong' })).status).toBe(422);
     expect((await post('edit', { id: 'cloud_ref', revision: '1', credential_mode: 'keep' })).status).toBe(422);
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
     // PostgreSQL Direct uses the same explicit plaintext acceptance and real health gate.
@@ -159,7 +163,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
     expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
-    expect(initialPageHtml).toContain('Hyperdrive activation and retirement require protected GitHub Actions');
+    expect(initialPageHtml).toContain('Hyperdrive actions run in protected GitHub Actions');
+    expect(initialPageHtml).toContain('action="/setup/hyperdrive-action"');
+    expect(initialPageHtml).toContain('Request enable');
+    expect(initialPageHtml).toContain('Request retirement');
     expect(initialPageHtml).not.toContain('name="ciphertext"');
     expect(initialPageHtml).not.toContain('reader:pass');
     vi.unstubAllGlobals();

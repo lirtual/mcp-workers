@@ -9,6 +9,7 @@ import { createRegistryConnection, deleteRegistryConnection, getRegistryConnecti
 import { rotateRegistryKeys } from '../registry/rotation.js';
 import type { Dialect, Env } from '../types.js';
 import { validateCsrf, verifyAccess } from './access.js';
+import { dispatchHyperdriveAction } from './github-actions.js';
 import { setupFailure, setupPage, setupResult } from './page.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
@@ -143,7 +144,7 @@ export async function handleSetup(
       const token = btoa(String.fromCharCode(...raw)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
       return setupPage(await listRegistryConnections(env.DB), token);
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
@@ -193,6 +194,14 @@ export async function handleSetup(
     }
     const version = revision(form);
     const row = await requiredRow(env, id);
+    if (action === 'hyperdrive-action') {
+      if (row.transport !== 'hyperdrive' || row.status !== 'disabled' || row.revision !== version) invalid();
+      const operation = required(form, 'hyperdrive_action');
+      if (operation !== 'enable' && operation !== 'retire') invalid();
+      if (operation === 'retire' && required(form, 'confirm_id') !== id) invalid();
+      await dispatchHyperdriveAction(env, operation, id, version, requestFetch);
+      return setupResult('Protected GitHub Actions request accepted. Review the workflow result before treating this connection as changed.');
+    }
     if (action === 'disable') {
       await setRegistryConnectionStatus(env.DB, id, version, 'disabled');
       return setupResult('Connection disabled for new operations.');

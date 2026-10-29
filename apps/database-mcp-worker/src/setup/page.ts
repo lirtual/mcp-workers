@@ -45,7 +45,19 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
         ? action(row, csrf, 'enable') + action(row, csrf, 'delete') :
       row.transport === 'hyperdrive' ? '' : action(row, csrf, 'delete')) +
     (row.transport === 'hyperdrive'
-      ? '<p class="muted">Hyperdrive activation and retirement require protected GitHub Actions verification. The Cloudflare binding, CA and cache must be verified first.</p>'
+      ? '<p class="muted">Hyperdrive actions run in protected GitHub Actions after exact binding, CA and cache verification. A successful request does not confirm completion.</p>' +
+        (row.status === 'disabled'
+          ? '<details><summary>Manage Hyperdrive via GitHub Actions</summary>' +
+            '<p class="muted">Enable requires a published, reviewed binding. Retirement requires a prior unbinding release and no remaining rollback dependency.</p>' +
+            '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
+            '<input type="hidden" name="hyperdrive_action" value="enable">' +
+            '<button type="submit">Request enable</button></form>' +
+            '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
+            '<input type="hidden" name="hyperdrive_action" value="retire">' +
+            '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' +
+            '<button type="submit">Request retirement</button></form></details>'
+          : '') +
+        '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View GitHub Actions results</a></p>'
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
     `<details><summary>Edit connection</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credentials<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
