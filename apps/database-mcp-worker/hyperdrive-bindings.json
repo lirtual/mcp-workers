@@ -1,22 +1,12 @@
 [
   {
-    "binding": "HYPERDRIVE_AIVEN_MYSQL",
-    "id": "31fc05c77ac042ff927a6d3cbf5bbb7d",
+    "binding": "HYPERDRIVE_AIVEN_OPENLIST",
+    "id": "135ef2e15db049c68e99b0849f9a3da0",
     "dialect": "mysql",
     "origin_host": "mysql-zeroverse.d.aivencloud.com",
     "origin_port": 18691,
-    "origin_database": "database-mcp-test-mysql",
-    "origin_user": "test",
-    "ca_certificate_id": "c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a"
-  },
-  {
-    "binding": "HYPERDRIVE_AIVEN_POSTGRES",
-    "id": "b2c7dab22f594bbca255827065e19bce",
-    "dialect": "postgres",
-    "origin_host": "postgresql-zeroverse.d.aivencloud.com",
-    "origin_port": 18691,
-    "origin_database": "database-mcp-test-postgres",
-    "origin_user": "test",
+    "origin_database": "openlist",
+    "origin_user": "avnadmin",
     "ca_certificate_id": "c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a"
   }
 ]
