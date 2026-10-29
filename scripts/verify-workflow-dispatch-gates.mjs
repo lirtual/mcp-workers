@@ -51,7 +51,7 @@ export function verifyDatabaseActivationGate(source) {
       "github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'",
       "github.actor == 'lirtual'", "inputs.worker == 'database-mcp-worker'",
       'inputs.database_hyperdrive_enable_approved == true',
-      'inputs.deploy_to_production == false', 'inputs.database_aiven_provision_approved != true',
+      'inputs.deploy_to_production == false',
       "inputs.database_hyperdrive_enable_id != ''", "inputs.database_hyperdrive_enable_revision != ''",
       'name: database-mcp-worker', 'group: worker-release-database-mcp-worker',
       'secrets.CLOUDFLARE_API_TOKEN', 'secrets.MCP_ACCESS_TOKEN',
@@ -62,6 +62,8 @@ export function verifyDatabaseActivationGate(source) {
   for (const legacy of [
     'database_prepare_approved:', 'database_direct_preflight_approved:',
     'database_restore_approved:', 'database_restore_expected_version:',
+    'database_aiven_provision_approved:', '\n  database-aiven-provision:\n',
+    'node scripts/database-aiven-hyperdrive-prepare-344.mjs',
     '\n  database-prepare:\n', '\n  database-direct-preflight:\n',
     '\n  database-restore:\n', 'node scripts/database-legacy-restore-',
     'node scripts/database-prep-344.mjs', 'node scripts/database-direct-preflight-344.mjs'
