@@ -1,7 +1,7 @@
 import type { Connection } from 'mysql2/promise';
 import type { Client as PgClient } from 'pg';
 import { createPostgresClient, createMysqlClient } from './clients.js';
-import { assertMysqlHyperdriveSqlMode, mysqlSafeParams } from './mysql-mode.js';
+import { assertMysqlInterpolationSqlMode, mysqlSafeParams } from './mysql-mode.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import type { BuiltWriteStatement } from '../sql/write.js';
 import type { EffectiveWriteConnection, WriteResult } from '../types.js';
@@ -124,14 +124,17 @@ async function mysqlInsert(
   return withMysqlClient(connection, async client => {
     const params = mysqlSafeParams(statement.params);
     if (connection.transport === 'direct') {
-      const [result] = await mysqlTimed(client, connection, client.execute(statement.sql, params));
+      // Some Direct origins reject COM_STMT_PREPARE. Use the same checked
+      // dedicated session and bounded client interpolation as Direct reads.
+      await assertMysqlInterpolationSqlMode(client, connection);
+      const [result] = await mysqlTimed(client, connection, client.query(statement.sql, params));
       return { affectedRows: mysqlAffectedRows(result) };
     }
     let transactionOpen = false;
     try {
       await mysqlTimed(client, connection, client.beginTransaction());
       transactionOpen = true;
-      await assertMysqlHyperdriveSqlMode(client, connection);
+      await assertMysqlInterpolationSqlMode(client, connection);
       const [result] = await mysqlTimed(client, connection, client.query(statement.sql, params));
       const affectedRows = mysqlAffectedRows(result);
       await mysqlTimed(client, connection, client.commit());
@@ -152,12 +155,11 @@ async function mysqlGuardedMutation(
     try {
       await mysqlTimed(client, connection, client.beginTransaction());
       transactionOpen = true;
-      if (connection.transport === 'hyperdrive') await assertMysqlHyperdriveSqlMode(client, connection);
+      // For both transports, validate the actual session's escaping mode
+      // inside the transaction before interpolating parameters.
+      await assertMysqlInterpolationSqlMode(client, connection);
       const params = mysqlSafeParams(statement.params);
-      const [result] = await mysqlTimed(
-        client, connection,
-        connection.transport === 'hyperdrive' ? client.query(statement.sql, params) : client.execute(statement.sql, params)
-      );
+      const [result] = await mysqlTimed(client, connection, client.query(statement.sql, params));
       const affectedRows = mysqlAffectedRows(result);
       if (affectedRows > connection.maxAffectedRows) {
         await mysqlTimed(client, connection, client.rollback());
