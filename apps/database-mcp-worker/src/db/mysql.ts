@@ -1,6 +1,6 @@
 import type { Connection, FieldPacket } from 'mysql2/promise';
 import { createMysqlClient } from './clients.js';
-import { assertMysqlHyperdriveSqlMode, mysqlSafeParams } from './mysql-mode.js';
+import { assertMysqlHyperdriveSqlMode, assertMysqlInterpolationSqlMode, mysqlSafeParams } from './mysql-mode.js';
 import { mapDatabaseError, PublicError } from '../errors.js';
 import { assertJsonWithinBytes, boundQueryResult, jsonSafe } from '../result.js';
 import { guardReadQuery, injectMySqlExecutionTimeout, toReadLimitedSql } from '../sql/guard.js';
@@ -38,13 +38,16 @@ async function withConnection<T>(
   }
 }
 
-/** MySQL Direct uses server-bound parameters; Hyperdrive lacks COM_STMT_PREPARE.
- * Hyperdrive callers are already inside a pinned transaction with SQL-mode
- * checked by withConnection, so only that transport uses client interpolation.
+/** Some Direct origins cannot complete COM_STMT_PREPARE (mysql2.execute).
+ * For parameterized reads, verify the same Direct session's escaping mode first;
+ * Hyperdrive is already checked inside a pinned transaction by withConnection.
  */
-function boundQuery(client: Connection, connection: EffectiveConnection, sql: string, params: unknown[]) {
+async function boundQuery(client: Connection, connection: EffectiveConnection, sql: string, params: unknown[]) {
   const values = mysqlSafeParams(params);
-  return connection.transport === 'direct' ? client.execute(sql, values) : client.query(sql, values);
+  if (connection.transport === 'direct' && values.length > 0) {
+    await assertMysqlInterpolationSqlMode(client, connection);
+  }
+  return client.query(sql, values);
 }
 
 function columnsFromFields(fields: readonly FieldPacket[] | undefined): QueryColumn[] {

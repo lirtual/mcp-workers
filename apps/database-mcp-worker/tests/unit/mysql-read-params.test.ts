@@ -15,9 +15,15 @@ const base: EffectiveConnection = {
   limits: { maxRows: 10, maxResultBytes: 10000, maxSchemaBytes: 10000, queryTimeoutMs: 5000 }
 };
 
-function mockClient() {
-  const execute = vi.fn().mockResolvedValue([[['safe']], []]);
-  const query = vi.fn().mockResolvedValue([[['safe']], []]);
+function mockClient(sqlMode = 'STRICT_TRANS_TABLES') {
+  const execute = vi.fn().mockRejectedValue(new Error('unsupported COM_STMT_PREPARE'));
+  const query = vi.fn().mockImplementation(async (sql: string) => {
+    if (sql.startsWith('SHOW SESSION VARIABLES')) {
+      return [[{ Variable_name: 'sql_mode', Value: sqlMode }], []];
+    }
+    if (sql.includes('information_schema.columns')) return [[['id', 'int', 'NO', null, 1, '']], []];
+    return [[['safe']], []];
+  });
   const beginTransaction = vi.fn().mockResolvedValue(undefined);
   const rollback = vi.fn().mockResolvedValue(undefined);
   const end = vi.fn().mockResolvedValue(undefined);
@@ -26,39 +32,53 @@ function mockClient() {
   return { execute, query, beginTransaction, rollback };
 }
 
-describe('MySQL read parameter binding', () => {
+describe('MySQL read interpolation safety and Direct compatibility', () => {
   afterEach(() => vi.clearAllMocks());
 
-  it('uses server-side binding for Direct query_read (including SQL-mode-sensitive values)', async () => {
+  it('checks Direct session SQL mode before interpolating SQL-mode-sensitive values, without COM_STMT_PREPARE', async () => {
     const client = mockClient();
     const value = "a'\\\\b";
     await mysqlQueryRead(base, 'SELECT ? AS value', [value], 2);
-    expect(client.execute).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('SELECT ? AS value'), [value]);
-    expect(client.query).not.toHaveBeenCalled();
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query.mock.calls[0]?.[0]).toContain('SHOW SESSION VARIABLES');
+    expect(client.query.mock.calls[1]?.[0]).toContain('SELECT ? AS value');
+    expect(client.query.mock.calls[1]?.[1]).toEqual([value]);
+    expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('uses server-side binding for Direct explain', async () => {
+  it('preserves Direct constant SELECT without requiring a mode-dependent interpolation check', async () => {
+    const client = mockClient();
+    await mysqlQueryRead(base, 'SELECT 1 AS value', [], 2);
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe Direct session mode before interpolating a value', async () => {
+    const client = mockClient('NO_BACKSLASH_ESCAPES');
+    await expect(mysqlQueryRead(base, 'SELECT ? AS value', ["'\\x"], 2))
+      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it('checks session SQL mode for Direct EXPLAIN parameters', async () => {
     const client = mockClient();
     await mysqlExplain(base, 'SELECT ? AS value', ["'\\value"]);
-    expect(client.execute).toHaveBeenCalledWith(expect.stringContaining('EXPLAIN FORMAT=JSON'), ["'\\value"]);
-    expect(client.query).not.toHaveBeenCalled();
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query.mock.calls[1]?.[0]).toContain('EXPLAIN FORMAT=JSON');
+    expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('uses server-side binding for Direct schema introspection', async () => {
+  it('checks session SQL mode for Direct schema introspection parameters', async () => {
     const client = mockClient();
-    client.execute.mockResolvedValueOnce([[['id', 'int', 'NO', null, 1, '']], []])
-      .mockResolvedValueOnce([[], []]).mockResolvedValueOnce([[], []]);
     await mysqlInspectSchema(base, 'app', 'users');
-    expect(client.execute).toHaveBeenCalledTimes(3);
-    expect(client.execute.mock.calls.every(([sql, params]) => typeof sql === 'string' &&
-      sql.includes(' = ?') && Array.isArray(params) && params.includes('users'))).toBe(true);
-    expect(client.query).not.toHaveBeenCalled();
+    expect(client.query).toHaveBeenCalledTimes(6);
+    expect(client.query.mock.calls.filter(([sql]) => String(sql).startsWith('SHOW SESSION VARIABLES'))).toHaveLength(3);
+    expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('preserves Hyperdrive query interpolation only after pinned SQL-mode verification', async () => {
+  it('keeps Hyperdrive interpolation behind a pinned session-mode check', async () => {
     const client = mockClient();
-    client.query.mockResolvedValueOnce([[{ Variable_name: 'sql_mode', Value: 'STRICT_TRANS_TABLES' }], []])
-      .mockResolvedValueOnce([[['safe']], []]);
     await mysqlQueryRead({ ...base, transport: 'hyperdrive' }, 'SELECT ? AS value', ['safe'], 2);
     expect(client.beginTransaction).toHaveBeenCalledOnce();
     expect(client.query).toHaveBeenCalledTimes(2);
@@ -66,9 +86,8 @@ describe('MySQL read parameter binding', () => {
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('rejects Hyperdrive interpolation when session mode cannot be verified', async () => {
-    const client = mockClient();
-    client.query.mockResolvedValueOnce([[{ Variable_name: 'sql_mode', Value: 'NO_BACKSLASH_ESCAPES' }], []]);
+  it('rejects Hyperdrive interpolation on incompatible SQL mode', async () => {
+    const client = mockClient('NO_BACKSLASH_ESCAPES');
     await expect(mysqlQueryRead({ ...base, transport: 'hyperdrive' }, 'SELECT ? AS value', ['safe'], 2))
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
     expect(client.query).toHaveBeenCalledOnce();
