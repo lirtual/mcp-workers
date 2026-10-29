@@ -224,7 +224,7 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   const reviewedBindings = JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
   const source = {
     name: "database-mcp-worker", main: "src/index.ts",
-    secrets: { required: ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"] },
+    secrets: { required: ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"] },
     workers_dev: true, preview_urls: false,
     hyperdrive: reviewedBindings.map(x => ({ binding: x.binding, id: x.id })),
     d1_databases: [{ binding: "DB", database_name: "database-mcp-registry",
@@ -249,7 +249,7 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   broken(x => { x.routes = []; }, /dedicated HTTPS hostname/);
   broken(x => { x.routes[0].pattern = "other.example.com"; }, /dedicated HTTPS hostname/);
   broken(x => { x.ratelimits[1].simple.limit = 100; }, /rate-limit policies/);
-  const names = ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"];
+  const names = ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"];
   const limiter = source.ratelimits[0];
   const setup = source.ratelimits[1];
   const list = names.map(name => ({ name }));
@@ -448,7 +448,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const secretStep = workflow.slice(secretStart, variableStart);
   assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_ENCRYPTION_KEY", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.ok(secretStep.includes("vars.DATABASE_KEY_ID"),
