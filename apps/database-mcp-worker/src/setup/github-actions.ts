@@ -7,33 +7,14 @@ import { PublicError } from '../errors.js';
 const WORKFLOW_URL = 'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/release.yml/dispatches';
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-export async function dispatchHyperdriveAction(
+async function dispatchWorkflow(
   env: Env,
-  action: 'enable' | 'retire',
-  id: string,
-  revision: number,
-  request: typeof fetch = fetch
+  inputs: Record<string, string>,
+  request: typeof fetch
 ): Promise<void> {
-  if ((action !== 'enable' && action !== 'retire') || !ID.test(id) ||
-      !Number.isSafeInteger(revision) || revision < 1) {
-    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive action.');
-  }
   const token = env.DATABASE_GITHUB_ACTIONS_TOKEN;
   if (typeof token !== 'string' || token.length < 20) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch is not configured.');
-  }
-  const inputs: Record<string, string> = {
-    worker: 'database-mcp-worker',
-    deploy_to_production: 'false'
-  };
-  if (action === 'enable') {
-    inputs.database_hyperdrive_enable_approved = 'true';
-    inputs.database_hyperdrive_enable_id = id;
-    inputs.database_hyperdrive_enable_revision = String(revision);
-  } else {
-    inputs.database_hyperdrive_retire_approved = 'true';
-    inputs.database_hyperdrive_retire_id = id;
-    inputs.database_hyperdrive_retire_revision = String(revision);
   }
   let response: Response;
   try {
@@ -56,4 +37,47 @@ export async function dispatchHyperdriveAction(
   if (response.status !== 204) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch was not accepted.');
   }
+}
+
+/**
+ * Non-destructive Owner smoke: dispatch Release Worker on main with every
+ * operation flag false. All existing release.yml jobs stay skipped; no D1,
+ * database, Hyperdrive or Worker release mutation is requested.
+ * HTTP 204 proves only GitHub accepted this request, not a completed run.
+ */
+export async function verifyGithubActionsDispatch(
+  env: Env,
+  request: typeof fetch = fetch
+): Promise<void> {
+  await dispatchWorkflow(env, {
+    worker: 'database-mcp-worker',
+    deploy_to_production: 'false'
+  }, request);
+}
+
+export async function dispatchHyperdriveAction(
+  env: Env,
+  action: 'enable' | 'retire',
+  id: string,
+  revision: number,
+  request: typeof fetch = fetch
+): Promise<void> {
+  if ((action !== 'enable' && action !== 'retire') || !ID.test(id) ||
+      !Number.isSafeInteger(revision) || revision < 1) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive action.');
+  }
+  const inputs: Record<string, string> = {
+    worker: 'database-mcp-worker',
+    deploy_to_production: 'false'
+  };
+  if (action === 'enable') {
+    inputs.database_hyperdrive_enable_approved = 'true';
+    inputs.database_hyperdrive_enable_id = id;
+    inputs.database_hyperdrive_enable_revision = String(revision);
+  } else {
+    inputs.database_hyperdrive_retire_approved = 'true';
+    inputs.database_hyperdrive_retire_id = id;
+    inputs.database_hyperdrive_retire_revision = String(revision);
+  }
+  await dispatchWorkflow(env, inputs, request);
 }

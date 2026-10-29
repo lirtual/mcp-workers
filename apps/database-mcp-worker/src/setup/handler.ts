@@ -9,7 +9,7 @@ import { createRegistryConnection, deleteRegistryConnection, getRegistryConnecti
 import { rotateRegistryKeys } from '../registry/rotation.js';
 import type { Dialect, Env } from '../types.js';
 import { validateCsrf, verifyAccess } from './access.js';
-import { dispatchHyperdriveAction } from './github-actions.js';
+import { dispatchHyperdriveAction, verifyGithubActionsDispatch } from './github-actions.js';
 import { setupFailure, setupPage, setupResult } from './page.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
@@ -144,7 +144,7 @@ export async function handleSetup(
       const token = btoa(String.fromCharCode(...raw)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
       return setupPage(await listRegistryConnections(env.DB), token);
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
@@ -158,6 +158,10 @@ export async function handleSetup(
       }
       const rotated = await rotateRegistryKeys(env.DB, env);
       return setupResult(`Rotated ${rotated.rotated}; remaining ${rotated.pending}. Keep historical keys until snapshots and backups expire.`);
+    }
+    if (action === 'github-actions-check') {
+      await verifyGithubActionsDispatch(env, requestFetch);
+      return setupResult('GitHub accepted a verification-only, no-deploy workflow request. No database or Worker changes were requested. Check the Actions run result separately.');
     }
     const id = required(form, 'id');
     if (action === 'add') {

@@ -249,6 +249,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('No database connections configured');
     expect(html).toContain('action="/setup/add"');
     expect(html).toContain('action="/setup/rotate"');
+    expect(html).toContain('action="/setup/github-actions-check"');
     expect(html).toContain('<option value="mysql">');
     expect(html).toContain('<option value="postgres">');
     expect(html).toContain('<option value="mysql">');
@@ -264,6 +265,46 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('Save disabled if connection test fails');
     expect(html).not.toContain('Owner-only. Passwords and origin URLs');
     expect(html).not.toContain('protected atomic activation');
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
+  });
+
+
+  it('Owner no-deploy GitHub Actions check requires Access and CSRF and never changes D1', async () => {
+    const { sqlite, env } = fixture(); instances.push(sqlite);
+    env.DATABASE_GITHUB_ACTIONS_TOKEN = 'github_pat_synthetic_very_long_test_token';
+    const { jwt, certificates } = await auth();
+    let dispatched = 0;
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (String(input).startsWith('https://api.github.com/')) {
+        dispatched++;
+        expect(JSON.parse(String(init?.body))).toEqual({
+          ref: 'main',
+          inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false' }
+        });
+        return new Response(null, { status: 204 });
+      }
+      return certificates();
+    };
+    const page = await handleSetup(new Request(pageUrl, {
+      headers: { 'cf-access-jwt-assertion': jwt }
+    }), env, mockFetch as typeof fetch);
+    expect(page.status).toBe(200);
+    const csrf = (await page.text()).match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+    const submission = (origin: string, token: string) =>
+      handleSetup(new Request(pageUrl + '/github-actions-check', {
+        method: 'POST',
+        headers: { 'cf-access-jwt-assertion': jwt, origin, cookie,
+          'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf: token })
+      }), env, mockFetch as typeof fetch);
+    expect((await submission('https://attacker.example.net', csrf)).status).toBe(403);
+    expect((await submission('https://db-owner.example.net', 'bad')).status).toBe(403);
+    expect(dispatched).toBe(0);
+    const result = await submission('https://db-owner.example.net', csrf);
+    expect(result.status).toBe(200);
+    expect(await result.text()).toContain('verification-only, no-deploy');
+    expect(dispatched).toBe(1);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
   });
 

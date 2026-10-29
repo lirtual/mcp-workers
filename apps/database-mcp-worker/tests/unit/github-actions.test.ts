@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { dispatchHyperdriveAction } from '../../src/setup/github-actions.js';
+import { dispatchHyperdriveAction, verifyGithubActionsDispatch } from '../../src/setup/github-actions.js';
 import type { Env } from '../../src/types.js';
 
 const token = 'github_pat_synthetic_test_token_never_real';
@@ -64,4 +64,35 @@ test('non-204 or network error does not expose provider response body', async ()
   const lost = async () => { throw Error(secret); };
   await assert.rejects(dispatchHyperdriveAction(env(), 'retire', 'safe', 1, lost as typeof fetch),
     err => { assert.doesNotMatch(String(err), /do-not-print/); return true; });
+});
+
+test('verification-only dispatch sets no release, activation, retirement, or fixture flags', async () => {
+  let calls = 0;
+  const request = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    calls++;
+    assert.equal(String(input), 'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/release.yml/dispatches');
+    assert.equal(init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      ref: 'main',
+      inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false' }
+    });
+    return new Response(null, { status: 204 });
+  };
+  await verifyGithubActionsDispatch(env(), request as typeof fetch);
+  assert.equal(calls, 1);
+});
+
+test('verification-only dispatch rejects missing token or GitHub error without leaks', async () => {
+  let calls = 0;
+  const request = async () => {
+    calls++;
+    return new Response('protected secret must never appear', { status: 403 });
+  };
+  await assert.rejects(verifyGithubActionsDispatch(env(''), request as typeof fetch), /not configured/);
+  assert.equal(calls, 0);
+  await assert.rejects(verifyGithubActionsDispatch(env(), request as typeof fetch), error => {
+    assert.doesNotMatch(String(error), /protected secret/);
+    return true;
+  });
+  assert.equal(calls, 1);
 });
