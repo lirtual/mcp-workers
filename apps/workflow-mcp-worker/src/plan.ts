@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
-import {isForeachTaskInputRef} from './github-action-inputs.ts';
+import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
@@ -198,7 +198,17 @@ function checkGitHubActionWith(withData:Record<string,unknown>,path:string):void
      !['task','session'].includes(String(action.type))||
      typeof action.contractDigest!=='string'||!/^[a-f0-9]{64}$/i.test(action.contractDigest))
     throw new PlanError('invalid_github_action',path+'/action');
-  object(action.inputs,'invalid_github_action_inputs');
+  const inputs=object(action.inputs,'invalid_github_action_inputs');
+  for(const [name,value] of Object.entries(inputs)){
+    if(typeof value==='string'||typeof value==='boolean'||
+       (typeof value==='number'&&Number.isFinite(value)))continue;
+    if(action.type==='session'&&name==='duration_minutes'&&
+       isSessionDurationInputRef(value))continue;
+    // Foreach Task templates have their own exact item-ref validator,
+    // preserving its detailed fail-closed rejection errors.
+    if(action.type==='task')continue;
+    throw new PlanError('invalid_github_action_inputs',path+'/action/inputs/'+name);
+  }
 }
 
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
@@ -581,6 +591,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
     }else if(s.uses==='github.run'){
       checkGitHubActionWith(withData,stepPath+'/with');
+      const action=withData.action as Record<string,unknown>;
+      const actionInputs=action.inputs as Record<string,unknown>;
+      if(action.type==='session'&&isSessionDurationInputRef(actionInputs.duration_minutes)){
+        // Runtime variation is limited to this one reviewed numeric field.
+        // Every such Plan has the same default and an explicit expiry mode.
+        if((o.inputs as Record<string,unknown>|undefined)?.duration_minutes!==300||
+           actionInputs.duration_mode!=='explicit')
+          throw new PlanError('invalid_session_duration_binding',
+            stepPath+'/with/action/inputs/duration_minutes');
+      }
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint');

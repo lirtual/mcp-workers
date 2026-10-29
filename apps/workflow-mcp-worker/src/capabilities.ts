@@ -258,6 +258,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
+  session_duration_binding:'For reviewed GitHub Session Actions only: Plan inputs.duration_minutes=300, Action inputs.duration_minutes={ref: inputs.duration_minutes}, Action inputs.duration_mode=explicit; workflow_run.inputs.duration_minutes is optional whole minutes 1–300. This does not authorize arbitrary Action input references; old literal Session Plans require one-time republish.',
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',

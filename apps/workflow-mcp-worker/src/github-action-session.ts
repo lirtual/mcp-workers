@@ -8,6 +8,7 @@ import {verifyPinnedGitHubActionIdentity,type GithubActionKeys} from './github-a
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import type {Plan} from './plan.ts';
+import {resolveSessionActionInputs} from './github-action-inputs.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -267,14 +268,20 @@ export async function runPublishedGitHubActionSession(
  if(typeof raw.ref!=='string'||!raw.ref.startsWith('refs/tags/')||
     !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))
   return {status:'failed',error_code:'github_action_invalid_publication'};
- const inputs:Record<string,string>={};
- for(const [key,value] of Object.entries(raw.inputs)){
-  if(typeof value!=='string'&&typeof value!=='boolean'&&
-    (typeof value!=='number'||!Number.isFinite(value)))
-   return {status:'failed',error_code:'github_action_invalid_publication'};
-  inputs[key]=String(value);
- }
  const db=env.DB,token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+ let inputs:Record<string,string>;
+ try{
+  const row=await db.prepare('SELECT inputs FROM runs WHERE id=?')
+   .bind(runId).first<{inputs:string}>();
+  if(!row)throw Error('missing_run_inputs');
+  const supplied=JSON.parse(row.inputs) as Record<string,unknown>;
+  if(!supplied||typeof supplied!=='object'||Array.isArray(supplied))
+   throw Error('invalid_run_inputs');
+  inputs=resolveSessionActionInputs(raw.inputs as Record<string,unknown>,
+    plan.inputs,supplied);
+ }catch{
+  return {status:'failed',error_code:'github_session_inputs_invalid'};
+ }
  const dispatched=await step.do('github-session-dispatch-'+stepPlan.id,{
   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
  },async()=>{

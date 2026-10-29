@@ -195,3 +195,56 @@ test('dynamic Task D1 input hash blocks altered arguments before registering an 
   assert.equal(posts,1);
  }finally{db.close();}
 });
+
+
+test('Session POST uses the immutable Run duration, defaults to 300 and rejects forged inputs',async()=>{
+ for(const [supplied,expected] of [[{},'300'],[{duration_minutes:10},'10']] as const){
+  const {db,adapter}=setup();
+  try{
+   const bound={...publishedPlan,inputs:{duration_minutes:300},steps:[{
+    ...publishedPlan.steps[0],with:{...publishedPlan.steps[0].with,
+     action:{...action,ref:'refs/tags/test-v1',inputs:{
+      duration_minutes:{ref:'inputs.duration_minutes'},duration_mode:'explicit'}}},
+   }]};
+   db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(bound),'v');
+   db.prepare('UPDATE runs SET inputs=? WHERE id=?').run(JSON.stringify(supplied),rid);
+   const request={...data,inputs:{duration_minutes:expected,duration_mode:'explicit'}};
+   let posts=0;
+   const http=async (req:Request)=>{
+    if(req.method==='GET')return gitRef();
+    posts++;
+    const body=JSON.parse(await req.text()) as {inputs:Record<string,string>};
+    assert.equal(body.inputs.duration_minutes,expected);
+    assert.equal(body.inputs.duration_mode,'explicit');
+    return Response.json({workflow_run_id:99});
+   };
+   // The persisted run, not a caller's transient dispatch map, grants variation.
+   await assert.rejects(()=>registerAndDispatchGitHubAction(adapter,{
+    ...request,inputs:{...request.inputs,duration_minutes:expected==='10'?'300':'10'}},
+    http),/publication_missing/);
+   assert.equal(posts,0);
+   assert.equal(db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,0);
+   assert.equal((await registerAndDispatchGitHubAction(adapter,request,http)).status,'confirmed');
+   assert.equal(posts,1);
+  }finally{db.close();}
+ }
+});
+
+test('invalid persisted Session duration cannot register or dispatch an Attempt',async()=>{
+ const {db,adapter}=setup();
+ try{
+  const bound={...publishedPlan,inputs:{duration_minutes:300},steps:[{
+   ...publishedPlan.steps[0],with:{...publishedPlan.steps[0].with,
+    action:{...action,ref:'refs/tags/test-v1',inputs:{
+     duration_minutes:{ref:'inputs.duration_minutes'},duration_mode:'explicit'}}},
+  }]};
+  db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(bound),'v');
+  for(const invalid of [301,0,'10',10.5]){
+   db.prepare('UPDATE runs SET inputs=? WHERE id=?').run(JSON.stringify({duration_minutes:invalid}),rid);
+   await assert.rejects(()=>registerAndDispatchGitHubAction(adapter,{
+    ...data,inputs:{duration_minutes:String(invalid),duration_mode:'explicit'}},
+    async()=>{throw Error('unexpected network');}),/invalid_duration/);
+   assert.equal(db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,0);
+  }
+ }finally{db.close();}
+});

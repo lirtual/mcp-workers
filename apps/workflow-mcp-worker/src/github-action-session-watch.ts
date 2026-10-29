@@ -1,3 +1,4 @@
+import {isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {WorkflowStep} from 'cloudflare:workers';
 import type {Env} from './store.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
@@ -22,7 +23,7 @@ export function sessionCancellationDue(
  time:number,
 ):boolean{
  const duration=Number(row.duration_minutes);
- if(!Number.isSafeInteger(duration)||duration<1||duration>330)return false;
+ if(!Number.isSafeInteger(duration)||duration<1||duration>300)return false;
  if(!Number.isFinite(time)||!Number.isFinite(row.created_at)||!Number.isFinite(row.updated_at))return false;
  if(row.state==='ready')
   return time>=row.updated_at+duration*60_000+SESSION_READY_GRACE_MS;
@@ -51,13 +52,14 @@ export async function watchPersistedSessions(
   },async()=>{
    try{
    const sessions=(await db.prepare(`SELECT s.step_id,s.state,s.created_at,s.updated_at,
-     a.attempt_id,json_extract(v.plan,'$.steps') AS unused_plan
+     a.attempt_id,json_extract(v.plan,'$.steps') AS unused_plan,
+     json_extract(v.plan,'$.inputs') AS plan_defaults,r.inputs AS run_inputs
      FROM session_executions s
      JOIN runs r ON r.id=s.run_id
      JOIN workflow_versions v ON v.id=r.version_id
      LEFT JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
      WHERE s.run_id=? AND s.state!='terminated'
-     ORDER BY s.step_id LIMIT 4`).bind(runId).all<SessionRow & {unused_plan:string}>()).results;
+     ORDER BY s.step_id LIMIT 4`).bind(runId).all<SessionRow & {unused_plan:string;plan_defaults:string|null;run_inputs:string}>()).results;
    if(!sessions.length)return 0;
    for(const entry of sessions){
     if(!entry.attempt_id){
@@ -86,6 +88,14 @@ export async function watchPersistedSessions(
        id:string;with?:{action?:{inputs?:{duration_minutes?:unknown}}}
       }>;
       duration=saved.find(s=>s.id===entry.step_id)?.with?.action?.inputs?.duration_minutes;
+      if(isSessionDurationInputRef(duration)){
+       const defaults=JSON.parse(entry.plan_defaults??'{}') as Record<string,unknown>;
+       const supplied=JSON.parse(entry.run_inputs) as Record<string,unknown>;
+       if(defaults?.duration_minutes!==300||!supplied||
+          typeof supplied!=='object'||Array.isArray(supplied))throw Error('invalid_duration');
+       duration=Object.hasOwn(supplied,'duration_minutes')
+         ?supplied.duration_minutes:defaults.duration_minutes;
+      }
      }catch{duration=undefined;}
      if(sessionCancellationDue({...entry,duration_minutes:duration},now()))
       await requestGitHubActionCancellation(db,runId,entry.step_id,token);

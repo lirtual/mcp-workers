@@ -210,3 +210,24 @@ test('mixed ordered read-only MCP and one literal Task compile with exact pinned
  (dynamic.steps[0]!.template.steps[2]!.with as {action:{inputs:unknown}}).action.inputs={outcome:{ref:'item.value'}};
  await assert.rejects(()=>compilePlan(dynamic),/unsupported_foreach_inputs/);
 });
+
+test('Session accepts only explicit opt-in numeric duration Run binding',async()=>{
+ const dynamic={...action,inputs:{duration_minutes:{ref:'inputs.duration_minutes'},
+   duration_mode:'explicit'}};
+ const source={version:1,name:'Session dynamic lifetime',inputs:{duration_minutes:300},
+   steps:[{id:'start',uses:'github.run',with:{capability:'github.action',action:dynamic}}]};
+ const compiled=await compilePlan(source);
+ assert.deepEqual((compiled.plan.steps[0].with.action as typeof dynamic).inputs,dynamic.inputs);
+ for(const bad of [
+   {...source,inputs:{duration_minutes:10}},
+   {...source,inputs:{duration_minutes:301}},
+   {...source,steps:[{...source.steps[0],with:{capability:'github.action',
+     action:{...dynamic,inputs:{duration_minutes:{ref:'inputs.duration_minutes'},
+       duration_mode:'repository'}}}}]},
+   {...source,steps:[{...source.steps[0],with:{capability:'github.action',
+     action:{...dynamic,inputs:{duration_minutes:{ref:'inputs.some_other_field'},
+       duration_mode:'explicit'}}}}]},
+ ]){
+   await assert.rejects(()=>compilePlan(bad));
+ }
+});
