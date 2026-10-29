@@ -39,8 +39,10 @@ export async function verifyOwner(request:Request,env:ApprovalEnv):Promise<boole
        claims.email!==config.email||claims.type!=="app"||typeof claims.sub!=="string"||!claims.sub||
        !Number.isFinite(claims.exp)||claims.exp<=now||!Number.isFinite(claims.iat)||claims.iat>now||
        (claims.nbf!==undefined&&(!Number.isFinite(claims.nbf)||claims.nbf>now)))return false;
-    const response=await fetch(config.issuer+"/cdn-cgi/access/certs",{redirect:"error",signal:AbortSignal.timeout(4000)});
-    if(!response.ok)return false;
+    // Workers does not implement Fetch redirect:error; manual plus explicit status
+    // rejection fails closed without following an untrusted JWKS redirect.
+    const response=await fetch(config.issuer+"/cdn-cgi/access/certs",{redirect:"manual",signal:AbortSignal.timeout(4000)});
+    if(!response.ok)return false; // includes all 3xx without following Location
     const reader=response.body!.getReader();let raw="";
     while(true){const {value,done}=await reader.read();if(done)break;
       raw+=new TextDecoder().decode(value);if(raw.length>65536){await reader.cancel();return false;}}
