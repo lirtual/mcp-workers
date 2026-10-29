@@ -9,6 +9,13 @@ describe('database configuration limits and URLs', () => {
     expect(() => parseDirectDatabaseUrl('mysql://u:p@host/db?ssl=true', 'mysql')).toThrow();
   });
 
+  it('passes bare canonical IPv6 hosts to TCP drivers', () => {
+    const parsed = parseDirectDatabaseUrl('mysql://reader:password@[2606:4700:0:0::1111]:3306/app', 'v6');
+    expect(parsed.host).toBe('2606:4700::1111');
+    expect(parsed.port).toBe(3306);
+    expect(parsed.database).toBe('app');
+  });
+
   it('accepts between one and ten flat entries only', () => {
     expect(() => parseDatabaseConfig(JSON.stringify(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`db${i}`, 'mysql://u:p@h/db']))))).not.toThrow();
     expect(() => parseDatabaseConfig(JSON.stringify(Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`db${i}`, 'mysql://u:p@h/db']))))).toThrow();

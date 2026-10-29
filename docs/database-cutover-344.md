@@ -1,54 +1,67 @@
-# Database MCP #344 — Fresh registry release and recovery
+# Database MCP #344 — Production release and recovery
 
-## Current Owner decision (2026-10-28)
+## Verified baseline (2026-10-29)
 
-**No migration of historical connection data.** The former two-record import,
-protected atomic Direct activation and any prerequisite that `b2b` or
-`scrape_relay` already exist in the new D1 are superseded. The historical
-imported D1 **must not** be read, imported again, modified or deleted in this
-release. Do not invoke any historical activation jobs against it.
+The Owner chose **no migration of legacy connection data**. New D1
+`database-mcp-registry` (`cbfe6a05-4979-4e6a-9cc2-4f6468586e4a`) received
+the reviewed schema and became the live Worker `DB` binding. Old D1
+`database-mcp-db` (`8853a6ac-beaa-45aa-bdb2-0867e6f3df6d`) was not imported
+or modified during cutover.
 
-New dedicated empty D1: `database-mcp-registry`
-(`cbfe6a05-4979-4e6a-9cc2-4f6468586e4a`). Legacy D1 `database-mcp-db`
-(`8853a6ac-beaa-45aa-bdb2-0867e6f3df6d`) remains untouched. As of
-2026-10-28, the new D1 was created but its schema **has not been applied**.
-The original Worker `eb3f4823-124b-4d76-abdc-42f85097bb5a` remains the
-production deployment with original `DATABASE_CONFIG` Secret.
+The normal [Release Worker #40798303006](https://github.com/lirtual/mcp-workers/actions/runs/40798303006)
+succeeded at source `8f73efffa795`; the release readback identified version
+`592b4d10-1904-4ad1-b8e2-9e5b554ea87d`, 100% active, bound to the new D1.
+The Owner then added `b2b` and `scrape_relay` via the OTP-protected
+[setup page](https://database.lirtual.dpdns.org/setup). Both MySQL Direct
+connections passed production health and bounded `SELECT 1` (4/4);
+see [acceptance evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6485167119).
+This is a historical release readback, not a continuous live-status guarantee.
 
-## Safe release order
+The temporary empty-catalog period is over for these two connections.
+The old `DATABASE_CONFIG` Secret and original Worker recovery version remain
+retained but **are not active**. The legacy restore procedure was **not exercised**.
 
-1. Review and merge PR #345 only after the existing CI accepts fresh-registry
-   runtime, Owner CRUD, read-only release checks, and preserved legacy recovery.
-2. Via the **existing** `Release Worker` workflow on unchanged `main`, use
-   `worker=database-mcp-worker`, `database_prepare_approved=true`, and
-   `deploy_to_production=false` to apply **only** the existing two migrations to
-   `database-mcp-registry`. Do not import or open historical connection data.
-3. Use the existing read-only fresh-registry preflight to confirm that the new
-   D1 has both migrations, zero connections and zero retired IDs, and that the
-   original Worker with `DATABASE_CONFIG` is still available for recovery.
-4. An explicitly approved production Worker release via **existing** GitHub
-   Actions binds the **new D1**, retains encrypted-key requirements and Owner
-   Cloudflare Access policy, and must pass protected source/binding/version
-   checks. No new CI, deployment system or Acceptance environment.
-5. **Planned configuration gap:** at first deployment the new Worker has zero
-   connections; existing Database MCP queries to the former logical IDs are
-   unavailable until the Owner reconfigures them. This gap is accepted by the
-   Owner. In `https://database.lirtual.dpdns.org/setup` use the OTP-protected
-   Owner UI to add required MySQL Direct IDs one at a time, confirm explicit
-   plaintext transport acknowledgement, and complete approved production
-   connection checks. **Do not copy old credentials to GitHub, issues or logs.**
-6. If the new Worker release fails, use the separately authorized and
-   readback-verified pinned legacy Worker version recovery. Preserve the old
-   `DATABASE_CONFIG` and original Worker version; do not mutate either D1 in
-   an attempt to recover.
+## Current operating contract
 
-Initial runtime scope is **MySQL Direct only**, with the existing explicit
-plaintext warning, public-endpoint restrictions, Owner CSRF and OTP, admission,
-rate limiting, AES-GCM encryption at rest, identity immutability, 10-connection
-limit and retired-ID nonreuse. PostgreSQL Direct and Hyperdrive require
-separate acceptance and code release; no compatibility toggle enables them.
+- **Only MySQL Direct is enabled.** It uses plaintext TCP with explicit
+  acceptance. PostgreSQL Direct and both Hyperdrive modes fail closed pending
+  separately approved implementation and strict TLS/security evidence.
+- D1 holds 0–10 logical connections. The ID, dialect, transport and database
+  target (host/IP, port, database name) are immutable. Owner setup permits
+  credential updates for the same target, not target substitution. To move to
+  another target, disable/delete the old connection and use a different ID.
+  Deleted IDs are retired and cannot be reused within this registry.
+- The Owner may add, test, change credentials, enable, disable, delete and
+  re-encrypt Direct connections at `/setup`. Never put database URLs or
+  credentials in Issues, logs or CI. Direct encryption-key rotation does **not**
+  rotate upstream MySQL passwords. Retain previous keys until rollback and
+  backups have been accounted for.
+- Production Safe Write, DDL, transaction rollback, negative-security matrix
+  and legacy recovery drill are **Not performed**. The bounded 4/4 read-only
+  smoke does not authorize broader business-data access.
+- Historical whole-D1 restore can roll back the retired-ID ledger. Freeze
+  creation/activation and reconcile against independent historical identity
+  evidence before permitting new configuration operations.
 
-The old import/activation scripts and any prior issue comments are **historical
-artifacts, not executable steps for this plan**. The initial worker release
-must never depend on historical imported D1 rows. Passing CI or schema checks
-is not proof of production connection E2E.
+## Subsequent releases and recovery
+
+1. Use the **existing manual Release Worker** GitHub Actions workflow from
+   the reviewed `main` SHA. Recheck D1 schema and binding, Owner Access
+   policy, supported modes, required secrets and latest approved version.
+   Do **not** rerun the historical first-time migration/import.
+2. A normal code release must retain all Owner-managed D1 records, must not
+   restage legacy `DATABASE_CONFIG` as the active catalog, and must confirm
+   the exact active version/bindings after publish.
+3. On release failure, use only the separately authorized, pinned legacy
+   Worker recovery procedure after checking Secret, version and compatibility.
+   This fallback still points to the old catalog, not automatically to any
+   new D1 connection; do not assume rollback restores Owner-managed edits.
+   Recovery was **not exercised** in the 2026-10-29 acceptance.
+4. Never retire legacy Worker resources, the old D1, encryption keys or
+   `DATABASE_CONFIG` without separate reviewed recovery/retirement evidence.
+   Never enable deferred modes without their actual Workers tests and security
+   acceptance.
+
+Old Draft, zero-row and `database_prepare_approved` cutover instructions are
+**historical only**, not actions to repeat. For the original design and
+outstanding four-mode scope see [Spec #344](https://github.com/lirtual/mcp-workers/issues/344).

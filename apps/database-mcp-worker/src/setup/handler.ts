@@ -1,4 +1,4 @@
-import { getRuntimeLimits } from '../config.js';
+import { getRuntimeLimits, parseDirectDatabaseUrl } from '../config.js';
 import { healthCheck } from '../db/index.js';
 import { PublicError, toPublicError } from '../errors.js';
 import { requireAvailableMode } from '../registry/availability.js';
@@ -88,6 +88,7 @@ export function setupFailureReference(error: PublicError): string | undefined {
       'Invalid connection id.': 'connection_id_invalid',
       'A complete Direct database URL is required.': 'url_missing',
       'Direct plaintext acceptance is required.': 'plaintext_ack_required',
+      'Database target is immutable; create a new connection ID.': 'target_immutable',
       'The database endpoint resolves to a nonpublic or reserved address.': 'endpoint_nonpublic',
       'The database endpoint hostname is not an eligible public DNS name.': 'hostname_invalid'
     };
@@ -226,6 +227,16 @@ export async function handleSetup(
       const previous = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
       const url = mode === 'keep' ? previous.url : required(form, 'url');
+      if (mode === 'replace') {
+        const current = parseDirectDatabaseUrl(previous.url, id);
+        const next = parseDirectDatabaseUrl(url, id);
+        // A logical ID cannot silently switch upstream database identity.
+        // Only credentials may change; moving the target requires a new ID.
+        if (current.dialect !== next.dialect || current.host !== next.host ||
+            current.port !== next.port || current.database !== next.database) {
+          throw new PublicError('INVALID_INPUT', 'Database target is immutable; create a new connection ID.');
+        }
+      }
       // Active failed edits preserve the prior ciphertext, revision and status.
       await validatePublicEndpoint(url, id);
       try { await testCandidate(env, id, url, row.dialect); }

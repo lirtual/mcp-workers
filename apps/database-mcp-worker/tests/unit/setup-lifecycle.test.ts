@@ -88,6 +88,22 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     const ciphertext = row.ciphertext;
     expect(fakeHealth.mock.lastCall?.[0]).not.toHaveProperty('ca');
     expect((await openConnectionConfig(env, 'main', 'mysql', {keyId: 'key-one', ciphertext})).ca).toBeUndefined();
+    // No network probes or D1 mutations for a changed target, even when its health would pass.
+    const checkedBeforeTargetChanges = fakeHealth.mock.calls.length;
+    for (const otherTarget of [
+      'mysql://reader:pass@different.example.net/catalog',
+      'mysql://reader:pass@db.example.net:3307/catalog',
+      'mysql://reader:pass@db.example.net/other_catalog',
+      'postgres://reader:pass@db.example.net/catalog'
+    ]) {
+      const rejected = await post('edit', { id: 'main', revision: '2', credential_mode: 'replace',
+        plaintext_ack: '1', url: otherTarget });
+      expect(rejected.status).toBe(422);
+      expect(await rejected.text()).toContain('Diagnostic: target_immutable');
+    }
+    expect(fakeHealth.mock.calls.length).toBe(checkedBeforeTargetChanges);
+    expect(sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main'))
+      .toMatchObject({ status: 'active', revision: 2, ciphertext });
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unavailable'));
     expect((await post('edit', { id: 'main', revision: '2', credential_mode: 'replace', plaintext_ack: '1',
       url: 'mysql://reader:changed@db.example.net/catalog' })).status).toBe(422);
@@ -95,6 +111,12 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(row).toMatchObject({ status: 'active', revision: 2, ciphertext });
     expect((await post('delete', { id: 'main', revision: '2', confirm_id: 'main' })).status).toBe(422);
     expect((await post('disable', { id: 'main', revision: '2' })).status).toBe(200);
+    const disabledEdit = await post('edit', { id: 'main', revision: '3', credential_mode: 'replace',
+      plaintext_ack: '1', allow_disabled: '1', url: 'mysql://reader:pass@new.example.net/catalog' });
+    expect(disabledEdit.status).toBe(422);
+    expect(await disabledEdit.text()).toContain('Diagnostic: target_immutable');
+    expect(sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main'))
+      .toMatchObject({ status: 'disabled', revision: 3, ciphertext });
     // A disabled placeholder with unreachable credentials can be repaired without
     // making it active. An active connection must never accept failed edits.
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unreachable fixture'));

@@ -45,6 +45,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     `<details><summary>Edit connection</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credentials<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
     '<label>New URL (only when replacing)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
+    '<p class="muted">Host, port and database cannot change for this ID. Use a new ID for a new target.</p>' +
     plaintextAck +
     (row.status === 'disabled' ? '<label class="check"><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
     '<button type="submit">Test and save</button></form></details>') + '</li>').join('');

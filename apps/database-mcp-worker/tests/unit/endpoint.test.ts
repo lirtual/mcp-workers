@@ -17,7 +17,7 @@ describe('eligible public database endpoints', () => {
     await expect(validatePublicEndpoint('mysql://reader:password@93.184.216.34:3306/app', 'one', noDns))
       .resolves.toMatchObject({ dialect: 'mysql', host: '93.184.216.34', port: 3306 });
     await expect(validatePublicEndpoint('mysql://reader:password@[2606:4700::1111]:3306/app', 'one', noDns))
-      .resolves.toMatchObject({ dialect: 'mysql' });
+      .resolves.toMatchObject({ dialect: 'mysql', host: '2606:4700::1111', port: 3306 });
     expect(noDns).not.toHaveBeenCalled();
   });
   it('rejects private, special-use, mapped, and loopback literal IPs for MySQL Direct', async () => {
