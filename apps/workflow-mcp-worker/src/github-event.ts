@@ -88,7 +88,7 @@ export async function handleGithubEvent(
   try{
     const row=await env.DB.prepare(
       'SELECT w.state,w.active_version_id,v.plan FROM workflows w '+
-      'JOIN workflow_versions v ON v.id=w.active_version_id WHERE w.id=?'
+      'JOIN workflow_versions v ON v.id=w.active_version_id WHERE w.id=? AND w.deleted_at IS NULL'
     ).bind(match[1]).first<{state:string;active_version_id:string;plan:string}>();
     if(!row)return response(404,'not_found');
     let plan:Plan;

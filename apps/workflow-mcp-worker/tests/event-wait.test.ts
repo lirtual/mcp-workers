@@ -33,7 +33,7 @@ function deferred<T>(){
 function setup(t:test.TestContext){
  const sqlite=new DatabaseSync(':memory:');
  t.after(()=>sqlite.close());
- for(const name of ['0001_s1.sql','0002_native_complete_seen.sql',
+ for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql',
    '0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
    sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  let deliveries:Array<{type:string;payload:any}>=[];

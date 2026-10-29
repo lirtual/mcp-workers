@@ -9,7 +9,7 @@ test('D1 registered-capability migration preserves confirmed historical Attempts
   const db=new DatabaseSync(':memory:');
   try {
     db.exec('PRAGMA foreign_keys = on');
-    for(const file of ['0001_s1.sql','0002_native_complete_seen.sql',
+    for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql',
       '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])db.exec(migration(file));
     db.prepare('INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES (?,?,?,?,?)')
       .run('w','Historical record','{}',1,1);

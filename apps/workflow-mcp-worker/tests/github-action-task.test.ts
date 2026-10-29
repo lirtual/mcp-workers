@@ -24,7 +24,7 @@ const workflowRef=repo+'/'+action.workflowPath+'@'+ref;
 function setup(){
  const db=new DatabaseSync(':memory:');
  db.exec('PRAGMA foreign_keys=ON');
- for(const migration of ['0001_s1.sql','0002_native_complete_seen.sql',
+ for(const migration of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql',
   '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])
   db.exec(readFileSync(new URL('../migrations/'+migration,import.meta.url),'utf8'));
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));

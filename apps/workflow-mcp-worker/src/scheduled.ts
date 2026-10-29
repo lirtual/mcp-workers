@@ -23,7 +23,7 @@ export async function admitScheduledCron(env:Env,scheduledTime:number):Promise<C
     const {results}=await env.DB.prepare(
       "SELECT w.id,w.active_version_id,v.plan FROM workflows w "+
       "JOIN workflow_versions v ON v.id=w.active_version_id "+
-      "WHERE w.state='active' AND w.id>? ORDER BY w.id LIMIT 100")
+      "WHERE w.state='active' AND w.deleted_at IS NULL AND w.id>? ORDER BY w.id LIMIT 100")
       .bind(lastId).all<PublishedCronRow>();
     if(!results.length)return stats;
     for(const row of results){
@@ -57,7 +57,7 @@ export async function admitScheduledCron(env:Env,scheduledTime:number):Promise<C
     if(results.length<100)return stats;
   }
   // Exactly 1,000 rows are valid; only fail if an 1,001st active row exists.
-  const tail=await env.DB.prepare("SELECT id FROM workflows WHERE state='active' AND id>? ORDER BY id LIMIT 1")
+  const tail=await env.DB.prepare("SELECT id FROM workflows WHERE state='active' AND deleted_at IS NULL AND id>? ORDER BY id LIMIT 1")
     .bind(lastId).first<{id:string}>();
   if(!tail)return stats;
   throw Error('cron_scan_budget_exceeded');

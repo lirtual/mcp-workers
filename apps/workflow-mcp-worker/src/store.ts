@@ -98,7 +98,7 @@ export function applyStatus(native:string, outcome:string):string {
   if(native==='complete')return outcome;
   return outcome;
 }
-type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string};
+type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string;deleted_at:number|null};
 type VersionRow={id:string;plan:string;digest:string};
 type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
@@ -135,7 +135,7 @@ export class WorkflowService {
   constructor(env:Env){this.env=env;}
   private get db(){return this.env.DB;}
   async list(){
-    const out=await this.db.prepare('SELECT * FROM workflows ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
+    const out=await this.db.prepare('SELECT * FROM workflows WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
     // Four global physical Session slots are independent of the parent
     // Workflow's business outcome. The existing read-only workflow_list is
     // enough to discover a held/uncertain slot and its server-pinned run_id;
@@ -153,7 +153,7 @@ export class WorkflowService {
         attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
   }
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
-  private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=?').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
+  private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=? AND deleted_at IS NULL').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
     const name=draftName(definition);
     const id=crypto.randomUUID(),time=now();
@@ -163,7 +163,7 @@ export class WorkflowService {
   async update(workflow_id:string,expected_revision:number,definition:string){
     assertId(workflow_id);if(!Number.isSafeInteger(expected_revision)||expected_revision<1)throw new StateError('invalid_revision');
     const name=draftName(definition);
-    const x=await this.db.prepare('UPDATE workflows SET draft=?,name=?,draft_revision=draft_revision+1,updated_at=? WHERE id=? AND draft_revision=?').bind(definition,name,now(),workflow_id,expected_revision).run();
+    const x=await this.db.prepare('UPDATE workflows SET draft=?,name=?,draft_revision=draft_revision+1,updated_at=? WHERE id=? AND draft_revision=? AND deleted_at IS NULL').bind(definition,name,now(),workflow_id,expected_revision).run();
     if(!x.meta.changes) {await this.row(workflow_id);throw new StateError('revision_conflict');}
     return {workflow_id,draft_revision:expected_revision+1};
   }
@@ -226,7 +226,7 @@ export class WorkflowService {
     if(parentId===id)throw new PlanError('child_self_invocation','/steps');
     const row=await this.db.prepare(`SELECT w.state,w.active_version_id,v.digest,v.plan
       FROM workflows w JOIN workflow_versions v ON v.workflow_id=w.id AND v.id=?
-      WHERE w.id=?`).bind(version,id).first<{state:string;active_version_id:string|null;digest:string;plan:string}>();
+      WHERE w.id=? AND w.deleted_at IS NULL`).bind(version,id).first<{state:string;active_version_id:string|null;digest:string;plan:string}>();
     if(!row||row.state!=='active'||row.active_version_id!==version)
       throw new PlanError('child_version_not_active','/steps');
     let childPlan:Plan;
@@ -390,8 +390,8 @@ export class WorkflowService {
     }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
-      this.db.prepare('UPDATE workflows SET active_version_id=?,state=CASE WHEN state=\'paused\' THEN \'paused\' ELSE \'active\' END,updated_at=? WHERE id=? AND draft_revision=? AND active_version_id IS ?').bind(version,t,workflow_id,expected_revision,row.active_version_id),
-      this.db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) SELECT ?,id,?,?,? FROM workflows WHERE id=? AND active_version_id=?').bind(version,plan_digest,json(publishedPlan),t,workflow_id,version),
+      this.db.prepare('UPDATE workflows SET active_version_id=?,state=CASE WHEN state=\'paused\' THEN \'paused\' ELSE \'active\' END,updated_at=? WHERE id=? AND draft_revision=? AND active_version_id IS ? AND deleted_at IS NULL').bind(version,t,workflow_id,expected_revision,row.active_version_id),
+      this.db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) SELECT ?,id,?,?,? FROM workflows WHERE id=? AND active_version_id=? AND deleted_at IS NULL').bind(version,plan_digest,json(publishedPlan),t,workflow_id,version),
     ]);
     if(!batch[0].meta.changes||!batch[1].meta.changes){
       // A concurrent identical Publish can win the CAS; never report a second version.
@@ -504,8 +504,65 @@ export class WorkflowService {
     return {run_id,step_id,cancellation,
       physical_terminated:cancellation==='terminal_confirmed'};
   }
-  async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active'").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
-  async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
+  async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active' AND deleted_at IS NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
+  async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL AND deleted_at IS NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
+
+  /** Non-destructive tombstone: retain published Versions, Runs and receipts.
+   * Atomic predicate fences admission/Session/parent references at commit. */
+  async delete(workflow_id:string,expected_revision:number){
+    assertId(workflow_id);
+    if(!Number.isSafeInteger(expected_revision)||expected_revision<1)
+      throw new StateError('invalid_revision');
+    const time=now();
+    const result=await this.db.prepare(`UPDATE workflows
+      SET deleted_at=?,state='paused',updated_at=?
+      WHERE id=? AND draft_revision=? AND deleted_at IS NULL
+        AND state IN ('draft','paused')
+        AND NOT EXISTS (
+          SELECT 1 FROM runs r WHERE r.workflow_id=workflows.id
+            AND (r.outcome IN ('queued','running') OR r.start_state IN ('reserved','start_unknown'))
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM session_executions s
+          JOIN runs r ON r.id=s.run_id
+          WHERE r.workflow_id=workflows.id AND s.state!='terminated'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM workflows parent
+          JOIN workflow_versions v ON v.id=parent.active_version_id
+          JOIN json_each(v.plan,'$.child_approvals') child
+          WHERE parent.id!=workflows.id AND parent.deleted_at IS NULL
+            AND parent.state IN ('active','paused')
+            AND json_extract(child.value,'$.workflow_id')=workflows.id
+        )`).bind(time,time,workflow_id,expected_revision).run();
+    if(result.meta.changes)
+      return {workflow_id,state:'deleted' as const,history_preserved:true};
+    const row=await this.db.prepare('SELECT state,draft_revision,deleted_at FROM workflows WHERE id=?')
+      .bind(workflow_id).first<Pick<WorkflowRow,'state'|'draft_revision'|'deleted_at'>>();
+    if(!row)throw new StateError('workflow_not_found');
+    if(row.deleted_at!==null)
+      return {workflow_id,state:'deleted' as const,already_deleted:true,history_preserved:true};
+    if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
+    if(!['draft','paused'].includes(row.state))throw new StateError('workflow_not_paused');
+    const busy=await this.db.prepare(`SELECT 1 AS present FROM runs
+      WHERE workflow_id=? AND (outcome IN ('queued','running')
+        OR start_state IN ('reserved','start_unknown')) LIMIT 1`)
+      .bind(workflow_id).first<{present:number}>();
+    if(busy)throw new StateError('workflow_has_unsettled_runs');
+    const session=await this.db.prepare(`SELECT 1 AS present FROM session_executions s
+      JOIN runs r ON r.id=s.run_id WHERE r.workflow_id=? AND s.state!='terminated' LIMIT 1`)
+      .bind(workflow_id).first<{present:number}>();
+    if(session)throw new StateError('workflow_has_active_sessions');
+    const parent=await this.db.prepare(`SELECT 1 AS present FROM workflows parent
+      JOIN workflow_versions v ON v.id=parent.active_version_id
+      JOIN json_each(v.plan,'$.child_approvals') child
+      WHERE parent.id!=? AND parent.deleted_at IS NULL
+        AND parent.state IN ('active','paused')
+        AND json_extract(child.value,'$.workflow_id')=? LIMIT 1`)
+      .bind(workflow_id,workflow_id).first<{present:number}>();
+    if(parent)throw new StateError('workflow_referenced_by_parent');
+    throw new StateError('workflow_delete_conflict');
+  }
   async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string){
     assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
@@ -577,7 +634,7 @@ export class WorkflowService {
       throw new StateError('child_approval_required');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
-      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at,capacity_weight) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND active_version_id=?) AND ${capacityAdmissionPredicate(weight as 1|2)}`
+      `INSERT OR IGNORE INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at,capacity_weight) SELECT ?,?,?,?,?,?,?, 'reserved','queued',?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? AND state='active' AND deleted_at IS NULL AND active_version_id=?) AND ${capacityAdmissionPredicate(weight as 1|2)}`
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
