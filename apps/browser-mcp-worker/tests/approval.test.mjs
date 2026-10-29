@@ -12,7 +12,15 @@ async function jwt(patch={},header={}){
   return value+'.'+Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',pair.privateKey,new TextEncoder().encode(value))).toString('base64url');
 }
 const originalFetch=globalThis.fetch;
-test.before(()=>{globalThis.fetch=async url=>{assert.equal(url,config.BROWSER_ACCESS_ISSUER+'/cdn-cgi/access/certs');return Response.json({keys:[jwk]});};});
+let forceCertRedirect=false;
+test.before(()=>{globalThis.fetch=async (url,init)=>{
+  assert.equal(url,config.BROWSER_ACCESS_ISSUER+'/cdn-cgi/access/certs');
+  // Production Workers rejects redirect:'error' before any outbound request.
+  if(init?.redirect==='error')throw new TypeError('Unsupported redirect mode');
+  assert.equal(init?.redirect,'manual');
+  if(forceCertRedirect)return new Response(null,{status:302,headers:{location:'https://untrusted.example/certs'}});
+  return Response.json({keys:[jwk]});
+};});
 test.after(()=>{globalThis.fetch=originalFetch;});
 const path=op=>'/owner/operations/'+op;
 async function view(f,op,token){return f.http(path(op),{headers:{'cf-access-jwt-assertion':token??await jwt()}});}
@@ -67,6 +75,19 @@ test('exact ChatGPT attribution on signed owner GET redirects to canonical URL, 
     assert.equal((await status(f,op.args)).state,'pending_approval');
     assert.equal(f.effects.length,0);
   }finally{await f.close();}
+});
+
+test('Owner JWT must verify with Workers-compatible JWKS fetch and reject certificate redirects',async()=>{
+  const f=await fixture(config);try{
+    const op=await pending(f),signed=await jwt();
+    assert.equal((await view(f,op.operation_id,signed)).status,200,
+      'genuine signed Access JWT must be verified with supported Workers fetch options');
+    forceCertRedirect=true;
+    assert.equal((await view(f,op.operation_id,signed)).status,401,
+      'redirected JWKS response must never grant Owner authority');
+    assert.equal((await status(f,op.args)).state,'pending_approval');
+    assert.equal(f.effects.length,0);
+  }finally{forceCertRedirect=false;await f.close();}
 });
 
 test('owner HTTP requires cryptographic Access identity, canonical host, aud, issuer, expiry and exact mailbox',async()=>{
