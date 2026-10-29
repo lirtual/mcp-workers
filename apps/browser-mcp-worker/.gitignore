@@ -1,0 +1,8 @@
+# Local Worker build state, never published from this source tree
+.wrangler/
+.build/
+node_modules/
+.dev.vars
+.dev.vars.*
+.env
+.env.*

@@ -1101,8 +1101,6 @@ test("worker release documentation stays aligned with the selected-Worker contra
   assert.match(ingress, /workers_dev: false/);
 });
 
-
-
 test("Database Hyperdrive mapping requires exactly matching unique Wrangler IDs", () => {
   const manifest = [{ binding: "HYPERDRIVE_APP", id: "11111111-2222-3333-4444-555555555555" }];
   assert.equal(verifyDatabaseHyperdriveSource({ hyperdrive: [...manifest] }, manifest), true);
@@ -1125,4 +1123,30 @@ test("Database Hyperdrive config readback is fail-closed before and after releas
     assert.match(section, /if: inputs.worker == 'database-mcp-worker'/);
     assert.match(section, /CLOUDFLARE_API_TOKEN/);
   }
+});
+
+test('Browser release pins resources, protects namespace and stages only its independent Bearer', async()=>{
+  const worker='browser-mcp-worker';
+  const source=readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
+  const conf=readConfiguration(worker,source);
+  const settings={bindings:[{name:'MCP_ACCESS_TOKEN',type:'secret_text'},
+    {name:'BROWSER_OWNER',type:'durable_object_namespace',class_name:'BrowserOwner',namespace_id:'browser-original'}],
+    observability:{enabled:true,logs:{invocation_logs:false,head_sampling_rate:0}}};
+  const secrets=[{name:'MCP_ACCESS_TOKEN'}];
+  const options={mode:'readback',browserNamespaceId:'browser-original'};
+  assert.equal(verifyBindings(worker,settings,secrets,options),true);
+  assert.throws(()=>verifyBindings(worker,settings,[],options),/Secret missing/);
+  assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,browserNamespaceId:'different'}),/namespace changed/);
+  for(const binding of [{name:'DB',type:'d1'}, {name:'MCP_ACCESS_TOKEN',type:'plain_text',text:'invalid'}])
+    assert.throws(()=>verifyBindings(worker,{...settings,bindings:[...settings.bindings,binding]},secrets,options),/inventory drift/);
+  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,migrations:[]})),/persistence drift/);
+  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,durable_objects:{bindings:[{name:'BROWSER_OWNER',class_name:'Other'}]}})),/persistence drift/);
+  const {collectBootstrapSecrets}=await import('./bootstrap-worker-secrets.mjs');
+  assert.deepEqual(collectBootstrapSecrets(worker,{MCP_ACCESS_TOKEN:'independent',RAINDROP_ACCESS_TOKEN:'ignore'}),{MCP_ACCESS_TOKEN:'independent'});
+  assert.throws(()=>collectBootstrapSecrets(worker,{}),/MCP_ACCESS_TOKEN/);
+  const {collectWorkerVars}=await import('./worker-release-variables.mjs');
+  assert.deepEqual(collectWorkerVars(worker,{MANIFEST_KEY:'public-not-a-secret'}),[]);
+  const workflow=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  assert.match(workflow,/name: Build and verify shared Browser extension artifact\n        if: inputs.worker == 'browser-mcp-worker'/);
+  assert.match(workflow,/mcp_endpoint="https:\/\/browser.lirtual.dpdns.org\/mcp"/);
 });

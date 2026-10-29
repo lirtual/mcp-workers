@@ -3,6 +3,7 @@ import test from "node:test";
 import { BOOTSTRAP_SECRETS, collectBootstrapSecrets } from "./bootstrap-worker-secrets.mjs";
 
 const fixtures = {
+  "browser-mcp-worker": { MCP_ACCESS_TOKEN: "independent-browser-token" },
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1" },

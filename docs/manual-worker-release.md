@@ -36,3 +36,5 @@
 - Remote Control 严格维持独立 SQLite `DeviceCoordinator`（不能复用 Preview DO、不能使用 VPC 和 v1/v2 运行模式开关）；不将既有的配对、身份或回执验收默认为新环境测试。
 
 正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享的 `MCP_ACCESS_TOKEN` 和 SSH 的 `ENCRYPTION_KEY`（EdgeSSH 与 SSH MCP 需与既有加密记录对应并分别验收），以及 GitHub Actions MCP 的 `ACTIONS_GITHUB_DISPATCH_TOKENS`。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。IMA 的 `IMA_CLIENT_ID` 改由该 Worker 的必填 GitHub Environment Variable 提供，`IMA_API_KEY` 仍保密。只有遗留部署仍带有旧 `CLIENT_ID` Variable 时，才需要按部署指南执行一次性迁移；当前 IMA 生产绑定已是 `IMA_CLIENT_ID` 的 `plain_text`，正常发布仍须通过绑定读回，不能把失败当成迁移完成。
+
+Browser T8：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret，不沿用共享值），无额外 Variable。Manifest Key 是公开安装标识，不是 Secret。当前 `workers_dev: false`、`preview_urls: false` 且没有生产路由；现有手动 Release 的 Browser 预检将阻断发布。不得以本次接线创建资源、写 Portal/Access 或切换凭据；参见 [T8 发布与验收边界](../apps/browser-mcp-worker/docs/t8-release.md)。

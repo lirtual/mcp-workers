@@ -31,6 +31,7 @@
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
+| `browser-mcp-worker` | 无；必须用独立 `MCP_ACCESS_TOKEN` 同名 Environment Secret 覆盖全局默认值 | 无；生产路由未配置，预检阻断 |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `http-mcp-worker` | `HTTP_CREDENTIALS_JSON`（可选） | 无 |
@@ -87,3 +88,5 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 ## 6. 删除旧 Environment 的条件
 
 只有在完成 Repository 全局凭据迁移、**所有需要使用的 Worker** 创建独立 Environment、确认旧 `production` 里的密钥/变量及保护规则均已妥善迁移后，才自行删除旧 `production`。本次改动不会自动删除该 Environment 或 Cloudflare 上的任何东西。
+
+Browser T8 仅接入既有选定 Worker 发布契约。`browser-mcp-worker` 当前未配置生产路由，预检会拒绝部署；独立凭据、资源、路由、Access/Portal 及实机验收需另行授权。工件与安装说明见 [Browser T8](../apps/browser-mcp-worker/docs/t8-release.md)。
