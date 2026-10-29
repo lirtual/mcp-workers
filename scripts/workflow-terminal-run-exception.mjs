@@ -32,6 +32,40 @@ export const SIXTH_PROVIDER_DEPLOYMENT_ID = "aeed581e-2769-4cde-9f6a-236d6414b4a
 
 const WORKFLOW = "workflow-mcp-orchestrator";
 
+// The six exact instances were all verified before Cloudflare pruned history.
+// Success at this pinned, owner-only release is independent D1/native/GitHub proof.
+const PRIOR_RELEASE_ID = 40871993462;
+const VERIFIED_PRIOR_COMPLETION = Symbol("previous-native-proof");
+const PRIOR_RELEASE_JOB_ID = 123441577953;
+const PRIOR_RELEASE_SHA = "85464b14040e174f3ea43f6e4acd92b29c523563";
+const PRIOR_PROOF_STEPS = [
+  "Verify historical terminal Run proof (read-only)",
+  "Verify second terminal E2E Run proof (read-only)",
+  "Verify third terminal E2E Run proof (read-only)",
+  "Verify fourth terminal E2E Run proof (read-only)",
+  "Verify fifth terminal E2E Run proof (read-only)",
+  "Verify sixth terminal E2E Run proof (read-only)",
+];
+export function verifyPriorNativeProof(run, jobs) {
+  requireValid(run?.id === PRIOR_RELEASE_ID &&
+    run?.workflow_id === 394912681 &&
+    run?.head_sha === PRIOR_RELEASE_SHA &&
+    run?.event === "workflow_dispatch" && run?.status === "completed" &&
+    run?.conclusion === "success", "prior native proof release identity changed");
+  const job = jobs?.jobs?.find(j => j.id === PRIOR_RELEASE_JOB_ID);
+  requireValid(job?.name === "Manual selected Worker release" &&
+    job?.status === "completed" && job?.conclusion === "success" &&
+    job?.head_sha === PRIOR_RELEASE_SHA &&
+    PRIOR_PROOF_STEPS.every(name =>
+      job.steps?.filter(s => s.name === name && s.conclusion === "success").length === 1),
+    "prior native proof not fully verified");
+  return Object.freeze({[VERIFIED_PRIOR_COMPLETION]:true});
+}
+const nativeCompleteProven = native =>
+  (native?.status === "complete" && !!native?.end) ||
+  native?.[VERIFIED_PRIOR_COMPLETION] === true;
+
+
 function requireValid(test, message) {
   if (!test) throw Error("Historical Workflow release blocked: " + message);
 }
@@ -64,7 +98,7 @@ export function verifyTerminalRunEvidence(d1, native, github) {
     attempts[0].candidate_run_id === TERMINAL_SESSION_GITHUB_RUN_ID &&
     attempts[0].candidate_run_attempt === 1,
     "historical GitHub Attempt not cancelled");
-  requireValid(native?.status === "complete" && native?.end,
+  requireValid(nativeCompleteProven(native),
     "native Cloudflare instance is not completed");
   requireValid(github?.id === TERMINAL_SESSION_GITHUB_RUN_ID &&
     github?.status === "completed" && github?.conclusion === "cancelled",
@@ -107,7 +141,7 @@ export function verifySecondTerminalEvidence(d1,native,github) {
     invocations[0].deployment_id==="a2faea6a-dc64-40cb-b6fd-91bf7f306f9b"&&
     invocations[0].binding_generation===1,
     "second Run immutable send receipt identity changed");
-  requireValid(native?.status==="complete"&&native?.end,
+  requireValid(nativeCompleteProven(native),
     "second Cloudflare instance is not complete");
   requireValid(github?.id===SECOND_SESSION_GITHUB_RUN_ID&&
     github?.status==="completed"&&github?.conclusion==="cancelled",
@@ -155,7 +189,7 @@ export function verifyThirdTerminalEvidence(d1,native,github) {
     invocations[0].binding_generation===1&&
     invocations[0].deployment_id===THIRD_PROVIDER_DEPLOYMENT_ID,
     "third Run Action identity changed");
-  requireValid(native?.status==="complete"&&native?.end,
+  requireValid(nativeCompleteProven(native),
     "third native Cloudflare instance not complete");
   requireValid(github?.id===THIRD_SESSION_GITHUB_RUN_ID&&
     github?.status==="completed"&&github?.conclusion==="cancelled",
@@ -202,7 +236,7 @@ export function verifyFourthTerminalEvidence(d1,native,github) {
     invocations[0].binding_generation===1&&
     invocations[0].deployment_id===FOURTH_PROVIDER_DEPLOYMENT_ID,
     "fourth Run Action identity changed");
-  requireValid(native?.status==="complete"&&native?.end,
+  requireValid(nativeCompleteProven(native),
     "fourth native Cloudflare instance not complete");
   requireValid(github?.id===FOURTH_SESSION_GITHUB_RUN_ID&&
     github?.status==="completed"&&github?.conclusion==="cancelled",
@@ -249,7 +283,7 @@ export function verifyFifthTerminalEvidence(d1,native,github) {
     invocations[0].binding_generation===1&&
     invocations[0].deployment_id===FIFTH_PROVIDER_DEPLOYMENT_ID,
     "fifth Run Action identity changed");
-  requireValid(native?.status==="complete"&&native?.end,
+  requireValid(nativeCompleteProven(native),
     "fifth native Cloudflare instance not complete");
   requireValid(github?.id===FIFTH_SESSION_GITHUB_RUN_ID&&
     github?.status==="completed"&&github?.conclusion==="cancelled",
@@ -296,7 +330,7 @@ export function verifySixthTerminalEvidence(d1,native,github) {
     invocations[0].binding_generation===1&&
     invocations[0].deployment_id===SIXTH_PROVIDER_DEPLOYMENT_ID,
     "sixth Run Action identity changed");
-  requireValid(native?.status==="complete"&&native?.end,
+  requireValid(nativeCompleteProven(native),
     "sixth native Cloudflare instance not complete");
   requireValid(github?.id===SIXTH_SESSION_GITHUB_RUN_ID&&
     github?.status==="completed"&&github?.conclusion==="cancelled",
@@ -329,21 +363,38 @@ async function main() {
     requireValid(response.ok,"independent native/GitHub state unavailable (HTTP "+response.status+")");
     return response.json();
   };
-  const cf = await get("https://api.cloudflare.com/client/v4/accounts/"+
+  const cfResponse = await fetch("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
     (sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
-    process.env.CLOUDFLARE_API_TOKEN);
-  requireValid(cf?.success === true && cf?.result,
-    "native Cloudflare instance readback unavailable");
+    {headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
+      Accept:"application/json"},signal:AbortSignal.timeout(15000)});
+  let native;
+  if (cfResponse.ok) {
+    const cf = await cfResponse.json();
+    requireValid(cf?.success === true && cf?.result,
+      "native Cloudflare instance readback unavailable");
+    native = cf.result;
+  } else if (cfResponse.status === 404) {
+    // A 404 alone is never proof. Pin prior successful checks for all six
+    // precise instances, and still check today's D1/GitHub terminal state.
+    requireValid(process.env.GITHUB_TOKEN,
+      "prior native proof GitHub read token missing");
+    const base = "https://api.github.com/repos/lirtual/mcp-workers/actions/runs/"+PRIOR_RELEASE_ID;
+    native = verifyPriorNativeProof(await get(base,process.env.GITHUB_TOKEN),
+      await get(base+"/jobs?per_page=100",process.env.GITHUB_TOKEN));
+    console.log("Historical native instance expired; exact prior release proof verified");
+  } else {
+    requireValid(false,"independent native state unavailable (HTTP "+cfResponse.status+")");
+  }
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
     (sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-  if(sixth)verifySixthTerminalEvidence(d1,cf.result,github);
-  else if(fifth)verifyFifthTerminalEvidence(d1,cf.result,github);
-  else if(fourth)verifyFourthTerminalEvidence(d1,cf.result,github);
-  else if(third)verifyThirdTerminalEvidence(d1,cf.result,github);
-  else if(second)verifySecondTerminalEvidence(d1,cf.result,github);
-  else verifyTerminalRunEvidence(d1,cf.result,github);
+  if(sixth)verifySixthTerminalEvidence(d1,native,github);
+  else if(fifth)verifyFifthTerminalEvidence(d1,native,github);
+  else if(fourth)verifyFourthTerminalEvidence(d1,native,github);
+  else if(third)verifyThirdTerminalEvidence(d1,native,github);
+  else if(second)verifySecondTerminalEvidence(d1,native,github);
+  else verifyTerminalRunEvidence(d1,native,github);
   requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
   await appendFile(process.env.GITHUB_OUTPUT,
     (sixth?"sixth_terminal_run_id="+SIXTH_TERMINAL_RUN_ID:
