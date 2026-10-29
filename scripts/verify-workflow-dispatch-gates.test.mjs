@@ -117,10 +117,10 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
 
-test('Database lifecycle dispatch stays within ten inputs and production pins Owner-reviewed SHA',()=>{
+test('Database lifecycle dispatch stays within nine inputs and production pins Owner-reviewed SHA',()=>{
   const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
   const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
-  assert.ok(names.length===10,'release workflow_dispatch must have exactly ten inputs');
+  assert.ok(names.length===9,'release workflow_dispatch must have exactly nine inputs');
   assert.equal(new Set(names).size,names.length);
   assert.ok(names.includes('database_expected_release_sha'));
   const deploy=release.slice(release.indexOf('\n  deploy:\n'));
@@ -181,7 +181,7 @@ test('candidate guards preserve reusable CI under manual release and acceptance 
     github,inputs,(value,part)=>value.includes(part),(value,part)=>value.startsWith(part));
   const github={repository:'lirtual/mcp-workers',actor:'lirtual',event_name:'workflow_dispatch',
     ref:'refs/heads/main',workflow_ref:'lirtual/mcp-workers/.github/workflows/release.yml@refs/heads/main'};
-  for(const caller of ['release.yml','acceptance.yml','openlist-acceptance.yml']) {
+  for(const caller of ['release.yml','acceptance.yml']) {
     const context={...github,workflow_ref:'lirtual/mcp-workers/.github/workflows/'+caller+'@refs/heads/main'};
     const inputs={worker:'database-mcp-worker'};
     assert.equal(evaluate(job,context,inputs),true);

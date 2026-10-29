@@ -73,7 +73,7 @@ export function verifyDatabaseActivationGate(source) {
 /** Final apply is mutually exclusive with deploy and all other lifecycle actions. */
 export function verifyDatabaseApplyGate(source) {
   const {content,gate} = job(source,'database-hyperdrive-apply');
-  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_hyperdrive_apply_id != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' && inputs.database_expected_release_sha == '' && inputs.openlist_portal_registration != true }}";
+  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_hyperdrive_apply_id != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' && inputs.database_expected_release_sha == '' }}";
   assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe Hyperdrive apply gate');
   for (const clause of ['name: database-mcp-worker','group: worker-release-database-mcp-worker',
     'cancel-in-progress: false','contents: write','pull-requests: write','checks: read','statuses: read','actions: read',
@@ -90,13 +90,13 @@ export function verifyDatabaseApplyGate(source) {
   assert.ok(job(source,'checks').gate.includes("inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == ''"));
   verifyDatabaseFinalizeGate(source);
   const inputs=source.slice(source.indexOf('    inputs:'),source.indexOf('\npermissions:'));
-  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,10,'Expected exactly ten inputs');
+  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,9,'Expected exactly nine inputs');
 }
 
 /** Only the successful existing deploy can supply a published version receipt. */
 export function verifyDatabaseFinalizeGate(source) {
   const {content,gate}=job(source,'database-hyperdrive-finalize');
-  const expected=dollar+"{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == true && needs.deploy.result == 'success' && inputs.database_hyperdrive_apply_id != '' && inputs.database_expected_release_sha != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' && inputs.openlist_portal_registration != true }}";
+  const expected=dollar+"{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == true && needs.deploy.result == 'success' && inputs.database_hyperdrive_apply_id != '' && inputs.database_expected_release_sha != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' }}";
   assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe postrelease gate');
   for(const clause of ['needs: deploy','name: database-mcp-worker','group: worker-release-database-mcp-worker',
     'cancel-in-progress: false','persist-credentials: false','ref: '+dollar+'{{ github.sha }}',
@@ -227,8 +227,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 10,
-  'Release workflow_dispatch must have exactly ten inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 9,
+  'Release workflow_dispatch must have exactly nine inputs');
 assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');
 assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]'),
   'Database release expected SHA gate missing');
