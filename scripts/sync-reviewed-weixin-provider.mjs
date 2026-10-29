@@ -61,7 +61,7 @@ export async function syncReviewedVersion(proof, credentials, fetchImpl=fetch){
     if(!response.ok)throw Error('Read-only provenance check unavailable (HTTP '+response.status+')');
     return response.json();
   };
-  const [run,list,deployments,settings,environment,variable]=await Promise.all([
+  const [run,list,deployments,settings,environment,variable,workflowSettings]=await Promise.all([
     request(PROVIDER+'/actions/runs/'+proof.release_run_id,providerReadToken),
     request(PROVIDER+'/actions/workflows/release.yml/runs?per_page=20',providerReadToken),
     request('https://api.cloudflare.com/client/v4/accounts/'+accountId+
@@ -69,12 +69,18 @@ export async function syncReviewedVersion(proof, credentials, fetchImpl=fetch){
     request('https://api.cloudflare.com/client/v4/accounts/'+accountId+
       '/workers/scripts/weixin-mcp-worker/settings',cloudflareToken),
     request(CONSUMER+'/environments/'+ENV_NAME,environmentWriteToken),
-    request(CONSUMER+'/environments/'+ENV_NAME+'/variables/'+VAR_NAME,environmentWriteToken)
+    request(CONSUMER+'/environments/'+ENV_NAME+'/variables/'+VAR_NAME,environmentWriteToken),
+    request('https://api.cloudflare.com/client/v4/accounts/'+accountId+
+      '/workers/scripts/workflow-mcp-worker/settings',cloudflareToken)
   ]);
   verifyProviderProvenance(proof,run,list);
   if(deployments?.success!==true||settings?.success!==true)
     throw Error('Cloudflare active Provider could not be verified');
   verifyCloudflareProvider(proof,deployments.result,settings.result);
+  const livePin=workflowSettings?.result?.bindings?.filter(x=>
+    x.name===VAR_NAME&&x.type==='plain_text');
+  if(workflowSettings?.success!==true||livePin?.length!==1||!UUID.test(livePin[0].text??''))
+    throw Error('Existing consumer runtime pin not independently verified');
   if(!Array.isArray(environment?.protection_rules)||
      !environment.protection_rules.some(x=>x.type==='required_reviewers')||
      variable?.name!==VAR_NAME||!UUID.test(variable?.value??''))
@@ -87,6 +93,9 @@ export async function syncReviewedVersion(proof, credentials, fetchImpl=fetch){
     environmentWriteToken);
   if(readBack?.value?.toLowerCase()!==proof.provider_version_id)
     throw Error('Updated Provider version pin not confirmed');
+  // Idempotent: after an earlier successful release, never queue a needless redeploy.
+  if(livePin[0].text.toLowerCase()===proof.provider_version_id)
+    return {provider_version_id:proof.provider_version_id,dispatched:false};
   // Exactly the pre-existing main-only release, with all native/D1/session gates.
   await request(CONSUMER+'/actions/workflows/release.yml/dispatches',
     workflowToken,'POST',{ref:'main',
@@ -108,7 +117,8 @@ async function main(){
     workflowToken:process.env.GITHUB_TOKEN
   });
   console.log('Reviewed pin '+r.provider_version_id+
-    ' verified and requested through the original Workflow release; delivery not claimed');
+    (r.dispatched?' queued through original Workflow release':' already live; no duplicate release')+
+    '; no message delivery is claimed');
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)
   main().catch(e=>{console.error(e.message);process.exitCode=1;});
