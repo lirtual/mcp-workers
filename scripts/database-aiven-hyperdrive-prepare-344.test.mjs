@@ -4,9 +4,9 @@ import { prepareAivenHyperdrive } from './database-aiven-hyperdrive-prepare-344.
 
 const caId = 'c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a';
 const cfg = [
-  { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'db344-aiven-mysql-test', dialect: 'mysql',
+  { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'db344-aiven-mysql-test', dialect: 'mysql',
     host: 'mysql-zeroverse.d.aivencloud.com', database: 'database-mcp-test-mysql', mode: 'VERIFY_IDENTITY' },
-  { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'db344-aiven-postgres-test', dialect: 'postgres',
+  { id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'db344-aiven-postgres-test', dialect: 'postgres',
     host: 'postgresql-zeroverse.d.aivencloud.com', database: 'database-mcp-test-postgres', mode: 'verify-full' }
 ];
 const env = { GITHUB_ACTOR: 'lirtual', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40),
