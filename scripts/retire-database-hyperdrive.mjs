@@ -25,6 +25,12 @@ export async function retireDatabaseHyperdrive({
   verifyDatabaseHyperdriveSource(source, manifest);
   const base = 'https://api.cloudflare.com/client/v4/accounts/' + accountId;
   async function cloud(path, method = 'GET', body) {
+    // Emit only a bounded operation class on failure; never emit Cloudflare
+    // payloads, SQL parameters, credentials, row IDs or raw provider errors.
+    const phase = path.includes('/d1/database/')
+      ? (body?.sql?.startsWith('DELETE') ? 'd1_delete' : 'd1_query')
+      : path.endsWith('/settings') ? 'worker_settings'
+      : path.endsWith('/deployments') ? 'worker_deployments' : 'other';
     let response;
     try { response = await request(base + path, {
       method, headers: { authorization: 'Bearer ' + token, accept: 'application/json',
@@ -115,6 +121,12 @@ export async function main() {
   process.stdout.write('Retired disabled unbound Hyperdrive D1 identity; upstream Cloudflare config retained.\n');
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(() => { process.stderr.write('Database Hyperdrive retirement: BLOCKED (details withheld).\n');
-    process.exitCode = 1; });
+  main().catch(error => {
+    const message = error instanceof Error ? error.message : '';
+    // A fixed, allowlisted diagnostic label only. Never print arbitrary errors.
+    const phase = /at (d1_delete|d1_query|worker_settings|worker_deployments)(?: \(HTTP (400|401|403|404|409|429|500|502|503|unknown)\))?/.exec(message);
+    const suffix = phase ? ' stage=' + phase[1] + (phase[2] ? ' status=' + phase[2] : '') : '';
+    process.stderr.write('Database Hyperdrive retirement: BLOCKED' + suffix + '.\n');
+    process.exitCode = 1;
+  });
 }
