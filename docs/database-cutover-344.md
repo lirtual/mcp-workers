@@ -34,7 +34,10 @@ retained but **are not active**. The legacy restore procedure was **not exercise
 - The Owner may add, test, change credentials, enable, disable, delete and
   re-encrypt Direct connections at `/setup`. Never put database URLs or
   credentials in Issues, logs or CI. Direct encryption-key rotation does **not**
-  rotate upstream MySQL passwords. Retain previous keys until rollback and
+  rotate upstream MySQL passwords. The Owner setup rotation form now requires
+  an explicit recovery-compatibility attestation. This is **not automatic proof**:
+  independently check all rollback-eligible Worker versions and retained D1
+  backup key generations before confirming. Retain previous keys until rollback and
   backups have been accounted for.
 - Production Safe Write, DDL, transaction rollback, negative-security matrix
   and legacy recovery drill are **Not performed**. The bounded 4/4 read-only

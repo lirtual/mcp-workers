@@ -149,6 +149,12 @@ export async function handleSetup(
     validateCsrf(request, env, required(form, 'csrf'));
     const action = path.slice('/setup/'.length);
     if (action === 'rotate') {
+      // The Worker cannot inspect the private key material of rollback-eligible
+      // versions or historical D1 backups. Require an explicit Owner attestation
+      // of those external recovery checks before any ciphertext is re-encrypted.
+      if (form.getAll('rotation_ack').length !== 1 || form.get('rotation_ack') !== 'verified') {
+        throw new PublicError('INVALID_INPUT', 'Rotation recovery compatibility confirmation is required.');
+      }
       const rotated = await rotateRegistryKeys(env.DB, env);
       return setupResult(`Rotated ${rotated.rotated}; remaining ${rotated.pending}. Keep historical keys until snapshots and backups expire.`);
     }

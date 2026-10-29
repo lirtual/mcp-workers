@@ -60,7 +60,9 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<p class="muted">A disabled connection cannot be used until it passes a connection check.</p></details>' +
     '<button type="submit">Add connection</button></form></fieldset>' +
     '<details class="maintenance"><summary>Maintenance</summary><p class="muted">Re-encrypt saved connections when changing encryption keys; this does not change MySQL passwords.</p>' +
+    '<p class="muted">Before rotating, independently verify that every rollback-eligible Worker version can decrypt the new key, and retain historical keys until D1 snapshots and backups no longer need them. This page cannot verify those external requirements.</p>' +
     '<form method="post" action="/setup/rotate">' + token(csrf) +
+    '<label class="check"><input type="checkbox" name="rotation_ack" value="verified" required>I verified rollback compatibility and retained-key recovery.</label>' +
     '<button type="submit">Rotate encryption keys</button></form></details>', csrf);
 }
 export function setupFailure(code: string, status: number, reference?: string): Response {
