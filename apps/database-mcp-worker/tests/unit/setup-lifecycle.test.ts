@@ -152,14 +152,21 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       hyperdrive_action: 'retire', confirm_id: 'wrong' })).status).toBe(422);
     expect((await post('edit', { id: 'cloud_ref', revision: '1', credential_mode: 'keep' })).status).toBe(422);
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
-    // PostgreSQL Direct uses the same explicit plaintext acceptance and real health gate.
+    // PostgreSQL Direct is excluded from the approved three modes, even with plaintext acknowledgment.
+    const healthBeforeUnsupportedMode = fakeHealth.mock.calls.length;
     expect((await post('add', { id: 'pg_direct', dialect: 'postgres', transport: 'direct',
-      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(200);
-    expect(sqlite.prepare("SELECT status,transport,dialect FROM database_connections WHERE id='pg_direct'").get())
-      .toMatchObject({ status: 'active', transport: 'direct', dialect: 'postgres' });
-    expect((await post('disable', { id: 'pg_direct', revision: '2' })).status).toBe(200);
+      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(503);
+    expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='pg_direct'").get()).toBeUndefined();
+    expect(fakeHealth.mock.calls.length).toBe(healthBeforeUnsupportedMode);
+    // PostgreSQL Hyperdrive remains supported as a disabled reference, never auto-activated.
+    expect((await post('add', { id: 'pg_proxy', dialect: 'postgres', transport: 'hyperdrive',
+      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' })).status).toBe(200);
+    expect(sqlite.prepare("SELECT status,transport,dialect FROM database_connections WHERE id='pg_proxy'").get())
+      .toMatchObject({ status: 'disabled', transport: 'hyperdrive', dialect: 'postgres' });
     const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const initialPageHtml = await initialPage.text();
+    expect(initialPageHtml.split('<details><summary>Add Hyperdrive reference</summary>')[0]).not.toContain('<option value="postgres">');
+    expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
     expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
@@ -250,8 +257,8 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('action="/setup/add"');
     expect(html).toContain('action="/setup/rotate"');
     expect(html).toContain('action="/setup/github-actions-check"');
-    expect(html).toContain('<option value="mysql">');
-    expect(html).toContain('<option value="postgres">');
+    expect(html).toContain('<input type="hidden" name="dialect" value="mysql">');
+    expect(html.split('<details><summary>Add Hyperdrive reference</summary>')[0]).not.toContain('<option value="postgres">');
     expect(html).toContain('<option value="mysql">');
     expect(html).toContain('<option value="postgres">');
     expect(html).toContain('name="transport" value="direct"');
