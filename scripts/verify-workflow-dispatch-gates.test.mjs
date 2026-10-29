@@ -25,7 +25,19 @@ test('historical registry activation job is retired and cannot be dispatched', (
   assert.doesNotThrow(() => verifyDatabaseActivationGate(release));
   assert.throws(() => verifyDatabaseActivationGate(release + '\n  database-activate:\n'), /Historical Database activation/);
   assert.throws(() => verifyDatabaseActivationGate(release + '\n      database_activation_id:\n'), /Historical Database activation/);
-  assert.throws(() => verifyDatabaseActivationGate(release + '\n        run: node scripts/activate-database-hyperdrive.mjs\n'), /Historical Database activation/);
+  assert.throws(() => verifyDatabaseActivationGate(release + '\n        run: node scripts/activate-database-hyperdrive.mjs\n'), /Duplicate or missing protected Hyperdrive/);
+  for (const unsafe of [
+    ["github.actor == 'lirtual' &&", 'true &&'],
+    ['inputs.database_hyperdrive_enable_approved == true', 'true'],
+    ['inputs.deploy_to_production == false', 'true'],
+    ['group: worker-release-database-mcp-worker', 'group: no-lock']
+  ]) {
+    const at = release.indexOf('\n  database-hyperdrive-enable:\n');
+    const part = release.slice(at);
+    assert.ok(at >= 0 && part.includes(unsafe[0]));
+    const broken = release.slice(0, at) + part.replace(unsafe[0], unsafe[1]);
+    assert.throws(() => verifyDatabaseActivationGate(broken), /Unsafe Hyperdrive activation/);
+  }
   for (const retired of [
     '      database_restore_approved:', '  database-restore:',
     '  database-prepare:', '  database-direct-preflight:'
