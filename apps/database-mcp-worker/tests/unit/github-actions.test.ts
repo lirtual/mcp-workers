@@ -19,6 +19,7 @@ test('Owner dispatch uses exactly one pinned GitHub workflow with bounded enable
     assert.equal(init?.redirect, 'manual');
     const headers = new Headers(init?.headers);
     assert.equal(headers.get('authorization'), 'Bearer ' + token);
+    assert.equal(headers.get('user-agent'), 'lirtual-database-mcp-worker');
     assert.deepEqual(JSON.parse(String(init?.body)), {
       ref: 'main',
       return_run_details: true,
@@ -163,4 +164,20 @@ test('GitHub redirects are rejected without following authorization header', asy
   };
   await assert.rejects(verifyGithubActionsDispatch(env(), mocked as typeof fetch), /redirect rejected/);
   assert.equal(calls, 1);
+});
+
+test('workerd GitHub REST contract includes mandatory User-Agent on every action', async () => {
+  let accepted = 0;
+  const strictGithub = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const headers = new Headers(init?.headers);
+    if (!headers.get('user-agent')) return new Response('GitHub API requires User-Agent', { status: 403 });
+    assert.equal(headers.get('user-agent'), 'lirtual-database-mcp-worker');
+    accepted++;
+    return Response.json({ workflow_run_id: 40850012345 }, { status: 200 });
+  };
+  assert.deepEqual(await verifyGithubActionsDispatch(env(), strictGithub as typeof fetch),
+    { runId: 40850012345 });
+  assert.deepEqual(await dispatchHyperdriveAction(env(), 'enable', 'openlist', 1, strictGithub as typeof fetch),
+    { runId: 40850012345 });
+  assert.equal(accepted, 2);
 });

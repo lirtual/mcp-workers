@@ -39,6 +39,9 @@ async function dispatchWorkflow(
       method: 'POST', redirect: 'manual',
       headers: {
         Authorization: 'Bearer ' + token,
+        // GitHub REST rejects absent/invalid User-Agent (HTTP 403); Node
+        // mocks default one, but Cloudflare Workers outbound fetch may not.
+        'User-Agent': 'lirtual-database-mcp-worker',
         Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
         'X-GitHub-Api-Version': '2022-11-28'
