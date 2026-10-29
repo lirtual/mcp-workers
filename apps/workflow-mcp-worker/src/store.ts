@@ -6,7 +6,7 @@ import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-rec
 import {releaseVerifiedSessionSlot} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
-import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate} from './github-action-inputs.ts';
+import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSessionDurationInputRef} from './github-action-inputs.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
@@ -196,7 +196,9 @@ export class WorkflowService {
       try{
         const given=raw.inputs as Record<string,unknown>;
         const isDynamic=path.includes('/template/steps/0/')&&containsDynamicForeachTaskInputs(given);
-        const validated=isDynamic?validateForeachTaskInputTemplate(candidate.contract,given):given;
+        const validated=isDynamic?validateForeachTaskInputTemplate(candidate.contract,given):
+          expected.type==='session'&&isSessionDurationInputRef(given.duration_minutes)?
+            {...given,duration_minutes:300}:given;
         await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,validated);
         if(isDynamic){
           const controller=plan.steps[Number(path.split('/')[2])];
@@ -544,6 +546,20 @@ export class WorkflowService {
     try{activePlan=JSON.parse(published.plan) as Plan;}
     catch{throw new StateError('published_plan_invalid');}
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
+    // Reject invalid/unapproved runtime overrides before reserving a Run.
+    // A legacy literal Session Plan remains immutable and must not pretend
+    // that a supplied duration was honored.
+    if(Object.hasOwn(inputs,'duration_minutes')){
+      const sessions=activePlan.steps.filter(s=>s.uses==='github.run'&&
+        (s.with.action as {type?:unknown}|undefined)?.type==='session');
+      if(sessions.length&&!sessions.every(s=>isSessionDurationInputRef(
+        (s.with.action as {inputs?:Record<string,unknown>}).inputs?.duration_minutes)))
+        throw new StateError('session_duration_override_not_enabled');
+      if(sessions.length&&(!Number.isSafeInteger(inputs.duration_minutes)||
+         Number(inputs.duration_minutes)<1||Number(inputs.duration_minutes)>300))
+        throw new StateError('github_action_invalid_duration');
+    }
+
     const protocolActions=activePlan.steps.filter(step=>
       step.uses==='github.run'&&step.with?.capability==='github.action');
     // Session uses the same reviewed GitHub Action admission as Task.

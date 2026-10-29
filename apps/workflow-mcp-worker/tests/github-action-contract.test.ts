@@ -64,12 +64,12 @@ test('rejects duplicate YAML mappings', () => {
   assert.throws(() => parseGitHubAction(valid + '\nenv:\n  WORKFLOW_ACTION_TYPE: task\n'));
 });
 
-test('Session enforces one job, cleanup guard =360 and user duration <=330, and bounded duration',()=>{
+test('Session enforces one job, cleanup guard =360 and user duration <=300, and bounded duration',()=>{
  for(const revised of [
    valid.replace('    timeout-minutes: 360',''),
    valid.replace('timeout-minutes: 360','timeout-minutes: 359'),
    valid.replace('timeout-minutes: 360','timeout-minutes: ${{ inputs.duration_minutes }}'),
-   valid.replace('default: 10','default: 331'),
+   valid.replace('default: 10','default: 301'),
    valid.replace('default: 10','default: 0'),
    valid.replace('duration_minutes:','minutes:'),
    valid.replace('    timeout-minutes: 360','    timeout-minutes: 5'),

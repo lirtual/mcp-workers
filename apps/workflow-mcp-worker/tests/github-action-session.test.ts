@@ -940,11 +940,11 @@ test('unconfirmed dispatch or GitHub outage retains four-slot reservation withou
  }finally{globalThis.fetch=originalFetch;f.db.close();}
 });
 test('fallback elapsed-time rule cannot shorten true job duration and rejects invalid limits',()=>{
- assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:330},
-  1000+330*60_000+SESSION_READY_GRACE_MS-1),false);
- assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:330},
-  1000+330*60_000+SESSION_READY_GRACE_MS),true);
- assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:331},1e12),false);
+ assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:300},
+  1000+300*60_000+SESSION_READY_GRACE_MS-1),false);
+ assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:300},
+  1000+300*60_000+SESSION_READY_GRACE_MS),true);
+ assert.equal(sessionCancellationDue({state:'ready',created_at:100,updated_at:1000,duration_minutes:301},1e12),false);
  assert.equal(sessionCancellationDue({state:'stopping',created_at:100,updated_at:1000,duration_minutes:5},1e12),false);
 });
 
@@ -1200,5 +1200,33 @@ test('native Tailnet Sessions reject a Quick Tunnel URL even from their signed o
   assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
    publicKey,inspect,'https://example-test-session.trycloudflare.com'),'denied');
   assert.equal(f.db.prepare('SELECT session_url FROM session_executions').get()?.session_url,null);
+ }finally{f.db.close();}
+});
+
+
+test('Workflow admission only permits opted-in Session duration override within 1–300',async()=>{
+ const f=fixture();
+ try{
+  const bound={...plan,inputs:{duration_minutes:300},steps:[{
+   ...plan.steps[0],with:{...plan.steps[0].with,action:{
+    ...plan.steps[0].with.action,inputs:{
+     duration_minutes:{ref:'inputs.duration_minutes'},duration_mode:'explicit'},
+   }},
+  }]};
+  f.db.prepare('UPDATE workflows SET active_version_id=? WHERE id=?').run('v','wf');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(bound),'v');
+  const service=new WorkflowService({
+   DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+   GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-test',
+   WORKFLOW:{create:async()=>({})},
+  } as unknown as Env);
+  for(const invalid of [0,301,-1,'10',10.25]){
+   await assert.rejects(()=>service.start('wf',{duration_minutes:invalid}),
+    /github_action_invalid_duration/);
+  }
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM runs').get()?.n,6);
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(plan),'v');
+  await assert.rejects(()=>service.start('wf',{duration_minutes:10}),
+   /session_duration_override_not_enabled/);
  }finally{f.db.close();}
 });

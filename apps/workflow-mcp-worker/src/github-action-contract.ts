@@ -93,19 +93,19 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
   }
   if (env.WORKFLOW_ACTION_TYPE === 'session') {
     // One physical Job owns Ready, Tailscale and cleanup. The Runner itself
-    // must stop the session at or before 330 minutes FROM JOB START, not
+    // must stop the session at or before 300 minutes FROM JOB START, not
     // depend on best-effort Worker polling or a second scheduling service.
     const jobs=Object.values(root.jobs);
     if (jobs.length!==1) fail('session_requires_one_job');
     const job=jobs[0];
     const timeout=own(job,'timeout-minutes');
-    // 360-minute GitHub Job guard leaves time for first-step 330-minute
+    // 360-minute GitHub Job guard leaves time for first-step 300-minute
     // expiry, normal shutdown, and best-effort cleanup.
     if(timeout !== 360)fail('invalid_session_timeout');
     const duration=inputs.duration_minutes;
     if(!duration || duration.type!=='number' ||
        duration.required || !Number.isSafeInteger(duration.default) ||
-       (duration.default as number)<1 || (duration.default as number)>330)
+       (duration.default as number)<1 || (duration.default as number)>300)
       fail('invalid_session_duration');
   }
   return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs };

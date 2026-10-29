@@ -1,5 +1,38 @@
 import type { DiscoveredAction } from './github-action-contract.ts';
 
+// The only permitted runtime GitHub Session override. An immutable Plan opts
+// in explicitly; arbitrary run inputs never become GitHub dispatch parameters.
+export function isSessionDurationInputRef(value: unknown): value is {ref:'inputs.duration_minutes'} {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    (value as {ref?:unknown}).ref === 'inputs.duration_minutes';
+}
+
+export function resolveSessionActionInputs(
+  pinned: Record<string,unknown>,
+  defaults: Record<string,unknown> | undefined,
+  supplied: Record<string,unknown>,
+): Record<string,string> {
+  const result:Record<string,string> = {};
+  for(const [key,value] of Object.entries(pinned)){
+    if(key==='duration_minutes' && isSessionDurationInputRef(value)){
+      if(pinned.duration_mode !== 'explicit' || defaults?.duration_minutes !== 300)
+        throw Error('github_session_duration_binding_invalid');
+      const duration=Object.hasOwn(supplied,'duration_minutes')
+        ? supplied.duration_minutes : defaults.duration_minutes;
+      if(!Number.isSafeInteger(duration) || Number(duration)<1 || Number(duration)>300)
+        throw Error('github_action_invalid_duration');
+      result[key]=String(duration);
+    }else{
+      if(typeof value!=='string' && typeof value!=='boolean' &&
+         (typeof value!=='number'||!Number.isFinite(value)))
+        throw Error('github_action_invalid_publication');
+      result[key]=String(value);
+    }
+  }
+  return result;
+}
+
 const RESERVED = new Set(['attempt_id', 'dispatch_id', 'capability_id']);
 const forbidden = (key: string): boolean =>
   RESERVED.has(key.toLowerCase()) || key.toLowerCase().startsWith('workflow_');
@@ -47,7 +80,7 @@ export function validateGitHubActionInputs(
   // GitHub Runner's 360 minute ceiling remains a separate native backstop.
   if (action.type === 'session' && Object.hasOwn(declared, 'duration_minutes')) {
     const duration = Number(result.duration_minutes);
-    if (!Number.isSafeInteger(duration) || duration < 1 || duration > 330)
+    if (!Number.isSafeInteger(duration) || duration < 1 || duration > 300)
       throw Error('github_action_invalid_duration');
   }
   if (Object.keys(result).length > 10) throw Error('github_action_too_many_inputs');

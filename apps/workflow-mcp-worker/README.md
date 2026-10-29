@@ -30,6 +30,66 @@ every side-effecting RPC. D1 grants a single first-dispatch right; recovery
 queries historical receipts only. No public Weixin MCP write is used.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
+### Session Action launch-time duration (1–300 minutes)
+
+All reviewed GitHub **Session** Actions (ubuntu, windows, chrome, code-server,
+openlist) may opt into a single numeric Run override without weakening the
+immutable Action review and Publish grants. The reviewed GitHub Action still
+has to declare `duration_minutes` (default 300) and `duration_mode`
+(`explicit`). A new or one-time migrated Workflow Draft declares:
+
+```json
+{
+  "version": 1,
+  "name": "example session",
+  "inputs": {"duration_minutes": 300},
+  "steps": [{
+    "id": "session",
+    "uses": "action.run",
+    "with": {
+      "executor": "github",
+      "capability": "github.action",
+      "action": {
+        "repository": "<reviewed repository>",
+        "repositoryId": 123,
+        "workflowId": 456,
+        "workflowPath": ".github/workflows/ubuntu.yml",
+        "commitSha": "<exact reviewed 40-character SHA>",
+        "type": "session",
+        "contractDigest": "<exact reviewed 64-character digest>",
+        "ref": "refs/tags/<immutable reviewed release tag>",
+        "inputs": {
+          "duration_minutes": {"ref": "inputs.duration_minutes"},
+          "duration_mode": "explicit",
+          "session_mode": "fixed"
+        }
+      }
+    }
+  }]
+}
+```
+
+The identifiers above are illustrative, not publishable values. Use
+`workflow_action_list` to obtain **all** the real, exact reviewed fields and
+retain the existing Publish approvals (and any downstream notifications).
+
+After this one-time Publish, `workflow_run({workflow_id})` defaults to **300**
+minutes; `workflow_run({workflow_id,inputs:{duration_minutes:10}})` runs for
+**10** minutes without republishing. Only whole-number minutes **1–300** are
+accepted. `0`, `301`, decimals and numeric strings fail before Run admission.
+The Run snapshots the selected duration in D1; Session dispatch and one-shot
+Attempt registration independently re-evaluate the same persisted input.
+The Runner enforces the deadline from its earliest job-start timestamp and
+cleans up normally. No Task Action or other GitHub dispatch input is dynamically
+bound; the exact Action source, tag, contract, secrets and approval remain pinned.
+
+Already published literal-input Session plans keep their existing behavior:
+they do **not** accept duration overrides until separately republished with
+the opt-in binding. Older `duration_mode: repository` plans retain their
+repository-variable behavior; there is no silent conversion to the new mode.
+Changing Action sources or the live Worker still requires the normal,
+separately authorized release process.
+
 ## Runtime
 
 The owner-facing endpoint is `https://workflow.lirtual.dpdns.org/mcp`. The existing production Portal endpoint is `https://mcp.lirtual.dpdns.org/mcp`. The Worker's MCP endpoint requires the existing Portal bearer authentication; GitHub callbacks use GitHub-issued OIDC, not the Portal bearer. External Webhooks require a distinct, scoped random Bearer token; never send the MCP owner credential to a Webhook producer.

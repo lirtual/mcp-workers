@@ -1,3 +1,4 @@
+import {resolveSessionActionInputs} from './github-action-inputs.ts';
 import type { ReviewedGitHubAction } from './github-action-review.ts';
 import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
@@ -37,9 +38,9 @@ export async function registerAndDispatchGitHubAction(
  // A private caller cannot create dispatch authority merely by supplying
  // an Action object. Bind this attempt to its already-published immutable
  // Workflow version, exact Step, and exact reviewed Action grant.
- const origin=await db.prepare(`SELECT r.outcome,v.plan
+ const origin=await db.prepare(`SELECT r.outcome,r.inputs,v.plan
    FROM runs r JOIN workflow_versions v ON v.id=r.version_id
-   WHERE r.id=?`).bind(data.runId).first<{outcome:string;plan:string}>();
+   WHERE r.id=?`).bind(data.runId).first<{outcome:string;inputs:string;plan:string}>();
  if(!origin||!['queued','running'].includes(origin.outcome))
   throw Error('github_action_publication_missing');
  let plan:Plan;
@@ -76,12 +77,23 @@ export async function registerAndDispatchGitHubAction(
  }else{
   // Legacy literal-input paths must still match their immutable Plan values
   // byte-for-byte; an external caller cannot choose an arbitrary input map.
-  const expectedInputs=Object.fromEntries(Object.entries(pinned as Record<string,unknown>).map(([key,value])=>{
-   if(typeof value!=='string'&&typeof value!=='boolean'&&
-      (typeof value!=='number'||!Number.isFinite(value)))
+  let expectedInputs:Record<string,string>;
+  if(raw.type==='session'){
+   let supplied:Record<string,unknown>;
+   try{supplied=JSON.parse(origin.inputs) as Record<string,unknown>;}
+   catch{throw Error('github_action_publication_missing');}
+   if(!supplied||typeof supplied!=='object'||Array.isArray(supplied))
     throw Error('github_action_publication_missing');
-   return [key,String(value)];
-  }));
+   expectedInputs=resolveSessionActionInputs(pinned as Record<string,unknown>,
+     plan.inputs,supplied);
+  }else{
+   expectedInputs=Object.fromEntries(Object.entries(pinned as Record<string,unknown>).map(([key,value])=>{
+    if(typeof value!=='string'&&typeof value!=='boolean'&&
+       (typeof value!=='number'||!Number.isFinite(value)))
+     throw Error('github_action_publication_missing');
+    return [key,String(value)];
+   }));
+  }
   if(Object.keys(expectedInputs).length!==Object.keys(data.inputs).length||
      Object.entries(expectedInputs).some(([key,value])=>data.inputs[key]!==value))
    throw Error('github_action_publication_missing');
