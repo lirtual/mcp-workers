@@ -1149,4 +1149,6 @@ test('Browser release pins resources, protects namespace and stages only its ind
   const workflow=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   assert.match(workflow,/name: Build and verify shared Browser extension artifact\n        if: inputs.worker == 'browser-mcp-worker'/);
   assert.match(workflow,/mcp_endpoint="https:\/\/browser.lirtual.dpdns.org\/mcp"/);
+  assert.match(workflow,/name: Register production Browser MCP with existing One-MCP Portal\n        if: inputs.worker == 'browser-mcp-worker'/);
+  assert.match(workflow,/run: node scripts\/register-browser-portal\.mjs/);
 });

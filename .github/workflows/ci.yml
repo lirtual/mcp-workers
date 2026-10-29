@@ -52,6 +52,8 @@ jobs:
 
       - name: Verify HTTP Portal registration contract (offline)
         run: node --test scripts/register-http-portal.test.mjs
+      - name: Verify Browser Portal registration contract (offline)
+        run: node --test scripts/register-browser-portal.test.mjs
       - name: Verify OpenList Portal registration contract (offline)
         run: node --test scripts/register-openlist-portal.test.mjs
       - name: Verify shared MCP Access policy registration gate (offline)
