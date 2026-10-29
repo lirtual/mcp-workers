@@ -578,7 +578,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,event_receipts_table:0,runtime_table:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,deleted_column:0,event_receipts_table:0,runtime_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
     child_terminate_fence_column:0,capacity_guard_trigger:0,
     locator_column:0,fixed_column:0,fixed_index:0,
@@ -598,6 +598,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const latest = {...previousComplete,migration_count:12,migration_v12:1,event_receipts_table:1};
   const cloudflareComplete = {...latest,migration_count:13,migration_v13:1,
     invocations_table:1,cloudflare_cancel_table:1};
+  const deletedComplete = {...cloudflareComplete,migration_count:14,migration_v14:1,deleted_column:1};
   assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
@@ -606,13 +607,18 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(upgraded),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(previousComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
   for(const row of [
     {...cloudflareComplete,migration_count:12},
     {...cloudflareComplete,migration_v13:0},
     {...cloudflareComplete,invocations_table:0},
     {...cloudflareComplete,cloudflare_cancel_table:0},
+    {...deletedComplete,migration_count:13},
+    {...deletedComplete,migration_v14:0},
+    {...deletedComplete,deleted_column:0},
   ]) assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(previousComplete),false,true),/schema migrations/);
   for(const row of [baseline,partial,current,completed,oldComplete,upgraded]){
@@ -658,7 +664,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
       /schema migrations/);
   }
-  assert.equal(verifyWorkflowD1Readiness(result({...cloudflareComplete,run_count:3,
+  assert.equal(verifyWorkflowD1Readiness(result({...deletedComplete,run_count:3,
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
@@ -667,7 +673,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
     /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...cloudflareComplete,active_sessions:1}),false,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result({...deletedComplete,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
