@@ -15,7 +15,7 @@ const emission=(name:string, schedule?:string)=>({
 function setup(t:test.TestContext){
   const db=new DatabaseSync(':memory:');
   t.after(()=>db.close());
-  for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
+  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
     db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   let dispatches=0;
   const env={

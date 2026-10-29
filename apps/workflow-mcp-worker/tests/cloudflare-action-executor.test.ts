@@ -20,7 +20,7 @@ const github={repository:'lirtual/session-actions',repositoryId:123,workflowId:4
 async function fixture(t:test.TestContext){
  const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());
  sql.exec('PRAGMA foreign_keys=ON');
- for(const name of ['0001_s1.sql','0002_native_complete_seen.sql',
+ for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql',
    '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql',
    '0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql'])

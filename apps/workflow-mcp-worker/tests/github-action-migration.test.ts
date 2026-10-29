@@ -8,7 +8,7 @@ const read=(name:string)=>readFileSync(new URL(name,dir),'utf8');
 function setup(){
  const db=new DatabaseSync(':memory:');
  db.exec('PRAGMA foreign_keys=ON');
- for(const file of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])db.exec(read(file));
+ for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql'])db.exec(read(file));
  db.exec(`INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at)
  VALUES('wf','test','{}',1,'active',1,1);
  INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','digest','{}',1);
