@@ -83,6 +83,15 @@ test('HTTP MCP is CI-selected',()=>{
   assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
 });
 
+test('Browser MCP Worker and packaging changes select CI and the existing manual release gate', () => {
+  assert.deepEqual(selectAffectedApps(['apps/browser-mcp-worker/src/worker.ts']), ['browser-mcp-worker']);
+  assert.deepEqual(selectAffectedApps(['apps/browser-mcp-worker/extension/background.js']), ['browser-mcp-worker']);
+  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('browser-mcp-worker'));
+  assert.ok(RELEASE_WORKERS.includes('browser-mcp-worker'));
+  for (const file of ['scripts/build-browser-extension.py','scripts/browser-extension-manifest.json','docs/browser-extension/INSTALL.md','docs/browser-extension/NOTICES.md'])
+    assert.deepEqual(selectAffectedApps([file]), ['browser-mcp-worker']);
+});
+
 test('retired Weixin Worker is neither test-selected nor deployable',async()=>{
  assert.ok(!APPLICATIONS.includes('weixin-mcp-worker'));
  assert.ok(!RELEASE_WORKERS.includes('weixin-mcp-worker'));

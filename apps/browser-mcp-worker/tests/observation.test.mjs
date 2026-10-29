@@ -1,0 +1,92 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import vm from "node:vm";
+import fs from "node:fs";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
+
+const source=fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../extension/observation.js"),"utf8");
+function browserFixture({tabs=[],frame=null,scriptResult=null,afterFrame=null}={}){
+  const calls=[];
+  const grants={};
+  const chrome={
+    storage:{session:{get:async()=>({browser_sensitive_grants:grants})}},
+    extension:{isAllowedIncognitoAccess:async()=>true},
+    tabs:{
+      async query(){calls.push(["tabs.query"]);return tabs;},
+      async get(tabId){calls.push(["tabs.get",tabId]);return tabs.find(t=>t.id===tabId)??null;}
+    },
+    webNavigation:{async getFrame(request){calls.push(["getFrame",request.tabId]);return calls.filter(c=>c[0]==="getFrame").length===1?frame:afterFrame??frame;}},
+    scripting:{async executeScript(options){calls.push(["executeScript",options.target]);return scriptResult??[];}}
+  };
+  const ctx=vm.createContext({URL,chrome,BROWSER_MCP_SERVICE_ORIGIN:"https://browser-mcp-worker.invalid"});
+  vm.runInContext(source,ctx);
+  return {ctx,calls,grants,read:(tool,tabId,scopes)=>vm.runInContext(`executeBrowserRead(${JSON.stringify(tool)},${JSON.stringify(tabId)},${JSON.stringify(scopes)})`,ctx)};
+}
+test("explicit browser policy denies protected auth surfaces, internal addresses, and browser schemes",async()=>{
+  const f=browserFixture();
+  for(const address of [
+    "chrome://settings/","file:///etc/passwd","http://127.0.0.1/",
+    "http://192.168.1.1/","http://169.254.169.254/latest/meta-data/",
+    "https://mail.google.com/mail/u/0/","https://accounts.google.com/signin",
+    "https://browser-mcp-worker.invalid/approve",
+    "https://example.cloudflareaccess.com/cdn-cgi/access/login",
+    "https://github.com/login", "https://gitlab.com/users/sign_in",
+    "https://auth.openai.com/authorize", "https://example.com/%6cogin",
+    "https://example.com/account/oauth/authorize"
+  ])assert.equal(vm.runInContext(`browserEligibleUrl(${JSON.stringify(address)})`,f.ctx),false,address);
+  assert.equal(vm.runInContext('browserEligibleUrl("https://www.example.com/page")',f.ctx),true);
+});
+test("browser tab discovery never returns forbidden URL, private tab or page title",async()=>{
+  const f=browserFixture({tabs:[
+    {id:11,url:"https://example.com/private?token=TOP_SECRET#fragment",title:"SECRET TITLE",windowId:1,active:false,incognito:false},
+    {id:12,url:"https://accounts.google.com/",title:"login",windowId:1,incognito:false},
+    {id:13,url:"https://example.com/private",incognito:true,windowId:2}
+  ]});
+  const result=await f.read("tabs");
+  assert.equal(result.tabs.length,1);
+  assert.equal(result.tabs[0].tab_id,11);
+  assert.equal(result.tabs[0].origin,"https://example.com");
+  assert.equal(JSON.stringify(result).includes("TOP_SECRET"),false);
+  assert.equal(JSON.stringify(result).includes("SECRET TITLE"),false);
+});
+test("explicit background tab snapshot binds document ID and blocks navigation races",async()=>{
+  const tab={id:41,url:"https://example.com/a",windowId:1,active:false,incognito:false};
+  const frame={url:tab.url,documentLifecycle:"active",documentId:"fresh-document"};
+  const f=browserFixture({tabs:[tab],frame,scriptResult:[
+    {frameId:0,documentId:"fresh-document",result:{text:"Public heading",truncated:false}}
+  ]});
+  const value=await f.read("snapshot",41);
+  assert.equal(value.document_id,"fresh-document");
+  assert.equal(value.text,"Public heading");
+  assert.equal(f.calls.some(x=>x[0]==="tabs.get"&&x[1]===41),true);
+  const changed=browserFixture({tabs:[tab],frame,afterFrame:{url:"https://example.com/next",documentId:"new-document",documentLifecycle:"active"},
+    scriptResult:[{frameId:0,documentId:"fresh-document",result:{text:"stale",truncated:false}}]});
+  const stale=await changed.read("snapshot",41);
+  assert.equal(stale.error_code,"stale_target");
+  // Same documentId can survive a SPA route transition; refuse mixed snapshots.
+  const spa=browserFixture({tabs:[tab],frame,afterFrame:{
+    url:"https://example.com/route-changed",documentId:frame.documentId,documentLifecycle:"active"},
+    scriptResult:[{frameId:0,documentId:frame.documentId,result:{text:"new-page",truncated:false}}]});
+  assert.equal((await spa.read("snapshot",41)).error_code,"stale_target");
+});
+
+test("local/private policy gates both scopes independently and never permits metadata targets",async()=>{
+  const f=browserFixture();
+  const allowed=(url,grant=false)=>vm.runInContext("browserEligibleUrl("+JSON.stringify(url)+","+JSON.stringify(grant)+")",f.ctx);
+  const tab=(url,incognito,lan=false,privateGrant=false)=>vm.runInContext(
+    "browserAllowedTab("+JSON.stringify({id:71,url,incognito})+","+JSON.stringify({lan,private:privateGrant})+")",f.ctx);
+  for(const url of ["http://169.254.169.254/","http://metadata.google.internal/","http://100.100.100.200/","http://127.0.0.1/login"]){
+    assert.equal(allowed(url,false),false,url);
+    assert.equal(allowed(url,true),false,url);
+  }
+  for(const url of ["http://localhost:3000/","http://192.168.0.8/app","https://printer.lan/","http://[::1]:8000/"]){
+    assert.equal(allowed(url,false),false,url);
+    assert.equal(allowed(url,true),true,url);
+  }
+  assert.equal(tab("https://example.com/public",true,false,false),false);
+  assert.equal(tab("https://example.com/public",true,false,true),true);
+  assert.equal(tab("http://localhost:3000/",true,true,false),false);
+  assert.equal(tab("http://localhost:3000/",true,false,true),false);
+  assert.equal(tab("http://localhost:3000/",true,true,true),true);
+});

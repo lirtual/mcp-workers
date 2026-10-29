@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const APPLICATIONS = [
+  'browser-mcp-worker',
   'database-mcp-worker',
   'email-mcp-worker',
   'github-actions-mcp-worker',
@@ -18,6 +19,7 @@ export const APPLICATIONS = [
 
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
 // Weixin is published only by cloudflare-actions after the separately authorized handoff.
+// Browser reuses the manual production gate; provisioning remains separately authorized.
 export const RELEASE_WORKERS = [...APPLICATIONS];
 
 function requiresAllApps(file) {
@@ -36,7 +38,7 @@ function requiresAllApps(file) {
 export function selectAffectedApps(changedFiles) {
   if (changedFiles.some(requiresAllApps)) return [...APPLICATIONS];
   return APPLICATIONS.filter(app => changedFiles.some(file =>
-    file.startsWith(`apps/${app}/`) || (app === 'remote-control-mcp-worker' && file === 'scripts/stage-public-remote-control-agent.sh')));
+    file.startsWith(`apps/${app}/`) || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/'))) || (app === 'remote-control-mcp-worker' && file === 'scripts/stage-public-remote-control-agent.sh')));
 }
 
 export function selectionDetails(changedFiles) {
@@ -65,7 +67,7 @@ function main(env = process.env) {
   let selected;
   let changedFiles;
   if (env.REUSABLE_WORKER) {
-    if (!APPLICATIONS.includes(env.REUSABLE_WORKER)) {
+    if (!RELEASE_WORKERS.includes(env.REUSABLE_WORKER)) {
       throw new Error(`Unsupported reusable Worker selection: ${env.REUSABLE_WORKER}`);
     }
     selected = [env.REUSABLE_WORKER];

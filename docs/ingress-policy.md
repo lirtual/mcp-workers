@@ -63,3 +63,5 @@ After Portal and Access checks pass, perform actual ChatGPT tool discovery
 and representative scoped read + out-of-scope denial tests. Log and report
 each gate separately; do not call a service production-ready based on
 Portal sync alone.
+
+Browser T8：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret，不沿用共享值），无额外 Variable。Manifest Key 是公开安装标识，不是 Secret。当前 `workers_dev: false`、`preview_urls: false` 且没有生产路由；现有手动 Release 的 Browser 预检将阻断发布。不得以本次接线创建资源、写 Portal/Access 或切换凭据；参见 [T8 发布与验收边界](../apps/browser-mcp-worker/docs/t8-release.md)。

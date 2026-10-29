@@ -8,6 +8,7 @@ on:
         required: true
         type: choice
         options:
+          - browser-mcp-worker
           - database-mcp-worker
           - email-mcp-worker
           - ima-mcp-worker
@@ -75,6 +76,7 @@ jobs:
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
+           inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
            inputs.worker == 'database-mcp-worker' ||
            inputs.worker == 'email-mcp-worker' ||
@@ -133,6 +135,21 @@ jobs:
 
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build and verify shared Browser extension artifact
+        if: inputs.worker == 'browser-mcp-worker'
+        run: |
+          python3 scripts/build-browser-extension.py --out-dir "$RUNNER_TEMP/browser-extension"
+          python3 scripts/build-browser-extension.py --verify "$RUNNER_TEMP/browser-extension/browser-mcp-extension-v0.1.0.zip"
+
+      - name: Retain Browser ZIP and provenance for separately authorized GitHub Release publication
+        if: inputs.worker == 'browser-mcp-worker'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-mcp-extension-${{ github.sha }}
+          path: ${{ runner.temp }}/browser-extension/*.zip*
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Cloudflare release preflight (read-only)
         id: preflight
@@ -541,7 +558,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SELECTED_WORKER" in
-            raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|openlist-mcp-worker|workflow-mcp-worker) ;;
+            browser-mcp-worker|raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|openlist-mcp-worker|workflow-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
           esac
           log="$(mktemp)"
@@ -667,6 +684,8 @@ jobs:
           mcp_endpoint="https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp"
           if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]]; then
             mcp_endpoint="https://workflow.lirtual.dpdns.org/mcp"
+          elif [[ "$SELECTED_WORKER" == "browser-mcp-worker" ]]; then
+            mcp_endpoint="https://browser.lirtual.dpdns.org/mcp"
           elif [[ "$SELECTED_WORKER" == "email-mcp-worker" ]]; then
             mcp_endpoint="https://email-mcp.lirtual.dpdns.org/mcp"
           fi

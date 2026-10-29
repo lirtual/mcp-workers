@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
-const WORKERS = new Set(["raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
+const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
 const REQUIRED_SECRETS = {
+  "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"],
@@ -20,6 +21,7 @@ const REQUIRED_SECRETS = {
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 };
 const WORKER_ENTRIES = {
+  "browser-mcp-worker": "src/worker.ts",
   "raindrop-mcp-worker": "src/worker.ts",
   "ima-mcp-worker": "src/index.ts",
   "database-mcp-worker": "src/index.ts",
@@ -232,7 +234,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "SSH legacy broker binding or token remains");
     }
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true;
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
@@ -388,7 +390,20 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Retired Remote Control approval bindings must be removed");
     }
   }
-  const allowed = new Set(worker === "workflow-mcp-worker"
+  if (worker === "browser-mcp-worker") {
+    const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
+    invariant(coordinator?.class_name === "BrowserOwner" &&
+      typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
+      !coordinator.script_name && bindings.length === 2 &&
+      !!find("MCP_ACCESS_TOKEN", "secret_text") &&
+      !bindings.some(b => b.type === "plain_text"), "Browser binding inventory drift");
+    invariant(settings.observability?.logs?.head_sampling_rate === 0,
+      "Browser logs sampling must remain zero");
+    if (options.mode === "readback" && options.browserNamespaceId)
+      invariant(coordinator.namespace_id === options.browserNamespaceId,
+        "Browser namespace changed; preserve pairing and Unknown receipts");
+  }
+  const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER"] : worker === "workflow-mcp-worker"
     ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER"]) :
     worker === "openlist-mcp-worker" ? ["OPENLIST"] :
     worker === "email-mcp-worker" ? ["DB"] :
@@ -690,7 +705,7 @@ export function readConfiguration(worker, content) {
       conf.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must stay enabled");
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
       "Source Invocation Logs setting differs from production");
   }
@@ -776,6 +791,21 @@ export function readConfiguration(worker, content) {
       conf.exports?.DeviceCoordinator?.storage === "sqlite",
       "Production must declare a local SQLite DeviceCoordinator");
   }
+  if (worker === "browser-mcp-worker") {
+    invariant(Object.keys(conf).every(k=>["$schema","name","main","compatibility_date","compatibility_flags","workers_dev","preview_urls","keep_vars","durable_objects","migrations","observability","secrets","routes"].includes(k)) &&
+      conf.workers_dev === false && conf.preview_urls === false &&
+      JSON.stringify(conf.compatibility_flags) === JSON.stringify(["nodejs_compat"]) &&
+      !conf.vars && !conf.services?.length && !conf.d1_databases?.length &&
+      !conf.kv_namespaces?.length && !conf.r2_buckets?.length && !conf.workflows?.length &&
+      !conf.vpc_services && !conf.ratelimits?.length &&
+      JSON.stringify(conf.durable_objects?.bindings) === JSON.stringify([
+        {name:"BROWSER_OWNER",class_name:"BrowserOwner"}]) &&
+      JSON.stringify(conf.migrations) === JSON.stringify([
+        {tag:"browser-v1",new_sqlite_classes:["BrowserOwner"]}]) &&
+      JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]) &&
+      conf.observability?.enabled === true && conf.observability.logs.head_sampling_rate === 0,
+      "Browser source resource or persistence drift");
+  }
   return conf;
 }
 
@@ -855,7 +885,7 @@ async function current(account, worker, token, options) {
   }
   if (worker !== "ssh-mcp-worker") {
     invariant(scriptSettings?.observability?.logs?.invocation_logs ===
-      (["remote-control-mcp-worker", "email-mcp-worker"].includes(worker) ? false : true),
+      (["remote-control-mcp-worker", "email-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true),
       "Script-level Invocation Logs drift");
   }
   if (worker === "ima-mcp-worker") {
@@ -863,6 +893,7 @@ async function current(account, worker, token, options) {
   }
   return {
     ...activeVersion(deployments),
+    ...(worker === "browser-mcp-worker" ? {browserNamespaceId: settings.bindings.find(b=>b.name==="BROWSER_OWNER").namespace_id} : {}),
     ...(options.mode === "preflight" && typeof previousNamespaceId === "string"
       ? { previousNamespaceId } : {}),
   };
@@ -959,6 +990,11 @@ async function main() {
   const configPath = join(process.cwd(), "apps", worker, "wrangler.jsonc");
   const rawConfig = await readFile(configPath, "utf8");
   const sourceConfig = readConfiguration(worker, rawConfig);
+  if (worker === "browser-mcp-worker") {
+    invariant(sourceConfig.routes?.length === 1 && sourceConfig.routes[0].custom_domain === true &&
+      sourceConfig.routes[0].pattern === "browser.lirtual.dpdns.org",
+      "Browser release blocked: reviewed dedicated Custom Domain is not configured");
+  }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
   const previous = mode === "readback"
     ? JSON.parse(await readFile(statePath, "utf8")) : null;
@@ -972,6 +1008,7 @@ async function main() {
   const read = async () => {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+      browserNamespaceId: previous?.browserNamespaceId,
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
     });
     // Compare active deployments inside the existing bounded retry loop.
