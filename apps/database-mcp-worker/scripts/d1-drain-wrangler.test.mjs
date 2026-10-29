@@ -62,8 +62,10 @@ test('Spec #476 Wrangler local D1 migration and admission/disable/retire safety'
     const migrated=wrangler(root,'migrations','apply','DB');
     assert.ok(migrated.includes('0003_hyperdrive_operations.sql'));
     const preserved=execute(root,'SELECT id,status,revision,created_at,updated_at,config_id,binding_name,in_flight_count FROM database_connections ORDER BY id');
-    assert.deepEqual(preserved.map(({in_flight_count,...old})=>old),legacy);
-    assert.ok(preserved.every(row=>row.in_flight_count===0));
+    assert.deepEqual(preserved.map(({in_flight_count,...old})=>{
+      assert.equal(in_flight_count,0);
+      return old;
+    }),legacy);
     assert.deepEqual(execute(root,"SELECT id,retired_at FROM retired_connection_ids WHERE id='retired_legacy'"),
       [{id:'retired_legacy',retired_at:333}]);
     const applied=execute(root,'SELECT name FROM d1_migrations ORDER BY id');
