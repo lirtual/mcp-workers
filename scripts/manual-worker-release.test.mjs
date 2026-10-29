@@ -981,98 +981,11 @@ test("HTTP readback tolerates only bounded optional Secret inventory propagation
  assert.deepEqual(result,{version_id:"new-version"});
 });
 
-test("OpenList release retries version propagation but never tolerates unrelated drift", async () => {
-  const source = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
-  assert.match(source, /worker === 'openlist-mcp-worker'\)\)\s*verifyPublishedVersion/);
-  assert.match(source, /worker === "openlist-mcp-worker"\)\s*\? await retryReleaseReadback\(read\)/);
-  const expected = "11111111-1111-4111-8111-111111111111";
-  const previous = {mode:"update",version_id:"00000000-0000-4000-8000-000000000000",
-    deployment_id:"before"};
-  let count=0;
-  const actual=await retryReleaseReadback(async()=>{
-    count++;
-    const observed=count===1
-      ? {version_id:previous.version_id,deployment_id:"before"}
-      : {version_id:expected,deployment_id:"after"};
-    verifyPublishedVersion(previous,observed,expected);
-    return observed;
-  },async()=>{});
-  assert.equal(count,2);
-  assert.equal(actual.version_id,expected);
-  let attempts=0;
-  await assert.rejects(retryReleaseReadback(async()=>{
-    attempts++;
-    throw Error("OpenList upstream KV binding drift");
-  },async()=>{throw Error("unrelated drift must not retry");}),/KV binding drift/);
-  assert.equal(attempts,1);
-});
-
-test('OpenList release readback rejects roots that the runtime cannot accept', () => {
-  const secrets = ['MCP_ACCESS_TOKEN','OPENLIST_API_TOKEN'].map(name => ({name}));
-  const base = [
-    {name:'MCP_ACCESS_TOKEN',type:'secret_text'},
-    {name:'OPENLIST_API_TOKEN',type:'secret_text'},
-    {name:'OPENLIST',type:'service',service:'openlist-tsworkers'},
-    {name:'OPENLIST_ALLOWED_ROOTS',type:'plain_text',text:'["/Koofr/safe"]'},
-  ];
-  const config = bindings => ({ bindings, observability: {
-    enabled:true,logs:{invocation_logs:true},
-  }});
-  assert.equal(verifyBindings('openlist-mcp-worker',config(base),secrets),true);
-  for (const root of ['/Koofr/te\u0301st','/Koofr/'+'x'.repeat(256),'/Koofr/@d/alias']) {
-    const bindings=base.map(binding => binding.name==='OPENLIST_ALLOWED_ROOTS'
-      ? {...binding,text:JSON.stringify([root])}:binding);
-    assert.throws(() => verifyBindings('openlist-mcp-worker',config(bindings),secrets),
-      /OpenList allowed roots|OPENLIST_ALLOWED_ROOTS/);
-  }
-});
-
-
-test("OpenList first-release preflight checks existing upstream Worker without any writes", async () => {
-  let requests = 0;
-  const token = "test-cloudflare-token";
-  const transport = async (url, options) => {
-    requests++;
-    assert.equal(new URL(url).pathname,
-      "/client/v4/accounts/" + "a".repeat(32) + "/workers/scripts");
-    assert.equal(options.headers.Authorization,"Bearer "+token);
-    assert.equal(options.headers.Accept,"application/json");
-    assert.equal(options.method,undefined);
-    return Response.json({success:true,result:[
-      {id:"openlist-tsworkers"}, {id:"another-mcp-worker"},
-    ],result_info:{total_count:2}});
-  };
-  assert.equal(await scriptExists("a".repeat(32),"openlist-tsworkers",token,transport),true);
-  assert.equal(await scriptExists("a".repeat(32),"openlist-mcp-worker",token,transport),false);
-  assert.equal(requests,2);
-  const source = await import("node:fs/promises").then(fs =>
-    fs.readFile(new URL("./manual-worker-release.mjs",import.meta.url),"utf8"));
-  assert.match(source,/mode === "preflight" && worker === "openlist-mcp-worker"/);
-  assert.match(source,/scriptExists\(account, "openlist-tsworkers", token\)/);
-  assert.match(source,/Required OpenList upstream Worker is not deployed/);
-});
-
-test("upstream existence check fails on incomplete or unavailable inventory", async () => {
-  const account="a".repeat(32);
-  const missing=async () => Response.json({success:true,result:[],
-    result_info:{total_count:0}});
-  assert.equal(await scriptExists(account,"openlist-tsworkers","token",missing),false);
-  const incomplete=async () => Response.json({success:true,result:[
-    {id:"openlist-tsworkers"},
-  ],result_info:{total_count:4}});
-  await assert.rejects(scriptExists(account,"openlist-tsworkers","token",incomplete),
-    /inventory incomplete/);
-  const unavailable=async () => Response.json({success:false,result:null},{status:403});
-  await assert.rejects(scriptExists(account,"openlist-tsworkers","token",unavailable),
-    /inventory HTTP 403/);
-});
-
-
 test("worker release documentation stays aligned with the selected-Worker contract", async () => {
   const { BOOTSTRAP_SECRETS } = await import("./bootstrap-worker-secrets.mjs");
   const { WORKER_VARIABLES } = await import("./worker-release-variables.mjs");
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+openlist_portal_registration:/);
+  const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+[a-z][a-z_]+:/);
   assert.ok(options, "missing worker release choice options");
   const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-mcp-worker)$/gm)].map(m => m[1]).sort();
   const { RELEASE_WORKERS } = await import("./select-affected-apps.mjs");

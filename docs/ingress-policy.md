@@ -20,7 +20,6 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 | SSH | `ssh-mcp-worker` | workers.dev | `https://ssh-mcp-worker.aiyaya.workers.dev/mcp` |
 | GitHub Actions | `github-actions-mcp-worker` | workers.dev | `https://github-actions-mcp-worker.aiyaya.workers.dev/mcp` |
 | HTTP | `http-mcp-worker` | workers.dev | `https://http-mcp-worker.aiyaya.workers.dev/mcp` |
-| OpenList | `openlist-mcp-worker` | workers.dev | `https://openlist-mcp-worker.aiyaya.workers.dev/mcp` |
 | Remote Control | `remote-control-mcp-worker` | workers.dev + custom domain | `https://rca.lirtual.dpdns.org/mcp` |
 | Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
 | Email | `email-mcp-worker` | custom domains only | `https://email-mcp.lirtual.dpdns.org/mcp` |

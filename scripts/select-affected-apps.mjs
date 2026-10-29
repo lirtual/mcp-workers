@@ -10,7 +10,6 @@ export const APPLICATIONS = [
   'github-actions-mcp-worker',
   'http-mcp-worker',
   'ima-mcp-worker',
-  'openlist-mcp-worker',
   'raindrop-mcp-worker',
   'remote-control-mcp-worker',
   'ssh-mcp-worker',

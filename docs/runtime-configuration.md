@@ -25,15 +25,14 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `http-mcp-worker` | `HTTP_CREDENTIALS_JSON` | 无 |
-| `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
 Database MCP Spec #344 runs in production with encrypted, Owner-managed connections in D1 `database-mcp-registry`. The current release contract requires `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, Owner Access Variables and `DB`; it neither consumes `DATABASE_CONFIG` nor imports historical records. Old database resources are retired only by a separately reviewed cleanup after deployment verification. See [Database production and recovery runbook](./database-cutover-344.md).
 
-Notes: `HTTP_CREDENTIALS_JSON` is an **optional Secret**, not a required placeholder. `IMA_BASE_URL`, Raindrop retry count, Database limits and Workflow's `WORKFLOW_ACTION_APPROVED_REPOSITORIES` are optional Variables. Email's three Access Variables, OpenList's `OPENLIST_ALLOWED_ROOTS`, IMA's `IMA_CLIENT_ID` and Workflow's `MCP_PORTAL_CLIENT_ID` are **required**. Workflow's approved-repositories GitHub Variable is translated to the `GITHUB_ACTION_APPROVED_REPOSITORIES` runtime binding.
+Notes: `HTTP_CREDENTIALS_JSON` is an **optional Secret**, not a required placeholder. `IMA_BASE_URL`, Raindrop retry count, Database limits and Workflow's `WORKFLOW_ACTION_APPROVED_REPOSITORIES` are optional Variables. Email's three Access Variables, IMA's `IMA_CLIENT_ID` and Workflow's `MCP_PORTAL_CLIENT_ID` are **required**. Workflow's approved-repositories GitHub Variable is translated to the `GITHUB_ACTION_APPROVED_REPOSITORIES` runtime binding.
 
 
-`MAIL_ENCRYPTION_KEY` and `SESSION_RUNTIME_DATA_KEY` are canonical 32-byte Base64-encoded keys. SSH's `ENCRYPTION_KEY` must match the real EdgeSSH key protecting existing D1 records; the retired `SSH_BROKER_TOKEN` is not a release requirement. The existing Email D1, OpenList Service Binding and legacy IMA DO binding must not be deleted during documentation maintenance. Other pinned variables (e.g. Workflow Portal endpoint and Remote Control installation origin) come from scripts or Wrangler, not arbitrary GitHub Environment input.
+`MAIL_ENCRYPTION_KEY` and `SESSION_RUNTIME_DATA_KEY` are canonical 32-byte Base64-encoded keys. SSH's `ENCRYPTION_KEY` must match the real EdgeSSH key protecting existing D1 records; the retired `SSH_BROKER_TOKEN` is not a release requirement. The existing Email D1, legacy IMA DO binding must not be deleted during documentation maintenance. Other pinned variables (e.g. Workflow Portal endpoint and Remote Control installation origin) come from scripts or Wrangler, not arbitrary GitHub Environment input.
 
 See [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md) and [token rotation runbook](./mcp-shared-token-runbook.md).
 

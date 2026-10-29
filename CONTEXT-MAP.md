@@ -8,7 +8,6 @@ The active repository contains independently owned MCP Worker bounded contexts:
 - [HTTP MCP](./apps/http-mcp-worker/README.md): owns interactive public HTTP(S) debugging, bounded responses, and origin/path-scoped outbound credentials.
 - [Database MCP](./apps/database-mcp-worker/README.md): owns database connection configuration, SQL safety, and database tool semantics.
 - [IMA MCP](./apps/ima-mcp-worker/CONTEXT.md): owns IMA knowledge and notes operations.
-- [OpenList MCP](./apps/openlist-mcp-worker/CONTEXT.md): owns guarded virtual-tree operations to the existing OpenList-Worker through a private Service Binding.
 - [Raindrop MCP](./apps/raindrop-mcp-worker/CONTEXT.md): owns Raindrop.io bookmark, collection, tag, highlight, and upstream API semantics.
 - [Browser MCP](./apps/browser-mcp-worker/CONTEXT.md): owns profile-scoped extension pairing, local control, WSS connection generation, owner approval and browser receipts (Spec #418; T1 foundation is in progress).
 
