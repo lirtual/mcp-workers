@@ -82,6 +82,10 @@ export function setupFailureReference(error: PublicError): string | undefined {
   const known: Record<string, string> = {
     'Owner authentication configuration is incomplete.': 'auth_configuration',
     'Owner Access signing certificates are unavailable.': 'auth_certificates',
+    'Owner Access runtime identity is unavailable.': 'auth_identity',
+    'Owner Access signing-key fetch failed.': 'auth_certs_fetch',
+    'Owner Access signing-key response was rejected.': 'auth_certs_http',
+    'Owner Access signing-key document was invalid.': 'auth_certs_json',
     'Owner setup is not configured.': 'runtime_bindings',
     'The database registry is unavailable.': 'registry_read',
     'The database registry is invalid.': 'registry_shape'
@@ -101,9 +105,12 @@ function status(error: PublicError): number {
 }
 
 /** Owner setup is strictly separated from bearer-token /mcp. */
-export async function handleSetup(request: Request, env: Env, requestFetch: typeof fetch = fetch): Promise<Response> {
+export async function handleSetup(
+  request: Request, env: Env, requestFetch: typeof fetch = fetch,
+  access?: CloudflareAccessContext
+): Promise<Response> {
   try {
-    const identity = await verifyAccess(request, env, requestFetch);
+    const identity = await verifyAccess(request, env, requestFetch, access);
     if (!env.DB || !env.SETUP_RATE_LIMITER) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner setup is not configured.');
     const throttle = await env.SETUP_RATE_LIMITER.limit({ key: 'owner:' + identity.sub });
     if (!throttle.success) throw new PublicError('RATE_LIMITED', 'Owner setup rate limit exceeded.');

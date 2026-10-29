@@ -18,9 +18,9 @@ function authError(status: number, code: string, message: string): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === '/setup' || url.pathname.startsWith('/setup/')) return handleSetup(request, env);
+    if (url.pathname === '/setup' || url.pathname.startsWith('/setup/')) return handleSetup(request, env, fetch, ctx?.access);
     if (url.pathname !== '/mcp') return new Response('Not found', { status: 404 });
 
     const portalAuth = await authenticateDatabasePortal(request, env);

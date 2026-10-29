@@ -6,6 +6,14 @@ function fail(code: string): never {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner authentication configuration is incomplete.');
   if (code === 'auth_unavailable')
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner Access signing certificates are unavailable.');
+  if (code === 'cert_fetch_failed')
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner Access signing-key fetch failed.');
+  if (code === 'cert_http_rejected')
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner Access signing-key response was rejected.');
+  if (code === 'cert_invalid_json')
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner Access signing-key document was invalid.');
+  if (code === 'auth_identity_unavailable')
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Owner Access runtime identity is unavailable.');
   if (code === 'csrf_rejected') throw new PublicError('ACCESS_DENIED', 'Invalid form origin or CSRF token.');
   throw new PublicError('AUTH_REQUIRED', 'Cloudflare Access authentication is required.');
 }
@@ -28,12 +36,32 @@ function decodeJson<T>(value: string): T {
   try { return JSON.parse(new TextDecoder().decode(decodeB64(value))) as T; }
   catch { return fail('unauthorized'); }
 }
-export async function verifyAccess(request: Request, env: Env, requestFetch: typeof fetch = fetch): Promise<Identity> {
+/**
+ * Cloudflare supplies ctx.access only after it authenticates this direct Worker
+ * invocation. Unlike user-provided headers, its audience/identity cannot be
+ * forged by an HTTP client. The existing JWT verifier remains fail-closed
+ * fallback for invocations without this runtime context.
+ */
+export async function verifyAccess(
+  request: Request, env: Env, requestFetch: typeof fetch = fetch,
+  access?: CloudflareAccessContext
+): Promise<Identity> {
   const url = new URL(request.url);
   if (url.protocol !== 'https:' || url.hostname !== ownerHost(env) || url.port ||
       (request.headers.has('host') && request.headers.get('host') !== url.host)) fail('not_found');
   const team = env.ACCESS_TEAM_DOMAIN;
   if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(team ?? '') || !env.ACCESS_AUD || !env.OWNER_EMAIL) fail('auth_misconfigured');
+  if (access) {
+    if (access.aud !== env.ACCESS_AUD) fail('unauthorized');
+    let identity: CloudflareAccessIdentity | undefined;
+    try { identity = await access.getIdentity(); }
+    catch { return fail('auth_identity_unavailable'); }
+    const email = identity?.email;
+    if (typeof email !== 'string' || email.toLowerCase() !== env.OWNER_EMAIL.toLowerCase()) fail('unauthorized');
+    // Stable identifier for the existing per-Owner rate limiter.
+    return { sub: typeof identity?.user_uuid === 'string' && identity.user_uuid.length > 0
+      ? identity.user_uuid : email.toLowerCase(), email };
+  }
   const jwt = request.headers.get('cf-access-jwt-assertion');
   if (!jwt || jwt.length > 10000) fail('unauthorized');
   const parts = jwt.split('.');
@@ -48,12 +76,12 @@ export async function verifyAccess(request: Request, env: Env, requestFetch: typ
     (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || payload.nbf > now + 30)) ||
     !payload.sub || !payload.email || payload.email.toLowerCase() !== env.OWNER_EMAIL.toLowerCase()) fail('unauthorized');
   let certs: Response;
-  try { certs = await requestFetch('https://' + team + '/cdn-cgi/access/certs', { redirect: 'error', signal: AbortSignal.timeout(5000) }); }
-  catch { return fail('auth_unavailable'); }
-  if (!certs.ok) fail('auth_unavailable');
+  try { certs = await requestFetch('https://' + team + '/cdn-cgi/access/certs', { redirect: 'manual', signal: AbortSignal.timeout(5000) }); }
+  catch { return fail('cert_fetch_failed'); }
+  if (!certs.ok) fail('cert_http_rejected');
   let body: { keys?: (JsonWebKey & { kid?: string; alg?: string })[] };
   try { body = await certs.json() as typeof body; }
-  catch { return fail('auth_unavailable'); }
+  catch { return fail('cert_invalid_json'); }
   const jwk = body.keys?.find(key => key.kid === header.kid && key.kty === 'RSA' && key.alg === 'RS256');
   if (!jwk) fail('unauthorized');
   try {

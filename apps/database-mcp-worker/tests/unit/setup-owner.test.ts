@@ -38,6 +38,43 @@ describe('Database Owner setup authorization', () => {
   });
 });
 
+describe('Cloudflare-native Owner identity', () => {
+  const env = { ...base,
+    DB: { prepare: () => ({ all: async () => ({ results: [] }) }) },
+    SETUP_RATE_LIMITER: { limit: async () => ({ success: true }) }
+  } as unknown as Env;
+  const verified = (aud: string, email?: string): CloudflareAccessContext =>
+    ({ aud, getIdentity: async () => ({ email, user_uuid: 'owner-uuid' }) }) as CloudflareAccessContext;
+  it('uses the runtime-attested exact audience and Owner without fetching certs or trusting unverified headers', async () => {
+    const noNetwork = async (): Promise<Response> => { throw new Error('certificate fetch must not be needed'); };
+    const result = await handleSetup(new Request(url), env, noNetwork, verified('test-aud', 'OWNER@example.org'));
+    expect(result.status).toBe(200);
+    expect(await result.text()).toContain('No database connections configured');
+    // Assert the actual entrypoint forwards ctx.access to the Owner handler.
+    const worker = (await import('../../src/index.js')).default;
+    const direct = await worker.fetch(new Request(url), env, { access: verified('test-aud', 'owner@example.org') } as ExecutionContext);
+    expect(direct.status).toBe(200);
+    for (const identity of [verified('different-app', 'owner@example.org'),
+      verified('test-aud', 'intruder@example.org'), verified('test-aud')]) {
+      const denied = await handleSetup(new Request(url), env, noNetwork, identity);
+      expect(denied.status).toBe(401);
+    }
+    const wrongHost = await handleSetup(new Request('https://other.example.org/setup'), env,
+      noNetwork, verified('test-aud', 'owner@example.org'));
+    expect(wrongHost.status).toBe(403);
+    // A fake request header cannot synthesize runtime-verified ctx.access.
+    const fake = await handleSetup(new Request(url, { headers: { 'cf-access-jwt-assertion': 'forged' } }), env, noNetwork);
+    expect(fake.status).toBe(401);
+    const badNative = await handleSetup(new Request(url), env, noNetwork, {
+      aud: 'test-aud', getIdentity: async () => { throw new Error('private identity error'); }
+    });
+    const html = await badNative.text();
+    expect(badNative.status).toBe(503);
+    expect(html).toContain('Diagnostic: auth_identity');
+    expect(html).not.toContain('private identity error');
+  });
+});
+
 describe('Cloudflare Access signed JWT enforcement', () => {
   it('verifies RS256 signature, issuer, audience, expiration and exact Owner identity', async () => {
     const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048,
@@ -72,8 +109,12 @@ describe('Cloudflare Access signed JWT enforcement', () => {
     });
     expect(unavailableCerts.status).toBe(503);
     const certHtml = await unavailableCerts.text();
-    expect(certHtml).toContain('Diagnostic: auth_certificates');
+    expect(certHtml).toContain('Diagnostic: auth_certs_fetch');
     expect(certHtml).not.toContain('never expose');
+    const badStatus = await handleSetup(req(valid), validEnv, async () => new Response('redacted', { status: 302 }));
+    expect(await badStatus.text()).toContain('Diagnostic: auth_certs_http');
+    const invalidDocument = await handleSetup(req(valid), validEnv, async () => new Response('not-json'));
+    expect(await invalidDocument.text()).toContain('Diagnostic: auth_certs_json');
     const unavailableRegistry = await handleSetup(req(valid), { ...validEnv,
       DB: { prepare: () => ({ all: async () => { throw new Error('private SQL'); } }) }
     } as unknown as Env, mock);
