@@ -11,6 +11,7 @@ test('Owner PAT probe dispatches exactly one no-deploy no-approval workflow', as
     assert.equal(init.method, 'POST');
     assert.equal(init.redirect, 'manual');
     assert.equal(init.headers.Authorization, 'Bearer ' + token);
+    assert.equal(init.headers['User-Agent'], 'lirtual-database-mcp-worker');
     assert.deepEqual(JSON.parse(init.body), {
       ref: 'main',
       return_run_details: true,
