@@ -72,7 +72,8 @@ export async function validatePublicEndpoint(raw: string, id: string, requestFet
   try {
     const answers = await Promise.all(['A', 'AAAA'].map(async type => {
       const response = await requestFetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, {
-        headers: { accept: 'application/dns-json' }, redirect: 'error', signal: AbortSignal.timeout(3500)
+        // Workers rejects redirect: 'error' before sending; manual keeps 3xx fail-closed.
+        headers: { accept: 'application/dns-json' }, redirect: 'manual', signal: AbortSignal.timeout(3500)
       });
       if (!response.ok) unavailable();
       return await response.json() as DnsReply;
