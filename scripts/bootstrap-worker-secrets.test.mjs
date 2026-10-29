@@ -6,7 +6,7 @@ const fixtures = {
   "browser-mcp-worker": { MCP_ACCESS_TOKEN: "independent-browser-token" },
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
-  "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1" },
+  "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1", DATABASE_GITHUB_ACTIONS_TOKEN: "github_pat_synthetic_database_owner_token" },
   "email-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
@@ -60,6 +60,11 @@ test("Database release stages new D1 encryption keys, never legacy DATABASE_CONF
   assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
     ...input, DATABASE_KEY_ID: "invalid key"
   }), /DATABASE_KEY_ID/);
+  for (const invalid of ["short", "x".repeat(513), "foo\nbar", " foo", "foo "]) {
+    assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
+      ...input, DATABASE_GITHUB_ACTIONS_TOKEN: invalid
+    }), /DATABASE_GITHUB_ACTIONS_TOKEN/);
+  }
   const previous = { ...obsolete,
     DATABASE_ENCRYPTION_PREVIOUS_KEY: Buffer.alloc(32, 7).toString("base64"),
     DATABASE_PREVIOUS_KEY_ID: "v0"
