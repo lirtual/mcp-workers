@@ -343,7 +343,9 @@ export class BrowserOwner implements DurableObject {
       });
       try {socket.send(JSON.stringify({type:"prepare_request",operation_id,
         intent_key:command.intent_key,generation:e.generation,command,
-        approval_available:!!approvalConfig(this.env)&& (socket.deserializeAttachment() as SocketAuth)?.approval_origin===approvalConfig(this.env)?.origin,expires_at:now+300000}));}
+        // Leave 30s headroom for bounded clock skew between Worker and local Chrome.
+        // Both sides still reject expired grants and the Worker enforces the deadline.
+        approval_available:!!approvalConfig(this.env)&& (socket.deserializeAttachment() as SocketAuth)?.approval_origin===approvalConfig(this.env)?.origin,expires_at:now+270000}));}
       catch {this.terminateMutation(operation_id);}
       if(ready)await ready;
       return json(this.withApproval(this.intents.status(e.id,command.intent_key)));
