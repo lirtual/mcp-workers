@@ -170,7 +170,7 @@ export async function handleSetup(
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
     const action = path.slice('/setup/'.length);
-    await expireHyperdrivePreparations(env.DB);
+    if (action !== 'hyperdrive-unbind-status') await expireHyperdrivePreparations(env.DB);
     if (action === 'rotate') {
       // The Worker cannot inspect the private key material of rollback-eligible
       // versions or historical D1 backups. Require an explicit Owner attestation

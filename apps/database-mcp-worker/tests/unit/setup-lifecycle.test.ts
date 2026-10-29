@@ -456,6 +456,10 @@ it('Owner sees read-only staged unbinding status from /setup with CSRF and disab
     (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
     VALUES ('safe_id','mysql','hyperdrive','disabled',
       '11111111-2222-3333-4444-555555555555','HYPERDRIVE_SAFETY',4,1,1)`).run();
+  // This status-only POST must not run the generic lazy operation-expiry UPDATE.
+  sqlite.prepare(`INSERT INTO hyperdrive_operations
+    (operation_id,logical_id,action,expected_revision,phase,created_at,updated_at,expires_at)
+    VALUES ('77777777-7777-4777-8777-777777777777','expired_candidate','create',0,'pending',1,1,1)`).run();
   env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
   const {jwt,certificates}=await auth();
   let githubCalls=0;let branch='';let tampered=false;
@@ -507,4 +511,6 @@ it('Owner sees read-only staged unbinding status from /setup with CSRF and disab
   expect(githubCalls).toBe(5);
   expect(sqlite.prepare('SELECT revision,status FROM database_connections WHERE id=?').get('safe_id'))
     .toMatchObject({revision:4,status:'disabled'});
+  expect(sqlite.prepare('SELECT phase,updated_at FROM hyperdrive_operations WHERE logical_id=?').get('expired_candidate'))
+    .toMatchObject({phase:'pending',updated_at:1});
 });
