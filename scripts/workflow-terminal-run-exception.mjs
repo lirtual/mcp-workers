@@ -18,6 +18,12 @@ export const FOURTH_SESSION_GITHUB_RUN_ID = 40792650738;
 export const FOURTH_PROVIDER_INVOCATION_ID = "27cf5b0e-3b9c-4d9f-a9bd-db76c2266ea5";
 export const FOURTH_PROVIDER_DEPLOYMENT_ID = "12970996-4220-4731-b76e-a0c8aa7a5017";
 
+// Fifth exact 2026-10-29 Owner-delivered E2E; upstream ACK is unknown.
+export const FIFTH_TERMINAL_RUN_ID = "a1970556-a529-46c2-9bb1-81980b51557e";
+export const FIFTH_SESSION_GITHUB_RUN_ID = 40803663333;
+export const FIFTH_PROVIDER_INVOCATION_ID = "2adf4608-c075-425d-a93d-d7d74211a295";
+export const FIFTH_PROVIDER_DEPLOYMENT_ID = "3d61997c-eb30-46e3-b96f-334343d061af";
+
 const WORKFLOW = "workflow-mcp-orchestrator";
 
 function requireValid(test, message) {
@@ -198,6 +204,53 @@ export function verifyFourthTerminalEvidence(d1,native,github) {
   return FOURTH_TERMINAL_RUN_ID;
 }
 
+// Fail-closed: only the fifth exact immutable 2026-10-29 terminated Run is exempted.
+export function verifyFifthTerminalEvidence(d1,native,github) {
+  requireValid(Array.isArray(d1)&&d1.length===5&&
+    d1.every(z=>z?.success===true&&Array.isArray(z.results)),
+    "fifth Run D1 readback incomplete");
+  const [runs,steps,sessions,attempts,invocations]=d1.map(z=>z.results);
+  requireValid(runs.length===1&&runs[0].id===FIFTH_TERMINAL_RUN_ID&&
+    runs[0].outcome==="indeterminate"&&runs[0].start_state==="started"&&
+    runs[0].error_code==="cloudflare_outcome_unknown",
+    "fifth Run unknown outcome changed");
+  requireValid(steps.length===3&&
+    steps[0].run_id===FIFTH_TERMINAL_RUN_ID&&
+    steps[0].step_id==="notify"&&steps[0].status==="indeterminate"&&
+    steps[0].error_code==="cloudflare_outcome_unknown"&&
+    steps[1].run_id===FIFTH_TERMINAL_RUN_ID&&
+    steps[1].step_id==="openlist"&&steps[1].status==="succeeded"&&
+    steps[2].run_id===FIFTH_TERMINAL_RUN_ID&&
+    steps[2].step_id==="receipt"&&steps[2].status==="skipped",
+    "fifth Run Step result changed");
+  requireValid(sessions.length===1&&
+    sessions[0].run_id===FIFTH_TERMINAL_RUN_ID&&
+    sessions[0].step_id==="openlist"&&sessions[0].state==="terminated",
+    "fifth Run Session not terminated");
+  requireValid(attempts.length===1&&
+    attempts[0].run_id===FIFTH_TERMINAL_RUN_ID&&
+    attempts[0].step_id==="openlist"&&attempts[0].state==="cancelled"&&
+    attempts[0].repository==="lirtual/session-actions"&&
+    attempts[0].owner_run_id===FIFTH_SESSION_GITHUB_RUN_ID&&
+    attempts[0].candidate_run_id===FIFTH_SESSION_GITHUB_RUN_ID&&
+    attempts[0].owner_run_attempt===1&&
+    attempts[0].candidate_run_attempt===1,
+    "fifth Run GitHub Attempt not terminated");
+  requireValid(invocations.length===1&&
+    invocations[0].run_id===FIFTH_TERMINAL_RUN_ID&&
+    invocations[0].step_id==="notify"&&
+    invocations[0].invocation_id===FIFTH_PROVIDER_INVOCATION_ID&&
+    invocations[0].binding_generation===1&&
+    invocations[0].deployment_id===FIFTH_PROVIDER_DEPLOYMENT_ID,
+    "fifth Run Action identity changed");
+  requireValid(native?.status==="complete"&&native?.end,
+    "fifth native Cloudflare instance not complete");
+  requireValid(github?.id===FIFTH_SESSION_GITHUB_RUN_ID&&
+    github?.status==="completed"&&github?.conclusion==="cancelled",
+    "fifth GitHub Run not physically cancelled");
+  return FIFTH_TERMINAL_RUN_ID;
+}
+
 async function main() {
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
     "only the Workflow release may request this exception");
@@ -207,11 +260,12 @@ async function main() {
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
     "required read-only verification credentials missing");
   const kind=process.env.TERMINAL_PROOF_KIND;
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth",
+  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth",
     "unknown terminal proof kind");
   const second=kind==="second";
   const third=kind==="third";
   const fourth=kind==="fourth";
+  const fifth=kind==="fifth";
   const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
   const get = async (url, token) => {
     const response = await fetch(url,{
@@ -223,20 +277,22 @@ async function main() {
   };
   const cf = await get("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
+    (fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
     process.env.CLOUDFLARE_API_TOKEN);
   requireValid(cf?.success === true && cf?.result,
     "native Cloudflare instance readback unavailable");
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
-    (fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
+    (fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-  if(fourth)verifyFourthTerminalEvidence(d1,cf.result,github);
+  if(fifth)verifyFifthTerminalEvidence(d1,cf.result,github);
+  else if(fourth)verifyFourthTerminalEvidence(d1,cf.result,github);
   else if(third)verifyThirdTerminalEvidence(d1,cf.result,github);
   else if(second)verifySecondTerminalEvidence(d1,cf.result,github);
   else verifyTerminalRunEvidence(d1,cf.result,github);
   requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
   await appendFile(process.env.GITHUB_OUTPUT,
-    (fourth?"fourth_terminal_run_id="+FOURTH_TERMINAL_RUN_ID:
+    (fifth?"fifth_terminal_run_id="+FIFTH_TERMINAL_RUN_ID:
+      fourth?"fourth_terminal_run_id="+FOURTH_TERMINAL_RUN_ID:
       third?"third_terminal_run_id="+THIRD_TERMINAL_RUN_ID:
       second?"second_terminal_run_id="+SECOND_TERMINAL_RUN_ID:
       "terminal_run_id="+TERMINAL_RUN_ID)+"\n");
