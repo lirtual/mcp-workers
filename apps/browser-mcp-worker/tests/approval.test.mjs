@@ -242,7 +242,19 @@ test('preparation storage failure yields a stable safe receipt, never a website 
     await f.rpc('browser_tab_open',args);await f.flush();
     const result=await status(f,args);
     assert.equal(result.state,'failed');
-    assert.equal(result.error_code,'preparation_unavailable');
+    assert.equal(result.error_code,'prepare_storage_unavailable');
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
+test('local authorization mismatch is a fixed no-content preparation failure, not a browser effect',async()=>{
+  const f=await fixture(config);try{
+    f.local.authorization='stopped';
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/local-stop-test'};
+    await f.rpc('browser_tab_open',args);await f.flush();
+    const result=await status(f,args);
+    assert.equal(result.state,'failed');
+    assert.equal(result.error_code,'prepare_context_changed');
     assert.equal(f.effects.length,0);
   }finally{await f.close();}
 });

@@ -244,13 +244,18 @@ function connect() {
         if(message.generation!==currentGeneration||typeof message.operation_id!=="string"||
             !/^[a-f0-9-]{36}$/.test(message.operation_id))return;
         let accepted=false,proposal={};
+        // Fixed preparation-stage reason codes only; never send page content or raw exceptions.
+        let prepareStage="validation";
         try {
           const permissionToken=await sensitiveToken();
           const check=await browserValidateMutation(message.command,message.approval_available===true);
           if(check.error_code)proposal={error_code:check.error_code};
+          prepareStage="context";
           const local=await state();
-          if(check.ready&&permissionToken===await sensitiveToken()&&message.command?.endpoint_id===local.endpoint_id&&socket===ws&&local.authorization==="enabled"&&
-              message.generation===currentGeneration){
+          const validContext=permissionToken===await sensitiveToken()&&message.command?.endpoint_id===local.endpoint_id&&socket===ws&&local.authorization==="enabled"&&
+              message.generation===currentGeneration;
+          if(check.ready&&validContext){
+            prepareStage="storage";
             await trustedSession;
             const all=await chrome.storage.session.get(null);
             const prepared=Object.entries(all).filter(([k])=>k.startsWith("browser_prepare_"));
@@ -259,7 +264,9 @@ function connect() {
             if(needsApproval&&prepared.filter(([,v])=>v.approval_required&&v.expires_at>=Date.now()&&v.generation===currentGeneration).length>=10)throw Error("capacity_exceeded");
             if(new TextEncoder().encode(JSON.stringify(message.command)).byteLength>65536)throw Error("capacity_exceeded");
             const run_id=needsApproval?await approvalRun():null;
-            if(needsApproval&&(!Number.isSafeInteger(message.expires_at)||message.expires_at>Date.now()+300000||message.expires_at<=Date.now()))throw Error("invalid_expiry");
+            if(needsApproval&&(!Number.isSafeInteger(message.expires_at)||message.expires_at>Date.now()+300000||message.expires_at<=Date.now())){
+              prepareStage="expiry";throw Error("invalid_expiry");
+            }
             proposal=needsApproval?{approval_required:true,command:message.command,run_id,expires_at:message.expires_at,context:{description:check.description,target_url:check.target_url,source_url:check.source_url??null}}:{};
             await chrome.storage.session.set({["browser_prepare_"+message.operation_id]:{
               command:message.command,permissionToken,generation:message.generation,
@@ -267,8 +274,15 @@ function connect() {
               expires_at:needsApproval?message.expires_at:Date.now()+15000
             }});
             accepted=true;
-          }
-        } catch(error){if(error?.message==="capacity_exceeded")proposal={error_code:"capacity_exceeded"};/* never execute on invalid prepare */}
+          } else if(check.ready)proposal={error_code:"prepare_context_changed"};
+          else if(!check.error_code)proposal={error_code:"prepare_validation_unavailable"};
+        } catch(error){
+          // Preserve fail-closed behavior and avoid exposing exception messages.
+          proposal={error_code:error?.message==="capacity_exceeded"?"capacity_exceeded":
+            prepareStage==="expiry"?"prepare_expired":
+            prepareStage==="storage"?"prepare_storage_unavailable":
+            prepareStage==="context"?"prepare_context_changed":"prepare_validation_unavailable"};
+        }
         if(socket===ws&&ws.readyState===WebSocket.OPEN&&message.generation===currentGeneration)
           ws.send(JSON.stringify({type:"prepare_result",operation_id:message.operation_id,
             intent_key:message.intent_key,generation:currentGeneration,accepted,...proposal}));

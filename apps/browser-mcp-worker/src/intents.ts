@@ -25,6 +25,10 @@ const failureActions:Record<string,string>={
   stopped:"owner_must_resume_locally",
   approval_required:"wait_for_owner_approval",
   preparation_unavailable:"extension_prepare_failed; confirm installed extension supports owner approval before a new intent",
+  prepare_validation_unavailable:"extension_target_validation_failed; check local extension readiness",
+  prepare_context_changed:"extension_authorization_or_session_changed; verify enabled Profile and reconnect",
+  prepare_storage_unavailable:"extension_session_prepare_storage_failed; check extension session storage",
+  prepare_expired:"extension_prepare_deadline_invalid; do not reuse this operation",
   approval_prepare_invalid:"owner_prepare_proof_rejected; confirm installed extension version before a new intent",
   capacity_exceeded:"review_operation_capacity",
   ordinary_window_required:"owner_must_open_ordinary_window"
