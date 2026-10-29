@@ -85,7 +85,11 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<label>Cloudflare config ID<input name="config_id" maxlength="64" required></label>' +
     '<label>Binding name<input name="binding_name" pattern="HYPERDRIVE_[A-Z0-9_]{1,54}" maxlength="65" required></label>' +
     '<button type="submit">Save disabled reference</button></form></details>' +
-    '<details class="maintenance"><summary>Maintenance</summary><p class="muted">Re-encrypt saved connections when changing encryption keys; this does not change MySQL passwords.</p>' +
+    '<details class="maintenance"><summary>Maintenance</summary>' +
+    '<p class="muted">Test GitHub Actions dispatch without deploying a Worker or changing any database connection. This only confirms GitHub accepted the request; check the workflow run separately.</p>' +
+    '<form method="post" action="/setup/github-actions-check">' + token(csrf) +
+    '<button type="submit">Check GitHub Actions connection</button></form>' +
+    '<p class="muted">Re-encrypt saved connections when changing encryption keys; this does not change MySQL passwords.</p>' +
     '<p class="muted">Before rotating, independently verify that every rollback-eligible Worker version can decrypt the new key, and retain historical keys until D1 snapshots and backups no longer need them. This page cannot verify those external requirements.</p>' +
     '<form method="post" action="/setup/rotate">' + token(csrf) +
     '<label class="check"><input type="checkbox" name="rotation_ack" value="verified" required>I verified rollback compatibility and retained-key recovery.</label>' +
