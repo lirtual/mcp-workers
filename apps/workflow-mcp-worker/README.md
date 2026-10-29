@@ -21,13 +21,20 @@ execution shape; the old `github.run` Published Plan, digest, OIDC, Attempt,
 Ready and physical Session lifecycle remain unchanged. The new spelling does
 **not** grant execution or make a discovered Action runnable automatically.
 
-Cloudflare `action.run` currently accepts only the reviewed `weixin.send_text`
-Provider and a verified same-Run OpenList Session Ready. Publish requires
-separate explicit grants, the exact contract digest and Worker Version ID;
-the internal Service Binding must independently report that live identity.
-The Provider also checks those pins against Worker Version Metadata inside
-every side-effecting RPC. D1 grants a single first-dispatch right; recovery
-queries historical receipts only. No public Weixin MCP write is used.
+The `workflow_publish.approved_cloudflare_actions` MCP input uses bounded
+provider/action identifier strings, not a fixed client-side enum. This is
+**not** dynamic Provider registration: Validate/Publish/Run still require a
+source-reviewed Action, exact manifest digest, configured Service Binding
+identity, deployment ID and explicit approval. Previously cached MCP tool
+metadata may require a one-time client refresh.
+
+Cloudflare `action.run` supports the reviewed `weixin.send_text` (requiring a
+verified same-Run OpenList Session Ready) and `bark.send_notification` Actions.
+Publish requires separate explicit grants, the exact contract digest and
+Worker Version ID; the Service Binding must independently confirm live identity.
+D1 grants a single first-dispatch right. Weixin can recover by historical
+receipts; Bark preserves unknown outcomes without a second send. No public
+Weixin MCP write is used.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
 ### Session Action launch-time duration (1–300 minutes)

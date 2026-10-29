@@ -331,7 +331,7 @@ export class WorkflowService {
     }
   }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
-    approved_cloudflare_actions:Array<{executor:'cloudflare';provider:'weixin'|'bark';action:'weixin.send_text'|'bark.send_notification';contract_digest:string;deployment_id:string}>=[],
+    approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
     approve_cloudflare_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');

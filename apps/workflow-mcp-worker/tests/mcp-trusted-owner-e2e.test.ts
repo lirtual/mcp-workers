@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
+import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
@@ -97,6 +98,17 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     await client.connect(transport);
     const listed=await client.listTools();
     assert.ok(listed.tools.some(x=>x.name==='workflow_publish'));
+    // The authenticated public MCP schema must not require a client refresh
+    // each time a reviewed Cloudflare Provider/Action is registered.
+    const publisher=listed.tools.find(x=>x.name==='workflow_publish')!;
+    const approved=(publisher.inputSchema as any).properties.approved_cloudflare_actions.items.properties;
+    for(const key of ['provider','action']){
+      assert.equal(approved[key].type,'string');
+      assert.equal(approved[key].enum,undefined,`${key} must not be a fixed action catalog`);
+      assert.equal(typeof approved[key].pattern,'string');
+      assert.equal(typeof approved[key].maxLength,'number');
+    }
+
     async function call(name:string,args:Record<string,unknown>,error?:string):Promise<any>{
       const output=await client.callTool({name,arguments:args});
       const first=output.content[0];
@@ -211,6 +223,50 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(rejected.steps[0].status,'failed');
     assert.equal(toolCalls,1,'missing portal credentials cannot reach target');
     env.MCP_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
+
+    // A generic public approval shape is only an input envelope, not a grant.
+    // Publish must match the already-reviewed Provider manifest and live binding.
+    const bark=await cloudflareActionManifest('bark');
+    const deployment='44444444-4444-4444-8444-444444444444';
+    let barkSends=0;
+    env.BARK_ACTION_DEPLOYMENT_ID=deployment;
+    env.BARK_ACTION_PROVIDER={
+      getContract:async()=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
+      sendNotification:async()=>{barkSends++;throw Error('must_not_send');},
+    };
+    const barkDefinition={version:1,name:'Reviewed Bark publish boundary',steps:[
+      {id:'source',uses:'result.emit',with:{data:{id:42}}},
+      {id:'notify',uses:'action.run',needs:['source'],with:{
+        executor:'cloudflare',provider:'bark',action:'bark.send_notification',
+        contract_digest:bark.contract_digest,
+        input:{notification:{body:{ref:'steps.source.output'},title:'Done'}},
+      }},
+    ]};
+    const checked=await call('workflow_validate',{definition:JSON.stringify(barkDefinition)});
+    assert.equal(checked.valid,true);
+    const draft=await call('workflow_create',{definition:JSON.stringify(barkDefinition)});
+    const target={workflow_id:draft.workflow_id,expected_revision:1};
+    const barkGrant={executor:'cloudflare',provider:'bark',action:'bark.send_notification',
+      contract_digest:bark.contract_digest,deployment_id:deployment};
+    for(const grant of [
+      undefined,
+      {...barkGrant,provider:'unregistered'},
+      {...barkGrant,action:'other.send_notification'},
+      {...barkGrant,contract_digest:'0'.repeat(64)},
+      {...barkGrant,deployment_id:'55555555-5555-4555-8555-555555555555'},
+    ]){
+      await call('workflow_publish',{...target,approve_cloudflare_execution:true,
+        ...(grant?{approved_cloudflare_actions:[grant]}:{})},'cloudflare_action_approval_required');
+    }
+    await call('workflow_publish',{...target,approved_cloudflare_actions:[barkGrant]},
+      'cloudflare_action_approval_required');
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,1);
+    const barkPublished=await call('workflow_publish',{...target,
+      approved_cloudflare_actions:[barkGrant],approve_cloudflare_execution:true});
+    const frozen=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .get(barkPublished.published_version_id) as {plan:string}).plan);
+    assert.deepEqual(frozen.cloudflare_action_approvals,[barkGrant]);
+    assert.equal(barkSends,0,'Publish must never send a notification');
 
   }finally{
     await client.close();
