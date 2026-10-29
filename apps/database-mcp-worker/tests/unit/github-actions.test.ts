@@ -15,7 +15,8 @@ test('Owner dispatch uses exactly one pinned GitHub workflow with bounded enable
     seen++;
     assert.equal(String(input), 'https://api.github.com/repos/lirtual/mcp-workers/actions/workflows/release.yml/dispatches');
     assert.equal(init?.method, 'POST');
-    assert.equal(init?.redirect, 'error');
+    assert.equal(init?.redirect, 'manual');
+    assert.equal(init?.redirect, 'manual');
     const headers = new Headers(init?.headers);
     assert.equal(headers.get('authorization'), 'Bearer ' + token);
     assert.deepEqual(JSON.parse(String(init?.body)), {
@@ -133,4 +134,33 @@ test('GitHub error status classes are fixed, and provider body is never exposed'
       return true;
     });
   }
+});
+
+test('Cloudflare Workers fetch contract: unsupported redirect error never reaches GitHub', async () => {
+  // The real workerd runtime throws TypeError for redirect: 'error'.
+  // Preserve this narrow runtime behavior in the existing unit suite.
+  let calls = 0;
+  const workerdLikeFetch = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    calls++;
+    if (init?.redirect === 'error') throw new TypeError('Unsupported redirect mode: error');
+    assert.equal(init?.redirect, 'manual');
+    return Response.json({ workflow_run_id: 40850012345 }, { status: 200 });
+  };
+  assert.deepEqual(await verifyGithubActionsDispatch(env(), workerdLikeFetch as typeof fetch),
+    { runId: 40850012345 });
+  assert.equal(calls, 1);
+});
+
+test('GitHub redirects are rejected without following authorization header', async () => {
+  let calls = 0;
+  const mocked = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    calls++;
+    assert.equal(init?.redirect, 'manual');
+    return new Response(null, {
+      status: 302,
+      headers: { location: 'https://untrusted.example.org/steal-pat' }
+    });
+  };
+  await assert.rejects(verifyGithubActionsDispatch(env(), mocked as typeof fetch), /redirect rejected/);
+  assert.equal(calls, 1);
 });
