@@ -51,7 +51,7 @@ test("public path denies sensitive/prohibited pages, expired/mutated refs, stale
     for(const url of ["https://example.com/login","https://example.com/approval","https://example.com/cdn-cgi/access/authorize","https://accounts.google.com/","https://example.com/operations?confirm=1","https://example.com/?token=secret","http://127.0.0.1/private","chrome://settings/","https://browser.example/"]){f.pageState.url=url;await denied({});}
     f.pageState.url="https://example.com/clean";f.pageState.incognito=true;await denied({});f.pageState.incognito=false;
     assert.equal((await f.perform("click",await f.command("click",e=>e.tag==="button"))).result.state,"failed");
-    args=await f.command("fill",e=>e.type==="text",{text:"draft"});f.nodes[1].form=true;await denied({});f.nodes[1].form=false;
+    args=await f.command("click",e=>e.type==="checkbox");f.nodes[2].form=true;assert.equal((await f.perform("click",{...args,intent_key:intent()})).result.state,"failed");f.nodes[2].form=false;
     args=await f.command("fill",e=>e.type==="text",{text:"draft"});f.nodes[1].isConnected=false;await denied({});
     assert.equal(f.effects.length,0);
   }finally{await f.close();}

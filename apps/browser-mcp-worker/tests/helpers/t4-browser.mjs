@@ -49,7 +49,7 @@ export async function fixture(config={}){
     constructor(tag,attrs={}){this.tagName=tag;this.attrs=attrs;this.id=attrs.id||"";this.isConnected=true;this.textContent=attrs.label||"";
       this.labels=[];this.parentElement=null;this.scrollHeight=500;this.clientHeight=100;this.options=[];this._value="";}
     getAttribute(k){return this.attrs[k]??null;}
-    closest(){return this.form?{}:null;}
+    closest(selector){return this.form&&String(selector).split(",").some(s=>s.trim()==="form")?{}:null;}
     getClientRects(){return [{}];}
     click(){effects.push(["click",this.tagName]);if(this.throwAfterEffect)throw Error("lost");}
     focus(){effects.push(["focus",this.tagName]);}
