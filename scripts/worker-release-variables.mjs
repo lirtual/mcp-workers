@@ -14,8 +14,13 @@ const INTEGER_LIMITS = Object.freeze({
   MAX_WRITE_AFFECTED_ROWS: [1, 100],
 });
 
+export const BROWSER_APPROVAL_VARIABLES = Object.freeze([
+  "BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_ISSUER", "BROWSER_ACCESS_AUDIENCE",
+  "BROWSER_OWNER_EMAIL", "BROWSER_APPROVAL_ISOLATION",
+]);
+
 export const WORKER_VARIABLES = Object.freeze({
-  "browser-mcp-worker": [],
+  "browser-mcp-worker": BROWSER_APPROVAL_VARIABLES,
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
@@ -52,6 +57,18 @@ export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
+  if (worker === "browser-mcp-worker") {
+    const configured = BROWSER_APPROVAL_VARIABLES.filter(name => env[name] != null && env[name] !== "");
+    if (configured.length !== 0 && configured.length !== BROWSER_APPROVAL_VARIABLES.length)
+      throw Error("Browser approval requires all five variables or none");
+    if (configured.length && (
+      env.BROWSER_APPROVAL_ORIGIN !== "https://browser.lirtual.dpdns.org" ||
+      env.BROWSER_ACCESS_ISSUER !== "https://lirtualzero.cloudflareaccess.com" ||
+      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACCESS_AUDIENCE) ||
+      env.BROWSER_OWNER_EMAIL !== "lirtual@outlook.com" ||
+      env.BROWSER_APPROVAL_ISOLATION !== "isolated-owner-profile-and-mailbox-v1"
+    )) throw Error("Browser approval runtime identity or isolation assertion invalid");
+  }
   if (worker === "workflow-mcp-worker") {
     variables.push(
       "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",

@@ -1142,6 +1142,18 @@ test('Browser release pins resources, protects namespace and stages only its ind
   assert.throws(()=>collectBootstrapSecrets(worker,{}),/MCP_ACCESS_TOKEN/);
   const {collectWorkerVars}=await import('./worker-release-variables.mjs');
   assert.deepEqual(collectWorkerVars(worker,{MANIFEST_KEY:'public-not-a-secret'}),[]);
+  const approve={BROWSER_APPROVAL_ORIGIN:'https://browser.lirtual.dpdns.org',
+    BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',
+    BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),BROWSER_OWNER_EMAIL:'lirtual@outlook.com',
+    BROWSER_APPROVAL_ISOLATION:'isolated-owner-profile-and-mailbox-v1'};
+  const enabled={...settings,bindings:[...settings.bindings,
+    ...Object.entries(approve).map(([name,text])=>({name,type:'plain_text',text}))]};
+  assert.equal(verifyBindings(worker,enabled,secrets,{...options,expectedBrowserApproval:true}),true);
+  assert.throws(()=>verifyBindings(worker,enabled,secrets,options),/differs from reviewed/);
+  assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,expectedBrowserApproval:true}),/differs from reviewed/);
+  assert.throws(()=>verifyBindings(worker,{...enabled,bindings:enabled.bindings.slice(0,-1)},secrets,options),/incomplete/);
+  assert.throws(()=>verifyBindings(worker,{...enabled,bindings:enabled.bindings.map(b=>b.name==='BROWSER_OWNER_EMAIL'?{...b,text:'bad@example.com'}:b)},secrets,options),/identity/);
+  assert.throws(()=>verifyBindings(worker,{...enabled,bindings:[...enabled.bindings,{name:'BAD_VAR',type:'plain_text',text:'no'}]},secrets,{...options,expectedBrowserApproval:true}),/inventory drift/);
   const workflow=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   assert.match(workflow,/name: Build and verify shared Browser extension artifact\n        if: inputs.worker == 'browser-mcp-worker'/);
   assert.match(workflow,/mcp_endpoint="https:\/\/browser.lirtual.dpdns.org\/mcp"/);

@@ -3,7 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectWorkerVars } from "./worker-release-variables.mjs";
+import { collectWorkerVars, BROWSER_APPROVAL_VARIABLES } from "./worker-release-variables.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker", "openlist-mcp-worker"]);
@@ -392,11 +392,26 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "browser-mcp-worker") {
     const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
+    // The default release has only its DO and Bearer. An approved activation
+    // must supply every owner binding with an exact production identity; never
+    // accept a partially applied approval configuration or stale extra bindings.
+    const approval = BROWSER_APPROVAL_VARIABLES.map(name => find(name, "plain_text"));
+    const count = approval.filter(Boolean).length;
+    invariant(count === 0 || count === BROWSER_APPROVAL_VARIABLES.length,
+      "Browser approval binding inventory incomplete");
+    if (count) {
+      const env = Object.fromEntries(BROWSER_APPROVAL_VARIABLES.map((name, i) => [name, approval[i].text]));
+      collectWorkerVars("browser-mcp-worker", env);
+    }
+    if (options.mode === "readback")
+      invariant(count === (options.expectedBrowserApproval ? BROWSER_APPROVAL_VARIABLES.length : 0),
+        "Browser approval binding inventory differs from reviewed GitHub Environment");
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
-      !coordinator.script_name && bindings.length === 2 &&
+      !coordinator.script_name && bindings.length === 2 + count &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
-      !bindings.some(b => b.type === "plain_text"), "Browser binding inventory drift");
+      !bindings.some(b => b.type === "plain_text" && !BROWSER_APPROVAL_VARIABLES.includes(b.name)),
+      "Browser binding inventory drift");
     invariant(settings.observability?.logs?.head_sampling_rate === 0,
       "Browser logs sampling must remain zero");
     if (options.mode === "readback" && options.browserNamespaceId)
@@ -1012,6 +1027,8 @@ async function main() {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
+      expectedBrowserApproval: worker === "browser-mcp-worker" &&
+        process.env.BROWSER_APPROVAL_EXPECTED === "isolated-owner-profile-and-mailbox-v1",
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Cloudflare may briefly serve an old version, including for OpenList releases.

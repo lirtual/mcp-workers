@@ -326,6 +326,11 @@ jobs:
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
+          BROWSER_APPROVAL_ORIGIN: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ORIGIN || '' }}
+          BROWSER_ACCESS_ISSUER: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACCESS_ISSUER || '' }}
+          BROWSER_ACCESS_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACCESS_AUDIENCE || '' }}
+          BROWSER_OWNER_EMAIL: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_OWNER_EMAIL || '' }}
+          BROWSER_APPROVAL_ISOLATION: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ISOLATION || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
@@ -753,6 +758,18 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-weixin-provider-pin.mjs recheck
 
+      - name: Verify Browser isolated Owner Access before optional approval activation (read-only)
+        if: inputs.worker == 'browser-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          BROWSER_APPROVAL_ORIGIN: ${{ vars.BROWSER_APPROVAL_ORIGIN }}
+          BROWSER_ACCESS_ISSUER: ${{ vars.BROWSER_ACCESS_ISSUER }}
+          BROWSER_ACCESS_AUDIENCE: ${{ vars.BROWSER_ACCESS_AUDIENCE }}
+          BROWSER_OWNER_EMAIL: ${{ vars.BROWSER_OWNER_EMAIL }}
+          BROWSER_APPROVAL_ISOLATION: ${{ vars.BROWSER_APPROVAL_ISOLATION }}
+        run: node scripts/browser-owner-access.mjs
+
       - name: Publish exactly selected Worker
         id: publish
         shell: bash
@@ -806,6 +823,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
+          BROWSER_APPROVAL_EXPECTED: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ISOLATION || '' }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
       - name: Verify published Workflow pin still matches current Provider (read-only)
