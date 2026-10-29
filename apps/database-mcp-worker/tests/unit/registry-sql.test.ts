@@ -5,6 +5,7 @@ import { createRegistryConnection, getRegistryConnection, listRegistryConnection
   setRegistryConnectionStatus, deleteRegistryConnection } from '../../src/registry/store.js';
 import type { D1Database } from '@cloudflare/workers-types';
 import { admitConnection, catalogMetadata } from "../../src/registry/admission.js";
+import { isAvailableMode } from '../../src/registry/availability.js';
 import { sealConnectionConfig, openConnectionConfig } from "../../src/registry/crypto.js";
 import { rotateRegistryKeys } from "../../src/registry/rotation.js";
 
@@ -106,14 +107,23 @@ describe('fresh admission of a validated connection', () => {
   });
 });
 
-describe('phased first release mode enforcement', () => {
-  it('rejects already-active PostgreSQL Direct and Hyperdrive rows before credentials or binding access', async () => {
+describe('three-mode Owner and MCP admission enforcement', () => {
+  it('permits only MySQL Direct plus both Hyperdrive dialects', () => {
+    expect(isAvailableMode('direct', 'mysql')).toBe(true);
+    expect(isAvailableMode('hyperdrive', 'mysql')).toBe(true);
+    expect(isAvailableMode('hyperdrive', 'postgres')).toBe(true);
+    expect(isAvailableMode('direct', 'postgres')).toBe(false);
+  });
+  it('rejects an already-active PostgreSQL Direct row before credential decryption', async () => {
     const f = fixture(); all.push(f.sqlite);
     const env = { DB: f.db } as Parameters<typeof admitConnection>[0];
     await createRegistryConnection(f.db, input('pg_active'));
     await setRegistryConnectionStatus(f.db, 'pg_active', 1, 'active');
     await expect(admitConnection(env, 'pg_active'))
-      .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
+      .rejects.toMatchObject({
+        code: 'CONFIGURATION_UNAVAILABLE',
+        message: 'This connection mode is not enabled for this release.'
+      });
     await createRegistryConnection(f.db, { id: 'hyperdrive_active', dialect: 'mysql', transport: 'hyperdrive',
       configId: '11111111-2222-3333-4444-555555555555', bindingName: 'HYPERDRIVE_MYSQL' });
     await setRegistryConnectionStatus(f.db, 'hyperdrive_active', 1, 'active');
