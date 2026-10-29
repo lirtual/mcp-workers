@@ -20,7 +20,8 @@
     "required": [
       "MCP_ACCESS_TOKEN",
       "DATABASE_ENCRYPTION_KEY",
-      "DATABASE_KEY_ID"
+      "DATABASE_KEY_ID",
+      "DATABASE_GITHUB_ACTIONS_TOKEN"
     ]
   },
   "vars": {
