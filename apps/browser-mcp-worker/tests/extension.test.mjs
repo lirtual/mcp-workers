@@ -72,6 +72,19 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
   const sendSpoof=(type,sender)=>new Promise(resolve=>handler({type},sender,resolve));
   return {local,session,events,send,sendSpoof,chrome,startup,installed,removed:tabId=>onRemoved(tabId),ctx,sockets};
 }
+test("Stop on an unpaired Profile remains local and does not invent unconfirmed cloud work",async()=>{
+  const env=await setup();
+  const result=await env.send("stop");
+  assert.equal(result.authorization,"stopped");
+  assert.equal(result.cloud_confirmed,true,"there is no cloud Endpoint to stop");
+  assert.equal(env.local.pending_cloud_stop,false);
+  assert.equal(env.local.authorization,"stopped");
+  assert.equal(env.events.filter(e=>e.type==="fetch").length,0);
+  const displayed=await env.send("status");
+  assert.equal(displayed.pending_cloud_stop,false);
+  assert.equal(displayed.connection,"offline");
+});
+
 test("owner Stop is persisted before attempting network and survives an offline denial",async()=>{
   const env=await setup({service,endpoint_id:id,credential,authorization:"enabled"},async()=>{
     throw Error("offline");

@@ -121,8 +121,10 @@ async function stopLocal() {
   localDenialEpoch++;
   const sensitiveClear=clearSensitivePermissions();
   void sensitiveClear.catch(()=>{});
+  // A never-paired Profile has no cloud grant to reconcile.
+  const hadEndpoint=Boolean((await state()).endpoint_id);
   // Persist the local denial *before* any cloud/network action.
-  await persist({authorization:"stopped",connection:"offline",pending_cloud_stop:true});
+  await persist({authorization:"stopped",connection:"offline",pending_cloud_stop:hadEndpoint});
   clearNetwork();
   const s=await state();
   if(s.endpoint_id) {
