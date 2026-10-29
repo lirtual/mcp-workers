@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseDatabaseConfig, resolveConnection, resolveWriteConnection } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
+import { resolveConnection, resolveWriteConnection } from '../../src/config.js';
 import { deleteRows, insertRows, queryRead } from '../../src/db/index.js';
 import type { Env } from '../../src/types.js';
 

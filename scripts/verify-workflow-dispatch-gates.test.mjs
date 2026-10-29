@@ -19,7 +19,6 @@ test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'openlist-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
-  assert.throws(() => verifyReleaseWorkers(release.replace('inputs.database_restore_approved != true &&', 'true &&'), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
 
 test('historical registry activation job is retired and cannot be dispatched', () => {
@@ -27,6 +26,11 @@ test('historical registry activation job is retired and cannot be dispatched', (
   assert.throws(() => verifyDatabaseActivationGate(release + '\n  database-activate:\n'), /Historical Database activation/);
   assert.throws(() => verifyDatabaseActivationGate(release + '\n      database_activation_id:\n'), /Historical Database activation/);
   assert.throws(() => verifyDatabaseActivationGate(release + '\n        run: node scripts/activate-database-hyperdrive.mjs\n'), /Historical Database activation/);
+  for (const retired of [
+    '      database_restore_approved:', '  database-restore:',
+    '  database-prepare:', '  database-direct-preflight:'
+  ]) assert.throws(() => verifyDatabaseActivationGate(release + '\n' + retired + '\n'),
+    /Retired Database compatibility/);
 });
 
 test('existing static reusable workflows and local scripts pass', () => {

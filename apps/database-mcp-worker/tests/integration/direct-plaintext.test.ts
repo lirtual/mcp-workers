@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { deleteRows, healthCheck, insertRows, queryRead } from '../../src/db/index.js';
 import { createMysqlClient, createPostgresClient } from '../../src/db/clients.js';
-import { parseDatabaseConfig, resolveConnection } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
+import { resolveConnection } from '../../src/config.js';
 import type { Env } from '../../src/types.js';
 
 const postgres = process.env.TEST_POSTGRES_READ_URL;

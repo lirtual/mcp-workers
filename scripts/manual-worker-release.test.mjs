@@ -252,7 +252,6 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   const list = names.map(name => ({ name }));
   const settings = {
     bindings: [...names.map(name => ({ name, type: "secret_text" })),
-      { name: "DATABASE_CONFIG", type: "secret_text" }, // retained until separately approved cleanup
       { name: "DB", type: "d1", id: source.d1_databases[0].database_id },
       { name: "DATABASE_SETUP_HOST", type: "plain_text", text: source.vars.DATABASE_SETUP_HOST },
       ...["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"].map(name =>
@@ -272,17 +271,9 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   assert.throws(() => verifyBindings("database-mcp-worker", settings,
     list.filter(x => x.name !== "DATABASE_ENCRYPTION_KEY"),
     { mode: "readback", sourceConfig: source }), /DATABASE_ENCRYPTION_KEY/);
-  const previous = {
-    bindings: [
-      { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-      { name: "DATABASE_CONFIG", type: "secret_text" },
-      { ...limiter, type: "ratelimit" }
-    ],
-    observability: settings.observability
-  };
-  assert.equal(verifyBindings("database-mcp-worker", previous,
-    [{ name: "MCP_ACCESS_TOKEN" }, { name: "DATABASE_CONFIG" }],
-    { mode: "preflight", sourceConfig: source }), true);
+  assert.equal(verifyBindings("database-mcp-worker", settings, list, {
+    mode: "preflight", sourceConfig: source
+  }), true);
 });
 
 test("Remote production requires its own DO and rejects Preview namespace reuse", () => {

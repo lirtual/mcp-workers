@@ -4,7 +4,7 @@ Every maintained MCP Worker in this repository uses runtime Secret **name** `MCP
 
 | Worker | MCP entry Secret | Other Environment Secrets |
 | --- | --- | --- |
-| `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_CONFIG` |
+| `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID` |
 | `email-mcp-worker` | `MCP_ACCESS_TOKEN` | `MAIL_ENCRYPTION_KEY` |
 | `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |

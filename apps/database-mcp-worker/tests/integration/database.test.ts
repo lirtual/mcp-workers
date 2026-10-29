@@ -1,7 +1,8 @@
 import { Client as PgClient } from 'pg';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
-import { parseDatabaseConfig, resolveConnection, resolveWriteConnection } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
+import { resolveConnection, resolveWriteConnection } from '../../src/config.js';
 import { deleteRows, explainRead, insertRows, inspectSchema, queryRead, updateRows } from '../../src/db/index.js';
 import type { EffectiveConnection, EffectiveWriteConnection, Env } from '../../src/types.js';
 

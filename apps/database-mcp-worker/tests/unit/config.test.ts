@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { getMaxWriteAffectedRows, getRuntimeLimits, parseDirectDatabaseUrl, parseDatabaseConfig } from '../../src/config.js';
+import { parseDatabaseConfig } from '../helpers/catalog.js';
+import { getMaxWriteAffectedRows, getRuntimeLimits, parseDirectDatabaseUrl } from '../../src/config.js';
 import type { Env } from '../../src/types.js';
 
 describe('database configuration limits and URLs', () => {

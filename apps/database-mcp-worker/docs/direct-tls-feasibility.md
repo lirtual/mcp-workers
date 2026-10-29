@@ -1,3 +1,5 @@
+> **Historical investigation only (October 2026):** this document describes the pre-cutover state, not current deployment instructions. Current MySQL Direct runs on Owner-managed D1; consult `README.md` and `../../../docs/database-cutover-344.md`.
+
 > **Historical investigation only.** Spec #344 Q24–Q46 (2026-10-28) supersedes the Direct-TLS-only architectural decision. This file preserves prior failed probe evidence; the current plan is explicit Direct plaintext or separately CA/hostname-verified Hyperdrive TLS. See [Spec #344](https://github.com/lirtual/mcp-workers/issues/344) and [Worker README](../README.md). No production TLS, plaintext, or source-database testing is authorized by this note.
 
 # Spec #344 — Direct TLS feasibility gate (blocked)

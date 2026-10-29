@@ -38,11 +38,11 @@
 | `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
-表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、OpenList 的 `OPENLIST_ALLOWED_ROOTS`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，原有 `b2b`、`scrape_relay` 身份已由发布门禁固定校验，不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。HTTP 的 `HTTP_CREDENTIALS_JSON` 是可选 Secret，未配置时不要提交空占位值。
+表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、OpenList 的 `OPENLIST_ALLOWED_ROOTS`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。HTTP 的 `HTTP_CREDENTIALS_JSON` 是可选 Secret，未配置时不要提交空占位值。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
-**Database MCP Spec #344 尚未切换生产。** 上表为 Draft 分支拟采用的 GitHub 发布配置契约，并非当前线上 Worker 已迁移。现网原有 `DATABASE_CONFIG` Secret 必须保留，直到真实 Cloudflare Workers MySQL/PostgreSQL TLS、专用 D1、独立 Owner Access、迁移完整性及回滚均经独立验收并取得生产切换授权。Draft 分支发布门禁明确禁止把旧完整 JSON 重新写入运行时。不要复制旧业务数据库凭据到测试实例，也不要提前运行 Database Worker 生产发布。参见 [Spec #344 切换与回滚清单](./database-cutover-344.md)。
+**Database MCP Spec #344 已切换生产。** 唯一连接目录是 `database-mcp-registry` D1；`DATABASE_CONFIG` 旧格式不再参与发布或运行。现有 GitHub Actions 只读验证数据库绑定、加密记录与 Owner Access，随后发布当前 D1 架构 Worker。旧 D1/Secret 的云端删除属于独立资源清理，不应随普通代码发布自动执行。参见 [Database 生产发布与恢复](./database-cutover-344.md)。
 
 
 当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。

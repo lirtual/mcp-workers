@@ -28,7 +28,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `openlist-mcp-worker` | `OPENLIST_API_TOKEN` | `OPENLIST_ALLOWED_ROOTS` |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
-Database MCP Spec #344 is **Draft / BLOCKED**, not the deployed configuration. Existing live `DATABASE_CONFIG` must remain intact until independently authorized migration and rollback; the proposed release checks require a dedicated D1 registry, exact Owner Access OTP, and the two approved legacy IDs (`b2b`, `scrape_relay`) pinned in the source, without a duplicate GitHub Variable. See [cutover checklist](./database-cutover-344.md).
+Database MCP Spec #344 runs in production with encrypted, Owner-managed connections in D1 `database-mcp-registry`. The current release contract requires `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, Owner Access Variables and `DB`; it neither consumes `DATABASE_CONFIG` nor imports historical records. Old database resources are retired only by a separately reviewed cleanup after deployment verification. See [Database production and recovery runbook](./database-cutover-344.md).
 
 Notes: `HTTP_CREDENTIALS_JSON` is an **optional Secret**, not a required placeholder. `IMA_BASE_URL`, Raindrop retry count, Database limits and Workflow's `WORKFLOW_ACTION_APPROVED_REPOSITORIES` are optional Variables. Email's three Access Variables, OpenList's `OPENLIST_ALLOWED_ROOTS`, IMA's `IMA_CLIENT_ID` and Workflow's `MCP_PORTAL_CLIENT_ID` are **required**. Workflow's approved-repositories GitHub Variable is translated to the `GITHUB_ACTION_APPROVED_REPOSITORIES` runtime binding.
 
