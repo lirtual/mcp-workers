@@ -106,6 +106,32 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(2))?.fixed_key,'123:.github/workflows/ubuntu.yml');
  }finally{f.db.close();}
 });
+test('Go OpenList conflict reports the shared reservation owner without dispatch',async()=>{
+ const f=fixture();
+ try{
+  const goAction={...action,workflowPath:'.github/workflows/openlist.yml'};
+  const goPlan={...plan,github_action_approvals:[goAction],
+   steps:[{...plan.steps[0],with:{...plan.steps[0].with,
+    action:{...goAction,ref:'refs/tags/release-v1',
+     inputs:{duration_minutes:5,session_mode:'temporary'}}}}]};
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(goPlan),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  let requests=0;
+  const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
+  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const outcome=await runPublishedGitHubActionSession(env,goPlan as Plan,
+   goPlan.steps[0] as Step,run(2),workflow,async()=>{
+    requests++;throw Error('shared resource conflict must not dispatch');
+   });
+  assert.equal(outcome.status,'failed');
+  assert.equal(outcome.error_code,'github_session_fixed_already_active');
+  assert.deepEqual(outcome.output,{existing_session:{run_id:run(1),step_id:'launch'}});
+  assert.equal(requests,0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,1);
+ }finally{f.db.close();}
+});
+
 test('strict shared Go OpenList slot excludes temporary Sessions and dynamic download Tasks',async()=>{
  const f=fixture();
  try{
