@@ -159,7 +159,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
     expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
-    expect(initialPageHtml).toContain('Hyperdrive activation and retirement require protected GitHub Actions');
+    expect(initialPageHtml).toContain('Hyperdrive actions run in protected GitHub Actions');
     expect(initialPageHtml).not.toContain('name="ciphertext"');
     expect(initialPageHtml).not.toContain('reader:pass');
     vi.unstubAllGlobals();
