@@ -4,18 +4,24 @@ Cloudflare MCP Worker for bounded SQL reads, schema inspection, structured Safe 
 
 ## Delivery boundary
 
-**Current transition (2026-10-29):** MySQL Direct (`b2b`, `scrape_relay`) remain active and unchanged.
-Legacy Aiven test references `aiven_mysql_test` and `aiven_pg_test` were independently
-CAS-disabled before removing their Worker bindings. The new dedicated Hyperdrive
-`aiven-mysql-openlist` connects to the `openlist` MySQL database as `avnadmin`
-under `HYPERDRIVE_AIVEN_OPENLIST` and must remain disabled in D1 until protected
-owner activation passes Cloudflare strict `VERIFY_IDENTITY`, CA provenance, cache-off,
-deployed binding, and live health checks. This change does not claim any production
-OpenList SQL write/DDL acceptance. Both obsolete logical IDs must be retired after
-the release using the existing protected `database_hyperdrive_retire_approved` workflow
-and must never be reused. The old Cloudflare Hyperdrive configs and shared CA must
-only be deleted after verifying other consumers and rollback-version dependencies.
-Prior `aiven_mysql_test` full E2E evidence remains available
+**Production state (2026-10-29):** MySQL Direct `b2b` and `scrape_relay` remain active and
+unchanged. The dedicated MySQL Hyperdrive logical connection `aiven_mysql_openlist` is
+**active**, using Cloudflare Hyperdrive `aiven-mysql-openlist` for the Aiven `openlist`
+database as `avnadmin`; protected activation
+([Action #40834639046](https://github.com/lirtual/mcp-workers/actions/runs/40834639046))
+and live read-only health / `SELECT 1` passed. Real OpenList production write and DDL
+acceptance was **not performed**.
+
+Legacy D1 test IDs `aiven_mysql_test` and `aiven_pg_test` were CAS-disabled, unbound in
+[PR #460](https://github.com/lirtual/mcp-workers/pull/460), independently retired through
+protected Actions, confirmed in `retired_connection_ids`, and their dedicated Cloudflare
+Hyperdrive configurations removed after verifying none of the 20 current Workers refer
+to them. Historical test IDs must never be reused. The Aiven project CA remains valid
+and in use by the active OpenList Hyperdrive; it retains its legacy human-readable
+test-oriented name because Cloudflare rejects duplicate certificate uploads (1471),
+deletion while in use (1476), and updates with invalid substitute CA (2015).
+Do not delete the CA or downgrade `VERIFY_IDENTITY` merely to change its name.
+Prior test-only Hyperdrive E2E evidence is retained
 ([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6488549684)).
 PostgreSQL Hyperdrive E2E and PostgreSQL Direct plaintext E2E remain unperformed.
 Spec #344 remains **Open**.
