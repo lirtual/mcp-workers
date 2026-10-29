@@ -45,3 +45,41 @@ test('rejects a missing or wrong D1 binding and missing owner identity', async (
   }
   await assert.rejects(checkFreshRegistry({ ...env, GITHUB_ACTOR: 'unapproved' }, mocked().fetcher), /preflight (?:rejected|failed)/);
 });
+
+// Regression: activating a reviewed Hyperdrive in production must never block
+// an unrelated routine code-only release. No live SQL or D1 writes here.
+const mysqlHyperdrive = {
+  id: 'aiven_mysql_test', dialect: 'mysql', transport: 'hyperdrive',
+  status: 'active', revision: 2, key_id: null, ciphertext: null,
+  config_id: '31fc05c77ac042ff927a6d3cbf5bbb7d',
+  binding_name: 'HYPERDRIVE_AIVEN_MYSQL'
+};
+const postgresHyperdrive = {
+  id: 'aiven_pg_test', dialect: 'postgres', transport: 'hyperdrive',
+  status: 'disabled', revision: 1, key_id: null, ciphertext: null,
+  config_id: 'b2c7dab22f594bbca255827065e19bce',
+  binding_name: 'HYPERDRIVE_AIVEN_POSTGRES'
+};
+test('fresh release accepts active reviewed MySQL Hyperdrive and disabled PostgreSQL Hyperdrive', async () => {
+  const rows = [mysqlHyperdrive, postgresHyperdrive];
+  const mock = mocked({ rows });
+  assert.deepEqual(await checkFreshRegistry(env, mock.fetcher), {
+    valid: true, phase: 'managed', records: 2
+  });
+  assert.equal(mock.paths.filter(p => p.method === 'POST').length, 2);
+});
+test('fresh release accepts a future manifest-backed active PostgreSQL Hyperdrive', async () => {
+  const mock = mocked({ rows: [{ ...postgresHyperdrive, status: 'active' }] });
+  assert.equal((await checkFreshRegistry(env, mock.fetcher)).valid, true);
+});
+test('fresh release rejects active Hyperdrive drift from reviewed manifest', async () => {
+  for (const rows of [
+    [{ ...mysqlHyperdrive, config_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }],
+    [{ ...mysqlHyperdrive, binding_name: 'HYPERDRIVE_UNREVIEWED' }],
+    [{ ...mysqlHyperdrive, dialect: 'postgres' }],
+    [{ ...mysqlHyperdrive, ciphertext: 'unexpected' }]
+  ]) {
+    const mock = mocked({ rows });
+    await assert.rejects(checkFreshRegistry(env, mock.fetcher), /preflight (?:rejected|failed)/);
+  }
+});
