@@ -76,7 +76,6 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     };
     await checkRejected({ url: original }, 'plaintext_ack_required');
     await checkRejected({ plaintext_ack: '1' }, 'url_missing');
-    await checkRejected({ plaintext_ack: '1', url: 'mysql://reader:supersecret@1.1.1.1/catalog' }, 'mysql_ip_not_allowed');
     await checkRejected({ plaintext_ack: '1', url: 'mysql://reader:supersecret@db.example.net/catalog?sslmode=disable' }, 'url_options');
     await checkRejected({ plaintext_ack: '1', url: 'mysql://reader:supersecret@localhost/catalog' }, 'hostname_invalid');
     expect((await post('add', { id: 'bad', dialect: 'mysql', transport: 'direct', plaintext_ack: '1', url: original, ca: 'not a certificate' })).status).toBe(422);
@@ -141,6 +140,36 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).not.toContain('action="/setup/enable"');
     expect(initialPageHtml).not.toContain('action="/setup/edit"');
     vi.unstubAllGlobals();
+  });
+  it('accepts a public literal MySQL IP in the Owner create form without storing plaintext or weakening private-IP denial', async () => {
+    const { sqlite, env } = fixture(); instances.push(sqlite);
+    const { jwt, certificates } = await auth();
+    fakeHealth.mockResolvedValue({ latencyMs: 2 });
+    const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    const csrf = (await page.text()).match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    const cookie = page.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const post = (id: string, url: string) => handleSetup(new Request(pageUrl + '/add', {
+      method: 'POST', headers: { 'cf-access-jwt-assertion': jwt,
+        origin: 'https://db-owner.example.net', cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf, id, dialect: 'mysql', transport: 'direct',
+        plaintext_ack: '1', url })
+    }), env, certificates);
+    const privateResponse = await post('private', 'mysql://reader:secret@192.168.1.1:3306/app');
+    expect(privateResponse.status).toBe(422);
+    expect(await privateResponse.text()).toContain('Diagnostic: endpoint_nonpublic');
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
+
+    const publicUrl = 'mysql://reader:secret@93.184.216.34:3306/app';
+    const created = await post('public_ip', publicUrl);
+    expect(created.status).toBe(200);
+    expect(await created.text()).not.toContain(publicUrl);
+    expect(sqlite.prepare('SELECT id, status, ciphertext FROM database_connections').get())
+      .toMatchObject({ id: 'public_ip', status: 'active' });
+    const saved = sqlite.prepare('SELECT ciphertext, key_id FROM database_connections WHERE id=?')
+      .get('public_ip') as { ciphertext: string; key_id: string };
+    expect(saved.ciphertext).not.toContain('secret');
+    expect((await openConnectionConfig(env, 'public_ip', 'mysql',
+      { ciphertext: saved.ciphertext, keyId: saved.key_id })).url).toBe(publicUrl);
   });
   it('shows the Owner add form when starting from an empty fresh directory', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);

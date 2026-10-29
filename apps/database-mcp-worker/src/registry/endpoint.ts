@@ -2,10 +2,9 @@ import { isIP } from 'node:net';
 import { parseDirectDatabaseUrl } from '../config.js';
 import { PublicError } from '../errors.js';
 
-type InvalidEndpointReason = 'literal_mysql_ip' | 'nonpublic_address' | 'invalid_hostname';
+type InvalidEndpointReason = 'nonpublic_address' | 'invalid_hostname';
 function invalid(reason: InvalidEndpointReason): never {
   const messages: Record<InvalidEndpointReason, string> = {
-    literal_mysql_ip: 'MySQL Direct requires a public DNS hostname, not a literal IP address.',
     nonpublic_address: 'The database endpoint resolves to a nonpublic or reserved address.',
     invalid_hostname: 'The database endpoint hostname is not an eligible public DNS name.'
   };
@@ -66,7 +65,6 @@ export async function validatePublicEndpoint(raw: string, id: string, requestFet
   const ip = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   if (isIP(ip)) {
     if (!publicAddress(ip)) invalid('nonpublic_address');
-    if (parsed.dialect === 'mysql') invalid('literal_mysql_ip');
     return parsed;
   }
   if (!allowedHostname(host)) invalid('invalid_hostname');

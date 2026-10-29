@@ -12,6 +12,24 @@ describe('eligible public database endpoints', () => {
     await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one', resolver('1.1.1.1')))
       .resolves.toMatchObject({ dialect: 'postgres', host: 'db.example.org' });
   });
+  it('accepts globally routable literal IPs for MySQL Direct without a DNS lookup', async () => {
+    const noDns = vi.fn(async (): Promise<Response> => { throw new Error('DNS lookup not expected'); }) as unknown as typeof fetch;
+    await expect(validatePublicEndpoint('mysql://reader:password@93.184.216.34:3306/app', 'one', noDns))
+      .resolves.toMatchObject({ dialect: 'mysql', host: '93.184.216.34', port: 3306 });
+    await expect(validatePublicEndpoint('mysql://reader:password@[2606:4700::1111]:3306/app', 'one', noDns))
+      .resolves.toMatchObject({ dialect: 'mysql' });
+    expect(noDns).not.toHaveBeenCalled();
+  });
+  it('rejects private, special-use, mapped, and loopback literal IPs for MySQL Direct', async () => {
+    const invalidHosts = ['0.0.0.0', '10.2.3.4', '100.64.1.1', '127.0.0.1', '169.254.169.254',
+      '172.16.0.1', '192.168.1.1', '192.0.2.1', '198.18.0.1', '198.51.100.1',
+      '203.0.113.1', '224.0.0.1', '255.255.255.255',
+      '[::1]', '[::ffff:127.0.0.1]', '[fe80::1]', '[2001:db8::1]'];
+    for (const host of invalidHosts) {
+      await expect(validatePublicEndpoint(`mysql://reader:password@${host}:3306/app`, 'one'))
+        .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    }
+  });
   it('rejects local names, local IPs, TLS downgrade arguments and private resolved addresses', async () => {
     for (const url of [
       'postgres://user@localhost/app', 'postgres://user@127.0.0.1/app',
