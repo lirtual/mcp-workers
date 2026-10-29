@@ -9,13 +9,19 @@
   Both passed production health and bounded `SELECT 1` (4/4). A separate
   isolated production test table passed Safe Write, structured DDL, over-limit
   DML rollback and verified cleanup. See [#344 evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6486546568).
-- Only MySQL Direct is active. PostgreSQL Direct and either Hyperdrive dialect
-  remain disabled until separate runtime and strict TLS/CA/hostname acceptance.
-- The old flat `DATABASE_CONFIG` catalog is **not** an input to the production
-  Worker. Its original D1 `database-mcp-db` and legacy Secret may still exist
-  in Cloudflare during retirement, but neither is a recovery dependency.
-  The previous legacy Worker restoration and one-time import/prepare actions
-  are retired from the Release Worker workflow.
+- MySQL Hyperdrive `aiven_mysql_test` is now **active**: actual production
+  health, bounded SELECT, dedicated Aiven test-table Safe Write, DDL,
+  21-row over-limit rollback and cleanup all passed
+  ([E2E evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6488549684)).
+  PostgreSQL Hyperdrive `aiven_pg_test` remains **disabled** (revision 1).
+  Its config/binding/CA/`verify-full` passed readback but activation was
+  blocked by a platform safety check; its live E2E is **Not performed**.
+  PostgreSQL Direct code is present but requires a separate approved plaintext
+  test origin before real acceptance.
+- The obsolete `DATABASE_CONFIG` Worker and GitHub Environment Secrets and
+  old `database-mcp-db` D1 have been **deleted and verified** after the managed
+  D1 cutover ([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6487209015)).
+  Old Worker recovery and historical import are permanently retired.
 - Never drop or rewrite migrations `0001_connections.sql` or
   `0002_transport_and_retired_ids.sql`: they are already applied to the live D1.
   Deleting/replacing a D1 record or restoring a historical whole-D1 snapshot
@@ -46,31 +52,23 @@
    claimed merely because a Secret name exists. Keep historical keys while
    any retained snapshot needs them; Owner key-rotation attestation is not
    proof of successful recovery.
-5. After an approved production release, independently verify that both
-   logical connections still appear and pass bounded health/constant SELECT
+5. After an approved production release, independently verify that all expected
+   **active** logical connections still appear and pass bounded health/constant SELECT
    without accessing business tables. Report E2E separately from successful CI
    or Cloudflare publication.
 
-## Legacy resource retirement — separate production step
+## Legacy resource retirement — completed
 
-Source and release-workflow cleanup **does not delete** Cloudflare Secrets,
-old D1, historical Worker versions or GitHub Environment settings. Once the
-simplified `main` release and real two-connection read-only E2E pass:
+After [PR #448](https://github.com/lirtual/mcp-workers/pull/448)
+merged and the managed-D1 Worker passed real E2E, the obsolete
+`DATABASE_CONFIG` Cloudflare/GitHub Secrets and old `database-mcp-db` D1
+were individually deleted and independently verified; live connections
+remained healthy. Do not recreate them for compatibility with the retired
+flat-catalog Worker. The current D1 encryption keys remain required.
+Historical managed-D1 snapshot recovery was **not performed**, not PASS.
 
-- Verify no active consumer or retained recovery snapshot still requires the
-  old `DATABASE_CONFIG` Secret or old `database-mcp-db` D1. In particular,
-  confirm none of the supported rollback-compatible releases depends on them.
-- Remove the obsolete Cloudflare Secret, old D1 and related GitHub Environment
-  Secret only as explicitly authorized, individually controlled resource
-  operations. Keep current `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, new
-  D1 and all actively needed historical encryption keys.
-- Recheck current live D1 bindings, connection listing, health and bounded
-  reads after cleanup. Do not treat resource deletion or live restore as
-  performed until the actual steps and E2E evidence are recorded.
-
-Full four-mode Spec #344 remains open for deferred security/transport scope;
-retiring legacy compatibility does **not** constitute an approval to enable
-PostgreSQL Direct or Hyperdrive.
+Full four-mode Spec #344 stays open for PostgreSQL Hyperdrive activation/E2E,
+PostgreSQL Direct plaintext E2E and deployed Hyperdrive TLS negatives.
 
 ## 2026-10-29 — four-mode staged enablement
 
@@ -85,3 +83,12 @@ substitute for real TLS-negative, Safe Write, DDL and rollback acceptance.
 PostgreSQL Direct remains intentionally **plaintext** and requires a separately
 authorized reachable plaintext origin; the TLS-only Aiven PostgreSQL service is
 not a substitute. Never use the live business connections for these probes.
+
+## 2026-10-29 — origin-side TLS negative evidence
+
+On the existing Aiven **MySQL and PostgreSQL** test hosts, real OpenSSL
+STARTTLS handshakes (no SQL or credentials) verified that each correct
+project CA/hostname combination succeeded, while wrong-CA and wrong-hostname
+cases failed certificate verification. These are **origin-side negative tests**,
+not the pending Cloudflare Workers→Hyperdrive full negative matrix. No
+production configuration was modified for these tests.
