@@ -361,6 +361,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                   properties:{uses:{enum:['github.run','action.run']}}},minContains:1,maxContains:1},
               ]}}]}}},
         ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 ordered emit/read-only MCP children with at most one reviewed literal-input GitHub Task; Sessions, multiple Tasks and nesting are unsupported.'},
+        approval:{type:'object',additionalProperties:false,required:['required'],
+          properties:{required:{const:true}},
+          description:'Optional only on a top-level reviewed GitHub Task/Session, max one gate per Plan. Independent one-use decision is required before dispatch.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -418,6 +421,8 @@ const entries=[
    description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
   {id:'flow.wait',kind:'flow',availability:'supported',
     description:'Durable relative time delay using Cloudflare step.sleep, 1–300 literal seconds per Step and at most 300 seconds total per Published Plan. Wait retains a Run capacity slot; downstream effects require completion. No external event receiver or Approval Gate.'},
+  {id:'flow.approval_gate',kind:'flow',availability:'supported_with_grant',
+   description:'Optional one-use owner API decision before a reviewed top-level GitHub Task/Session. Runs wait up to 600 seconds. Decision must match Run, Step, and Published Version; approval never substitutes for Publish grants.'},
   {id:'flow.wait_event',kind:'flow',availability:'supported',
     description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
   {id:'flow.loop',kind:'flow',availability:'unsupported',
@@ -471,7 +476,7 @@ export async function workflowCapabilities(env:Pick<Env,
     github_repository_scope:githubReady?'configured':'unavailable',
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
-      status:'workflow_status',result:'workflow_result'},
+      status:'workflow_status',result:'workflow_result',approval:'workflow_approval'},
     admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
     note:'Discovery and inline validation never publish or grant execution.',
   };
@@ -489,6 +494,13 @@ export async function workflowCapabilities(env:Pick<Env,
       deployment_id:env.WEIXIN_ACTION_DEPLOYMENT_ID??null,
       bark_deployment_id:env.BARK_ACTION_DEPLOYMENT_ID??null}:{}),
   };
+  if(id==='flow.approval_gate'){
+    detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
+      high_impact:'reviewed_github_task_or_session',max_per_plan:1,timeout_seconds:600,
+      shape:{approval:{required:true}},decision_tool:'workflow_approval',
+      effect:'once',human_presence:'not_independently_verified',
+      denial_or_timeout:'no_dispatch',additional_publish_authority:false};
+  }
   if(id==='trigger.webhook'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
     detail.example=await compilingExample({...emit,triggers:[{type:'webhook',token_sha256:'0'.repeat(64)}]});

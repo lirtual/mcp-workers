@@ -37,6 +37,33 @@ receipts; Bark preserves unknown outcomes without a second send. No public
 Weixin MCP write is used.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
+### Optional runtime approval before GitHub dispatch (Spec #176)
+
+A top-level, reviewed `github.run` or `action.run` with `executor: github`
+may additionally declare `"approval":{"required":true}`. Only **one** runtime
+gate is supported per Plan; approval is rejected for read-only MCP calls,
+Cloudflare notifications, foreach/repeat templates and unsupported operations.
+Publish still requires all existing immutable source/contract grants and
+`approve_heavy_execution: true`. Omitting `approval` retains existing behavior.
+
+On Run, `workflow_status` reports the Step as `waiting_approval` for up to
+**10 minutes**. The owner must explicitly call `workflow_approval` with the
+**exact `run_id`, `step_id` and `published_version_id`**, and `decision` of
+`approve` or `deny`. Only that matching one-use decision can unlock the
+reviewed GitHub dispatch. Denial/timeout/mismatch/repeated decisions block
+or reject; the Run does **not** automatically approve or resend unknown
+GitHub operations. A best-effort native wake is not business success; D1 is
+the durable decision and the existing GitHub Attempt/OIDC ledger still
+controls physical dispatch and result. The gate is an authenticated **MCP
+API assertion**, not independently verified presence of a human, and it
+cannot expand existing execution permissions. A paused Workflow blocks new
+Runs; it does not reverse an in-flight approved operation.
+
+The additional D1 migration `0015_runtime_approval.sql` is applied only by
+the existing selected-Worker GitHub Actions release path, after read-only
+quiescence checks. Existing Published Versions retain their original
+behavior; the new gate is strictly opt-in.
+
 ### Session Action launch-time duration (1–300 minutes)
 
 All reviewed GitHub **Session** Actions (ubuntu, windows, chrome, code-server,

@@ -3,6 +3,7 @@ import {watchPersistedSessions} from './github-action-session-watch.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
+import {waitForRuntimeApproval} from './runtime-approval.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -417,7 +418,7 @@ async function runForeachStep(
               :{status:'failed',error_code:'step_execution_failed'};
           }
         });
-      await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
+      await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running','waiting_approval')")
         .bind(runId,entry.id,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),
           outcome.error_code??null,now()).run();
       collected.push(outcome.status==='succeeded'?outcome.output:null);
@@ -655,7 +656,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     let failed=false;
     let uncertain=false;
     let uncertainCode:string|null=null;
-    const hasEventWait=plan.steps.some(s=>s.uses==='flow.wait_event'||s.uses==='action.run');
+    const hasEventWait=plan.steps.some(s=>s.uses==='flow.wait_event'||s.uses==='action.run'||s.approval?.required===true);
     try{
       while(pending.size){
         // Cancellation can commit after the native event was received but
@@ -709,6 +710,20 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                 if(!dependenciesPermitRun(s,ctx.steps))
                   return {status:'skipped'} as Outcome;
                 if(s.if!==undefined&&!evaluateCondition(s.if,ctx))return {status:'skipped'} as Outcome;
+                if(s.approval?.required){
+                  // Native wake is only a hint; D1 holds the one-use decision.
+                  // No GitHub Attempt or POST exists before this gate succeeds.
+                  const approval=await waitForRuntimeApproval(db,step,id,s.id,row.version_id,
+                    async()=>{
+                      const state=await db.prepare('SELECT outcome FROM runs WHERE id=?')
+                        .bind(id).first<{outcome:string}>();
+                      return state?.outcome!=='running';
+                    });
+                  if(!approval.ok)return {status:'failed',error_code:approval.error_code};
+                  await db.prepare(`UPDATE run_steps SET status='running',updated_at=?
+                    WHERE run_id=? AND step_id=? AND status='waiting_approval'`)
+                    .bind(now(),id,s.id).run();
+                }
                 return await runGithubStep(this.env,plan,s,id,step);
               }catch{
                 // Never retry an uncertain GitHub dispatch on a Workflow replay.
@@ -744,7 +759,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
-          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running')")
+          await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running','waiting_approval')")
           .bind(id,s.id,result.status,result.output===undefined?null:JSON.stringify(result.output),result.error_code??null,now()).run();
           return result;
         }));
