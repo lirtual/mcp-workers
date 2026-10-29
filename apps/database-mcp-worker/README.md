@@ -146,6 +146,12 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   separately reviewed Owner release; final retirement still requires a second
   request and the original exhaustive rollback-version/100%-deployment proof.
   Draft PR creation does not prove safety to merge or absence of in-flight SQL.
+  The CI release contract deliberately refuses automatic unbinding PR merge or
+  release from the retirement staging job: neither the disabled D1 flag nor
+  the bounded 60-second SQL query timeout alone is a verified global in-flight
+  operation census. Until an independently checkable drain/isolation contract
+  exists, maintain the separate GitHub PR review and pinned manual release
+  path. Never infer safe deletion or rollback from a clean Draft PR.
   `/setup` provides a separate **Check unbinding PR (read-only)** action for a
   disabled Hyperdrive ID and expected revision. It looks up only the stable
   branch in the same repository and allows only the two reviewed source-file

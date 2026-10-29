@@ -200,3 +200,25 @@ test('candidate guards preserve reusable CI under manual release and acceptance 
   for(const event_name of ['push','pull_request'])
     assert.equal(evaluate(job,{...direct,event_name},{}),true);
 });
+
+test('Hyperdrive retirement cannot merge or release a staged unbinding without separately proven isolation',async()=>{
+  const {verifyDatabaseRetireStagingGate}=await import('./verify-workflow-dispatch-gates.mjs');
+  const stage=readFileSync(new URL('./prepare-database-hyperdrive-unbind-476.mjs',import.meta.url),'utf8');
+  verifyDatabaseRetireStagingGate(release,stage);
+  for(const [from,to] of [
+    ["inputs.database_hyperdrive_retire_approved == true",'true'],
+    ["inputs.deploy_to_production == false",'true'],
+    ["github.actor == 'lirtual'",'true'],
+    ["if: steps.unbind.outputs.action == 'retire'",'if: always()'],
+    ['run: node scripts/prepare-database-hyperdrive-unbind-476.mjs','run: node scripts/retire-database-hyperdrive.mjs'],
+  ]) {
+    const start=release.indexOf('\n  database-hyperdrive-retire:\n');
+    const before=release.slice(0,start),after=release.slice(start);
+    assert.throws(()=>verifyDatabaseRetireStagingGate(before+after.replace(from,to),stage));
+  }
+  for (const badScript of [
+    stage+"\nawait github('/pulls/73/merge','PUT',{})",
+    stage+"\nawait github('/actions/workflows/release.yml/dispatches','POST',{})",
+    stage.replace("draft:true,body:","draft:false,body:")
+  ])assert.throws(()=>verifyDatabaseRetireStagingGate(release,badScript));
+});

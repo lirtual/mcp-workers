@@ -112,6 +112,30 @@ export function verifyDatabaseFinalizeGate(source) {
   assert.ok(!job(source,'checks').gate.includes("inputs.database_hyperdrive_apply_id == ''"));
 }
 
+/** No automatic unbinding merge or production deployment until an independent
+ * in-flight and rollback isolation proof exists. This is a release contract,
+ * not a replacement for executing Owner approval or Cloudflare readback. */
+export function verifyDatabaseRetireStagingGate(source,stageSource) {
+  const {content,gate}=job(source,'database-hyperdrive-retire');
+  const expected=dollar+"{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.database_hyperdrive_retire_approved == true && inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' }}";
+  assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe Hyperdrive retire gate');
+  for(const required of ['name: database-mcp-worker','group: worker-release-database-mcp-worker',
+    'cancel-in-progress: false','contents: write','pull-requests: write',
+    'id: unbind','run: node scripts/prepare-database-hyperdrive-unbind-476.mjs',
+    "if: steps.unbind.outputs.action == 'retire'",
+    'run: node scripts/retire-database-hyperdrive.mjs']){
+    assert.ok(content.includes(required),'Unsafe Hyperdrive retire staging: '+required);
+  }
+  for(const forbidden of ['wrangler deploy','/pulls/merge','DATABASE_ENCRYPTION_KEY:'])
+    assert.ok(!content.includes(forbidden),'Unreviewed unbind or release action');
+  assert.ok(stageSource.includes('draft:true,body:') &&
+    stageSource.includes("return {phase:'awaiting_unbind_review'") &&
+    !/github\(\s*['"][^'"]*\/merge['"]/.test(stageSource) &&
+    !/github\(\s*['"][^'"]*actions\/workflows\/release\.yml\/dispatches/.test(stageSource),
+    'Unbinding stage must not merge or deploy');
+  assert.equal(source.split('run: node scripts/prepare-database-hyperdrive-unbind-476.mjs').length-1,1);
+}
+
 // This is deliberately not a YAML or shell interpreter. It recognizes only
 // literal local reusable-workflow references and supported static script calls.
 // Unknown/dynamic commands are outside this check, not proof of correctness.
@@ -211,6 +235,7 @@ assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEA
 verifyReleaseWorkers(release, RELEASE_WORKERS);
 verifyDatabaseActivationGate(release);
 verifyDatabaseApplyGate(release);
+verifyDatabaseRetireStagingGate(release,readFileSync(new URL('./prepare-database-hyperdrive-unbind-476.mjs',import.meta.url),'utf8'));
 assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');
 for (const marker of [
