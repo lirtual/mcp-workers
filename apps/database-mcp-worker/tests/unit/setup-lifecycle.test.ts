@@ -66,6 +66,19 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       body: new URLSearchParams({ csrf, ...values })
     }), env, certificates);
     const original = 'mysql://reader:pass@db.example.net/catalog';
+    const checkRejected = async (values: Record<string, string>, diagnostic: string) => {
+      const response = await post('add', { id: 'invalid', dialect: 'mysql', transport: 'direct', ...values });
+      expect(response.status).toBe(422);
+      const html = await response.text();
+      expect(html).toContain('Diagnostic: ' + diagnostic);
+      expect(html).not.toContain('reader:pass');
+      expect(html).not.toContain('supersecret');
+    };
+    await checkRejected({ url: original }, 'plaintext_ack_required');
+    await checkRejected({ plaintext_ack: '1' }, 'url_missing');
+    await checkRejected({ plaintext_ack: '1', url: 'mysql://reader:supersecret@1.1.1.1/catalog' }, 'mysql_ip_not_allowed');
+    await checkRejected({ plaintext_ack: '1', url: 'mysql://reader:supersecret@db.example.net/catalog?sslmode=disable' }, 'url_options');
+    await checkRejected({ plaintext_ack: '1', url: 'mysql://reader:supersecret@localhost/catalog' }, 'hostname_invalid');
     expect((await post('add', { id: 'bad', dialect: 'mysql', transport: 'direct', plaintext_ack: '1', url: original, ca: 'not a certificate' })).status).toBe(422);
     expect((await post('add', { id: 'main', dialect: 'mysql', transport: 'direct', plaintext_ack: '1', url: original })).status).toBe(200);
     const listing = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);

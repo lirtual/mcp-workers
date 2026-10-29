@@ -30,6 +30,10 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
     `<button type="submit">${verb}</button></form>`;
 }
 const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="1">I understand Direct sends database passwords and queries without TLS; traffic may be intercepted.</label>';
+const plaintextAckRequired = '<label><input type="checkbox" name="plaintext_ack" value="1" required>I explicitly accept unencrypted Direct transport.</label>';
+const directUrlHint = '<p>URL format: <code>mysql://USERNAME:PASSWORD@db.yourdomain.com:3306/DATABASE</code>. ' +
+  'A public DNS hostname is required (no literal IP, localhost or private address). ' +
+  'Do not append query parameters. Percent-encode URL-reserved characters in usernames or passwords.</p>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
     (row.status === 'active' ? action(row, csrf, 'disable') :
@@ -45,11 +49,12 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<p><strong>Available now:</strong> MySQL Direct plaintext only (explicit consent). PostgreSQL Direct and Hyperdrive require separate acceptance before activation. No fallback.</p>' +
     `<ul>${list || '<li>No database connections configured</li>'}</ul>` +
     '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
-    '<label>Immutable ID<input name="id" maxlength="64" required></label>' +
+    '<label>Immutable ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required placeholder="b2b"></label>' +
     '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option></select></label>' +
     '<label>Transport<select name="transport"><option value="direct">Direct plaintext</option></select></label>' +
-    '<label>Direct URL (password is not prefilled)<input type="password" name="url" maxlength="8192" autocomplete="off"></label>' +
-    plaintextAck +
+    directUrlHint +
+    '<label>Direct URL (credentials are never displayed)<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
+    plaintextAckRequired +
     '<label><input type="checkbox" name="allow_disabled" value="1">Save Direct candidate disabled if unreachable</label>' +
     '<button type="submit">Validate and add</button></form></fieldset>' +
     '<fieldset><legend>Direct key rotation</legend><form method="post" action="/setup/rotate">' + token(csrf) +
