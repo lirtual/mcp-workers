@@ -280,6 +280,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
         dispatched++;
         expect(JSON.parse(String(init?.body))).toEqual({
           ref: 'main',
+          return_run_details: true,
           inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false' }
         });
         if (githubStatus === 200) return Response.json({ workflow_run_id: 40850012345 }, { status: 200 });
