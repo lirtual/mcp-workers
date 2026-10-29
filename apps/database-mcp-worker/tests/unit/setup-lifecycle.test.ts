@@ -274,6 +274,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     env.DATABASE_GITHUB_ACTIONS_TOKEN = 'github_pat_synthetic_very_long_test_token';
     const { jwt, certificates } = await auth();
     let dispatched = 0;
+    let githubStatus = 204;
     const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (String(input).startsWith('https://api.github.com/')) {
         dispatched++;
@@ -281,7 +282,9 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
           ref: 'main',
           inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false' }
         });
-        return new Response(null, { status: 204 });
+        if (githubStatus === 200) return Response.json({ workflow_run_id: 40850012345 }, { status: 200 });
+        if (githubStatus === 204) return new Response(null, { status: 204 });
+        return new Response('secret value must never appear', { status: githubStatus });
       }
       return certificates();
     };
@@ -305,6 +308,15 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(result.status).toBe(200);
     expect(await result.text()).toContain('verification-only, no-deploy');
     expect(dispatched).toBe(1);
+    githubStatus = 200;
+    const newReceipt = await submission('https://db-owner.example.net', csrf);
+    expect(newReceipt.status).toBe(200);
+    expect(await newReceipt.text()).toContain('Workflow Run ID: 40850012345');
+    githubStatus = 403;
+    const rejected = await submission('https://db-owner.example.net', csrf);
+    expect(rejected.status).toBe(503);
+    expect(await rejected.text()).toContain('Diagnostic: github_forbidden');
+    expect(dispatched).toBe(3);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
   });
 
