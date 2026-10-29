@@ -28,6 +28,32 @@ export function removeHyperdriveBindingSource(text,manifest,binding,id){
   return {'apps/database-mcp-worker/wrangler.jsonc':changed,
     'apps/database-mcp-worker/hyperdrive-bindings.json':JSON.stringify(next,null,2)+'\n'};
 }
+/** Check branch, full PR identity and exact blob bytes before trusting a
+ * previously accepted Create-PR side effect. Read-only and fail-closed. */
+async function verifyUnbindDraft({github,prNumber,branch,headSha,baseSha,files}){
+  const pr=await github('/pulls/'+prNumber);
+  gate(pr?.number===prNumber&&pr?.state==='open'&&pr?.draft===true&&
+    pr?.head?.sha===headSha&&pr?.head?.ref===branch&&
+    pr?.head?.repo?.full_name===REPO&&pr?.base?.ref==='main'&&
+    pr?.base?.repo?.full_name===REPO&&pr?.base?.sha===baseSha&&
+    pr?.commits===1&&pr?.changed_files===2,'pr_readback_mismatch');
+  const commit=await github('/git/commits/'+headSha);
+  gate(commit?.sha===headSha&&sha.test(commit?.tree?.sha??'')&&
+    commit?.parents?.length===1&&commit.parents[0].sha===baseSha,'commit_readback_mismatch');
+  const changed=await github('/pulls/'+prNumber+'/files?per_page=100');
+  gate(Array.isArray(changed)&&changed.length===2&&
+    Object.keys(files).every(path=>changed.filter(f=>f.filename===path&&f.status==='modified'&&
+      sha.test(f.sha??'')).length===1),'pr_files_mismatch');
+  for(const file of changed){
+    const expected=Buffer.from(files[file.filename],'utf8');
+    const expectedHash=createHash('sha1').update(Buffer.from('blob '+expected.length+'\0')).update(expected).digest('hex');
+    gate(file.sha===expectedHash,'pr_blob_sha_mismatch');
+    const read=await github('/git/blobs/'+file.sha);
+    gate(read?.sha===file.sha&&read?.encoding==='base64'&&
+      typeof read.content==='string'&&
+      Buffer.from(read.content,'base64').equals(expected),'pr_blob_content_mismatch');
+  }
+}
 export async function stageHyperdriveUnbind({env=process.env,request=fetch,sourceText,manifest}){
   gate(env.GITHUB_REPOSITORY===REPO&&env.GITHUB_EVENT_NAME==='workflow_dispatch'&&
     env.GITHUB_ACTOR==='lirtual'&&env.GITHUB_REF==='refs/heads/main'&&sha.test(env.GITHUB_SHA??'')&&
@@ -79,12 +105,24 @@ export async function stageHyperdriveUnbind({env=process.env,request=fetch,sourc
     return {phase:'already_unbound'};
   }
   await verifyGithubPrPreflight({request,token:env.DATABASE_GITHUB_ACTIONS_TOKEN,sourceSha:env.GITHUB_SHA});
-  const branch='db476-unbind-'+createHash('sha256').update([row.id,row.revision,env.GITHUB_SHA].join(':')).digest('hex').slice(0,24);
+  const branch='db476-unbind-'+createHash('sha256').update('db476:unbind:'+row.id).digest('hex').slice(0,24);
   // A previously accepted request is not permission to create a second PR.
   let present;
   try{present=await request(gh+'/git/ref/heads/'+branch,
     {headers:ghHeaders,redirect:'manual',signal:AbortSignal.timeout(10000)});}
   catch{fail('branch_unknown');}
+  if(present?.status===200){
+    let ref;
+    try{ref=await present.json();}catch{fail('branch_receipt_unknown');}
+    gate(ref?.ref==='refs/heads/'+branch&&sha.test(ref?.object?.sha??''),'branch_receipt_unknown');
+    // No create, update or PR re-dispatch on a pre-existing branch.
+    const prs=await github('/pulls?state=all&head=lirtual%3A'+branch+'&per_page=100');
+    gate(Array.isArray(prs)&&prs.length===1&&prs.length<100&&Number.isSafeInteger(prs[0]?.number)&&
+      prs[0].number>0,'pr_reconciliation_required');
+    await verifyUnbindDraft({github,prNumber:prs[0].number,branch,
+      headSha:ref.object.sha,baseSha:env.GITHUB_SHA,files});
+    return {phase:'awaiting_unbind_review',prNumber:prs[0].number};
+  }
   gate(present?.status===404,'branch_existing_or_unknown');
   const base=await github('/git/commits/'+env.GITHUB_SHA);
   gate(sha.test(base?.tree?.sha??''),'base_invalid');
@@ -104,16 +142,8 @@ export async function stageHyperdriveUnbind({env=process.env,request=fetch,sourc
     head:branch,base:'main',draft:true,body:'Spec #476 · Disabled logical ID '+row.id+
       '. Two nonsecret source files only. Do not merge or release before separate proof that in-flight operations and rollback dependencies are clear.'});
   gate(Number.isSafeInteger(pr?.number)&&pr.number>0,'pr_unknown');
-  const actual=await github('/pulls/'+pr.number);
-  gate(actual?.state==='open'&&actual?.draft===true&&actual?.head?.sha===commit.sha&&
-    actual?.head?.ref===branch&&actual?.base?.ref==='main'&&actual?.base?.sha===env.GITHUB_SHA&&
-    actual?.commits===1&&actual?.changed_files===2,'pr_mismatch');
-  const head=await github('/git/commits/'+commit.sha);
-  gate(head?.sha===commit.sha&&head?.tree?.sha===tree.sha&&head.parents?.length===1&&
-    head.parents[0].sha===env.GITHUB_SHA,'commit_readback_mismatch');
-  const changed=await github('/pulls/'+pr.number+'/files?per_page=100');
-  gate(Array.isArray(changed)&&changed.length===2&&entries.every(x=>
-    changed.some(y=>y.filename===x.path&&y.status==='modified'&&y.sha===x.sha)),'pr_diff_mismatch');
+  await verifyUnbindDraft({github,prNumber:pr.number,branch,
+    headSha:commit.sha,baseSha:env.GITHUB_SHA,files});
   return {phase:'awaiting_unbind_review',prNumber:pr.number};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){

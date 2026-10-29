@@ -138,8 +138,10 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   **Draft** unbinding PR when a verified registry binding is still present in
   `main`. The preparer is gated by D1 disabled revision, no conflicting
   operation or shared registry reference, Owner permission preflight and a
-  deterministic Git branch; unexpected previous branch/PR outcomes block and
-  require reconciliation, never a duplicate PR. No Cloudflare config/CA or D1
+  stable per-logical-ID Git branch; a previously accepted Draft PR can be
+  resumed only after exact read-only parent/base/head, two-file SHA and Git
+  blob-content verification. Unknown, stale or duplicate PRs remain blocked,
+  never triggering a duplicate PR. No Cloudflare config/CA or D1
   deletion happens during this preparation. Publishing the unbind remains a
   separately reviewed Owner release; final retirement still requires a second
   request and the original exhaustive rollback-version/100%-deployment proof.
