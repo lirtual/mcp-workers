@@ -138,30 +138,30 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'other' })).status).toBe(422);
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'main' })).status).toBe(200);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
+    // Hyperdrive references never trigger origin connection attempts and are disabled.
+    const checkedBeforeCloud = fakeHealth.mock.calls.length;
     expect((await post('add', { id: 'cloud_ref', dialect: 'mysql', transport: 'hyperdrive',
-      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(503);
+      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
+    expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
+    expect(sqlite.prepare("SELECT status,transport,revision FROM database_connections WHERE id='cloud_ref'").get())
+      .toMatchObject({ status: 'disabled', transport: 'hyperdrive', revision: 1 });
+    expect((await post('enable', { id: 'cloud_ref', revision: '1' })).status).toBe(503);
+    expect((await post('edit', { id: 'cloud_ref', revision: '1', credential_mode: 'keep' })).status).toBe(422);
+    expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
+    // PostgreSQL Direct uses the same explicit plaintext acceptance and real health gate.
     expect((await post('add', { id: 'pg_direct', dialect: 'postgres', transport: 'direct',
-      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(503);
-    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
-    // Already-present deferred records cannot be enabled or edited by forged
-    // Owner POSTs; rejection happens before any credential or origin access.
-    sqlite.prepare(`INSERT INTO database_connections
-      (id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at)
-      VALUES ('deferred_pg','postgres','direct','disabled','opaque','key-one',1,1,1)`).run();
-    const checkedBefore = fakeHealth.mock.calls.length;
-    expect((await post('enable', { id: 'deferred_pg', revision: '1', plaintext_ack: '1' })).status).toBe(503);
-    expect((await post('edit', { id: 'deferred_pg', revision: '1', credential_mode: 'keep' })).status).toBe(503);
-    expect(fakeHealth.mock.calls.length).toBe(checkedBefore);
-    expect(sqlite.prepare("SELECT status,revision FROM database_connections WHERE id='deferred_pg'").get())
-      .toMatchObject({ status: 'disabled', revision: 1 });
+      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(200);
+    expect(sqlite.prepare("SELECT status,transport,dialect FROM database_connections WHERE id='pg_direct'").get())
+      .toMatchObject({ status: 'active', transport: 'direct', dialect: 'postgres' });
+    expect((await post('disable', { id: 'pg_direct', revision: '2' })).status).toBe(200);
     const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const initialPageHtml = await initialPage.text();
-    expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
-    expect(initialPageHtml).toContain('<input type="hidden" name="transport" value="direct">');
-    expect(initialPageHtml).not.toContain('<option value="postgres">');
-    expect(initialPageHtml).not.toContain('<option value="hyperdrive">');
-    expect(initialPageHtml).not.toContain('action="/setup/enable"');
-    expect(initialPageHtml).not.toContain('action="/setup/edit"');
+    expect(initialPageHtml).toContain('<option value="postgres">');
+    expect(initialPageHtml).toContain('name="transport" value="direct"');
+    expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
+    expect(initialPageHtml).toContain('Hyperdrive activation and retirement require protected GitHub Actions');
+    expect(initialPageHtml).not.toContain('name="ciphertext"');
+    expect(initialPageHtml).not.toContain('reader:pass');
     vi.unstubAllGlobals();
   });
   it('requires explicit rollback and retained-key confirmation before Owner key rotation', async () => {
@@ -242,10 +242,14 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('No database connections configured');
     expect(html).toContain('action="/setup/add"');
     expect(html).toContain('action="/setup/rotate"');
-    expect(html).toContain('<input type="hidden" name="dialect" value="mysql">');
-    expect(html).toContain('<input type="hidden" name="transport" value="direct">');
+    expect(html).toContain('<option value="mysql">');
+    expect(html).toContain('<option value="postgres">');
+    expect(html).toContain('<option value="mysql">');
+    expect(html).toContain('<option value="postgres">');
+    expect(html).toContain('name="transport" value="direct"');
+    expect(html).toContain('name="transport" value="hyperdrive"');
     expect(html).not.toContain('placeholder="b2b"');
-    expect(html).not.toContain('<select name="dialect">');
+    expect(html).toContain('<select name="dialect">');
     expect(html).not.toContain('<select name="transport">');
     expect(html).toContain('<details><summary>Advanced options</summary>');
     expect(html).toContain('<details class="maintenance"><summary>Maintenance</summary>');

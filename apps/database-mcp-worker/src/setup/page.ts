@@ -35,13 +35,18 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
 const plaintextAck = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1">I accept unencrypted Direct transport.</label>';
 const plaintextAckRequired = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>';
 const directUrlHint = '<details><summary>URL format help</summary><p class="muted">' +
-  '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code>. HOST can be a public IP or hostname. ' +
-  'Encode special characters in credentials; no URL query parameters.</p></details>';
+  '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code> or ' +
+  '<code>postgres://USER:PASSWORD@HOST:5432/DATABASE</code>. ' +
+  'Use a public IP or hostname; no URL query parameters. Direct is unencrypted.</p></details>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
-  const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} · ${escape(row.status)}</span>` +
+  const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} / ${escape(row.transport)} · ${escape(row.status)}</span>` +
     (row.status === 'active' ? action(row, csrf, 'disable') :
-      (isAvailableMode(row.transport, row.dialect) ? action(row, csrf, 'enable') : '') + action(row, csrf, 'delete')) +
-    (!isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
+      row.transport === 'direct' && isAvailableMode(row.transport, row.dialect)
+        ? action(row, csrf, 'enable') + action(row, csrf, 'delete') :
+      row.transport === 'hyperdrive' ? '' : action(row, csrf, 'delete')) +
+    (row.transport === 'hyperdrive'
+      ? '<p class="muted">Hyperdrive activation and retirement require protected GitHub Actions verification. The Cloudflare binding, CA and cache must be verified first.</p>'
+      : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
     `<details><summary>Edit connection</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credentials<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
     '<label>New URL (only when replacing)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
@@ -51,14 +56,23 @@ export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
     '<button type="submit">Test and save</button></form></details>') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections. Credentials are never displayed.</p>' +
     `<ul class="connections">${list || '<li>No database connections configured</li>'}</ul>` +
-    '<fieldset><legend>Add connection</legend><form method="post" action="/setup/add">' + token(csrf) +
+    '<fieldset><legend>Add Direct connection</legend><form method="post" action="/setup/add">' + token(csrf) +
     '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
-    '<input type="hidden" name="dialect" value="mysql"><input type="hidden" name="transport" value="direct">' +
-    '<label>MySQL URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
+    '<input type="hidden" name="transport" value="direct">' +
+    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
+    '<label>Database URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
     directUrlHint + plaintextAckRequired +
     '<details><summary>Advanced options</summary><label class="check"><input type="checkbox" name="allow_disabled" value="1">Save disabled if connection test fails</label>' +
     '<p class="muted">A disabled connection cannot be used until it passes a connection check.</p></details>' +
-    '<button type="submit">Add connection</button></form></fieldset>' +
+    '<button type="submit">Add Direct connection</button></form></fieldset>' +
+    '<details><summary>Add Hyperdrive reference</summary><p class="muted">First create a dedicated Hyperdrive config with strict CA/hostname verification and caching disabled. The reference starts disabled; only protected Actions may activate it.</p>' +
+    '<form method="post" action="/setup/add">' + token(csrf) +
+    '<input type="hidden" name="transport" value="hyperdrive">' +
+    '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
+    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
+    '<label>Cloudflare config ID<input name="config_id" maxlength="64" required></label>' +
+    '<label>Binding name<input name="binding_name" pattern="HYPERDRIVE_[A-Z0-9_]{1,54}" maxlength="65" required></label>' +
+    '<button type="submit">Save disabled reference</button></form></details>' +
     '<details class="maintenance"><summary>Maintenance</summary><p class="muted">Re-encrypt saved connections when changing encryption keys; this does not change MySQL passwords.</p>' +
     '<p class="muted">Before rotating, independently verify that every rollback-eligible Worker version can decrypt the new key, and retain historical keys until D1 snapshots and backups no longer need them. This page cannot verify those external requirements.</p>' +
     '<form method="post" action="/setup/rotate">' + token(csrf) +
