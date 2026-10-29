@@ -164,6 +164,45 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).not.toContain('action="/setup/edit"');
     vi.unstubAllGlobals();
   });
+  it('requires explicit rollback and retained-key confirmation before Owner key rotation', async () => {
+    const { sqlite, env } = fixture(); instances.push(sqlite);
+    const { jwt, certificates } = await auth();
+    vi.stubGlobal('fetch', async () => Response.json({ Status: 0, Answer: [{ type: 1, data: '1.1.1.1' }] }));
+    fakeHealth.mockResolvedValue({ latencyMs: 2 });
+    const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    const html = await page.text();
+    expect(html).toContain('name="rotation_ack" value="verified" required');
+    expect(html).toContain('This page cannot verify those external requirements.');
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+    const post = (action: string, values: Record<string, string>) => handleSetup(new Request(pageUrl + '/' + action, {
+      method: 'POST', headers: { 'cf-access-jwt-assertion': jwt, origin: 'https://db-owner.example.net', cookie,
+        'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf, ...values })
+    }), env, certificates);
+    const url = 'mysql://reader:pass@db.example.net/catalog';
+    expect((await post('add', { id: 'main', dialect: 'mysql', transport: 'direct', plaintext_ack: '1', url })).status).toBe(200);
+    const before = sqlite.prepare('SELECT revision,key_id,ciphertext FROM database_connections WHERE id=?').get('main') as {
+      revision: number; key_id: string; ciphertext: string
+    };
+    env.DATABASE_ENCRYPTION_PREVIOUS_KEY = env.DATABASE_ENCRYPTION_KEY!;
+    env.DATABASE_PREVIOUS_KEY_ID = env.DATABASE_KEY_ID!;
+    env.DATABASE_ENCRYPTION_KEY = btoa('r'.repeat(32));
+    env.DATABASE_KEY_ID = 'key-two';
+    const missing = await post('rotate', {});
+    expect(missing.status).toBe(422);
+    expect(await missing.text()).not.toContain(url);
+    expect(await post('rotate', { rotation_ack: 'false' }).then(response => response.status)).toBe(422);
+    expect(sqlite.prepare('SELECT revision,key_id,ciphertext FROM database_connections WHERE id=?').get('main'))
+      .toMatchObject(before);
+    const rotated = await post('rotate', { rotation_ack: 'verified' });
+    expect(rotated.status).toBe(200);
+    const after = sqlite.prepare('SELECT revision,key_id,ciphertext FROM database_connections WHERE id=?').get('main') as typeof before;
+    expect(after).toMatchObject({ revision: before.revision + 1, key_id: 'key-two' });
+    expect(after.ciphertext).not.toEqual(before.ciphertext);
+    expect((await openConnectionConfig(env, 'main', 'mysql', { keyId: after.key_id, ciphertext: after.ciphertext })).url)
+      .toBe(url);
+  });
   it('accepts a public literal MySQL IP in the Owner create form without storing plaintext or weakening private-IP denial', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
     const { jwt, certificates } = await auth();
