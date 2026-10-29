@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {readFileSync} from "node:fs";
-import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const ok = () => ({
   d1:[
@@ -53,11 +53,13 @@ test("SQL exception is explicit for one proven Run; all new Session/Run counters
   const withBoth=execFileSync(process.execPath,args,{encoding:"utf8",env:{
     ...process.env,WORKFLOW_TERMINAL_RUN_ID:TERMINAL_RUN_ID,
     WORKFLOW_SECOND_TERMINAL_RUN_ID:SECOND_TERMINAL_RUN_ID,
-    WORKFLOW_THIRD_TERMINAL_RUN_ID:THIRD_TERMINAL_RUN_ID
+    WORKFLOW_THIRD_TERMINAL_RUN_ID:THIRD_TERMINAL_RUN_ID,
+     WORKFLOW_FOURTH_TERMINAL_RUN_ID:FOURTH_TERMINAL_RUN_ID
   }});
   assert.equal((withBoth.match(new RegExp(SECOND_TERMINAL_RUN_ID,"g"))||[]).length,2);
   assert.match(withBoth,/run_id NOT IN/);
   assert.equal((withBoth.match(new RegExp(THIRD_TERMINAL_RUN_ID,"g"))||[]).length,2);
+  assert.equal((withBoth.match(new RegExp(FOURTH_TERMINAL_RUN_ID,"g"))||[]).length,2);
   const forged=execFileSync(process.execPath,args,{encoding:"utf8",env:{
     ...process.env,WORKFLOW_TERMINAL_RUN_ID:TERMINAL_RUN_ID,
     WORKFLOW_SECOND_TERMINAL_RUN_ID:"ffffffff-ffff-ffff-ffff-ffffffffffff"
@@ -74,6 +76,10 @@ test("SQL exception is explicit for one proven Run; all new Session/Run counters
   assert.equal((release.match(/steps\.terminal_second\.outputs\.second_terminal_run_id/g)||[]).length,3);
   assert.equal((release.match(/steps\.terminal_third\.outputs\.third_terminal_run_id/g)||[]).length,3);
   assert.equal((release.match(/id <> '\$WORKFLOW_THIRD_TERMINAL_RUN_ID'/g)||[]).length,2);
+  assert.equal((release.match(/steps\.terminal_fourth\.outputs\.fourth_terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/id <> '\$WORKFLOW_FOURTH_TERMINAL_RUN_ID'/g)||[]).length,2);
+  assert.ok(release.indexOf("Verify fourth terminal E2E Run proof")<
+    release.indexOf("Verify Workflow release configuration"));
   assert.ok(release.indexOf("Verify third terminal E2E Run proof")<
     release.indexOf("Verify Workflow release configuration"));
   assert.ok(release.indexOf("Verify second terminal E2E Run proof")<
@@ -151,4 +157,42 @@ test("third exact Owner-delivered Run: immutable unknown result and independent 
   assert.throws(()=>verifyThirdTerminalEvidence(data.d1,data.native,{...data.github,...patch}),/blocked/);
  const extra=structuredClone(data);extra.d1[4].results.push({...extra.d1[4].results[0]});
  assert.throws(()=>verifyThirdTerminalEvidence(extra.d1,extra.native,extra.github),/blocked/);
+});
+
+test("fourth exact Owner-delivered Run: immutable unknown result and independent physical termination",()=>{
+ const id=FOURTH_TERMINAL_RUN_ID;
+ const data={
+  d1:[
+   {success:true,results:[{id,outcome:"indeterminate",start_state:"started",error_code:"cloudflare_outcome_unknown"}]},
+   {success:true,results:[
+    {run_id:id,step_id:"notify",status:"indeterminate",error_code:"cloudflare_outcome_unknown"},
+    {run_id:id,step_id:"openlist",status:"succeeded",error_code:null},
+    {run_id:id,step_id:"receipt",status:"skipped",error_code:null}]},
+   {success:true,results:[{run_id:id,step_id:"openlist",state:"terminated"}]},
+   {success:true,results:[{run_id:id,step_id:"openlist",state:"cancelled",
+    repository:"lirtual/session-actions",owner_run_id:40792650738,owner_run_attempt:1,
+    candidate_run_id:40792650738,candidate_run_attempt:1}]},
+   {success:true,results:[{run_id:id,step_id:"notify",
+    invocation_id:"27cf5b0e-3b9c-4d9f-a9bd-db76c2266ea5",
+    binding_generation:1,deployment_id:"12970996-4220-4731-b76e-a0c8aa7a5017"}]}
+  ],
+  native:{status:"complete",end:"2026-10-29T00:19:28.947Z"},
+  github:{id:40792650738,status:"completed",conclusion:"cancelled"}
+ };
+ assert.equal(verifyFourthTerminalEvidence(data.d1,data.native,data.github),id);
+ for(const [group,key,bad] of [
+  [0,"outcome","succeeded"],[0,"error_code",null],
+  [1,"status","succeeded"],[2,"state","ready"],
+  [3,"state","claimed"],[3,"candidate_run_id",42],
+  [4,"invocation_id","replaced"],[4,"binding_generation",2],
+  [4,"deployment_id","wrong-version"]]){
+  const changed=structuredClone(data);changed.d1[group].results[0][key]=bad;
+  assert.throws(()=>verifyFourthTerminalEvidence(changed.d1,changed.native,changed.github),/blocked/);
+ }
+ for(const patch of [{status:"running"},{end:null}])
+  assert.throws(()=>verifyFourthTerminalEvidence(data.d1,{...data.native,...patch},data.github),/blocked/);
+ for(const patch of [{status:"in_progress"},{conclusion:"success"},{id:5}])
+  assert.throws(()=>verifyFourthTerminalEvidence(data.d1,data.native,{...data.github,...patch}),/blocked/);
+ const extra=structuredClone(data);extra.d1[4].results.push({...extra.d1[4].results[0]});
+ assert.throws(()=>verifyFourthTerminalEvidence(extra.d1,extra.native,extra.github),/blocked/);
 });
