@@ -12,6 +12,7 @@ function requireGate(condition, message) {
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const revisionPattern = /^[1-9][0-9]{0,12}$/;
 const accountPattern = /^[a-f0-9]{32}$/i;
+const REGISTRY_D1_ID = 'cbfe6a05-4979-4e6a-9cc2-4f6468586e4a';
 
 export async function activateDatabaseHyperdrive({
   connectionId, expectedRevision, accountId, token, portalToken, actor, ref, sourceSha,
@@ -27,8 +28,8 @@ export async function activateDatabaseHyperdrive({
 
   requireGate(source?.name === 'database-mcp-worker' && source?.main === 'src/index.ts' &&
     source?.d1_databases?.length === 1 && source.d1_databases[0].binding === 'DB' &&
-    source.d1_databases[0].database_name === 'database-mcp-db' &&
-    /^[a-f0-9-]{36}$/i.test(source.d1_databases[0].database_id ?? ''),
+    source.d1_databases[0].database_name === 'database-mcp-registry' &&
+    source.d1_databases[0].database_id === REGISTRY_D1_ID,
     'reviewed Worker/D1 source is missing');
   verifyDatabaseHyperdriveSource(source, manifest);
   const manifestEntries = manifest.filter(row => row && row.binding && row.id);

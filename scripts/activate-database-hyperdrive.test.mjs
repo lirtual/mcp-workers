@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { activateDatabaseHyperdrive } from './activate-database-hyperdrive.mjs';
 
 const configId = '12345678-1234-1234-1234-123456789abc';
-const databaseId = '8853a6ac-beaa-45aa-bdb2-0867e6f3df6d';
+const databaseId = 'cbfe6a05-4979-4e6a-9cc2-4f6468586e4a';
 const caId = 'abcd1234-0000-1111-2222-123456789abc';
 const binding = 'HYPERDRIVE_TEST';
 const manifest = [{
@@ -11,7 +11,7 @@ const manifest = [{
   origin_port: 3306, origin_database: 'approved', origin_user: 'test', ca_certificate_id: caId
 }];
 const source = { name: 'database-mcp-worker', main: 'src/index.ts',
-  d1_databases: [{ binding: 'DB', database_name: 'database-mcp-db', database_id: databaseId }],
+  d1_databases: [{ binding: 'DB', database_name: 'database-mcp-registry', database_id: databaseId }],
   hyperdrive: [{ binding, id: configId }] };
 const config = { id: configId, mtls: { sslmode: 'VERIFY_IDENTITY', ca_certificate_id: caId },
   caching: { disabled: true },
@@ -81,6 +81,21 @@ function fixture({ wrongCA = false, healthOk = true, differentBinding = false, l
   }
   return { request, row, calls };
 }
+
+test('cannot target the deleted legacy D1 or an unreviewed registry', async () => {
+  for (const old of [
+    { database_name: 'database-mcp-db', database_id: '8853a6ac-beaa-45aa-bdb2-0867e6f3df6d' },
+    { database_name: 'database-mcp-registry', database_id: '99999999-9999-4999-8999-999999999999' },
+    { database_name: 'unapproved-registry', database_id: databaseId }
+  ]) {
+    const f = fixture();
+    const badSource = { ...source, d1_databases: [{ binding: 'DB', ...old }] };
+    await assert.rejects(activateDatabaseHyperdrive({ ...good, source: badSource, request: f.request }),
+      /reviewed Worker\/D1 source is missing/);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.row.status, 'disabled');
+  }
+});
 
 test('protected activation checks binding, CA and CAS before live MCP health', async () => {
   const f = fixture();
