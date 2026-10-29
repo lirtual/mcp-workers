@@ -96,3 +96,20 @@ test('lost delete acknowledgment is confirmed by independent D1 readback, never 
     { retired: true, connectionId: 'retire_test' });
   assert.equal(f.state.writes, 1);
 });
+
+// Diagnostic must identify the failing remote operation without reflecting
+// upstream response bodies or credentials in the error string.
+test('retirement rejects Cloudflare D1 access failure with bounded stage label', async () => {
+  const f = fixture();
+  const request = async (url, init) => {
+    if (url.includes('/d1/database/') && url.endsWith('/query')) {
+      return { ok: false, status: 403, text: async () => 'private-database-credential-must-not-appear' };
+    }
+    return f.request(url, init);
+  };
+  await assert.rejects(retireDatabaseHyperdrive({ ...inputs, request }), error => {
+    assert.match(error.message, /d1_query \(HTTP 403\)/);
+    assert.doesNotMatch(error.message, /private-database-credential/);
+    return true;
+  });
+});
