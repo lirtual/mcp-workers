@@ -176,6 +176,21 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   `version_id` in the rollback inventory, validates its immutable D1 and
   Hyperdrive binding resources, then rechecks the live deployment before the
   D1 CAS. Unverifiable active or rollback versions block retirement.
+  On 2026-10-30 an **unmodified production read-only inventory** found 26
+  deployable Database Worker versions: 13 still hold the existing Aiven
+  Hyperdrive binding and 13 do not. The current deployment uses one version
+  at 100%, included in the deployable inventory. Current settings of all 21
+  account Workers were inspected; only `database-mcp-worker` currently binds
+  this config. This is **not** evidence about the other Workers' history,
+  external accounts or in-flight SQL. The production registry still has only
+  migrations `0001` and `0002`; `0003` (durable in-flight fence) is unapplied.
+  Do not purge old Worker versions, force artificial deployments to age them
+  out, auto-apply D1 migrations or delete the original Hyperdrive/CA. Use the
+  existing release preflight and an explicit independently reviewed migration
+  plan when a production cutover is authorized. Failure to satisfy any of the
+  above must leave the Draft and live connections unchanged. A synthetic
+  26-version regression exercises both the 13 retained-binding refusal and
+  clean-inventory-only D1 CAS path, without production writes.
   The CI release contract deliberately refuses automatic unbinding PR merge or
   release from the retirement staging job: neither the disabled D1 flag nor
   the bounded 60-second SQL query timeout alone is a verified global in-flight

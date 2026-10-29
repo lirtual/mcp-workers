@@ -159,3 +159,74 @@ test('a changed live deployment during final readback is rejected without D1 wri
   assert.equal(deployments,2);
   assert.equal(f.state.writes,0);
 });
+
+// The live Cloudflare inventory contained 26 rollback-eligible versions and
+// 13 still referenced the current config. Use synthetic IDs to exercise the
+// real response shape; this test must never touch production resources.
+test('26 deployable versions with 13 retained bindings block retirement without writes',async()=>{
+ const live='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+ const ids=[live,...Array.from({length:25},(_,i)=>
+   '00000000-0000-4000-8000-'+String(i+1).padStart(12,'0'))];
+ const retained=new Set(ids.slice(13));
+ assert.equal(retained.size,13);
+ const f=fixture();
+ const request=async(url,init)=>{
+   if(url.endsWith('/versions?deployable=true'))return {
+     ok:true,json:async()=>({success:true,result:{items:ids.map(id=>({id}))}})
+   };
+   const id=ids.find(x=>url.endsWith('/versions/'+x));
+   if(id)return {
+     ok:true,json:async()=>({success:true,result:{id,resources:{bindings:[
+       {type:'d1',name:'DB',database_id:registry},
+       ...(retained.has(id)?[{type:'hyperdrive',name:binding,id:configId}]:[])
+     ]}}})
+   };
+   return f.request(url,init);
+ };
+ await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/rollback.*reference/);
+ assert.equal(f.state.writes,0);
+ assert.equal(f.state.record?.id,'retire_test');
+ assert.equal(f.calls.some(c=>c.url.includes('hyperdrive/configs')),false);
+});
+
+test('full 26-version clean rollback inventory permits only the D1 tombstone',async()=>{
+ const live='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+ const ids=[live,...Array.from({length:25},(_,i)=>
+   '00000000-0000-4000-8000-'+String(i+1).padStart(12,'0'))];
+ const checked=[];
+ const f=fixture();
+ const request=async(url,init)=>{
+   if(url.endsWith('/versions?deployable=true'))return {
+     ok:true,json:async()=>({success:true,result:{items:ids.map(id=>({id}))}})
+   };
+   const id=ids.find(x=>url.endsWith('/versions/'+x));
+   if(id){checked.push(id);return {
+     ok:true,json:async()=>({success:true,result:{id,resources:{bindings:[
+       {type:'d1',name:'DB',database_id:registry}
+     ]}}})
+   };}
+   return f.request(url,init);
+ };
+ const result=await retireDatabaseHyperdrive({...inputs,request});
+ assert.deepEqual(result,{retired:true,connectionId:'retire_test'});
+ assert.deepEqual(checked,ids);
+ assert.equal(f.state.writes,1);
+});
+
+test('partially unreadable rollback inventory refuses destructive D1 retirement',async()=>{
+ const f=fixture();
+ const request=async(url,init)=>{
+   if(url.endsWith('/versions?deployable=true'))return {
+     ok:true,json:async()=>({success:true,result:{items:[
+       {id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'},
+       {id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'}
+     ]}})
+   };
+   if(url.endsWith('/versions/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'))return {
+     ok:true,json:async()=>({success:true,result:{id:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'}})
+   };
+   return f.request(url,init);
+ };
+ await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/reference remains or is unconfirmed/);
+ assert.equal(f.state.writes,0);
+});
