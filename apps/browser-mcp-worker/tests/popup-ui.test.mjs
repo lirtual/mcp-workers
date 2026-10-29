@@ -56,3 +56,13 @@ test("failed local button action shows its rejection in place instead of silent 
   assert.match(p.nodes["action-feedback"].textContent,/cloud_stop_not_confirmed/);
   assert.match(p.nodes.summary.textContent,/enabled/);
 });
+
+test("popup has fixed intrinsic extension width without viewport-relative circular sizing",()=>{
+  const style=html.match(/<style>([\s\S]*?)<\/style>/)?.[1]||"";
+  assert.match(style,/html\s*\{[^}]*\bwidth\s*:\s*364px/,
+    "extension popup root must set explicit intrinsic width");
+  assert.match(style,/body\s*\{[^}]*\bwidth\s*:\s*340px/,
+    "body should fit the fixed root width minus margins");
+  assert.doesNotMatch(style,/(?:min-width|max-width|width)\s*:\s*[^;}]*\b(?:vw|vh)/,
+    "viewport-relative width caps shrink browser-action popups during intrinsic sizing");
+});
