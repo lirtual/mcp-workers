@@ -1,11 +1,12 @@
 import { PublicError } from '../errors.js';
 import type { DatabaseTransport, Dialect } from '../types.js';
 
-// The initial reviewed release accepts MySQL Direct only. Deferred modes
-// require separate evidence and a reviewed code change before they can be
-// admitted; no runtime toggle or second deployment path can bypass this rule.
+// SQL drivers support MySQL/PostgreSQL over explicit plaintext Direct or
+// dedicated verified Cloudflare Hyperdrive bindings. Hyperdrive references
+// enter D1 disabled and are enabled only by protected Actions verification.
 export function isAvailableMode(transport: DatabaseTransport, dialect: Dialect): boolean {
-  return transport === 'direct' && dialect === 'mysql';
+  return (transport === 'direct' || transport === 'hyperdrive') &&
+    (dialect === 'mysql' || dialect === 'postgres');
 }
 
 export function requireAvailableMode(transport: DatabaseTransport, dialect: Dialect): void {

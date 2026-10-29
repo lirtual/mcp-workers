@@ -71,3 +71,17 @@ simplified `main` release and real two-connection read-only E2E pass:
 Full four-mode Spec #344 remains open for deferred security/transport scope;
 retiring legacy compatibility does **not** constitute an approval to enable
 PostgreSQL Direct or Hyperdrive.
+
+## 2026-10-29 — four-mode staged enablement
+
+Existing Aiven test services are used for MySQL and PostgreSQL Hyperdrive evidence.
+Provision only the two named test Hyperdrive configurations through the existing
+protected Release Worker workflow and existing GitHub Secrets; do not log passwords.
+The Owner page may save an unverified Hyperdrive reference only as **disabled**.
+A protected activation must verify the dedicated Cloudflare binding, exact origin,
+strict CA/hostname mode, disabled caching and real deployed Worker health before
+enabling. A successful synthetic test, local CI or Cloudflare config GET is not a
+substitute for real TLS-negative, Safe Write, DDL and rollback acceptance.
+PostgreSQL Direct remains intentionally **plaintext** and requires a separately
+authorized reachable plaintext origin; the TLS-only Aiven PostgreSQL service is
+not a substitute. Never use the live business connections for these probes.
