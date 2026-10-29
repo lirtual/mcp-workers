@@ -14,7 +14,11 @@ import { setupFailure, setupPage, setupResult } from './page.js';
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
 function required(form: URLSearchParams, field: string): string {
   const values = form.getAll(field);
-  if (values.length !== 1 || !values[0]) invalid();
+  if (values.length !== 1 || !values[0]) {
+    if (field === 'id') throw new PublicError('INVALID_INPUT', 'A connection ID is required.');
+    if (field === 'url') throw new PublicError('INVALID_INPUT', 'A complete Direct database URL is required.');
+    invalid();
+  }
   return values[0];
 }
 function revision(form: URLSearchParams): number {
@@ -78,6 +82,25 @@ async function requiredRow(env: Env, id: string) {
 }
 // Fixed Owner-facing references only; never include upstream errors, keys, URLs, SQL or identities.
 export function setupFailureReference(error: PublicError): string | undefined {
+  if (error.code === 'INVALID_INPUT') {
+    const exact: Record<string, string> = {
+      'A connection ID is required.': 'connection_id_missing',
+      'Invalid connection id.': 'connection_id_invalid',
+      'A complete Direct database URL is required.': 'url_missing',
+      'Direct plaintext acceptance is required.': 'plaintext_ack_required',
+      'MySQL Direct requires a public DNS hostname, not a literal IP address.': 'mysql_ip_not_allowed',
+      'The database endpoint resolves to a nonpublic or reserved address.': 'endpoint_nonpublic',
+      'The database endpoint hostname is not an eligible public DNS name.': 'hostname_invalid'
+    };
+    if (exact[error.message]) return exact[error.message];
+    // Parser messages contain a connection ID, so only classify their fixed
+    // suffix; never reflect IDs, URLs, credentials, or raw exceptions.
+    if (error.message.endsWith(' has unsupported direct database URL options.')) return 'url_options';
+    if (error.message.endsWith(' uses an unsupported direct database URL scheme.')) return 'url_scheme';
+    if (error.message.endsWith(' has an invalid direct database URL.')) return 'url_format';
+    if (error.message.endsWith(' has an invalid direct database port.')) return 'url_port';
+    return 'form_invalid';
+  }
   if (error.code !== 'CONFIGURATION_UNAVAILABLE') return undefined;
   const known: Record<string, string> = {
     'Owner authentication configuration is incomplete.': 'auth_configuration',
@@ -144,7 +167,9 @@ export async function handleSetup(
         });
         return setupResult('Hyperdrive reference saved disabled. Publish and verify its dedicated binding and strict TLS before enabling.');
       }
-      if (transport !== 'direct' || form.get('plaintext_ack') !== '1' || formCa(form)) invalid();
+      if (transport !== 'direct' || formCa(form)) invalid();
+      if (form.get('plaintext_ack') !== '1')
+        throw new PublicError('INVALID_INPUT', 'Direct plaintext acceptance is required.');
       const url = required(form, 'url');
       const parsed = await validatePublicEndpoint(url, id);
       if (parsed.dialect !== dialect) invalid();

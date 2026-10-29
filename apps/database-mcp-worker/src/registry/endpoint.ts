@@ -2,7 +2,15 @@ import { isIP } from 'node:net';
 import { parseDirectDatabaseUrl } from '../config.js';
 import { PublicError } from '../errors.js';
 
-function invalid(): never { throw new PublicError('INVALID_INPUT', 'The database endpoint must be a public, eligible address.'); }
+type InvalidEndpointReason = 'literal_mysql_ip' | 'nonpublic_address' | 'invalid_hostname';
+function invalid(reason: InvalidEndpointReason): never {
+  const messages: Record<InvalidEndpointReason, string> = {
+    literal_mysql_ip: 'MySQL Direct requires a public DNS hostname, not a literal IP address.',
+    nonpublic_address: 'The database endpoint resolves to a nonpublic or reserved address.',
+    invalid_hostname: 'The database endpoint hostname is not an eligible public DNS name.'
+  };
+  throw new PublicError('INVALID_INPUT', messages[reason]);
+}
 function unavailable(): never { throw new PublicError('CONNECTION_UNAVAILABLE', 'Database hostname validation is unavailable.'); }
 
 /** Check IPv4 special-use ranges. Reject anything not known to be globally routable. */
@@ -57,10 +65,11 @@ export async function validatePublicEndpoint(raw: string, id: string, requestFet
   const host = parsed.host.toLowerCase();
   const ip = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   if (isIP(ip)) {
-    if (!publicAddress(ip) || parsed.dialect === 'mysql') invalid();
+    if (!publicAddress(ip)) invalid('nonpublic_address');
+    if (parsed.dialect === 'mysql') invalid('literal_mysql_ip');
     return parsed;
   }
-  if (!allowedHostname(host)) invalid();
+  if (!allowedHostname(host)) invalid('invalid_hostname');
   let addresses = 0;
   try {
     const answers = await Promise.all(['A', 'AAAA'].map(async type => {
@@ -74,7 +83,7 @@ export async function validatePublicEndpoint(raw: string, id: string, requestFet
       if (answer.Status !== 0) unavailable();
       for (const record of answer.Answer ?? []) {
         if (record.type !== 1 && record.type !== 28) continue;
-        if (typeof record.data !== 'string' || !publicAddress(record.data)) invalid();
+        if (typeof record.data !== 'string' || !publicAddress(record.data)) invalid('nonpublic_address');
         addresses++;
       }
     }
