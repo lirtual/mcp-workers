@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync} from 'node:fs';
+import {copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -37,16 +37,35 @@ test('Spec #476 Wrangler local D1 migration and admission/disable/retire safety'
     mkdirSync(join(root,'migrations'));
     mkdirSync(join(root,'state'));
     mkdirSync(join(root,'src'));
-    cpSync(migrations,join(root,'migrations'),{recursive:true});
+    // Preserve a real 0002-era registry when applying 0003: blank-only tests
+    // miss production data preservation and migration-order regressions.
+    for(const name of ['0001_connections.sql','0002_transport_and_retired_ids.sql'])
+      copyFileSync(join(migrations,name),join(root,'migrations',name));
     writeFileSync(join(root,'src/index.js'),'export default {fetch:()=>new Response("synthetic")};\n');
     writeFileSync(join(root,'wrangler.json'),JSON.stringify({
       name:'spec476-ephemeral',main:'src/index.js',compatibility_date:'2026-09-12',
       d1_databases:[{binding:'DB',database_name:'spec476-ephemeral',database_id:syntheticId,
         migrations_dir:'migrations'}]
     }));
+    const baseline=wrangler(root,'migrations','apply','DB');
+    for(const name of ['0001_connections.sql','0002_transport_and_retired_ids.sql'])
+      assert.ok(baseline.includes(name));
+    execute(root,`INSERT INTO database_connections
+      (id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at)
+      VALUES ('existing_direct','mysql','direct','active','synthetic-test-ciphertext-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx','key1',7,111,111)`);
+    execute(root,`INSERT INTO database_connections
+      (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
+      VALUES ('existing_hd','mysql','hyperdrive','active','bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb','HYPERDRIVE_EXISTING',5,222,222)`);
+    execute(root,"INSERT INTO retired_connection_ids (id,retired_at) VALUES ('retired_legacy',333)");
+    const legacy=execute(root,'SELECT id,status,revision,created_at,updated_at,config_id,binding_name FROM database_connections ORDER BY id');
+    copyFileSync(join(migrations,'0003_hyperdrive_operations.sql'),join(root,'migrations','0003_hyperdrive_operations.sql'));
     const migrated=wrangler(root,'migrations','apply','DB');
-    for(const name of ['0001_connections.sql','0002_transport_and_retired_ids.sql','0003_hyperdrive_operations.sql'])
-      assert.ok(migrated.includes(name+' ') || migrated.includes(name+'│'));
+    assert.ok(migrated.includes('0003_hyperdrive_operations.sql'));
+    const preserved=execute(root,'SELECT id,status,revision,created_at,updated_at,config_id,binding_name,in_flight_count FROM database_connections ORDER BY id');
+    assert.deepEqual(preserved.map(({in_flight_count,...old})=>old),legacy);
+    assert.ok(preserved.every(row=>row.in_flight_count===0));
+    assert.deepEqual(execute(root,"SELECT id,retired_at FROM retired_connection_ids WHERE id='retired_legacy'"),
+      [{id:'retired_legacy',retired_at:333}]);
     const applied=execute(root,'SELECT name FROM d1_migrations ORDER BY id');
     assert.deepEqual(applied.map(r=>r.name),[
       '0001_connections.sql','0002_transport_and_retired_ids.sql','0003_hyperdrive_operations.sql'
