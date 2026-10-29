@@ -119,3 +119,49 @@ test('after persisted send, version drift and lost ACK remain unknown without re
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'indeterminate');
  assert.equal(attempts,1);
 });
+
+test('D1 reservation failure prevents every Bark side effect',async t=>{
+ const f=await fixture(t);
+ const originalDB=f.env.DB;
+ f.env.DB={prepare:(sql:string)=>{
+  if(sql.startsWith('INSERT OR IGNORE INTO cloudflare_action_invocations'))
+   throw Error('simulated durable reservation failure');
+  return originalDB.prepare(sql);
+ }} as any;
+ const result=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
+ assert.equal(result.status,'indeterminate');
+ assert.equal(f.sent(),0);
+ assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
+});
+test('provider identity or pinned version mismatch cannot consume a fence or dispatch',async t=>{
+ const f=await fixture(t);
+ f.env.BARK_ACTION_PROVIDER={
+  getContract:async()=>({deployment_id:'44444444-4444-4444-8444-444444444444',
+   contract_digest:f.action.with.contract_digest}),
+  sendNotification:async()=>{throw Error('must not dispatch');},
+ } as any;
+ const result=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
+ assert.equal(result.status,'failed');
+ assert.equal(f.sent(),0);
+ assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
+ const other=await fixture(t);
+ other.env.BARK_ACTION_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
+ assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'failed');
+ assert.equal(other.sent(),0);
+});
+test('a rejected or ambiguous Provider reply is terminal for the same invocation',async t=>{
+ for(const response of ['rejected','unknown'] as const){
+  const f=await fixture(t);
+  let sends=0;
+  f.env.BARK_ACTION_PROVIDER={
+   getContract:async()=>({deployment_id:version,
+    contract_digest:(await cloudflareActionManifest('bark')).contract_digest}),
+   sendNotification:async(input:any)=>{sends++;
+    return {status:response,input_digest:input.input_digest};},
+  } as any;
+  const first=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
+  assert.equal(first.status,response==='rejected'?'failed':'indeterminate');
+  assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'indeterminate');
+  assert.equal(sends,1);
+ }
+});
