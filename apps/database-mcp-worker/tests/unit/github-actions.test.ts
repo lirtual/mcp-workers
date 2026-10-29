@@ -20,6 +20,7 @@ test('Owner dispatch uses exactly one pinned GitHub workflow with bounded enable
     assert.equal(headers.get('authorization'), 'Bearer ' + token);
     assert.deepEqual(JSON.parse(String(init?.body)), {
       ref: 'main',
+      return_run_details: true,
       inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false',
         database_hyperdrive_enable_approved: 'true',
         database_hyperdrive_enable_id: 'openlist',
@@ -38,7 +39,7 @@ test('retirement dispatch does not request deployment or ever include credential
     return new Response(null, { status: 204 });
   };
   await dispatchHyperdriveAction(env(), 'retire', 'retired_id', 2, mocked as typeof fetch);
-  assert.deepEqual(payload, { ref: 'main',
+  assert.deepEqual(payload, { ref: 'main', return_run_details: true,
     inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false',
       database_hyperdrive_retire_approved: 'true', database_hyperdrive_retire_id: 'retired_id',
       database_hyperdrive_retire_revision: '2' } });
@@ -74,6 +75,7 @@ test('verification-only dispatch sets no release, activation, retirement, or fix
     assert.equal(init?.method, 'POST');
     assert.deepEqual(JSON.parse(String(init?.body)), {
       ref: 'main',
+      return_run_details: true,
       inputs: { worker: 'database-mcp-worker', deploy_to_production: 'false' }
     });
     return new Response(null, { status: 204 });
@@ -95,4 +97,40 @@ test('verification-only dispatch rejects missing token or GitHub error without l
     return true;
   });
   assert.equal(calls, 1);
+});
+
+test('GitHub HTTP 200 with validated run ID is accepted for both smoke and enable', async () => {
+  const mocked = async () => Response.json({ workflow_run_id: 40850012345,
+    run_url: 'https://api.github.com/repos/lirtual/mcp-workers/actions/runs/40850012345',
+    html_url: 'https://github.com/lirtual/mcp-workers/actions/runs/40850012345' }, { status: 200 });
+  assert.deepEqual(await verifyGithubActionsDispatch(env(), mocked as typeof fetch), { runId: 40850012345 });
+  assert.deepEqual(await dispatchHyperdriveAction(env(), 'enable', 'safe', 1, mocked as typeof fetch),
+    { runId: 40850012345 });
+});
+
+test('GitHub HTTP 204 remains accepted without claiming a run ID', async () => {
+  const mocked = async () => new Response(null, { status: 204 });
+  assert.deepEqual(await verifyGithubActionsDispatch(env(), mocked as typeof fetch), {});
+});
+
+test('invalid HTTP 200 run receipt fails closed without provider details', async () => {
+  for (const value of [null, {}, { workflow_run_id: '40850012345' },
+    { workflow_run_id: 0 }, { workflow_run_id: -1 }]) {
+    const request = async () => Response.json(value, { status: 200 });
+    await assert.rejects(verifyGithubActionsDispatch(env(), request as typeof fetch),
+      /receipt unavailable/);
+  }
+});
+
+test('GitHub error status classes are fixed, and provider body is never exposed', async () => {
+  const cases: Array<[number,string]> = [[401,'unauthorized'],[403,'forbidden'],[404,'workflow unavailable'],
+    [422,'inputs rejected'],[429,'rate limited'],[500,'upstream unavailable'],[418,'HTTP rejected']];
+  for (const [status, expected] of cases) {
+    const request = async () => new Response('secret-upstream-response', { status });
+    await assert.rejects(verifyGithubActionsDispatch(env(), request as typeof fetch), error => {
+      assert.match(String(error), new RegExp(expected));
+      assert.doesNotMatch(String(error), /secret-upstream-response/);
+      return true;
+    });
+  }
 });
