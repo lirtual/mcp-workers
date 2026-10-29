@@ -729,6 +729,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0012_event_wait_receipts.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
 });
 
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
@@ -744,7 +745,7 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:13,expected_migrations:13,
+    migration_count:14,expected_migrations:14,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
@@ -761,6 +762,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
   })),{confirmed_ready_sessions:0});
   for(const broken of [
     {migration_count:12},{expected_migrations:12},
+    {migration_count:13},{expected_migrations:13},
     {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},

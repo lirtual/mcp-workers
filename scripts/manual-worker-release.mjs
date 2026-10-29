@@ -601,7 +601,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
    '0008_session_locator.sql','0009_fixed_sessions.sql',
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
-   '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql')) AS expected_migrations,
+   '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
+    '0014_workflow_deletion.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -641,7 +642,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant((row.migration_count === 12 || row.migration_count === 13) &&
+  invariant([12,13,14].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
@@ -676,7 +677,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===13 && row.expected_migrations===13,
+  invariant(row.migration_count===14 && row.expected_migrations===14,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
