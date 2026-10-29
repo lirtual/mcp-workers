@@ -29,6 +29,21 @@ on:
         required: false
         type: boolean
         default: false
+      database_hyperdrive_enable_approved:
+        description: 'Database only: protected strict-TLS Hyperdrive activation after binding and Owner disabled reference'
+        required: false
+        type: boolean
+        default: false
+      database_hyperdrive_enable_id:
+        description: 'Database Hyperdrive activation only: exact disabled connection ID'
+        required: false
+        type: string
+        default: ''
+      database_hyperdrive_enable_revision:
+        description: 'Database Hyperdrive activation only: current disabled revision'
+        required: false
+        type: string
+        default: ''
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -80,6 +95,46 @@ jobs:
           DATABASE_TEST_POSTGRES_PASSWORD: ${{ secrets.DATABASE_TEST_POSTGRES_PASSWORD }}
           DATABASE_AIVEN_PROVISION_APPROVED: ${{ inputs.database_aiven_provision_approved }}
         run: node scripts/database-aiven-hyperdrive-prepare-344.mjs
+
+  database-hyperdrive-enable:
+    name: Protected Hyperdrive Owner activation (no Worker deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.database_hyperdrive_enable_approved == true &&
+          inputs.deploy_to_production == false && inputs.database_aiven_provision_approved != true &&
+          inputs.database_hyperdrive_enable_id != '' && inputs.database_hyperdrive_enable_revision != '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to current reviewed main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check Cloudflare TLS, D1 CAS and live Worker health before activation
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
+          DATABASE_ACTIVATION_ID: ${{ inputs.database_hyperdrive_enable_id }}
+          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_hyperdrive_enable_revision }}
+        run: node scripts/activate-database-hyperdrive.mjs
 
   checks:
     name: Pre-release checks

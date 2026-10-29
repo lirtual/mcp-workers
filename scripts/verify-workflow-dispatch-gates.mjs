@@ -35,9 +35,30 @@ export function verifyDatabaseActivationGate(source) {
   assert.ok(!source.includes('\n  database-activate:\n'), 'Historical Database activation job must be absent');
   assert.ok(!source.includes('database_activation_id:') &&
     !source.includes('database_activation_approved:') &&
-    !source.includes('database_activation_revision:') &&
-    !source.includes('node scripts/activate-database-hyperdrive.mjs'),
+    !source.includes('database_activation_revision:'),
     'Historical Database activation input or script remains exposed');
+  // Newly approved Hyperdrive activation is distinct from the retired
+  // historical D1 activation. Allow one script call in a strictly guarded
+  // Owner/main/Environment-scoped job; reject stray or duplicated invocations.
+  const name = '\n  database-hyperdrive-enable:\n';
+  const count = source.split('run: node scripts/activate-database-hyperdrive.mjs').length - 1;
+  const job = source.split(name)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/, 1)[0];
+  if (job === undefined) {
+    assert.equal(count, 0, 'Unprotected Hyperdrive activation invocation');
+  } else {
+    assert.equal(count, 1, 'Duplicate or missing protected Hyperdrive activation invocation');
+    for (const clause of [
+      "github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'",
+      "github.actor == 'lirtual'", "inputs.worker == 'database-mcp-worker'",
+      'inputs.database_hyperdrive_enable_approved == true',
+      'inputs.deploy_to_production == false', 'inputs.database_aiven_provision_approved != true',
+      "inputs.database_hyperdrive_enable_id != ''", "inputs.database_hyperdrive_enable_revision != ''",
+      'name: database-mcp-worker', 'group: worker-release-database-mcp-worker',
+      'secrets.CLOUDFLARE_API_TOKEN', 'secrets.MCP_ACCESS_TOKEN',
+      'inputs.database_hyperdrive_enable_id', 'inputs.database_hyperdrive_enable_revision',
+      'run: node scripts/activate-database-hyperdrive.mjs'
+    ]) assert.ok(job.includes(clause), 'Unsafe Hyperdrive activation job: ' + clause);
+  }
   for (const legacy of [
     'database_prepare_approved:', 'database_direct_preflight_approved:',
     'database_restore_approved:', 'database_restore_expected_version:',

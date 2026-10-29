@@ -221,10 +221,12 @@ test("generated Database D1 release SQL executes against actual SQLite schema", 
 });
 
 test("Database transition validates reviewed D1, Owner route and two throttles before release", () => {
+  const reviewedBindings = JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
   const source = {
     name: "database-mcp-worker", main: "src/index.ts",
     secrets: { required: ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID"] },
     workers_dev: true, preview_urls: false,
+    hyperdrive: reviewedBindings.map(x => ({ binding: x.binding, id: x.id })),
     d1_databases: [{ binding: "DB", database_name: "database-mcp-registry",
       database_id: "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a", migrations_dir: "migrations" }],
     vars: { DATABASE_SETUP_HOST: "database-owner.example.com" },
@@ -243,6 +245,7 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   broken(x => { x.d1_databases = undefined; }, /dedicated production D1/);
   broken(x => { x.d1_databases[0].database_id = "FILL_ME_IN"; }, /dedicated production D1/);
   broken(x => { x.secrets.required.push("DATABASE_CONFIG"); }, /never legacy DATABASE_CONFIG/);
+  broken(x => { x.hyperdrive[0].id = '00000000000000000000000000000000'; }, /Hyperdrive binding/);
   broken(x => { x.routes = []; }, /dedicated HTTPS hostname/);
   broken(x => { x.routes[0].pattern = "other.example.com"; }, /dedicated HTTPS hostname/);
   broken(x => { x.ratelimits[1].simple.limit = 100; }, /rate-limit policies/);
@@ -253,6 +256,7 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   const settings = {
     bindings: [...names.map(name => ({ name, type: "secret_text" })),
       { name: "DB", type: "d1", id: source.d1_databases[0].database_id },
+      ...source.hyperdrive.map(x => ({ name: x.binding, type: "hyperdrive", id: x.id })),
       { name: "DATABASE_SETUP_HOST", type: "plain_text", text: source.vars.DATABASE_SETUP_HOST },
       ...["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"].map(name =>
         ({ name, type: "plain_text", text: "approved-owner" })),
@@ -268,6 +272,7 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   check("DB", /D1 binding mismatch/);
   check("SETUP_RATE_LIMITER", /SETUP_RATE_LIMITER/);
   check("ACCESS_AUD", /Access variable missing/);
+  check(source.hyperdrive[0].binding, /Hyperdrive binding IDs/);
   assert.throws(() => verifyBindings("database-mcp-worker", settings,
     list.filter(x => x.name !== "DATABASE_ENCRYPTION_KEY"),
     { mode: "readback", sourceConfig: source }), /DATABASE_ENCRYPTION_KEY/);
