@@ -12,8 +12,8 @@ const input={mode:'credentials',connectionId:'rotation_fixture',expectedRevision
  manifest:[]};
 function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
  migration=1,sourceBound=false,currentBound=false,rollbackBound=false,
- unknownRollback=false,changeDeployment=false,caDrift=false,otherWorkerRollbackBound=false}={}){
- const calls=[];let deployments=0;
+ unknownRollback=false,changeDeployment=false,caDrift=false,otherWorkerRollbackBound=false,rowRecheckChanged=false}={}){
+ const calls=[];let deployments=0,rowReads=0;
  const source=sourceBound?{...input.source,hyperdrive:[{binding:'HYPERDRIVE_TEST',id:configId}]}:input.source;
  const manifest=sourceBound?[{binding:'HYPERDRIVE_TEST',id:configId,dialect:'mysql'}]:[];
  const respond=result=>({ok:true,json:async()=>({success:true,result})});
@@ -21,10 +21,10 @@ function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
   const path=url.split('/accounts/'+input.accountId)[1];calls.push({path,method:init.method});
   if(path.includes('/d1/database/')&&path.endsWith('/query')){
    const {sql}=JSON.parse(init.body);
-   if(sql.startsWith('SELECT id'))return respond([{success:true,results:[{
+   if(sql.startsWith('SELECT id')){rowReads++;return respond([{success:true,results:[{
     id:'rotation_fixture',dialect:'mysql',transport:'hyperdrive',status,revision,
     config_id:configId,binding_name:'HYPERDRIVE_TEST',in_flight_count:count
-   }]}]);
+   }].map(row=>rowRecheckChanged&&rowReads>1?{...row,revision:8}:row)}]);}
    if(sql.includes('FROM d1_migrations'))return respond([{success:true,results:[{n:migration}]}]);
    if(sql.includes('FROM database_connections'))return respond([{success:true,results:[{n:shared}]}]);
    if(sql.includes('FROM hyperdrive_operations'))return respond([{success:true,results:[{n:operations}]}]);
@@ -86,5 +86,11 @@ test('no Owner gate or credential allows a Cloudflare request, and errors exclud
   assert.doesNotMatch(error.message,/private-token|password|fake-ca/);
   assert.match(error.message,/rollback_reference/);return true;
  });
+ onlyRead(f);
+});
+
+test('registry changes while scanning historical versions invalidate an earlier clean observation',async()=>{
+ const f=fixture({rowRecheckChanged:true});
+ await assert.rejects(run(f),/registry_changed_during_check/);
  onlyRead(f);
 });

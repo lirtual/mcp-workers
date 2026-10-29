@@ -32,6 +32,8 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
     !Array.isArray(result[0].results))fail('registry_unavailable');
   return result[0].results;
  }
+ const migrations=await query("SELECT COUNT(*) AS n FROM d1_migrations WHERE name='0003_hyperdrive_operations.sql'");
+ if(migrations.length!==1||migrations[0].n!==1)fail('drain_schema_unavailable');
  const rows=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?',[connectionId]);
  const row=rows.length===1?rows[0]:null;
  if(row?.id!==connectionId||row.transport!=='hyperdrive'||row.status!=='disabled'||
@@ -39,8 +41,6 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
  !/^[a-f0-9]{32}$/i.test(row.config_id??'')||
  !/^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(row.binding_name??'')||
  !['mysql','postgres'].includes(row.dialect))fail('disabled_drain_unproven');
- const migrations=await query("SELECT COUNT(*) AS n FROM d1_migrations WHERE name='0003_hyperdrive_operations.sql'");
- if(migrations.length!==1||migrations[0].n!==1)fail('drain_schema_unavailable');
  const shared=await query('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',[connectionId,row.config_id,row.binding_name]);
  if(shared.length!==1||shared[0].n!==0)fail('shared_registry_reference');
  const ops=await query("SELECT COUNT(*) AS n FROM hyperdrive_operations WHERE logical_id=? AND phase IN ('pending','running','awaiting_confirmation','unknown')",[connectionId]);
@@ -111,6 +111,17 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
  const {result:again}=await read(deploymentPath);
  if(again?.deployments?.[0]?.versions?.length!==1||again.deployments[0].versions[0].percentage!==100||
   again.deployments[0].versions[0].version_id!==activeId)fail('deployment_changed');
+ // A long historical-version scan must not return a clean result if D1
+ // status/revision or an unresolved execution changed while checking.
+ const latest=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?',[connectionId]);
+ if(latest.length!==1||latest[0].id!==row.id||latest[0].status!=='disabled'||
+   latest[0].revision!==row.revision||latest[0].config_id!==row.config_id||
+   latest[0].binding_name!==row.binding_name||latest[0].in_flight_count!==0)
+   fail('registry_changed_during_check');
+ const recentShared=await query('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',[connectionId,row.config_id,row.binding_name]);
+ if(recentShared.length!==1||recentShared[0].n!==0)fail('shared_registry_reference');
+ const recentOps=await query("SELECT COUNT(*) AS n FROM hyperdrive_operations WHERE logical_id=? AND phase IN ('pending','running','awaiting_confirmation','unknown')",[connectionId]);
+ if(recentOps.length!==1||recentOps[0].n!==0)fail('unfinished_operation');
  // An eligibility observation is neither an Owner mutation approval nor an
  // exclusive lock. Any future write must repeat the checks under approval.
  return {eligible:true,mode,logicalId:connectionId,revision:row.revision,
