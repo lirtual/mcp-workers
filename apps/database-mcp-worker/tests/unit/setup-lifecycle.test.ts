@@ -134,7 +134,8 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       .toMatchObject({ status: 'disabled', revision: 1 });
     const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const initialPageHtml = await initialPage.text();
-    expect(initialPageHtml).toContain('MySQL Direct plaintext only');
+    expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
+    expect(initialPageHtml).toContain('<input type="hidden" name="transport" value="direct">');
     expect(initialPageHtml).not.toContain('<option value="postgres">');
     expect(initialPageHtml).not.toContain('<option value="hyperdrive">');
     expect(initialPageHtml).not.toContain('action="/setup/enable"');
@@ -180,6 +181,16 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('No database connections configured');
     expect(html).toContain('action="/setup/add"');
     expect(html).toContain('action="/setup/rotate"');
+    expect(html).toContain('<input type="hidden" name="dialect" value="mysql">');
+    expect(html).toContain('<input type="hidden" name="transport" value="direct">');
+    expect(html).not.toContain('placeholder="b2b"');
+    expect(html).not.toContain('<select name="dialect">');
+    expect(html).not.toContain('<select name="transport">');
+    expect(html).toContain('<details><summary>Advanced options</summary>');
+    expect(html).toContain('<details class="maintenance"><summary>Maintenance</summary>');
+    expect(html).toContain('type="checkbox" name="plaintext_ack" value="1" required');
+    expect(html).toContain('Save disabled if connection test fails');
+    expect(html).not.toContain('Owner-only. Passwords and origin URLs');
     expect(html).not.toContain('protected atomic activation');
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
   });
