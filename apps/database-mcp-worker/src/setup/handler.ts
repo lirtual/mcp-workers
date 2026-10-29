@@ -88,7 +88,6 @@ export function setupFailureReference(error: PublicError): string | undefined {
       'Invalid connection id.': 'connection_id_invalid',
       'A complete Direct database URL is required.': 'url_missing',
       'Direct plaintext acceptance is required.': 'plaintext_ack_required',
-      'MySQL Direct requires a public DNS hostname, not a literal IP address.': 'mysql_ip_not_allowed',
       'The database endpoint resolves to a nonpublic or reserved address.': 'endpoint_nonpublic',
       'The database endpoint hostname is not an eligible public DNS name.': 'hostname_invalid'
     };

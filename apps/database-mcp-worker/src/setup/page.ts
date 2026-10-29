@@ -32,7 +32,7 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
 const plaintextAck = '<label><input type="checkbox" name="plaintext_ack" value="1">I understand Direct sends database passwords and queries without TLS; traffic may be intercepted.</label>';
 const plaintextAckRequired = '<label><input type="checkbox" name="plaintext_ack" value="1" required>I explicitly accept unencrypted Direct transport.</label>';
 const directUrlHint = '<p>URL format: <code>mysql://USERNAME:PASSWORD@db.yourdomain.com:3306/DATABASE</code>. ' +
-  'A public DNS hostname is required (no literal IP, localhost or private address). ' +
+  'Use a public DNS hostname or globally routable public IP (no localhost or private/reserved address). ' +
   'Do not append query parameters. Percent-encode URL-reserved characters in usernames or passwords.</p>';
 export function setupPage(rows: RegistryMetadata[], csrf: string): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> — ${escape(row.dialect)} / ${escape(row.transport)} / ${escape(row.status)} · revision ${row.revision}` +
