@@ -1,6 +1,6 @@
 # Browser MCP — Spec #418
 
-**Development status:** T1/T2 observation foundations, T3 durable intent and mutation protocol, restricted T4 interactions, conditional T5 independent owner approval, T6 local-only sensitive grants and T7 owner-reported Unknown reconciliation in source; **not production-ready**. T3's real Chrome/Edge mutation behavior passed in isolated local E2E; verified stable-path extension installation and production validation remain Not run. This application is not connected to Portal, has no approved production hostname, has no approved credentials, and must not be deployed to production from this work alone.
+**Production deployment status (2026-10-29):** Browser MCP Worker published via the existing GitHub Actions production workflow on `https://browser.lirtual.dpdns.org`; production Bearer, DO binding and active-version readback passed. Owner-reported Chrome/Edge unpaired installation/restart/reload checks passed. One-MCP server registration, actual owner pairing and production Chrome/Edge task acceptance remain **Not run**. High-impact independent Owner Approval remains disabled/fail-closed until separately verified. Tests or a deployed Worker are not evidence of end-to-end production acceptance.
 
 ## Architecture
 
