@@ -1,6 +1,14 @@
 # Database MCP #344 — production release and recovery (managed D1 only)
 
-## Current authoritative state (2026-10-29)
+## Current authoritative state (2026-10-29, after Owner Actions E2E)
+
+- Live Database MCP registry lists exactly three active connections: `b2b` and `scrape_relay` (MySQL Direct), plus `aiven_mysql_openlist` (MySQL Hyperdrive). All three passed fresh health checks and the OpenList Hyperdrive passed bounded `SELECT 1`. The previously used `aiven_mysql_test` and `aiven_pg_test` IDs, databases and dedicated Hyperdrive configurations have been retired; **do not recreate them**.
+- The Owner management page's real verification-only GitHub Actions dispatch [#40850173389](https://github.com/lirtual/mcp-workers/actions/runs/40850173389) was accepted; all five jobs were skipped as intended. No database or Worker change was requested. The existing protected release now checks actual GitHub dispatch authorization before publication.
+- Production Worker version `b1130c66-a961-4034-b4ca-f73da8e73d1b` was verified at 100% traffic. The managed D1 is the sole authoritative registry; the old flat configuration and original D1 were retired.
+- Acceptance **not performed** on current origins: OpenList production Safe Write/DDL/escaping/rollback, deployed Hyperdrive TLS failure negatives, actual managed D1 backup/encryption-key restoration, and PostgreSQL Direct/Hyperdrive E2E (no authorized isolated PostgreSQL source currently exists). Historical test-origin successes do not substitute for these checks.
+- Keep the three working connections unchanged. Do not run writes on business data, restore old test databases, or add a separate CI or deployment architecture simply to close Spec #344. Overall issue scope remains open unless a separate Owner decision revises the four-mode acceptance criteria.
+
+## Previous test-origin state (historical; not current production inventory)
 
 - The production `database-mcp-worker` uses exactly one Owner-managed D1
   registry: `database-mcp-registry` (`cbfe6a05-4979-4e6a-9cc2-4f6468586e4a`).
@@ -80,10 +88,10 @@ non-use before any separately authorized Cloudflare deletion.
 Full four-mode Spec #344 stays open for PostgreSQL Hyperdrive activation/E2E,
 PostgreSQL Direct plaintext E2E and deployed Hyperdrive TLS negatives.
 
-## 2026-10-29 — four-mode staged enablement
+## Historical four-mode staged enablement (old test origins now retired)
 
-Existing Aiven test services are used for MySQL and PostgreSQL Hyperdrive evidence.
-Provision only the two named test Hyperdrive configurations through the existing
+This section records prior Aiven test-origin evidence only; those test services were subsequently deleted and must not be re-provisioned for this runbook.
+The original plan was to provision two named test Hyperdrive configurations through the existing
 protected Release Worker workflow and existing GitHub Secrets; do not log passwords.
 The Owner page may save an unverified Hyperdrive reference only as **disabled**.
 A protected activation must verify the dedicated Cloudflare binding, exact origin,
