@@ -50,8 +50,11 @@ export async function syncReviewedVersion(proof, credentials, fetchImpl=fetch){
      !/^[a-f0-9]{32}$/i.test(accountId??''))throw Error('Protected sync credentials incomplete');
   const request=async (url,token,method='GET',body)=>{
     const response=await fetchImpl(url,{method,redirect:'manual',
-      headers:{Accept:'application/vnd.github+json',
-       Authorization:'Bearer '+token,'X-GitHub-Api-Version':'2022-11-28',
+      headers:{Accept:url.startsWith('https://api.cloudflare.com/')?
+        'application/json':'application/vnd.github+json',
+       Authorization:'Bearer '+token,
+       ...(url.startsWith('https://api.github.com/')?
+         {'X-GitHub-Api-Version':'2022-11-28'}:{}),
        ...(body?{'Content-Type':'application/json'}:{})},
       ...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(15000)});
     if(method==='PATCH'||method==='POST'){
