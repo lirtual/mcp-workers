@@ -1,8 +1,8 @@
 # Browser MCP 0.1.0 — installation and update
 
-T8 development artifact for Spec #418 / #426. Not a complete product acceptance candidate.
-No live Chrome/Edge, production, Access or Portal acceptance has been performed.
-The service hostname is a placeholder; installation alone does not provision a service.
+Spec #418 / #426 production candidate artifact; publishing and installation are separately authorized operations.
+Some Chrome/Edge isolated native tests and owner-reported unpaired restart/reload checks passed; paired production/Portal acceptance is not yet established.
+The fixed service origin is `https://browser.lirtual.dpdns.org`; installation alone does not deploy the Worker or register a Portal.
 
 ## Download and verify
 

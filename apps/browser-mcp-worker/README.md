@@ -60,9 +60,9 @@ T3 still requires real stable-path Developer Mode installation and local owner c
 
 No Cloudflare production deployment or production authentication/credential changes were performed.
 
-### Source-only service lock
+### Production service lock
 
-The unpacked source extension deliberately pins `https://browser-mcp-worker.invalid` as a disabled placeholder. It cannot pair until the owner approves the real HTTPS ingress and a reviewed release replaces this constant and its corresponding UI guidance. Do **not** remove the origin check or ship an arbitrary-service input as a workaround. The isolated test-only extension copy may replace this value temporarily; the repository source and any real release remain pinned until the owner approves the production ingress.
+The extension pins the independently reviewed production ingress `https://browser.lirtual.dpdns.org`; no caller-supplied or arbitrary URL may replace this origin. Pinning an address alone does not deploy the Worker, configure its independent MCP Bearer credential, register a Portal tool, establish a browser pairing or prove production readiness. The Owner must still enter a one-time code in each trusted Profile and explicitly Resume locally. Independent high-impact approval remains disabled unless its separate isolation requirements are actually met.
 
 
 ### T4: restricted fixed-schema page interactions (2026-10-29)
