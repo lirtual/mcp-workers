@@ -121,7 +121,13 @@ function browserPageInteraction(mode,command,expectedUrl) {
     ...Array.from(el.labels||[],l=>l.textContent)].join(" "))))return denied("sensitive_surface");
   const visible=el=>el.isConnected && !el.closest('[hidden],[inert],[aria-hidden="true"]') &&
     getComputedStyle(el).display!=="none"&&getComputedStyle(el).visibility==="visible"&&el.getClientRects().length>0;
-  const safe=el=>visible(el)&&!el.disabled&&!el.readOnly&&!el.form&&el.getAttribute("aria-disabled")!=="true"&&!el.closest('form,[contenteditable],[role="dialog"],[aria-modal="true"]')&&
+  // Allow benign data fields inside forms; input/change handlers can still have
+  // external effects. Keep form buttons and form checkbox/radio clicks excluded.
+  const formDataField=el=>el.tagName==="TEXTAREA"||el.tagName==="SELECT"||
+    el.tagName==="INPUT"&&["text","search",""].includes((el.getAttribute("type")||"").toLowerCase());
+  const safe=el=>visible(el)&&!el.disabled&&!el.readOnly&&el.getAttribute("aria-disabled")!=="true"&&
+    !el.closest('[contenteditable],[role="dialog"],[aria-modal="true"]')&&
+    (formDataField(el)||(!el.form&&!el.closest("form")))&&
     !sensitive.test([el.id,el.getAttribute("name"),el.getAttribute("autocomplete"),el.getAttribute("aria-label"),
       ...Array.from(el.labels||[],l=>l.textContent)].join(" "));
   const slot="__browserMcpElementsT4";
