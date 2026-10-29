@@ -38,6 +38,15 @@ async function withConnection<T>(
   }
 }
 
+/** MySQL Direct uses server-bound parameters; Hyperdrive lacks COM_STMT_PREPARE.
+ * Hyperdrive callers are already inside a pinned transaction with SQL-mode
+ * checked by withConnection, so only that transport uses client interpolation.
+ */
+function boundQuery(client: Connection, connection: EffectiveConnection, sql: string, params: unknown[]) {
+  const values = mysqlSafeParams(params);
+  return connection.transport === 'direct' ? client.execute(sql, values) : client.query(sql, values);
+}
+
 function columnsFromFields(fields: readonly FieldPacket[] | undefined): QueryColumn[] {
   if (!fields) return [];
   return fields.map(field => ({ name: field.name, type: String(field.type) }));
@@ -55,7 +64,7 @@ export async function mysqlQueryRead(
 
   return withConnection(connection, async client => {
     const [rows, fields] = await withTimeout(
-      client.query(timedSql, mysqlSafeParams(params)),
+      boundQuery(client, connection, timedSql, params),
       connection.limits.queryTimeoutMs,
       () => client.destroy()
     );
@@ -78,7 +87,7 @@ export async function mysqlExplain(
   const timedSql = injectMySqlExecutionTimeout(guarded.sql, connection.limits.queryTimeoutMs);
   const explainSql = `EXPLAIN FORMAT=JSON ${timedSql}`;
   return withConnection(connection, async client => {
-    const [rows] = await withTimeout(client.query(explainSql, mysqlSafeParams(params)), connection.limits.queryTimeoutMs, () => {
+    const [rows] = await withTimeout(boundQuery(client, connection, explainSql, params), connection.limits.queryTimeoutMs, () => {
       client.destroy();
     });
     const value = jsonSafe(rows);
@@ -147,7 +156,7 @@ export async function mysqlInspectSchema(
         );
       }
       const [columnRows] = await withTimeout(
-        client.query(
+        boundQuery(client, connection,
           `SELECT /*+ MAX_EXECUTION_TIME(${connection.limits.queryTimeoutMs}) */
                   column_name, column_type, is_nullable, column_default, ordinal_position, extra
            FROM information_schema.columns
@@ -163,7 +172,7 @@ export async function mysqlInspectSchema(
       }
 
       const [constraintRows] = await withTimeout(
-        client.query(
+        boundQuery(client, connection,
           `SELECT /*+ MAX_EXECUTION_TIME(${connection.limits.queryTimeoutMs}) */
                   tc.constraint_name, tc.constraint_type, kcu.column_name, kcu.ordinal_position,
                   kcu.referenced_table_schema, kcu.referenced_table_name, kcu.referenced_column_name
@@ -183,7 +192,7 @@ export async function mysqlInspectSchema(
       );
 
       const [indexRows] = await withTimeout(
-        client.query(
+        boundQuery(client, connection,
           `SELECT /*+ MAX_EXECUTION_TIME(${connection.limits.queryTimeoutMs}) */
                   index_name, non_unique, seq_in_index, column_name, index_type
            FROM information_schema.statistics
@@ -236,7 +245,7 @@ export async function mysqlInspectSchema(
 
     if (schema !== undefined) {
       const [rows] = await withTimeout(
-        client.query(
+        boundQuery(client, connection,
           `SELECT /*+ MAX_EXECUTION_TIME(${connection.limits.queryTimeoutMs}) */
                   table_schema, table_name, table_type
            FROM information_schema.tables

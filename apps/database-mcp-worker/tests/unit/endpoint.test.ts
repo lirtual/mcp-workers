@@ -61,6 +61,26 @@ describe('eligible public database endpoints', () => {
     await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one',
       resolver6('2606:4700::1111'))).resolves.toMatchObject({ host: 'db.example.org' });
   });
+  it('uses Workers-compatible manual redirect mode for every DNS lookup', async () => {
+    const request = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      // workerd rejects redirect: 'error' before issuing a network request.
+      if (init?.redirect === 'error') throw new TypeError('Unsupported redirect mode');
+      expect(init?.redirect).toBe('manual');
+      return Response.json({ Status: 0, Answer: [{ type: 1, data: '1.1.1.1' }] });
+    }) as unknown as typeof fetch;
+    await expect(validatePublicEndpoint('mysql://reader:pass@db.example.org/app', 'one', request))
+      .resolves.toMatchObject({ host: 'db.example.org' });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+  it('rejects DNS HTTP redirects without following their destination', async () => {
+    const request = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual');
+      return new Response(null, { status: 302, headers: { location: 'https://other.example/' } });
+    }) as unknown as typeof fetch;
+    await expect(validatePublicEndpoint('mysql://reader:pass@db.example.org/app', 'one', request))
+      .rejects.toMatchObject({ code: 'CONNECTION_UNAVAILABLE' });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
   it('fails closed when public DNS validation fails', async () => {
     await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one',
       vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch))
