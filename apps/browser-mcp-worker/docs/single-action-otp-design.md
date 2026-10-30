@@ -204,3 +204,13 @@ This test is an explicit gate before any code implementation or production migra
 
 Once authentication evidence has been collected or the Owner cancels the experiment, **delete only the temporary Access app by its exact app ID** (this should also remove its app-scoped policy) and verify that the test URL returns the prior Worker HTTP 404 without Access redirect. Do not remove the underlying OTP IdP or either existing Browser Owner Approval Access app. The application's 15-minute **session** duration does *not* automatically delete the application, so cleanup is explicitly pending.
 
+
+## Owner OTP browser results — 2026-10-30
+
+**Owner observation:** Both the ordinary browser and a newly created InPrivate/Incognito browser session displayed an email OTP challenge on the new temporary Access-protected `/activation-test-418/start` route. This demonstrates that neither observed navigation skipped the challenge; it does **not** establish whether the ordinary browser already had an authenticated session for this specific temporary Access app, or that subsequent revisits always require a new challenge.
+
+**Independent Access evidence:** Read-only `GET /accounts/{account_id}/access/logs/access_requests` since `2026-10-30T05:04:00Z` returned HTTP 200 and exactly **one** event for the temporary activation probe app, timestamp `2026-10-30T05:07:15Z`, `action=login`, `allowed=true`, `connection=onetimepin`. The event establishes one successful Access OTP-provider authentication, not two successful completions. Its logged fields do **not** carry the activation nonce or a cryptographic per-attempt OTP redemption proof. No Owner email/IP/cookies/tokens/PIN were copied into the document.
+
+**Remaining decisive negative test:** After actually completing the OTP in a regular browser, immediately revisit the exact same temporary test URL in the **same window/profile** without closing it and without clearing cookies. Observe whether Cloudflare Access asks for another freshly emailed PIN or silently forwards to the Worker `404 Not found`. A silent forward proves the existing Access application session is reused, so Access-protected navigation by itself **cannot** enforce Q3's every-OFF→ON fresh OTP contract. Regardless of the result, still separately validate extension-held challenge proof, owner-vs-Agent auth isolation, pending Stop invalidation and exact Profile binding; none are implemented by this gate test.
+
+**Status:** OTP Access gate / one real OTP login observed; automated browser activation and per-toggle fresh authentication **not verified**. Temporary Access application remains installed solely for the narrowly scoped test and must be explicitly removed after evidence collection.
