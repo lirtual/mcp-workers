@@ -50,6 +50,48 @@ async function auth() {
 }
 
 describe('Owner HTML → D1 real-SQL lifecycle', () => {
+  it('Owner can discard an unactivated disabled Hyperdrive reference, but never an activated one', async () => {
+    const { sqlite, env } = fixture(); instances.push(sqlite);
+    const { jwt, certificates } = await auth();
+    const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    const html = await page.text();
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+    const post = (action: string, values: Record<string, string>) => handleSetup(new Request(pageUrl + '/' + action, {
+      method: 'POST', headers: { 'cf-access-jwt-assertion': jwt, origin: 'https://db-owner.example.net',
+        cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf, ...values })
+    }), env, certificates);
+    const old = { id: 'mistyped_pg', dialect: 'mysql', transport: 'hyperdrive',
+      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' };
+    expect((await post('add', old)).status).toBe(200);
+    expect(sqlite.prepare('SELECT status,revision FROM database_connections WHERE id=?').get(old.id))
+      .toMatchObject({ status: 'disabled', revision: 1 });
+    const listing = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
+    const listText = await listing.text();
+    expect(listText).toContain('Choose database dialect');
+    expect(listText).toContain('name="dialect" required');
+    expect(listText).toContain('The immutable Connection ID is permanently retired');
+    const wrongConfirm = await post('delete', { id: old.id, revision: '1', confirm_id: 'wrong' });
+    expect(wrongConfirm.status).toBe(422);
+    expect(sqlite.prepare('SELECT id FROM database_connections WHERE id=?').get(old.id)).toBeDefined();
+    const dropped = await post('delete', { id: old.id, revision: '1', confirm_id: old.id });
+    expect(dropped.status).toBe(200);
+    expect(sqlite.prepare('SELECT id FROM database_connections WHERE id=?').get(old.id)).toBeUndefined();
+    expect(sqlite.prepare('SELECT id FROM retired_connection_ids WHERE id=?').get(old.id))
+      .toEqual({ id: old.id });
+    // Config and Binding can be referenced by a NEW logical ID, never by the retired ID.
+    expect((await post('add', old)).status).toBe(409);
+    expect((await post('add', { ...old, id: 'correct_pg', dialect: 'postgres' })).status).toBe(200);
+    expect(sqlite.prepare('SELECT dialect,status,revision FROM database_connections WHERE id=?').get('correct_pg'))
+      .toMatchObject({ dialect: 'postgres', status: 'disabled', revision: 1 });
+    // No enabled or revision-bumped Hyperdrive row may use this shortcut,
+    // even if the row was disabled again later.
+    sqlite.prepare("UPDATE database_connections SET status='disabled',revision=3 WHERE id='correct_pg'").run();
+    expect((await post('delete', { id: 'correct_pg', revision: '3', confirm_id: 'correct_pg' })).status).toBe(422);
+    expect(sqlite.prepare('SELECT id FROM database_connections WHERE id=?').get('correct_pg'))
+      .toBeDefined();
+  });
   it('preserves active configuration after a failed edit, and requires disable to delete', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
     const { jwt, certificates } = await auth();
@@ -264,7 +306,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('name="transport" value="direct"');
     expect(html).toContain('name="transport" value="hyperdrive"');
     expect(html).not.toContain('placeholder="b2b"');
-    expect(html).toContain('<select name="dialect">');
+    expect(html).toContain('<select name="dialect" required>');
     expect(html).not.toContain('<select name="transport">');
     expect(html).toContain('<details><summary>Advanced options</summary>');
     expect(html).toContain('<details class="maintenance"><summary>Maintenance</summary>');
