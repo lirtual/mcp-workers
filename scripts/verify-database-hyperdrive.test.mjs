@@ -87,3 +87,29 @@ test('release diagnostic allows only fixed codes and never prints thrown secret/
     null
   ]) assert.equal(safeReadbackFailureCode(unexpected), 'unknown');
 });
+
+test('classifies only bounded HTTP read failures while discarding provider content', async () => {
+  for (const [status, expectedCode] of [
+    [401, 'cloudflare_read_401'],
+    [403, 'cloudflare_read_403'],
+    [404, 'cloudflare_read_404'],
+    [429, 'cloudflare_read_429'],
+    [503, 'cloudflare_read_5xx'],
+    [418, 'cloudflare_read_other']
+  ]) {
+    await assert.rejects(
+      verifyDatabaseHyperdriveCloudReadback({
+        ...options,
+        request: async () => ({
+          ok: false, status,
+          json: async () => ({ password: 'must-never-be-read-or-logged' })
+        })
+      }),
+      error => {
+        assert.equal(safeReadbackFailureCode(error), expectedCode);
+        assert.doesNotMatch(error.message, /password|must-never-be-read-or-logged/);
+        return true;
+      }
+    );
+  }
+});

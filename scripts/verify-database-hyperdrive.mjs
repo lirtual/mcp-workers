@@ -66,7 +66,13 @@ export async function verifyDatabaseHyperdriveCloudReadback({ source, manifest, 
     } catch {
       throw Error('Database Hyperdrive verification failed: Cloudflare read unavailable');
     }
-    requireVerified(response?.ok === true, 'Cloudflare configuration read rejected');
+    // Report a fixed HTTP class only; never emit Cloudflare response content.
+    if (response?.ok !== true) {
+      const status = response?.status;
+      const httpClass = status === 401 || status === 403 || status === 404 || status === 429
+        ? String(status) : Number.isSafeInteger(status) && status >= 500 && status <= 599 ? '5xx' : 'other';
+      throw Error('Database Hyperdrive verification failed: Cloudflare configuration read rejected (' + httpClass + ')');
+    }
     let envelope;
     try { envelope = await response.json(); }
     catch { throw Error('Database Hyperdrive verification failed: unreadable Cloudflare response'); }
@@ -101,6 +107,10 @@ const READBACK_CODES = new Map([
   ['Database Hyperdrive verification failed: origin identity differs from reviewed source', 'origin_mismatch'],
   ['Database Hyperdrive verification failed: read-only Cloudflare account access is unavailable', 'credentials_unavailable'],
   ['Database Hyperdrive verification failed: Cloudflare configuration read rejected', 'cloudflare_read_rejected'],
+  ...['401', '403', '404', '429', '5xx', 'other'].map(status => [
+    'Database Hyperdrive verification failed: Cloudflare configuration read rejected (' + status + ')',
+    'cloudflare_read_' + status
+  ]),
   ['Database Hyperdrive verification failed: Cloudflare did not confirm the configuration', 'cloudflare_unconfirmed'],
   ['Database Hyperdrive verification failed: unreadable Cloudflare response', 'cloudflare_unreadable'],
   ['Database Hyperdrive verification failed: Cloudflare read unavailable', 'cloudflare_unavailable'],
