@@ -1,17 +1,34 @@
 # Database MCP #344 — production release and recovery (managed D1 only)
 
-## Aiven MySQL test replacement — staged source only
+## Aiven MySQL test replacement — verified live read-only E2E (2026-10-30)
 
-The owner-created test config `38bf39b569484dbb8a9fe1b24f0df854`
-was independently read back as MySQL `aiven_mysql_test` /
-`db344_e2e` on the existing Aiven host:18691, strict
-`VERIFY_IDENTITY`, shared CA, cache disabled. The protected release now
-stages a separate reviewed `HYPERDRIVE_DB344_MYSQL_E2E` Binding alongside
-the PostgreSQL E2E Binding. The deleted old OpenList config is **not**
-restored. The old D1 row was separately disabled (revision 3), not
-deleted. Until publication and protected activation, this is **not** a
-working MCP logical connection or completed MySQL SQL E2E. Use an
-unretired new logical ID for the isolated test database.
+The independently created `38bf39b569484dbb8a9fe1b24f0df854`
+uses the isolated Aiven MySQL database `aiven_mysql_test` and user
+`db344_e2e`, strict `VERIFY_IDENTITY`, the existing CA and disabled
+SQL caching. Reviewed [PR #518](https://github.com/lirtual/mcp-workers/pull/518)
+merged; the **only** production publication was existing
+[Owner Release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654),
+which passed all required checks and readbacks. Worker version
+`ea5e9c45-7f43-44c5-bf19-67d08da9d962` is serving **100%** with
+both `HYPERDRIVE_DB344_MYSQL_E2E` and
+`HYPERDRIVE_DB344_PG_E2E` bound exactly to reviewed IDs.
+
+An available, nonretired logical ID `aiven_mysql_e2e` was first
+registered disabled (revision 1), then
+[Owner Activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557)
+completed after real deployed Worker Hyperdrive preflight. Independent
+D1 readback shows **active, revision 2**. Live Database MCP health
+returned PASS (713ms), and bounded `SELECT 1 AS acceptance_ok`
+returned `1`. Both Direct connections (`b2b`, `scrape_relay`)
+passed health checks. No business-data writes or DDL were issued.
+
+The previously deleted OpenList config is **not** restored; its stale
+D1 reference `aiven_mysql_openlist` remains **disabled, revision 3**,
+pending separate reviewed retirement. The retired legacy logical ID
+`aiven_mysql_test` was not reused. This is MySQL Hyperdrive **read-only**
+production-path E2E PASS, but PostgreSQL Hyperdrive E2E, negative TLS,
+write/DDL/rollback, and full #476 lifecycle acceptance remain NOT
+PERFORMED.
 
 ## Original deleted-MySQL incident snapshot (2026-10-30; historical)
 

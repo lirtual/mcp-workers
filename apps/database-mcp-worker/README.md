@@ -1,19 +1,33 @@
 # Database MCP Worker · Spec #344
 
-## Pending reviewed MySQL test-binding release (not yet deployed)
+## Current production state — 2026-10-30 (verified)
 
-The Owner has created an independent Aiven MySQL **test** Hyperdrive config
-`38bf39b569484dbb8a9fe1b24f0df854` for database `aiven_mysql_test`
-and user `db344_e2e`. Cloudflare GET verified strict
-`VERIFY_IDENTITY` TLS, shared CA and disabled caching. The reviewed Wrangler
-and manifest now stage `HYPERDRIVE_DB344_MYSQL_E2E`, preserving the separate
-PostgreSQL test binding. **This source change does not publish the Worker or
-create/activate a D1 connection.** Only the existing protected GitHub Actions
-release may publish. Once published, create a *new disabled* D1 logical ID,
-then invoke the existing protected Owner activation and confirm real Worker
-`SELECT 1`. Do not reuse the retired logical ID `aiven_mysql_test`
-or reactivate the broken `aiven_mysql_openlist` D1 record. The two
-production Direct connections remain unchanged.
+The independent **Aiven MySQL test** Hyperdrive config
+`38bf39b569484dbb8a9fe1b24f0df854` uses database
+`aiven_mysql_test`, user `db344_e2e`, strict `VERIFY_IDENTITY`, the
+approved CA and disabled caching. [PR #518](https://github.com/lirtual/mcp-workers/pull/518)
+merged on reviewed `main`; the existing
+[Owner Release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654)
+**succeeded**. Independent Cloudflare readback found the exact MySQL
+`HYPERDRIVE_DB344_MYSQL_E2E` and PostgreSQL
+`HYPERDRIVE_DB344_PG_E2E` bindings on version
+`ea5e9c45-7f43-44c5-bf19-67d08da9d962` serving 100%.
+
+The new and unretired D1 logical ID `aiven_mysql_e2e` was registered
+**disabled**, then enabled only after
+[protected Owner activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557)
+passed the deployed Worker Hyperdrive SQL preflight. It is now
+**active, revision 2**. Independent Database MCP health passed (713ms)
+and a bounded `SELECT 1 AS acceptance_ok` returned `1`.
+The stale `aiven_mysql_openlist` record remains **disabled, revision 3**;
+the previously retired logical ID `aiven_mysql_test` is **not reused**.
+Both original MySQL Direct connections (`b2b`, `scrape_relay`) passed
+independent health checks and were unchanged.
+
+This is a real deployed **MySQL Hyperdrive read-only E2E PASS**, not
+permission for business-data writes. PostgreSQL Hyperdrive real SQL E2E,
+negative TLS tests, write/DDL/rollback and complete Spec #476 lifecycle
+acceptance remain separate outstanding work.
 
 ## Previous incident snapshot (before replacement test config; historical)
 
