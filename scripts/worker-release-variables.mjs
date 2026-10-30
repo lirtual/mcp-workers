@@ -31,7 +31,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
   "http-mcp-worker": [],
-  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "WEIXIN_ACTION_DEPLOYMENT_ID", "BARK_ACTION_DEPLOYMENT_ID"],
+  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -139,7 +139,7 @@ export function collectWorkerVars(worker, env, options = {}) {
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: " + name);
     }
-    if(["WEIXIN_ACTION_DEPLOYMENT_ID","BARK_ACTION_DEPLOYMENT_ID"].includes(name) && value!=null && value!=="" &&
+    if(name==="ACTIONS_DEPLOYMENT_ID" && value!=null && value!=="" &&
        (typeof value!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value)))
       throw new Error("Invalid "+name);
     if (value == null || value === "") continue;
@@ -179,8 +179,8 @@ async function main() {
   const config = worker === "remote-control-mcp-worker"
     ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, "")) : undefined;
-  // The protected release stages WEIXIN_ACTION_DEPLOYMENT_ID from the live,
-  // independently checked Provider after staging other non-secret variables.
+  // The protected release stages ACTIONS_DEPLOYMENT_ID from the live,
+  // independently checked unified Worker after staging other non-secret variables.
   // Do not require the obsolete manual Environment variable here.
   const flags = collectWorkerVars(worker, process.env, { config });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",

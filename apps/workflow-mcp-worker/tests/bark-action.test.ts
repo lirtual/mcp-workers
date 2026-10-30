@@ -49,6 +49,7 @@ async function fixture(t:test.TestContext){
  sql.exec("CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT NOT NULL);");
  sql.exec("INSERT INTO runs(id,outcome) VALUES('11111111-1111-4111-8111-111111111111','running')");
  sql.exec(readFileSync(new URL('../migrations/0013_cloudflare_action_invocations.sql',import.meta.url),'utf8'));
+ sql.exec(readFileSync(new URL('../migrations/0017_cloudflare_action_migration_fence.sql',import.meta.url),'utf8'));
  const prepare=(query:string)=>{
   const bound=(args:unknown[])=>({
    first:async<T>()=>(sql.prepare(query).get(...(args as []))??null) as T|null,
@@ -59,14 +60,14 @@ async function fixture(t:test.TestContext){
  const {manifest,action,plan}=await sample();
  let sent=0;
  const provider={
-  getContract:async()=>({deployment_id:version,contract_digest:manifest.contract_digest}),
-  sendNotification:async(input:any)=>{
+  getContract:async(_action_id:string)=>({deployment_id:version,contract_digest:manifest.contract_digest}),
+  execute:async(_action_id:string,input:any)=>{
    sent++;assert.equal(input.notification.title,'Done');
    assert.equal(input.notification.body,'{"id":42,"ok":true}');
    return {status:'accepted',input_digest:input.input_digest};
   },
  };
- const env={DB:{prepare},BARK_ACTION_PROVIDER:provider,BARK_ACTION_DEPLOYMENT_ID:version} as unknown as Env;
+ const env={DB:{prepare},ACTIONS:provider,ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
  return {sql,action,plan,env,sent:()=>sent};
 }
 test('one persisted Bark dispatch; repeat is unknown and never calls getReceipt',async t=>{
@@ -106,15 +107,15 @@ test('after persisted send, version drift and lost ACK remain unknown without re
  const f=await fixture(t);
  const first=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
  assert.equal(first.status,'succeeded');
- f.env.BARK_ACTION_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
+ f.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
  assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'indeterminate');
  assert.equal(f.sent(),1);
  const other=await fixture(t);
  let attempts=0;
- other.env.BARK_ACTION_PROVIDER={
-  getContract:async()=>({deployment_id:version,contract_digest:(await cloudflareActionManifest('bark')).contract_digest}),
-  sendNotification:async()=>{attempts++;throw Error('lost ACK');},
- };
+ other.env.ACTIONS={
+  getContract:async(_action_id:string)=>({deployment_id:version,contract_digest:(await cloudflareActionManifest('bark')).contract_digest}),
+  execute:async()=>{attempts++;throw Error('lost ACK');},
+ } as any;
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'indeterminate');
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'indeterminate');
  assert.equal(attempts,1);
@@ -135,17 +136,17 @@ test('D1 reservation failure prevents every Bark side effect',async t=>{
 });
 test('provider identity or pinned version mismatch cannot consume a fence or dispatch',async t=>{
  const f=await fixture(t);
- f.env.BARK_ACTION_PROVIDER={
-  getContract:async()=>({deployment_id:'44444444-4444-4444-8444-444444444444',
+ f.env.ACTIONS={
+  getContract:async(_action_id:string)=>({deployment_id:'44444444-4444-4444-8444-444444444444',
    contract_digest:f.action.with.contract_digest}),
-  sendNotification:async()=>{throw Error('must not dispatch');},
+  execute:async()=>{throw Error('must not dispatch');},
  } as any;
  const result=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
  assert.equal(result.status,'failed');
  assert.equal(f.sent(),0);
  assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
  const other=await fixture(t);
- other.env.BARK_ACTION_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
+ other.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'failed');
  assert.equal(other.sent(),0);
 });
@@ -153,10 +154,10 @@ test('a rejected or ambiguous Provider reply is terminal for the same invocation
  for(const response of ['rejected','unknown'] as const){
   const f=await fixture(t);
   let sends=0;
-  f.env.BARK_ACTION_PROVIDER={
-   getContract:async()=>({deployment_id:version,
+  f.env.ACTIONS={
+   getContract:async(_action_id:string)=>({deployment_id:version,
     contract_digest:(await cloudflareActionManifest('bark')).contract_digest}),
-   sendNotification:async(input:any)=>{sends++;
+   execute:async(_action_id:string,input:any)=>{sends++;
     return {status:response,input_digest:input.input_digest};},
   } as any;
   const first=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
@@ -164,4 +165,19 @@ test('a rejected or ambiguous Provider reply is terminal for the same invocation
   assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'indeterminate');
   assert.equal(sends,1);
  }
+});
+
+test('migration freeze wins atomically before a Bark send reservation',async t=>{
+ const f=await fixture(t);
+ f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen',changed_at=1 WHERE id=1").run();
+ assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'failed');
+ assert.equal(f.sent(),0);
+ assert.equal((f.sql.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
+});
+test('Bark reservation before migration freeze retains uncertain receipt without resending',async t=>{
+ const f=await fixture(t);
+ assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'succeeded');
+ f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen',changed_at=2 WHERE id=1").run();
+ assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'indeterminate');
+ assert.equal(f.sent(),1);
 });

@@ -238,11 +238,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const bark=await cloudflareActionManifest('bark');
     const deployment='44444444-4444-4444-8444-444444444444';
     let barkSends=0;
-    env.BARK_ACTION_DEPLOYMENT_ID=deployment;
-    env.BARK_ACTION_PROVIDER={
-      getContract:async()=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
-      sendNotification:async()=>{barkSends++;throw Error('must_not_send');},
-    };
+    env.ACTIONS_DEPLOYMENT_ID=deployment;
+    env.ACTIONS={
+      getContract:async(_action_id:string)=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
+      execute:async()=>{barkSends++;throw Error('must_not_send');},
+    } as any;
     const barkDefinition={version:1,name:'Reviewed Bark publish boundary',steps:[
       {id:'source',uses:'result.emit',with:{data:{id:42}}},
       {id:'notify',uses:'action.run',needs:['source'],with:{

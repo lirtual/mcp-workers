@@ -16,7 +16,7 @@ function normalize(value:unknown){
 }
 export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
- const provider=env.BARK_ACTION_PROVIDER,version=env.BARK_ACTION_DEPLOYMENT_ID;
+ const provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
  const manifest=await cloudflareActionManifest('bark');
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&
   g.provider==='bark'&&g.action===manifest.action&&
@@ -57,7 +57,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    notification=values;
   }catch{return deny('invalid_bark_notification');}
   let bound;
-  try{bound=await provider.getContract();}catch{return deny('cloudflare_provider_identity_unconfirmed');}
+  try{bound=await provider.getContract(manifest.action);}catch{return deny('cloudflare_provider_identity_unconfirmed');}
   if(bound.deployment_id!==version||bound.contract_digest!==manifest.contract_digest)
    return deny('cloudflare_provider_identity_mismatch');
   const payload=JSON.stringify(canonical(notification));
@@ -71,6 +71,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
      binding_generation,contract_digest,deployment_id,created_at)
     SELECT ?,?,?,?,?,0,?,?,? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
+    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
       WHERE c.run_id=? AND c.step_id=?)`)
     .bind(runId,action.id,id,id,inputDigest,manifest.contract_digest,version,
@@ -79,7 +80,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    return await existing()?unknown('bark_receipt_unavailable'):deny('cloudflare_dispatch_not_admitted');
   }
   try{
-   const result=await provider.sendNotification({invocation_id:id,
+   const result=await provider.execute(manifest.action,{invocation_id:id,
     deployment_id:version,contract_digest:manifest.contract_digest,
     input_digest:inputDigest,notification});
    if(result.input_digest!==inputDigest)return unknown('bark_digest_conflict');

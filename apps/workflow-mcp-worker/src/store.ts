@@ -48,6 +48,15 @@ export type Env = {
   GITHUB_ACTION_OIDC_AUDIENCE?: string;
   // Canonical 256-bit AES-GCM key for short-lived Session data.
   SESSION_RUNTIME_DATA_KEY?: string;
+  // One reviewed runtime; old bindings remain only during the bounded cutover.
+  ACTIONS_DEPLOYMENT_ID?: string;
+  ACTIONS?: {
+    listActions():Promise<Array<{action_id:string}>>;
+    getContract(action_id:string):Promise<{deployment_id:string;contract_digest:string}>;
+    execute(action_id:string,input:unknown):Promise<{status:string;input_digest:string}>;
+    getReceipt(action_id:string,query:unknown):Promise<{status:string}>;
+    getBinding(action_id:string):Promise<{generation:number;ready:boolean}>;
+  };
   // The Worker Version ID is pinned by the separately authorized release.
   BARK_ACTION_DEPLOYMENT_ID?: string;
   BARK_ACTION_PROVIDER?: {
@@ -269,7 +278,7 @@ export class WorkflowService {
           const manifest=await cloudflareActionManifest(bark?'bark':'weixin');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
-              (bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID)??null};
+              this.env.ACTIONS_DEPLOYMENT_ID??null};
         }));
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
@@ -376,15 +385,15 @@ export class WorkflowService {
     if(hasCloudflare){
       const step=plan.steps.find(s=>s.uses==='action.run')!;
       const bark=step.with.provider==='bark';
-      const deployment=bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID;
-      const provider=bark?this.env.BARK_ACTION_PROVIDER:this.env.WEIXIN_ACTION_PROVIDER;
+      const deployment=this.env.ACTIONS_DEPLOYMENT_ID;
+      const provider=this.env.ACTIONS;
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
       const contract=await cloudflareActionManifest(bark?'bark':'weixin');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
-      try{live=await provider.getContract();}
+      try{live=await provider.getContract(contract.action);}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
       if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
         throw new StateError('cloudflare_provider_identity_mismatch');
@@ -413,8 +422,8 @@ export class WorkflowService {
       const previous=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
         .bind(row.active_version_id).first<{plan:string}>();
       const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
-      if(current?.digest===plan_digest && (!portalConnection ||
-        (oldPlan?.mcp_connection_generation??0)===portalConnection.generation))
+      if(current?.digest===plan_digest && oldPlan &&
+        canonicalJsonString(oldPlan)===canonicalJsonString(publishedPlan))
         return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
     }
     const version=crypto.randomUUID(),t=now();
@@ -430,8 +439,8 @@ export class WorkflowService {
         const prior=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
           .bind(latest.active_version_id).first<{plan:string}>();
         const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
-        if(current?.digest===plan_digest && (!portalConnection ||
-            (priorPlan?.mcp_connection_generation??0)===portalConnection.generation))
+        if(current?.digest===plan_digest && priorPlan &&
+            canonicalJsonString(priorPlan)===canonicalJsonString(publishedPlan))
           return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
       }
       throw new StateError('revision_conflict');

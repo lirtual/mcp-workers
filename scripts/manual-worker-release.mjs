@@ -249,18 +249,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
         !secretNames.has("MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
-      const providerVersion=find("WEIXIN_ACTION_DEPLOYMENT_ID","plain_text");
-      invariant(bindings.filter(x=>x.name==="WEIXIN_ACTION_DEPLOYMENT_ID").length===1 &&
+      const providerVersion=find("ACTIONS_DEPLOYMENT_ID","plain_text");
+      invariant(bindings.filter(x=>x.name==="ACTIONS_DEPLOYMENT_ID").length===1 &&
         typeof providerVersion?.text==="string" &&
         /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(providerVersion.text) &&
-        !secretNames.has("WEIXIN_ACTION_DEPLOYMENT_ID"),
-        "Workflow reviewed Weixin Provider Version ID drift");
-      const barkVersion=find("BARK_ACTION_DEPLOYMENT_ID","plain_text");
-      invariant(bindings.filter(x=>x.name==="BARK_ACTION_DEPLOYMENT_ID").length===1 &&
-        typeof barkVersion?.text==="string" &&
-        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(barkVersion.text) &&
-        !secretNames.has("BARK_ACTION_DEPLOYMENT_ID"),
-        "Workflow reviewed Bark Provider Version ID drift");
+        !secretNames.has("ACTIONS_DEPLOYMENT_ID") &&
+        !bindings.some(x=>["WEIXIN_ACTION_DEPLOYMENT_ID","BARK_ACTION_DEPLOYMENT_ID"].includes(x.name)),
+        "Workflow reviewed Actions Provider Version ID drift");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -416,7 +411,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "Browser namespace changed; preserve pairing and Unknown receipts");
   }
   const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER"] : worker === "workflow-mcp-worker"
-    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER"]) :
+    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER", "ACTIONS"] : ["DB", "WORKFLOW", "ACTIONS"]) :
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
@@ -428,12 +423,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
           : ["DEVICE_COORDINATOR"]) : []);
   if (worker === "workflow-mcp-worker" && options.mode === "readback") {
-    invariant(bindings.filter(x=>x.name === "WEIXIN_ACTION_PROVIDER").length === 1 &&
-      !!find("WEIXIN_ACTION_PROVIDER", "service"),
-      "Workflow reviewed Weixin Service Binding missing after release");
-    invariant(bindings.filter(x=>x.name === "BARK_ACTION_PROVIDER").length === 1 &&
-      !!find("BARK_ACTION_PROVIDER", "service"),
-      "Workflow reviewed Bark Service Binding missing after release");
+    invariant(bindings.filter(x=>x.name==="ACTIONS").length===1 &&
+      find("ACTIONS","service")?.service==="cloudflare-actions" &&
+      !bindings.some(x=>["WEIXIN_ACTION_PROVIDER","BARK_ACTION_PROVIDER"].includes(x.name)),
+      "Workflow single Actions Service Binding missing after release");
   }
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
@@ -468,14 +461,11 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-orchestrator" &&
     conf.workflows[0]?.class_name === "WorkflowOrchestrator",
     "Workflow binding drift");
-  invariant(conf.services?.length === 2 &&
-    conf.services[0]?.binding === "WEIXIN_ACTION_PROVIDER" &&
-    conf.services[0]?.service === "weixin-mcp-worker" &&
-    conf.services[0]?.entrypoint === "WeixinActionProvider" &&
-    conf.services[1]?.binding === "BARK_ACTION_PROVIDER" &&
-    conf.services[1]?.service === "bark-provider" &&
-    conf.services[1]?.entrypoint === "BarkActionProvider" &&
-    conf.services.every(x=>Object.keys(x).sort().join(",")==="binding,entrypoint,service"),
+  invariant(conf.services?.length === 1 &&
+    conf.services[0]?.binding === "ACTIONS" &&
+    conf.services[0]?.service === "cloudflare-actions" &&
+    conf.services[0]?.entrypoint === "ActionsEntrypoint" &&
+    Object.keys(conf.services[0]).sort().join(",")==="binding,entrypoint,service",
     "Workflow reviewed Cloudflare Service Bindings drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"]),
     "Workflow Portal Secret declaration drift");
@@ -586,12 +576,16 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
     row?.approvals_table === 1 && row?.migration_v16 !== 1 &&
     row?.portal_auth_table !== 1 && row?.mcp_fence_table !== 1 && fullV11Schema;
-  const complete = row?.migration_count === 16 &&
+  const completeV16 = row?.migration_count === 16 &&
     row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
     row?.mcp_fence_table === 1 && row?.migration_v15 === 1 &&
     row?.approval_gates_table === 1 && row?.approvals_table === 1 &&
     row?.deleted_column === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || complete)),
+  const complete = row?.migration_count === 17 &&
+    row?.migration_v17 === 1 && row?.cloudflare_gate_table === 1 &&
+    row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
+    row?.mcp_fence_table === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -620,7 +614,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
    '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
     '0014_workflow_deletion.sql','0015_runtime_approval.sql',
-    '0016_portal_connection_revocation.sql')) AS expected_migrations,
+    '0016_portal_connection_revocation.sql',
+    '0017_cloudflare_action_migration_fence.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -666,7 +661,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15,16].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
@@ -701,7 +696,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===16 && row.expected_migrations===16,
+  invariant(row.migration_count===17 && row.expected_migrations===17,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps","undelivered_callbacks",

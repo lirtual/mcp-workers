@@ -300,19 +300,12 @@ jobs:
           umask 077
           node scripts/worker-release-variables.mjs "$SELECTED_WORKER" "$RUNNER_TEMP/mcp-worker-variables.txt"
 
-      - name: Stage exact current reviewed Weixin Provider Version (read-only)
+      - name: Pin the reviewed unified Actions Worker (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/reviewed-weixin-provider-pin.mjs stage
-
-      - name: Stage exact current reviewed Bark Provider Version (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/reviewed-bark-provider-pin.mjs stage
+        run: node scripts/reviewed-actions-provider-pin.mjs stage
 
       - name: Recheck current main inside acquired release lock
         shell: bash
@@ -522,6 +515,8 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0014_workflow_deletion.sql') AS migration_v14,
               (SELECT count(*) FROM d1_migrations WHERE name='0015_runtime_approval.sql') AS migration_v15,
               (SELECT count(*) FROM d1_migrations WHERE name='0016_portal_connection_revocation.sql') AS migration_v16,
+              (SELECT count(*) FROM d1_migrations WHERE name='0017_cloudflare_action_migration_fence.sql') AS migration_v17,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approval_gates') AS approval_gates_table,
@@ -733,19 +728,28 @@ jobs:
           BROWSER_ACTIVATION_ORIGIN: ${{ vars.BROWSER_ACTIVATION_ORIGIN }}
         run: node scripts/browser-owner-access.mjs
 
-      - name: Recheck Weixin Provider Version before Workflow publication (read-only)
+      - name: Recheck unified Actions Worker before Workflow publication (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/reviewed-weixin-provider-pin.mjs recheck
+        run: node scripts/reviewed-actions-provider-pin.mjs recheck
 
-      - name: Recheck Bark Provider Version before Workflow publication (read-only)
+      # First legacy-to-ACTIONS cutover MUST have a frozen D1 dispatch gate.
+      # This read-only check cannot prove old native Workflow instances drained;
+      # physical drain remains a separately documented release prerequisite.
+      - name: Verify Actions binding transition has an atomic D1 fence (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
+        shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/reviewed-bark-provider-pin.mjs recheck
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
+              "SELECT (SELECT state FROM cloudflare_action_gate WHERE id=1) AS gate_state") |
+            node scripts/actions-consumer-cutover-gate.mjs
 
       - name: Publish exactly selected Worker
         id: publish
@@ -804,23 +808,16 @@ jobs:
           BROWSER_ACTIVATION_EXPECTED: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
-      - name: Verify published Workflow pin still matches current Provider (read-only)
+      - name: Verify Workflow pin matches actual unified Actions Worker (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/reviewed-weixin-provider-pin.mjs postflight
-
-      - name: Verify published Bark Provider Version is still pinned (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/reviewed-bark-provider-pin.mjs postflight
+        run: node scripts/reviewed-actions-provider-pin.mjs postflight
 
       - name: Remove temporary Provider pin proof
         if: always() && inputs.worker == 'workflow-mcp-worker'
-        run: rm -f "$RUNNER_TEMP/weixin-provider-version.txt" "$RUNNER_TEMP/bark-provider-version.txt"
+        run: rm -f "$RUNNER_TEMP/actions-provider-version.txt"
 
       - name: Verify Database Hyperdrive TLS, CA, origin and cache after publication
         if: inputs.worker == 'database-mcp-worker'

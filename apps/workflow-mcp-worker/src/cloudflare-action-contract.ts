@@ -1,8 +1,8 @@
 /** Static, source-reviewed Cloudflare Provider catalog. Discovery is not authority. */
 export const WEIXIN_CLOUDFLARE_ACTION=Object.freeze({
  executor:'cloudflare',provider:'weixin',action:'weixin.send_text',version:1,
- source_repository:'lirtual/cloudflare-actions',service:'weixin-mcp-worker',
- entrypoint:'WeixinActionProvider',side_effect:'send_to_verified_owner_only',
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'send_to_verified_owner_only',
  input_schema:{type:'object',additionalProperties:false,
   required:['session_step_id'],properties:{session_step_id:{type:'string',
    description:'A dependency on a signed, physically verified OpenList Session in this Run'}}},
@@ -11,8 +11,8 @@ export const WEIXIN_CLOUDFLARE_ACTION=Object.freeze({
 });
 export const BARK_CLOUDFLARE_ACTION=Object.freeze({
  executor:'cloudflare',provider:'bark',action:'bark.send_notification',version:1,
- source_repository:'lirtual/cloudflare-actions',service:'bark-provider',
- entrypoint:'BarkActionProvider',side_effect:'send_to_configured_owner_only',
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'send_to_configured_owner_only',
  input_schema:{type:'object',additionalProperties:false,required:['body'],
   properties:{body:{type:'string'},title:{type:'string'},subtitle:{type:'string'},
   markdown:{type:'string'},group:{type:'string'},level:{type:'string'},sound:{type:'string'},

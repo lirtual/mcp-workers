@@ -30,7 +30,7 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["email-mcp-worker"], ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"]);
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
-  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "WEIXIN_ACTION_DEPLOYMENT_ID", "BARK_ACTION_DEPLOYMENT_ID"]);
+  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
@@ -173,13 +173,13 @@ test("Email Access Variables must match exact approved values", () => {
 test("Workflow Provider version variable accepts one reviewed immutable Worker Version ID only",()=>{
  const good="33333333-3333-4333-8333-333333333333";
  const values=collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",
-  WEIXIN_ACTION_DEPLOYMENT_ID:good});
- assert.ok(values.includes("WEIXIN_ACTION_DEPLOYMENT_ID:"+good));
+  ACTIONS_DEPLOYMENT_ID:good});
+ assert.ok(values.includes("ACTIONS_DEPLOYMENT_ID:"+good));
  for(const value of ["main","latest","", "00000000-0000-0000-0000-000000000000",
    "abc\nSECRET","33333333-3333-4333-8333-333333333333 extra"]) {
   if(!value)continue; // Absence rejected by the production CLI release entrypoint.
   assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",
-   WEIXIN_ACTION_DEPLOYMENT_ID:value}),/WEIXIN_ACTION_DEPLOYMENT_ID/);
+   ACTIONS_DEPLOYMENT_ID:value}),/ACTIONS_DEPLOYMENT_ID/);
  }
 });
 
