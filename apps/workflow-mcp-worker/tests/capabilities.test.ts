@@ -20,7 +20,8 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
-  for(const id of ['action.mcp.write','flow.loop','flow.saga']){
+  assert.equal(catalog.get('action.mcp.write')?.availability,'unavailable');
+  for(const id of ['flow.loop','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
@@ -320,8 +321,12 @@ test('external event wait has one bounded, digest-only compiler contract and mat
     ['repeat','foreach','child','wait','wait_event']);
 });
 
-test('unsupported write, loops and Saga remain design-only; HTTP has an executable scoped contract',async()=>{
- for(const id of ['action.mcp.write','flow.loop','flow.saga']){
+test('unreviewed writes are blocked; dynamic loops and Saga remain design-only',async()=>{
+ const write=await workflowCapabilities(env,'action.mcp.write');
+ assert.equal(write.availability,'unavailable');
+ assert.deepEqual((write.grant as {required:string[]}).required,
+   ['approved_operations','approve_mcp_write_execution','accept_target_risks']);
+ for(const id of ['flow.loop','flow.saga']){
   const detail=await workflowCapabilities(env,id);
   assert.equal(detail.availability,'unsupported');
   const design=detail.design_contract as {executable:boolean;source_schema:string};
@@ -343,5 +348,5 @@ test('unsupported write, loops and Saga remain design-only; HTTP has an executab
   steps:[{id:'one',uses:'http.request',with:{url:'https://example.com'}}]}),/invalid_http_operation/);
  await assert.rejects(()=>compilePlan({version:1,name:'Unsupported MCP write',
   steps:[{id:'one',uses:'mcp.call',with:{endpoint:PRODUCTION_PORTAL_ENDPOINT,
-   tool:'ima_create_note',scope:'write',arguments:{},input_schema:{type:'object'}}}]}),/unsupported_operation_scope/);
+   tool:'ima_create_note',scope:'write',arguments:{},input_schema:{type:'object'}}}]}),/unreviewed_write_operation/);
 });

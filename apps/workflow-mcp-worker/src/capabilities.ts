@@ -5,6 +5,7 @@ import {httpAuthorization} from './http-authorization.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
+import {REVIEWED_WRITE_TOOL,reviewedWriteTool} from './mcp-write-contract.ts';
 import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
 
@@ -14,12 +15,12 @@ type PortalTool={
  annotations?:{readOnlyHint?:boolean;destructiveHint?:boolean};
 };
 type PortalToolContract={
- tool:string;endpoint:string;scope:'read';input_schema:unknown;
- output_schema?:unknown;schema_digest:string;arguments:{limit:number};
+ tool:string;endpoint:string;scope:'read'|'write';input_schema:unknown;
+ output_schema?:unknown;schema_digest:string;arguments:{limit:number}|{content:string};
  availability:'discovered_not_executed';
 };
 type PortalDiscovery={availability:'verified_contract'|'unavailable'|'not_authorized';
- tools:PortalToolContract[];reason?:string};
+ tools:PortalToolContract[];write_tools?:PortalToolContract[];reason?:string};
 
 /**
  * Explicitly source-reviewed operations only. An upstream readOnlyHint does
@@ -60,6 +61,19 @@ export async function reviewedPortalTools(tools:PortalTool[]):Promise<PortalTool
 /** Read the actual restricted Portal catalog with the same credential/URL
  * boundary as runtime. Never call a tool during discovery, never leak errors.
  */
+export async function reviewedPortalWriteTools(tools:PortalTool[]):Promise<PortalToolContract[]>{
+  if(tools.filter(x=>x.name===REVIEWED_WRITE_TOOL).length!==1)return [];
+  const tool=tools.find(x=>x.name===REVIEWED_WRITE_TOOL)!;
+  if(!reviewedWriteTool(tool))return [];
+  try{
+    return [{tool:REVIEWED_WRITE_TOOL,endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'write',
+      input_schema:tool.inputSchema,
+      ...(tool.outputSchema?{output_schema:tool.outputSchema}:{}),
+      schema_digest:await toolSchemaDigest(tool.inputSchema,tool.outputSchema),
+      arguments:{content:'Owner-reviewed note content'},availability:'discovered_not_executed'}];
+  }catch{return [];}
+}
+
 export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscovery>{
  if(env.MCP_PORTAL_ENDPOINT!==PRODUCTION_PORTAL_ENDPOINT ||
     !env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
@@ -81,8 +95,10 @@ export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscov
    await client.connect(transport);
    const result=await client.listTools();
    const contracts=await reviewedPortalTools(result.tools);
+   const write_tools=await reviewedPortalWriteTools(result.tools);
    return {availability:contracts.length?'verified_contract':'not_authorized',
-     tools:contracts,...(!contracts.length?{reason:'approved_read_tool_not_present_or_schema_changed'}:{})};
+     tools:contracts,write_tools,
+     ...(!contracts.length?{reason:'approved_read_tool_not_present_or_schema_changed'}:{})};
  }catch{
    return {availability:authDenied?'not_authorized':'unavailable',
      tools:[],reason:authDenied?'portal_access_denied':'portal_unreachable'};
@@ -221,7 +237,7 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
     properties:{
       endpoint:{const:PRODUCTION_PORTAL_ENDPOINT},
       tool:{type:'string',pattern:'^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$'},
-      scope:{const:'read'},arguments:{type:'object'},
+      scope:{enum:['read','write']},arguments:{type:'object'},
       input_schema:{type:'object'},output_schema:{type:'object'},
     }},
   'action.run':{oneOf:[
@@ -400,8 +416,8 @@ const entries=[
    description:'Emit a bounded deterministic result; with={data:expression}.'},
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
-  {id:'action.mcp.write',kind:'action',availability:'unsupported',
-   description:'Write-scope MCP calls and live Connection revocation are not implemented; read-scope mcp.call cannot be widened.'},
+  {id:'action.mcp.write',kind:'action',availability:'supported_with_grant',
+   description:'Only the source-reviewed IMA `ima_create_note` tool, using a literal bounded content string on the pinned Portal. Exact operation/schema, explicit write execution approval and risk acceptance; no dynamic targets, folders, foreach or retry.'},
   {id:'action.http',kind:'action',availability:'supported_with_grant',
    description:'Bounded literal public HTTPS GET/HEAD/POST (JSON) using an exact owner-approved URL/method; no caller headers, query, credentials, redirects or automatic retries. Unknown effects remain indeterminate.'},
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
@@ -479,14 +495,14 @@ export async function workflowCapabilities(env:Pick<Env,
     (!!env.BARK_ACTION_PROVIDER&&!!env.BARK_ACTION_DEPLOYMENT_ID);
   const availability=(entry:Entry)=>
     entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
-    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&portalRevoked?'revoked':
-    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.run.cloudflare','action.mcp.call','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -568,12 +584,23 @@ export async function workflowCapabilities(env:Pick<Env,
       unsupported:['credentials','custom_headers','redirects','dynamic_url','foreach_http']};
   }
   if(id==='action.mcp.write'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      registry:'Static source-reviewed capability and input/output schema, no arbitrary target or dynamic plugin marketplace',
-      grants:'Exact published Action/Connection/operation rights; parameters only narrow scope',
-      revocation:'Recheck current grants before protected dispatch, including restart and compensation',
-      effects:'Persistent one-shot dispatch fence; ambiguous outcomes remain indeterminate',
-      network:'Pinned MCP Portal and explicitly reviewed write-capable tools, never readOnlyHint as authorization'};
+    const discovered=portalRevoked?{availability:'revoked' as const,write_tools:[]}:await portalDiscovery(env);
+    const writeTools=discovered.write_tools??[];
+    detail.availability=portalRevoked?'revoked':writeTools.length?'verified_contract':
+      discovered.availability==='unavailable'?'unavailable':'not_authorized';
+    detail.discovered_tools=writeTools;
+    if(writeTools.length){
+      detail.example=await compilingExample({version:1,name:'One reviewed IMA note',steps:[
+        {id:'note',uses:'mcp.call',with:{endpoint:writeTools[0].endpoint,tool:writeTools[0].tool,
+          scope:'write',input_schema:writeTools[0].input_schema,
+          ...(writeTools[0].output_schema?{output_schema:writeTools[0].output_schema}:{}),
+          arguments:writeTools[0].arguments}}]});
+    }
+    detail.connection_auth={state:portalState?.state??'not_checked',generation:portalState?.generation??null,
+      reenable_requires_new_published_plan:true,revocation_fence:'durable_effect_reservation'};
+    detail.grant={scope:'write',tool:REVIEWED_WRITE_TOOL,
+      required:['approved_operations','approve_mcp_write_execution','accept_target_risks'],
+      constraints:'Single literal note content (1–2048 chars), no folder target, dynamic refs or foreach. Only source-reviewed IMA `ima_create_note`. Unknown effects never retried.'};
   }
   if(id==='flow.approval_gate'){
     detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
