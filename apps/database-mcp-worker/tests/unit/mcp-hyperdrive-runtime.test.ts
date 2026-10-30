@@ -27,7 +27,7 @@ function fixture(){
   sql.prepare(`INSERT INTO database_connections
     (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
     VALUES ('synthetic_hd','mysql','hyperdrive','active',
-      '135ef2e15db049c68e99b0849f9a3da0','HYPERDRIVE_AIVEN_OPENLIST',1,1,1)`).run();
+      '38bf39b569484dbb8a9fe1b24f0df854','HYPERDRIVE_DB344_MYSQL_E2E',1,1,1)`).run();
   const stmt=(query:string,args:unknown[]=[])=>({
     bind(...next:unknown[]){return stmt(query,next)},
     async run(){const result=sql.prepare(query).run(...args as []);return {meta:{changes:result.changes}}},
@@ -35,7 +35,7 @@ function fixture(){
     async all<T>(){return {results:sql.prepare(query).all(...args as []) as T[]}}
   });
   const env={DB:{prepare:(query:string)=>stmt(query)},RATE_LIMITER:{limit:async()=>({success:true})},
-    HYPERDRIVE_AIVEN_OPENLIST:{
+    HYPERDRIVE_DB344_MYSQL_E2E:{
       connectionString:'mysql://synthetic:synthetic@proxy.example.test:3306/synthetic_proxy',
       host:'proxy.example.test',port:3306,user:'synthetic',password:'synthetic',database:'synthetic_proxy'
     }

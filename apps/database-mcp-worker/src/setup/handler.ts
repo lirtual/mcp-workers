@@ -300,10 +300,13 @@ export async function handleSetup(
       if (transport !== 'direct' && transport !== 'hyperdrive') invalid();
       requireAvailableMode(transport, dialect);
       if (transport === 'hyperdrive') {
-        // Only the protected post-release finalizer can create a Hyperdrive D1
-        // reference after exact Worker version, binding, origin and TLS readback.
-        throw new PublicError('CONFIGURATION_UNAVAILABLE',
-          'Create Hyperdrive through the reviewed Prepare and final Apply lifecycle.');
+        // An existing externally prepared config may be registered disabled.
+        // No SQL starts until the separately protected Owner activation verifies
+        // the reviewed binding, config identity, strict TLS and live Worker health.
+        await createRegistryConnection(env.DB, {
+          id, dialect, transport, configId: required(form, 'config_id'), bindingName: required(form, 'binding_name')
+        });
+        return setupResult('Hyperdrive reference saved disabled. Publish and verify its dedicated binding and strict TLS before enabling.');
       }
       if (transport !== 'direct' || formCa(form)) invalid();
       if (form.get('plaintext_ack') !== '1')

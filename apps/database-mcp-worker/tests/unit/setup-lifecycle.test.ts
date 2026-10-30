@@ -184,17 +184,14 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'other' })).status).toBe(422);
     expect((await post('delete', { id: 'main', revision: '7', confirm_id: 'main' })).status).toBe(200);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toMatchObject({ n: 0 });
-    // Hyperdrive creation cannot bypass the reviewed exact-version release by writing D1 directly.
+    // Existing Cloudflare Hyperdrive references can be staged as disabled only.
+    // Actual SQL activation still requires the reviewed protected workflow.
     const checkedBeforeCloud = fakeHealth.mock.calls.length;
     expect((await post('add', { id: 'cloud_ref', dialect: 'mysql', transport: 'hyperdrive',
-      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(503);
+      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
-    expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='cloud_ref'").get()).toBeUndefined();
-    // Existing Hyperdrive references remain manageable, without requiring a new creation.
-    sqlite.prepare(`INSERT INTO database_connections
-      (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
-      VALUES ('cloud_ref','mysql','hyperdrive','disabled',
-        '11111111-2222-3333-4444-555555555555','HYPERDRIVE_TEST',1,1,1)`).run();
+    expect(sqlite.prepare("SELECT dialect,status,revision FROM database_connections WHERE id='cloud_ref'").get())
+      .toMatchObject({dialect:'mysql',status:'disabled',revision:1});
     expect((await post('enable', { id: 'cloud_ref', revision: '1' })).status).toBe(503);
     expect((await post('hyperdrive-action', { id: 'cloud_ref', revision: '1',
       hyperdrive_action: 'enable' })).status).toBe(503); // Owner dispatch secret not configured.
@@ -210,15 +207,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(503);
     expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='pg_direct'").get()).toBeUndefined();
     expect(fakeHealth.mock.calls.length).toBe(healthBeforeUnsupportedMode);
-    // PostgreSQL Hyperdrive remains supported, but new D1 refs require the
-    // protected publication/disabled finalizer rather than direct form writes.
+    // PostgreSQL Hyperdrive reference registration is disabled by default
+    // and cannot bypass protected activation.
     expect((await post('add', { id: 'pg_proxy', dialect: 'postgres', transport: 'hyperdrive',
-      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' })).status).toBe(503);
-    expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='pg_proxy'").get()).toBeUndefined();
-    sqlite.prepare(`INSERT INTO database_connections
-      (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
-      VALUES ('pg_proxy','postgres','hyperdrive','disabled',
-        'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee','HYPERDRIVE_PG',1,1,1)`).run();
+      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' })).status).toBe(200);
     expect(sqlite.prepare("SELECT status,transport,dialect FROM database_connections WHERE id='pg_proxy'").get())
       .toMatchObject({ status: 'disabled', transport: 'hyperdrive', dialect: 'postgres' });
     const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
@@ -227,7 +219,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
-    expect(initialPageHtml).not.toContain('name="transport" value="hyperdrive"');
+    expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
     expect(initialPageHtml).toContain('Hyperdrive actions run in protected GitHub Actions');
     expect(initialPageHtml).toContain('action="/setup/hyperdrive-action"');
     expect(initialPageHtml).toContain('Request enable');
@@ -376,7 +368,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('<option value="mysql">');
     expect(html).toContain('<option value="postgres">');
     expect(html).toContain('name="transport" value="direct"');
-    expect(html).not.toContain('name="transport" value="hyperdrive"');
+    expect(html).toContain('name="transport" value="hyperdrive"');
     expect(html).not.toContain('placeholder="b2b"');
     expect(html).toContain('<select name="dialect" required>');
     expect(html).not.toContain('<select name="transport">');
