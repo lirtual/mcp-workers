@@ -5,7 +5,7 @@ import {httpAuthorization} from './http-authorization.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
-import {REVIEWED_WRITE_TOOL,reviewedWriteTool} from './mcp-write-contract.ts';
+import {REVIEWED_WRITE_TOOL,REVIEWED_APPEND_TOOL,REVIEWED_WRITE_TOOLS,reviewedWriteTool} from './mcp-write-contract.ts';
 import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
 
@@ -16,7 +16,7 @@ type PortalTool={
 };
 type PortalToolContract={
  tool:string;endpoint:string;scope:'read'|'write';input_schema:unknown;
- output_schema?:unknown;schema_digest:string;arguments:{limit:number}|{content:string};
+ output_schema?:unknown;schema_digest:string;arguments:{limit:number}|{content:string}|{note_id:string;content:string};
  availability:'discovered_not_executed';
 };
 type PortalDiscovery={availability:'verified_contract'|'unavailable'|'not_authorized';
@@ -62,16 +62,23 @@ export async function reviewedPortalTools(tools:PortalTool[]):Promise<PortalTool
  * boundary as runtime. Never call a tool during discovery, never leak errors.
  */
 export async function reviewedPortalWriteTools(tools:PortalTool[]):Promise<PortalToolContract[]>{
-  if(tools.filter(x=>x.name===REVIEWED_WRITE_TOOL).length!==1)return [];
-  const tool=tools.find(x=>x.name===REVIEWED_WRITE_TOOL)!;
-  if(!reviewedWriteTool(tool))return [];
-  try{
-    return [{tool:REVIEWED_WRITE_TOOL,endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'write',
-      input_schema:tool.inputSchema,
-      ...(tool.outputSchema?{output_schema:tool.outputSchema}:{}),
-      schema_digest:await toolSchemaDigest(tool.inputSchema,tool.outputSchema),
-      arguments:{content:'Owner-reviewed note content'},availability:'discovered_not_executed'}];
-  }catch{return [];}
+  const found:PortalToolContract[]=[];
+  for(const name of REVIEWED_WRITE_TOOLS){
+    if(tools.filter(x=>x.name===name).length!==1)continue;
+    const tool=tools.find(x=>x.name===name)!;
+    if(!reviewedWriteTool(tool))continue;
+    try{
+      found.push({tool:name,endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'write',
+        input_schema:tool.inputSchema,
+        ...(tool.outputSchema?{output_schema:tool.outputSchema}:{}),
+        schema_digest:await toolSchemaDigest(tool.inputSchema,tool.outputSchema),
+        arguments:name===REVIEWED_APPEND_TOOL?
+          {note_id:'0000000000000000',content:'Owner-reviewed append content'}:
+          {content:'Owner-reviewed note content'},
+        availability:'discovered_not_executed'});
+    }catch{ /* Fail closed for this exact reviewed tool's schema. */ }
+  }
+  return found;
 }
 
 export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscovery>{
@@ -417,7 +424,7 @@ const entries=[
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
   {id:'action.mcp.write',kind:'action',availability:'supported_with_grant',
-   description:'Only the source-reviewed IMA `ima_create_note` tool, using a literal bounded content string on the pinned Portal. Exact operation/schema, explicit write execution approval and risk acceptance; no dynamic targets, folders, foreach or retry.'},
+   description:'Only the source-reviewed IMA `ima_create_note` or `ima_append_note` tool, with bounded literal content and a fixed numeric note ID for append. One write per Plan; exact operation/schema, explicit write approval and risk acceptance; no dynamic targets, folders, foreach or retry.'},
   {id:'action.http',kind:'action',availability:'supported_with_grant',
    description:'Bounded literal public HTTPS GET/HEAD/POST (JSON) using an exact owner-approved URL/method; no caller headers, query, credentials, redirects or automatic retries. Unknown effects remain indeterminate.'},
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
@@ -598,9 +605,9 @@ export async function workflowCapabilities(env:Pick<Env,
     }
     detail.connection_auth={state:portalState?.state??'not_checked',generation:portalState?.generation??null,
       reenable_requires_new_published_plan:true,revocation_fence:'durable_effect_reservation'};
-    detail.grant={scope:'write',tool:REVIEWED_WRITE_TOOL,
+    detail.grant={scope:'write',tools:[...REVIEWED_WRITE_TOOLS],
       required:['approved_operations','approve_mcp_write_execution','accept_target_risks'],
-      constraints:'Single literal note content (1–2048 chars), no folder target, dynamic refs or foreach. Only source-reviewed IMA `ima_create_note`. Unknown effects never retried.'};
+      constraints:'One reviewed IMA note write per Plan. Create needs literal content (1–2048 chars); append needs literal existing numeric note_id (8–24 digits) plus content (1–2048 chars). No folder target, dynamic refs, foreach or automatic retries. Unknown effects remain indeterminate.'};
   }
   if(id==='flow.approval_gate'){
     detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
