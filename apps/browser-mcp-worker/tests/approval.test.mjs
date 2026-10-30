@@ -22,433 +22,147 @@ test.before(()=>{globalThis.fetch=async (url,init)=>{
   return Response.json({keys:[jwk]});
 };});
 test.after(()=>{globalThis.fetch=originalFetch;});
-const path=op=>'/owner/operations/'+op;
-async function view(f,op,token){return f.http(path(op),{headers:{'cf-access-jwt-assertion':token??await jwt()}});}
-async function proposal(f,op){
-  const response=await view(f,op);assert.equal(response.status,200);
-  const html=await response.text();return {html,nonce:/name="nonce" value="([a-f0-9]{64})"/.exec(html)?.[1],response};
-}
-async function decide(f,op,nonce,decision='approve',extra={}){
-  const response=await f.http(path(op),{method:'POST',headers:{'cf-access-jwt-assertion':await jwt(),origin,'content-type':'application/x-www-form-urlencoded',...extra},body:new URLSearchParams({nonce,decision})});
-  return {response,html:await response.text()};
-}
-async function pending(f){
-  const effects=f.effects.length;
-  const args=await f.command('click',e=>e.tag==='button');
-  const {admitted,result}=await f.perform('click',args);
-  assert.equal(result.state,'pending_approval',JSON.stringify(result));assert.equal(result.operation_id,admitted.operation_id);assert.equal(admitted.state,'pending_approval');
-  assert.equal(result.approval_url,origin+path(result.operation_id));assert.equal(f.effects.length,effects);
-  return {args,...result};
-}
-async function status(f,args){return f.rpc('browser_operation_status',{endpoint_id:args.endpoint_id,intent_key:args.intent_key});}
 
-test('unavailable owner approval displays a safe inline error instead of a downloadable UUID',async()=>{
-  for(const env of [{},config]){
-    const f=await fixture(env);try{
-      const response=await f.http(path('00000000-0000-0000-0000-000000000000'));
-      assert.equal(response.status,Object.keys(env).length?401:403);
-      assert.equal(response.headers.get('content-type'),'text/plain; charset=utf-8');
-      assert.equal(response.headers.get('content-disposition'),null);
-      assert.equal(response.headers.get('cache-control'),'no-store');
-      assert.match(await response.text(),/Owner/);
-      assert.equal(f.effects.filter(e=>e[0]!=="fetch").length,0,"Access pairing network is not a website effect");
-    }finally{await f.close();}
-  }
-});
+const legacy=op=>'/owner/operations/'+op;
+const unknown=op=>'/owner/unknown/'+op;
+const opStatus=(f,args)=>f.rpc('browser_operation_status',{endpoint_id:args.endpoint_id,intent_key:args.intent_key});
 
-test('exact ChatGPT attribution on signed owner GET redirects to canonical URL, never broadens authority',async()=>{
+test('retired owner approval URL and POST never authorize, even with valid signed Owner Access',async()=>{
   const f=await fixture(config);try{
-    const op=await pending(f),token=await jwt(),route=path(op.operation_id);
-    const tagged=route+'?utm_source=chatgpt.com';
-    assert.equal((await f.http(tagged)).status,401,'attribution never bypasses owner identity');
-    const redirected=await f.http(tagged,{headers:{'cf-access-jwt-assertion':token}});
-    assert.equal(redirected.status,303);
-    assert.equal(redirected.headers.get('location'),origin+route);
-    assert.equal(redirected.headers.get('cache-control'),'no-store');
-    assert.equal((await view(f,op.operation_id,token)).status,200);
-    for(const query of ['?decision=approve','?utm_source=evil.example','?utm_source=chatgpt.com&decision=approve'])
-      assert.equal((await f.http(route+query,{headers:{'cf-access-jwt-assertion':token}})).status,403);
-    assert.equal((await f.http(tagged,{headers:{'cf-access-jwt-assertion':token,origin:'https://evil.example'}})).status,403);
-    const p=await proposal(f,op.operation_id);
-    assert.ok(p.nonce);
-    assert.equal((await f.http(tagged,{method:'POST',headers:{'cf-access-jwt-assertion':token,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({nonce:p.nonce,decision:'deny'})})).status,403);
-    assert.equal((await status(f,op.args)).state,'pending_approval');
+    const signed=await jwt(),id='00000000-0000-0000-0000-000000000000';
+    for(const path of [legacy(id),'/owner/operations/'+id+'?utm_source=chatgpt.com']){
+      const response=await f.http(path,{headers:{'cf-access-jwt-assertion':signed}});
+      assert.equal(response.status,404);
+      assert.doesNotMatch(await response.text(),/Approve this exact operation|decision=approve/);
+    }
+    const post=await f.http(legacy(id),{method:'POST',headers:{
+      'cf-access-jwt-assertion':signed,origin,'content-type':'application/x-www-form-urlencoded'
+    },body:new URLSearchParams({nonce:'a'.repeat(64),decision:'approve'})});
+    assert.equal(post.status,404);
     assert.equal(f.effects.length,0);
   }finally{await f.close();}
 });
 
-test('Owner JWT must verify with Workers-compatible JWKS fetch and reject certificate redirects',async()=>{
+test('consequential button is rejected without approval URL or effects, regardless of Owner configuration',async()=>{
+  for(const env of [{},config]){
+    const f=await fixture(env);try{
+      const args=await f.command('click',e=>e.tag==='button');
+      const before=f.effects.length;
+      const {admitted,result}=await f.perform('click',args);
+      assert.equal(admitted.state,'admitted');
+      assert.equal(result.state,'failed');
+      assert.equal(result.error_code,'forbidden');
+      assert.equal(result.safe_next_action,'blocked_forbidden_target');
+      assert.equal(result.approval_url,undefined);
+      assert.equal(f.effects.length,before);
+      assert.equal((await opStatus(f,args)).operation_id,admitted.operation_id);
+      assert.equal((await opStatus(f,args)).state,'failed');
+    }finally{await f.close();}
+  }
+});
+
+test('consequential navigation is denied at original endpoint while ordinary tab open works',async()=>{
   const f=await fixture(config);try{
-    const op=await pending(f),signed=await jwt();
-    assert.equal((await view(f,op.operation_id,signed)).status,200,
-      'genuine signed Access JWT must be verified with supported Workers fetch options');
+    const start=f.effects.length;
+    const bad={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete'};
+    const submitted=await f.rpc('browser_tab_open',bad);await f.flush();
+    const receipt=await opStatus(f,bad);
+    assert.equal(receipt.state,'failed');assert.equal(receipt.error_code,'forbidden');
+    assert.equal(receipt.approval_url,undefined);assert.equal(f.effects.length,start);
+    const safe={...bad,intent_key:intent(),url:'https://example.org/public'};
+    await f.rpc('browser_tab_open',safe);await f.flush();
+    assert.equal((await opStatus(f,safe)).state,'completed');
+    assert.ok(f.effects.some(e=>e[0]==='tab_open'&&e[1]===safe.url));
+  }finally{await f.close();}
+});
+
+test('existing pending_approval state is expired on DO recreation, without dispatch or repeat effect',async()=>{
+  const f=await fixture(config);try{
+    const args=await f.command('click',e=>e.tag==='input'&&e.type==='checkbox');
+    const {admitted,result}=await f.perform('click',args);
+    assert.equal(result.state,'completed');
+    const before=f.effects.length;
+    f.db.prepare("UPDATE browser_intents SET state='pending_approval',execute_token_hash=NULL WHERE operation_id=?").run(admitted.operation_id);
+    f.restart();
+    const retired=await opStatus(f,args);
+    assert.equal(retired.state,'expired');
+    assert.equal(retired.error_code,'approval_retired');
+    const repeated=await f.rpc('browser_click',args);await f.flush();
+    assert.equal(repeated.state,'expired');
+    assert.equal(f.effects.length,before);
+    assert.equal(retired.operation_id,admitted.operation_id);
+  }finally{await f.close();}
+});
+
+test('independent Unknown owner review retains signed Access, one-time nonce and no execute authority',async()=>{
+  const f=await fixture(config);try{
+    const args=await f.command('click',e=>e.tag==='input'&&e.type==='checkbox');
+    f.drop();const {admitted}=await f.perform('click',args);
+    const before=f.effects.length;
+    f.restart();
+    const receipt=await opStatus(f,args);
+    assert.equal(receipt.state,'unknown');
+    assert.equal(receipt.operation_id,admitted.operation_id);
+    assert.equal(receipt.owner_review_url,origin+unknown(receipt.operation_id));
+    const raw=await f.http(unknown(receipt.operation_id));
+    assert.equal(raw.status,401);
+    const signed=await jwt();
+    const response=await f.http(unknown(receipt.operation_id),{headers:{'cf-access-jwt-assertion':signed}});
+    assert.equal(response.status,200);
+    const html=await response.text(),nonce=/name="nonce" value="([a-f0-9]{64})"/.exec(html)?.[1];
+    assert.ok(nonce);
+    assert.doesNotMatch(html,/Approve this exact operation/);
+    const report=async()=>f.http(unknown(receipt.operation_id),{method:'POST',headers:{
+      'cf-access-jwt-assertion':signed,origin,'content-type':'application/x-www-form-urlencoded'
+    },body:new URLSearchParams({nonce,outcome:'effect_seen'})});
+    assert.equal((await report()).status,200);
+    assert.notEqual((await report()).status,200);
+    const recorded=await opStatus(f,args);
+    assert.equal(recorded.state,'owner_reported_resolution');
+    assert.equal(recorded.owner_reported_resolution,'effect_seen');
+    assert.equal(f.effects.length,before);
+  }finally{await f.close();}
+});
+
+test('Unknown review refuses invalid audience, wrong origin, and redirected JWKS',async()=>{
+  const f=await fixture(config);try{
+    const id='00000000-0000-0000-0000-000000000000';
+    assert.equal((await f.http(unknown(id),{headers:{'cf-access-jwt-assertion':await jwt({aud:['b'.repeat(64)]})}})).status,401);
+    assert.equal((await f.http('https://evil.example'+unknown(id),{headers:{'cf-access-jwt-assertion':await jwt()}})).status,403);
     forceCertRedirect=true;
-    assert.equal((await view(f,op.operation_id,signed)).status,401,
-      'redirected JWKS response must never grant Owner authority');
-    assert.equal((await status(f,op.args)).state,'pending_approval');
-    assert.equal(f.effects.length,0);
+    assert.equal((await f.http(unknown(id),{headers:{'cf-access-jwt-assertion':await jwt()}})).status,401);
   }finally{forceCertRedirect=false;await f.close();}
 });
 
-test('owner HTTP requires cryptographic Access identity, canonical host, aud, issuer, expiry and exact mailbox',async()=>{
+test('legacy owner-approved execute frame never consumes or executes a current prepared operation',async()=>{
   const f=await fixture(config);try{
-    const op=await pending(f);
-    for(const headers of [{},{authorization:'Bearer test-token'},{'cf-access-authenticated-user-email':config.BROWSER_OWNER_EMAIL},{'cf-access-jwt-assertion':'unsigned'}])
-      assert.equal((await f.http(path(op.operation_id),{headers})).status,401);
-    for(const patch of [{aud:['b'.repeat(64)]},{iss:'https://other.cloudflareaccess.com'},{exp:1},{email:'agent@example.com'},{nbf:Math.floor(Date.now()/1000)+100},{iat:Math.floor(Date.now()/1000)+100},{type:'service'}])
-      assert.equal((await view(f,op.operation_id,await jwt(patch))).status,401);
-    for(const header of [{alg:'none'},{kid:'unknown'},{crit:['fake']}])assert.equal((await view(f,op.operation_id,await jwt({},header))).status,401);
-    const token=await jwt();const parts=token.split('.');parts[1]=enc({email:config.BROWSER_OWNER_EMAIL,iss:config.BROWSER_ACCESS_ISSUER,aud:[config.BROWSER_ACCESS_AUDIENCE],type:'app',sub:'owner',iat:0,exp:9999999999});
-    assert.equal((await view(f,op.operation_id,parts.join('.'))).status,401);
-    for(const host of ['https://alternate.example','https://preview.workers.dev','http://browser.example'])
-      assert.equal((await f.http(host+path(op.operation_id),{headers:{'cf-access-jwt-assertion':token}})).status,403);
-    const p=await proposal(f,op.operation_id);assert.ok(p.nonce);assert.match(p.html,/Submit payment/);assert.match(p.html,/example.com\/clean/);
-    assert.equal(p.response.headers.get('cache-control'),'no-store');assert.equal(p.response.headers.get('x-frame-options'),'DENY');
-    assert.match(p.response.headers.get('content-security-policy'),/frame-ancestors 'none'/);assert.doesNotMatch(p.html,/<script|<iframe/);
-    assert.equal((await f.http(path(op.operation_id)+'?decision=approve',{headers:{'cf-access-jwt-assertion':token}})).status,403);
-    assert.equal((await decide(f,op.operation_id,p.nonce,'approve',{origin:'https://evil.example'})).response.status,403);
-    assert.equal((await decide(f,op.operation_id,p.nonce,'approve',{'content-type':'application/json'})).response.status,403);
-    assert.equal(f.effects.length,0);assert.equal((await status(f,op.args)).state,'pending_approval');
+    const args=await f.command('fill',e=>e.tag==='input'&&e.type==='text',{text:'ordinary'});
+    f.hold();const {admitted}=await f.perform('fill',args);
+    assert.equal((await opStatus(f,args)).state,'dispatching');
+    const before=f.effects.length;
+    await f.release({owner_approved:true,run_id:crypto.randomUUID(),expires_at:Date.now()+100000});
+    await f.flush();
+    assert.equal(f.effects.length,before,'obsolete approval frame must not reach the page');
+    f.restart();
+    assert.equal((await opStatus(f,args)).state,'unknown','a dispatched-but-unconfirmed operation is not replayed');
+    assert.equal((await f.rpc('browser_fill',args)).state,'unknown');
+    assert.equal(f.effects.length,before);
+    assert.ok(admitted.operation_id);
   }finally{await f.close();}
 });
 
-test('prepare never executes; independent owner can approve once, deny, and query the original operation',async()=>{
+test('legacy prepared approval session never bypasses the new deny policy',async()=>{
   const f=await fixture(config);try{
-    const op=await pending(f);
-    assert.equal((await f.popup('status')).activity.approvals[0].operation_id,op.operation_id);
-    // Waiting releases the Endpoint: a separate snapshot may be requested.
-    const snapshot=await f.snapshot();assert.equal(snapshot.document_id,'doc-1');
-    // New snapshot invalidates the old element refs, so create a fresh proposal.
-    assert.equal((await proposal(f,op.operation_id)).nonce,undefined);
-    assert.equal((await status(f,op.args)).state,'expired');
-    const fresh=await pending(f),p=await proposal(f,fresh.operation_id);
-    assert.ok(p.nonce);assert.equal(f.effects.length,0,'GET must not grant execution');
-    const bad=await decide(f,fresh.operation_id,'0'.repeat(64));assert.match(bad.html,/invalid_nonce/);
-    await Promise.all([decide(f,fresh.operation_id,p.nonce),decide(f,fresh.operation_id,p.nonce)]);await f.flush();
-    assert.equal(f.effects.length,1);assert.equal((await status(f,fresh.args)).state,'completed');
-    await decide(f,fresh.operation_id,p.nonce);await f.rpc('browser_click',fresh.args);await f.flush();assert.equal(f.effects.length,1);
-    const denied=await pending(f),d=await proposal(f,denied.operation_id);await decide(f,denied.operation_id,d.nonce,'deny');await f.flush();
-    assert.equal((await status(f,denied.args)).state,'denied');assert.equal(f.effects.length,1);
+    const args=await f.command('fill',e=>e.tag==='input'&&e.type==='text',{text:'ordinary'});
+    f.hold();const {admitted}=await f.perform('fill',args);
+    const key='browser_prepare_'+admitted.operation_id;
+    assert.ok(f.session[key]);
+    f.session[key].approval_required=true;
+    const before=f.effects.length;
+    await f.release();await f.flush();
+    assert.equal(f.effects.length,before,'old session proposal must not execute');
+    f.restart();
+    assert.equal((await opStatus(f,args)).state,'unknown');
+    assert.equal(f.effects.length,before);
   }finally{await f.close();}
-});
-
-test('temporary owner-view transport loss is retryable on the same proposal, without authorization or execution',async()=>{
-  const f=await fixture(config);try{
-    const op=await pending(f),restore=f.transientDisconnect();
-    const response=await view(f,op.operation_id);
-    assert.equal(response.status,503);
-    const text=await response.text();
-    assert.match(text,/owner_transport_unavailable/);
-    assert.doesNotMatch(text,/name=\"nonce\"/);
-    assert.equal((await status(f,op.args)).state,'pending_approval');
-    assert.equal(f.effects.length,0);
-    restore();
-    const p=await proposal(f,op.operation_id);assert.ok(p.nonce);
-    await decide(f,op.operation_id,p.nonce,'deny');await f.flush();
-    assert.equal((await status(f,op.args)).state,'denied');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('lost extension review response cannot mint a nonce, execute, or expire an otherwise valid intent',async()=>{
-  const f=await fixture(config);try{
-    const op=await pending(f);f.dropNextApprovalReply();
-    const response=await view(f,op.operation_id);
-    assert.equal(response.status,503);
-    assert.match(await response.text(),/owner_transport_unavailable/);
-    assert.equal((await status(f,op.args)).state,'pending_approval');
-    assert.equal(f.effects.length,0);
-    const p=await proposal(f,op.operation_id);assert.ok(p.nonce);
-    await decide(f,op.operation_id,p.nonce,'deny');await f.flush();
-    assert.equal((await status(f,op.args)).state,'denied');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('owner expiry exposes only fixed reasons for deadline, endpoint change, or extension context loss',async()=>{
-  for(const [cause,expected] of [['deadline','approval_deadline_expired'],['generation','approval_endpoint_changed'],['missing_prepare','approval_extension_context_invalid']]){
-    const f=await fixture(config);try{
-      const op=await pending(f);
-      if(cause==='deadline')f.db.prepare('UPDATE browser_approvals SET expires_at=? WHERE operation_id=?').run(Date.now()-1,op.operation_id);
-      if(cause==='generation')f.db.prepare('UPDATE endpoints SET generation=generation+1').run();
-      if(cause==='missing_prepare')delete f.session['browser_prepare_'+op.operation_id];
-      const review=await proposal(f,op.operation_id);
-      assert.equal(review.nonce,undefined);
-      assert.equal((await status(f,op.args)).state,'expired');
-      assert.equal((await status(f,op.args)).error_code,expected,cause);
-      assert.ok(review.html.includes(expected));
-      assert.equal(f.effects.length,0);
-    }finally{await f.close();}
-  }
-});
-
-test('pending metadata survives DO recreation; session-command loss expires without recovery/replay',async()=>{
-  for(const loseCommand of [false,true]){
-    const f=await fixture(config);try{
-      const op=await pending(f);f.restart();
-      assert.equal((await status(f,op.args)).state,'pending_approval');
-      if(loseCommand)delete f.session['browser_prepare_'+op.operation_id];
-      const p=await proposal(f,op.operation_id);
-      if(loseCommand){assert.equal(p.nonce,undefined);assert.equal((await status(f,op.args)).state,'expired');}
-      else {assert.ok(p.nonce);await decide(f,op.operation_id,p.nonce);await f.flush();assert.equal((await status(f,op.args)).state,'completed');}
-      assert.equal(f.effects.length,loseCommand?0:1);
-    }finally{await f.close();}
-  }
-});
-
-test('navigation, DOM change, run change, TTL, Stop and Revoke invalidate owner authority',async()=>{
-  for(const change of ['document','dom','run','ttl','stop','revoke','generation']){
-    const f=await fixture(config);try{
-      const op=await pending(f),p=await proposal(f,op.operation_id);assert.ok(p.nonce);
-      if(change==='document')f.pageState.document_id='other-document';
-      if(change==='dom')f.pageState.mutated=true;
-      if(change==='run')f.session.browser_approval_run=crypto.randomUUID();
-      if(change==='ttl')f.db.prepare('UPDATE browser_approvals SET expires_at=?').run(Date.now()-1);
-      if(change==='stop')await f.rpc('browser_stop',{endpoint_id:op.args.endpoint_id});
-      if(change==='revoke')await f.rpc('browser_revoke',{endpoint_id:op.args.endpoint_id});
-      if(change==='generation')f.db.prepare('UPDATE endpoints SET generation=generation+1').run();
-      await decide(f,op.operation_id,p.nonce);await f.flush();
-      assert.equal(f.effects.length,0,change);assert.equal((await status(f,op.args)).state,'expired',change);
-    }finally{await f.close();}
-  }
-});
-
-test('execute with lost receipt becomes Unknown on recreation and never replays',async()=>{
-  const f=await fixture(config);try{
-    const op=await pending(f),p=await proposal(f,op.operation_id);f.drop();await decide(f,op.operation_id,p.nonce);await f.flush();
-    assert.equal(f.effects.length,1);f.restart();assert.equal((await status(f,op.args)).state,'unknown');
-    await decide(f,op.operation_id,p.nonce);await f.rpc('browser_click',op.args);await f.flush();assert.equal(f.effects.length,1);
-  }finally{await f.close();}
-});
-
-test('isolation missing or incomplete remains Blocked and stores no page content or command in DO/local receipts',async()=>{
-  for(const env of [{},{...config,BROWSER_APPROVAL_ISOLATION:''},{...config,BROWSER_APPROVAL_ORIGIN:'https://another.example'}]){
-    const f=await fixture(env);try{
-      const args=await f.command('click',e=>e.tag==='button');
-      const op=await f.perform('click',args);assert.equal(op.result.state,'failed');assert.equal(op.result.error_code,'approval_blocked');assert.equal(f.effects.length,0);
-    }finally{await f.close();}
-  }
-  const f=await fixture(config);try{
-    f.pageState.url='https://example.com/clean?fixture=seed-not-persisted';
-    const op=await pending(f);await proposal(f,op.operation_id);
-    const rows=f.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-    const data=JSON.stringify(rows.flatMap(r=>f.db.prepare('SELECT * FROM '+r.name).all()));
-    for(const value of ['Submit payment','seed-not-persisted','example.com/clean','document_id','element_id','textContent'])assert.ok(!data.includes(value),value);
-    assert.ok(!JSON.stringify(f.local).includes('seed-not-persisted'));
-    assert.match(data,/[a-f0-9]{64}/);
-  }finally{await f.close();}
-});
-
-test('commitment refuses changed exact args, target, display or operation identity; 10 pending limit is fail closed',async()=>{
-  for(const mutate of [s=>{s.command.tab_id=2;},s=>{s.command.document_id='other';},s=>{s.command.element_id='e-'+crypto.randomUUID();},s=>{s.command.action='fill';s.command.text='seed-payload';},s=>{s.context.target_url='https://example.com/other';},s=>{s.context.description='Different intent';}]){
-    const f=await fixture(config);try{
-      const op=await pending(f);mutate(f.session['browser_prepare_'+op.operation_id]);
-      assert.equal((await proposal(f,op.operation_id)).nonce,undefined);assert.equal((await status(f,op.args)).state,'expired');assert.equal(f.effects.length,0);
-    }finally{await f.close();}
-  }
-  const f=await fixture(config);try{
-    for(let i=0;i<10;i++)await pending(f);
-    assert.equal((await f.popup('status')).activity.approvals.length,10);
-    const args=await f.command('click',e=>e.tag==='button');const op=await f.perform('click',args);
-    assert.equal(op.result.state,'failed');assert.equal(f.effects.length,0);
-    const bad=await f.rpc('browser_fill',{...args,text:'x'.repeat(2001)});assert.equal(bad.error_code,'invalid_arguments');
-    const last=f.db.prepare("SELECT operation_id,endpoint_id FROM browser_intents WHERE state='pending_approval' LIMIT 1").get();
-    const receipt=await f.rpc('browser_operation_status',{endpoint_id:last.endpoint_id,operation_id:last.operation_id});assert.equal(receipt.operation_id,last.operation_id);assert.equal(receipt.state,'pending_approval');
-    assert.equal((await f.rpc('browser_operation_status',{endpoint_id:crypto.randomUUID(),operation_id:last.operation_id})).error_code,'not_found');
-  }finally{await f.close();}
-});
-
-test('approval cannot cross execute-time Stop or forbidden owner/SSO surfaces',async()=>{
-  // The same exclusion predicate gates tabs, snapshots, screenshots and mutations.
-  for(const url of [origin+'/owner/operations/'+crypto.randomUUID(),config.BROWSER_ACCESS_ISSUER+'/cdn-cgi/access/login','https://mail.google.com/']){
-    const f=await fixture(config);try{
-      const args=await f.command('click',e=>e.tag==='button');f.pageState.url=url;
-      for(const tool of ['browser_snapshot','browser_screenshot'])assert.ok((await f.rpc(tool,{endpoint_id:args.endpoint_id,tab_id:1})).error_code);
-      assert.equal((await f.perform('click',args)).result.state,'failed');assert.equal(f.effects.length,0);
-    }finally{await f.close();}
-  }
-  const f=await fixture(config);try{
-    const op=await pending(f),p=await proposal(f,op.operation_id);f.hold();await decide(f,op.operation_id,p.nonce);
-    await f.rpc('browser_stop',{endpoint_id:op.args.endpoint_id});await f.release();await f.flush();assert.equal(f.effects.length,0);
-    assert.equal((await status(f,op.args)).state,'unknown');
-  }finally{await f.close();}
-});
-
-test('busy approval expires instead of queuing behind an active observation',async()=>{
-  const f=await fixture(config);let gate,reading;
-  try{
-    const op=await pending(f),p=await proposal(f,op.operation_id);gate=f.pauseNextScript();reading=f.snapshot();await gate.entered;
-    const decision=await decide(f,op.operation_id,p.nonce);assert.match(decision.html,/expired/);assert.equal(f.effects.length,0);
-    gate.release();await reading;assert.equal((await status(f,op.args)).state,'expired');
-  }finally{gate?.release();if(reading)await reading;await f.close();}
-});
-
-test('identified consequential URL is pending, meaningful destination is transient, and owner authorizes one original open',async()=>{
-  const f=await fixture(config);try{
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/action?confirm=1&note=ephemeral-seed'};
-    const result=await f.rpc('browser_tab_open',args);await f.flush();assert.equal(result.state,'pending_approval');assert.equal(f.effects.length,0);
-    const p=await proposal(f,result.operation_id);assert.match(p.html,/confirm=1/);assert.match(p.html,/ephemeral-seed/);
-    await decide(f,result.operation_id,p.nonce);await f.flush();assert.equal((await status(f,args)).state,'completed');
-    assert.equal(f.effects.length,1);assert.deepEqual(f.effects[0],['tab_open',args.url,1]);
-    const durable=JSON.stringify(f.db.prepare('SELECT * FROM browser_intents').all())+JSON.stringify(f.db.prepare('SELECT * FROM browser_approvals').all());
-    assert.ok(!durable.includes('ephemeral-seed'));
-  }finally{await f.close();}
-});
-
-test('minor Chrome/Worker clock skew leaves approval preparation usable without widening the five-minute limit',async()=>{
-  for(const offset of [-20000,-10000,0,10000]){
-    const f=await fixture(config,{extensionClockOffsetMs:offset});try{
-      const started=Date.now();const op=await pending(f);
-      assert.ok(op.expires_at>started+235000,'approval should remain usable, clock offset '+offset);
-      assert.ok(op.expires_at<=Date.now()+270000,'approval must retain a bounded shorter deadline');
-      assert.equal(f.effects.length,0);
-    }finally{await f.close();}
-  }
-  const f=await fixture(config,{extensionClockOffsetMs:-45000});try{
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/clock-offset-denied'};
-    await f.rpc('browser_tab_open',args);await f.flush();
-    const result=await status(f,args);
-    assert.equal(result.state,'failed');assert.equal(result.error_code,'prepare_expired');
-    assert.equal(f.effects.length,0,'larger skew must fail closed without a browser effect');
-  }finally{await f.close();}
-});
-
-test('production-style consequential delete URL receives a denial-only owner proposal, without opening a tab',async()=>{
-  const f=await fixture(config);try{
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/spec418-owner-deny-check-20261029-v3'};
-    const admitted=await f.rpc('browser_tab_open',args);await f.flush();
-    const result=await status(f,args);
-    assert.equal(result.state,'pending_approval',JSON.stringify({admitted,result}));
-    assert.equal(f.effects.length,0);
-    const page=await proposal(f,result.operation_id);
-    assert.ok(page.nonce);
-    assert.match(page.html,/spec418-owner-deny-check-20261029-v3/);
-    await decide(f,result.operation_id,page.nonce,'deny');await f.flush();
-    assert.equal((await status(f,args)).state,'denied');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('a stale extension without the owner approval handshake is blocked, never dispatched',async()=>{
-  const f=await fixture(config,{legacyOwnerProtocol:true});try{
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/legacy-client-check'};
-    await f.rpc('browser_tab_open',args);await f.flush();
-    const result=await status(f,args);
-    assert.equal(result.state,'failed');
-    assert.equal(result.error_code,'approval_blocked');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('preparation storage failure yields a stable safe receipt, never a website effect',async()=>{
-  const f=await fixture(config);try{
-    const storage=f.chrome.storage.session;
-    const originalSet=storage.set;
-    storage.set=async data=>{
-      if(Object.keys(data).some(k=>k.startsWith('browser_prepare_')))throw Error('simulated confidential storage failure');
-      return originalSet(data);
-    };
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/storage-check'};
-    await f.rpc('browser_tab_open',args);await f.flush();
-    const result=await status(f,args);
-    assert.equal(result.state,'failed');
-    assert.equal(result.error_code,'prepare_storage_unavailable');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('local authorization mismatch is a fixed no-content preparation failure, not a browser effect',async()=>{
-  const f=await fixture(config);try{
-    f.local.authorization='stopped';
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/local-stop-test'};
-    await f.rpc('browser_tab_open',args);await f.flush();
-    const result=await status(f,args);
-    assert.equal(result.state,'failed');
-    assert.equal(result.error_code,'prepare_context_changed');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('malformed approval run proof produces a safe fixed failure code',async()=>{
-  const f=await fixture(config);try{
-    f.session.browser_approval_run='not-a-valid-uuid';
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete/invalid-proof'};
-    await f.rpc('browser_tab_open',args);await f.flush();
-    const result=await status(f,args);
-    assert.equal(result.state,'failed');
-    assert.equal(result.error_code,'approval_prepare_invalid');
-    assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('an embedded document is excluded from snapshot and indirect interaction',async()=>{
-  const f=await fixture(config);try{
-    const args=await f.command('click',e=>e.tag==='button');f.pageState.embedded=true;
-    assert.equal((await f.snapshot()).error_code,'sensitive_surface');
-    assert.equal((await f.perform('click',args)).result.state,'failed');assert.equal(f.effects.length,0);
-  }finally{await f.close();}
-});
-
-test('independent owner Unknown review records reported outcome once, never turns it into observed success or replays',async()=>{
-  const f=await fixture(config);try{
-    const endpoint_id=f.local.endpoint_id,intent_key=intent();
-    f.drop(); // one browser effect; its original execution receipt is lost
-    const result=await f.rpc('browser_tab_open',{endpoint_id,intent_key,url:'https://example.com/clean'});
-    await f.flush();f.restart();
-    const before=await status(f,{endpoint_id,intent_key});
-    assert.equal(before.state,'unknown',JSON.stringify(before));
-    const effects=f.effects.length;
-    const route='/owner/unknown/'+result.operation_id,token=await jwt();
-    assert.equal(before.owner_review_url,origin+route);
-    assert.equal((await f.http(route)).status,401);
-    assert.equal((await f.http('https://alternate.example'+route,{headers:{'cf-access-jwt-assertion':token}})).status,403);
-    const view=await f.http(route,{headers:{'cf-access-jwt-assertion':token}});
-    assert.equal(view.status,200);
-    assert.equal(view.headers.get('cache-control'),'no-store');
-    const page=await view.text();
-    assert.doesNotMatch(page,/https:\/\/example\.com\/clean/);
-    const nonce=/name="nonce" value="([a-f0-9]{64})"/.exec(page)?.[1];
-    assert.ok(nonce,'trusted owner receives one-time Unknown review nonce');
-    const submit=async(n,originHeader=origin,outcome='effect_seen')=>f.http(route,{method:'POST',headers:{
-      'cf-access-jwt-assertion':await jwt(),origin:originHeader,'content-type':'application/x-www-form-urlencoded'
-    },body:new URLSearchParams({nonce:n,outcome})});
-    assert.equal((await submit(nonce,'https://evil.example')).status,403);
-    assert.equal((await submit('f'.repeat(64))).status,403);
-    f.db.prepare('UPDATE browser_owner_resolutions SET nonce_expires_at=? WHERE operation_id=?').run(Date.now()-1,result.operation_id);
-    assert.equal((await submit(nonce)).status,403,'expired review nonce must fail');
-    const renewed=await f.http(route,{headers:{'cf-access-jwt-assertion':token}});
-    const freshNonce=/name="nonce" value="([a-f0-9]{64})"/.exec(await renewed.text())?.[1];
-    assert.ok(freshNonce && freshNonce!==nonce);
-    const [first,second]=await Promise.all([submit(freshNonce),submit(freshNonce)]);
-    assert.deepEqual([first.status,second.status].sort(),[200,403],'at most one concurrent owner report');
-    const report=await status(f,{endpoint_id,intent_key});
-    assert.equal(report.state,'owner_reported_resolution');
-    assert.equal(report.owner_reported_resolution,'effect_seen');
-    assert.equal(f.effects.length,effects);
-    assert.notEqual(report.state,'completed');
-    assert.notEqual((await submit(freshNonce)).status,200,'replaying owner review must fail');
-    await f.rpc('browser_tab_open',{endpoint_id,intent_key,url:'https://example.com/clean'});await f.flush();
-    assert.equal(f.effects.length,effects);
-  }finally{await f.close();}
-});
-
-
-test('LAN/private consent allows observation and ordinary interaction but never replaces independent owner approval',async()=>{
-  for(const mode of ['lan','private','both']){
-    const f=await fixture(config);try{
-      f.pageState.nativePrivate=true;
-      if(mode!=='private'){await f.popup('sensitive-permission',{surface:'lan',enabled:true});f.pageState.url='http://192.168.1.7/app?private=QUERY_SEED';}
-      if(mode!=='lan'){await f.popup('sensitive-permission',{surface:'private',enabled:true});f.pageState.incognito=true;}
-      const ordinary=await f.command('click',e=>e.type==='checkbox');assert.equal((await f.perform('click',ordinary)).result.state,'completed');
-      const op=await pending(f),p=await proposal(f,op.operation_id);assert.ok(p.nonce);
-      await decide(f,op.operation_id,p.nonce);await f.flush();assert.equal((await status(f,op.args)).state,'completed');
-      const revoked=await pending(f),surface=mode==='private'?'private':'lan';
-      if(mode==='private')f.pageState.nativeFailure=true;
-      else await f.popup('sensitive-permission',{surface,enabled:false});
-      const denied=await proposal(f,revoked.operation_id);assert.equal(denied.nonce,undefined);
-      assert.equal((await status(f,revoked.args)).state,'expired');
-      const persisted=JSON.stringify({local:f.local,rows:f.db.prepare('SELECT * FROM browser_intents').all()});
-      for(const seed of ['QUERY_SEED','192.168.1.7','Submit payment'])assert.ok(!persisted.includes(seed));
-    }finally{await f.close();}
-  }
 });

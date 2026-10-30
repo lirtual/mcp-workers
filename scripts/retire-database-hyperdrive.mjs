@@ -24,7 +24,7 @@ export async function retireDatabaseHyperdrive({
       source.d1_databases[0].database_name !== 'database-mcp-registry') fail('managed D1 source');
   verifyDatabaseHyperdriveSource(source, manifest);
   const base = 'https://api.cloudflare.com/client/v4/accounts/' + accountId;
-  async function cloud(path, method = 'GET', body) {
+  async function cloud(path, method = 'GET', body, returnEnvelope = false) {
     // Emit only a bounded operation class on failure; never emit Cloudflare
     // payloads, SQL parameters, credentials, row IDs or raw provider errors.
     const phase = path.includes('/d1/database/')
@@ -36,13 +36,17 @@ export async function retireDatabaseHyperdrive({
       method, headers: { authorization: 'Bearer ' + token, accept: 'application/json',
         ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(15000)
+      redirect: 'manual', signal: AbortSignal.timeout(15000)
     }); } catch { fail('Cloudflare API unavailable'); }
-    if (!response?.ok) fail('Cloudflare response rejected');
+    if (!response?.ok) {
+      const status = [400,401,403,404,409,429,500,502,503].includes(response?.status)
+        ? response.status : 'unknown';
+      fail('Cloudflare response rejected at ' + phase + ' (HTTP ' + status + ')');
+    }
     let envelope;
     try { envelope = await response.json(); } catch { fail('invalid Cloudflare response'); }
     if (!envelope || envelope.success !== true || envelope.result == null) fail('unconfirmed API result');
-    return envelope.result;
+    return returnEnvelope ? envelope : envelope.result;
   }
   async function sql(statement, params = []) {
     const result = await cloud('/d1/database/' + REGISTRY + '/query', 'POST',
@@ -50,12 +54,12 @@ export async function retireDatabaseHyperdrive({
     if (!Array.isArray(result) || result.length !== 1 || result[0]?.success !== true) fail('D1 query rejected');
     return result[0];
   }
-  const readSql = 'SELECT id,dialect,transport,status,revision,config_id,binding_name FROM database_connections WHERE id=?';
+  const readSql = 'SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?';
   const initial = await sql(readSql, [connectionId]);
   if (initial.results?.length !== 1) fail('logical connection absent');
   const row = initial.results[0];
   if (row.id !== connectionId || row.transport !== 'hyperdrive' || row.status !== 'disabled' ||
-      row.revision !== Number(expectedRevision) || typeof row.config_id !== 'string' ||
+      row.revision !== Number(expectedRevision) || row.in_flight_count !== 0 || typeof row.config_id !== 'string' ||
       typeof row.binding_name !== 'string') fail('connection is active, stale or invalid');
   // Release source and *deployed* Worker must no longer contain either ref.
   if (manifest.some(x => x.id === row.config_id || x.binding === row.binding_name) ||
@@ -67,25 +71,161 @@ export async function retireDatabaseHyperdrive({
   if (!Array.isArray(versions) || versions.length !== 1 || versions[0].percentage !== 100) {
     fail('current production deployment is not a single version');
   }
-  const settings = await cloud('/workers/scripts/database-mcp-worker/settings');
-  const bindings = settings?.bindings;
-  if (!Array.isArray(bindings) || bindings.filter(x => x.type === 'd1' &&
-      x.name === 'DB' && (x.id === REGISTRY || x.database_id === REGISTRY)).length !== 1 ||
-      bindings.some(x => x.type === 'hyperdrive' &&
-      (x.id === row.config_id || x.name === row.binding_name))) fail('still bound in deployed Worker');
+  // `version_id` is the live deployment API field. Settings alone can be
+  // newer than the version actually receiving traffic; verify its immutable
+  // resources before permitting the D1 tombstone.
+  const activeVersionId = versions[0].version_id;
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(activeVersionId ?? '')) {
+    fail('active production version ID unconfirmed');
+  }
   const expectedBindings = source.hyperdrive ?? [];
-  const deployedBindings = bindings.filter(x => x.type === 'hyperdrive');
-  if (deployedBindings.length !== expectedBindings.length || expectedBindings.some(e =>
-      deployedBindings.filter(x => x.id === e.id && x.name === e.binding).length !== 1)) {
-    fail('deployed Hyperdrive manifest drift');
+  function assertReviewedSettings(settings) {
+    const bindings = settings?.bindings;
+    if (!Array.isArray(bindings) || bindings.filter(x => x.type === 'd1' &&
+        x.name === 'DB' && (x.id === REGISTRY || x.database_id === REGISTRY)).length !== 1 ||
+        bindings.some(x => x.type === 'hyperdrive' &&
+        (x.id === row.config_id || x.name === row.binding_name))) fail('still bound in deployed Worker');
+    const deployedBindings = bindings.filter(x => x.type === 'hyperdrive');
+    if (deployedBindings.length !== expectedBindings.length || expectedBindings.some(e =>
+        deployedBindings.filter(x => x.id === e.id && x.name === e.binding).length !== 1)) {
+      fail('deployed Hyperdrive manifest drift');
+    }
+  }
+  assertReviewedSettings(await cloud('/workers/scripts/database-mcp-worker/settings'));
+  // The deployable=true API explicitly ignores pagination and returns all
+  // rollback-eligible versions. Missing/ambiguous inventory cannot prove safety.
+  const rollback = await cloud('/workers/scripts/database-mcp-worker/versions?deployable=true');
+  if (!Array.isArray(rollback?.items) || rollback.items.length === 0 ||
+      rollback.items.length > 100 || new Set(rollback.items.map(v=>v.id)).size !== rollback.items.length) {
+    fail('rollback reference inventory unavailable');
+  }
+  if (!rollback.items.some(v => v.id === activeVersionId)) {
+    fail('active production version absent from rollback inventory');
+  }
+  let verifiedLive = false;
+  for (const version of rollback.items) {
+    if (!/^[0-9a-f-]{36}$/i.test(version.id ?? '')) fail('rollback reference identity invalid');
+    const detail = await cloud('/workers/scripts/database-mcp-worker/versions/' + version.id);
+    if (detail?.id !== version.id || !Array.isArray(detail.resources?.bindings) ||
+        detail.resources.bindings.some(b=>b.type==='hyperdrive' &&
+          (b.id===row.config_id || b.name===row.binding_name))) fail('rollback version reference remains or is unconfirmed');
+    if (version.id === activeVersionId) {
+      const liveBindings = detail.resources.bindings;
+      const remaining = liveBindings.filter(b=>b.type==='hyperdrive');
+      if (liveBindings.filter(b=>b.type==='d1' && b.name==='DB' &&
+          (b.database_id===REGISTRY || b.id===REGISTRY)).length!==1 ||
+          remaining.length!==expectedBindings.length || expectedBindings.some(e=>
+            remaining.filter(b=>b.id===e.id && b.name===e.binding).length!==1)) {
+        fail('live production version binding inventory differs from reviewed release');
+      }
+      verifiedLive = true;
+    }
+  }
+  if (!verifiedLive) fail('active version was not verified');
+  // A logical connection must not be tombstoned while another Worker can
+  // still use its config, including a rollback-eligible immutable version.
+  // deployable=true explicitly ignores pagination; fail closed on unknown
+  // account script inventories or version lists, without deleting resources.
+  const versionIdPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  async function workerInventory() {
+    const envelope = await cloud('/workers/scripts', 'GET', undefined, true);
+    const rows = envelope.result;
+    const pages = envelope.result_info;
+    if (!Array.isArray(rows) || rows.length === 0 || rows.length >= 100 ||
+        (pages && (pages.total_pages !== 1 ||
+          (pages.page !== undefined && pages.page !== 1) ||
+          (pages.total_count !== undefined && pages.total_count !== rows.length) ||
+          (pages.count !== undefined && pages.count !== rows.length))))
+      fail('account Worker inventory incomplete');
+    return rows;
+  }
+  const scriptInventory = await workerInventory();
+  const scriptNames = scriptInventory.map(x => x.id ?? x.name);
+  if (scriptNames.some(n => typeof n !== 'string' || !n) ||
+      new Set(scriptNames).size !== scriptNames.length ||
+      !scriptNames.includes('database-mcp-worker'))
+    fail('account Worker identity inventory incomplete');
+  const hasRetiredBinding = bs => bs.some(b => b.type === 'hyperdrive' &&
+    (b.id === row.config_id || b.name === row.binding_name));
+  const otherWorkers = [];
+  for (const name of scriptNames.filter(n => n !== 'database-mcp-worker')) {
+    const path = '/workers/scripts/' + encodeURIComponent(name);
+    const current = await cloud(path + '/settings');
+    if (!Array.isArray(current?.bindings)) fail('other Worker settings unavailable');
+    if (hasRetiredBinding(current.bindings)) fail('another Worker still references config');
+    const deployment = await cloud(path + '/deployments');
+    const liveVersions = deployment?.deployments?.[0]?.versions;
+    if (!Array.isArray(liveVersions) || liveVersions.length !== 1 ||
+        liveVersions[0].percentage !== 100 ||
+        !versionIdPattern.test(liveVersions[0].version_id ?? ''))
+      fail('other Worker deployment unconfirmed');
+    const otherVersions = await cloud(path + '/versions?deployable=true');
+    const ids = otherVersions?.items?.map(v => v.id);
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 ||
+        new Set(ids).size !== ids.length ||
+        ids.some(id => !versionIdPattern.test(id)) ||
+        !ids.includes(liveVersions[0].version_id))
+      fail('other Worker rollback inventory incomplete');
+    for (const id of ids) {
+      const detail = await cloud(path + '/versions/' + id);
+      if (detail?.id !== id || !Array.isArray(detail.resources?.bindings))
+        fail('other Worker rollback detail unavailable');
+      if (hasRetiredBinding(detail.resources.bindings))
+        fail('another Worker rollback version references config');
+    }
+    otherWorkers.push({path,activeId:liveVersions[0].version_id,ids:ids.sort()});
+    const again = await cloud(path + '/deployments');
+    if (again?.deployments?.[0]?.versions?.length !== 1 ||
+        again.deployments[0].versions[0].percentage !== 100 ||
+        again.deployments[0].versions[0].version_id !== liveVersions[0].version_id)
+      fail('other Worker deployment changed during check');
+  }
+  const inventoryAgain = await workerInventory();
+  if (!Array.isArray(inventoryAgain) || inventoryAgain.length !== scriptNames.length ||
+      inventoryAgain.map(x => x.id ?? x.name).sort().some((n,i) =>
+        n !== [...scriptNames].sort()[i]))
+    fail('account Worker inventory changed during check');
+  for (const {path,activeId,ids} of otherWorkers) {
+    const latest = await cloud(path + '/settings');
+    if (!Array.isArray(latest?.bindings) || hasRetiredBinding(latest.bindings))
+      fail('other Worker settings changed during check');
+    const versionsAgain = await cloud(path + '/versions?deployable=true');
+    if (!Array.isArray(versionsAgain?.items) ||
+        versionsAgain.items.length !== ids.length ||
+        versionsAgain.items.map(x => x.id).sort().some((id,i) => id !== ids[i]))
+      fail('other Worker rollback inventory changed during check');
+    const deploymentAgain = await cloud(path + '/deployments');
+    if (deploymentAgain?.deployments?.[0]?.versions?.length !== 1 ||
+        deploymentAgain.deployments[0].versions[0].percentage !== 100 ||
+        deploymentAgain.deployments[0].versions[0].version_id !== activeId)
+      fail('other Worker deployment changed during check');
   }
   const shared = await sql('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',
     [connectionId, row.config_id, row.binding_name]);
   if (shared.results?.[0]?.n !== 0) fail('another D1 connection references this config');
+  // Close an avoidable time-of-check-to-deletion window if another release
+  // changed the live Worker while rollback resources were being examined.
+  const liveAgain = await cloud('/workers/scripts/database-mcp-worker/deployments');
+  if (liveAgain?.deployments?.[0]?.versions?.length!==1 ||
+      liveAgain.deployments[0].versions[0].percentage!==100 ||
+      liveAgain.deployments[0].versions[0].version_id!==activeVersionId) {
+    fail('live production deployment changed during retirement verification');
+  }
+  // A different version may become rollback-eligible while other Workers are
+  // scanned, without changing the currently serving production version.
+  const latestOwnRollback = await cloud('/workers/scripts/database-mcp-worker/versions?deployable=true');
+  const initialOwnIds = rollback.items.map(v => v.id).sort();
+  if (!Array.isArray(latestOwnRollback?.items) ||
+      latestOwnRollback.items.length !== initialOwnIds.length ||
+      latestOwnRollback.items.map(v => v.id).sort().some((id,i) => id !== initialOwnIds[i]))
+    fail('database Worker rollback inventory changed');
+  // Current script settings may change independently of the immutable live version.
+  // Recheck immediately before the D1 tombstone after scanning all rollback versions.
+  assertReviewedSettings(await cloud('/workers/scripts/database-mcp-worker/settings'));
   // No upstream delete: older retained Worker versions, other apps, and shared
   // CA are outside this D1 CAS. They remain subject to separate human review.
   try {
-    const deleted = await sql("DELETE FROM database_connections WHERE id=? AND revision=? AND transport='hyperdrive' AND status='disabled' AND config_id=? AND binding_name=?",
+    const deleted = await sql("DELETE FROM database_connections WHERE id=? AND revision=? AND transport='hyperdrive' AND status='disabled' AND in_flight_count=0 AND config_id=? AND binding_name=? AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations WHERE logical_id=database_connections.id AND phase IN ('pending','running','awaiting_confirmation','unknown'))",
       [connectionId, expectedRevision, row.config_id, row.binding_name]);
     if (deleted.meta?.changes !== 1) fail('stale revision or deletion conflict');
   } catch {

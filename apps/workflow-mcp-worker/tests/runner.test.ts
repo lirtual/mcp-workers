@@ -2488,3 +2488,85 @@ test('non-MCP result.emit keeps the existing 30-second native Step timeout',asyn
   ]);
   assert.equal((await service.result(started.run_id)).status,'succeeded');
 });
+
+test('reviewed IMA append: exactly one effect, no replay on lost ACK, revoke blocks new dispatch',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  const noteId='7521947772530780';
+  let written='',calls=0,dropAcknowledgment=false;
+  const makePeer=()=>{
+    const server=new McpServer({name:'workflow-reviewed-append-fixture',version:'0.1.0'},
+      {capabilities:{tools:{}}});
+    server.registerTool('ima_append_note',{
+      inputSchema:z.object({note_id:z.string(),content:z.string().min(1)}).strict(),
+      annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false},
+    },async({note_id,content})=>{
+      assert.equal(note_id,noteId);
+      calls++;written+=content;
+      return {content:[{type:'text',text:'appended'}]};
+    });
+    return server;
+  };
+  const peer=createMcpHandler(makePeer,{legacy:'stateless'});
+  const oldFetch=globalThis.fetch;
+  const url=ECHO_GRANT.endpoint;
+  const handler=async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    assert.equal(request.url,url);
+    const isCall=request.method==='POST' &&
+      (await request.clone().json() as {method?:string}).method==='tools/call';
+    const response=await peer.fetch(request);
+    if(dropAcknowledgment&&isCall)throw Error('simulated_ack_lost_after_append');
+    return response;
+  };
+  globalThis.fetch=handler as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  const client=new Client({name:'append-schema-fixture',version:'0.1.0'});
+  const transport=new StreamableHTTPClientTransport(new URL(url),{fetch:handler as typeof fetch});
+  let schema:unknown;
+  try{
+    await client.connect(transport);
+    const found=(await client.listTools()).tools.find(x=>x.name==='ima_append_note');
+    assert.ok(found);
+    assert.equal(reviewedWriteTool(found),true);
+    schema=found.inputSchema;
+  }finally{await client.close().catch(()=>{});}
+  const definition={version:1,name:'Reviewed append one effect',steps:[{
+    id:'append',uses:'mcp.call',with:{endpoint:url,tool:'ima_append_note',
+      scope:'write',input_schema:schema,arguments:{note_id:noteId,content:'safe append'}},
+  }]};
+  const compiled=await compilePlan(definition);
+  const grant:ReadonlyOperation={endpoint:url,tool:'ima_append_note',scope:'write',
+    schema_digest:String(compiled.plan.steps[0].with.schema_digest)};
+  const created=await service.create(JSON.stringify(definition));
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant],true),
+    /mcp_write_approval_required/);
+  assert.equal(calls,0);
+  await service.publish(created.workflow_id,1,[grant],true,false,[],[],[],false,[],false,true);
+  const first=await service.start(created.workflow_id,{});
+  await run(first.run_id);
+  assert.equal((await service.result(first.run_id)).status,'succeeded');
+  assert.equal(written,'safe append');
+  assert.equal(calls,1);
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM mcp_dispatch_fences WHERE run_id=?')
+    .get(first.run_id)?.n,1);
+  await run(first.run_id);
+  assert.equal(calls,1);
+  dropAcknowledgment=true;
+  const unknown=await service.start(created.workflow_id,{});
+  await run(unknown.run_id);
+  const result=await service.result(unknown.run_id);
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.error_code,'external_outcome_unknown');
+  assert.equal(calls,2);
+  assert.equal(written,'safe appendsafe append');
+  dropAcknowledgment=false;
+  await run(unknown.run_id);
+  assert.equal(calls,2);
+  await service.portalConnectionRevoke();
+  const revoked=await service.start(created.workflow_id,{});
+  await run(revoked.run_id);
+  const denied=await service.result(revoked.run_id);
+  assert.equal(denied.status,'failed');
+  assert.equal(denied.steps[0]?.error_code,'portal_connection_revoked');
+  assert.equal(calls,2);
+});

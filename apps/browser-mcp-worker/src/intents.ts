@@ -16,9 +16,9 @@ type Answer = {operation_id?:string;state?:State;tab_id?:number|null;error_code?
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const endpoint=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const sevenDays=7*86400000, fiveMinutes=5*60000;
-type ApprovalExpiryReason = "approval_deadline_expired" | "approval_endpoint_changed" | "approval_extension_context_invalid";
+type ApprovalExpiryReason = "approval_deadline_expired" | "approval_endpoint_changed" | "approval_extension_context_invalid" | "approval_retired";
 const approvalExpiryReasons:ReadonlySet<string>=new Set<ApprovalExpiryReason>([
-  "approval_deadline_expired","approval_endpoint_changed","approval_extension_context_invalid"
+  "approval_deadline_expired","approval_endpoint_changed","approval_extension_context_invalid","approval_retired"
 ]);
 
 // Only these static, non-content-bearing denial codes may enter durable receipts.
@@ -28,13 +28,11 @@ const failureActions:Record<string,string>={
   stale_element:"reobserve_target_before_new_intent",
   sensitive_surface:"blocked_sensitive_surface",
   stopped:"owner_must_resume_locally",
-  approval_required:"wait_for_owner_approval",
-  preparation_unavailable:"extension_prepare_failed; confirm installed extension supports owner approval before a new intent",
+  preparation_unavailable:"extension_prepare_failed; confirm installed extension version before a new intent",
   prepare_validation_unavailable:"extension_target_validation_failed; check local extension readiness",
   prepare_context_changed:"extension_authorization_or_session_changed; verify enabled Profile and reconnect",
   prepare_storage_unavailable:"extension_session_prepare_storage_failed; check extension session storage",
   prepare_expired:"extension_prepare_deadline_invalid; do not reuse this operation",
-  approval_prepare_invalid:"owner_prepare_proof_rejected; confirm installed extension version before a new intent",
   capacity_exceeded:"review_operation_capacity",
   ordinary_window_required:"owner_must_open_ordinary_window"
 };
@@ -99,18 +97,9 @@ export class IntentLedger {
     const key=await crypto.subtle.importKey("raw",bytes(this.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
     return hex(await crypto.subtle.sign("HMAC",key,bytes(canonical)));
   }
-  async seal(value:unknown):Promise<string> {
-    const key=await crypto.subtle.importKey("raw",bytes(this.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
-    return hex(await crypto.subtle.sign("HMAC",key,bytes(JSON.stringify(value))));
-  }
-  async matchesCommand(command:Command,operation_id:string):Promise<boolean> {
-    if(!validCommand(command))return false;
-    const row=this.row(command.endpoint_id,command.intent_key);
-    return !!row&&row.operation_id===operation_id&&row.commitment===await this.commitment(command);
-  }
-  approvalState(endpoint_id:string,intent_key:string,state:"pending_approval"|"denied"|"expired"|"admitted",reason?:ApprovalExpiryReason,now=Date.now()) {
-    this.sql.exec("UPDATE browser_intents SET state=?,updated_at=?,result_code=CASE WHEN ?='expired' THEN ? ELSE result_code END WHERE endpoint_id=? AND intent_key=? AND state IN ('admitted','pending_approval')",
-      state,now,state,reason??null,endpoint_id,intent_key);
+  retirePendingApprovals(now=Date.now()) {
+    // On upgrade, a prior manual-approval request must never become dispatchable.
+    this.sql.exec("UPDATE browser_intents SET state='expired',updated_at=?,result_code='approval_retired' WHERE state='pending_approval'",now);
   }
   byOperation(operation_id:string):Row|undefined {
     return this.sql.exec<Row>("SELECT * FROM browser_intents WHERE operation_id=?",operation_id).toArray()[0];

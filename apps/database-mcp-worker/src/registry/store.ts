@@ -9,6 +9,8 @@ export interface RegistryMetadata {
   dialect: Dialect;
   transport: DatabaseTransport;
   status: RegistryStatus;
+  /** Active Hyperdrive executions with unknown completion remain persistently reserved. */
+  in_flight_count?: number;
   revision: number;
   created_at: number;
   updated_at: number;
@@ -59,6 +61,7 @@ async function dbCall<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
   catch (error) {
     if (error instanceof PublicError) throw error;
+    if (error instanceof Error && /hyperdrive reservation conflict/i.test(error.message)) conflict();
     // Driver diagnostics can contain SQL and stored credential material.
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is unavailable.');
   }
@@ -66,7 +69,7 @@ async function dbCall<T>(operation: () => Promise<T>): Promise<T> {
 export async function listRegistryConnections(db: Db): Promise<RegistryMetadata[]> {
   if (!db) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is unavailable.');
   return dbCall(async () => {
-    const { results } = await db.prepare('SELECT id,dialect,transport,status,revision,created_at,updated_at FROM database_connections ORDER BY id LIMIT 11').all<RegistryMetadata>();
+    const { results } = await db.prepare('SELECT id,dialect,transport,status,revision,created_at,updated_at,in_flight_count FROM database_connections ORDER BY id LIMIT 11').all<RegistryMetadata>();
     if (results.length > 10 || results.some(row => !['direct','hyperdrive'].includes(row.transport))) {
       throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is invalid.');
     }
@@ -103,12 +106,16 @@ export async function createRegistryConnection(db: Db, data: NewRegistryConnecti
     const result = await db.prepare(`INSERT INTO database_connections
       (id,dialect,transport,status,ciphertext,key_id,config_id,binding_name,revision,created_at,updated_at)
       SELECT ?,?,?,'disabled',?,?,?,?,1,?,?
-      WHERE (SELECT COUNT(*) FROM database_connections) < 10
-        AND NOT EXISTS (SELECT 1 FROM retired_connection_ids WHERE id=?)`)
+      WHERE (SELECT COUNT(*) FROM database_connections) +
+        (SELECT COUNT(*) FROM hyperdrive_operations WHERE action='create'
+           AND phase IN ('pending','running','awaiting_confirmation','unknown')) < 10
+        AND NOT EXISTS (SELECT 1 FROM retired_connection_ids WHERE id=?)
+        AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations WHERE logical_id=?
+           AND phase IN ('pending','running','awaiting_confirmation','unknown'))`)
       .bind(data.id, data.dialect, transport,
         transport === 'direct' ? data.ciphertext : null, transport === 'direct' ? data.keyId : null,
         transport === 'hyperdrive' ? data.configId : null, transport === 'hyperdrive' ? data.bindingName : null,
-        now, now, data.id).run();
+        now, now, data.id, data.id).run();
     if (result.meta.changes !== 1) {
       const retired = await db.prepare('SELECT id FROM retired_connection_ids WHERE id=?').bind(data.id).first();
       if (retired) conflict();
@@ -116,7 +123,7 @@ export async function createRegistryConnection(db: Db, data: NewRegistryConnecti
     }
   } catch (error) {
     if (error instanceof PublicError) throw error;
-    if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) conflict();
+    if (error instanceof Error && /UNIQUE constraint failed|hyperdrive reservation conflict/i.test(error.message)) conflict();
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is unavailable.');
   }
 }

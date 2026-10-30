@@ -48,12 +48,19 @@ export const NONTERMINAL_NATIVE_STATUSES=Object.freeze([
 ]);
 export function verifyNativeInstanceResponse(status,body){
  if(!NONTERMINAL_NATIVE_STATUSES.includes(status))fail('unsupported native status');
- const count=body?.result_info?.total_count;
- if(body?.success!==true||!Array.isArray(body?.result)||
-    !Number.isSafeInteger(count)||count<0||
-    !Number.isSafeInteger(body?.result_info?.count)||
-    body.result_info.count!==body.result.length)fail('native inventory incomplete');
- if(count!==0||body.result.length!==0)fail('old native Workflow instances are still '+status);
+ const info=body?.result_info;
+ // An empty current page is not an empty inventory if another page exists.
+ // Cloudflare's total_count is deprecated; require no results AND no next cursor.
+ if(body?.success!==true||!Array.isArray(body.result)||
+    !Number.isSafeInteger(info?.count)||info.count!==body.result.length||
+    (info?.cursor!==undefined&&info.cursor!==null&&info.cursor!=='')||
+    (info?.next_cursor!==undefined&&info.next_cursor!==null&&info.next_cursor!=='')||
+    (info?.total_count!==undefined&&(!Number.isSafeInteger(info.total_count)||info.total_count<0))||
+    (info?.total_pages!==undefined&&(!Number.isSafeInteger(info.total_pages)||info.total_pages>1)))
+  fail('native inventory incomplete');
+ if(body.result.length!==0||info.count!==0||
+    (info.total_count!==undefined&&info.total_count!==0))
+  fail('old native Workflow instances are still '+status);
  return true;
 }
 export async function checkNativeWorkflowDrain(account,headers,fetcher=fetch){

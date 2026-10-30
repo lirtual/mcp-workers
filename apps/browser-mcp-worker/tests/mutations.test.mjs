@@ -54,7 +54,7 @@ test("stale document identity and sensitive URLs never call tab mutation APIs",a
   for(const url of ["file:///etc/passwd","https://accounts.google.com/",
     "http://127.0.0.1/private","https://example.com/logout","https://example.com/delete"]){
     const r=await execute(cmd("tab_open",{url}));
-    assert.equal(r.error_code,url.endsWith("/delete")?"approval_required":"forbidden",url);
+    assert.equal(r.error_code,"forbidden",url);
   }
   assert.equal(calls.filter(x=>["create","update","remove"].includes(x[0])).length,0);
 });
@@ -124,7 +124,7 @@ test("shared groups with the same neutral title are not adopted automatically",a
   assert.equal(calls.filter(x=>x[0]==="name-group").length,1);
 });
 
-test("consequential GET query and encoded routes are denied until independent owner approval exists",async()=>{
+test("consequential GET query and encoded routes are denied without a remote approval bypass",async()=>{
   const {execute,calls}=setup();
   for(const url of [
     "https://example.com/operations?confirm=1",
@@ -134,7 +134,7 @@ test("consequential GET query and encoded routes are denied until independent ow
     "https://example.com/%ZZ/confirm"
   ]){
     const r=await execute(cmd("tab_open",{url}));
-    assert.equal(r.error_code,url.includes("%ZZ")?"forbidden":"approval_required",url);
+    assert.equal(r.error_code,"forbidden",url);
   }
   assert.equal(calls.filter(x=>x[0]==="create").length,0);
 });

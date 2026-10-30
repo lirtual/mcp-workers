@@ -150,7 +150,7 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
     assert.throws(() => parseDatabaseCutoverIds(invalid), /expected IDs|JSON invalid/);
   }
   const result = counts => [{ success: true, results: [counts] }];
-  const valid = { migration_count: 2, record_count: 2, preserved_count: 2, active_count: 2, retired_count: 0, reused_count: 0, malformed_count: 0 };
+  const valid = { migration_count: 3, resource_claim_column: 1, apply_receipt_column: 1, inflight_column: 1, inflight_delete_trigger: 1, inflight_rebind_trigger: 1, reviewed_rebind_trigger: 1, retired_config_column: 1, retired_binding_column: 1, retired_resource_trigger: 1, reserved_count: 0, record_count: 2, preserved_count: 2, active_count: 2, retired_count: 0, reused_count: 0, malformed_count: 0 };
   assert.deepEqual(verifyDatabaseD1Readiness(result(valid), 2),
     { record_count: 2, preserved_count: 2, active_count: 2 });
   assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 0, preserved_count: 0 }), 2),
@@ -173,8 +173,25 @@ test("Database D1 cutover rejects missing reviewed IDs without querying upstream
 });
 
 
+test('Database release fails closed without complete persisted drain-fence schema', () => {
+  const sql=databaseD1ReadinessSql(['source_mysql']);
+  for(const name of ['inflight_column','inflight_delete_trigger','inflight_rebind_trigger','reviewed_rebind_trigger','retired_config_column','retired_binding_column','retired_resource_trigger']) {
+    assert.ok(sql.includes(' AS '+name),'Release query must prove '+name);
+  }
+  const base={migration_count:3,resource_claim_column:1,apply_receipt_column:1,
+    inflight_column:1,inflight_delete_trigger:1,inflight_rebind_trigger:1,reviewed_rebind_trigger:1,retired_config_column:1,retired_binding_column:1,retired_resource_trigger:1,
+    reserved_count:0,record_count:1,preserved_count:1,active_count:1,
+    retired_count:0,reused_count:0,malformed_count:0};
+  const wrap=row=>[{success:true,results:[row]}];
+  assert.doesNotThrow(()=>verifyDatabaseD1Readiness(wrap(base),1,'registry'));
+  for(const bad of [{inflight_column:0},{inflight_delete_trigger:0},{inflight_rebind_trigger:0},
+    {inflight_column:2},{inflight_rebind_trigger:2}, {reviewed_rebind_trigger:0}, {inflight_delete_trigger:null},{retired_config_column:0},{retired_binding_column:0},{retired_resource_trigger:0}]){
+    assert.throws(()=>verifyDatabaseD1Readiness(wrap({...base,...bad}),1,'registry'));
+  }
+});
+
 test("subsequent Database releases allow updated 0–10 connection inventory while retaining schema/retirement checks", () => {
-  const base = { migration_count: 2, record_count: 0, preserved_count: 0,
+  const base = { migration_count: 3, resource_claim_column: 1, apply_receipt_column: 1, inflight_column: 1, inflight_delete_trigger: 1, inflight_rebind_trigger: 1, reviewed_rebind_trigger: 1, retired_config_column: 1, retired_binding_column: 1, retired_resource_trigger: 1, reserved_count: 0, record_count: 0, preserved_count: 0,
     active_count: 0, retired_count: 2, reused_count: 0, malformed_count: 0 };
   const result = row => [{ success: true, results: [row] }];
   assert.deepEqual(verifyDatabaseD1Readiness(result(base), 2, 'registry'),
@@ -187,7 +204,7 @@ test("subsequent Database releases allow updated 0–10 connection inventory whi
   for (const bad of [
     { record_count: 11 }, { reused_count: 1 }, { malformed_count: 1 },
     { migration_count: 1 }, { active_count: 1 }, { preserved_count: 3 },
-    { retired_count: -1 }
+    { retired_count: -1 }, { resource_claim_column: 0 }, { apply_receipt_column: 0 }, { reserved_count: 11 }
   ]) assert.throws(() => verifyDatabaseD1Readiness(result({ ...base, ...bad }), 2, 'registry'));
   assert.throws(() => verifyDatabaseD1Readiness(result(base), 2, 'invalid'), /phase invalid/);
 });
@@ -198,9 +215,15 @@ test("generated Database D1 release SQL executes against actual SQLite schema", 
     sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0001_connections.sql",
       import.meta.url), "utf8"));
     sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0002_transport_and_retired_ids.sql", import.meta.url), "utf8"));
+    for (const name of ['0003_hyperdrive_operations.sql']) {
+      sql.exec(readFileSync(new URL('../apps/database-mcp-worker/migrations/' + name,import.meta.url),'utf8'));
+    }
     sql.exec("CREATE TABLE d1_migrations (name TEXT NOT NULL)");
     sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0001_connections.sql");
     sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0002_transport_and_retired_ids.sql");
+    for(const name of ['0003_hyperdrive_operations.sql']) {
+      sql.prepare('INSERT INTO d1_migrations(name) VALUES (?)').run(name);
+    }
     const add = sql.prepare("INSERT INTO database_connections(id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at) VALUES (?, ?, 'direct', ?, ?, ?, 1,1,1)");
     add.run("source_mysql", "mysql", "active", "x".repeat(48), "key_v1");
     add.run("source_pg", "postgres", "disabled", "y".repeat(48), "key_v1");
@@ -215,6 +238,11 @@ test("generated Database D1 release SQL executes against actual SQLite schema", 
     assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /inventory invalid/);
     sql.prepare("DELETE FROM database_connections WHERE id=?").run("source_mysql");
     assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /missing reviewed legacy/);
+    verifyDatabaseD1Readiness(execute(), 2, 'registry');
+    // Simulate the pre-apply schema; the new handoff trigger depends on this column.
+    sql.exec('DROP TRIGGER database_connection_respects_reservation');
+    sql.exec('ALTER TABLE hyperdrive_operations DROP COLUMN apply_run_id');
+    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2, 'registry'), /lifecycle migration not applied/);
   } finally {
     sql.close();
   }

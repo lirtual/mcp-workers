@@ -37,12 +37,16 @@ test('native Workflow drain gate fails closed for live or incomplete status inve
  for(const status of NONTERMINAL_NATIVE_STATUSES){
   assert.equal(verifyNativeInstanceResponse(status,{
    success:true,result:[],result_info:{count:0,total_count:0,per_page:100}}),true);
+  assert.equal(verifyNativeInstanceResponse(status,{success:true,result:[],result_info:{count:0}}),true);
   for(const value of [
    {success:true,result:[{id:'active'}],result_info:{count:1,total_count:1}},
    {success:true,result:[],result_info:{count:0,total_count:1}},
-   {success:true,result:[],result_info:{count:0}},
    {success:false,result:[],result_info:{count:0,total_count:0}},
-   {success:true,result:[],result_info:{count:10,total_count:0}}
+   {success:true,result:[],result_info:{count:10,total_count:0}},
+   {success:true,result:[],result_info:{count:0,total_count:0,cursor:'next-page'}},
+   {success:true,result:[],result_info:{count:0,next_cursor:'next-page'}},
+   {success:true,result:[],result_info:{count:0,total_pages:2}},
+   {success:true,result:[],result_info:{count:0,total_count:-1}}
   ])assert.throws(()=>verifyNativeInstanceResponse(status,value),/blocked/);
  }
 });

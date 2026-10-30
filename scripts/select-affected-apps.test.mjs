@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { selectAffectedApps, selectionDetails, APPLICATIONS, RELEASE_WORKERS } from './select-affected-apps.mjs';
+import { selectAffectedApps, selectionDetails, APPLICATIONS, RELEASE_WORKERS, selectionForEvent } from './select-affected-apps.mjs';
 
 test('an ssh-mcp-worker-only change selects and schedules its app check', () => {
   const selection = selectionDetails(['apps/ssh-mcp-worker/src/hosts.ts']);
@@ -46,11 +45,8 @@ test('GitHub Actions MCP is CI-checked and manually deployable from main', async
 test('retired Preview cannot be redeployed, and production still requires main', async () => {
   const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(workflow, /remote-control-v2-preview|deploy-preview:|wrangler\\.v2-preview/);
-  const run=(worker,ref)=>execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
-    cwd:new URL('../',import.meta.url),
-    env:{...process.env,EVENT_NAME:'workflow_dispatch',MANUAL_WORKER:worker,MANUAL_REF:ref},
-    encoding:'utf8'
-  });
+  const run=(worker,ref)=>'Selected applications: '+selectionForEvent({EVENT_NAME:'workflow_dispatch',
+    MANUAL_WORKER:worker,MANUAL_REF:ref}).selected.join(' ');
   assert.throws(()=>run('remote-control-v2-preview','refs/heads/topic-review'),/Unsupported manual Worker selection/);
   assert.throws(()=>run('remote-control-v2-preview','refs/heads/main'),/Unsupported manual Worker selection/);
   assert.throws(()=>run('remote-control-mcp-worker','refs/heads/topic-review'),/Unsupported manual Worker selection/);
@@ -69,11 +65,8 @@ test('Email MCP is CI-checked and only manually releasable from main', async () 
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('email-mcp-worker'));
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.equal(release.includes('\n          - email-mcp-worker\n'), true);
-  const run = (ref) => execFileSync(process.execPath, ['scripts/select-affected-apps.mjs'], {
-    cwd: new URL('../', import.meta.url),
-    env: { ...process.env, EVENT_NAME: 'workflow_dispatch', MANUAL_WORKER: 'email-mcp-worker', MANUAL_REF: ref },
-    encoding: 'utf8',
-  });
+  const run = ref => selectionForEvent({EVENT_NAME:'workflow_dispatch',
+    MANUAL_WORKER:'email-mcp-worker',MANUAL_REF:ref}).selected.join(' ');
   assert.match(run('refs/heads/main'), /email-mcp-worker/);
   assert.throws(() => run('refs/heads/other'), /Unsupported manual Worker selection/);
 });
@@ -96,14 +89,23 @@ test('retired Weixin Worker is neither test-selected nor deployable',async()=>{
  assert.ok(!APPLICATIONS.includes('weixin-mcp-worker'));
  assert.ok(!RELEASE_WORKERS.includes('weixin-mcp-worker'));
  assert.deepEqual(selectAffectedApps(['apps/weixin-mcp-worker/poc/protocol.mjs']),[]);
- const run=(event)=>execFileSync(process.execPath,['scripts/select-affected-apps.mjs'],{
-  cwd:new URL('../',import.meta.url),
-  env:{...process.env,EVENT_NAME:event,MANUAL_WORKER:'weixin-mcp-worker',
-    REUSABLE_WORKER:event==='workflow_call'?'weixin-mcp-worker':'',
-    MANUAL_REF:'refs/heads/main'},encoding:'utf8'
- });
+ const run=event=>selectionForEvent({EVENT_NAME:event,MANUAL_WORKER:'weixin-mcp-worker',
+    REUSABLE_WORKER:event==='workflow_call'?'weixin-mcp-worker':'',MANUAL_REF:'refs/heads/main'});
  assert.throws(()=>run('workflow_dispatch'),/Unsupported manual Worker selection/);
  assert.throws(()=>run('workflow_call'),/Unsupported reusable Worker selection/);
  const release=await readFile(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
  assert.ok(!release.includes('\n          - weixin-mcp-worker\n'));
+});
+
+
+test('candidate CI selects full Database checks only for Owner/repo and exact db476 UUID branch',()=>{
+  const env={EVENT_NAME:'workflow_dispatch',MANUAL_WORKER:'database-mcp-worker',
+    MANUAL_REF:'refs/heads/db476-12345678-1234-1234-1234-123456789abc',
+    GITHUB_REPOSITORY:'lirtual/mcp-workers',GITHUB_ACTOR:'lirtual'};
+  const result=selectionForEvent(env);
+  assert.deepEqual(result.selected,['database-mcp-worker']);
+  assert.equal(selectionDetails(['apps/database-mcp-worker/wrangler.jsonc']).databaseChanged,true);
+  for(const [key,value] of [['GITHUB_ACTOR','attacker'],['GITHUB_REPOSITORY','lirtual/fork'],
+    ['MANUAL_REF','refs/heads/db476-invalid'],['MANUAL_WORKER','email-mcp-worker']])
+    assert.throws(()=>selectionForEvent({...env,[key]:value}),/Unsupported manual Worker selection/);
 });

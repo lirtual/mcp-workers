@@ -3,7 +3,7 @@ import {httpOperation,type HttpOperation} from './http-action.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
-import {REVIEWED_WRITE_TOOL,reviewedWriteArguments} from './mcp-write-contract.ts';
+import {reviewedWriteArguments} from './mcp-write-contract.ts';
 import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
@@ -659,8 +659,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool',stepPath+'/with/tool');
       if(withData.scope!=='read'&&withData.scope!=='write')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
       object(withData.arguments,'invalid_step_arguments');
-      if(withData.scope==='write' && (withData.tool!==REVIEWED_WRITE_TOOL ||
-         !reviewedWriteArguments(withData.arguments)))
+      if(withData.scope==='write' && !reviewedWriteArguments(withData.arguments,withData.tool as string))
         throw new PlanError('unreviewed_write_operation',stepPath+'/with');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.

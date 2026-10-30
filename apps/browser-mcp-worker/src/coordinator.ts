@@ -6,10 +6,10 @@ type Endpoint = {
   id: string; alias: string; state: "stopped" | "enabled" | "revoked";
   generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number; offline_deadline?:number|null;
 };
-type SocketAuth = { protocol?:number; endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; approval_origin?:string };
+type SocketAuth = { protocol?:number; endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; };
 type PendingMutation = {
   endpoint_id:string;intent_key:string;generation:number;revision:number;socket:WebSocket;
-  phase:"preparing"|"dispatched";prepared?:()=>void;timer:ReturnType<typeof setTimeout>;
+  phase:"preparing"|"dispatched";timer:ReturnType<typeof setTimeout>;
 };
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store" } });
 const validId = (s: unknown): s is string => typeof s === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(s);
@@ -43,7 +43,6 @@ export class BrowserOwner implements DurableObject {
     const p=this.pendingMutations.get(operation_id);
     if(!p)return;
     clearTimeout(p.timer);
-    p.prepared?.();
     this.pendingMutations.delete(operation_id);
     if(p.phase==="dispatched")this.intents.markUnknown(p.endpoint_id,p.intent_key);
     else this.intents.abort(p.endpoint_id,p.intent_key);
@@ -69,115 +68,17 @@ export class BrowserOwner implements DurableObject {
     this.sql.exec("CREATE TABLE IF NOT EXISTS browser_approvals (operation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, binding TEXT NOT NULL, expires_at INTEGER NOT NULL, nonce_hash TEXT)");
     // Dispatch effects may have occurred before a DO recreation. Never replay them.
     this.intents.recoverUnknown(Date.now());
+    // Existing approval requests had no execute token. Retire them permanently
+    // without granting, dispatching, or deleting any historical receipt.
+    this.intents.retirePendingApprovals();
   }
-  private readonly approvalReads=new Map<string,{socket:WebSocket;resolve:(value:Record<string,unknown>|null)=>void;timer:ReturnType<typeof setTimeout>}>();
-  private expireApprovals(now=Date.now()) {
-    const rows=this.sql.exec<{operation_id:string;expires_at:number}>("SELECT a.operation_id,a.expires_at FROM browser_approvals a JOIN browser_intents i ON i.operation_id=a.operation_id WHERE i.state='pending_approval'").toArray();
-    for(const a of rows){
-      const row=this.intents.byOperation(a.operation_id);if(!row)continue;
-      const e=this.endpoint(row.endpoint_id);
-      if(row.state==="pending_approval"&&(a.expires_at<=now||!e||e.state!=="enabled"||e.generation!==row.generation||e.revision!==row.prepared_revision||!approvalConfig(this.env)))
-        this.intents.approvalState(row.endpoint_id,row.intent_key,"expired",
-          a.expires_at<=now?"approval_deadline_expired":"approval_endpoint_changed");
-    }
-    this.sql.exec("DELETE FROM browser_approvals WHERE expires_at<?",now-7*86400000);
-  }
-  private withApproval<T extends {operation_id?:string;state?:string}>(answer:T) {
-    if(answer.state==="unknown"&&answer.operation_id){
-      const config=approvalConfig(this.env);
-      return {...answer,...(config?{
-        owner_review_url:config.origin+"/owner/unknown/"+answer.operation_id,
-        safe_next_action:"independently_review_unknown; never retry the original effect"
-      }:{safe_next_action:"blocked: independent owner review unavailable; never retry"})};
-    }
-    if(answer.state!=="pending_approval"||!answer.operation_id)return answer;
-    const a=this.sql.exec<{expires_at:number}>("SELECT expires_at FROM browser_approvals WHERE operation_id=?",answer.operation_id).toArray()[0];
-    return {...answer,expires_at:a?.expires_at,approval_url:approvalConfig(this.env)?.origin+"/owner/operations/"+answer.operation_id,safe_next_action:"wait_for_owner_approval"};
-  }
-  private approvalBinding(command:Command,run_id:string,generation:number,revision:number,expires_at:number,context:unknown) {
-    // Includes every actual parameter, exact document/element, top frame, browser
-    // run, grant, connection and deadline. No low-entropy public hash.
-    return this.intents.seal([command.endpoint_id,command.intent_key,command.action,command.tab_id??null,0,
-      command.document_id??null,command.element_id??null,command.url??null,command.text??null,
-      command.key??null,command.delta_y??null,command.value??null,run_id,generation,revision,expires_at,context]);
-  }
-  private async ownerApproval(arg:Record<string,unknown>,decide:boolean):Promise<Response> {
-    if(!approvalConfig(this.env)||!validId(arg.operation_id))return json({error_code:"forbidden"},403);
-    this.expireApprovals();
-    const row=this.intents.byOperation(arg.operation_id);
-    if(!row)return json({error_code:"not_found"},404);
-    if(row.state!=="pending_approval")return json(this.intents.status(row.endpoint_id,row.intent_key));
-    const a=this.sql.exec<{run_id:string;binding:string;expires_at:number;nonce_hash:string|null}>("SELECT * FROM browser_approvals WHERE operation_id=?",row.operation_id).toArray()[0];
-    if(!a)return json({error_code:"expired"},409);
-    if(decide){
-      if(!["approve","deny"].includes(arg.decision as string)||typeof arg.nonce!=="string"||arg.nonce.length!==64||!a.nonce_hash||await hash(arg.nonce)!==a.nonce_hash)return json({error_code:"invalid_nonce"},403);
-      // Consume before any async extension round trip. Concurrent/replayed POSTs
-      // cannot both redeem a nonce, even when the extension or SQLite fails.
-      const consumed=this.sql.exec<{operation_id:string}>("UPDATE browser_approvals SET nonce_hash=NULL WHERE operation_id=? AND nonce_hash=? RETURNING operation_id",row.operation_id,a.nonce_hash).toArray();
-      if(consumed.length!==1)return json({error_code:"invalid_nonce"},403);
-      if(arg.decision==="deny"){
-        this.intents.approvalState(row.endpoint_id,row.intent_key,"denied");
-        return json(this.intents.status(row.endpoint_id,row.intent_key));
-      }
-    }
-    if(this.approvalReads.size>=40)return json({error_code:"busy"},409);
-    const e=this.endpoint(row.endpoint_id)!;
-    const socket=this.state.getWebSockets().find(sock=>{
-      const auth=sock.deserializeAttachment() as SocketAuth|null;
-      return auth?.authenticated&&auth.protocol===2&&auth.endpoint_id===e.id&&auth.generation===e.generation&&
-        typeof auth.last_seen==="number"&&Date.now()-auth.last_seen<60000&&sock.readyState===WebSocket.OPEN;
-    });
-    const expire=(reason:"approval_deadline_expired"|"approval_endpoint_changed"|"approval_extension_context_invalid"="approval_extension_context_invalid")=>{
-      this.intents.approvalState(row.endpoint_id,row.intent_key,"expired",reason);
-      return json(this.intents.status(row.endpoint_id,row.intent_key));
-    };
-    // A temporary transport failure must not consume a still-valid owner proposal.
-    // Never return a review nonce or execute a command without a fresh extension check.
-    const retryView=()=>a.expires_at<=Date.now()?expire("approval_deadline_expired"):json({operation_id:row.operation_id,
-      state:"pending_approval",expires_at:a.expires_at,error_code:"owner_transport_unavailable",
-      safe_next_action:"retry_same_owner_link_before_expiry"},503);
-    if(!socket)return decide?expire():retryView();
-    if(decide){
-      if(this.admittingEndpoints.has(e.id)||this.intents.hasDispatching(e.id)||[...this.pendingReads.values()].some(p=>p.endpoint_id===e.id)||[...this.pendingMutations.values()].some(p=>p.endpoint_id===e.id))return expire();
-      this.admittingEndpoints.add(e.id);
-    }
-    try {
-      const request_id=crypto.randomUUID();
-      const proposal=await new Promise<Record<string,unknown>|null>(resolve=>{
-        const timer=setTimeout(()=>{this.approvalReads.delete(request_id);resolve(null);},5000);
-        this.approvalReads.set(request_id,{socket,resolve,timer});
-        try{socket.send(JSON.stringify({type:"approval_request",request_id,operation_id:row.operation_id,generation:e.generation}));}
-        catch{clearTimeout(timer);this.approvalReads.delete(request_id);resolve(null);}
-      });
-      // A lost response is not proof the bound command or consent changed.
-      // A concrete mismatching response still expires the unsafe proposal.
-      if(!proposal&&!decide)return retryView();
-      const command=proposal?.command as Command|undefined;
-      if(!command||proposal?.run_id!==a.run_id||proposal.expires_at!==a.expires_at||
-         proposal.ready!==true||JSON.stringify(command).length>65536||!await this.intents.matchesCommand(command,row.operation_id)||
-         await this.approvalBinding(command,a.run_id,e.generation,e.revision,a.expires_at,proposal.context)!==a.binding)return expire();
-      this.expireApprovals();
-      const current=this.endpoint(e.id);
-      if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||!current||current.state!=="enabled"||current.generation!==e.generation||current.revision!==e.revision)return expire("approval_endpoint_changed");
-      if(!decide){
-        const nonce=secret();
-        const nonceHash=await hash(nonce);
-        if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||a.expires_at<=Date.now())return expire("approval_deadline_expired");
-        this.sql.exec("UPDATE browser_approvals SET nonce_hash=? WHERE operation_id=?",nonceHash,row.operation_id);
-        return json({operation_id:row.operation_id,state:"pending_approval",expires_at:a.expires_at,
-          endpoint_id:e.id,run_id:a.run_id,frame_id:0,command,context:proposal.context,nonce});
-      }
-      this.intents.approvalState(e.id,row.intent_key,"admitted");
-      const dispatch=await this.intents.dispatch(e.id,row.intent_key,e.generation);
-      if(!dispatch.execute_token)return expire();
-      const latest=this.endpoint(e.id);
-      if(!latest||latest.state!=="enabled"||latest.generation!==e.generation||latest.revision!==e.revision||Date.now()>=a.expires_at){this.intents.markUnknown(e.id,row.intent_key);return json(this.intents.status(e.id,row.intent_key));}
-      const timer=setTimeout(()=>this.terminateMutation(row.operation_id),8000);
-      this.pendingMutations.set(row.operation_id,{endpoint_id:e.id,intent_key:row.intent_key,generation:e.generation,revision:e.revision,socket,phase:"dispatched",timer});
-      try{socket.send(JSON.stringify({type:"execute_request",operation_id:row.operation_id,intent_key:row.intent_key,generation:e.generation,execute_token:dispatch.execute_token,owner_approved:true,run_id:a.run_id,expires_at:a.expires_at}));}
-      catch{this.terminateMutation(row.operation_id);}
-      return json(this.intents.status(e.id,row.intent_key));
-    } finally {if(decide)this.admittingEndpoints.delete(e.id);}
+  private withOwnerReview<T extends {operation_id?:string;state?:string}>(answer:T) {
+    if(answer.state!=="unknown"||!answer.operation_id)return answer;
+    const config=approvalConfig(this.env);
+    return {...answer,...(config?{
+      owner_review_url:config.origin+"/owner/unknown/"+answer.operation_id,
+      safe_next_action:"independently_review_unknown; never retry the original effect"
+    }:{safe_next_action:"blocked: independent owner review unavailable; never retry"})};
   }
   private async ownerUnknown(arg:Record<string,unknown>,report:boolean):Promise<Response> {
     if(!approvalConfig(this.env)||!validId(arg.operation_id))return json({error_code:"forbidden"},403);
@@ -268,8 +169,6 @@ export class BrowserOwner implements DurableObject {
     } catch { return json({error:"bad_request"},400); }
     const now = Date.now();
     this.expireTemporary(now);
-    this.expireApprovals(now);
-    if(url.pathname==="/owner-view"||url.pathname==="/owner-decide")return this.ownerApproval(arg,url.pathname==="/owner-decide");
     if(url.pathname==="/owner-unknown-view"||url.pathname==="/owner-unknown-report")
       return this.ownerUnknown(arg,url.pathname==="/owner-unknown-report");
     if (url.pathname === "/operation-status") {
@@ -280,7 +179,7 @@ export class BrowserOwner implements DurableObject {
       const result=Object.hasOwn(arg,"operation_id")?
         original&&original.endpoint_id===arg.endpoint_id?this.intents.status(original.endpoint_id,original.intent_key):{error_code:"not_found"}:
         this.intents.status(arg.endpoint_id as string,arg.intent_key as string);
-      return json(this.withApproval(result),result.error_code?result.error_code==="not_found"?404:400:200);
+      return json(this.withOwnerReview(result),result.error_code?result.error_code==="not_found"?404:400:200);
     }
     if (url.pathname === "/activity-summary") {
       if(Object.keys(arg).length!==2 || !validId(arg.endpoint_id) || typeof arg.credential!=="string" || arg.credential.length!==64)
@@ -288,8 +187,7 @@ export class BrowserOwner implements DurableObject {
       const e=this.endpoint(arg.endpoint_id);
       if(!e || e.state==='revoked' || (await hash(arg.credential))!==e.credential_hash)return json({error_code:"unauthorized"},401);
       this.intents.reconcile(now);
-      const approvals=this.sql.exec<{operation_id:string;expires_at:number}>("SELECT a.operation_id,a.expires_at FROM browser_approvals a JOIN browser_intents i ON i.operation_id=a.operation_id WHERE i.endpoint_id=? AND i.state='pending_approval'",e.id).toArray();
-      return json({...this.intents.activitySummary(e.id),...(approvals.length?{approvals:approvals.map(a=>({...a,state:"pending_approval"}))}: {})});
+      return json(this.intents.activitySummary(e.id));
     }
     if(url.pathname==="/activate-begin"){
       if(!validId(arg.attempt_id)||typeof arg.proof_hash!=="string"||!/^[a-f0-9]{64}$/.test(arg.proof_hash)||
@@ -380,7 +278,7 @@ export class BrowserOwner implements DurableObject {
       const prior=this.intents.status(command.endpoint_id,command.intent_key);
       if(prior.operation_id){
         const recovered=await this.intents.admit(command,now);
-        return json(this.withApproval(recovered),recovered.error_code?409:200);
+        return json(this.withOwnerReview(recovered),recovered.error_code?409:200);
       }
       const e=this.endpoint(command.endpoint_id);
       if(!e||e.state!=="enabled"||!this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
@@ -416,21 +314,15 @@ export class BrowserOwner implements DurableObject {
         this.intents.abort(e.id,command.intent_key);
         return json({operation_id,state:"failed",error_code:"preparation_unavailable"},503);
       }
-      let prepared:(()=>void)|undefined;
-      const ready=approvalConfig(this.env)?new Promise<void>(resolve=>{prepared=resolve;}):null;
       const timer=setTimeout(()=>this.terminateMutation(operation_id),8000);
       this.pendingMutations.set(operation_id,{
         endpoint_id:e.id,intent_key:command.intent_key,generation:e.generation,revision:e.revision,
-        socket,phase:"preparing",timer,prepared
+        socket,phase:"preparing",timer
       });
       try {socket.send(JSON.stringify({type:"prepare_request",operation_id,
-        intent_key:command.intent_key,generation:e.generation,command,
-        // Leave 30s headroom for bounded clock skew between Worker and local Chrome.
-        // Both sides still reject expired grants and the Worker enforces the deadline.
-        approval_available:!!approvalConfig(this.env)&& (socket.deserializeAttachment() as SocketAuth)?.approval_origin===approvalConfig(this.env)?.origin,expires_at:now+270000}));}
+        intent_key:command.intent_key,generation:e.generation,command}));}
       catch {this.terminateMutation(operation_id);}
-      if(ready)await ready;
-      return json(this.withApproval(this.intents.status(e.id,command.intent_key)));
+      return json(this.withOwnerReview(this.intents.status(e.id,command.intent_key)));
     }
     if (url.pathname === "/read") {
       const id=arg.endpoint_id;
@@ -556,18 +448,13 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,protocol:2,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now(),approval_origin:v.owner_approval_protocol===1&&v.service_origin===approvalConfig(this.env)?.origin?v.service_origin as string:undefined} satisfies SocketAuth);
+      socket.serializeAttachment({authenticated:true,protocol:2,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
       socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:2}));
       return;
     }
     if(auth.protocol!==2){socket.close(1008,"obsolete_protocol");return;}
     const e = this.endpoint(auth.endpoint_id!);
     if (!e || e.state !== "enabled" || !this.leaseValid(e) || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
-    if(v.type==="approval_result"&&validId(v.request_id)&&v.generation===e.generation){
-      const p=this.approvalReads.get(v.request_id);
-      if(!p||p.socket!==socket)return;
-      clearTimeout(p.timer);this.approvalReads.delete(v.request_id);p.resolve(v);return;
-    }
     if(v.type==="prepare_result"&&validId(v.operation_id)&&v.generation===e.generation){
       const pending=this.pendingMutations.get(v.operation_id);
       // A hibernated/reconstructed DO has durable prepare metadata but NO
@@ -584,35 +471,18 @@ export class BrowserOwner implements DurableObject {
         if(pending)this.terminateMutation(v.operation_id);
         return;
       }
-      if(v.accepted===true && v.approval_required===true) {
-        if(!approvalConfig(this.env)||auth.approval_origin!==approvalConfig(this.env)?.origin||!validId(v.run_id)||!Number.isSafeInteger(v.expires_at)||
-           (v.expires_at as number)>Date.now()+300000||(v.expires_at as number)<=Date.now()||
-           !v.command||!v.context||JSON.stringify(v.context).length>8192||JSON.stringify(v.command).length>65536||
-           !await this.intents.matchesCommand(v.command as Command,v.operation_id)){
-          this.terminateMutation(v.operation_id);
-          this.sql.exec("UPDATE browser_intents SET result_code='approval_prepare_invalid' WHERE operation_id=? AND state='failed'",v.operation_id);
-          return;
-        }
-        const current=this.endpoint(e.id);
-        const count=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM browser_intents WHERE endpoint_id=? AND state='pending_approval'",e.id).toArray()[0]?.n??0;
-        if(!current||current.state!=="enabled"||current.generation!==e.generation||current.revision!==latest.revision||count>=10){
-          this.terminateMutation(v.operation_id);
-          if(count>=10)this.sql.exec("UPDATE browser_intents SET result_code='capacity_exceeded' WHERE operation_id=? AND state='failed'",v.operation_id);
-          return;
-        }
-        const binding=await this.approvalBinding(v.command as Command,v.run_id as string,e.generation,latest.revision,v.expires_at as number,v.context);
-        const after=this.endpoint(e.id);
-        if(!after||after.state!=="enabled"||after.generation!==e.generation||after.revision!==latest.revision||!this.pendingMutations.has(v.operation_id)){this.terminateMutation(v.operation_id);return;}
-        this.sql.exec("INSERT OR IGNORE INTO browser_approvals(operation_id,run_id,binding,expires_at) VALUES(?,?,?,?)",v.operation_id,v.run_id,binding,v.expires_at);
-        this.intents.approvalState(e.id,v.intent_key,"pending_approval");
-        clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);
-        return; // prepare never grants execute, and waiting holds no lock
+      // Old approval proposals cannot turn into ordinary execution.
+      if(["approval_required","command","context","run_id","expires_at","owner_approved"]
+          .some(field=>Object.hasOwn(v,field))){
+        this.terminateMutation(v.operation_id);
+        this.sql.exec("UPDATE browser_intents SET result_code='forbidden' WHERE operation_id=? AND state='failed'",v.operation_id);
+        return;
       }
       if(v.accepted!==true){
         this.intents.abort(e.id,v.intent_key);
-        const denial=v.error_code==="approval_required"?"approval_blocked":safeFailureCode(v.error_code);
+        const denial=v.error_code==="approval_required"?"forbidden":safeFailureCode(v.error_code);
         this.sql.exec("UPDATE browser_intents SET result_code=? WHERE operation_id=? AND state='failed'",denial??"preparation_unavailable",v.operation_id);
-        if(pending){clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);}
+        if(pending){clearTimeout(pending.timer);this.pendingMutations.delete(v.operation_id);}
         return;
       }
       const dispatch=await this.intents.dispatch(e.id,v.intent_key,e.generation);
@@ -620,7 +490,7 @@ export class BrowserOwner implements DurableObject {
         if(pending)this.terminateMutation(v.operation_id);
         return;
       }
-      if(pending){pending.phase="dispatched";pending.prepared?.();}
+      if(pending){pending.phase="dispatched";}
       // Execute is authorized only by the original current grant and generation.
       const after=this.endpoint(e.id);
       if(!after||after.state!=="enabled"||after.generation!==e.generation||
@@ -650,7 +520,7 @@ export class BrowserOwner implements DurableObject {
       if(result.error_code)return;
       const pending=this.pendingMutations.get(v.operation_id);
       if(pending && pending.socket===socket){
-        clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);
+        clearTimeout(pending.timer);this.pendingMutations.delete(v.operation_id);
       }
     } else if (v.type === "read_result" && validId(v.request_id) && v.generation===e.generation) {
       const pending=this.pendingReads.get(v.request_id);
@@ -685,7 +555,6 @@ export class BrowserOwner implements DurableObject {
         if(changed.rowsWritten===1)temporaryId=e.id;
       }
     }
-    for(const [id,p] of this.approvalReads)if(p.socket===socket){clearTimeout(p.timer);this.approvalReads.delete(id);p.resolve(null);}
     for(const [op,p] of this.pendingMutations)if(p.socket===socket)this.terminateMutation(op);
     for(const [id,p] of this.pendingReads){if(p.socket===socket){clearTimeout(p.timer);this.pendingReads.delete(id);p.resolve({error_code:"offline"});}}
     if(temporaryId&&deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
