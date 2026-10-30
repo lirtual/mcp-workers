@@ -479,6 +479,20 @@ export class WorkflowService {
       const approval=published?.steps.find(s=>s.id===step_id&&
         s.uses==='github.run'&&s.approval?.required===true);
       if(approval){
+        // Repeated cancellation of an already-fenced approval is read-only.
+        // A dispatched-but-unclaimed physical Job may still exist, so never
+        // claim its termination or issue a second GitHub cancel POST.
+        const prior=await this.db.prepare(`SELECT outcome,error_code FROM runs
+          WHERE id=?`).bind(run_id)
+          .first<{outcome:string;error_code:string|null}>();
+        if(!force&&prior?.outcome==='cancelled'&&
+           prior.error_code==='approval_cancel_requested'){
+          const pending=await this.db.prepare(`SELECT 1 AS present FROM step_attempts
+            WHERE run_id=? AND step_id=? LIMIT 1`)
+            .bind(run_id,step_id).first<{present:number}>();
+          return {run_id,step_id,cancellation:pending?'requested_unverified':'requested',
+            physical_terminated:false};
+        }
         const step=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
           .bind(run_id,step_id).first<{status:string}>();
         if(step && (step.status==='waiting_approval'||step.status==='running')){
@@ -536,6 +550,39 @@ export class WorkflowService {
             WHERE run_id=? AND step_id=? LIMIT 1`)
             .bind(run_id,step_id).first<{present:number}>();
           if(!attempt)throw new StateError('approval_cancel_conflict');
+          // The Attempt INSERT can win while its outbound GitHub dispatch
+          // has not yet returned a physical Run ID. Refusing cancellation
+          // here leaves an approved Task able to claim and execute.
+          // Fence the business Run before the signed physical Claim instead;
+          // an in-flight dispatch is NOT proof of physical termination.
+          const preclaim=await this.db.batch([
+            this.db.prepare(`UPDATE runs SET outcome='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE id=? AND outcome='running'
+              AND EXISTS(SELECT 1 FROM step_attempts a
+                WHERE a.run_id=runs.id AND a.step_id=?
+                  AND a.capability_id='github.action'
+                  AND a.state IN ('created','dispatch_unknown')
+                  AND a.candidate_run_id IS NULL AND a.candidate_run_attempt IS NULL
+                  AND a.owner_run_id IS NULL AND a.owner_run_attempt IS NULL)
+              AND NOT EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id<>? AND s.status IN ('running','waiting','waiting_approval'))`)
+              .bind(now(),run_id,step_id,step_id),
+            this.db.prepare(`UPDATE run_steps SET status='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE run_id=? AND step_id=? AND status IN ('waiting_approval','running')
+                AND EXISTS(SELECT 1 FROM runs r WHERE r.id=?
+                  AND r.outcome='cancelled' AND r.error_code='approval_cancel_requested')`)
+              .bind(now(),run_id,step_id,run_id),
+          ]);
+          if(preclaim[0].meta.changes===1){
+            if(preclaim[1].meta.changes!==1)
+              throw new StateError('approval_cancel_state_unconfirmed');
+            return {run_id,step_id,cancellation:'requested_unverified',
+              physical_terminated:false};
+          }
+          // A signed Claim or confirmed candidate may have won instead;
+          // use the existing immutable physical Job cancellation path.
           }
         }
       }
