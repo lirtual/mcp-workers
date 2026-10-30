@@ -77,7 +77,7 @@ test('temporary network loss grants a bounded offline window; stale generations 
   let attachment={authenticated:false,deadline:Date.now()+5000},authenticated=false;
   const reconnect={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:frame=>{if(JSON.parse(frame).type==='authenticated')authenticated=true;},close:()=>{},readyState:1};
   const reconnector=new BrowserOwner({storage:f.storage,getWebSockets:()=>[reconnect]});
-  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:2,extension_version:'0.2.0',endpoint_id:p.endpoint_id,credential:p.credential}));
+  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.1',endpoint_id:p.endpoint_id,credential:p.credential}));
   assert.equal(authenticated,true);
   assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
   assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'enabled');
@@ -97,7 +97,7 @@ test('expired temporary lease denies an existing authenticated socket read',asyn
   const id=await begin(f,'temporary');await f.post('activate-authorize',{attempt_id:id});
   const p=await f.post('activate-complete',{attempt_id:id,proof});
   let sent=0;
-  const sock={deserializeAttachment:()=>({authenticated:true,protocol:2,endpoint_id:p.endpoint_id,generation:1,last_seen:Date.now()}),readyState:1,send:()=>{sent++;},close:()=>{}};
+  const sock={deserializeAttachment:()=>({authenticated:true,protocol:3,endpoint_id:p.endpoint_id,generation:1,last_seen:Date.now()}),readyState:1,send:()=>{sent++;},close:()=>{}};
   f.sql.exec('UPDATE endpoints SET generation=1,lease_expires_at=? WHERE id=?',Date.now()-1,p.endpoint_id);
   const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[sock]});
   const read=await owner.fetch(new Request('https://owner.internal/read',{method:'POST',body:JSON.stringify({endpoint_id:p.endpoint_id,tool:'tabs'})}));
@@ -215,4 +215,23 @@ test('existing permanent Endpoint survives additive DO schema upgrade with crede
     assert.equal(row.revision,11);assert.equal(row.stop_epoch,7);
     assert.equal(row.pairing_mode,'permanent');assert.equal(row.lease_expires_at,null);
   }finally{db.close();}
+});
+
+test('new browser protocol rejects old extension handshakes and persisted old execution frames',async()=>{
+ const f=fixture();try{
+  const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
+  const paired=await f.post('activate-complete',{attempt_id:attempt,proof});
+  const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[]});
+  for(const [protocol,extension_version] of [[2,'0.2.0'],[3,'0.2.0']]){
+    let reason=null,attachment={authenticated:false,deadline:Date.now()+5000};
+    const socket={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:()=>{throw Error('obsolete authentication accepted');},close:(_code,why)=>{reason=why;},readyState:1};
+    await owner.webSocketMessage(socket,JSON.stringify({type:'authenticate',protocol,extension_version,endpoint_id:paired.endpoint_id,credential:paired.credential}));
+    assert.equal(reason,'authentication_required');
+    assert.equal(f.sql.exec('SELECT generation FROM endpoints WHERE id=?',paired.endpoint_id).toArray()[0].generation,0);
+  }
+  let reason=null;
+  const obsolete={deserializeAttachment:()=>({authenticated:true,protocol:2,endpoint_id:paired.endpoint_id,generation:0,deadline:0}),send:()=>{throw Error('obsolete frame accepted');},close:(_code,why)=>{reason=why;},readyState:1};
+  await owner.webSocketMessage(obsolete,JSON.stringify({type:'ping'}));
+  assert.equal(reason,'obsolete_protocol');
+ }finally{f.db.close();}
 });

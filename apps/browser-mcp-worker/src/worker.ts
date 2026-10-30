@@ -78,7 +78,7 @@ async function handleMcp(request:Request,env:Env):Promise<Response> {
   } catch{return failure(null,-32700,"Invalid JSON-RPC request",400);}
   if (call.method==="notifications/initialized") return new Response(null,{status:202});
   if (call.id===undefined||typeof call.id!=="number"&&typeof call.id!=="string") return failure(null,-32600,"Missing valid request ID",400);
-  if (call.method==="initialize") return reply(call.id,{protocolVersion:"2025-03-26",capabilities:{tools:{listChanged:false}},serverInfo:{name:"browser-mcp-worker",version:"0.2.0"}});
+  if (call.method==="initialize") return reply(call.id,{protocolVersion:"2025-03-26",capabilities:{tools:{listChanged:false}},serverInfo:{name:"browser-mcp-worker",version:"0.2.1"}});
   if (call.method==="ping") return reply(call.id,{});
   if (call.method==="tools/list") return reply(call.id,{tools});
   if (call.method!=="tools/call") return failure(call.id,-32601,"Method not found");
