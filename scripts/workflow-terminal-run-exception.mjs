@@ -29,6 +29,9 @@ export const SIXTH_TERMINAL_RUN_ID = "3e312105-b40e-49ea-a037-c3359074be2b";
 export const SIXTH_SESSION_GITHUB_RUN_ID = 40806497790;
 export const SIXTH_PROVIDER_INVOCATION_ID = "83b722f0-4ed3-4a7d-838c-78613f5167f1";
 export const SIXTH_PROVIDER_DEPLOYMENT_ID = "aeed581e-2769-4cde-9f6a-236d6414b4a2";
+// Exact 2026-10-30 download E2E: cloud upload verified, Weixin invocation absent.
+export const SEVENTH_TERMINAL_RUN_ID = "0bb5f19e-627e-440d-9757-7dfd9a0af31d";
+export const SEVENTH_TASK_GITHUB_RUN_ID = 41046399301;
 
 const WORKFLOW = "workflow-mcp-orchestrator";
 
@@ -338,6 +341,47 @@ export function verifySixthTerminalEvidence(d1,native,github) {
   return SIXTH_TERMINAL_RUN_ID;
 }
 
+// Exact download notification failure: preserve the indeterminate Run and
+// independently verify native completion, physical successful GitHub Task,
+// and absence of any Weixin invocation. No generic Unknown exclusion.
+export function verifySeventhTerminalEvidence(d1,native,github) {
+  requireValid(Array.isArray(d1)&&d1.length===5&&
+    d1.every(z=>z?.success===true&&Array.isArray(z.results)),
+    "seventh Run D1 readback incomplete");
+  const [runs,steps,sessions,attempts,invocations]=d1.map(z=>z.results);
+  requireValid(runs.length===1&&runs[0].id===SEVENTH_TERMINAL_RUN_ID&&
+    runs[0].outcome==="indeterminate"&&runs[0].start_state==="started"&&
+    runs[0].error_code==="cloudflare_dispatch_unconfirmed",
+    "seventh Run result changed");
+  requireValid(steps.length===3&&
+    steps.every(s=>s.run_id===SEVENTH_TERMINAL_RUN_ID)&&
+    steps[0].step_id==="download_task"&&steps[0].status==="succeeded"&&
+    steps[1].step_id==="download_task_0_submit_download"&&steps[1].status==="succeeded"&&
+    steps[2].step_id==="notify_weixin"&&steps[2].status==="indeterminate"&&
+    steps[2].error_code==="cloudflare_dispatch_unconfirmed",
+    "seventh Run step result changed");
+  requireValid(sessions.length===0,"seventh Run unexpectedly owns a Session");
+  requireValid(attempts.length===1&&
+    attempts[0].run_id===SEVENTH_TERMINAL_RUN_ID&&
+    attempts[0].step_id==="download_task_0_submit_download"&&
+    attempts[0].state==="succeeded"&&
+    attempts[0].repository==="lirtual/session-actions"&&
+    attempts[0].owner_run_id===SEVENTH_TASK_GITHUB_RUN_ID&&
+    attempts[0].candidate_run_id===SEVENTH_TASK_GITHUB_RUN_ID&&
+    attempts[0].owner_run_attempt===1&&
+    attempts[0].candidate_run_attempt===1,
+    "seventh GitHub Task Attempt changed");
+  requireValid(invocations.length===0,
+    "seventh Weixin invocation cannot be excluded");
+  requireValid(nativeCompleteProven(native),
+    "seventh Cloudflare instance not completed");
+  requireValid(github?.id===SEVENTH_TASK_GITHUB_RUN_ID&&
+    github?.status==="completed"&&github?.conclusion==="success"&&
+    github?.run_attempt===1&&github?.head_branch==="v0.1.42-rc.7",
+    "seventh GitHub Task not physically successful");
+  return SEVENTH_TERMINAL_RUN_ID;
+}
+
 async function main() {
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
     "only the Workflow release may request this exception");
@@ -347,13 +391,14 @@ async function main() {
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
     "required read-only verification credentials missing");
   const kind=process.env.TERMINAL_PROOF_KIND;
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth",
+  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh",
     "unknown terminal proof kind");
   const second=kind==="second";
   const third=kind==="third";
   const fourth=kind==="fourth";
   const fifth=kind==="fifth";
   const sixth=kind==="sixth";
+  const seventh=kind==="seventh";
   const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
   const get = async (url, token) => {
     const response = await fetch(url,{
@@ -365,7 +410,7 @@ async function main() {
   };
   const cfResponse = await fetch("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
+    (seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
     {headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
       Accept:"application/json"},signal:AbortSignal.timeout(15000)});
   let native;
@@ -375,6 +420,7 @@ async function main() {
       "native Cloudflare instance readback unavailable");
     native = cf.result;
   } else if (cfResponse.status === 404) {
+    requireValid(!seventh,"seventh native instance must be independently live-proven");
     // A 404 alone is never proof. Pin prior successful checks for all six
     // precise instances, and still check today's D1/GitHub terminal state.
     requireValid(process.env.GITHUB_TOKEN,
@@ -387,9 +433,10 @@ async function main() {
     requireValid(false,"independent native state unavailable (HTTP "+cfResponse.status+")");
   }
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
-    (sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
+    (seventh?SEVENTH_TASK_GITHUB_RUN_ID:sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-  if(sixth)verifySixthTerminalEvidence(d1,native,github);
+  if(seventh)verifySeventhTerminalEvidence(d1,native,github);
+  else if(sixth)verifySixthTerminalEvidence(d1,native,github);
   else if(fifth)verifyFifthTerminalEvidence(d1,native,github);
   else if(fourth)verifyFourthTerminalEvidence(d1,native,github);
   else if(third)verifyThirdTerminalEvidence(d1,native,github);
@@ -397,7 +444,8 @@ async function main() {
   else verifyTerminalRunEvidence(d1,native,github);
   requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
   await appendFile(process.env.GITHUB_OUTPUT,
-    (sixth?"sixth_terminal_run_id="+SIXTH_TERMINAL_RUN_ID:
+    (seventh?"seventh_terminal_run_id="+SEVENTH_TERMINAL_RUN_ID:
+      sixth?"sixth_terminal_run_id="+SIXTH_TERMINAL_RUN_ID:
       fifth?"fifth_terminal_run_id="+FIFTH_TERMINAL_RUN_ID:
       fourth?"fourth_terminal_run_id="+FOURTH_TERMINAL_RUN_ID:
       third?"third_terminal_run_id="+THIRD_TERMINAL_RUN_ID:
