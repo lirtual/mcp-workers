@@ -29,7 +29,9 @@ identity, deployment ID and explicit approval. Previously cached MCP tool
 metadata may require a one-time client refresh.
 
 Cloudflare `action.run` supports the reviewed `weixin.send_text` (requiring a
-verified same-Run OpenList Session Ready) and `bark.send_notification` Actions.
+verified same-Run OpenList Session Ready), `weixin.notify_download`
+(requiring a single-item reviewed GitHub download Task with OIDC Claim and physical success proof
+and physically verified completion), and `bark.send_notification` Actions.
 Publish requires separate explicit grants, the exact contract digest and
 Worker Version ID; the Service Binding must independently confirm live identity.
 D1 grants a single first-dispatch right. Weixin can recover by historical
@@ -462,3 +464,20 @@ delete is idempotent. Unsettled Runs, nonterminated physical Sessions and
 published active/paused parent references block removal. No purging or restore
 API is exposed. Migration `0014_workflow_deletion.sql` is additive and must
 be applied through the existing guarded main-only release.
+
+### Koofr download completed → Owner Weixin notification
+
+The existing `download` Workflow may append one top-level `action.run` using
+`executor: cloudflare`, `provider: weixin`, `action: weixin.notify_download`,
+`input: {download_step_id: download_task}` and `needs: [download_task]`.
+The `download_task` must be a `max_items: 1` foreach containing the pinned
+`lirtual/session-actions/.github/workflows/download.yml` GitHub Task; no
+arbitrary Result or user-supplied success may authorize the notification.
+The existing OIDC Claim and verified GitHub physical Task success prove completion;
+the reviewed download Task only exits successfully after remote readback.
+A D1 admission fence checks the same Run, both succeeded Steps, approved Task
+Attempt, physical terminal and cancellation status atomically. The Weixin Provider
+sends a fixed Owner-only success text without paths, URLs, tokens or arbitrary
+message input. Failed, skipped and indeterminate downloads cannot notify.
+Notifications remain at-most-one invocation with read-only recovery, and
+the phone's receipt must be checked separately from an upstream acceptance.

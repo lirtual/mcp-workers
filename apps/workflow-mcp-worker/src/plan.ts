@@ -597,7 +597,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.provider==='bark'?'bark':'weixin');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'weixin');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -610,6 +610,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(!Object.hasOwn(notification,'body'))throw new PlanError('missing_bark_body',stepPath+'/with/input/notification');
         if(typeof notification.body==='string'&&notification.body.length>2400)
           throw new PlanError('bark_body_too_large',stepPath+'/with/input/notification');
+      }else if(manifest.action==='weixin.notify_download'){
+        keys(input,['download_step_id'],stepPath+'/with/input');
+        if(typeof input.download_step_id!=='string'||!SAFE_ID.test(input.download_step_id))
+          throw new PlanError('invalid_trusted_download_reference',stepPath+'/with/input/download_step_id');
       }else{
         keys(input,['session_step_id'],stepPath+'/with/input');
         if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
@@ -647,7 +651,18 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       ...(s.approval===undefined?{}:{approval:{required:true}})});
   }
   for(const s of steps){
-    if(s.uses==='action.run'&&s.with.provider==='weixin'){
+    if(s.uses==='action.run'&&s.with.action==='weixin.notify_download'){
+      const source=(s.with.input as {download_step_id:string}).download_step_id;
+      const upstream=steps.find(x=>x.id===source);
+      const template=upstream?.with.template as {uses?:unknown;action?:unknown;with?:{action?:unknown}}|undefined;
+      const action=(template?.with?.action??template?.action) as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+      if(!s.needs.includes(source)||upstream?.uses!=='flow.foreach'||
+         upstream.with.max_items!==1||template?.uses!=='github.run'||
+         action?.repository!=='lirtual/session-actions'||
+         action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
+        throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
+    }
+    if(s.uses==='action.run'&&s.with.action==='weixin.send_text'){
       // Provider URL and recipient never come from a Draft or ordinary Step output.
       const source=(s.with.input as {session_step_id:string}).session_step_id;
       const upstream=steps.find(x=>x.id===source);
