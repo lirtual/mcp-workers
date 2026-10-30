@@ -92,9 +92,11 @@ function setup(t:test.TestContext){
     await service.publish(w.workflow_id,1,approvals,approvals.length>0);
     return service.start(w.workflow_id,inputs);
   }
-  async function run(run_id:string){
+  async function run(run_id:string,onStep?:(name:string,options:unknown)=>void){
     await new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id}} as WorkflowEvent<{run_id:string}>,
-      {do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback()} as unknown as WorkflowStep);
+      {do:async(name:string,options:unknown,callback:()=>Promise<unknown>)=>{
+        onStep?.(name,options);return callback();
+      }} as unknown as WorkflowStep);
   }
   return {service,admit,run,env,sqlite};
 }
@@ -2433,7 +2435,11 @@ test('reviewed MCP write calls exactly one IMA ima_create_note after pinned publ
   assert.equal(writes,0);
   await service.publish(created.workflow_id,1,[grant],true,false,[],[],[],false,[],false,true);
   const started=await service.start(created.workflow_id,{});
-  await run(started.run_id);
+  const timeouts:Array<{name:string;options:unknown}>=[];
+  await run(started.run_id,(name,options)=>timeouts.push({name,options}));
+  assert.deepEqual(timeouts.filter(x=>x.name==='workflow-write').map(x=>x.options),[
+    {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},
+  ]);
   const result=await service.result(started.run_id);
   assert.equal(result.status,'succeeded');
   assert.equal(result.steps[0]?.status,'succeeded');
@@ -2469,4 +2475,16 @@ test('reviewed MCP write calls exactly one IMA ima_create_note after pinned publ
   assert.equal(denied.status,'failed');
   assert.equal(denied.steps[0]?.error_code,'portal_connection_revoked');
   assert.equal(writes,2);
+});
+
+// The longer MCP budget must not silently extend unrelated Step types.
+test('non-MCP result.emit keeps the existing 30-second native Step timeout',async t=>{
+  const {admit,run,service}=setup(t);
+  const started=await admit([{id:'out',uses:'result.emit',with:{data:'ok'}}]);
+  const observed:Array<{name:string;options:unknown}>=[];
+  await run(started.run_id,(name,options)=>observed.push({name,options}));
+  assert.deepEqual(observed.filter(x=>x.name==='workflow-out').map(x=>x.options),[
+    {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+  ]);
+  assert.equal((await service.result(started.run_id)).status,'succeeded');
 });

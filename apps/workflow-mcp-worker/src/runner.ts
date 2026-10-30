@@ -782,7 +782,10 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                 return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
             })()
-            : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
+            // Portal MCP handshake + live tool discovery occur before the D1 call fence.
+            // Bound those reads and a single call together without permitting retries.
+            : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},
+              timeout:s.uses==='mcp.call'?'90 seconds':'30 seconds'},async ():Promise<Outcome>=>{
             try{
               // Only an executing callback marks a Step running. Cached replay
               // must never replace a previously persisted terminal Step state.
