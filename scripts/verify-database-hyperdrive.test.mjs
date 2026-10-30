@@ -139,15 +139,19 @@ test('denied Hyperdrive read identifies second manifest slot without querying up
 });
 
 
-test('reviewed production manifest has only isolated MySQL and PostgreSQL E2E origins',async()=>{
+test('reviewed production manifest preserves isolated baseline bindings as new candidates are added',async()=>{
  const {readFileSync}=await import('node:fs');
  const {readConfiguration}=await import('./manual-worker-release.mjs');
  const root=new URL('../apps/database-mcp-worker/',import.meta.url);
  const source=readConfiguration('database-mcp-worker',readFileSync(new URL('wrangler.jsonc',root),'utf8'));
  const reviewed=JSON.parse(readFileSync(new URL('hyperdrive-bindings.json',root),'utf8'));
  const byBinding=new Map(reviewed.map(x=>[x.binding,x]));
- assert.equal(byBinding.size,2);
- assert.deepEqual([...byBinding.keys()].sort(),['HYPERDRIVE_DB344_MYSQL_E2E','HYPERDRIVE_DB344_PG_E2E']);
+ // Existing reviewed origins must remain exact, but new-ID lifecycle candidates
+ // legitimately extend the manifest. Strict per-config readback is tested
+ // separately and required by the production release gate.
+ assert.equal(byBinding.size,reviewed.length);
+ assert.ok(byBinding.has('HYPERDRIVE_DB344_MYSQL_E2E'));
+ assert.ok(byBinding.has('HYPERDRIVE_DB344_PG_E2E'));
  const mysql=byBinding.get('HYPERDRIVE_DB344_MYSQL_E2E');
  assert.deepEqual(mysql,{
   binding:'HYPERDRIVE_DB344_MYSQL_E2E',id:'38bf39b569484dbb8a9fe1b24f0df854',
