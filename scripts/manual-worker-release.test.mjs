@@ -1083,6 +1083,34 @@ test('Browser release pins resources, protects namespace and stages only its ind
   const enabled={...settings,bindings:[...settings.bindings,
     ...Object.entries(approve).map(([name,text])=>({name,type:'plain_text',text}))]};
   assert.equal(verifyBindings(worker,enabled,secrets,{...options,expectedBrowserApproval:true}),true);
+  const activation={BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',
+    BROWSER_ACTIVATION_AUDIENCE:'b'.repeat(64)};
+  const both={...enabled,bindings:[...enabled.bindings,
+    ...Object.entries(activation).map(([name,text])=>({name,type:'plain_text',text}))]};
+  const expectedBoth={...options,expectedBrowserApproval:true,
+    expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE};
+  assert.equal(verifyBindings(worker,both,secrets,expectedBoth),true);
+  assert.equal(verifyBindings(worker,both,secrets,{mode:'preflight'}),true);
+  assert.throws(()=>verifyBindings(worker,both,secrets,{...options,expectedBrowserApproval:true}),
+    /activation binding inventory differs/);
+  assert.throws(()=>verifyBindings(worker,both,secrets,{...expectedBoth,
+    expectedBrowserActivationAudience:'c'.repeat(64)}),/activation binding inventory differs/);
+  assert.throws(()=>verifyBindings(worker,{...both,bindings:both.bindings.filter(x=>
+    x.name!=='BROWSER_ACTIVATION_ORIGIN')},secrets,expectedBoth),/activation binding inventory incomplete/);
+  assert.throws(()=>verifyBindings(worker,{...both,bindings:both.bindings.map(x=>
+    x.name==='BROWSER_ACTIVATION_ORIGIN'?{...x,text:'https://wrong.example'}:x)},
+    secrets,expectedBoth),/activation Access origin/);
+  assert.throws(()=>verifyBindings(worker,{...both,bindings:[...both.bindings,
+    {name:'OTHER_VAR',type:'plain_text',text:'bad'}]},secrets,expectedBoth),/inventory drift/);
+  const temporaryOnly={...settings,bindings:[...settings.bindings,
+    ...Object.entries(Object.fromEntries(Object.entries(approve).filter(([name])=>
+      ['BROWSER_ACCESS_ISSUER','BROWSER_OWNER_EMAIL'].includes(name)))).map(([name,text])=>({name,type:'plain_text',text})),
+    ...Object.entries(activation).map(([name,text])=>({name,type:'plain_text',text}))]};
+  assert.equal(verifyBindings(worker,temporaryOnly,secrets,{
+    ...options,expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE}),true);
+  assert.match(readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8'),
+    /BROWSER_ACTIVATION_EXPECTED:/);
+
   assert.throws(()=>verifyBindings(worker,enabled,secrets,options),/differs from reviewed/);
   assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,expectedBrowserApproval:true}),/differs from reviewed/);
   assert.throws(()=>verifyBindings(worker,{...enabled,bindings:enabled.bindings.slice(0,-1)},secrets,options),/incomplete/);
