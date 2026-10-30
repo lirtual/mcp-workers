@@ -22,7 +22,7 @@ const runNumber=Number(required('GITHUB_RUN_ID'));
 const runAttempt=Number(required('GITHUB_RUN_ATTEMPT'));
 assert.equal(repository,'lirtual/mcp-workers');
 assert.equal(ref,'refs/heads/main');
-assert.equal(workflowRef,repository+'/.github/workflows/ci.yml@'+ref);
+assert.equal(workflowRef,repository+'/.github/workflows/acceptance.yml@'+ref);
 assert.equal(runAttempt,1,'reruns require a fresh signed identity');
 assert.match(sha,/^[0-9a-f]{40}$/i);
 assert.ok(Number.isSafeInteger(runNumber)&&runNumber>0&&Number.isSafeInteger(repositoryId));
@@ -98,7 +98,7 @@ async function run(){
   });
   if(migrated.status!==0)throw Error('Disposable D1 migrations failed '+migrated.status);
   const reviewed={repository,repositoryId,workflowId:1,
-    workflowPath:'.github/workflows/ci.yml',commitSha:sha,
+    workflowPath:'.github/workflows/acceptance.yml',commitSha:sha,
     type:'task',contractDigest:'b'.repeat(64)};
   const plan={version:1,name:'Isolated Task callback',github_execution_approved:true,
     github_action_approvals:[reviewed],steps:[{id:'verify',uses:'github.run',
