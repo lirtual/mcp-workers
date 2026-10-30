@@ -268,7 +268,7 @@ test('approval consumed and Step running without Attempt is still cancellable; l
   await assert.rejects(()=>registerAndDispatchGitHubAction(ctx.env.DB,{
    runId,stepId:'run_task',attemptId:'44444444-4444-4444-8444-444444444444',
    dispatchId:'55555555-5555-4555-8555-555555555555',
-   action,ref:action.ref,token:'unused',inputs:{},
+   action:{...action,type:'task' as const},ref:action.ref,token:'unused',inputs:{},
   },async()=>{outbound++;throw Error('must_not_dispatch');}),/github_action_publication_missing/);
   assert.equal(outbound,0);
   assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
