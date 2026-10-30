@@ -54,7 +54,7 @@ export async function verifyDatabaseHyperdriveCloudReadback({ source, manifest, 
   if (manifest.length === 0) return { verified: 0 };
   requireVerified(/^[a-f0-9]{32}$/i.test(accountId ?? '') &&
     typeof token === 'string' && token.length > 0, 'read-only Cloudflare account access is unavailable');
-  for (const expected of manifest) {
+  for (const [index, expected] of manifest.entries()) {
     // Do not log non-2xx bodies: upstream errors can include origin details.
     let response;
     try {
@@ -71,7 +71,9 @@ export async function verifyDatabaseHyperdriveCloudReadback({ source, manifest, 
       const status = response?.status;
       const httpClass = status === 401 || status === 403 || status === 404 || status === 429
         ? String(status) : Number.isSafeInteger(status) && status >= 500 && status <= 599 ? '5xx' : 'other';
-      throw Error('Database Hyperdrive verification failed: Cloudflare configuration read rejected (' + httpClass + ')');
+      // Slot is an ordinal within reviewed source, not an origin/secret identifier.
+      const slot = index === 0 ? '1' : index === 1 ? '2' : 'other';
+      throw Error('Database Hyperdrive verification failed: Cloudflare configuration read rejected (' + httpClass + ', slot ' + slot + ')');
     }
     let envelope;
     try { envelope = await response.json(); }
@@ -82,7 +84,13 @@ export async function verifyDatabaseHyperdriveCloudReadback({ source, manifest, 
   }
   return { verified: manifest.length };
 }
+const APPROVED_ACCOUNT_ID = '8bb496011403552e785ea1b834daffdf';
+export function verifyApprovedAccountScope(accountId) {
+  requireVerified(accountId === APPROVED_ACCOUNT_ID, 'approved Cloudflare account mismatch');
+  return true;
+}
 export async function main() {
+  verifyApprovedAccountScope(process.env.CLOUDFLARE_ACCOUNT_ID);
   const source = readConfiguration('database-mcp-worker', await readFile(
     new URL('../apps/database-mcp-worker/wrangler.jsonc', import.meta.url), 'utf8'
   ));
@@ -106,11 +114,14 @@ const READBACK_CODES = new Map([
   ['Database Hyperdrive verification failed: CA/hostname verification is not strict or does not match reviewed CA', 'tls_mismatch'],
   ['Database Hyperdrive verification failed: origin identity differs from reviewed source', 'origin_mismatch'],
   ['Database Hyperdrive verification failed: read-only Cloudflare account access is unavailable', 'credentials_unavailable'],
+  ['Database Hyperdrive verification failed: approved Cloudflare account mismatch', 'account_scope_mismatch'],
   ['Database Hyperdrive verification failed: Cloudflare configuration read rejected', 'cloudflare_read_rejected'],
-  ...['401', '403', '404', '429', '5xx', 'other'].map(status => [
-    'Database Hyperdrive verification failed: Cloudflare configuration read rejected (' + status + ')',
-    'cloudflare_read_' + status
-  ]),
+  ...['401', '403', '404', '429', '5xx', 'other'].flatMap(status =>
+    ['1', '2', 'other'].map(slot => [
+      'Database Hyperdrive verification failed: Cloudflare configuration read rejected (' + status + ', slot ' + slot + ')',
+      'cloudflare_read_' + status + '_slot_' + slot
+    ])
+  ),
   ['Database Hyperdrive verification failed: Cloudflare did not confirm the configuration', 'cloudflare_unconfirmed'],
   ['Database Hyperdrive verification failed: unreadable Cloudflare response', 'cloudflare_unreadable'],
   ['Database Hyperdrive verification failed: Cloudflare read unavailable', 'cloudflare_unavailable'],
