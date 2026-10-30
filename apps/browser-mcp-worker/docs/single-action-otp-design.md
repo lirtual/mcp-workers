@@ -214,3 +214,18 @@ Once authentication evidence has been collected or the Owner cancels the experim
 **Remaining decisive negative test:** After actually completing the OTP in a regular browser, immediately revisit the exact same temporary test URL in the **same window/profile** without closing it and without clearing cookies. Observe whether Cloudflare Access asks for another freshly emailed PIN or silently forwards to the Worker `404 Not found`. A silent forward proves the existing Access application session is reused, so Access-protected navigation by itself **cannot** enforce Q3's every-OFF→ON fresh OTP contract. Regardless of the result, still separately validate extension-held challenge proof, owner-vs-Agent auth isolation, pending Stop invalidation and exact Profile binding; none are implemented by this gate test.
 
 **Status:** OTP Access gate / one real OTP login observed; automated browser activation and per-toggle fresh authentication **not verified**. Temporary Access application remains installed solely for the narrowly scoped test and must be explicitly removed after evidence collection.
+
+
+## Same-session SSO replay negative result — 2026-10-30
+
+**Owner-observed result (confirmed negative case):** Following a successful Cloudflare One-time PIN login to the temporary Access-protected `/activation-test-418/start`, the Owner revisited the **same URL in the same regular browser session without clearing cookies**. The result was **immediate Worker `Not found`**, with **no fresh PIN prompt**. Since this temporary path has no Worker handler, the 404 response demonstrates that the Access layer admitted the browser request from the existing authenticated session without forcing another email PIN. Cloudflare Access authentication logs previously showed one successful OTP login for the test app.
+
+### Security conclusion
+
+- **Q3's every deliberate OFF→ON fresh email OTP is NOT met by the ordinary protected-path approach**, even with the OTP-only allowed IdP and `require login_method` policy. That policy restricts the *authentication method*, not the freshness of each visit.
+- Opening the same URL twice is not the same as a fully implemented toggle sequence, but it **decisively invalidates using each successful Access page navigation / Access JWT as evidence of a new PIN**. A future activation endpoint must explicitly obtain trustworthy fresh-authentication proof and bind it to the exact initiating extension challenge; the current simple design is insufficient.
+- The result does **not** establish that no other supported mechanism can ever force a fresh OTP. Prior to implementation, validate a genuinely session-free, owner-controlled authentication context with verifiable one-use callback proof, or bring Q3/Q5 back to the Owner for a conscious security/UX trade-off. Do **not** weaken silently, use global logout of unrelated apps, scrape the mailbox, or build a second OTP issuer as an unapproved workaround.
+- Local Stop precedence and the temporary pairing lifetime remain sound design requirements. None of the access-layer testing exercised a browser extension callback, automated pairing, real Stop or actual WSS activation; these remain Not tested.
+
+**Test infrastructure:** A temporary Access self-hosted app ID `a24c5ac7-4d81-4688-9ad4-383f641ae147` had been created solely for this test, independent of the production Owner Approval `/owner/*` app. The expected cleanup is to delete only that exact test app, verify the route returns Worker 404 without Access redirection, and confirm the production Owner Approval app remains unchanged.
+
