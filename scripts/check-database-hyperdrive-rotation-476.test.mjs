@@ -12,7 +12,10 @@ const input={mode:'credentials',connectionId:'rotation_fixture',expectedRevision
  manifest:[]};
 function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
  migration=1,sourceBound=false,currentBound=false,rollbackBound=false,
- unknownRollback=false,changeDeployment=false,caDrift=false,otherWorkerRollbackBound=false,rowRecheckChanged=false,versionInventoryDrift=false,configReadbackDrift=false,workerInventoryDrift=false}={}){
+ unknownRollback=false,changeDeployment=false,caDrift=false,otherWorkerRollbackBound=false,rowRecheckChanged=false,versionInventoryDrift=false,configReadbackDrift=false,workerInventoryDrift=false,targetDrift=false,missingTarget=false}={}){
+ const target={binding:'HYPERDRIVE_TEST',id:configId,dialect:'mysql',
+  origin_host:'db.example.com',origin_port:3306,origin_database:'sample',
+  origin_user:'service',ca_certificate_id:'test-cert-1234'};
  const calls=[];let deployments=0,rowReads=0,inventoryReads=0,configReads=0,workerReads=0;
  const source=sourceBound?{...input.source,hyperdrive:[{binding:'HYPERDRIVE_TEST',id:configId}]}:input.source;
  const manifest=sourceBound?[{binding:'HYPERDRIVE_TEST',id:configId,dialect:'mysql'}]:[];
@@ -23,7 +26,8 @@ function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
    const {sql}=JSON.parse(init.body);
    if(sql.startsWith('SELECT id')){rowReads++;return respond([{success:true,results:[{
     id:'rotation_fixture',dialect:'mysql',transport:'hyperdrive',status,revision,
-    config_id:configId,binding_name:'HYPERDRIVE_TEST',in_flight_count:count
+    config_id:configId,binding_name:'HYPERDRIVE_TEST',in_flight_count:count,
+    target_metadata:missingTarget?null:JSON.stringify(target)
    }].map(row=>rowRecheckChanged&&rowReads>1?{...row,revision:8}:row)}]);}
    if(sql.includes('FROM d1_migrations'))return respond([{success:true,results:[{n:migration}]}]);
    if(sql.includes('FROM database_connections'))return respond([{success:true,results:[{n:shared}]}]);
@@ -31,8 +35,10 @@ function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
   }
   if(path==='/hyperdrive/configs/'+configId){
    configReads++;
-   return respond({id:configId,caching:{disabled:true},origin:{scheme:'mysql'},
-    mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:caDrift?null:configReadbackDrift&&configReads>1?'unexpected-new-ca':'fake-ca'}});
+   return respond({id:configId,caching:{disabled:true},origin:{scheme:'mysql',
+    host:targetDrift?'wrong.example.com':target.origin_host,port:target.origin_port,
+    database:target.origin_database,user:target.origin_user},
+    mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:caDrift?null:configReadbackDrift&&configReads>1?'unexpected-new-ca':target.ca_certificate_id}});
   }
   if(path==='/workers/scripts'){
    workerReads++;
@@ -122,4 +128,12 @@ test('a newly registered Worker during inventory scan cannot return stale eligib
  const f=fixture({workerInventoryDrift:true});
  await assert.rejects(run(f),/worker_inventory_changed/);
  onlyRead(f);
+});
+
+test('rotation rejects altered origin identity and absent immutable D1 target metadata',async()=>{
+ for(const options of [{targetDrift:true},{missingTarget:true}]){
+  const f=fixture(options);
+  await assert.rejects(run(f),/target_identity_unconfirmed/);
+  onlyRead(f);
+ }
 });

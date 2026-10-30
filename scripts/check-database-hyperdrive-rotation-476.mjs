@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readConfiguration,verifyDatabaseHyperdriveSource} from './manual-worker-release.mjs';
+import {verifyCloudflareHyperdriveConfig} from './verify-database-hyperdrive.mjs';
 const REGISTRY='cbfe6a05-4979-4e6a-9cc2-4f6468586e4a';
 const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const fail=code=>{throw Error('Hyperdrive rotation preflight blocked: '+code)};
@@ -34,7 +35,7 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
  }
  const migrations=await query("SELECT COUNT(*) AS n FROM d1_migrations WHERE name='0003_hyperdrive_operations.sql'");
  if(migrations.length!==1||migrations[0].n!==1)fail('drain_schema_unavailable');
- const rows=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?',[connectionId]);
+ const rows=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count,target_metadata FROM database_connections WHERE id=?',[connectionId]);
  const row=rows.length===1?rows[0]:null;
  if(row?.id!==connectionId||row.transport!=='hyperdrive'||row.status!=='disabled'||
  row.revision!==Number(expectedRevision)||row.in_flight_count!==0||
@@ -52,6 +53,17 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
  config.origin?.scheme!==(row.dialect==='mysql'?'mysql':'postgres')||
  config.mtls?.sslmode!==(row.dialect==='mysql'?'VERIFY_IDENTITY':'verify-full')||
  typeof config.mtls.ca_certificate_id!=='string')fail('config_drift');
+ // 0003 pins immutable nonsecret origin identity for new configurations.
+ // A legacy row with no verified metadata cannot qualify for in-place rotation.
+ let target;
+ try { target=JSON.parse(row.target_metadata); }catch{fail('target_identity_unconfirmed')}
+ const keys=['binding','id','dialect','origin_host','origin_port','origin_database',
+  'origin_user','ca_certificate_id'];
+ if(!target||typeof target!=='object'||Array.isArray(target)||
+   Object.keys(target).length!==keys.length||keys.some(k=>!Object.hasOwn(target,k))||
+   target.binding!==row.binding_name||target.id!==row.config_id||target.dialect!==row.dialect)
+   fail('target_identity_unconfirmed');
+ try{verifyCloudflareHyperdriveConfig(target,config)}catch{fail('target_identity_unconfirmed')}
  const scripts=await read('/workers/scripts');
  if(!Array.isArray(scripts.result)||scripts.result.length>100||scripts.result_info?.total_pages>1||
    (scripts.result.length===100&&scripts.result_info?.total_pages!==1))
@@ -137,11 +149,12 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
   again.deployments[0].versions[0].version_id!==activeId)fail('deployment_changed');
  // A long historical-version scan must not return a clean result if D1
  // status/revision or an unresolved execution changed while checking.
- const latest=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?',[connectionId]);
+ const latest=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count,target_metadata FROM database_connections WHERE id=?',[connectionId]);
  if(latest.length!==1||latest[0].id!==row.id||latest[0].dialect!==row.dialect||
    latest[0].transport!==row.transport||latest[0].status!=='disabled'||
    latest[0].revision!==row.revision||latest[0].config_id!==row.config_id||
-   latest[0].binding_name!==row.binding_name||latest[0].in_flight_count!==0)
+   latest[0].binding_name!==row.binding_name||latest[0].target_metadata!==row.target_metadata||
+   latest[0].in_flight_count!==0)
    fail('registry_changed_during_check');
  const recentShared=await query('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',[connectionId,row.config_id,row.binding_name]);
  if(recentShared.length!==1||recentShared[0].n!==0)fail('shared_registry_reference');

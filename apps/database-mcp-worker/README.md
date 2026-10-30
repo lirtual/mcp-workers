@@ -202,7 +202,8 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   Owner `/setup`. It accepts a disabled ID, exact revision, and one of
   `credentials` or `ca`, with **no passwords, CA PEM, resource writes or
   deployment**. The Runner reads D1 status/in-flight/unfinished operations,
-  current CA/TLS/cache config, all current account Worker settings, and each
+  current CA/TLS/cache config and immutable D1 origin metadata (no legacy
+  metadata-free rotation), all current account Worker settings, and each
   Worker's deployable version bindings including active-version receipts.
   Any referenced version, incomplete inventory, shared registry, stale D1,
   source Binding, version drift or missing migration blocks the check. Before
