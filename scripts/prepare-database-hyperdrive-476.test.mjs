@@ -147,7 +147,7 @@ test('PR confirmation renews a nonsecret seven-day review window but never the e
   assert.match(source,/updated_at=\?,expires_at=\?,error_class='github_pr_ci_pending'/);
   assert.match(source,/AND phase='running' AND expected_source_sha=\? AND expires_at>\?/);
 });
-for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected','ca-replacement-unprotected','ca-replacement-drift-unprotected'])
+for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected','ca-replacement-unprotected','ca-replacement-drift-unprotected','ca-replacement-upstream-drift-unprotected','ca-replacement-upstream-ca-drift-unprotected','ca-replacement-upstream-tls-drift-unprotected','ca-replacement-upstream-unreadable-unprotected'])
 test('preparation preserves policy and resource receipt safety: '+mode,async()=>{
   const {DatabaseSync}=await import('node:sqlite');
   const {createCipheriv}=await import('node:crypto');
@@ -247,6 +247,14 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
     }
     if(path.endsWith('/mtls_certificates/'+'6'.repeat(36)))return Response.json({success:true,result:{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true,certificates:mode==='ca-wrong-pem-unprotected'?'mismatched':candidate.caPem}});
     if(path.endsWith('/mtls_certificates/'+candidate.caCertificateId))return Response.json({success:true,result:{id:candidate.caCertificateId,ca:true}});
+    if(path.endsWith('/hyperdrive/configs/'+'e'.repeat(32))) {
+      if(mode==='ca-replacement-upstream-unreadable-unprotected')return new Response(null,{status:403});
+      return Response.json({success:true,result:{id:'e'.repeat(32),origin:{scheme:'mysql',
+        host:mode==='ca-replacement-upstream-drift-unprotected'?'changed.example.net':'mysql.example.net',
+        port:3306,database:'catalog',user:'reader'},caching:{disabled:true},
+        mtls:{sslmode:mode==='ca-replacement-upstream-tls-drift-unprotected'?'require':'VERIFY_IDENTITY',
+          ca_certificate_id:mode==='ca-replacement-upstream-ca-drift-unprotected'?'different-ca-123456789':'old-ca-123456789'}}});
+    }
     if(path.endsWith('/hyperdrive/configs') && init.method==='GET')return Response.json({success:true,result:[]});
     if(path.endsWith('/hyperdrive/configs') && init.method==='POST') {
       creates++;
@@ -265,6 +273,16 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
     if(mode==='ca-replacement-drift-unprotected'){
       await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),
         error=>error.reason==='ca_replacement_target_changed');
+      assert.equal(creates,0);
+      assert.equal(caUploads,0);
+      assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('old_ref')},
+        {status:'active',revision:3});
+      return;
+    }
+    if(['ca-replacement-upstream-drift-unprotected','ca-replacement-upstream-ca-drift-unprotected','ca-replacement-upstream-tls-drift-unprotected','ca-replacement-upstream-unreadable-unprotected'].includes(mode)) {
+      await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),
+        error=>error.reason===(mode==='ca-replacement-upstream-unreadable-unprotected' ?
+          'ca_replacement_config_unavailable' : 'ca_replacement_target_changed'));
       assert.equal(creates,0);
       assert.equal(caUploads,0);
       assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('old_ref')},

@@ -338,6 +338,16 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
       (!candidate.caCertificateId ||
         candidate.caCertificateId !== metadata.ca_certificate_id),
       'ca_replacement_target_changed');
+    // D1 provenance is immutable, but the old Cloudflare configuration can
+    // drift independently. Refuse to prepare replacement CA/config assets if
+    // the live target no longer matches the reviewed origin and strict TLS.
+    requireGate(/^[a-f0-9]{32}$/i.test(prior.config_id ?? ''),
+      'ca_replacement_target_changed');
+    let previousConfig;
+    try { previousConfig = await cloud('/hyperdrive/configs/' + prior.config_id); }
+    catch { fail('ca_replacement_config_unavailable'); }
+    try { verifyCloudflareHyperdriveConfig(metadata, previousConfig); }
+    catch { fail('ca_replacement_target_changed'); }
   }
   const binding = checkedManifestSource(source, manifest, candidate, operationId);
   // Before Cloudflare POST: CAS the operation and source identity. Unknown
@@ -434,7 +444,8 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
   } catch (error) {
     // Preserve a receipt even if Cloudflare/GitHub accepted a write whose
     // response was lost. Do not release this ID or replay an external step.
-    const safeClasses = new Set(['ca_permission_denied','ca_upstream_unavailable',
+    const safeClasses = new Set(['ca_replacement_target_changed',
+      'ca_replacement_config_unavailable','ca_permission_denied','ca_upstream_unavailable',
       'ca_inventory_incomplete','ca_inventory_ambiguous','ca_name_collision',
       'ca_content_mismatch','ca_outcome_requires_reconciliation','ca_receipt_unknown',
       'ca_reference_invalid','ca_receipt_invalid','ca_write_claim_failed']);
