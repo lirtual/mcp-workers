@@ -35,41 +35,58 @@ function mockClient(sqlMode = 'STRICT_TRANS_TABLES') {
 describe('MySQL read interpolation safety and Direct compatibility', () => {
   afterEach(() => vi.clearAllMocks());
 
-  it('checks Direct session SQL mode before interpolating SQL-mode-sensitive values, without COM_STMT_PREPARE', async () => {
+  it('pins a native read-only transaction before Direct mode verification and parameter interpolation', async () => {
     const client = mockClient();
     const value = "a'\\\\b";
     await mysqlQueryRead(base, 'SELECT ? AS value', [value], 2);
-    expect(client.query).toHaveBeenCalledTimes(2);
-    expect(client.query.mock.calls[0]?.[0]).toContain('SHOW SESSION VARIABLES');
-    expect(client.query.mock.calls[1]?.[0]).toContain('SELECT ? AS value');
-    expect(client.query.mock.calls[1]?.[1]).toEqual([value]);
+    expect(client.query.mock.calls.map(([sql]) => sql)).toEqual([
+      'START TRANSACTION READ ONLY',
+      "SHOW SESSION VARIABLES LIKE 'sql_mode'",
+      expect.stringContaining('SELECT ? AS value')
+    ]);
+    expect(client.query.mock.calls[2]?.[1]).toEqual([value]);
+    expect(client.rollback).toHaveBeenCalledOnce();
+    expect(client.beginTransaction).not.toHaveBeenCalled();
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('preserves Direct constant SELECT without requiring a mode-dependent interpolation check', async () => {
+  it('requires native read-only mode for Direct constant SELECT as well', async () => {
     const client = mockClient();
     await mysqlQueryRead(base, 'SELECT 1 AS value', [], 2);
+    expect(client.query.mock.calls[0]?.[0]).toBe('START TRANSACTION READ ONLY');
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.rollback).toHaveBeenCalledOnce();
+    expect(client.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails closed if native read-only transaction cannot be established', async () => {
+    const client = mockClient();
+    client.query.mockRejectedValueOnce(new Error('read-only transaction not supported'));
+    await expect(mysqlQueryRead(base, 'SELECT 1', [], 2)).rejects.toBeTruthy();
     expect(client.query).toHaveBeenCalledOnce();
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('rejects unsafe Direct session mode before interpolating a value', async () => {
+  it('rejects unsafe Direct mode before interpolating a value and rolls back', async () => {
     const client = mockClient('NO_BACKSLASH_ESCAPES');
     await expect(mysqlQueryRead(base, 'SELECT ? AS value', ["'\\x"], 2))
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
-    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.rollback).toHaveBeenCalledOnce();
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('checks session SQL mode for Direct EXPLAIN parameters', async () => {
+  it('enforces native read-only mode for Direct EXPLAIN parameters', async () => {
     const client = mockClient();
     await mysqlExplain(base, 'SELECT ? AS value', ["'\\value"]);
-    expect(client.query).toHaveBeenCalledTimes(2);
-    expect(client.query.mock.calls[1]?.[0]).toContain('EXPLAIN FORMAT=JSON');
+    expect(client.query.mock.calls[0]?.[0]).toBe('START TRANSACTION READ ONLY');
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(client.query.mock.calls[2]?.[0]).toContain('EXPLAIN FORMAT=JSON');
+    expect(client.rollback).toHaveBeenCalledOnce();
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('checks session SQL mode for Direct schema introspection parameters', async () => {
+  it('preserves Direct schema introspection behavior', async () => {
     const client = mockClient();
     await mysqlInspectSchema(base, 'app', 'users');
     expect(client.query).toHaveBeenCalledTimes(6);
@@ -77,20 +94,21 @@ describe('MySQL read interpolation safety and Direct compatibility', () => {
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('keeps Hyperdrive interpolation behind a pinned session-mode check', async () => {
+  it('pins Hyperdrive read queries within a single native read-only transaction', async () => {
     const client = mockClient();
     await mysqlQueryRead({ ...base, transport: 'hyperdrive' }, 'SELECT ? AS value', ['safe'], 2);
-    expect(client.beginTransaction).toHaveBeenCalledOnce();
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.beginTransaction).not.toHaveBeenCalled();
+    expect(client.query.mock.calls[0]?.[0]).toBe('START TRANSACTION READ ONLY');
+    expect(client.query).toHaveBeenCalledTimes(3);
     expect(client.rollback).toHaveBeenCalledOnce();
     expect(client.execute).not.toHaveBeenCalled();
   });
 
-  it('rejects Hyperdrive interpolation on incompatible SQL mode', async () => {
+  it('fails closed on incompatible Hyperdrive SQL mode', async () => {
     const client = mockClient('NO_BACKSLASH_ESCAPES');
     await expect(mysqlQueryRead({ ...base, transport: 'hyperdrive' }, 'SELECT ? AS value', ['safe'], 2))
       .rejects.toMatchObject({ code: 'CONFIGURATION_UNAVAILABLE' });
-    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledTimes(2);
     expect(client.rollback).toHaveBeenCalledOnce();
   });
 });
