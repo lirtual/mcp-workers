@@ -295,6 +295,7 @@ test('registered Attempt wins pre-dispatch cancellation and retains physical-can
     String(action.repositoryId),action.repository+'/'+action.workflowPath+'@'+action.ref,
     action.ref,Date.now(),Date.now());
   await assert.rejects(()=>ctx.service.cancel(runId,'run_task'),/github_action_executor_not_configured/);
+  await assert.rejects(()=>ctx.service.cancel(runId,'run_task',true),/github_action_executor_not_configured/);
   assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
   assert.equal(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status,'running');
  }finally{ctx.sqlite.close();}
