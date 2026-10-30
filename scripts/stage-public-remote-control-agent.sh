@@ -4,7 +4,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
-sha="9536205d8aeeea3b551fa24c608c954ab8d2ad0f"
+sha="0bcc22fcd84ab000d57c3978ffe93c14314b6f9e"
 target="apps/remote-control-agent"
 if [[ -e "$target" || -L "$target" ]]; then
   if [[ -f "$target/.pinned-public-source" ]] &&
