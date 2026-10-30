@@ -124,8 +124,11 @@ async function replacementCaFromSource(
    id:string;dialect:Dialect;transport:string;status:string;config_id:string;
    binding_name:string;target_metadata:string|null;in_flight_count:number
   }>();
- if (!old || old.transport !== 'hyperdrive' || old.status !== 'disabled' ||
-   old.dialect !== candidate.dialect || old.in_flight_count !== 0 ||
+ // Candidate preparation creates a separate unbound config; it never edits,
+ // disables or drains the source. In-flight source SQL may continue safely.
+ if (!old || old.transport !== 'hyperdrive' ||
+   !['active','disabled'].includes(old.status) ||
+   old.dialect !== candidate.dialect ||
    !/^[a-f0-9]{32}$/i.test(old.config_id) || !/^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(old.binding_name) ||
    !old.target_metadata) invalid();
  let metadata:Record<string,unknown>;

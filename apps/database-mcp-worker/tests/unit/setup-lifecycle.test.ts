@@ -633,7 +633,7 @@ it('Owner credential-rotation confirmation never includes plaintext in GitHub di
 });
 
 
-it('replaces a disabled Hyperdrive username through a separate reviewed candidate without changing the original',async()=>{
+it('prepares a replacement from active or disabled Hyperdrive without mutating ongoing source executions',async()=>{
  const {sqlite,env}=fixture();instances.push(sqlite);
  const prior={binding:'HYPERDRIVE_ORIGINAL',id:'a'.repeat(32),dialect:'postgres',
   origin_host:'pg.example.net',origin_port:5432,origin_database:'app',origin_user:'oldreader',
@@ -667,23 +667,27 @@ it('replaces a disabled Hyperdrive username through a separate reviewed candidat
  for(const invalid of [{host:'different.example.net'},{database:'other'},
    {replacement_for:'nonexistent'},{id:'old_conn'},
    {ca_certificate_id:'manual-override-forbidden'}])expect((await save(invalid)).status).toBe(422);
- sqlite.prepare("UPDATE database_connections SET status='active' WHERE id='old_conn'").run();
- expect((await save()).status).toBe(422);
- sqlite.prepare("UPDATE database_connections SET status='disabled',in_flight_count=1 WHERE id='old_conn'").run();
- expect((await save()).status).toBe(422);
- sqlite.prepare("UPDATE database_connections SET in_flight_count=0 WHERE id='old_conn'").run();
+ // Staging a separate candidate does not patch the active source, nor
+ // interrupt a source read already holding a durable SQL admission claim.
+ sqlite.prepare("UPDATE database_connections SET status='active',in_flight_count=1 WHERE id='old_conn'").run();
+ const activePreparation=await save({id:'active_replacement'});
+ expect(activePreparation.status).toBe(200);
+ expect(sqlite.prepare("SELECT status,in_flight_count,config_id,revision FROM database_connections WHERE id='old_conn'").get())
+  .toMatchObject({status:'active',in_flight_count:1,revision:2,config_id:prior.id});
+ expect(dispatches).toHaveLength(1);
+ sqlite.prepare("UPDATE database_connections SET status='disabled' WHERE id='old_conn'").run();
  // Immutable metadata cannot be corrupted after creation; use a distinct
  // malformed historical source to test fail-closed provenance validation.
  sqlite.prepare("INSERT INTO database_connections (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at) VALUES ('malformed_source','postgres','hyperdrive','disabled',?,?,2,'{}',1,1)")
   .run('b'.repeat(32),'HYPERDRIVE_BAD_SOURCE');
  expect((await save({replacement_for:'malformed_source'})).status).toBe(422);
- expect(dispatches).toHaveLength(0);
+ expect(dispatches).toHaveLength(1);
  const accepted=await save();expect(accepted.status).toBe(200);
  expect(await accepted.text()).not.toContain(base.password);
- expect(dispatches).toHaveLength(1);
- expect(dispatches[0]).not.toContain(base.password);
- expect(sqlite.prepare("SELECT status,revision,config_id FROM database_connections WHERE id='old_conn'").get())
-  .toMatchObject({status:'disabled',revision:2,config_id:prior.id});
+ expect(dispatches).toHaveLength(2);
+ expect(dispatches.every(x=>!x.includes(base.password))).toBe(true);
+ expect(sqlite.prepare("SELECT status,revision,config_id,in_flight_count FROM database_connections WHERE id='old_conn'").get())
+  .toMatchObject({status:'disabled',revision:2,config_id:prior.id,in_flight_count:1});
  const row=sqlite.prepare("SELECT operation_id,phase,key_id FROM hyperdrive_operations WHERE logical_id='new_conn'").get() as {
   operation_id:string;phase:string;key_id:string
  };
@@ -697,7 +701,7 @@ it('replaces a disabled Hyperdrive username through a separate reviewed candidat
  expect(await readHyperdrivePreparation(env.DB!,env,second.operation_id)).toMatchObject({
   user:'newreader+tenant@project',caPem:pem
  });
- expect(dispatches).toHaveLength(2);
+ expect(dispatches).toHaveLength(3);
  expect(JSON.stringify(dispatches)).not.toContain(base.password);
 });
 
@@ -723,7 +727,7 @@ it('unified Save reuses strict CA replacement provenance without altering its ac
   return certificates();
  };
  const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
- const html=await page.text();expect(html).toContain('Replace a disabled Hyperdrive connection (new ID)');
+ const html=await page.text();expect(html).toContain('Prepare a Hyperdrive replacement (new ID)');
  const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
  const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
  const input={csrf,id:'replacement',transport:'hyperdrive',dialect:'postgres',input_mode:'fields',

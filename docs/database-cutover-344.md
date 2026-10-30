@@ -276,10 +276,10 @@ retirement while any enumerated rollback version still references its config or 
 ## Spec #476 replacement candidate update (2026-10-30; local Draft)
 
 - Hyperdrive username or CA changes are submitted from the existing unified
-  Add form using a new logical ID and an optional disabled source ID. The
+  Add form using a new logical ID and an optional existing active or disabled source ID. The
   source target must have complete, exact D1 provenance and zero unresolved
   executions; the new candidate must preserve dialect, host, port and
-  database. The old config, Binding and CA are never patched by this flow.
+  database. The old config, Binding and CA are never patched or disabled by this flow; ongoing source SQL is unaffected.
 - A suitable recorded CA can be provisionally reused, but still requires the
   protected Runner's independent strict certificate readback. An explicit
   replacement CA PEM creates a separate candidate asset. Normal final PR,

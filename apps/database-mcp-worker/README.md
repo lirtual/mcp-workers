@@ -49,11 +49,10 @@ ledger evolution and its exact read-only publication checks. A fresh read-only
 production D1 query on 2026-10-30 verified that only `0001` and `0002` are
 applied: `0003` has **not** been applied in production. Existing isolated CA renewal via new logical ID is
 available on the unified Add form with provenance and target verification.
-The same collapsed replacement input now accepts a disabled Hyperdrive source:
+The same collapsed replacement input now accepts an active or disabled Hyperdrive source:
 new username/password or new CA material is prepared under a **new ID**
 with unchanged dialect/host/port/database, validated provenance and no
-mutation of the source configuration or historical bindings. The source
-remains disabled; a protected reviewed release and actual health proof
+mutation of the source configuration or historical bindings. The source remains in its prior status, and any in-flight SQL proceeds; a protected reviewed release and actual health proof
 are still required before the replacement is Active. Password-only
 in-place rotation remains isolation-gated; username/CA edits never
 unsafe-PATCH a rollback-referenced config.

@@ -51,7 +51,7 @@ function addConnectionForm(csrf: string): string {
     <div class="hyperdrive-ca"><p class="muted">Hyperdrive strictly verifies certificates and hostnames with caching disabled. Provide the origin CA PEM where needed. Protected GitHub Actions prepares the config and Binding; a reviewed production release requires one separate approval.</p>
     <details><summary>CA PEM (only if no suitable CA is on record)</summary>
     <label>Certificate PEM<textarea name="ca_pem" rows="3" maxlength="16384" autocomplete="off"></textarea></label></details>
-    <details><summary>Replace a disabled Hyperdrive connection (new ID)</summary><p class="muted">Use a new Connection ID and the same database host, port and database. You may change the username, password and CA. The existing connection and all rollback references are kept; protected release and health verification still apply.</p>
+    <details><summary>Prepare a Hyperdrive replacement (new ID)</summary><p class="muted">Use a new Connection ID and the same database host, port and database. You may change the username, password and CA while the original stays active. The old config and rollback references remain unchanged; protected release and health verification still apply.</p>
     <label>Existing disabled Connection ID<input name="replacement_for" maxlength="64" autocomplete="off"></label></details>
 </div>
     <button type="submit">Save connection</button></form></fieldset>`;
@@ -79,7 +79,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<label>Type connection ID to confirm password update<input name="confirm_id" required></label>' +
           '<label class="check"><input type="checkbox" name="confirm_credentials" value="1" required>Update password only after protected isolation checks</label>' +
           '<button type="submit">Save new password</button></form>' +
-          '<p class="muted">To change the username or CA without breaking a rollback version, use <a href="#add-connection">Add connection</a>, choose a new ID and expand “Replace a disabled Hyperdrive connection”. The old connection stays disabled until your new candidate passes protected release and health checks.</p></details>' +
+          '<p class="muted">To change the username or CA without breaking a rollback version, use <a href="#add-connection">Add connection</a>, choose a new ID and expand “Prepare a Hyperdrive replacement”. The original connection is never modified by candidate preparation; switch consumers only after protected release and health checks.</p></details>' +
           '<details><summary>Advanced resource cleanup</summary><p class="muted">Logical Delete above does not remove Cloudflare resources. Release or delete historical bindings and certificates only after independently verifying all active and rollback references.</p>' +
           '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
           '<input type="hidden" name="hyperdrive_action" value="retire">' +
