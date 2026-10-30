@@ -501,8 +501,8 @@ function reviewedTerminalRunSql(sql) {
     "outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs",
     "outcome NOT IN ('succeeded','failed','cancelled') AND id NOT IN ("+sqlIds+")) AS nonterminal_runs"
   ).replace(
-    "status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps",
-    "status NOT IN ('succeeded','failed','skipped') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
+    "status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps",
+    "status NOT IN ('succeeded','failed','skipped','cancelled') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
   );
 }
 
@@ -632,7 +632,11 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
  (SELECT count(*) FROM runs WHERE start_state IS NULL OR
    start_state IN ('reserved','start_unknown')) AS unresolved_starts,
  (SELECT count(*) FROM run_steps WHERE status IS NULL OR
-   status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps,
+   status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
+ (SELECT count(*) FROM run_steps s JOIN runs r ON r.id=s.run_id
+   WHERE s.status='cancelled' AND (r.outcome IS NOT 'cancelled'
+     OR r.error_code IS NOT 'approval_cancel_requested'
+     OR s.error_code IS NOT 'approval_cancel_requested')) AS invalid_cancelled_steps,
  (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
    state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
  (SELECT count(*) FROM session_executions WHERE state IS NULL OR
@@ -653,7 +657,7 @@ export function verifyWorkflowMigrationReadiness(response) {
   const nonnegative = [
     "migration_count","expected_migrations","workflow_count","run_count",
     "session_count","attempt_count","callback_count","cancellation_count",
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ];
   for (const key of nonnegative) {
@@ -664,7 +668,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ]) {
     invariant(row[key] === 0, "Workflow migration blocked by " + key);
@@ -691,14 +695,14 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
   const row=response[0].results[0];
   for (const key of [
     "migration_count","expected_migrations","nonterminal_runs",
-    "unresolved_starts","unresolved_steps","nonterminal_attempts",
+    "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
   invariant(row.migration_count===16 && row.expected_migrations===16,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps","undelivered_callbacks",
   ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
   invariant(row.nonterminal_attempts===row.confirmed_ready_sessions &&
     row.nonterminated_sessions===row.confirmed_ready_sessions,
