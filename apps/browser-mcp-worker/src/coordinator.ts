@@ -1,9 +1,10 @@
 import { approvalConfig, type ApprovalEnv } from "./approval-auth.ts";
 import { isInteraction, validInteraction, interactionExtra } from "./interactions.ts";
 import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
+const TEMP_RECONNECT_GRACE_MS = 90000;
 type Endpoint = {
   id: string; alias: string; state: "stopped" | "enabled" | "revoked";
-  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number;
+  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number; offline_deadline?:number|null;
 };
 type SocketAuth = { protocol?:number; endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; approval_origin?:string };
 type PendingMutation = {
@@ -61,6 +62,7 @@ export class BrowserOwner implements DurableObject {
     const columns=this.sql.exec<{name:string}>("PRAGMA table_info(endpoints)").toArray().map(c=>c.name);
     if(!columns.includes("pairing_mode"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN pairing_mode TEXT NOT NULL DEFAULT 'permanent'");
     if(!columns.includes("lease_expires_at"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN lease_expires_at INTEGER");
+    if(!columns.includes("offline_deadline"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN offline_deadline INTEGER");
     this.sql.exec("CREATE TABLE IF NOT EXISTS activation_attempts (id TEXT PRIMARY KEY, proof_hash TEXT NOT NULL, alias TEXT NOT NULL, mode TEXT NOT NULL, endpoint_id TEXT, stop_epoch INTEGER, owner_verified INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)");
     this.intents = new IntentLedger(this.sql);
@@ -210,7 +212,21 @@ export class BrowserOwner implements DurableObject {
   private endpoint(id: string): Endpoint | undefined {
     return this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE id = ?", id).toArray()[0];
   }
-  private leaseValid(e:Endpoint) {return !e.lease_expires_at||e.lease_expires_at>Date.now();}
+  private leaseValid(e:Endpoint) {
+    const now=Date.now();
+    return (!e.lease_expires_at||e.lease_expires_at>now)&&(!e.offline_deadline||e.offline_deadline>now);
+  }
+  private expireTemporary(now=Date.now()) {
+    const expired=this.sql.exec<{id:string}>("SELECT id FROM endpoints WHERE state='enabled' AND pairing_mode='temporary' AND ((lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (offline_deadline IS NOT NULL AND offline_deadline<=?))",now,now).toArray();
+    for(const {id} of expired){
+      const changed=this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=? AND state='enabled'",now,id);
+      if(changed.rowsWritten===1)this.close(id,"revoked");
+    }
+  }
+  private async scheduleEarlierAlarm(deadline:number) {
+    const existing=await this.state.storage.getAlarm();
+    if(existing===null||existing>deadline)await this.state.storage.setAlarm(deadline);
+  }
   private live(id: string, generation: number) {
     return this.state.getWebSockets().some(s => {
       const a = s.deserializeAttachment() as SocketAuth | null;
@@ -251,6 +267,7 @@ export class BrowserOwner implements DurableObject {
       if (!arg || typeof arg !== "object" || Array.isArray(arg)) throw Error();
     } catch { return json({error:"bad_request"},400); }
     const now = Date.now();
+    this.expireTemporary(now);
     this.expireApprovals(now);
     if(url.pathname==="/owner-view"||url.pathname==="/owner-decide")return this.ownerApproval(arg,url.pathname==="/owner-decide");
     if(url.pathname==="/owner-unknown-view"||url.pathname==="/owner-unknown-report")
@@ -340,6 +357,11 @@ export class BrowserOwner implements DurableObject {
       const lease=row.mode==="temporary"?Date.now()+86400000:null;
       this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at,pairing_mode,lease_expires_at) VALUES(?,?,?,'enabled',0,1,?,?,?)",
         endpoint_id,row.alias,credentialHash,Date.now(),row.mode,lease);
+      if(lease)try{await this.scheduleEarlierAlarm(lease);}
+      catch{
+        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1 WHERE id=?",endpoint_id);
+        return json({error:"lease_unavailable"},503);
+      }
       return json({authorization:"enabled",endpoint_id,credential,pairing_mode:row.mode,lease_expires_at:lease});
     }
     if (url.pathname === "/create-pair" || url.pathname === "/claim" || url.pathname === "/local-resume") return json({error:"protocol_retired"},410);
@@ -418,7 +440,7 @@ export class BrowserOwner implements DurableObject {
           Object.keys(arg).some(k=>!["endpoint_id","tool","tab_id","scope"].includes(k)))
         return json({error_code:"invalid_arguments"},400);
       const e=this.endpoint(id);
-      if(!e || e.state!=="enabled")return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
+      if(!e || e.state!=="enabled" || !this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
         return a?.authenticated && a.protocol===2 && a.endpoint_id===id && a.generation===e.generation &&
@@ -500,10 +522,14 @@ export class BrowserOwner implements DurableObject {
         else next=Math.min(next,attachment.deadline);
       }
     }
+    this.expireTemporary(now);
+    const pending=this.sql.exec<{next_deadline:number|null}>("SELECT MIN(CASE WHEN offline_deadline IS NULL THEN lease_expires_at WHEN lease_expires_at IS NULL THEN offline_deadline ELSE MIN(offline_deadline,lease_expires_at) END) AS next_deadline FROM endpoints WHERE state='enabled' AND pairing_mode='temporary'").toArray()[0]?.next_deadline;
+    if(pending!==null&&pending!==undefined)next=Math.min(next,pending);
     if(Number.isFinite(next))await this.state.storage.setAlarm(next);
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const auth = socket.deserializeAttachment() as SocketAuth | null;
+    this.expireTemporary();
     if (!auth || typeof message !== "string" || message.length > (auth.authenticated?2200000:4096) || Date.now() > auth.deadline && !auth.authenticated) {
       socket.close(1008,"invalid_frame");return;
     }
@@ -522,7 +548,7 @@ export class BrowserOwner implements DurableObject {
       const current=this.endpoint(e.id);
       if(!current||current.state!=="enabled"||current.revision!==e.revision||current.generation!==e.generation){socket.close(1008,"stale_auth");return;}
       const generation = current.generation + 1;
-      const update=this.sql.exec("UPDATE endpoints SET generation=?,updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",generation,Date.now(),e.id,current.generation,current.revision);
+      const update=this.sql.exec("UPDATE endpoints SET generation=?,offline_deadline=NULL,updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",generation,Date.now(),e.id,current.generation,current.revision);
       if(update.rowsWritten!==1){socket.close(1008,"stale_auth");return;}
       for (const other of this.state.getWebSockets()) {
         if (other !== socket && (other.deserializeAttachment() as SocketAuth|null)?.endpoint_id === e.id) {
@@ -643,22 +669,34 @@ export class BrowserOwner implements DurableObject {
       this.close(e.id,"stopped");
     } else {socket.close(1008,"unsupported_frame");}
   }
-  webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):void {
-    // Losing the current connected temporary browser session invalidates its
-    // server grant immediately. A superseded older generation cannot revoke
-    // the replacement; explicit local Stop remains stopped, not revoked.
+  async webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):Promise<void> {
+    // A network flap and browser exit are indistinguishable at WSS close.
+    // Keep a bounded reconnect grant, never a live execution socket. Server
+    // alarms eventually revoke browser-exit grants without relying on clients.
+    // Superseded WSS generations and explicit Stop/Revoke cannot regain access.
     const auth=socket.deserializeAttachment() as SocketAuth|null;
+    let deadline:number|null=null, temporaryId:string|null=null;
     if(auth?.authenticated && auth.endpoint_id && typeof auth.generation==="number"){
       const e=this.endpoint(auth.endpoint_id);
       if(e?.state==="enabled"&&e.pairing_mode==="temporary"&&e.generation===auth.generation){
-        const changed=this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=? AND state='enabled' AND generation=?",
-          Date.now(),e.id,auth.generation);
-        if(changed.rowsWritten===1)this.close(e.id,"revoked");
+        deadline=Math.min(Date.now()+TEMP_RECONNECT_GRACE_MS,e.lease_expires_at??Infinity);
+        const changed=this.sql.exec("UPDATE endpoints SET offline_deadline=? WHERE id=? AND state='enabled' AND generation=? AND offline_deadline IS NULL",
+          deadline,e.id,auth.generation);
+        if(changed.rowsWritten===1)temporaryId=e.id;
       }
     }
     for(const [id,p] of this.approvalReads)if(p.socket===socket){clearTimeout(p.timer);this.approvalReads.delete(id);p.resolve(null);}
     for(const [op,p] of this.pendingMutations)if(p.socket===socket)this.terminateMutation(op);
     for(const [id,p] of this.pendingReads){if(p.socket===socket){clearTimeout(p.timer);this.pendingReads.delete(id);p.resolve({error_code:"offline"});}}
+    if(temporaryId&&deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
+    catch{
+      // A lost alarm must not leave a temporary offline grant indefinitely.
+      const e=this.endpoint(temporaryId);
+      if(e?.state==="enabled"&&e.generation===auth?.generation&&e.offline_deadline===deadline){
+        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=?",Date.now(),temporaryId);
+        this.close(temporaryId,"revoked");
+      }
+    }
   }
   webSocketError(_socket:WebSocket,_error:unknown):void {}
 }

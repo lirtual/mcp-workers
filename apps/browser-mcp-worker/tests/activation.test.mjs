@@ -8,9 +8,11 @@ const proof='b'.repeat(64);
 function fixture(){
   const db=new DatabaseSync(':memory:');
   const sql={exec(query,...args){const stmt=db.prepare(query);if(stmt.columns().length)return {toArray:()=>stmt.all(...args),rowsWritten:0};return {toArray:()=>[],rowsWritten:Number(stmt.run(...args).changes)};}};
-  const owner=new BrowserOwner({storage:{sql},getWebSockets:()=>[]});
+  let nextAlarm=null;
+  const storage={sql,getAlarm:async()=>nextAlarm,setAlarm:async deadline=>{nextAlarm=deadline;}};
+  const owner=new BrowserOwner({storage,getWebSockets:()=>[]});
   const post=async(route,payload)=>{const r=await owner.fetch(new Request('https://owner.internal/'+route,{method:'POST',body:JSON.stringify(payload)}));return {status:r.status,...await r.json()};};
-  return {db,sql,post};
+  return {db,sql,storage,post,alarm:()=>owner.alarm(),getAlarm:()=>nextAlarm};
 }
 async function begin(f,mode='permanent',prior={}){
   const attempt_id=crypto.randomUUID();const r=await f.post('activate-begin',{attempt_id,proof_hash:await hash(proof),mode,alias:'Chrome profile',...prior});assert.equal(r.status,200,JSON.stringify(r));return attempt_id;
@@ -54,20 +56,83 @@ test('identity endpoint without Access assertion does not authorize or leak chal
   const r=await worker.fetch(new Request('https://browser.example/activate/verify/'+crypto.randomUUID()),env);
   assert.equal(r.status,404);assert.equal(called,0);
 });
-test('WSS disconnect invalidates current temporary pairing, but old generation cannot revoke successor',async()=>{
+test('temporary network loss grants a bounded offline window; stale generations do not revoke newer grants',async()=>{
  const f=fixture();try{
   const id=await begin(f,'temporary');await f.post('activate-authorize',{attempt_id:id});
   const p=await f.post('activate-complete',{attempt_id:id,proof});
   f.sql.exec('UPDATE endpoints SET generation=3 WHERE id=?',p.endpoint_id);
-  let generation=2;const frames=[];
-  const socket={deserializeAttachment:()=>({authenticated:true,endpoint_id:p.endpoint_id,generation}),send:x=>frames.push(JSON.parse(x)),close:()=>{}};
-  const owner=new BrowserOwner({storage:{sql:f.sql},getWebSockets:()=>[socket]});
-  owner.webSocketClose(socket,1006,'network',false);
+  let generation=2;
+  const socket={deserializeAttachment:()=>({authenticated:true,endpoint_id:p.endpoint_id,generation}),send:()=>{},close:()=>{}};
+  const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[socket]});
+  await owner.webSocketClose(socket,1006,'network',false);
+  assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
+  generation=3;await owner.webSocketClose(socket,1006,'network',false);
+  const offline=f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline;
+  assert.ok(offline>Date.now()&&offline<=Date.now()+90000);
+  assert.equal(f.getAlarm(),offline);
   assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'enabled');
-  generation=3;owner.webSocketClose(socket,1006,'network',false);
+  assert.equal((await f.post('read',{endpoint_id:p.endpoint_id,tool:'tabs'})).error_code,'offline');
+
+  let attachment={authenticated:false,deadline:Date.now()+5000},authenticated=false;
+  const reconnect={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:frame=>{if(JSON.parse(frame).type==='authenticated')authenticated=true;},close:()=>{},readyState:1};
+  const reconnector=new BrowserOwner({storage:f.storage,getWebSockets:()=>[reconnect]});
+  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:2,extension_version:'0.2.0',endpoint_id:p.endpoint_id,credential:p.credential}));
+  assert.equal(authenticated,true);
+  assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
+  assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'enabled');
+  await owner.webSocketClose(socket,1006,'stale',false);
+  assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
+  await reconnector.webSocketClose(reconnect,1006,'network',false);
+  assert.ok(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline>Date.now());
+  f.sql.exec('UPDATE endpoints SET offline_deadline=? WHERE id=?',Date.now()-1,p.endpoint_id);
+  await f.alarm();
   assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'revoked');
-  assert.ok(frames.some(x=>x.type==='revoked'));
+  assert.equal((await f.post('read',{endpoint_id:p.endpoint_id,tool:'tabs'})).status,403);
  }finally{f.db.close();}
+});
+
+test('expired temporary lease denies an existing authenticated socket read',async()=>{
+ const f=fixture();try{
+  const id=await begin(f,'temporary');await f.post('activate-authorize',{attempt_id:id});
+  const p=await f.post('activate-complete',{attempt_id:id,proof});
+  let sent=0;
+  const sock={deserializeAttachment:()=>({authenticated:true,protocol:2,endpoint_id:p.endpoint_id,generation:1,last_seen:Date.now()}),readyState:1,send:()=>{sent++;},close:()=>{}};
+  f.sql.exec('UPDATE endpoints SET generation=1,lease_expires_at=? WHERE id=?',Date.now()-1,p.endpoint_id);
+  const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[sock]});
+  const read=await owner.fetch(new Request('https://owner.internal/read',{method:'POST',body:JSON.stringify({endpoint_id:p.endpoint_id,tool:'tabs'})}));
+  assert.equal(read.status,403);
+  assert.equal((await read.json()).error_code,'revoked');
+  assert.equal(sent,1,'only a revoke signal, not a read request, may be sent');
+  assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'revoked');
+ }finally{f.db.close();}
+});
+
+test('temporary offline grace never overrules Stop/Revoke; alarm failure fails closed',async()=>{
+ const f=fixture();try{
+  const id=await begin(f,'temporary');await f.post('activate-authorize',{attempt_id:id});
+  const p=await f.post('activate-complete',{attempt_id:id,proof});
+  f.sql.exec('UPDATE endpoints SET generation=1 WHERE id=?',p.endpoint_id);
+  const socket={deserializeAttachment:()=>({authenticated:true,endpoint_id:p.endpoint_id,generation:1}),send:()=>{},close:()=>{}};
+  const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[socket]});
+  await owner.webSocketClose(socket,1006,'network',false);
+  assert.ok(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline>Date.now());
+  assert.equal((await f.post('local-stop',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'stopped');
+  await owner.webSocketClose(socket,1006,'late',false);
+  f.sql.exec('UPDATE endpoints SET offline_deadline=? WHERE id=?',Date.now()-1,p.endpoint_id);
+  await f.alarm();
+  assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'stopped');
+  assert.equal((await f.post('local-revoke',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'revoked');
+  assert.equal((await f.post('read',{endpoint_id:p.endpoint_id,tool:'tabs'})).status,403);
+ }finally{f.db.close();}
+ const g=fixture();try{
+  const id=await begin(g,'temporary');await g.post('activate-authorize',{attempt_id:id});
+  const p=await g.post('activate-complete',{attempt_id:id,proof});
+  g.sql.exec('UPDATE endpoints SET generation=1 WHERE id=?',p.endpoint_id);
+  g.storage.setAlarm=async()=>{throw Error('alarm unavailable');};
+  const socket={deserializeAttachment:()=>({authenticated:true,endpoint_id:p.endpoint_id,generation:1}),send:()=>{},close:()=>{}};
+  await new BrowserOwner({storage:g.storage,getWebSockets:()=>[socket]}).webSocketClose(socket,1006,'network',false);
+  assert.equal((await g.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'revoked');
+ }finally{g.db.close();}
 });
 
 test('signed Access GET is read-only, same-origin POST verifies once, wrong audience and CSRF fail closed',async()=>{
