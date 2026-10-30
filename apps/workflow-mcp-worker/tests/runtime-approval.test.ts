@@ -22,13 +22,18 @@ const versionId='33333333-3333-4333-8333-333333333333';
 const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
  type:'task',contractDigest:'b'.repeat(64),ref:'refs/tags/v1',inputs:{}};
+const approvedAction={repository:action.repository,repositoryId:action.repositoryId,
+ workflowId:action.workflowId,workflowPath:action.workflowPath,commitSha:action.commitSha,
+ type:'task' as const,contractDigest:action.contractDigest};
 const definition={version:1,name:'Reviewed approved Task',steps:[
  {id:'run_task',uses:'github.run',approval:{required:true},
   with:{capability:'github.action',action}},
 ]};
 function fixture(){
  const sqlite=new DatabaseSync(':memory:');
- for(const name of ['0001_s1.sql','0003_s3_attempt_claim.sql','0015_runtime_approval.sql'])
+ for(const name of ['0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql',
+  '0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
+  '0006_action_attempt_capabilities.sql','0015_runtime_approval.sql'])
   sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  const prepare=(sql:string)=>{
   let args:unknown[]=[];
@@ -53,12 +58,13 @@ function fixture(){
  const env={DB:{prepare,batch},WORKFLOW:{async get(){return {async status(){return {status:'running'};},
   async sendEvent(){wakeCount++;wake?.({});}};}}} as unknown as Env;
  const service=new WorkflowService(env);
- const setup=async()=>{
+ const setup=async(withPublishedActionGrant=false)=>{
   const {plan}=await compilePlan(definition);
   sqlite.prepare('INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
    .run(workflowId,'Approved Task',JSON.stringify(definition),1,'active',1,1);
   sqlite.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,?,?,?,?)')
-   .run(versionId,workflowId,'testdigest',JSON.stringify({...plan,github_execution_approved:true}),1);
+   .run(versionId,workflowId,'testdigest',JSON.stringify({...plan,github_execution_approved:true,
+    ...(withPublishedActionGrant?{github_action_approvals:[approvedAction]}:{})}),1);
   sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at)
     VALUES(?,?,?,?,?,?,'started','running',?,?)`)
    .run(runId,workflowId,versionId,runId,'inputdigest','{}',1,1);
@@ -252,9 +258,38 @@ test('recorded and consumed approval can be cancelled before the first GitHub At
   assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
  }finally{ctx.sqlite.close();}
 });
+test('fully granted approved Task reaches a single mock dispatch without cancellation',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup(true);
+  const pending=ctx.waiting();
+  for(let n=0;n<100;n++){
+   if(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  await ctx.decide('approve');
+  assert.deepEqual(await pending,{ok:true});
+  ctx.sqlite.prepare("UPDATE run_steps SET status='running' WHERE step_id='run_task'").run();
+  const outbound:string[]=[];
+  const result=await registerAndDispatchGitHubAction(ctx.env.DB,{
+   runId,stepId:'run_task',attemptId:'44444444-4444-4444-8444-444444444444',
+   dispatchId:'55555555-5555-4555-8555-555555555555',
+   action:approvedAction,ref:action.ref,token:'test-token',inputs:{},
+  },async request=>{
+   outbound.push(request.method);
+   if(request.method==='GET')return new Response(JSON.stringify({
+    ref:action.ref,object:{type:'commit',sha:action.commitSha},
+   }),{status:200});
+   return new Response(JSON.stringify({workflow_run_id:9876}),{status:200});
+  });
+  assert.deepEqual(outbound,['GET','POST']);
+  assert.equal(result.status,'confirmed');
+  assert.equal(ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM step_attempts WHERE state='confirmed'").get()?.n,1);
+ }finally{ctx.sqlite.close();}
+});
+
 test('approval consumed and Step running without Attempt is still cancellable; late dispatch is rejected',async()=>{
  const ctx=fixture();try{
-  await ctx.setup();
+  await ctx.setup(true);
   const pending=ctx.waiting();
   for(let n=0;n<100;n++){
    if(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status==='waiting_approval')break;
@@ -268,7 +303,7 @@ test('approval consumed and Step running without Attempt is still cancellable; l
   await assert.rejects(()=>registerAndDispatchGitHubAction(ctx.env.DB,{
    runId,stepId:'run_task',attemptId:'44444444-4444-4444-8444-444444444444',
    dispatchId:'55555555-5555-4555-8555-555555555555',
-   action:{...action,type:'task' as const},ref:action.ref,token:'unused',inputs:{},
+   action:approvedAction,ref:action.ref,token:'unused',inputs:{},
   },async()=>{outbound++;throw Error('must_not_dispatch');}),/github_action_publication_missing/);
   assert.equal(outbound,0);
   assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
