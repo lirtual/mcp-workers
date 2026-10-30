@@ -89,7 +89,7 @@ async function main() {
     return result.targetInfos;
   });
   console.log("SERVICE_WORKER", targets.filter(t => t.type === "service_worker" && t.url.includes(id)).length);
-  const tab = await request("Target.createTarget", { url: "chrome-extension://" + id + "/popup.html" });
+  const tab = await request("Target.createTarget", { url: "chrome-extension://" + id + "/options.html" });
   const connection = await request("Target.attachToTarget", { targetId: tab.targetId, flatten: true });
   const session = connection.sessionId;
   await request("Runtime.enable", {}, session);
@@ -101,13 +101,23 @@ async function main() {
   const status = await retry(() => evalExpression(
     "chrome.storage.local.get(null).then(s=>({...s,authorization:s.authorization||'unpaired',connection:s.connection||'offline'}))"
   ));
-  const untrusted=await evalExpression("new Promise(resolve=>chrome.runtime.sendMessage({type:'status'},r=>resolve(r)))");
-  if(untrusted?.error!=="untrusted_sender")throw Error("Tab impersonated trusted Popup: "+JSON.stringify(untrusted));
-  console.log("UNTRUSTED_TAB_SENDER_DENIED",untrusted.error);
-  if (status.authorization !== "unpaired" || status.connection !== "offline" || status.credential) {
+  const optionsStatus=await evalExpression("new Promise(resolve=>chrome.runtime.sendMessage({type:'status'},r=>resolve(r)))");
+  if(!optionsStatus?.ok || optionsStatus.result?.credential)
+    throw Error("Native Options tab denied or secret exposed: "+JSON.stringify(optionsStatus));
+  console.log("NATIVE_OPTIONS_TAB_STATUS",optionsStatus.result.authorization);
+  if (!["stopped","unpaired"].includes(status.authorization) || status.connection !== "offline" ||
+      status.credential || status.endpoint_id) {
     throw Error("Initial extension grants or status invalid");
   }
   console.log("ISOLATED_EXTENSION_INITIAL_STATUS", status.authorization, status.connection);
+  // Real Chromium Options tab may carry sender.tab. Before first activation,
+  // its exact native page must be able to save pairing lifetime.
+  const modeSet=await evalExpression("new Promise(resolve=>chrome.runtime.sendMessage({type:'pairing-preference',mode:'temporary'},r=>resolve(r)))");
+  if(!modeSet?.ok || modeSet.result?.mode!=="temporary")
+    throw Error("Native Options lifetime change failed: "+JSON.stringify(modeSet));
+  const preferred=await evalExpression("chrome.storage.local.get('pairing_preference').then(s=>s.pairing_preference)");
+  if(preferred!=="temporary")throw Error("Native Options lifetime was not persisted");
+  console.log("NATIVE_OPTIONS_TEMPORARY_SELECTION", "PASS");
   let manageSession=null;
   if(upgradeSource){
     const management=await request("Target.createTarget",{url:"chrome://extensions"});
@@ -199,7 +209,7 @@ async function main() {
     if(reloaded.exceptionDetails||reloaded.result.value?.error)throw Error("Developer reload unavailable: "+JSON.stringify(reloaded.exceptionDetails||reloaded.result.value));
     let upgraded=null;
     try { upgraded=await retry(async()=>{
-      const tab=await request("Target.createTarget",{url:"chrome-extension://"+id+"/popup.html"});
+      const tab=await request("Target.createTarget",{url:"chrome-extension://"+id+"/options.html"});
       const sid=(await request("Target.attachToTarget",{targetId:tab.targetId,flatten:true})).sessionId;
       await request("Runtime.enable",{},sid);
       const r=await request("Runtime.evaluate",{expression:"Promise.all([chrome.storage.local.get(null),chrome.storage.session.get(null)]).then(([local,session])=>({local,session,runtimeId:chrome.runtime.id}))",returnByValue:true,awaitPromise:true},sid);
