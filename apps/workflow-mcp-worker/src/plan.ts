@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import {httpOperation,type HttpOperation} from './http-action.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
@@ -6,7 +7,7 @@ import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-i
 import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
-export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run'] as const;
+export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run','http.request'] as const;
 export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300,maxEventWaitSeconds:3600});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
@@ -18,7 +19,7 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
 };
@@ -31,7 +32,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_connection_generation?: number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -212,6 +213,19 @@ function checkGitHubActionWith(withData:Record<string,unknown>,path:string):void
     if(action.type==='task')continue;
     throw new PlanError('invalid_github_action_inputs',path+'/action/inputs/'+name);
   }
+}
+
+// The first HTTP slice intentionally fixes POST bodies at Publish time.
+// Runtime-evaluated body references would need a reviewed typed operation
+// schema to prove parameters cannot widen the owner-approved effect scope.
+function assertLiteralHttpBody(value:unknown,path:string,depth=0):void{
+  if(depth>15)throw new PlanError('http_body_too_deep',path);
+  if(Array.isArray(value)){for(const part of value)assertLiteralHttpBody(part,path,depth+1);return;}
+  if(!value||typeof value!=='object')return;
+  const entries=Object.entries(value as Record<string,unknown>);
+  if(entries.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(entries[0]![0]))
+    throw new PlanError('http_dynamic_body_unsupported',path);
+  for(const [,part] of entries)assertLiteralHttpBody(part,path,depth+1);
 }
 
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
@@ -504,7 +518,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       throw new PlanError('invalid_repeat_count',path+'/times');
     const template=object(candidate.template,'invalid_repeat_template');
     keys(template,['uses','with','if'],path+'/template');
-    if(!isSupportedStepUse(template.uses))
+    if(!isSupportedStepUse(template.uses)||template.uses==='http.request')
       throw new PlanError('unsupported_capability',path+'/template/uses');
     if(template.uses==='action.run' &&
        (template.with as {executor?:unknown}|undefined)?.executor==='cloudflare')
@@ -627,6 +641,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('invalid_session_duration_binding',
             stepPath+'/with/action/inputs/duration_minutes');
       }
+    }else if(s.uses==='http.request'){
+      keys(withData,['url','method','body'],stepPath+'/with');
+      try{httpOperation(withData);}catch{throw new PlanError('invalid_http_operation',stepPath+'/with');}
+      if(withData.method!=='POST'&&Object.hasOwn(withData,'body'))
+        throw new PlanError('invalid_http_body',stepPath+'/with/body');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint');
@@ -714,6 +733,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           if(typeof child.if!=='boolean'&&!(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
             throw new PlanError('invalid_condition',childPath+'/if');
         }
+      }
+    }else if(s.uses==='http.request'){
+      if(Object.hasOwn(s.with,'body')){
+        const path='/steps/'+steps.indexOf(s)+'/with/body';
+        expression(s.with.body,s,0,true,false,path);
+        assertLiteralHttpBody(s.with.body,path);
+        if(new TextEncoder().encode(JSON.stringify(s.with.body)).byteLength>4096)
+          throw new PlanError('http_body_too_large',path);
       }
     }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/arguments');
     else if(s.uses==='github.run' && s.with.capability==='github.action') {

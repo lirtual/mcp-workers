@@ -6,6 +6,7 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
 - **MCP tool calls (`mcp.call`):** read-only operations routed through the existing, server-pinned MCP Portal. Publish requires the exact endpoint, tool, `read` scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: network isolation and absence of remote side effects are not guaranteed.
+- **HTTP Action (`http.request`):** one literal, canonical public HTTPS URL and GET/HEAD/POST operation approved verbatim at Publish. No dynamic URL, query, credentials, caller headers or redirect following. A durable D1 fence prevents blind retries, and the independently revocable HTTP Connection prevents older Plans being revived.
 - **GitHub Actions (`github.run`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed SHA, tag, workflow, input contract and `approve_heavy_execution: true`; automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
 - **Result emission (`result.emit`)** for Workflow results.
 
@@ -153,6 +154,40 @@ Environment bindings and credentials:
 
 There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.
 
+### Bounded public HTTP Action and live revocation (Spec #176)
+
+A Draft Step may use `uses: http.request` with literal `with.url` and
+`with.method` (`GET`, `HEAD`, `POST`). `POST` alone may provide
+`with.body` as immutable JSON (up to 4 KiB); runtime references in the body are not supported in this first slice. The URL must be a
+canonical public HTTPS hostname and path (standard port only), without
+query, fragment, credentials or URL-encoded path. Private/IP-literal and
+special-use hostnames are rejected before Publish and again at runtime.
+No user-supplied headers, managed upstream credentials, automatic redirects,
+or dynamic URL/method expressions are accepted.
+
+`workflow_validate` returns `required_http_operations`. The owner must
+Publish the exact array as `approved_http_operations`, plus
+`approve_http_execution: true` and `accept_target_risks: true`.
+There is **no** implicit permission from the Draft or discovered capability.
+`workflow_connection_status/revoke/enable` accept optional `target: http`;
+omitting it retains the original Portal behavior. HTTP has its own D1
+`http_connection_auth` generation (migration 0017). Revoke serializes
+against the first HTTP effect reservation in the existing unique Run/Step
+D1 fence; after enable, only a newly Published Plan with exact original
+grants and the current generation can dispatch. Requests already sent cannot
+be withdrawn. Replays after a reservation never re-POST.
+
+The JSON request body is at most 4 KiB; response text is capped at 8 KiB,
+with 12-second timeout and `redirect: manual`. Only HTTP 2xx represents a
+successful **HTTP response**, not confirmed downstream business completion.
+POST transport failure, redirect or non-2xx remains indeterminate; never
+automatically retry unknown upstream effects. Nonmutating GET/HEAD errors
+are reported as failures. DNS rebinding and arbitrary unreviewed hosts are
+not independently proven safe by a hostname syntax check; use trusted
+approved HTTPS domains and verify the real Workers egress boundary before
+expanding target scope. No second scheduler, HTTP Worker binding, secrets
+broker or standalone action registry is introduced.
+
 ### Live Portal Connection revocation (Spec #176 incremental vertical)
 
 The **single fixed production MCP Portal** has an owner-controlled authorization state,
@@ -179,7 +214,7 @@ MCP, generic Provider registry, or cross-Provider revocation is implied.
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
 Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.
-Dynamic while/until, nested loops, Saga compensation, write-scope MCP Actions and generic HTTP Actions remain **unsupported** and fail at compilation. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+Dynamic while/until, nested loops, Saga compensation and write-scope MCP Actions remain **unsupported** and fail at compilation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
 
