@@ -24,7 +24,7 @@ const source={name:'database-mcp-worker',main:'src/index.ts',hyperdrive:[],
 const input={operationId:id,runId:'476',actor:'lirtual',ref:'refs/heads/main',
  repo:'lirtual/mcp-workers',event:'workflow_dispatch',sourceSha:'b'.repeat(40),
  accountId:'c'.repeat(32),token:'synthetic-cf-token',encryptionKey:base64,keyId,source,manifest:[]};
-function fixture({blocked=false,patchError=false,restartError=false,sharedDuringClaim=false,unrecordedDispatch=false,probeFails=false}={}){
+function fixture({blocked=false,patchError=false,restartError=false,sharedDuringClaim=false,unrecordedDispatch=false,probeFails=false,configDriftBeforePatch=false,caDriftBeforePatch=false,configReadFails=false}={}){
  const state={phase:'running',started:null,errors:[],patches:0,restarts:0,recordedRun:unrecordedDispatch?null:476};
  const requests=[];
  const op={operation_id:id,logical_id:'isolated',action:'rotate_credentials',phase:'running',
@@ -59,10 +59,12 @@ function fixture({blocked=false,patchError=false,restartError=false,sharedDuring
    if(patchError)throw Error('simulated ambiguous PATCH');
    return result({id:configId});
   }
+  if(url.endsWith('/hyperdrive/configs/'+configId)&&init.method==='GET'&&configReadFails)
+   throw Error('synthetic unreadable Cloudflare config, never log');
   if(url.endsWith('/hyperdrive/configs/'+configId)&&init.method==='GET')
-   return result({id:configId,origin:{scheme:'mysql',host:target.origin_host,
+   return result({id:configId,origin:{scheme:'mysql',host:configDriftBeforePatch?'unexpected.example.net':target.origin_host,
      port:3306,database:'catalog',user:'reader'},caching:{disabled:true},
-     mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:target.ca_certificate_id}});
+     mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:caDriftBeforePatch?'unexpected-ca-12345':target.ca_certificate_id}});
   if(url.endsWith('/mtls_certificates/'+target.ca_certificate_id))
    return result({id:target.ca_certificate_id,ca:true,
     certificates:'-----BEGIN CERTIFICATE-----\nQUJDRA==\n-----END CERTIFICATE-----'});
@@ -96,6 +98,29 @@ test('origin SQL proof alone cannot complete Hyperdrive Worker credential rotati
  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/operation_invalid/);
  assert.equal(f.state.patches,1);
 });
+test('changed origin identity at the last pre-PATCH readback never receives new credentials',async()=>{
+ const f=fixture({configDriftBeforePatch:true});
+ await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,
+  preflight:f.preflight,probeOrigin:f.probeOrigin}),/blocked/);
+ assert.equal(f.state.patches,0);
+ assert.equal(f.state.restarts,0);
+ assert.equal(f.state.phase,'failed');
+ assert.deepEqual(f.state.errors,['credential_isolation_blocked']);
+});
+
+test('CA drift or unreadable config blocks rotation before any external write',async()=>{
+ for(const option of [{caDriftBeforePatch:true},{configReadFails:true}]){
+  const f=fixture(option);
+  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,
+   preflight:f.preflight,probeOrigin:f.probeOrigin}),/config_changed_before_write/);
+  assert.equal(f.state.patches,0);
+  assert.equal(f.state.restarts,0);
+  assert.equal(f.state.phase,'failed');
+  assert.deepEqual(f.state.errors,['credential_isolation_blocked']);
+  assert.equal(f.requests.some(r=>r.method==='PATCH'),false);
+ }
+});
+
 test('blocked isolation never PATCHes upstream and clears its pending operation',async()=>{
  const f=fixture({blocked:true});
  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/isolation_unproven/);

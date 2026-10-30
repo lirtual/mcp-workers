@@ -110,6 +110,15 @@ export async function runHyperdriveCredentialRotation({
  let target;try{target=JSON.parse(row.target_metadata)}catch{
   await finish('failed','credential_isolation_blocked');fail('target_unconfirmed');
  }
+ // The account-wide preflight is a snapshot, not a lock. Before claiming an
+ // external password write, re-read the exact config; never send credentials
+ // to a different origin or a config with downgraded CA/TLS/cache settings.
+ try{
+  verifyCloudflareHyperdriveConfig(target,await api('/hyperdrive/configs/'+op.config_id));
+ }catch{
+  await finish('failed','credential_isolation_blocked');
+  fail('config_changed_before_write');
+ }
  const now=Date.now();
  const claim=await sql("UPDATE hyperdrive_operations SET resource_write_started_at=?,updated_at=? WHERE operation_id=? AND phase='running' AND action='rotate_credentials' AND resource_write_started_at IS NULL AND expires_at>? AND expected_revision=? AND config_id=? AND binding_name=? AND EXISTS (SELECT 1 FROM database_connections WHERE id=? AND revision=? AND status='disabled' AND transport='hyperdrive' AND in_flight_count=0 AND config_id=? AND binding_name=?) AND NOT EXISTS (SELECT 1 FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?))",
   [now,now,operationId,now,op.expected_revision,op.config_id,op.binding_name,
