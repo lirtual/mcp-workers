@@ -86,3 +86,16 @@ race against newly admitted old-version instances.
 '0017_http_connection_auth.sql' remains immutable; the unified Action
 migration is numbered '0018_cloudflare_action_migration_fence.sql'.
 Final source/local tests do not authorize production freeze, owner unbind or send.
+
+## First-cutover Owner ingress gate (source-only amendment)
+
+The protected Workflow release requires `actions_old_ingress_quiesced=true`
+on its **first** legacy-to-ACTIONS transition in addition to the frozen D1 gate
+and six zero-count native status inventories. The input is an explicit Owner
+attestation, **not technical proof**: independently stop old ingress/admission,
+verify no old physical instance can start and dispatch, and maintain that
+quiescence until the new binding is published. Neither an attestation nor a
+momentary zero-instance snapshot prevents newly admitted old-version instances.
+No runtime is quiesced by merely changing this input; unknown sends are never
+replayed. Repeat compatible unified Worker releases do not require the old
+ingress attestation.

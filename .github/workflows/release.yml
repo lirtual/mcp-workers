@@ -48,6 +48,11 @@ on:
         required: false
         type: string
         default: ''
+      actions_old_ingress_quiesced:
+        description: Workflow first cutover only - Owner verified legacy admissions are stopped independently (not a technical substitute)
+        type: boolean
+        required: false
+        default: false
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -806,6 +811,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&

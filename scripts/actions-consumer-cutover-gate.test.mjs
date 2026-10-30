@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {verifyActionsCutoverReadback as verify,verifyNativeInstanceResponse,
- checkNativeWorkflowDrain,NONTERMINAL_NATIVE_STATUSES} from './actions-consumer-cutover-gate.mjs';
+ checkNativeWorkflowDrain,NONTERMINAL_NATIVE_STATUSES,requireOldIngressQuiescence} from './actions-consumer-cutover-gate.mjs';
 const old=[
  {name:'WEIXIN_ACTION_PROVIDER',type:'service',service:'weixin-mcp-worker',entrypoint:'WeixinActionProvider'},
  {name:'BARK_ACTION_PROVIDER',type:'service',service:'bark-provider',entrypoint:'BarkActionProvider'}
@@ -67,4 +67,10 @@ test('first active native instance blocks transition without querying further st
    result_info:{count:1,total_count:1}})};
  }),/blocked/);
  assert.equal(queries,1);
+});
+
+test('first cutover explicitly rejects absent Owner ingress-quiescence attestation',()=>{
+ for(const value of [undefined,'','false','yes','1'])assert.throws(
+  ()=>requireOldIngressQuiescence(value),/quiescence/);
+ assert.equal(requireOldIngressQuiescence('true'),true);
 });

@@ -32,6 +32,13 @@ export function verifyActionsCutoverReadback(currentBindings,rawD1){
  return {transition:oldCount>0?'legacy_to_unified':'already_unified',
   gate:gate.gate_state,physical_drain_proven:false};
 }
+// A read-only D1/native snapshot cannot prove that an old ingress is blocked.
+// Owner's separately authorized, externally performed ingress quiescence is
+// an explicit prerequisite, not something this script silently assumes.
+export function requireOldIngressQuiescence(value){
+ if(value!=='true')fail('first cutover requires independently verified old ingress quiescence');
+ return true;
+}
 // Native instances retain their originally compiled Workflow version.
 // A D1 fence in NEW source cannot stop dispatch by a still-live OLD instance.
 // Only a bounded read of official status counts is accepted; missing counts
@@ -77,6 +84,7 @@ async function main(){
  catch{fail('D1 fence read malformed');}
  const check=verifyActionsCutoverReadback(current.result.bindings,parsed);
  if(check.transition==='legacy_to_unified'){
+  requireOldIngressQuiescence(process.env.ACTIONS_OLD_INGRESS_QUIESCED);
   await checkNativeWorkflowDrain(account,{authorization:'Bearer '+token,accept:'application/json'});
   console.log('First Actions cutover: D1 fence and six native instance statuses verified; future admission still requires independent quiescence');
  }else{
