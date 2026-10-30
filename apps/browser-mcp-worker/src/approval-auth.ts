@@ -77,11 +77,6 @@ async function verifyIdentity(request:Request,config:ReturnType<typeof approvalC
 }
 export const ownerHeaders={"cache-control":"no-store","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'","x-frame-options":"DENY","referrer-policy":"no-referrer","x-content-type-options":"nosniff"};
 const escape=(v:unknown)=>String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
-export function ownerPage(data:Record<string,unknown>,operation:string):Response {
-  const form=data.nonce?`<form method="post" action="/owner/operations/${escape(operation)}"><input type="hidden" name="nonce" value="${escape(data.nonce)}"><button name="decision" value="approve">Approve this exact operation</button><button name="decision" value="deny">Deny</button></form>`:"";
-  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser owner approval</title><h1>Browser owner approval</h1><p>Review the exact target, action and arguments. Completion records browser dispatch, not website business success. This link grants no authority. Use an isolated owner Profile and mailbox.</p><pre>${escape(JSON.stringify({...data,nonce:undefined},null,2))}</pre>${form}</html>`,{headers:{...ownerHeaders,"content-type":"text/html; charset=utf-8"}});
-}
-
 // Unknown resolution is an owner observation, NEVER a browser execute permit.
 export function ownerUnknownPage(data:Record<string,unknown>,operation:string):Response {
   const form=data.nonce?'<form method="post" action="/owner/unknown/'+escape(operation)+'"><input type="hidden" name="nonce" value="'+escape(data.nonce)+'"><button name="outcome" value="effect_seen">I observed an effect</button><button name="outcome" value="no_effect_seen">I verified no effect</button></form>':'';

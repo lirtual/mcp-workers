@@ -1,4 +1,4 @@
-// Read-only Owner Approval (#418) and Profile Activation (#531) Access release gates. Never change policies.
+// Read-only Unknown owner review (#418) and Profile Activation (#531) Access release gates. Never change policies.
 import { pathToFileURL } from "node:url";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
 
@@ -56,7 +56,7 @@ export function verifyBrowserActivationAccess(app, policies, providers, env) {
 }
 
 export async function verifyBrowserOwnerAccessCloudflare(env, transport = fetch) {
-  // An ordinary Browser release must work with NO approval bindings.
+  // An ordinary Browser release must work with NO owner-review bindings.
   // Partial configuration is never allowed; the Worker itself also fails closed.
   const approvalEnabled = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE", "BROWSER_APPROVAL_ISOLATION"]
     .some(k => env[k] != null && env[k] !== "");
@@ -100,8 +100,8 @@ export async function verifyBrowserOwnerAccessCloudflare(env, transport = fetch)
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   verifyBrowserOwnerAccessCloudflare(process.env).then(enabled => {
-    console.log(enabled ? "Browser Owner/Activation Access prepublication gate: PASS" :
-      "Browser Owner/Activation Access remains disabled (no variables staged)");
+    console.log(enabled ? "Browser Unknown Review/Activation Access prepublication gate: PASS" :
+      "Browser Unknown Review/Activation Access remains disabled (no variables staged)");
   }).catch(error => {
     // Only local fixed error codes are printed; never log API bodies, tokens or URLs.
     const codes = new Set(["app_identity","app_session","otp_provider","otp_pin",
@@ -109,7 +109,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "app_http","app_json","app_api","policies_transport","policies_http",
       "policies_json","policies_api","providers_transport","providers_http",
       "providers_json","providers_api","policies_inventory","providers_inventory"]);
-    console.error("Browser Owner/Activation Access gate: BLOCKED (" +
+    console.error("Browser Unknown Review/Activation Access gate: BLOCKED (" +
       (codes.has(error?.message) ? error.message : "invalid_config") + ")");
     process.exitCode = 1;
   });

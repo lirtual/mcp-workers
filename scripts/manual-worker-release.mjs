@@ -380,7 +380,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "browser-mcp-worker") {
     const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
-    // Owner Approval and Profile Activation use distinct Access applications.
+    // Unknown owner review and Profile Activation retain distinct Access applications.
     // Validate every observed binding as a single reviewed, exact configuration.
     const approvalFields = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
       "BROWSER_APPROVAL_ISOLATION"];

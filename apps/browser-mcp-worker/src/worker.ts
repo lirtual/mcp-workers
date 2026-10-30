@@ -1,4 +1,4 @@
-import { type ApprovalEnv, approvalConfig, verifyOwner, ownerPage, ownerUnknownPage, ownerHeaders, activationConfig, verifyActivationOwner } from "./approval-auth.ts";
+import { type ApprovalEnv, approvalConfig, verifyOwner, ownerUnknownPage, ownerHeaders, activationConfig, verifyActivationOwner } from "./approval-auth.ts";
 import { interactionActions, interactionExtra, isInteraction, validInteraction } from "./interactions.ts";
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 export { BrowserOwner } from "./coordinator.ts";
@@ -10,7 +10,7 @@ interface Env extends ApprovalEnv {
 }
 const interactionTools = interactionActions.map(action=>({
   name:"browser_"+action,
-  description:"Act on one explicit snapshot element in its Endpoint/tab/document. Stable UUIDv7 intent_key required; recover receipts with browser_operation_status, never replay Unknown. Password, OTP, authentication, approval and consequential non-form buttons require independently isolated owner approval; unavailable isolation is Blocked. Authentication, sensitive and ambiguous surfaces remain denied. Completion confirms event dispatch only, not website success.",
+  description:"Act on one explicit snapshot element in its Endpoint/tab/document. Stable UUIDv7 intent_key required; recover receipts with browser_operation_status, never replay Unknown. Password, OTP, authentication, approval, consequential or ambiguous controls are blocked without a remote override. Ordinary explicitly targeted controls require no per-action approval. Completion confirms event dispatch only, not website success.",
   inputSchema:{type:"object",properties:{endpoint_id:{type:"string",format:"uuid"},intent_key:{type:"string"},tab_id:{type:"integer",minimum:0},document_id:{type:"string",minLength:1,maxLength:200},element_id:{type:"string",pattern:"^e-[a-f0-9-]{36}$"},
     ...(action==="fill"?{text:{type:"string",maxLength:2000}}:{}),
     ...(action==="select"?{value:{type:"string",maxLength:200}}:{}),
@@ -166,7 +166,7 @@ async function handleExtension(request:Request,env:Env,path:string) {
   return new Response(result.body,{status:result.status,headers});
 }
 // Explicit inline text response for fail-closed owner errors. Without a content type,
-// mobile browsers may download the /owner/operations/<uuid> path as a file.
+// mobile browsers may download an owner review URL as a file.
 const ownerRejection = (status:number,message:string):Response => new Response(message,{
   status,headers:{...ownerHeaders,"content-type":"text/plain; charset=utf-8"}
 });
@@ -222,16 +222,14 @@ else chrome.runtime.sendMessage(target,{type:"activation-presence",attempt_id:at
     }
     if(url.pathname.startsWith("/owner/")) {
       const config=approvalConfig(env);
-      if(!config)return ownerRejection(403,"Owner approval is not enabled.");
+      if(!config)return ownerRejection(403,"Owner review is not enabled.");
       // ChatGPT can append this exact attribution when an Owner opens the independent
       // review link. Only a signed, read-only GET may canonicalize it; never trust
       // arbitrary query strings, redirects, POSTs, or cross-origin requests.
       const attributionGet=request.method==="GET"&&url.search==="?utm_source=chatgpt.com";
       if(url.origin!==config.origin||(url.search&&!attributionGet)||(request.headers.has("origin")&&request.headers.get("origin")!==config.origin))return ownerRejection(403,"Owner request rejected.");
       if(!await verifyOwner(request,env))return ownerRejection(401,"Owner identity not verified.");
-      const approvalMatch=/^\/owner\/operations\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const unknownMatch=/^\/owner\/unknown\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const match=approvalMatch??unknownMatch;
+      const match=/^\/owner\/unknown\/([a-f0-9-]{36})$/.exec(url.pathname);
       if(!match)return ownerRejection(404,"Owner operation not found.");
       if(request.method!=="GET"&&request.method!=="POST")return ownerRejection(405,"Owner method not allowed.");
       if(attributionGet)return new Response(null,{status:303,headers:{...ownerHeaders,location:config.origin+url.pathname}});
@@ -240,20 +238,18 @@ else chrome.runtime.sendMessage(target,{type:"activation-presence",attempt_id:at
         if(request.headers.get("origin")!==config.origin||request.headers.get("content-type")?.split(";")[0]!=="application/x-www-form-urlencoded")return ownerRejection(403,"Owner request rejected.");
         try {
           const form=new URLSearchParams(await boundedText(request,1024));
-          const field=unknownMatch?"outcome":"decision";
+          const field="outcome";
           if([...form.keys()].length!==2||!form.has("nonce")||!form.has(field))throw Error();
           body={...body,nonce:form.get("nonce"),[field]:form.get(field)};
         }catch{return ownerRejection(400,"Invalid owner request.");}
       }
       try {
-        const route=unknownMatch?(request.method==="GET"?"owner-unknown-view":"owner-unknown-report"):
-          request.method==="GET"?"owner-view":"owner-decide";
+        const route=request.method==="GET"?"owner-unknown-view":"owner-unknown-report";
         const result=await post(env,route,body);
         if(request.headers.get("accept")==="application/json")return Response.json(result.data,{status:result.status,headers:ownerHeaders});
-        const page=unknownMatch?ownerUnknownPage(result.data as Record<string,unknown>,match[1]!):
-          ownerPage(result.data as Record<string,unknown>,match[1]!);
+        const page=ownerUnknownPage(result.data as Record<string,unknown>,match[1]!);
         return new Response(page.body,{status:result.status,headers:page.headers});
-      }catch{return ownerRejection(503,"Owner approval temporarily unavailable.");}
+      }catch{return ownerRejection(503,"Owner review temporarily unavailable.");}
     }
     if(url.pathname==="/mcp")return handleMcp(request,env);
     if(url.pathname.startsWith("/extension/"))return handleExtension(request,env,url.pathname.slice("/extension/".length));

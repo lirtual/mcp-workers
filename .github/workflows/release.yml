@@ -780,7 +780,7 @@ jobs:
           DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
         run: node scripts/probe-database-github-dispatch.mjs
 
-      - name: Verify Browser Owner Approval and Profile Activation Access (read-only)
+      - name: Verify Browser Unknown Review and Profile Activation Access (read-only)
         if: inputs.worker == 'browser-mcp-worker'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
