@@ -655,6 +655,22 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    start_state IN ('reserved','start_unknown')) AS unresolved_starts,
  (SELECT count(*) FROM run_steps WHERE status IS NULL OR
    status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
+ -- A durable Saga cancellation ACK is not completion. For code-only
+ -- releases only, recognize the request as quiescent when the exact Session
+ -- and GitHub Attempt have separately reached verified physical terminal.
+ -- Schema migrations still require unresolved_steps=0.
+ (SELECT count(*) FROM run_steps receipt
+   JOIN runs owner ON owner.id=receipt.run_id
+   JOIN session_executions session ON session.run_id=receipt.run_id
+     AND receipt.step_id='__saga_'||session.step_id
+   JOIN step_attempts attempt ON attempt.run_id=session.run_id
+     AND attempt.step_id=session.step_id
+     AND attempt.capability_id='github.action'
+   WHERE receipt.status='requested' AND
+     owner.outcome IN ('failed','cancelled') AND
+     session.state='terminated' AND
+     attempt.state IN ('succeeded','failed','cancelled'))
+   AS verified_terminal_saga_receipts,
  (SELECT count(*) FROM run_steps s JOIN runs r ON r.id=s.run_id
    WHERE s.status='cancelled' AND (r.outcome IS NOT 'cancelled'
      OR r.error_code IS NOT s.error_code
@@ -721,13 +737,16 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "migration_count","expected_migrations","nonterminal_runs",
     "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
+    "verified_terminal_saga_receipts",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
   invariant(row.migration_count===17 && row.expected_migrations===17,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps","undelivered_callbacks",
+    "nonterminal_runs","unresolved_starts","invalid_cancelled_steps","undelivered_callbacks",
   ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
+  invariant(row.unresolved_steps===row.verified_terminal_saga_receipts,
+    "Workflow code-only release blocked by unresolved_steps");
   invariant(row.nonterminal_attempts===row.confirmed_ready_sessions &&
     row.nonterminated_sessions===row.confirmed_ready_sessions,
     "Workflow code-only release blocked by unconfirmed Session or Attempt");

@@ -1050,6 +1050,26 @@ export class WorkflowService {
             'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt):null,
         attempt_state:record.attempt_state,
         physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
+    // The Session terminal state is written only after physical GitHub
+    // confirmation. Repair the request-only Saga receipt after that proof,
+    // without inferring physical cleanup from a native rollback ACK.
+    if(publishedPlan.saga)for(const step of publishedPlan.steps){
+      if(!step.compensate)continue;
+      const receipt=byId.get('__saga_'+step.id);
+      if(receipt?.status!=='requested')continue;
+      const updated=await this.db.prepare(`UPDATE run_steps
+        SET status='succeeded',updated_at=?
+        WHERE run_id=? AND step_id=? AND status='requested'
+        AND EXISTS(SELECT 1 FROM session_executions session
+          JOIN step_attempts attempt ON attempt.run_id=session.run_id
+            AND attempt.step_id=session.step_id
+            AND attempt.capability_id='github.action'
+          WHERE session.run_id=run_steps.run_id AND session.step_id=?
+            AND session.state='terminated'
+            AND attempt.state IN ('succeeded','failed','cancelled'))`)
+        .bind(now(),run_id,'__saga_'+step.id,step.id).run();
+      if(updated.meta.changes===1)receipt.status='succeeded';
+    }
     const saga=publishedPlan.saga?(()=>{
       const triggered=(row.outcome==='cancelled'&&publishedPlan.saga!.on.includes('cancel'))||
         (['failed','indeterminate'].includes(row.outcome)&&publishedPlan.saga!.on.includes('failure'));
