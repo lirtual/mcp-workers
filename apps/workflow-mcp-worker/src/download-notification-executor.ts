@@ -80,7 +80,7 @@ export async function runDownloadNotification(
     AND a.state='succeeded' AND child.status='succeeded'
     AND parent.status='succeeded'
     AND a.repository='lirtual/session-actions'
-    AND a.workflow_ref LIKE 'lirtual/session-actions/.github/workflows/download.yml@%'
+    AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/download.yml@')=1
     AND a.owner_run_id=a.candidate_run_id
     AND a.owner_run_attempt=a.candidate_run_attempt`)
    .bind(sourceId,runId,childId).first<{attempt_id:string}>();
@@ -104,7 +104,7 @@ export async function runDownloadNotification(
       AND a.capability_id='github.action' AND a.state='succeeded'
       AND child.status='succeeded' AND parent.status='succeeded'
       AND a.repository='lirtual/session-actions'
-      AND a.workflow_ref LIKE 'lirtual/session-actions/.github/workflows/download.yml@%'
+      AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/download.yml@')=1
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt)
    AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
