@@ -36,6 +36,16 @@ describe('Database Owner setup authorization', () => {
       expect(body).toContain('&lt;svg');
     });
   });
+  it('offers a safe new-ID replacement for an active Hyperdrive connection without requiring downtime', async () => {
+    const response = setupPage([{ id: 'primary_pg', dialect: 'postgres', transport: 'hyperdrive', status: 'active',
+      revision: 3, created_at: 1, updated_at: 2 }], 'a'.repeat(43));
+    const body = await response.text();
+    expect(body).toContain('Prepare replacement while active');
+    expect(body).toContain('href="#add-connection"');
+    expect(body).toContain('Existing Hyperdrive Connection ID (active or disabled)');
+    expect(body).not.toContain('Existing disabled Connection ID');
+    expect(body).not.toContain('Disable this connection before editing credentials or retiring its logical ID.');
+  });
 });
 
 describe('Cloudflare-native Owner identity', () => {
