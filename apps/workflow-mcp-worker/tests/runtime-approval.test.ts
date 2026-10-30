@@ -6,6 +6,7 @@ import {registerHooks} from 'node:module';
 import {compilePlan} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
 import {waitForRuntimeApproval,recordRuntimeApproval} from '../src/runtime-approval.ts';
+import {registerAndDispatchGitHubAction} from '../src/github-action-orchestration.ts';
 import type {Env} from '../src/store.ts';
 import type {WorkflowStep,WorkflowEvent} from 'cloudflare:workers';
 const hook=registerHooks({resolve(specifier,context,next){
@@ -231,7 +232,7 @@ test('cancelling a pending approval atomically prevents late approval and native
   assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
  }finally{ctx.sqlite.close();}
 });
-test('cancel cannot revoke a recorded approval or terminate a parallel active Step',async()=>{
+test('recorded and consumed approval can be cancelled before the first GitHub Attempt',async()=>{
  const ctx=fixture();try{
   await ctx.setup();
   const pending=ctx.waiting();
@@ -240,9 +241,63 @@ test('cancel cannot revoke a recorded approval or terminate a parallel active St
    await new Promise(resolve=>setTimeout(resolve,0));
   }
   await ctx.decide('approve');
-  await assert.rejects(()=>ctx.service.cancel(runId,'run_task'),/approval_cancel_conflict/);
-  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
   assert.deepEqual(await pending,{ok:true});
+  assert.equal(typeof ctx.sqlite.prepare('SELECT consumed_at FROM runtime_approvals').get()?.consumed_at,'number');
+  const cancelled=await ctx.service.cancel(runId,'run_task');
+  assert.equal(cancelled.cancellation,'requested');
+  assert.equal(cancelled.physical_terminated,false);
+  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'cancelled');
+  assert.equal(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status,'cancelled');
+  assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM runtime_approvals').get()?.n,1);
+  assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
+ }finally{ctx.sqlite.close();}
+});
+test('approval consumed and Step running without Attempt is still cancellable; late dispatch is rejected',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup();
+  const pending=ctx.waiting();
+  for(let n=0;n<100;n++){
+   if(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  await ctx.decide('approve');
+  assert.deepEqual(await pending,{ok:true});
+  ctx.sqlite.prepare("UPDATE run_steps SET status='running' WHERE step_id='run_task'").run();
+  assert.equal((await ctx.service.cancel(runId,'run_task')).cancellation,'requested');
+  let outbound=0;
+  await assert.rejects(()=>registerAndDispatchGitHubAction(ctx.env.DB,{
+   runId,stepId:'run_task',attemptId:'44444444-4444-4444-8444-444444444444',
+   dispatchId:'55555555-5555-4555-8555-555555555555',
+   action:{...action,type:'task' as const},ref:action.ref,token:'unused',inputs:{},
+  },async()=>{outbound++;throw Error('must_not_dispatch');}),/github_action_publication_missing/);
+  assert.equal(outbound,0);
+  assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
+  assert.equal(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status,'cancelled');
+ }finally{ctx.sqlite.close();}
+});
+test('registered Attempt wins pre-dispatch cancellation and retains physical-cancel gate',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup();
+  const pending=ctx.waiting();
+  for(let n=0;n<100;n++){
+   if(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  await ctx.decide('approve');
+  assert.deepEqual(await pending,{ok:true});
+  ctx.sqlite.prepare("UPDATE run_steps SET status='running'").run();
+  ctx.sqlite.prepare(`INSERT INTO step_attempts
+   (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,
+    repository_id,workflow_ref,ref,created_at,updated_at)
+   VALUES(?,?,'run_task','heavy.github.echo',?,'created',?,?,?,?,?,?)`).run(
+    '44444444-4444-4444-8444-444444444444',runId,
+    '55555555-5555-4555-8555-555555555555',action.repository,
+    String(action.repositoryId),action.repository+'/'+action.workflowPath+'@'+action.ref,
+    action.ref,Date.now(),Date.now());
+  await assert.rejects(()=>ctx.service.cancel(runId,'run_task'),/github_action_executor_not_configured/);
+  await assert.rejects(()=>ctx.service.cancel(runId,'run_task',true),/github_action_executor_not_configured/);
+  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+  assert.equal(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status,'running');
  }finally{ctx.sqlite.close();}
 });
 
