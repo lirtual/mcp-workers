@@ -79,3 +79,24 @@ unified releases require exactly `ACTIONS` ->
 unexpected target is rejected. The gate reports native-instance inventory
 only when it actually performed that read. This does not eliminate the
 race against newly admitted old-version instances.
+
+
+## Production old-native Task poller diagnosis (read-only, 2026-10-30)
+
+A native Workflow instance `158fbbd6-ecdf-41cf-8c7f-806561bb44e6`
+continued periodic `github-action-check-verify` and
+`github-action-sleep-verify` even though its D1 parent Run and Run Step
+were already cancelled. The linked physical GitHub Action Run
+`lirtual/session-actions#41017369338` reached terminal failure at
+2026-10-30 07:00:13 UTC; its D1 Attempt is also `failed`.
+The old deployed Workflow version instead sees `unknown` when attempting
+to inspect this already-cancelled parent and keeps its bounded poll loop.
+
+A forward-only fix in `github-action-task.ts` stops future native Task
+polling **only if both the parent Run and the durable physical Attempt are
+terminal**; a cancelled parent with an unconfirmed physical Attempt must
+continue bounded read-only checks. No new GitHub dispatch, D1 result
+rewrite, or automatic native-instance termination follows.
+The old native instance is pinned to its original version and **is not
+fixed by a future source deployment**. The first cutover must still prove
+it has physically drained through the existing protected readiness gate.
