@@ -436,3 +436,33 @@ test('detached child completion after lost create ACK proves native start withou
   assert.equal((f.sqlite.prepare("SELECT start_state FROM runs WHERE id='c1'").get() as
     {start_state:string}).start_state,'started');
 });
+
+test('detached start never confirms native create after concurrent timeout won the durable CAS',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  let creates=0,observations=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;throw Error('native_ack_lost');},
+    async get(){
+      observations++;
+      // A second reconciler expires the queued child after this reconciler
+      // reads its old state, but before its observed-native markStarted CAS.
+      const expired=f.sqlite.prepare(`UPDATE runs SET outcome='indeterminate',
+        error_code='detached_child_start_unconfirmed'
+        WHERE id='c1' AND start_state='start_unknown' AND outcome='queued'`).run();
+      assert.equal(expired.changes,1);
+      return {status:async()=>({status:'running'})};
+    },
+  }};
+  const result=await startReservedDetachedChild(env as never,
+    {parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:3000});
+  assert.deepEqual(result,{childRunId:'c1',start_state:'indeterminate'});
+  assert.equal(creates,1,'unknown native ACK must never trigger a second create');
+  assert.equal(observations,1);
+  const durable=f.sqlite.prepare('SELECT start_state,outcome,error_code FROM runs WHERE id=?')
+    .get('c1') as {start_state:string;outcome:string;error_code:string};
+  assert.equal(durable.start_state,'start_unknown');
+  assert.equal(durable.outcome,'indeterminate');
+  assert.equal(durable.error_code,'detached_child_start_unconfirmed');
+});

@@ -174,21 +174,40 @@ export async function startReservedDetachedChild(
   // An undecided native dispatch is never retried. After the same bounded
   // observation window used by awaited children, preserve unknown physical
   // effects as indeterminate rather than leaking a queued D1 capacity slot.
+  // A competing reconciler may complete or expire this child after our read.
+  // A missed CAS is never proof of either a native start or a timeout.
+  const persistedStart=async() => {
+    const latest=await env.DB.prepare(`SELECT start_state,outcome,error_code FROM runs
+      WHERE id=? AND parent_run_id=? AND parent_step_id=?`)
+      .bind(childRunId,parentRunId,parentStepId)
+      .first<{start_state:string;outcome:string;error_code:string|null}>();
+    if(latest?.start_state==='started'&&
+       ['queued','running','succeeded','failed'].includes(latest.outcome))
+      return 'started' as const;
+    if(latest?.start_state==='reserved'&&latest.outcome==='failed'&&
+       latest.error_code==='detached_parent_not_active')
+      return 'rejected' as const;
+    if(latest?.outcome==='indeterminate'||latest?.outcome==='cancelled'||!latest)
+      return 'indeterminate' as const;
+    return 'start_unknown' as const;
+  };
   const expire=async()=>{
-    await env.DB.prepare(`UPDATE runs SET outcome='indeterminate',
+    const expired=await env.DB.prepare(`UPDATE runs SET outcome='indeterminate',
       error_code='detached_child_start_unconfirmed',updated_at=?
       WHERE id=? AND parent_run_id=? AND parent_step_id=?
       AND start_state IN ('dispatching','start_unknown') AND outcome='queued'`)
       .bind(timestamp,childRunId,parentRunId,parentStepId).run();
-    return {childRunId,start_state:'indeterminate' as const};
+    return {childRunId,start_state:expired.meta.changes===1?
+      'indeterminate' as const:await persistedStart()};
   };
   const markStarted=async()=>{
-    await env.DB.prepare(`UPDATE runs SET start_state='started',updated_at=?
+    const updated=await env.DB.prepare(`UPDATE runs SET start_state='started',updated_at=?
       WHERE id=? AND parent_run_id=? AND parent_step_id=?
       AND start_state IN ('dispatching','start_unknown')
       AND outcome IN ('queued','running','succeeded','failed')`)
       .bind(timestamp,childRunId,parentRunId,parentStepId).run();
-    return {childRunId,start_state:'started' as const};
+    return {childRunId,start_state:updated.meta.changes===1?
+      'started' as const:await persistedStart()};
   };
   if(row.start_state!=='reserved'){
     if(!['dispatching','start_unknown'].includes(row.start_state)||
@@ -202,11 +221,12 @@ export async function startReservedDetachedChild(
   if(row.parent_outcome!=='running'){
     // The parent became terminal before native dispatch: abandon only the
     // still-reserved child; no native effect was authorized.
-    await env.DB.prepare(`UPDATE runs SET outcome='failed',
+    const abandoned=await env.DB.prepare(`UPDATE runs SET outcome='failed',
       error_code='detached_parent_not_active',updated_at=?
       WHERE id=? AND start_state='reserved' AND outcome='queued'`)
       .bind(timestamp,childRunId).run();
-    return {childRunId,start_state:'rejected'};
+    return {childRunId,start_state:abandoned.meta.changes===1?
+      'rejected' as const:await persistedStart()};
   }
   const claim=await env.DB.prepare(`UPDATE runs SET start_state='dispatching',updated_at=?
     WHERE id=? AND parent_run_id=? AND parent_step_id=?
