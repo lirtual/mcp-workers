@@ -10,7 +10,8 @@ async function refresh() {
     $("summary").textContent="Profile: "+(s.alias||"Not paired")+"\nAuthorization: "+s.authorization+
       " · Connection: "+s.connection+
       (s.pending_cloud_stop?"\nCloud Stop: NOT CONFIRMED":"");
-    $("pairing-details").open=!s.endpoint_id;
+    $("lifetime").value=s.pairing_mode||s.pairing_preference||"permanent";
+    $("lifetime").disabled=Boolean(s.endpoint_id);
     $("status").textContent=[
       "Direct localhost/LAN: "+(s.sensitive_permissions?.lan?"ON":"OFF"),
       "Private/incognito: "+(s.sensitive_permissions?.private&&s.sensitive_permissions?.native_private?"ON":"OFF")+"; native permission: "+(s.sensitive_permissions?.native_private?"allowed":"DENIED / unavailable — enable Allow in Incognito/InPrivate in browser extension settings"),
@@ -20,6 +21,7 @@ async function refresh() {
       "Last update: "+(s.last_update?new Date(s.last_update).toLocaleString():"Never"),
       "Cloud Stop: "+(s.pending_cloud_stop?"NOT CONFIRMED — sync required":"No pending stop"),
       "Endpoint: "+(s.endpoint_id||"—"),
+      "Pairing: "+(s.pairing_mode||"not paired")+(s.lease_expires_at?"; expires "+new Date(s.lease_expires_at).toLocaleString():""),
       "Last observed target: "+(Number.isSafeInteger(s.last_observed_tab_id)?`[${s.last_observed_scope||"ordinary"}] Tab ${s.last_observed_tab_id} (${s.last_observed_tab_source==="agent_created"?"Agent-created":"Existing / source unknown"})`:"None / not bound"),
       "Operations Pending: "+(s.activity?.available?s.activity.pending:"UNCONFIRMED — cloud status unavailable"),
       "Owner approvals waiting: "+(s.activity?.available?(s.activity.approvals||[]).length:"UNCONFIRMED"),
@@ -32,10 +34,7 @@ async function refresh() {
       "Owner Approval: consequential actions require a separate, independently isolated owner approval. Authentication and sensitive surfaces stay denied."
     ].join("\n");
     for(const surface of ["lan","private"])$(surface).textContent=(s.sensitive_permissions?.[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
-    $("service").value=typeof BROWSER_MCP_SERVICE_ORIGIN==="string"
-      ? BROWSER_MCP_SERVICE_ORIGIN : "Not configured — release required";
     $("locate").disabled=!Number.isSafeInteger(s.last_observed_tab_id);
-    if(s.alias)$("alias").value=s.alias;
   } catch(e){
     $("summary").textContent="Local status unavailable";
     $("status").textContent="Unable to read local status: "+e.message;
@@ -61,15 +60,9 @@ async function action(label,fn){
   }
   await refresh();
 }
-$("pair").onclick=()=>action("Pairing",async()=>{
-  const service=BROWSER_MCP_SERVICE_ORIGIN,code=$("code").value.trim().toLowerCase(),alias=$("alias").value.trim();
-  const url=new URL(service);
-  if(!confirm(`Pair this exact browser profile with ${url.origin}?\n\nThe code is single-use. Control will remain STOPPED until locally enabled. Verify the service and ownership before confirming.`))return;
-  return call("pair",{service,code,alias});
-});
+$("lifetime").onchange=()=>action("Pairing lifetime",()=>call("pairing-preference",{mode:$("lifetime").value}));
 $("locate").onclick=()=>action("Locating observed tab",()=>call("locate"));
 $("stop").onclick=()=>action("Stopping locally",()=>call("stop"));
-$("resume").onclick=()=>action("Enabling locally",()=>call("resume"));
 $("revoke").onclick=()=>action("Revoking locally",async()=>{
   if(!confirm("Revoke this Profile identity and remove its local credential? If offline, separately revoke the old endpoint through authenticated MCP."))return;
   return call("revoke");

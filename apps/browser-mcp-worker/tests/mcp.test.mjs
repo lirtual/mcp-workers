@@ -24,10 +24,10 @@ test("Browser MCP rejects missing, wrong and cross-origin Portal credentials bef
   for(const header of [
     {authorization:""}, {authorization:"Bearer wrong"},
     {origin:"https://unexpected.website"}]){
-    const response=await rpc(env,"tools/call",{name:"browser_pair",arguments:{}},header);
+    const response=await rpc(env,"tools/call",{name:"browser_endpoints",arguments:{}},header);
     assert.ok(response.status===401||response.status===403);
   }
-  const missing=await rpc({...env,MCP_ACCESS_TOKEN:undefined},"tools/call",{name:"browser_pair",arguments:{}});
+  const missing=await rpc({...env,MCP_ACCESS_TOKEN:undefined},"tools/call",{name:"browser_endpoints",arguments:{}});
   assert.equal(missing.status,503);
   assert.equal(calls.length,0);
 });
@@ -36,7 +36,7 @@ test("tool discovery publishes only implemented lifecycle tools and strict expli
   const response=await rpc(env,"tools/list",{});
   assert.equal(response.status,200);
   const body=await response.json();
-  assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_pair","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
+  assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
   for(const entry of body.result.tools)assert.equal(entry.inputSchema.additionalProperties,false);
   for(const args of [{endpoint_id:"invalid"},{endpoint_id:"11111111-1111-4111-8111-111111111111",unexpected:true},{}]){
     const rejected=await rpc(env,"tools/call",{name:"browser_revoke",arguments:args});
@@ -47,7 +47,6 @@ test("tool discovery publishes only implemented lifecycle tools and strict expli
 test("pair and revoke route only through single owner Durable Object",async()=>{
   const {env,calls}=fixture();
   for(const [tool,args,path] of [
-    ["browser_pair",{},"/create-pair"],
     ["browser_endpoints",{},"/list"],
     ["browser_tabs",{endpoint_id:"11111111-1111-4111-8111-111111111111"},"/read"],
     ["browser_snapshot",{endpoint_id:"11111111-1111-4111-8111-111111111111",tab_id:23},"/read"],
@@ -84,8 +83,8 @@ test("ordinary website cannot claim or resume extensions; extension credential n
   const resp=await worker.fetch(new Request("https://browser.example/extension/claim",{method:"POST",
     headers:{"content-type":"application/json",origin:extension},
     body:JSON.stringify({code:"a".repeat(24),alias:"profile"})}),env);
-  assert.equal(resp.status,200);
-  assert.equal(calls.at(-1).path,"/claim");
+  assert.equal(resp.status,404);
+  assert.equal(calls.length,0);
   assert.ok(!JSON.stringify(calls).includes("private-browser-token"));
 });
 

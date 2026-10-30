@@ -182,3 +182,23 @@ test("Workflow Provider version variable accepts one reviewed immutable Worker V
    WEIXIN_ACTION_DEPLOYMENT_ID:value}),/WEIXIN_ACTION_DEPLOYMENT_ID/);
  }
 });
+
+
+test("Browser activation requires two independent validated Access Variables",()=>{
+  const good={BROWSER_ACCESS_ISSUER:"https://lirtualzero.cloudflareaccess.com",BROWSER_OWNER_EMAIL:"lirtual@outlook.com",BROWSER_ACTIVATION_ORIGIN:"https://browser.lirtual.dpdns.org",BROWSER_ACTIVATION_AUDIENCE:"b".repeat(64)};
+  assert.deepEqual(collectWorkerVars("browser-mcp-worker",good),Object.entries(good).map(([k,v])=>k+":"+v));
+  for(const bad of [
+    {...good,BROWSER_ACTIVATION_AUDIENCE:undefined},
+    {...good,BROWSER_ACTIVATION_ORIGIN:undefined},
+    {...good,BROWSER_ACTIVATION_ORIGIN:"https://evil.example"},
+    {...good,BROWSER_ACTIVATION_AUDIENCE:"invalid"},
+    {...good,BROWSER_ACCESS_AUDIENCE:good.BROWSER_ACTIVATION_AUDIENCE}
+  ])assert.throws(()=>collectWorkerVars("browser-mcp-worker",bad),/activation|approval/);
+});
+
+
+test("activation identity does not require an unverified high-impact approval isolation assertion",()=>{
+  const env={BROWSER_ACCESS_ISSUER:"https://lirtualzero.cloudflareaccess.com",BROWSER_OWNER_EMAIL:"lirtual@outlook.com",BROWSER_ACTIVATION_ORIGIN:"https://browser.lirtual.dpdns.org",BROWSER_ACTIVATION_AUDIENCE:"c".repeat(64)};
+  assert.equal(collectWorkerVars("browser-mcp-worker",env).length,4);
+  assert.throws(()=>collectWorkerVars("browser-mcp-worker",{...env,BROWSER_APPROVAL_ORIGIN:"https://browser.lirtual.dpdns.org"}),/approval/);
+});

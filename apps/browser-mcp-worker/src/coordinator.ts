@@ -3,9 +3,9 @@ import { isInteraction, validInteraction, interactionExtra } from "./interaction
 import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
 type Endpoint = {
   id: string; alias: string; state: "stopped" | "enabled" | "revoked";
-  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number;
+  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number;
 };
-type SocketAuth = { endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; approval_origin?:string };
+type SocketAuth = { protocol?:number; endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; approval_origin?:string };
 type PendingMutation = {
   endpoint_id:string;intent_key:string;generation:number;revision:number;socket:WebSocket;
   phase:"preparing"|"dispatched";prepared?:()=>void;timer:ReturnType<typeof setTimeout>;
@@ -23,11 +23,12 @@ const secret = () => {
 const safeAlias = (v: unknown) => typeof v === "string" && v.trim().length > 0 && v.length <= 64;
 const publicEndpoint = (e: Endpoint, online = false) => ({
   endpoint_id: e.id, alias: e.alias, authorization: e.state,
-  online: e.state === "enabled" && online,
+  online: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
   // Readiness means connected and locally enabled, never website business success.
-  control_ready: e.state === "enabled" && online,
-  observation_ready: e.state === "enabled" && online,
+  control_ready: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
+  observation_ready: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
   generation: e.generation, updated_at: e.updated_at,
+  pairing_mode:e.pairing_mode??"permanent",lease_expires_at:e.lease_expires_at??null,
 });
 export class BrowserOwner implements DurableObject {
   private readonly sql: SqlStorage;
@@ -57,6 +58,10 @@ export class BrowserOwner implements DurableObject {
     this.sql = state.storage.sql;
     this.sql.exec("CREATE TABLE IF NOT EXISTS pairs (code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS endpoints (id TEXT PRIMARY KEY, alias TEXT NOT NULL, credential_hash TEXT NOT NULL, state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, stop_epoch INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)");
+    const columns=this.sql.exec<{name:string}>("PRAGMA table_info(endpoints)").toArray().map(c=>c.name);
+    if(!columns.includes("pairing_mode"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN pairing_mode TEXT NOT NULL DEFAULT 'permanent'");
+    if(!columns.includes("lease_expires_at"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN lease_expires_at INTEGER");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS activation_attempts (id TEXT PRIMARY KEY, proof_hash TEXT NOT NULL, alias TEXT NOT NULL, mode TEXT NOT NULL, endpoint_id TEXT, stop_epoch INTEGER, owner_verified INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)");
     this.intents = new IntentLedger(this.sql);
     this.sql.exec("CREATE TABLE IF NOT EXISTS browser_approvals (operation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, binding TEXT NOT NULL, expires_at INTEGER NOT NULL, nonce_hash TEXT)");
@@ -117,7 +122,7 @@ export class BrowserOwner implements DurableObject {
     const e=this.endpoint(row.endpoint_id)!;
     const socket=this.state.getWebSockets().find(sock=>{
       const auth=sock.deserializeAttachment() as SocketAuth|null;
-      return auth?.authenticated&&auth.endpoint_id===e.id&&auth.generation===e.generation&&
+      return auth?.authenticated&&auth.protocol===2&&auth.endpoint_id===e.id&&auth.generation===e.generation&&
         typeof auth.last_seen==="number"&&Date.now()-auth.last_seen<60000&&sock.readyState===WebSocket.OPEN;
     });
     const expire=(reason:"approval_deadline_expired"|"approval_endpoint_changed"|"approval_extension_context_invalid"="approval_extension_context_invalid")=>{
@@ -205,10 +210,11 @@ export class BrowserOwner implements DurableObject {
   private endpoint(id: string): Endpoint | undefined {
     return this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE id = ?", id).toArray()[0];
   }
+  private leaseValid(e:Endpoint) {return !e.lease_expires_at||e.lease_expires_at>Date.now();}
   private live(id: string, generation: number) {
     return this.state.getWebSockets().some(s => {
       const a = s.deserializeAttachment() as SocketAuth | null;
-      return a?.authenticated === true && a.endpoint_id === id &&
+      return a?.authenticated === true && a.protocol===2 && a.endpoint_id === id &&
         a.generation === generation && s.readyState === WebSocket.OPEN &&
         typeof a.last_seen === "number" && Date.now()-a.last_seen < 60000;
     });
@@ -268,33 +274,75 @@ export class BrowserOwner implements DurableObject {
       const approvals=this.sql.exec<{operation_id:string;expires_at:number}>("SELECT a.operation_id,a.expires_at FROM browser_approvals a JOIN browser_intents i ON i.operation_id=a.operation_id WHERE i.endpoint_id=? AND i.state='pending_approval'",e.id).toArray();
       return json({...this.intents.activitySummary(e.id),...(approvals.length?{approvals:approvals.map(a=>({...a,state:"pending_approval"}))}: {})});
     }
-    if (url.pathname === "/create-pair") {
-      if (!this.budget("create", 12, now)) return json({error:"rate_limited"},429);
-      const code = secret().slice(0, 24);
-      this.sql.exec("DELETE FROM pairs WHERE expires_at < ? OR used=1",now);
-      this.sql.exec("INSERT INTO pairs(code_hash,expires_at) VALUES(?,?)",await hash(code),now+600000);
-      return json({ pairing_code: code, expires_at: now+600000 });
+    if(url.pathname==="/activate-begin"){
+      if(!validId(arg.attempt_id)||typeof arg.proof_hash!=="string"||!/^[a-f0-9]{64}$/.test(arg.proof_hash)||
+         !["permanent","temporary"].includes(arg.mode as string)||!safeAlias(arg.alias)||
+         !this.budget("activation:begin",60,now))return json({error:"invalid_activation"},400);
+      const id=arg.endpoint_id;
+      let stopEpoch:number|null=null;
+      if(id!==undefined){
+        if(!validId(id)||typeof arg.credential!=="string"||arg.credential.length!==64)return json({error:"invalid_endpoint"},400);
+        const e=this.endpoint(id);
+        if(!e||e.state==="revoked"||!this.leaseValid(e)||e.pairing_mode!==arg.mode||
+           await hash(arg.credential)!==e.credential_hash)return json({error:"re_pair_required"},403);
+        stopEpoch=e.stop_epoch;
+      }
+      this.sql.exec("DELETE FROM activation_attempts WHERE expires_at<? OR consumed=1",now);
+      if((this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM activation_attempts").toArray()[0]?.n??0)>=40)return json({error:"busy"},429);
+      this.sql.exec("INSERT INTO activation_attempts(id,proof_hash,alias,mode,endpoint_id,stop_epoch,expires_at) VALUES(?,?,?,?,?,?,?)",
+        arg.attempt_id,arg.proof_hash,arg.alias,arg.mode,id??null,stopEpoch,now+300000);
+      return json({state:"pending",expires_at:now+300000});
     }
-    if (url.pathname === "/claim") {
-      const ip = typeof arg.client_ip === "string" && arg.client_ip.length <= 64 ? arg.client_ip : "unknown";
-      this.sql.exec("DELETE FROM limits WHERE window_start < ?",now - 60000);
-      if (!this.budget("claim:global", 80, now) || !this.budget("claim:"+ip, 8, now)) return json({error:"rate_limited"},429);
-      if (typeof arg.code !== "string" || !/^[0-9a-f]{24}$/.test(arg.code) || !safeAlias(arg.alias)) return json({error:"invalid_pairing"},400);
-      this.sql.exec("DELETE FROM endpoints WHERE state='revoked' AND updated_at < ?",now-7*86400000);
-      const active=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM endpoints WHERE state!='revoked'").toArray()[0]?.n??0;
+    if(url.pathname==="/activate-authorize"){
+      if(!validId(arg.attempt_id))return json({error:"invalid_activation"},400);
+      const count=this.sql.exec("UPDATE activation_attempts SET owner_verified=1 WHERE id=? AND owner_verified=0 AND consumed=0 AND expires_at>?",
+        arg.attempt_id,now).rowsWritten;
+      return count===1?json({state:"verified"}):json({error:"not_found"},404);
+    }
+    if(url.pathname==="/activate-cancel"||url.pathname==="/activate-complete"){
+      if(!validId(arg.attempt_id)||typeof arg.proof!=="string"||!/^[a-f0-9]{64}$/.test(arg.proof))return json({error:"invalid_activation"},400);
+      const row=this.sql.exec<{proof_hash:string;alias:string;mode:string;endpoint_id:string|null;stop_epoch:number|null;owner_verified:number;expires_at:number;consumed:number}>(
+        "SELECT * FROM activation_attempts WHERE id=?",arg.attempt_id).toArray()[0];
+      if(!row||row.consumed||row.expires_at<=now||await hash(arg.proof)!==row.proof_hash)return json({error:"expired_or_invalid"},403);
+      if(url.pathname==="/activate-cancel"){
+        this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0",arg.attempt_id);
+        return json({state:"cancelled"});
+      }
+      if(row.owner_verified!==1)return json({state:"awaiting_owner"},409);
+      let existing:Endpoint|undefined;
+      if(row.endpoint_id){
+        existing=this.endpoint(row.endpoint_id);
+        if(!existing||existing.state==="revoked"||!this.leaseValid(existing)||existing.stop_epoch!==row.stop_epoch||
+           existing.pairing_mode!==row.mode||arg.endpoint_id!==row.endpoint_id||
+           typeof arg.credential!=="string"||await hash(arg.credential)!==existing.credential_hash)
+          return json({error:"activation_superseded"},409);
+      }
+      // All awaits are above this point. Revalidate at the last synchronous
+      // SQLite commit so Stop or Revoke during proof hashing wins.
+      if(existing){
+        const latest=this.endpoint(existing.id);
+        if(!latest||latest.state==="revoked"||!this.leaseValid(latest)||latest.stop_epoch!==row.stop_epoch||
+           latest.revision!==existing.revision||latest.credential_hash!==existing.credential_hash)
+          return json({error:"activation_superseded"},409);
+        if(this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0 AND owner_verified=1 AND expires_at>?",
+            arg.attempt_id,Date.now()).rowsWritten!==1)return json({error:"activation_superseded"},409);
+        const committed=this.sql.exec("UPDATE endpoints SET state='enabled',revision=revision+1,updated_at=? WHERE id=? AND state!='revoked' AND stop_epoch=? AND revision=?",
+          Date.now(),latest.id,row.stop_epoch,latest.revision);
+        if(committed.rowsWritten!==1)return json({error:"activation_superseded"},409);
+        return json({authorization:"enabled",endpoint_id:latest.id,pairing_mode:row.mode});
+      }
+      const active=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM endpoints WHERE state!='revoked' AND (lease_expires_at IS NULL OR lease_expires_at>?)",now).toArray()[0]?.n??0;
       if(active>=100)return json({error:"capacity_exceeded"},429);
-      const codeHash = await hash(arg.code);
-      const id = crypto.randomUUID();
-      const credential = secret();
-      const credentialHash = await hash(credential);
-      const found = this.sql.exec<{used:number;expires_at:number}>("SELECT used,expires_at FROM pairs WHERE code_hash=?",codeHash).toArray()[0];
-      if (!found || found.used || found.expires_at < now) return json({error:"invalid_pairing"},403);
-      // No await between the one-use update and insertion.
-      const updated=this.sql.exec("UPDATE pairs SET used=1 WHERE code_hash=? AND used=0 AND expires_at>=?",codeHash,now);
-      if(updated.rowsWritten!==1)return json({error:"invalid_pairing"},403);
-      this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at) VALUES(?,?,?,'stopped',0,0,?)",id,arg.alias,credentialHash,now);
-      return json({endpoint_id:id,credential,authorization:"stopped"});
+      const endpoint_id=crypto.randomUUID(),credential=secret();
+      const credentialHash=await hash(credential);
+      if(this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0 AND owner_verified=1 AND expires_at>?",
+        arg.attempt_id,Date.now()).rowsWritten!==1)return json({error:"activation_superseded"},409);
+      const lease=row.mode==="temporary"?Date.now()+86400000:null;
+      this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at,pairing_mode,lease_expires_at) VALUES(?,?,?,'enabled',0,1,?,?,?)",
+        endpoint_id,row.alias,credentialHash,Date.now(),row.mode,lease);
+      return json({authorization:"enabled",endpoint_id,credential,pairing_mode:row.mode,lease_expires_at:lease});
     }
+    if (url.pathname === "/create-pair" || url.pathname === "/claim" || url.pathname === "/local-resume") return json({error:"protocol_retired"},410);
     if (url.pathname === "/mutate") {
       const command = arg as Command;
       const expected=command.action==="tab_open"?["endpoint_id","intent_key","action","url"]:
@@ -313,7 +361,7 @@ export class BrowserOwner implements DurableObject {
         return json(this.withApproval(recovered),recovered.error_code?409:200);
       }
       const e=this.endpoint(command.endpoint_id);
-      if(!e||e.state!=="enabled")return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
+      if(!e||e.state!=="enabled"||!this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const pending=this.admittingEndpoints.has(e.id) ||
         [...this.pendingMutations.values()].some(p=>p.endpoint_id===e.id) ||
         [...this.pendingReads.values()].some(p=>p.endpoint_id===e.id);
@@ -321,7 +369,7 @@ export class BrowserOwner implements DurableObject {
         return json({error_code:"busy"},409);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated&&a.endpoint_id===e.id&&a.generation===e.generation&&
+        return a?.authenticated&&a.protocol===2&&a.endpoint_id===e.id&&a.generation===e.generation&&
           typeof a.last_seen==="number"&&now-a.last_seen<60000&&sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -373,7 +421,7 @@ export class BrowserOwner implements DurableObject {
       if(!e || e.state!=="enabled")return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated && a.endpoint_id===id && a.generation===e.generation &&
+        return a?.authenticated && a.protocol===2 && a.endpoint_id===id && a.generation===e.generation &&
           typeof a.last_seen==="number" && Date.now()-a.last_seen<60000 && sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -400,7 +448,7 @@ export class BrowserOwner implements DurableObject {
     const e = this.endpoint(id);
     if (!e) return json({error:"not_found"},404);
     if (url.pathname === "/state" || url.pathname === "/local-stop" ||
-        url.pathname === "/local-resume" || url.pathname === "/local-revoke") {
+        url.pathname === "/local-revoke") {
       if (typeof arg.credential !== "string" || arg.credential.length !== 64 ||
           (await hash(arg.credential)) !== e.credential_hash) return json({error:"unauthorized"},401);
     }
@@ -417,10 +465,6 @@ export class BrowserOwner implements DurableObject {
       else this.sql.exec("UPDATE endpoints SET stop_epoch=stop_epoch+1 WHERE id=?",id);
       this.close(id,"stopped");
       return json({endpoint_id:id,authorization:"stopped"});
-    }
-    if (url.pathname === "/local-resume") {
-      this.sql.exec("UPDATE endpoints SET state='enabled',revision=revision+1,updated_at=? WHERE id=?",now,id);
-      return json({endpoint_id:id,authorization:"enabled"});
     }
     if (url.pathname === "/revoke" || url.pathname === "/local-revoke") {
       this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=?",now,id);
@@ -467,12 +511,12 @@ export class BrowserOwner implements DurableObject {
     try { v = JSON.parse(message) as Record<string,unknown>; if (!v || Array.isArray(v)) throw Error(); }
     catch {socket.close(1008,"invalid_frame");return;}
     if (!auth.authenticated) {
-      if (v.type !== "authenticate" || v.protocol !== 1 || v.extension_version !== "0.1.0" || !validId(v.endpoint_id) ||
+      if (v.type !== "authenticate" || v.protocol !== 2 || v.extension_version !== "0.2.0" || !validId(v.endpoint_id) ||
           typeof v.credential !== "string" || v.credential.length !== 64) {
         socket.close(1008,"authentication_required");return;
       }
       const e = this.endpoint(v.endpoint_id);
-      if (!e || e.state !== "enabled" || (await hash(v.credential)) !== e.credential_hash) {
+      if (!e || e.state !== "enabled" || !this.leaseValid(e) || (await hash(v.credential)) !== e.credential_hash) {
         socket.close(1008,"unauthorized");return;
       }
       const current=this.endpoint(e.id);
@@ -486,12 +530,13 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now(),approval_origin:v.owner_approval_protocol===1&&v.service_origin===approvalConfig(this.env)?.origin?v.service_origin as string:undefined} satisfies SocketAuth);
-      socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:1}));
+      socket.serializeAttachment({authenticated:true,protocol:2,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now(),approval_origin:v.owner_approval_protocol===1&&v.service_origin===approvalConfig(this.env)?.origin?v.service_origin as string:undefined} satisfies SocketAuth);
+      socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:2}));
       return;
     }
+    if(auth.protocol!==2){socket.close(1008,"obsolete_protocol");return;}
     const e = this.endpoint(auth.endpoint_id!);
-    if (!e || e.state !== "enabled" || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
+    if (!e || e.state !== "enabled" || !this.leaseValid(e) || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
     if(v.type==="approval_result"&&validId(v.request_id)&&v.generation===e.generation){
       const p=this.approvalReads.get(v.request_id);
       if(!p||p.socket!==socket)return;
@@ -599,6 +644,18 @@ export class BrowserOwner implements DurableObject {
     } else {socket.close(1008,"unsupported_frame");}
   }
   webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):void {
+    // Losing the current connected temporary browser session invalidates its
+    // server grant immediately. A superseded older generation cannot revoke
+    // the replacement; explicit local Stop remains stopped, not revoked.
+    const auth=socket.deserializeAttachment() as SocketAuth|null;
+    if(auth?.authenticated && auth.endpoint_id && typeof auth.generation==="number"){
+      const e=this.endpoint(auth.endpoint_id);
+      if(e?.state==="enabled"&&e.pairing_mode==="temporary"&&e.generation===auth.generation){
+        const changed=this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=? AND state='enabled' AND generation=?",
+          Date.now(),e.id,auth.generation);
+        if(changed.rowsWritten===1)this.close(e.id,"revoked");
+      }
+    }
     for(const [id,p] of this.approvalReads)if(p.socket===socket){clearTimeout(p.timer);this.approvalReads.delete(id);p.resolve(null);}
     for(const [op,p] of this.pendingMutations)if(p.socket===socket)this.terminateMutation(op);
     for(const [id,p] of this.pendingReads){if(p.socket===socket){clearTimeout(p.timer);this.pendingReads.delete(id);p.resolve({error_code:"offline"});}}

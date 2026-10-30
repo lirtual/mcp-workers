@@ -7,14 +7,14 @@ const newPortal=()=>({id:'one-mcp',name:'One-MCP',hostname:'mcp.lirtual.dpdns.or
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-fixture',MCP_ACCESS_TOKEN:'shared-fixture'};
 const policies=[{id:'11111111-1111-4111-8111-111111111111',name:'WORKFLOWS',decision:'non_identity',reusable:true,precedence:1,include:[{service_token:{token_id:'fixture'}}]},{id:'22222222-2222-4222-8222-222222222222',name:'Default Allow Rule',decision:'allow',reusable:true,precedence:2,include:[{email:{email:'owner@invalid.test'}}]}];
 const apps=(enabled=true)=>[{name:'One-MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies},...(enabled?[{name:'Browser',type:'mcp',policies}]:[])];
-test('the exact fixed 16 tools match public Browser MCP and five interaction actions',()=>{
+test('the exact fixed 15 tools match public Browser MCP and five interaction actions',()=>{
   const source=readFileSync(new URL('../apps/browser-mcp-worker/src/worker.ts',import.meta.url),'utf8');
   const interactions=readFileSync(new URL('../apps/browser-mcp-worker/src/interactions.ts',import.meta.url),'utf8');
   const named=[...source.matchAll(/name:"(browser_[a-z_]+)"/g)].map(x=>x[1]);
   const actions=['click','fill','keypress','scroll','select'].map(x=>'browser_'+x);
   assert.match(interactions,/interactionActions = \["click","fill","keypress","scroll","select"\]/);
   assert.deepEqual([...new Set([...named,...actions])].sort(),BROWSER_TOOLS);
-  assert.equal(BROWSER_TOOLS.length,16);
+  assert.equal(BROWSER_TOOLS.length,15);
 });
 test('idempotent Browser registration preserves all existing One-MCP mappings and uses shared Bearer',async()=>{
   const portal=newPortal(),before=structuredClone(portal.servers);

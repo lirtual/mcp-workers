@@ -58,10 +58,17 @@ let lastObserved = null;
 const executingOperations=new Set();
 // A local Stop/Revoke invalidates every earlier in-flight Enable response.
 let localDenialEpoch=0;
-let pendingCloudEnables=0;
+let pendingCloudActivations=0;
 const state = async () => {
   await trustedStorage;
-  const stored = {...DEFAULT,...await chrome.storage.local.get(null)};
+  await trustedSession;
+  const saved=await chrome.storage.session.get("browser_temporary_grant");
+  const stored = {...DEFAULT,...await chrome.storage.local.get(null),...(saved.browser_temporary_grant?Object.fromEntries(Object.entries(saved.browser_temporary_grant).filter(([k])=>k!=="authorization")): {})};
+  if(stored.pairing_mode==="temporary"&&(!saved.browser_temporary_grant||
+      saved.browser_temporary_grant.lease_expires_at<=Date.now())){
+    stored.authorization="stopped";
+    delete stored.credential;delete stored.endpoint_id;
+  }
   if(localBlocked&&stored.authorization==="enabled")stored.authorization="stopped";
   // Connectivity is runtime evidence, never an assertion inherited from disk.
   const live = stored.authorization==="enabled" && socket?.readyState===1 && currentGeneration>0;
@@ -75,9 +82,11 @@ const persist = async (fields) => {
 };
 async function render() {
   const s = await state();
-  const label = s.authorization==="revoked"?"REV":s.authorization==="stopped"?"STOP":s.connection==="online"?"ON":"OFF";
+  const activation=(await chrome.storage.session.get("browser_activation_attempt")).browser_activation_attempt;
+  const label=s.authorization==="revoked"?"REV":activation?"AUTH":s.pending_cloud_stop?"STOP":
+    s.authorization!=="enabled"?"OFF":s.connection==="online"?"ON":"WAIT";
   await chrome.action.setBadgeText({text:label});
-  await chrome.action.setTitle({title:`Browser MCP — ${s.authorization} / ${s.connection}`});
+  await chrome.action.setTitle({title:`Browser MCP — ${activation?"authenticating":s.authorization} / ${s.connection}${s.pending_cloud_stop?" · cloud Stop pending":""}`});
 }
 function clearNetwork() {
   currentGeneration=0;
@@ -101,24 +110,102 @@ async function endpointPost(route,cred,data={}) {
   if(!response.ok)throw Error(result.error||"service_unavailable");
   return result;
 }
-async function pair({service,code,alias}) {
-  const url=validService(service);
-  await trustedStorage;
-  if(!url||!(/^[a-f0-9]{24}$/).test(code)||!alias||alias.length>64)throw Error("invalid_pairing_details");
-  const prior=await state();
-  if(prior.endpoint_id)throw Error("revoke_existing_endpoint_first");
-  if(prior.pending_revocation_id)throw Error("cloud_revocation_unconfirmed");
-  const response=await fetch(url+"/extension/claim",{method:"POST",headers:{"content-type":"application/json"},
-    body:JSON.stringify({code,alias}),redirect:"error"});
+// Only toolbar clicks start activation. The proof never enters page URLs, content
+// scripts, logs or MCP results. A verified Access page alone cannot activate.
+async function activationRequest(route,data) {
+  const url=validService(BROWSER_MCP_SERVICE_ORIGIN);
+  if(!url)throw Error("invalid_service");
+  const response=await fetch(url+"/extension/activate-"+route,{method:"POST",
+    headers:{"content-type":"application/json"},body:JSON.stringify(data),redirect:"error"});
   const result=await response.json();
-  if(!response.ok)throw Error(result.error||"pairing_failed");
-  await persist({service:url,endpoint_id:result.endpoint_id,credential:result.credential,alias,
-    authorization:"stopped",connection:"offline",pending_cloud_stop:false,pending_revocation_id:null});
-  return {authorization:"stopped",endpoint_id:result.endpoint_id};
+  if(!response.ok){if(response.status===409&&result.state==="awaiting_owner")return result;
+    throw Error(result.error||"activation_unavailable");}
+  return result;
+}
+function newProof(){return Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,"0")).join("");}
+async function proofHash(value){return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,"0")).join("");}
+async function activationAttempt(){await trustedSession;return (await chrome.storage.session.get("browser_activation_attempt")).browser_activation_attempt;}
+async function beginActivation(){
+  const epoch=localDenialEpoch;
+  const s=await state();
+  if(s.authorization==="enabled"||await activationAttempt())throw Error("already_active");
+  if(s.pending_revocation_id)throw Error("cloud_revocation_unconfirmed");
+  if(s.pending_cloud_stop){await syncPendingStop();if((await state()).pending_cloud_stop)throw Error("cloud_stop_not_confirmed");}
+  const mode=s.endpoint_id?s.pairing_mode??"permanent":s.pairing_preference??"permanent";
+  const proof=newProof(),attempt_id=crypto.randomUUID();
+  const attempt={attempt_id,proof,epoch,mode,created_at:Date.now()};
+  await chrome.storage.session.set({browser_activation_attempt:attempt});
+  try{
+    const result=await activationRequest("begin",{attempt_id,proof_hash:await proofHash(proof),
+      alias:s.alias||"Browser profile",mode,...(s.endpoint_id?{endpoint_id:s.endpoint_id,credential:s.credential}:{})});
+    if(result.state!=="pending"||localDenialEpoch!==epoch||
+       (await activationAttempt())?.attempt_id!==attempt_id)throw Error("activation_superseded");
+    await chrome.tabs.create({url:BROWSER_MCP_SERVICE_ORIGIN+"/activate/verify/"+attempt_id+"?extension="+chrome.runtime.id,active:true});
+    await chrome.alarms.create("browser-activation",{periodInMinutes:0.5});
+    void pollActivation();
+    await render();
+    return {state:"authenticating"};
+  }catch(error){await chrome.storage.session.remove("browser_activation_attempt");await render();throw error;}
+}
+let pollingActivation=false;
+async function pollActivation(){
+  if(pollingActivation)return;pollingActivation=true;try{
+  const a=await activationAttempt();if(!a)return;
+  if(Date.now()-a.created_at>=300000){await chrome.storage.session.remove("browser_activation_attempt");await render();return;}
+  const s=await state();
+  if(s.authorization==="enabled"||s.pending_cloud_stop)return;
+  let result;
+  pendingCloudActivations++;
+  try {result=await activationRequest("complete",{attempt_id:a.attempt_id,proof:a.proof,
+    ...(s.endpoint_id?{endpoint_id:s.endpoint_id,credential:s.credential}:{})});}
+  catch{return;}
+  finally{pendingCloudActivations--;if(pendingCloudActivations===0)void syncPendingStop();} // transient network loss cannot grant control
+  if(result.state==="awaiting_owner")return;
+  const current=await activationAttempt();
+  if(!current||current.attempt_id!==a.attempt_id||localDenialEpoch!==a.epoch){
+    if(result.endpoint_id){
+      const cred=result.credential||s.credential;
+      const existing=s.endpoint_id===result.endpoint_id;
+      if(cred){
+        try{
+          // An abandoned *new* Endpoint has no retained local identity: revoke
+          // it; an earlier paired Endpoint must be stopped, not revoked.
+          await endpointPost(existing?"stop":"revoke",{service:BROWSER_MCP_SERVICE_ORIGIN,
+            endpoint_id:result.endpoint_id,credential:cred});
+          if(existing)await persist({pending_cloud_stop:false});
+        }catch{
+          // The cloud result is unknown, never present an unconfirmed denial
+          // as fully reconciled. A new grant needs owner MCP revocation.
+          if(existing)await persist({pending_cloud_stop:true});
+          else await persist({pending_revocation_id:result.endpoint_id});
+        }
+      }else await persist({pending_revocation_id:result.endpoint_id});
+    }
+    return;
+  }
+  if(result.authorization!=="enabled"||!result.endpoint_id)return;
+  if(a.mode==="temporary"){
+    await chrome.storage.session.set({browser_temporary_grant:{service:BROWSER_MCP_SERVICE_ORIGIN,
+      endpoint_id:result.endpoint_id,credential:result.credential||s.credential,
+      pairing_mode:"temporary",lease_expires_at:result.lease_expires_at||s.lease_expires_at,
+      alias:s.alias||"Browser profile"}});
+    await persist({authorization:"enabled",pairing_mode:"temporary",connection:"connecting",pending_cloud_stop:false});
+  }else{
+    await persist({service:BROWSER_MCP_SERVICE_ORIGIN,endpoint_id:result.endpoint_id,
+      credential:result.credential||s.credential,pairing_mode:"permanent",alias:s.alias||"Browser profile",
+      authorization:"enabled",connection:"connecting",pending_cloud_stop:false});
+  }
+  await chrome.storage.session.remove("browser_activation_attempt");
+  if(localDenialEpoch!==a.epoch){await stopLocal();return;}
+  localBlocked=false;connect();await render();
+  }finally{pollingActivation=false;}
 }
 async function stopLocal() {
   localBlocked=true;
   localDenialEpoch++;
+  const active=await activationAttempt();
+  await chrome.storage.session.remove("browser_activation_attempt");
+  if(active)void activationRequest("cancel",{attempt_id:active.attempt_id,proof:active.proof}).catch(()=>{});
   const sensitiveClear=clearSensitivePermissions();
   void sensitiveClear.catch(()=>{});
   // A never-paired Profile has no cloud grant to reconcile.
@@ -131,49 +218,10 @@ async function stopLocal() {
     try {
       await endpointPost("stop",s);
       // An earlier cloud Enable still in transit can arrive after this Stop.
-      if(pendingCloudEnables===0)await persist({pending_cloud_stop:false});
+      if(pendingCloudActivations===0)await persist({pending_cloud_stop:false});
     } catch { /* cloud not confirmed; show pending stop */ }
   }
   return {authorization:"stopped",cloud_confirmed:!(await state()).pending_cloud_stop};
-}
-async function resumeLocal() {
-  const requestEpoch=localDenialEpoch;
-  await clearSensitivePermissions();
-  const s=await state();
-  if(!s.endpoint_id||s.authorization==="revoked")throw Error("not_paired");
-  if(s.pending_cloud_stop) {
-    try{await endpointPost("stop",s);await persist({pending_cloud_stop:false});}
-    catch{throw Error("cloud_stop_not_confirmed");}
-  }
-  // Local user gesture is the only way to enable a stopped Endpoint.
-  pendingCloudEnables++;
-  let result;
-  try {result=await endpointPost("resume",s);}
-  finally {pendingCloudEnables--;}
-  if(result.authorization!=="enabled")throw Error("resume_not_confirmed");
-  // A delayed cloud Enable must never undo a later local Stop. A second
-  // cloud Stop also closes the network reordering window (Stop then Resume).
-  const denyStaleResume=async()=>{
-    const latest=await state();
-    // The older Enable write itself might have landed *after* Stop's stored
-    // denial. The changed epoch is authoritative, even if disk reads enabled.
-    if(latest.endpoint_id===s.endpoint_id &&
-       (localDenialEpoch!==requestEpoch || latest.authorization==="stopped")){
-      await persist({authorization:"stopped",connection:"offline",pending_cloud_stop:true});
-      clearNetwork();
-      await syncPendingStop();
-    }
-    throw Error("local_authorization_changed");
-  };
-  if(localDenialEpoch!==requestEpoch || (await state()).authorization!=="stopped")
-    return denyStaleResume();
-  await persist({authorization:"enabled",connection:"connecting",pending_cloud_stop:false});
-  // A Stop can run while chrome.storage.local.set is pending. Recheck before
-  // opening WSS, repairing local denial/cloud Stop if the older write landed last.
-  if(localDenialEpoch!==requestEpoch)return denyStaleResume();
-  localBlocked=false;
-  connect();
-  return result;
 }
 async function locateObservedTab() {
   const target=lastObserved;
@@ -184,7 +232,7 @@ async function locateObservedTab() {
   const frame=await chrome.webNavigation.getFrame({tabId:target.tab_id,frameId:0});
   if(!frame||frame.documentId!==target.document_id||!await browserAccessUrl(frame.url)||
      new URL(frame.url).href!==new URL(tab.url).href)throw Error("stale_target");
-  // Local Popup action only. Remote reads never change focus.
+  // Trusted Options action only. Remote reads never change focus.
   if(lastObserved!==target||(await state()).authorization!=="enabled")throw Error("stale_target");
   await chrome.windows.update(tab.windowId,{focused:true});
   await chrome.tabs.update(tab.id,{active:true});
@@ -199,11 +247,15 @@ async function acknowledgeCloudRevocation() {
 async function revokeLocal() {
   localBlocked=true;
   localDenialEpoch++;
+  const active=await activationAttempt();
+  await chrome.storage.session.remove("browser_activation_attempt");
+  if(active)void activationRequest("cancel",{attempt_id:active.attempt_id,proof:active.proof}).catch(()=>{});
   const sensitiveClear=clearSensitivePermissions();
   void sensitiveClear.catch(()=>{});
   const s=await state();
   await trustedStorage;
   await chrome.storage.local.remove(["credential","endpoint_id"]);
+  await chrome.storage.session.remove("browser_temporary_grant");
   await persist({authorization:"revoked",connection:"offline",pending_cloud_stop:false,pending_revocation_id:s.endpoint_id||s.pending_revocation_id||null});
   clearNetwork();
   if(!s.endpoint_id)return {cloud_confirmed:false};
@@ -215,10 +267,11 @@ async function syncPendingStop() {
   if(!s.pending_cloud_stop||!s.endpoint_id)return;
   try {
     await endpointPost("stop",s);
-    if(pendingCloudEnables===0)await persist({pending_cloud_stop:false});
+    if(pendingCloudActivations===0)await persist({pending_cloud_stop:false});
   } catch {/* no privilege expansion on failed sync */}
 }
 function connect() {
+  if(socket&&(socket.readyState===0||socket.readyState===1))return;
   clearNetwork();
   void (async()=>{
     const s=await state();
@@ -231,7 +284,7 @@ function connect() {
     // may delay registering handlers and lose a fast WSS open/authentication.
     ws.onopen=()=>{
       if(socket!==ws)return;
-      ws.send(JSON.stringify({type:"authenticate",protocol:1,extension_version:"0.1.0",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service,owner_approval_protocol:1}));
+      ws.send(JSON.stringify({type:"authenticate",protocol:2,extension_version:"0.2.0",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service,owner_approval_protocol:1}));
     };
     ws.onmessage=async event=>{
       if(socket!==ws)return;
@@ -368,7 +421,7 @@ function connect() {
         localBlocked=true;localDenialEpoch++;
         void clearSensitivePermissions().catch(()=>{});
         await chrome.storage.local.set({authorization:message.type,connection:"offline",last_update:Date.now()});
-        if(message.type==="revoked")await chrome.storage.local.remove(["credential","endpoint_id"]);
+        if(message.type==="revoked"){await chrome.storage.local.remove(["credential","endpoint_id"]);await chrome.storage.session.remove("browser_temporary_grant");}
         clearNetwork();await render();
       }
     };
@@ -382,7 +435,7 @@ function connect() {
           const remote=await endpointPost("state",latest);
           if(remote.authorization!=="enabled") {
             await persist({authorization:remote.authorization,connection:"offline"});
-            if(remote.authorization==="revoked")await chrome.storage.local.remove(["credential","endpoint_id"]);
+            if(remote.authorization==="revoked"){await chrome.storage.local.remove(["credential","endpoint_id"]);await chrome.storage.session.remove("browser_temporary_grant");}
             return;
           }
         } catch { /* offline; reconnect only while local authorization permits */ }
@@ -392,9 +445,26 @@ function connect() {
     ws.onerror=()=>{/* close handler owns recovery */};
   })();
 }
+// Only the verified Access page opened in this SAME browser Profile may
+// acknowledge the current one-time attempt. A copied URL in another Profile
+// cannot satisfy the local-presence handshake.
+chrome.runtime.onMessageExternal.addListener((message,sender,sendResponse)=>{
+  let ok=false;
+  try{
+    const url=new URL(sender.url);
+    const id=/^\/activate\/verify\/([a-f0-9-]{36})$/.exec(url.pathname)?.[1];
+    ok=sender.origin===BROWSER_MCP_SERVICE_ORIGIN && url.origin===BROWSER_MCP_SERVICE_ORIGIN &&
+      url.searchParams.size===1 && url.searchParams.get("extension")===chrome.runtime.id &&
+      message?.type==="activation-presence" && message.attempt_id===id && Boolean(id);
+  }catch{}
+  if(!ok){sendResponse({ok:false});return false;}
+  void activationAttempt().then(a=>sendResponse({ok:Boolean(a && a.attempt_id===message.attempt_id &&
+    a.epoch===localDenialEpoch && Date.now()-a.created_at<300000)}),()=>sendResponse({ok:false}));
+  return true;
+});
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
   // Do not allow content scripts or arbitrary extension pages to invoke local Resume.
-  if(sender?.tab || sender?.id!==chrome.runtime.id || sender?.url!==chrome.runtime.getURL("popup.html")){
+  if(sender?.tab || sender?.id!==chrome.runtime.id || sender?.url!==chrome.runtime.getURL("options.html")){
     sendResponse({ok:false,error:"untrusted_sender"});
     return false;
   }
@@ -429,9 +499,11 @@ chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
     }
     if(message.type==="sensitive-permission"){await changeSensitivePermission(message.surface,message.enabled);return {changed:true};}
     if(message.type==="locate")return locateObservedTab();
-    if(message.type==="pair")return pair(message);
+    if(message.type==="pairing-preference"){
+      if(!["permanent","temporary"].includes(message.mode)||(await state()).endpoint_id)throw Error("revoke_before_mode_change");
+      await persist({pairing_preference:message.mode});return {mode:message.mode};
+    }
     if(message.type==="stop")return stopLocal();
-    if(message.type==="resume")return resumeLocal();
     if(message.type==="revoke")return revokeLocal();
     if(message.type==="ack-revocation")return acknowledgeCloudRevocation();
     throw Error("unsupported_message");
@@ -442,16 +514,42 @@ chrome.tabs.onRemoved.addListener(tab_id=>{
   if(lastObserved?.tab_id===tab_id)lastObserved=null;
   void chrome.storage.session.remove("browser_source_"+tab_id).catch(()=>{});
 });
-chrome.runtime.onStartup.addListener(()=>{void syncPendingStop();connect();});
-chrome.runtime.onInstalled.addListener(({reason})=>{
-  // Clear transient sensitive grants before reconnecting after an update.
-  // Persistent owner Stop remains authoritative; session clearance failure is fail-closed.
+let toolbarBusy=false;
+chrome.action.onClicked.addListener(()=>{
+  if(toolbarBusy){void stopLocal();return;}
+  toolbarBusy=true;
   void (async()=>{
-    try {
-      if(reason==="update")await chrome.storage.session.clear();
-      await syncPendingStop();
-      connect();
-    } catch { clearNetwork(); }
+    try{
+      if((await state()).authorization==="enabled"||await activationAttempt())await stopLocal();
+      else await beginActivation();
+    }catch{await render();}
+    finally{toolbarBusy=false;}
   })();
 });
-void syncPendingStop().then(()=>connect());
+chrome.alarms.onAlarm.addListener(alarm=>{if(alarm.name==="browser-activation")void pollActivation();});
+let migrationTask;
+function migrateActivation(){
+  return migrationTask??=(async()=>{
+    const s=await state();
+    if(s.activation_protocol===2)return;
+    // Once only: existing permanently paired Profiles keep identities and
+    // receipts, but their previously enabled local state is forced OFF.
+    if(s.authorization==="enabled")await stopLocal();
+    await persist({activation_protocol:2,authorization:"stopped"});
+  })();
+}
+async function boot(){
+  await migrateActivation();
+  await syncPendingStop();
+  const a=await activationAttempt();
+  if(a){await chrome.alarms.create("browser-activation",{periodInMinutes:0.5});void pollActivation();}
+  connect();
+}
+chrome.runtime.onStartup.addListener(()=>{void boot().catch(()=>clearNetwork());});
+chrome.runtime.onInstalled.addListener(({reason})=>{
+  void (async()=>{
+    if(reason==="update"){clearNetwork();await chrome.storage.session.clear();}
+    await boot();
+  })().catch(()=>clearNetwork());
+});
+void boot().catch(()=>clearNetwork());

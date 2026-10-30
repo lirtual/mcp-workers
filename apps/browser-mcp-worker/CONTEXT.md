@@ -10,10 +10,12 @@ This implementation contains the **T1 pairing/control foundation**, **partial T2
 - Connection Generation is monotonically advanced on authenticated WSS replacement; stale generations grant no authority.
 - Endpoint Revocation is permanent for that identity; it rejects new admissions but does not reverse an already-issued website side effect.
 - Passwords and recognized OTP/secret fields are excluded from the curated read path. T2 can transmit bounded visible text and guarded screenshots transiently, but page content and images are never persisted in the DO.
-- Only extension Popup may Resume. Authenticated MCP exposes Stop/Revoke, never Resume.
+- Only an explicit browser toolbar gesture may initiate a new Access-backed activation. Authenticated MCP exposes Stop/Revoke, never Resume. Legacy manual pairing and local Resume routes are retired in Spec #531.
 - Cloud STOP offline reconciliation is best-effort and distinguished from confirmed cloud revocation.
 - A live WSS is a transport signal, not browser readiness or website business success.
 
 The eventual T2–T10 semantics and security limits remain canonical in [Spec #418](https://github.com/lirtual/mcp-workers/issues/418).
 
 T2 still requires Chrome/Edge real-device tests, screenshot safety review, and complete DOM/element reference behavior before it can be accepted. The read-only relay has a 5-second bounded response window; it never queues offline work.
+
+Spec #531 supersedes the historical pairing UX: the Chrome/Edge toolbar click toggles local control; protected Access verification and a separate one-use extension secret are both required to issue or reenable a grant. Temporary pairing keeps credentials in `chrome.storage.session`, with a server lease as fallback, and requires a new pairing after browser restart. High-impact Owner Approval retains its separate isolation and admission boundary. These source changes have no production/real-browser acceptance until verified separately.
