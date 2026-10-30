@@ -275,7 +275,7 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
       const result=await handleSetup(new Request(pageUrl+'/'+path,{
         method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
           cookie,'content-type':'application/x-www-form-urlencoded'},
-        body:new URLSearchParams({csrf,id:'synthetic',origin_password:'do-not-send'})
+        body:new URLSearchParams({csrf,id:'synthetic',origin_password:'x'})
       }),env,certificates);
       expect(result.status).toBe(404);
     }
