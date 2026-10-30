@@ -15,11 +15,11 @@ then invoke the existing protected Owner activation and confirm real Worker
 or reactivate the broken `aiven_mysql_openlist` D1 record. The two
 production Direct connections remain unchanged.
 
-## Latest Cloudflare and D1 state (2026-10-30)
+## Previous incident snapshot (before replacement test config; historical)
 
-- Cloudflare lists only the isolated PostgreSQL Hyperdrive E2E config `eb4ccbd231ea44beabc72b3f2b483d69` (`verify-full`, caching disabled). The old OpenList MySQL config `135ef2e15db049c68e99b0849f9a3da0` is **deleted**: direct API GET returns 404, which blocked the protected release. The reviewed Wrangler and manifest entry for the deleted config have now been removed in source.
-- D1 still lists `aiven_mysql_openlist` as Active, but its health check **fails**. This is a stale logical record, **not** a working connection; only a separately authorized CAS-disable/retirement may change it. Never recreate the deleted MySQL config solely to satisfy a release check.
-- `b2b` and `scrape_relay` MySQL Direct health checks pass and remain unchanged. The PostgreSQL E2E binding is the only remaining reviewed Hyperdrive binding. A released Worker binding and real PostgreSQL SQL/RLS/DDL/TLS E2E still require independent production verification.
+- At the earlier incident snapshot Cloudflare listed only the isolated PostgreSQL Hyperdrive E2E config `eb4ccbd231ea44beabc72b3f2b483d69` (`verify-full`, caching disabled). The old OpenList MySQL config `135ef2e15db049c68e99b0849f9a3da0` is **deleted**: direct API GET returns 404, which blocked the protected release. The reviewed Wrangler and manifest entry for the deleted config have now been removed in source.
+- D1 formerly listed `aiven_mysql_openlist` as Active with a failing health check; the Owner later disabled that row (revision 3). It is not a working connection. Never recreate the deleted MySQL config solely to satisfy a release check.
+- `b2b` and `scrape_relay` MySQL Direct health checks pass and remain unchanged. After PR #515 cleanup the PostgreSQL E2E binding was the only reviewed binding. The new test MySQL binding staged above is a separate subsequent source change. A released Worker binding and real PostgreSQL SQL/RLS/DDL/TLS E2E still require independent production verification.
 
 ## Earlier delivery and acceptance history (historical, superseded by the state above)
 
