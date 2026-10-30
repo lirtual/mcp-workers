@@ -659,11 +659,11 @@ export async function workflowCapabilities(env:Pick<Env,
   if(id==='flow.foreach_mixed_task'){
     const [discovered,portal]=await Promise.all([
       githubReady?listAvailableGitHubActions(env):Promise.resolve({actions:[]}),
-      portalDiscovery(env),
+      portalRevoked?Promise.resolve({availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}):portalDiscovery(env),
     ]);
     const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
       'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
-    detail.availability=task&&portal.tools.length?'publishable_after_owner_approval':
+    detail.availability=portalRevoked?'revoked':task&&portal.tools.length?'publishable_after_owner_approval':
       !task?'no_verified_published_task':portal.availability;
     if(task&&'ref' in task&&typeof task.ref==='string'&&portal.tools.length)
       detail.example=await compilingExample(foreachMixedMcpTask({...task,ref:task.ref},portal.tools[0]!));
@@ -708,7 +708,8 @@ export async function workflowCapabilities(env:Pick<Env,
       unsupported:['session','arbitrary dynamic input expressions','nested templates']};
   }
   if(id==='flow.foreach_multi_mcp_read'){
-    const discovered=await portalDiscovery(env);
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
     detail.availability=discovered.availability;
     detail.discovered_tools=discovered.tools;
     if(discovered.reason)detail.reason=discovered.reason;
@@ -723,7 +724,8 @@ export async function workflowCapabilities(env:Pick<Env,
       unsupported:['github.run','nested templates','write-scope tools']};
   }
   if(id==='flow.foreach_mcp_read'){
-    const discovered=await portalDiscovery(env);
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
     detail.availability=discovered.availability;
     detail.discovered_tools=discovered.tools;
     if(discovered.reason)detail.reason=discovered.reason;
@@ -736,7 +738,8 @@ export async function workflowCapabilities(env:Pick<Env,
       unsupported:['github.run','nested templates','write-scope tools']};
   }
   if(id==='action.mcp.call'){
-    const discovered=await portalDiscovery(env);
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
     detail.availability=discovered.availability;
     detail.discovered_tools=discovered.tools;
     if(discovered.reason)detail.reason=discovered.reason;

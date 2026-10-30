@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {compilePlan} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
+import {workflowCapabilities} from '../src/capabilities.ts';
 import {portalAuthorization,changePortalAuthorization,reservePortalCall} from '../src/portal-authorization.ts';
 import type {Env} from '../src/store.ts';
 
@@ -95,5 +96,29 @@ test('revoke and reservation serialize: only reservation-first may proceed after
   assert.equal(reserved,'reserved');assert.deepEqual(revoked,{state:'revoked',generation:1});
   assert.equal(await reservePortalCall(db,runId,'second',0),'revoked');
   assert.equal((await db.prepare('SELECT count(*) AS n FROM mcp_dispatch_fences').first<{n:number}>())?.n,1);
+ }finally{sqlite.close();}
+});
+
+test('public discovery reports revoked and does not advertise reviewed tools after revoke',async()=>{
+ const {sqlite,db}=fixture();try{
+  await changePortalAuthorization(db,'revoke');
+  let lookups=0;
+  const env={DB:db,MCP_PORTAL_ENDPOINT:portal,
+   MCP_PORTAL_CLIENT_ID:'test-client',MCP_PORTAL_CLIENT_SECRET:'test-secret'} as Env;
+  const discover=async()=>{lookups++;throw Error('portal_discovery_should_not_run');};
+  const overview=await workflowCapabilities(env,undefined,discover) as unknown as {
+   connections:{portal:{availability:string;generation:number}};
+   capability_ids:Array<{id:string;availability:string}>
+  };
+  assert.equal(overview.connections.portal.availability,'revoked');
+  assert.equal(overview.connections.portal.generation,1);
+  assert.equal(overview.capability_ids.find(x=>x.id==='action.mcp.call')?.availability,'revoked');
+  for(const id of ['action.mcp.call','flow.foreach_mcp_read','flow.foreach_multi_mcp_read',
+   'flow.foreach_mixed_task']){
+   const detail=await workflowCapabilities(env,id,discover);
+   assert.equal(detail.availability,'revoked');
+   assert.deepEqual(detail.discovered_tools??[],[]);
+  }
+  assert.equal(lookups,0);
  }finally{sqlite.close();}
 });
