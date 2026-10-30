@@ -1,4 +1,6 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import {decideSessionAdmission,type SessionAdmission} from './session-device-authority.ts';
 import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
@@ -38,3 +40,10 @@ export default {
   return createMcpHandler(()=>buildMcpServer(env),{legacy:'stateless'}).fetch(auth.request);
  }
 };
+
+/** Private named RPC only; not a public fetch route or extra MCP tool. */
+export class SessionAuthorization extends WorkerEntrypoint<Env> {
+ async authorizeSessionAttempt(input:{attempt_id:unknown;oidc_jwt?:unknown}):Promise<SessionAdmission>{
+  return decideSessionAdmission(this.env,input);
+ }
+}

@@ -17,7 +17,7 @@ import readonlyWorker from './fixtures/readonly-worker.ts';
 // outbound trusted-target fetch is explicitly intercepted, not real Internet.
 const hook=registerHooks({resolve(specifier,context,next){
   if(specifier==='cloudflare:workers')return {
-    url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',
+    url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }; export class WorkerEntrypoint { constructor(ctx,env){this.env=env;} }',
     shortCircuit:true,
   };
   return next(specifier,context);
