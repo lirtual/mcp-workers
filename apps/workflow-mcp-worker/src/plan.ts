@@ -360,9 +360,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       continue;
     }
     if(candidate.flow==='while'||candidate.flow==='until'){
-      // First dynamic-loop slice: a single pure emit expression, no repeated
-      // external effects or nested Actions. Every potential body iteration
-      // consumes the existing maximum 32-step budget before publication.
+      // Each bounded iteration reserves an existing Plan budget unit.
+      // Only pure emit or one specifically reviewed read-only MCP Action may
+      // run per iteration; nested/other effects remain unsupported.
       keys(candidate,['id','flow','needs','condition','max_iterations','template'],path);
       if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
          OBJECT_PROTOTYPE_KEYS.has(candidate.id))
@@ -377,12 +377,28 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_loop_limit',path+'/max_iterations');
       const template=object(candidate.template,'invalid_loop_template');
       keys(template,['uses','with'],path+'/template');
-      if(template.uses!=='result.emit')
+      if(template.uses!=='result.emit'&&template.uses!=='mcp.call')
         throw new PlanError('unsupported_loop_action',path+'/template/uses');
       const withData=object(template.with,'invalid_loop_template');
-      keys(withData,['data'],path+'/template/with');
-      if(!Object.hasOwn(withData,'data'))
-        throw new PlanError('invalid_loop_template',path+'/template/with/data');
+      let compiledTemplate:{uses:'result.emit'|'mcp.call';with:Record<string,unknown>};
+      if(template.uses==='result.emit'){
+        keys(withData,['data'],path+'/template/with');
+        if(!Object.hasOwn(withData,'data'))
+          throw new PlanError('invalid_loop_template',path+'/template/with/data');
+        compiledTemplate={uses:'result.emit',with:{data:withData.data}};
+      }else{
+        const target=path+'/template/with';
+        keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],target);
+        if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',target+'/endpoint');
+        try{if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical');}
+        catch{throw new PlanError('invalid_endpoint',target+'/endpoint');}
+        if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))
+          throw new PlanError('invalid_tool',target+'/tool');
+        if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',target+'/scope');
+        object(withData.arguments,'invalid_step_arguments');
+        compiledTemplate={uses:'mcp.call',with:{...withData,
+          schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}};
+      }
       const ctx={id:candidate.id,needs:deps};
       const check=(value:unknown,field:string)=>
         expression(value,ctx,0,false,true,path+field);
@@ -392,11 +408,13 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof candidate.condition!=='boolean'&&
          !(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
         throw new PlanError('invalid_loop_condition',path+'/condition');
-      check(withData.data,'/template/with/data');
+      if(template.uses==='mcp.call')
+        expression(withData.arguments,ctx,0,true,true,path+'/template/with/arguments');
+      else check(withData.data,'/template/with/data');
       dynamicReserved+=Number(candidate.max_iterations);
       expanded.push({id:candidate.id,uses:'flow.loop',needs:deps,with:{
         mode:candidate.flow,max_iterations:candidate.max_iterations,
-        condition:candidate.condition,template:{uses:'result.emit',with:{data:withData.data}},
+        condition:candidate.condition,template:compiledTemplate,
       }});
       if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');

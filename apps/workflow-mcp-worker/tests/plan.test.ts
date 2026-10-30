@@ -590,3 +590,39 @@ test('pure dynamic while/until compiles with strict iteration and graph budget',
    id:'loop',uses:'flow.loop',with:{mode:'until',max_iterations:2,condition:true,template:{uses:'result.emit',with:{data:0}}},
  }]}),/unsupported_capability/);
 });
+
+test('bounded while/until compile reviewed read-only MCP templates, without nested or write bodies',async()=>{
+ const read={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+   input_schema:{type:'object',properties:{value:{type:'string'}}},
+   arguments:{value:'safe literal'}};
+ const source={version:1,name:'Reviewed loop',steps:[
+   {id:'loop',flow:'until',max_iterations:3,
+    condition:{eq:[{ref:'item.index'},1]},
+    template:{uses:'mcp.call',with:read}},
+   {id:'done',needs:['loop'],uses:'result.emit',with:{data:{ref:'steps.loop.output.value'}}},
+ ]};
+ const {plan,digest}=await compilePlan(source);
+ const child=(plan.steps[0]!.with.template as {uses:string;with:{schema_digest:string}});
+ assert.equal(child.uses,'mcp.call');
+ assert.equal(child.with.schema_digest,await toolSchemaDigest(read.input_schema));
+ assert.equal(digest,(await compilePlan(JSON.stringify(source))).digest);
+ for(const edit of [{scope:'write'},{tool:'unsafe tool'},
+   {endpoint:'http://127.0.0.1/mcp'},{arguments:{value:{ref:'steps.other.output'}}},
+   {arguments:{value:{ref:'item.not_allowed'}}},{input_schema:null}]){
+   const bad=structuredClone(source);
+   Object.assign(bad.steps[0]!.template!.with,edit);
+   await assert.rejects(()=>compilePlan(bad),PlanError);
+ }
+ for(const action of ['github.run','http.request','flow.loop','action.run']){
+   const bad=structuredClone(source);
+   (bad.steps[0]!.template as {uses:string}).uses=action;
+   await assert.rejects(()=>compilePlan(bad),
+     (error:unknown)=>error instanceof PlanError&&error.message==='unsupported_loop_action');
+ }
+ const overflow=structuredClone(source);
+ overflow.steps.push(...Array.from({length:29},(_,i)=>({
+   id:'emit'+i,uses:'result.emit',with:{data:'x'},
+ })) as never[]);
+ await assert.rejects(()=>compilePlan(overflow),
+   (error:unknown)=>error instanceof PlanError&&error.message==='invalid_step_count');
+});

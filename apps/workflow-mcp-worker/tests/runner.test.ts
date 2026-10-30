@@ -2641,3 +2641,120 @@ test('bounded loops fail closed on exhaustion, invalid Boolean conditions, and z
   await run(invalid.run_id);
   assert.equal((await service.result(invalid.run_id)).steps[0]?.error_code,'loop_evaluation_failed');
 });
+
+test('reviewed bounded MCP loop requires exact Publish grant and executes one fenced call per iteration',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const source={version:1,name:'Reviewed loop e2e',steps:[
+    {id:'loop',flow:'until',max_iterations:3,condition:{eq:[{ref:'item.index'},1]},
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,
+        tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,
+        arguments:{value:'read-only'}}}},
+  ]};
+  const created=await service.create(JSON.stringify(source));
+  await assert.rejects(()=>service.publish(created.workflow_id,1),
+    /external_approval_required/);
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[ECHO_GRANT]),
+    /target_risk_acknowledgment_required/);
+  assert.equal(calls,0);
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  const started=await service.start(created.workflow_id,{});
+  const names:string[]=[];
+  await run(started.run_id,name=>names.push(name));
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result.iterations,2);
+  assert.equal(calls,2);
+  assert.deepEqual(names.filter(name=>name.includes(':loop:args:')),[
+    'workflow-loop:loop:args:0','workflow-loop:loop:args:1']);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(started.run_id)?.n,2);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM run_steps WHERE run_id=? AND step_id LIKE '%:loop:read:%' AND status='succeeded'")
+    .get(started.run_id)?.n,2);
+});
+
+test('lost MCP acknowledgment fences bounded loop replay and prevents later iteration',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let calls=0;
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    const isCall=request.method==='POST'&&
+      (await request.clone().json() as {method:string}).method==='tools/call';
+    const response=await readonlyWorker.fetch(request);
+    if(isCall){calls++;throw Error('simulated_lost_ack_after_remote_execution');}
+    return response;
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  const created=await service.create(JSON.stringify({version:1,name:'MCP unknown loop',
+    steps:[{id:'loop',flow:'until',max_iterations:3,condition:false,
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',
+        scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'one'}}}},
+      {id:'later',needs:['loop'],uses:'result.emit',with:{data:'never'}}]}));
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  const started=await service.start(created.workflow_id,{});
+  await run(started.run_id);
+  const first=await service.result(started.run_id);
+  assert.equal(first.status,'indeterminate');
+  assert.equal(first.steps.find(x=>x.step_id==='later')?.status,'skipped');
+  assert.equal(calls,1);
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(started.run_id);
+  await run(started.run_id);
+  assert.equal(calls,1);
+  assert.equal((await service.result(started.run_id)).status,'indeterminate');
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(started.run_id)?.n,1);
+});
+
+test('Portal revoke and stale Published Plan suppress bounded-loop MCP dispatch',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const created=await service.create(JSON.stringify({version:1,name:'Revoked loop',
+    steps:[{id:'loop',flow:'until',max_iterations:3,condition:false,
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',
+        scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'safe'}}}}]}));
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  await service.portalConnectionRevoke();
+  const revoked=await service.start(created.workflow_id,{});
+  await run(revoked.run_id);
+  const first=await service.result(revoked.run_id);
+  assert.equal(first.status,'failed');
+  assert.equal(first.steps.find(x=>x.step_id==='loop')?.error_code,'portal_connection_revoked');
+  assert.equal(calls,0);
+
+  // New generation must require new publication; old Plan cannot revive.
+  await service.portalConnectionEnable();
+  const stale=await service.start(created.workflow_id,{});
+  await run(stale.run_id);
+  assert.equal(calls,0);
+  assert.equal((await service.result(stale.run_id)).status,'failed');
+  const fence=sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(stale.run_id) as {n:number};
+  assert.equal(fence.n,0);
+});
+
+
+test('cancellation during first bounded MCP call never admits the next iteration',async t=>{
+  const {service,sqlite,run}=setup(t);
+  let calls=0;
+  let activeRun='';
+  mockPublicPeer(t,async()=>{
+    calls++;
+    if(calls===1)
+      sqlite.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(activeRun);
+  });
+  const created=await service.create(JSON.stringify({version:1,name:'Cancelled loop',
+    steps:[{id:'loop',flow:'until',max_iterations:3,condition:false,
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',
+        scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'test'}}}}]}));
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  const started=await service.start(created.workflow_id,{});
+  activeRun=started.run_id;
+  await run(started.run_id);
+  assert.equal(calls,1);
+  assert.equal((await service.result(started.run_id)).status,'cancelled');
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(started.run_id)?.n,1);
+});
