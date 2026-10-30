@@ -53,7 +53,7 @@ async function rpc(env: Env, method: string, params: unknown, opts: {
   }), env);
   return { status: response.status, body: await response.json() as {
     result?: { isError?: boolean; content?: Array<{ text?: string }>; tools?: Array<{
-      name: string; inputSchema: { required?: string[] };
+      name: string; description?: string; inputSchema: { required?: string[] };
     }> };
     error?: { message?: string };
   } };
@@ -88,6 +88,13 @@ test("production tools require explicit device_id and retain owner controls", as
   for (const name of ["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]) {
     assert.ok(tools.some(item => item.name === name), "missing owner tool " + name);
   }
+  const shell = tools.find(item => item.name === "run_command");
+  assert.match(shell?.description ?? "", /Linux/);
+  assert.match(shell?.description ?? "", /Windows PowerShell/);
+  assert.match(shell?.description ?? "", /OS account.*permissions/);
+  assert.match(shell?.description ?? "", /not a security sandbox/);
+  assert.match(shell?.description ?? "", /stable operation_id/);
+  assert.ok(!shell?.description?.includes("that Linux account"));
   assert.equal(f.calls.length, 0);
 });
 
