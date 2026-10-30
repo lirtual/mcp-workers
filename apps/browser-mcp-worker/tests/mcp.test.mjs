@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {createHash} from "node:crypto";
+import {readFileSync} from "node:fs";
 import worker from "../src/worker.ts";
 
 function fixture(){
@@ -79,13 +81,36 @@ test("ordinary website cannot claim or resume extensions; extension credential n
     body:JSON.stringify({code:"a".repeat(24),alias:"profile"})}),env);
   assert.equal(site.status,403);
   assert.equal(calls.length,0);
-  const extension="chrome-extension://"+"a".repeat(32);
+  const extension="chrome-extension://jhifaghneomgcfollcdbncjkcloedfem";
   const resp=await worker.fetch(new Request("https://browser.example/extension/claim",{method:"POST",
     headers:{"content-type":"application/json",origin:extension},
     body:JSON.stringify({code:"a".repeat(24),alias:"profile"})}),env);
   assert.equal(resp.status,404);
   assert.equal(calls.length,0);
   assert.ok(!JSON.stringify(calls).includes("private-browser-token"));
+});
+
+test("only the reviewed Chrome/Edge extension identity reaches the extension ingress",async()=>{
+  const manifest=JSON.parse(readFileSync(new URL("../extension/manifest.json",import.meta.url),"utf8"));
+  const digest=createHash("sha256").update(Buffer.from(manifest.key,"base64")).digest("hex").slice(0,32);
+  const id=Array.from(digest,n=>String.fromCharCode(97+parseInt(n,16))).join("");
+  assert.equal(id,"jhifaghneomgcfollcdbncjkcloedfem","public manifest key and Worker allowlist must match");
+  const {env,calls}=fixture();
+  const url="https://browser.example/extension/activate-begin";
+  const payload=JSON.stringify({attempt_id:"11111111-1111-4111-8111-111111111111",proof_hash:"b".repeat(64),alias:"Profile",mode:"permanent"});
+  const request=(origin,method="POST")=>new Request(url,{method,headers:{origin,...(method==="POST"?{"content-type":"application/json"}:{})},...(method==="POST"?{body:payload}:{})});
+  for(const origin of ["chrome-extension://"+"a".repeat(32),"chrome-extension://"+"p".repeat(32),"https://evil.example"]){
+    assert.equal((await worker.fetch(request(origin),env)).status,403);
+    assert.equal((await worker.fetch(request(origin,"OPTIONS"),env)).status,403);
+  }
+  assert.equal(calls.length,0,"no invalid extension Origin may reach the coordinator");
+  const official="chrome-extension://"+id;
+  const preflight=await worker.fetch(request(official,"OPTIONS"),env);
+  assert.equal(preflight.status,204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"),official);
+  assert.equal((await worker.fetch(request(official),env)).status,200);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].path,"/activate-begin");
 });
 
 test("read operations require explicit Endpoint and safe numeric tab target",async()=>{
