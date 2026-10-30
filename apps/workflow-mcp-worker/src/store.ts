@@ -1,4 +1,5 @@
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import {compensateCancelledSessions} from './saga.ts';
 import {cancelAwaitedChild} from './child-cancel.ts';
 import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
@@ -707,6 +708,13 @@ export class WorkflowService {
           if(instance.terminate)await instance.terminate(published?.saga?.on.includes('cancel')?{rollback:true}:undefined);
           nativeTerminated=(await instance.status()).status==='terminated';
         }catch{}
+        // Native terminate({rollback:true}) can settle with RollbackMissing:
+        // registered handlers are then not executed. Do not infer success
+        // from the native termination ACK. Reuse the exact D1-fenced,
+        // independently authorized GitHub compensation path; native and
+        // fallback requests share the same receipt and cannot double POST.
+        if(published?.saga?.on.includes('cancel'))
+          await compensateCancelledSessions(this.env,published,run_id);
         return {run_id,step_id,cancellation:nativeTerminated?'terminal_confirmed':'requested',
           native_workflow_terminated:nativeTerminated,
           // A Cloudflare termination never proves external GitHub resources
@@ -1048,12 +1056,15 @@ export class WorkflowService {
       const compensations=publishedPlan.steps.filter(s=>s.compensate).map(s=>{
         const prior=byId.get('__saga_'+s.id);
         const session=sessions.find(record=>record.step_id===s.id);
+        const physicalTerminated=session?.recorded_state==='terminated';
         const confirmed=prior?.status==='succeeded'||(
-          prior?.status==='requested'&&session?.recorded_state==='terminated');
+          prior?.status==='requested'&&physicalTerminated);
         const status=confirmed?'succeeded':prior?.status??(
           triggered&&byId.get(s.id)?.status==='succeeded'?'unconfirmed':'not_required');
         return {step_id:s.id,kind:s.compensate!.kind,status,
-          physical_terminated:confirmed};
+          // Report verified physical termination independently of how it
+          // happened; a manually cancelled Session is not Saga success.
+          physical_terminated:physicalTerminated||confirmed};
       });
       return {on:publishedPlan.saga!.on,acid_rollback:false,
         status:!triggered?'not_triggered':

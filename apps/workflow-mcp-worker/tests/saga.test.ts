@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {compilePlan,PlanError} from '../src/plan.ts';
 import {WORKFLOW_DEFINITION_SCHEMA,workflowCapabilities} from '../src/capabilities.ts';
-import {compensateSession,sagaReceiptId} from '../src/saga.ts';
+import {compensateSession,compensateCancelledSessions,sagaReceiptId} from '../src/saga.ts';
 import type {Env} from '../src/store.ts';
 import type {requestGitHubActionCancellation} from '../src/github-action-cancel.ts';
 
@@ -83,4 +83,24 @@ test('Compensator persists exactly one reservation; a cancellation ACK remains o
  assert.equal(await compensateSession(env,{...granted,saga_compensation_approved:undefined},
    'run',plan.steps[0]!,cancel),'uncleared');
  assert.equal(calls,1,'removed exact Publish grant must never dispatch');
+});
+
+
+test('explicit cancellation fallback handles RollbackMissing in reverse order without crossing grant boundaries',async()=>{
+ const {plan}=await compilePlan(sample());
+ const approved={...plan,saga_compensation_approved:true as const};
+ const called:string[]=[];
+ const callback=(async (_env:Env,_plan:typeof plan,_runId:string,step:typeof plan.steps[number])=>{
+   called.push(step.id);
+   if(step.id==='second')throw Error('rollback_transport_unknown');
+   return 'requested' as const;
+ }) as typeof compensateSession;
+ await compensateCancelledSessions({} as Env,approved,'test-run',callback);
+ assert.deepEqual(called,['second','first'],
+   'independent earlier compensation must proceed despite later failure');
+ called.length=0;
+ await compensateCancelledSessions({} as Env,{...approved,saga:{on:['failure']}},'test-run',callback);
+ await compensateCancelledSessions({} as Env,{...approved,saga_compensation_approved:undefined},
+   'test-run',callback);
+ assert.deepEqual(called,[],'no undeclared cancellation trigger or missing grant');
 });
