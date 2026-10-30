@@ -694,7 +694,7 @@ test("Workflow migration preflight requires all independent physical states sett
     migration_count: 12, expected_migrations: 12,
     workflow_count: 7, run_count: 58, session_count: 49,
     attempt_count: 31, callback_count: 4, cancellation_count: 31,
-    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0,
+    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0, invalid_cancelled_steps: 0,
     nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
   };
   const response = row => [{success: true, results: [row]}];
@@ -703,7 +703,7 @@ test("Workflow migration preflight requires all independent physical states sett
     cancellations: 31,
   });
   for (const name of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
@@ -742,6 +742,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0016_portal_connection_revocation.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
 });
 
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
@@ -756,10 +757,30 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
   assert.match(source,/Refusing GitHub cleanup until physical GitHub Job is completed/);
 });
 
+test('cancelled Workflow Steps count as terminal only with matched cancelled Run receipt',()=>{
+  const start=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps s JOIN runs r');
+  const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS invalid_cancelled_steps',start);
+  assert.ok(start>=0&&end>start);
+  const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(start,end+ ' AS invalid_cancelled_steps'.length);
+  const db=new DatabaseSync(':memory:');
+  try{
+    db.exec('CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,error_code TEXT);');
+    db.exec('CREATE TABLE run_steps(run_id TEXT,status TEXT,error_code TEXT);');
+    db.prepare('INSERT INTO runs VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
+    db.prepare('INSERT INTO run_steps VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
+    const count=()=>db.prepare(query).get()?.invalid_cancelled_steps;
+    assert.equal(count(),0);
+    db.exec("UPDATE runs SET outcome='running'");assert.equal(count(),1);
+    db.exec("UPDATE runs SET outcome='cancelled',error_code=NULL");assert.equal(count(),1);
+    db.exec("UPDATE runs SET error_code='approval_cancel_requested';UPDATE run_steps SET error_code=NULL");assert.equal(count(),1);
+    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),0);
+  }finally{db.close();}
+});
+
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
     migration_count:16,expected_migrations:16,
-    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
+    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
   };
@@ -777,7 +798,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     {migration_count:12},{expected_migrations:12},
     {migration_count:13},{expected_migrations:13},
     {migration_count:14},{expected_migrations:14},
-    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
+    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},{invalid_cancelled_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},
     {confirmed_ready_sessions:-1},{confirmed_ready_sessions:"1"},
