@@ -47,11 +47,10 @@ function mockStage({active=false,shared=false,pending=false,branchExists=false,e
         config_id:target.id,binding_name:target.binding}]}]});
       return Response.json({success:true,result:[{success:true,results:[{n:body.sql.includes('hyperdrive_operations')?Number(pending):Number(shared)}]}]});
     }
-    if(path.endsWith('/actions/permissions/workflow')){
+    if(path.endsWith('/branches/main')){
       assert.equal(init.headers.authorization,'Bearer synthetic-owner');
-      return Response.json({can_approve_pull_request_reviews:true});
+      return Response.json({name:'main',protected:false});
     }
-    if(path.endsWith('/branches/main/protection'))return new Response(null,{status:404});
     if(path.endsWith('/rulesets'))return Response.json([]);
     if(path.endsWith('/actions/workflows/ci.yml'))return Response.json({id:1,path:'.github/workflows/ci.yml',state:'active'});
     if(path.endsWith('/git/ref/heads/main'))return Response.json({object:{sha:mainSha}});

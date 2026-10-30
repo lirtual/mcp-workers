@@ -35,29 +35,31 @@ export async function verifyGithubPrPreflight({ request = fetch, token, sourceSh
     authorization: 'Bearer ' + token, accept: 'application/vnd.github+json',
     'user-agent': 'lirtual-database-hyperdrive-476', 'x-github-api-version': '2022-11-28'
   };
+  // GitHub's default Actions permission setting is an Administration API,
+  // unrelated to permission to create a PR. The actual write is separately
+  // checked after a fresh branch/ruleset/CI readback.
+  let branch, protection, rules;
   try {
-    const result = await request('https://api.github.com/repos/' + REPO + '/actions/permissions/workflow', {
+    const branchResponse = await request('https://api.github.com/repos/' + REPO + '/branches/main', {
       headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
     });
-    requireGate(result.ok, 'github_pr_permission_unavailable');
-  } catch { fail('github_pr_permission_unavailable'); }
-  // GitHub's review-approval permission is unrelated to creating a PR.
-  // Check actual PR creation during the protected write, never infer it here.
-  // A 404 means classic branch protection is absent. Other responses require
-  // a known, reviewed eligibility path rather than claiming that checks passed.
-  let protection, rules;
-  try {
-    protection = await request('https://api.github.com/repos/' + REPO + '/branches/main/protection', {
-      headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
-    });
-    requireGate(protection.status === 404 || protection.status === 200, 'github_protection_unavailable');
+    requireGate(branchResponse.status === 200, 'github_protection_unavailable');
+    branch = await branchResponse.json();
+    requireGate(branch?.name === 'main' && typeof branch.protected === 'boolean',
+      'github_protection_unavailable');
     rules = await request('https://api.github.com/repos/' + REPO + '/rulesets?includes_parents=true&per_page=100', {
       headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
     });
     requireGate(rules.ok, 'github_rulesets_unavailable');
     const parsed = await rules.json();
     requireGate(Array.isArray(parsed) && parsed.length === 0, 'github_ruleset_review_required');
-    if (protection.status !== 404) {
+    if (branch.protected) {
+      // A genuinely protected branch needs Administration-read evidence.
+      // Do not infer no protection from 401/403/404.
+      protection = await request('https://api.github.com/repos/' + REPO + '/branches/main/protection', {
+        headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
+      });
+      requireGate(protection.status === 200, 'github_protection_unavailable');
       const policy = await protection.json();
       const checks = policy?.required_status_checks;
       requireGate(checks?.strict === true && Array.isArray(checks.contexts) &&
@@ -76,7 +78,7 @@ export async function verifyGithubPrPreflight({ request = fetch, token, sourceSh
       headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
     });
     requireGate(head.ok && (await head.json())?.object?.sha === sourceSha, 'main_sha_changed');
-    if (protection.status === 404) {
+    if (!branch.protected) {
       // The running preparer is checked out at this exact main SHA. Require the
       // existing CI definition, including its bounded dispatch/provenance gates.
       const content = await request('https://api.github.com/repos/' + REPO +
@@ -96,7 +98,7 @@ export async function verifyGithubPrPreflight({ request = fetch, token, sourceSh
     if (error?.reason) throw error;
     fail('github_protection_unavailable');
   }
-  return {unprotected: protection.status === 404};
+  return {unprotected: !branch.protected};
 }
 function openPayload(row, keyBase64) {
   requireGate(row?.action === 'create' && row.expected_revision === 0 &&

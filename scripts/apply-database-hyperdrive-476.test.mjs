@@ -99,10 +99,14 @@ function fixture(fault) {
     }
     if(path==='/git/trees/'+tree)return Response.json({sha:tree,truncated:false,
       tree:paths.map(path=>({path,mode:fault==='symlink'?'120000':fault==='executable'?'100755':'100644',type:'blob'}))});
-    if(path==='/branches/main/protection') {
+    if(path==='/branches/main') {
       policyReads++;
+      return Response.json({name:'main',protected:unprotected
+        ? fault==='no-protection-policy-changed' && policyReads>2
+        : true});
+    }
+    if(path==='/branches/main/protection') {
       if(fault==='null-policy')return Response.json(null);
-      if(unprotected && !(fault==='no-protection-policy-changed' && policyReads>2))return new Response(null,{status:404});
       if(fault==='policy-unavailable')return new Response(null,{status:403});
       return Response.json({enforce_admins:{enabled:fault!=='admin-bypass'},required_status_checks:{strict:fault!=='weak-policy',
         contexts:fault==='missing-required-check'?['Other check']:['Required checks gate'],checks:[{context:'Required checks gate',app_id:15368}]},

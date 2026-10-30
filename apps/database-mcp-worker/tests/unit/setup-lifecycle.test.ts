@@ -646,7 +646,8 @@ it('prepares a replacement from active or disabled Hyperdrive without mutating o
  const {jwt,certificates}=await auth();const dispatches:string[]=[];
  const requestFetch:typeof fetch=async(input,options)=>{
   const url=String(input);
-  if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:false});
+  if(url.endsWith('/branches/main'))return Response.json({name:'main',protected:true});
+  if(url.includes('/rulesets?'))return Response.json([]);
   if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
   if(url.endsWith('/actions/workflows/release.yml/dispatches')){
    dispatches.push(String(options?.body));return Response.json({workflow_run_id:476});
@@ -748,7 +749,8 @@ it('accepts only a uniquely reviewed manifest as legacy Hyperdrive Edit provenan
   const dispatches:string[]=[];
   const requestFetch:typeof fetch=async(input,options)=>{
     const url=String(input);
-    if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:false});
+    if(url.endsWith('/branches/main'))return Response.json({name:'main',protected:true});
+  if(url.includes('/rulesets?'))return Response.json([]);
     if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
     if(url.endsWith('/actions/workflows/release.yml/dispatches')){
       dispatches.push(String(options?.body));return Response.json({workflow_run_id:476});
@@ -815,7 +817,8 @@ it('unified Save reuses strict CA replacement provenance without altering its ac
  const dispatches:string[]=[];
  const requestFetch:typeof fetch=async(input,options)=>{
   const url=String(input);
-  if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:false});
+  if(url.endsWith('/branches/main'))return Response.json({name:'main',protected:true});
+  if(url.includes('/rulesets?'))return Response.json([]);
   if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
   if(url.endsWith('/actions/workflows/release.yml/dispatches')){
    dispatches.push(String(options?.body));return Response.json({workflow_run_id:476});
