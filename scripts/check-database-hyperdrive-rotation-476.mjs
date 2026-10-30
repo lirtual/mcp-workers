@@ -84,6 +84,9 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
  }
  // Other Workers' *current* settings do not describe their rollback versions.
  // A stale deployable version can reintroduce the same Hyperdrive reference.
+ // An inventory can advance while a long historical-version scan is in flight.
+ // Reconcile every exact Worker/version set before claiming read-only eligibility.
+ const versionSnapshots=new Map([['database-mcp-worker',versions.items.map(v=>v.id).sort()]]);
  let allVersions=versions.items.length;
  for(const name of names.filter(n=>n!=='database-mcp-worker')){
   const path='/workers/scripts/'+encodeURIComponent(name);
@@ -96,6 +99,7 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
     new Set(other.items.map(v=>v.id)).size!==other.items.length||
     other.items.some(v=>!UUID.test(v.id??''))||
     !other.items.some(v=>v.id===active[0].version_id))fail('other_worker_history_incomplete');
+  versionSnapshots.set(name,other.items.map(v=>v.id).sort());
   allVersions+=other.items.length;
   for(const v of other.items){
     const {result:detail}=await read(path+'/versions/'+v.id);
@@ -108,13 +112,34 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
     againOther.deployments[0].versions[0].version_id!==active[0].version_id)
     fail('other_worker_deployment_changed');
  }
+ const {result:latestScripts}=await read('/workers/scripts');
+ if(!Array.isArray(latestScripts)||latestScripts.length!==names.length||
+   latestScripts.result_info?.total_pages>1||
+   latestScripts.map(x=>x.id??x.name).sort().some((name,i)=>name!==[...names].sort()[i]))
+   fail('worker_inventory_changed');
+ for(const [name,ids] of versionSnapshots){
+   const {result:latestVersions}=await read('/workers/scripts/'+encodeURIComponent(name)+'/versions?deployable=true');
+   if(!Array.isArray(latestVersions?.items)||latestVersions.items.length!==ids.length||
+     latestVersions.items.some(v=>!UUID.test(v.id??''))||
+     latestVersions.items.map(v=>v.id).sort().some((id,i)=>id!==ids[i]))
+     fail('rollback_inventory_changed');
+ }
+ // Read the write-sensitive origin and strict TLS settings again: a
+ // configuration edit during the rollback scan invalidates the observation.
+ const {result:latestConfig}=await read('/hyperdrive/configs/'+row.config_id);
+ const invariant=c=>[c?.id,c?.origin?.scheme,c?.origin?.host,c?.origin?.port,
+   c?.origin?.database,c?.origin?.user,c?.mtls?.sslmode,c?.mtls?.ca_certificate_id,
+   c?.caching?.disabled];
+ if(JSON.stringify(invariant(latestConfig))!==JSON.stringify(invariant(config)))
+   fail('config_changed_during_check');
  const {result:again}=await read(deploymentPath);
  if(again?.deployments?.[0]?.versions?.length!==1||again.deployments[0].versions[0].percentage!==100||
   again.deployments[0].versions[0].version_id!==activeId)fail('deployment_changed');
  // A long historical-version scan must not return a clean result if D1
  // status/revision or an unresolved execution changed while checking.
  const latest=await query('SELECT id,dialect,transport,status,revision,config_id,binding_name,in_flight_count FROM database_connections WHERE id=?',[connectionId]);
- if(latest.length!==1||latest[0].id!==row.id||latest[0].status!=='disabled'||
+ if(latest.length!==1||latest[0].id!==row.id||latest[0].dialect!==row.dialect||
+   latest[0].transport!==row.transport||latest[0].status!=='disabled'||
    latest[0].revision!==row.revision||latest[0].config_id!==row.config_id||
    latest[0].binding_name!==row.binding_name||latest[0].in_flight_count!==0)
    fail('registry_changed_during_check');

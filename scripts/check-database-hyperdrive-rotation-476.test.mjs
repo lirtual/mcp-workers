@@ -12,8 +12,8 @@ const input={mode:'credentials',connectionId:'rotation_fixture',expectedRevision
  manifest:[]};
 function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
  migration=1,sourceBound=false,currentBound=false,rollbackBound=false,
- unknownRollback=false,changeDeployment=false,caDrift=false,otherWorkerRollbackBound=false,rowRecheckChanged=false}={}){
- const calls=[];let deployments=0,rowReads=0;
+ unknownRollback=false,changeDeployment=false,caDrift=false,otherWorkerRollbackBound=false,rowRecheckChanged=false,versionInventoryDrift=false,configReadbackDrift=false,workerInventoryDrift=false}={}){
+ const calls=[];let deployments=0,rowReads=0,inventoryReads=0,configReads=0,workerReads=0;
  const source=sourceBound?{...input.source,hyperdrive:[{binding:'HYPERDRIVE_TEST',id:configId}]}:input.source;
  const manifest=sourceBound?[{binding:'HYPERDRIVE_TEST',id:configId,dialect:'mysql'}]:[];
  const respond=result=>({ok:true,json:async()=>({success:true,result})});
@@ -29,15 +29,26 @@ function fixture({status='disabled',count=0,revision=7,shared=0,operations=0,
    if(sql.includes('FROM database_connections'))return respond([{success:true,results:[{n:shared}]}]);
    if(sql.includes('FROM hyperdrive_operations'))return respond([{success:true,results:[{n:operations}]}]);
   }
-  if(path==='/hyperdrive/configs/'+configId)return respond({id:configId,caching:{disabled:true},
-   origin:{scheme:'mysql'},mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:caDrift?null:'fake-ca'}});
-  if(path==='/workers/scripts')return respond([{id:'database-mcp-worker'},{id:'other-worker'}]);
+  if(path==='/hyperdrive/configs/'+configId){
+   configReads++;
+   return respond({id:configId,caching:{disabled:true},origin:{scheme:'mysql'},
+    mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:caDrift?null:configReadbackDrift&&configReads>1?'unexpected-new-ca':'fake-ca'}});
+  }
+  if(path==='/workers/scripts'){
+   workerReads++;
+   return respond([{id:'database-mcp-worker'},{id:'other-worker'},
+    ...(workerInventoryDrift&&workerReads>1?[{id:'unexpected-worker'}]:[])]);
+  }
   if(path.endsWith('/settings'))return respond({bindings:currentBound?[{type:'hyperdrive',name:'HYPERDRIVE_TEST',id:configId}]:[]});
   if(path.endsWith('/deployments')){
    deployments++;
    return respond({deployments:[{versions:[{version_id:changeDeployment&&deployments>1?other:version,percentage:100}]}]});
   }
-  if(path.endsWith('/versions?deployable=true'))return respond({items:[{id:version},{id:other}]});
+  if(path.endsWith('/versions?deployable=true')){
+   inventoryReads++;
+   const changed=versionInventoryDrift&&path.includes('/database-mcp-worker/')&&inventoryReads>1;
+   return respond({items:[{id:version},{id:other},...(changed?[{id:'cccccccc-cccc-cccc-cccc-cccccccccccc'}]:[])]});
+  }
   if(path.endsWith('/versions/'+version))return respond({id:version,resources:{bindings:path.includes('/other-worker/')&&otherWorkerRollbackBound?[{type:'hyperdrive',name:'HYPERDRIVE_TEST',id:configId}]:[]}});
   if(path.endsWith('/versions/'+other))return respond({id:other,resources:unknownRollback?null:{bindings:rollbackBound?
    [{type:'hyperdrive',name:'HYPERDRIVE_TEST',id:configId}]:[]}});
@@ -92,5 +103,23 @@ test('no Owner gate or credential allows a Cloudflare request, and errors exclud
 test('registry changes while scanning historical versions invalidate an earlier clean observation',async()=>{
  const f=fixture({rowRecheckChanged:true});
  await assert.rejects(run(f),/registry_changed_during_check/);
+ onlyRead(f);
+});
+
+test('a rollback version appearing during the isolation scan invalidates eligibility',async()=>{
+ const f=fixture({versionInventoryDrift:true});
+ await assert.rejects(run(f),/rollback_inventory_changed/);
+ onlyRead(f);
+});
+
+test('a Cloudflare CA change during the scan cannot return stale eligibility',async()=>{
+ const f=fixture({configReadbackDrift:true});
+ await assert.rejects(run(f),/config_changed_during_check/);
+ onlyRead(f);
+});
+
+test('a newly registered Worker during inventory scan cannot return stale eligibility',async()=>{
+ const f=fixture({workerInventoryDrift:true});
+ await assert.rejects(run(f),/worker_inventory_changed/);
  onlyRead(f);
 });

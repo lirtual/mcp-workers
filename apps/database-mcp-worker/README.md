@@ -205,7 +205,10 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   current CA/TLS/cache config, all current account Worker settings, and each
   Worker's deployable version bindings including active-version receipts.
   Any referenced version, incomplete inventory, shared registry, stale D1,
-  source Binding, version drift or missing migration blocks the check. The
+  source Binding, version drift or missing migration blocks the check. Before
+  returning eligibility, the Runner rechecks the complete Worker/version
+  inventory, exact Hyperdrive origin/CA/TLS settings, active deployment and
+  D1 revision, so changes during the read-only scan fail closed. The
   single optional rotation mode brings existing `release.yml` to ten inputs;
   all other lifecycle and production jobs explicitly reject a rotation mode.
   Passing this preliminary check is neither a mutation approval nor a global
