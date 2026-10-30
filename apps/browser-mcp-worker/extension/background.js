@@ -510,8 +510,11 @@ chrome.runtime.onMessageExternal.addListener((message,sender,sendResponse)=>{
   return true;
 });
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
-  // Do not allow content scripts or arbitrary extension pages to invoke local Resume.
-  if(sender?.tab || sender?.id!==chrome.runtime.id || sender?.url!==chrome.runtime.getURL("options.html")){
+  // A native Options page opened as a browser tab legitimately has sender.tab.
+  // Authorize the exact top-level extension-owned Options document, not an
+  // arbitrary tab, a content script, a sibling page, or an embedded frame.
+  if(sender?.id!==chrome.runtime.id || sender?.url!==chrome.runtime.getURL("options.html") ||
+     (sender.frameId!==undefined && sender.frameId!==0)){
     sendResponse({ok:false,error:"untrusted_sender"});
     return false;
   }

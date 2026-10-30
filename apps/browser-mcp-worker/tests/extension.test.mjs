@@ -71,9 +71,30 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
       handler({type,...props},{id:"test-extension",url:"chrome-extension://test-extension/options.html"},answer=>answer?.ok?resolve(answer.result):reject(Error(answer?.error||"unknown")));
     });
   }
-  const sendSpoof=(type,sender)=>new Promise(resolve=>handler({type},sender,resolve));
+  const sendSpoof=(type,sender,extra={})=>new Promise(resolve=>handler({type,...extra},sender,resolve));
   return {local,session,events,createdTabs,send,sendSpoof,chrome,startup,installed,click:()=>actionClick(),external:(message,sender)=>new Promise(resolve=>externalHandler(message,sender,resolve)),alarm:()=>alarm({name:"browser-activation"}),removed:tabId=>onRemoved(tabId),ctx,sockets};
 }
+test("native Options browser tab may read status and set Temporary, but spoofed senders remain denied",async()=>{
+  const e=await setup({authorization:"stopped",activation_protocol:2});
+  const optionsURL="chrome-extension://test-extension/options.html";
+  const optionsSender={id:"test-extension",url:optionsURL,frameId:0,
+    tab:{id:91,url:optionsURL,windowId:1}};
+  const status=await e.sendSpoof("status",optionsSender);
+  assert.equal(status.ok,true,"native Options page tab must not be rejected merely because sender.tab exists");
+  assert.equal(status.result.authorization,"stopped");
+  assert.equal(Object.hasOwn(status.result,"credential"),false);
+  const saved=await e.sendSpoof("pairing-preference",optionsSender,{mode:"temporary"});
+  assert.equal(saved.ok,true);
+  assert.equal(saved.result.mode,"temporary");
+  assert.equal(e.local.pairing_preference,"temporary");
+  for(const sender of [
+    {id:"other-extension",url:optionsURL,frameId:0,tab:{id:91,url:optionsURL}},
+    {id:"test-extension",url:"https://example.com/public",frameId:0,tab:{id:91}},
+    {id:"test-extension",url:"chrome-extension://test-extension/popup.html",frameId:0,tab:{id:91}},
+    {id:"test-extension",url:optionsURL,frameId:1,tab:{id:91,url:optionsURL}},
+    {id:"test-extension",url:optionsURL+"?spoof",frameId:0,tab:{id:91,url:optionsURL}}
+  ])assert.equal((await e.sendSpoof("status",sender)).error,"untrusted_sender");
+});
 test("fast WSS open authenticates before any asynchronous connection bookkeeping",async()=>{
   const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{fastOpen:true});
   try {
