@@ -139,8 +139,10 @@ export async function runHyperdriveCredentialRotation({
     proof?.hyperdriveWorkerVerified===false;
  }catch{/* Read-only probe failure cannot be mistaken for a failed/unknown PATCH. */}
  if(originSqlVerified){
-  await finish('completed','credential_origin_sql_verified');
-  return {phase:'completed',operationId,sqlVerified:true,hyperdriveWorkerVerified:false};
+  // A direct-origin SQL probe cannot attest the published Hyperdrive/Worker
+  // binding. Keep the operation nonterminal until that link is verified.
+  await finish('awaiting_confirmation','credential_origin_sql_verified');
+  return {phase:'awaiting_confirmation',operationId,sqlVerified:true,hyperdriveWorkerVerified:false};
  }
  await finish('awaiting_confirmation','credential_health_unverified');
  return {phase:'awaiting_confirmation',operationId,sqlVerified:false,hyperdriveWorkerVerified:false};

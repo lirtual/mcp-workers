@@ -84,12 +84,12 @@ function fixture({blocked=false,patchError=false,restartError=false,sharedDuring
  };
  return {state,requests,request,preflight,probeOrigin};
 }
-test('isolated Owner PATCH with strict CA and authenticated origin SQL finishes disabled',async()=>{
+test('origin SQL proof alone cannot complete Hyperdrive Worker credential rotation',async()=>{
  const f=fixture();
  const result=await runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin});
- assert.deepEqual(result,{phase:'completed',operationId:id,sqlVerified:true,hyperdriveWorkerVerified:false});
+ assert.deepEqual(result,{phase:'awaiting_confirmation',operationId:id,sqlVerified:true,hyperdriveWorkerVerified:false});
  assert.equal(f.state.patches,1);assert.equal(f.state.restarts,1);
- assert.equal(f.state.phase,'completed');
+ assert.equal(f.state.phase,'awaiting_confirmation');
  assert.deepEqual(f.state.errors,['credential_origin_sql_verified']);
  assert.equal(JSON.stringify(result).includes(secret),false);
  assert.equal(f.requests.filter(r=>r.method==='PATCH').length,1);
@@ -157,10 +157,10 @@ test('Runner claim and final receipt execute against actual migration 0003 SQLit
    return {ok:true,json:async()=>({success:true,result:[{success:true,results:[],meta:{changes:outcome.changes}}]})};
   };
   const receipt=await runHyperdriveCredentialRotation({...input,request,preflight:upstream.preflight,probeOrigin:upstream.probeOrigin});
-  assert.equal(receipt.phase,'completed');
+  assert.equal(receipt.phase,'awaiting_confirmation');
   assert.equal(upstream.state.patches,1);
   assert.deepEqual({...db.prepare('SELECT phase,error_class,ciphertext,key_id FROM hyperdrive_operations WHERE operation_id=?').get(id)},
-   {phase:'completed',error_class:'credential_origin_sql_verified',ciphertext:null,key_id:null});
+   {phase:'awaiting_confirmation',error_class:'credential_origin_sql_verified',ciphertext:null,key_id:null});
   assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('isolated')},
    {status:'disabled',revision:4});
  }finally{db.close()}
@@ -169,7 +169,7 @@ test('Runner claim and final receipt execute against actual migration 0003 SQLit
 test('a faster Runner records its exact GitHub Run ID before the Owner dispatch receipt arrives',async()=>{
  const f=fixture({unrecordedDispatch:true});
  const result=await runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin});
- assert.equal(result.phase,'completed');
+ assert.equal(result.phase,'awaiting_confirmation');
  assert.equal(f.state.recordedRun,476);
  assert.equal(f.state.patches,1);
 });
