@@ -52,7 +52,7 @@ function addConnectionForm(csrf: string): string {
     <details><summary>CA PEM (only if no suitable CA is on record)</summary>
     <label>Certificate PEM<textarea name="ca_pem" rows="3" maxlength="16384" autocomplete="off"></textarea></label></details>
     <details><summary>Prepare a Hyperdrive replacement (new ID)</summary><p class="muted">Use a new Connection ID and the same database host, port and database. You may change the username, password and CA while the original stays active. The old config and rollback references remain unchanged; protected release and health verification still apply.</p>
-    <label>Existing disabled Connection ID<input name="replacement_for" maxlength="64" autocomplete="off"></label></details>
+    <label>Existing Hyperdrive Connection ID (active or disabled)<input name="replacement_for" maxlength="64" autocomplete="off"></label></details>
 </div>
     <button type="submit">Save connection</button></form></fieldset>`;
 }
@@ -87,7 +87,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<button type="submit">Stage unbinding review</button></form>' +
           '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
           '<button type="submit">Read unbinding status</button></form></details>'
-        : '<p class="muted">Disable this connection before editing credentials or retiring its logical ID.</p>') +
+        : '<p class="muted"><a href="#add-connection">Prepare replacement while active</a> using a new Connection ID while the original remains available. Disable the original only before retirement.</p>') +
         '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion.</p>' +
         '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a></p>'
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
