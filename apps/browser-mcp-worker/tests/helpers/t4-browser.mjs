@@ -141,7 +141,7 @@ export async function fixture(config={},options={}){
     },
     pauseNextScript:()=>{let enter,release;const entered=new Promise(resolve=>{enter=resolve;});const ready=new Promise(resolve=>{release=resolve;});scriptGate={enter,ready};return {entered,release};},
     http:(path,init={})=>worker.fetch(new Request(new URL(path,service),init),env),
-    drop:()=>{dropReceipt=true;},hold:()=>{holdExecute=true;},release:async()=>{if(held)await ws.onmessage({data:held});},
+    drop:()=>{dropReceipt=true;},hold:()=>{holdExecute=true;},release:async(extra={})=>{if(held)await ws.onmessage({data:JSON.stringify({...JSON.parse(held),...extra})});},
     transientDisconnect:()=>{const live=sockets.filter(socket=>socket.readyState===1);assert.ok(live.length);for(const socket of live)socket.readyState=3;return ()=>{for(const socket of live)socket.readyState=1;};},
     dropNextApprovalReply:()=>{dropApprovalReply=true;},
     restart:()=>{retired.push(owner);owner=new BrowserOwner(state,config);},

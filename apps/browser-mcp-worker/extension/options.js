@@ -24,14 +24,11 @@ async function refresh() {
       "Pairing: "+(s.pairing_mode||"not paired")+(s.lease_expires_at?"; expires "+new Date(s.lease_expires_at).toLocaleString():""),
       "Last observed target: "+(Number.isSafeInteger(s.last_observed_tab_id)?`[${s.last_observed_scope||"ordinary"}] Tab ${s.last_observed_tab_id} (${s.last_observed_tab_source==="agent_created"?"Agent-created":"Existing / source unknown"})`:"None / not bound"),
       "Operations Pending: "+(s.activity?.available?s.activity.pending:"UNCONFIRMED — cloud status unavailable"),
-      "Owner approvals waiting: "+(s.activity?.available?(s.activity.approvals||[]).length:"UNCONFIRMED"),
-      ...(s.activity?.approvals||[]).map(a=>`Operation ${a.operation_id}: ${a.state}; expires ${new Date(a.expires_at).toLocaleString()}`),
-      "Waiting approvals do not occupy the execution lock. Open the canonical link from the original receipt in your independent owner Profile; links are not approval credentials.",
       "Operations Unknown: "+(s.activity?.available?s.activity.unknown:"UNCONFIRMED — do not assume zero"),
       "Unknown: query browser_operation_status with the ORIGINAL intent_key; never create a new key to retry.",
       "Tab retention: explicit close only; Stop/disconnect/turn end never auto-close tabs.",
       "Unconfirmed cloud revocation ID: "+(s.pending_revocation_id||"None"),
-      "Owner Approval: consequential actions require a separate, independently isolated owner approval. Authentication and sensitive surfaces stay denied."
+      "High-impact and unidentified controls are blocked, not remotely approved. Authentication and sensitive surfaces stay denied; Unknown receipts may be reviewed independently."
     ].join("\n");
     for(const surface of ["lan","private"])$(surface).textContent=(s.sensitive_permissions?.[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
     $("locate").disabled=!Number.isSafeInteger(s.last_observed_tab_id);
@@ -77,6 +74,6 @@ void refresh();
 
 for(const surface of ["lan","private"])$(surface).onclick=()=>action("Changing local permission",async()=>{
   const s=await call("status"),enabled=!s.sensitive_permissions?.[surface];
-  if(enabled&&!confirm(surface==="lan"?"Allow direct localhost/LAN HTTP(S) control for this browser session? This is not full DNS rebinding or page network isolation. Consequential actions still require independent owner approval.":"Allow private/incognito observation and control for this browser session? Chrome/Edge native permission is also required. Consequential actions still require independent owner approval."))return;
+  if(enabled&&!confirm(surface==="lan"?"Allow direct localhost/LAN HTTP(S) control for this browser session? This is not full DNS rebinding or page network isolation. Consequential actions remain blocked, with no remote approval.":"Allow private/incognito observation and control for this browser session? Chrome/Edge native permission is also required. Consequential actions remain blocked, with no remote approval."))return;
   return call("sensitive-permission",{surface,enabled});
 });

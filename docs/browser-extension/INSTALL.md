@@ -12,9 +12,11 @@ Spec #531 v0.2.0 was released through [GitHub Actions run #41031042848](https://
 
 ## Options, permission boundaries and Stop
 
-Options contains Profile identity, pairing lifetime/expiry, cloud Stop state, diagnostics, separate local LAN/Private permissions, Revoke and a confirmed-cloud-revocation acknowledgment. LAN/private grants are independently approved for the current session and do not become enabled through Access login. Private browsing also needs browser-native Allow in Incognito/InPrivate. No extra permission grants independent consequential-action approval. Never use Browser MCP to interact with its Access authentication, mailbox OTP, or independent Owner Approval pages.
+Options contains Profile identity, pairing lifetime/expiry, cloud Stop state, diagnostics, separate local LAN/Private permissions, Revoke and a confirmed-cloud-revocation acknowledgment. LAN/private grants are independently approved for the current session and do not become enabled through Access login. Private browsing also needs browser-native Allow in Incognito/InPrivate. No permission grants an override for consequential or ambiguous targets; those actions are denied by the extension. Do not use Browser MCP on its Access authentication, mailbox OTP, or independent Unknown-review pages.
 
 OFF is **not** Revoke. To change pairing lifetime, explicitly Revoke first and create a new pairing through the toolbar. Revocation rejects old credentials/WSS, but cannot roll back website effects that have already been dispatched. Network failures may leave cloud Stop/Revoke unconfirmed; do not treat those states as success. Consult the explicit Endpoint in the authenticated MCP status and resolve pending cloud state before further activation.
+
+The no-per-operation-approval policy belongs to the newer #418 rollout. Before the matching Worker and extension release is validated, existing installed production versions may still follow the older policy; do not infer production behavior solely from these source instructions.
 
 ## Update, rollback and acceptance
 

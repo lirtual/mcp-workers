@@ -44,12 +44,6 @@ function clearSensitivePermissions() {
   const task=sensitiveWrites.catch(()=>{}).then(()=>chrome.storage.session.set({browser_sensitive_grants:{lan:false,private:false,revision:crypto.randomUUID()}})).then(()=>{sensitiveFault=false;},error=>{sensitiveFault=true;throw error;}).finally(()=>{sensitiveChanging--;});
   sensitiveWrites=task;return task;
 }
-async function approvalRun() {
-  await trustedSession;
-  const stored=await chrome.storage.session.get("browser_approval_run");
-  if(stored.browser_approval_run)return stored.browser_approval_run;
-  const run=crypto.randomUUID();await chrome.storage.session.set({browser_approval_run:run});return run;
-}
 const DEFAULT = {authorization:"unpaired",connection:"offline",last_update:0,pending_cloud_stop:false};
 let socket = null, timer = null, reconnect = null;
 let currentGeneration = 0;
@@ -318,7 +312,7 @@ function connect() {
     // may delay registering handlers and lose a fast WSS open/authentication.
     ws.onopen=()=>{
       if(socket!==ws)return;
-      ws.send(JSON.stringify({type:"authenticate",protocol:2,extension_version:"0.2.0",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service,owner_approval_protocol:1}));
+      ws.send(JSON.stringify({type:"authenticate",protocol:2,extension_version:"0.2.0",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
     };
     ws.onmessage=async event=>{
       if(socket!==ws)return;
@@ -336,7 +330,7 @@ function connect() {
         let prepareStage="validation";
         try {
           const permissionToken=await sensitiveToken();
-          const check=await browserValidateMutation(message.command,message.approval_available===true);
+          const check=await browserValidateMutation(message.command);
           if(check.error_code)proposal={error_code:check.error_code};
           prepareStage="context";
           const local=await state();
@@ -348,18 +342,10 @@ function connect() {
             const all=await chrome.storage.session.get(null);
             const prepared=Object.entries(all).filter(([k])=>k.startsWith("browser_prepare_"));
             for(const [k,v] of prepared)if(v.expires_at<Date.now()||v.generation!==currentGeneration)await chrome.storage.session.remove(k);
-            const needsApproval=check.approval_required===true;
-            if(needsApproval&&prepared.filter(([,v])=>v.approval_required&&v.expires_at>=Date.now()&&v.generation===currentGeneration).length>=10)throw Error("capacity_exceeded");
             if(new TextEncoder().encode(JSON.stringify(message.command)).byteLength>65536)throw Error("capacity_exceeded");
-            const run_id=needsApproval?await approvalRun():null;
-            if(needsApproval&&(!Number.isSafeInteger(message.expires_at)||message.expires_at>Date.now()+300000||message.expires_at<=Date.now())){
-              prepareStage="expiry";throw Error("invalid_expiry");
-            }
-            proposal=needsApproval?{approval_required:true,command:message.command,run_id,expires_at:message.expires_at,context:{description:check.description,target_url:check.target_url,source_url:check.source_url??null}}:{};
             await chrome.storage.session.set({["browser_prepare_"+message.operation_id]:{
               command:message.command,permissionToken,generation:message.generation,
-              endpoint_id:local.endpoint_id,approval_required:needsApproval,run_id,context:proposal.context,
-              expires_at:needsApproval?message.expires_at:Date.now()+15000
+              endpoint_id:local.endpoint_id,expires_at:Date.now()+15000
             }});
             accepted=true;
           } else if(check.ready)proposal={error_code:"prepare_context_changed"};
@@ -374,22 +360,6 @@ function connect() {
         if(socket===ws&&ws.readyState===WebSocket.OPEN&&message.generation===currentGeneration)
           ws.send(JSON.stringify({type:"prepare_result",operation_id:message.operation_id,
             intent_key:message.intent_key,generation:currentGeneration,accepted,...proposal}));
-      } else if(message.type==="approval_request") {
-        if(message.generation!==currentGeneration||!/^[a-f0-9-]{36}$/.test(message.request_id||"")||!/^[a-f0-9-]{36}$/.test(message.operation_id||""))return;
-        let proposal={ready:false};
-        try {
-          await trustedSession;
-          const key="browser_prepare_"+message.operation_id;
-          const stored=(await chrome.storage.session.get(key))[key],local=await state();
-          if(stored?.permissionToken===await sensitiveToken()&&stored?.approval_required&&stored.generation===currentGeneration&&stored.endpoint_id===local.endpoint_id&&
-             stored.expires_at>Date.now()&&stored.run_id===await approvalRun()&&local.authorization==="enabled"){
-            const check=await browserValidateMutation(stored.command,true);
-            if(check.ready&&check.approval_required&&check.description&&check.description===stored.context.description&&check.target_url===stored.context.target_url&&(check.source_url??null)===stored.context.source_url)
-              proposal={ready:true,command:stored.command,run_id:stored.run_id,expires_at:stored.expires_at,context:stored.context};
-          }
-        }catch{/* no command recovery from local storage, DO or page */}
-        if(socket===ws&&currentGeneration===message.generation&&ws.readyState===WebSocket.OPEN)
-          ws.send(JSON.stringify({type:"approval_result",request_id:message.request_id,generation:currentGeneration,...proposal}));
       } else if(message.type==="execute_request") {
         const op=message.operation_id;
         if(message.generation!==currentGeneration||typeof op!=="string"||
@@ -404,8 +374,9 @@ function connect() {
           if(!stored||stored.permissionToken!==await sensitiveToken()||values[consumed]||stored.generation!==currentGeneration||
              stored.endpoint_id!==local.endpoint_id||stored.command?.intent_key!==message.intent_key||
              stored.expires_at<Date.now()||local.authorization!=="enabled"||socket!==ws)return;
-          if(stored.approval_required&&(message.owner_approved!==true||stored.run_id!==message.run_id||
-             stored.run_id!==await approvalRun()||stored.expires_at!==message.expires_at))return;
+          // Never dispatch a legacy owner-approved command after protocol retirement.
+          if(stored.approval_required!==undefined||message.owner_approved!==undefined||
+             message.run_id!==undefined||message.expires_at!==undefined)return;
           // Persist consumption before touching any webpage. Failure means no action.
           await chrome.storage.session.set({[consumed]:true});
           await chrome.storage.session.remove(key);
@@ -413,7 +384,7 @@ function connect() {
             const latest=await state();
             return stored.permissionToken===await sensitiveToken() && latest.authorization==="enabled" && socket===ws &&
               currentGeneration===message.generation && latest.endpoint_id===stored.endpoint_id;
-          },stored.approval_required&&message.owner_approved===true);
+          });
           // Session-only tab provenance; never derive permission to auto-close from it.
           // If recording fails after a browser effect, leave the receipt Unknown.
           if(result.state==="completed" && Number.isSafeInteger(result.tab_id)){
