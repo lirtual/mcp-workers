@@ -663,6 +663,14 @@ it('prepares a replacement from active or disabled Hyperdrive without mutating o
  expect(editHtml).toContain('name="dialect" value="postgres"');
  expect(editHtml).toContain('name="transport" value="hyperdrive"');
  expect(editHtml).not.toContain('name="transport" value="direct"');
+ expect(editHtml).toContain('name="input_mode" value="fields" checked');
+ expect(editHtml).toContain('name="host" autocomplete="off" maxlength="253" value="pg.example.net" readonly');
+ expect(editHtml).toContain('name="port" inputmode="numeric" type="number" min="1" max="65535" value="5432" readonly');
+ expect(editHtml).toContain('name="database" maxlength="128" value="app" readonly');
+ expect(editHtml).not.toContain('oldreader');
+ expect(editHtml).not.toContain(prior.id);
+ expect(editHtml).not.toContain(prior.binding);
+ expect(editHtml).toContain('update each client to the new Connection ID');
  const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
  const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
  const base={csrf,id:'new_conn',transport:'hyperdrive',dialect:'postgres',input_mode:'fields',
@@ -690,6 +698,12 @@ it('prepares a replacement from active or disabled Hyperdrive without mutating o
   .run('b'.repeat(32),'HYPERDRIVE_BAD_SOURCE');
  expect((await save({replacement_for:'malformed_source'})).status).toBe(422);
  expect(dispatches).toHaveLength(1);
+ const malformedPage=await handleSetup(new Request(pageUrl+'?edit=malformed_source',{
+  headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+ const malformedHtml=await malformedPage.text();
+ expect(malformedPage.status).toBe(200);
+ expect(malformedHtml).toContain('name="replacement_for" value="malformed_source"');
+ expect(malformedHtml).not.toContain('name="host" autocomplete="off" maxlength="253" value=');
  const accepted=await save();expect(accepted.status).toBe(200);
  expect(await accepted.text()).not.toContain(base.password);
  expect(dispatches).toHaveLength(2);

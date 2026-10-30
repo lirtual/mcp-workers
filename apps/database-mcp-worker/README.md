@@ -7,7 +7,13 @@ with plaintext Direct or strict-TLS Hyperdrive, accepts a Connection URL or expl
 host/port/database/username/password, and offers Direct Edit with either input.
 Hyperdrive Edit preselects the source dialect and transport in a new-ID replacement
 form, and server admission rejects an attempt to turn that replacement into
-Direct. Neither the original Hyperdrive reference nor its rollback consumers
+Direct. For strictly attested D1 source metadata, Owner Edit pre-fills the
+immutable host/port/database in the fields form (no prior username, password,
+CA, Config ID or Binding is rendered); the POST rechecks the source target.
+After the protected release and new-ID activation, clients must explicitly
+switch IDs, verify their own read path, then disable the old ID. There is
+no transparent alias, unsafe same-ID rebind or automatic consumer cutover.
+Neither the original Hyperdrive reference nor its rollback consumers
 are modified during candidate preparation. A rejected MySQL/PostgreSQL
 connection handshake before any SQL is sent now provides explicit no-SQL
 completion evidence for releasing that request's D1 in-flight claim. Failed

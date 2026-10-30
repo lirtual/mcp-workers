@@ -35,17 +35,18 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
     (verb === 'delete' ? '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' : '') +
     `<button type="submit">${verb}</button></form>`;
 }
-function addConnectionForm(csrf: string, replacing?: RegistryMetadata): string {
+export interface ReplacementOrigin { host: string; port: number; database: string; }
+function addConnectionForm(csrf: string, replacing?: RegistryMetadata, origin?: ReplacementOrigin): string {
   return `<fieldset><legend>${replacing ? 'Edit Hyperdrive (new Connection ID)' : 'Add connection'}</legend><form class="add-connection${replacing ? ' replacement' : ''}" id="add-connection" method="post" action="/setup/add">${token(csrf)}
-    ${replacing ? '<p class="muted">Replace ' + escape(replacing.id) + ' with a new Connection ID using the same database target. The existing connection stays active until separately verified cutover.</p>' : ''}
+    ${replacing ? '<p class="muted">Replace ' + escape(replacing.id) + ' with a new Connection ID using the same database target. The existing connection stays active during preparation. After protected release and verified activation, update each client to the new Connection ID, verify usage, then disable the old ID. Old bindings and rollback resources must be retained until separately proven unused.</p>' : ''}
     <label>Connection ID<input name="id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required></label>
     ${replacing ? '<p>Database: ' + escape(replacing.dialect === 'mysql' ? 'MySQL' : 'PostgreSQL') + '</p><input type="hidden" name="dialect" value="' + escape(replacing.dialect) + '">' : '<label>Database<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>'}
     ${replacing ? '<p>Transport: Hyperdrive (strict TLS)</p><input type="hidden" name="transport" value="hyperdrive">' : '<div class="choices" role="group" aria-label="Connection transport"><label><input type="radio" name="transport" value="direct" checked>Direct (plaintext)</label><label><input type="radio" name="transport" value="hyperdrive">Hyperdrive (strict TLS)</label></div>'}
-    <div class="choices" role="group" aria-label="Connection input"><label><input type="radio" name="input_mode" value="url" checked>Connection URL</label><label><input type="radio" name="input_mode" value="fields">Host and credentials</label></div>
+    <div class="choices" role="group" aria-label="Connection input"><label><input type="radio" name="input_mode" value="url"${replacing ? '' : ' checked'}>Connection URL</label><label><input type="radio" name="input_mode" value="fields"${replacing ? ' checked' : ''}>Host and credentials</label></div>
     <div class="url-input"><label>Connection URL<input name="url" type="password" autocomplete="off" maxlength="8192" placeholder="postgresql://user:password@host/database"></label></div>
-    <div class="fields-input"><label>Host<input name="host" autocomplete="off" maxlength="253"></label>
-    <label>Port (optional; MySQL 3306 / PostgreSQL 5432)<input name="port" inputmode="numeric" type="number" min="1" max="65535"></label>
-    <label>Database<input name="database" maxlength="128"></label><label>Username<input name="username" maxlength="128" autocomplete="off"></label>
+    <div class="fields-input"><label>Host<input name="host" autocomplete="off" maxlength="253"${origin ? ' value="' + escape(origin.host) + '" readonly' : ''}></label>
+    <label>Port (optional; MySQL 3306 / PostgreSQL 5432)<input name="port" inputmode="numeric" type="number" min="1" max="65535"${origin ? ' value="' + origin.port + '" readonly' : ''}></label>
+    <label>Database<input name="database" maxlength="128"${origin ? ' value="' + escape(origin.database) + '" readonly' : ''}></label><label>Username<input name="username" maxlength="128" autocomplete="off"></label>
     <label>Password<input name="password" type="password" maxlength="2048" autocomplete="off"></label></div>
     <div class="direct-warning"><p><strong>Direct is unencrypted TCP.</strong> Credentials and SQL travel without transport encryption. Use Hyperdrive when TLS is required.</p>
     <label class="check"><input type="checkbox" name="plaintext_ack" value="1">I accept plaintext Direct transport for this new connection.</label></div>
@@ -57,7 +58,8 @@ function addConnectionForm(csrf: string, replacing?: RegistryMetadata): string {
     <button type="submit">Save connection</button></form></fieldset>`;
 }
 export function setupPage(rows: RegistryMetadata[], csrf: string,
-  operations: HyperdriveOperationSummary[] = [], retiredHyperdriveIds: string[] = [], replacing?: RegistryMetadata): Response {
+  operations: HyperdriveOperationSummary[] = [], retiredHyperdriveIds: string[] = [], replacing?: RegistryMetadata,
+  replacementOrigin?: ReplacementOrigin): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} / ${escape(row.transport)} · ${escape(row.status)}</span>` +
     (row.transport === 'hyperdrive' && (row.in_flight_count ?? 0) > 0
       ? `<p><strong>Blocked: ${row.in_flight_count} unresolved execution(s).</strong> New SQL is disabled when this connection is disabled. Do not delete or rotate its resources without independently verified completion; no automatic timeout or count reset is performed.</p>` : '') +
@@ -114,7 +116,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
       '<button type="submit">Confirm final apply</button></form>' : '') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections. Credentials are never displayed.</p>' +
     `<ul class="connections">${list || '<li>No database connections configured</li>'}</ul>` +
-    addConnectionForm(csrf, replacing) +
+    addConnectionForm(csrf, replacing, replacementOrigin) +
     '<details><summary>Recent operations</summary><ul>' + (history || '<li>No operations</li>') + '</ul></details>' +
     (retiredHyperdriveIds.length ? '<details><summary>Cloudflare cleanup unverified (' + retiredHyperdriveIds.length + ')</summary>' +
       '<p class="muted">These retired connection IDs no longer admit MCP SQL. Historical Hyperdrive/CA resources are retained; physical cleanup needs separate live and rollback reference proof.</p><ul>' +

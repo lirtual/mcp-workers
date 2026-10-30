@@ -13,7 +13,7 @@ import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, dispatchHype
   verifyGithubPrCapability, readHyperdriveUnbindStatus } from './github-actions.js';
 import { previewHyperdriveCreation, createHyperdrivePreparation, createHyperdriveCredentialRotation, listHyperdriveOperations,
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
-import { setupFailure, setupPage, setupResult, setupUnbindStatusResult } from './page.js';
+import { setupFailure, setupPage, setupResult, setupUnbindStatusResult, type ReplacementOrigin } from './page.js';
 import { normalizeConnectionInput } from './connection-input.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
@@ -184,6 +184,27 @@ async function requireCaReplacementIdentity(
     }
 }
 
+/** Owner-only metadata prefill. Never render passwords, usernames, CA values,
+ * config IDs or bindings. POST independently checks source provenance again. */
+async function verifiedReplacementOrigin(db: D1Database, id: string, dialect: Dialect): Promise<ReplacementOrigin | undefined> {
+  const row = await db.prepare('SELECT config_id,binding_name,target_metadata FROM database_connections WHERE id=? AND dialect=? AND transport=\'hyperdrive\'')
+    .bind(id,dialect).first<{config_id:string;binding_name:string;target_metadata:string|null}>();
+  if (!row?.target_metadata) return undefined;
+  let data: Record<string,unknown>;
+  try { data = JSON.parse(row.target_metadata) as Record<string,unknown>; }
+  catch { return undefined; }
+  const keys = ['binding','id','dialect','origin_host','origin_port','origin_database','origin_user','ca_certificate_id'];
+  if (!data || typeof data !== 'object' || Array.isArray(data) ||
+    Object.keys(data).length !== keys.length || keys.some(key => !Object.hasOwn(data,key)) ||
+    data.id !== row.config_id || data.binding !== row.binding_name || data.dialect !== dialect ||
+    typeof data.origin_host !== 'string' ||
+    !/^(?=.{4,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(data.origin_host) ||
+    !Number.isSafeInteger(data.origin_port) || (data.origin_port as number) < 1 || (data.origin_port as number) > 65535 ||
+    typeof data.origin_database !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(data.origin_database) ||
+    typeof data.origin_user !== 'string' || typeof data.ca_certificate_id !== 'string') return undefined;
+  return {host:data.origin_host,port:data.origin_port as number,database:data.origin_database};
+}
+
 async function requiredRow(env: Env, id: string) {
   if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Database registry is unavailable.');
   const row = await getRegistryConnection(env.DB, id);
@@ -278,7 +299,8 @@ export async function handleSetup(
       const replacing = selected.length === 1
         ? connections.find(row => row.transport === 'hyperdrive' && row.id === selected[0])
         : undefined;
-      return setupPage(connections, token, operations, retired.results.map(row=>row.id), replacing);
+      const origin = replacing ? await verifiedReplacementOrigin(env.DB, replacing.id, replacing.dialect) : undefined;
+      return setupPage(connections, token, operations, retired.results.map(row=>row.id), replacing, origin);
     }
     if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|hyperdrive-credentials|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
