@@ -347,7 +347,11 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
               properties:{uses:{enum:['result.emit','mcp.call']},with:{type:'object'}},
               oneOf:[
                 {properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}},
-                {properties:{uses:{const:'mcp.call'},with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}},
+                {properties:{uses:{const:'mcp.call'},with:{
+                  ...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'],
+                  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties,
+                    scope:{const:'read'}},
+                }}},
               ]}},
           not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},
             {required:['needs_policy']},{required:['times']},{required:['items']},{required:['max_items']}]}},

@@ -329,6 +329,15 @@ test('bounded dynamic while/until discovery compiles and refuses nested/effect b
  const {definition,digest}=detail.example as {definition:unknown;digest:string};
  assert.equal((await compilePlan(definition)).digest,digest);
  assert.equal((await compilePlan(definition)).plan.steps[0].uses,'flow.loop');
+ // Loop bodies permit only the read grant; the ordinary top-level MCP
+ // schema still advertises both the separately reviewed read/write scopes.
+ const loopSchema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.oneOf[2] as unknown as {
+   properties:{template:{oneOf:[unknown,{properties:{with:{properties:{scope:unknown}}}}]}};
+ };
+ assert.deepEqual(loopSchema.properties.template.oneOf[1].properties.with.properties.scope,
+   {const:'read'});
+ assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties.scope,
+   {enum:['read','write']});
  assert.match(String(((await workflowCapabilities(env)).expression_rules as {supported_loop:string}).supported_loop),/exhaustion/);
  for(const uses of ['github.run','http.request','flow.loop']){
    await assert.rejects(()=>compilePlan({version:1,name:'Unsafe loop',steps:[{
