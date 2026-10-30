@@ -391,6 +391,10 @@ const entries=[
    description:'Emit a bounded deterministic result; with={data:expression}.'},
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
+  {id:'action.mcp.write',kind:'action',availability:'unsupported',
+   description:'Write-scope MCP calls and live Connection revocation are not implemented; read-scope mcp.call cannot be widened.'},
+  {id:'action.http',kind:'action',availability:'unsupported',
+   description:'Registered HTTP Action with reviewed origin, method, redirects, credentials and replay-safe semantics is not implemented; arbitrary URLs are forbidden.'},
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
    description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
   {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
@@ -429,6 +433,8 @@ const entries=[
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
    description:'At most one awaited, non-recursive child per parent (flow: child, not child_workflow). Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
+  {id:'flow.child.detached',kind:'flow',availability:'unsupported',
+   description:'Detached child Run initiation and independent cancellation ownership are not implemented; one pinned awaited child is the only supported composition.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
    description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
 ] as const;
@@ -494,6 +500,44 @@ export async function workflowCapabilities(env:Pick<Env,
       deployment_id:env.WEIXIN_ACTION_DEPLOYMENT_ID??null,
       bark_deployment_id:env.BARK_ACTION_DEPLOYMENT_ID??null}:{}),
   };
+  // Design-only contracts make unsupported features discoverable without
+  // advertising a second compiler or presenting a publishable DSL example.
+  if(id==='flow.loop'){
+    detail.design_contract={executable:false,source_schema:'not_accepted',
+      constructs:['while','until','nested_foreach','dynamic_repeat'],
+      evaluation:'Conditions read only frozen inputs and preceding published Step results',
+      bounds:'Explicit finite iteration/depth/expanded-step/time limits required before any external effect',
+      replay:'Deterministic iteration identities and immutable expansion snapshots before dispatch',
+      failure:'Budget exhaustion must fail closed, never silently count as success',
+      dependencies:'Nested effects must retain the parent Published Plan grants and one-shot dispatch fences'};
+  }
+  if(id==='flow.child.detached'){
+    detail.design_contract={executable:false,source_schema:'not_accepted',
+      ownership:'Explicit independent child Run; no inherited Connection, Secret or approval',
+      version:'Pinned active immutable child Published Version at admission',
+      cancellation:'Parent cancellation does not terminate detached child',
+      capacity:'Separate bounded child admission; no implicit reservation/deadlock bypass',
+      idempotency:'Stable identity and no retry of unknown native child creation'};
+  }
+  if(id==='flow.saga'){
+    detail.design_contract={executable:false,source_schema:'not_accepted',
+      authorization:'Each compensation Action and its Connection require exact explicit Publish grants',
+      ordering:'Reverse dependency order across confirmed effects; parallel branches require deterministic ordering',
+      trigger:'Only declared failed/cancelled policies; no compensation of uncertain forward effects by guesswork',
+      revocation:'Recheck active grants before a compensation side effect; revoked rights never reused',
+      replay:'One durable attempt per compensation effect, with indeterminate outcome on unknown dispatch',
+      result:'Record partial, failed and unknown compensation; never claim ACID rollback'};
+  }
+  if(id==='action.mcp.write'||id==='action.http'){
+    detail.design_contract={executable:false,source_schema:'not_accepted',
+      registry:'Static source-reviewed capability and input/output schema, no arbitrary target or dynamic plugin marketplace',
+      grants:'Exact published Action/Connection/operation rights; parameters only narrow scope',
+      revocation:'Recheck current grants before protected dispatch, including restart and compensation',
+      effects:'Persistent one-shot dispatch fence; ambiguous outcomes remain indeterminate',
+      network:id==='action.http'?
+        'Only explicitly approved public HTTPS origins/methods/paths; deny credentials on redirects and private-address pivots':
+        'Pinned MCP Portal and explicitly reviewed write-capable tools, never readOnlyHint as authorization'};
+  }
   if(id==='flow.approval_gate'){
     detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
       high_impact:'reviewed_github_task_or_session',max_per_plan:1,timeout_seconds:600,

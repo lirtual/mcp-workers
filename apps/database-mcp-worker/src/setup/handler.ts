@@ -353,9 +353,11 @@ export async function handleSetup(
     }
     if (action === 'delete') {
       if (row.transport === 'hyperdrive') {
-        // Current-version unbinding cannot prove older rollback versions have released
-        // this config or a shared CA. Fail closed until independent retire evidence.
-        invalid();
+        // Only an untouched, never-activated disabled reference (revision 1) may
+        // be discarded by its Owner. No origin/CA/Binding is modified. Any
+        // previously activated/updated Hyperdrive still requires protected
+        // unbinding and retirement proof, and CAS prevents a concurrent enable.
+        if (row.status !== 'disabled' || row.revision !== 1) invalid();
       }
       await deleteRegistryConnection(env.DB, id, version, required(form, 'confirm_id'));
       return setupResult('Disabled connection record retired. No upstream database was altered.');

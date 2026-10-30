@@ -1,5 +1,43 @@
 # Database MCP #344 — production release and recovery (managed D1 only)
 
+## Aiven MySQL test replacement — verified live read-only E2E (2026-10-30)
+
+The independently created `38bf39b569484dbb8a9fe1b24f0df854`
+uses the isolated Aiven MySQL database `aiven_mysql_test` and user
+`db344_e2e`, strict `VERIFY_IDENTITY`, the existing CA and disabled
+SQL caching. Reviewed [PR #518](https://github.com/lirtual/mcp-workers/pull/518)
+merged; the **only** production publication was existing
+[Owner Release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654),
+which passed all required checks and readbacks. Worker version
+`ea5e9c45-7f43-44c5-bf19-67d08da9d962` is serving **100%** with
+both `HYPERDRIVE_DB344_MYSQL_E2E` and
+`HYPERDRIVE_DB344_PG_E2E` bound exactly to reviewed IDs.
+
+An available, nonretired logical ID `aiven_mysql_e2e` was first
+registered disabled (revision 1), then
+[Owner Activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557)
+completed after real deployed Worker Hyperdrive preflight. Independent
+D1 readback shows **active, revision 2**. Live Database MCP health
+returned PASS (713ms), and bounded `SELECT 1 AS acceptance_ok`
+returned `1`. Both Direct connections (`b2b`, `scrape_relay`)
+passed health checks. No business-data writes or DDL were issued.
+
+The previously deleted OpenList config is **not** restored; its stale
+D1 reference `aiven_mysql_openlist` remains **disabled, revision 3**,
+pending separate reviewed retirement. The retired legacy logical ID
+`aiven_mysql_test` was not reused. This is MySQL Hyperdrive **read-only**
+production-path E2E PASS, but PostgreSQL Hyperdrive E2E, negative TLS,
+write/DDL/rollback, and full #476 lifecycle acceptance remain NOT
+PERFORMED.
+
+## Original deleted-MySQL incident snapshot (2026-10-30; historical)
+
+- Before the separate MySQL test config was created, independent Cloudflare account inventory contained only PostgreSQL Hyperdrive `eb4ccbd231ea44beabc72b3f2b483d69`; TLS is `verify-full` and caching is disabled. The former MySQL OpenList Hyperdrive `135ef2e15db049c68e99b0849f9a3da0` was deleted. Both the GitHub release readback and independent Cloudflare GET return HTTP 404 for this first manifest entry. This is a missing resource, **not evidence of a missing Hyperdrive Token permission**.
+- Remove only the deleted OpenList source/manifest Binding; preserve the Aiven PostgreSQL E2E configuration, its CA, and both working MySQL Direct connections (`b2b`, `scrape_relay`). The OpenList D1 row was nonfunctional while Active; Owner subsequently disabled it via /setup (revision 3). It remains disabled pending separately authorized retirement.
+- Existing protected `release.yml` must pass strict remaining-config readback and deploy/readback before any PostgreSQL D1 reference activation. Real PostgreSQL E2E and negative TLS validation remain NOT PERFORMED.
+
+## Historical records (not current inventory)
+
 ## Current authoritative state (2026-10-29, three-mode scope approved)
 
 **Current Owner scope:** exactly three combinations — MySQL Direct, MySQL Hyperdrive,

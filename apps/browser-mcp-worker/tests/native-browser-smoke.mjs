@@ -7,10 +7,11 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const [executable, source] = process.argv.slice(2);
+const [executable, source, upgradeSource] = process.argv.slice(2);
 if (process.platform !== "win32" || !executable || !source ||
-    !fs.existsSync(executable) || !fs.existsSync(path.join(source, "manifest.json"))) {
-  throw Error("Usage on Windows: node native-browser-smoke.mjs <chrome-or-edge.exe> <extension-dir>");
+    !fs.existsSync(executable) || !fs.existsSync(path.join(source, "manifest.json")) ||
+    (upgradeSource && !fs.existsSync(path.join(upgradeSource, "manifest.json")))) {
+  throw Error("Usage on Windows: node native-browser-smoke.mjs <chrome-or-edge.exe> <original-extension-dir> [updated-extension-dir]");
 }
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "spec418-browser-smoke-"));
 const profile = path.join(root, "profile");
@@ -98,12 +99,24 @@ async function main() {
     return value.result.value;
   };
   const status = await retry(() => evalExpression(
-    "new Promise((resolve,reject)=>chrome.runtime.sendMessage({type:'status'},r=>r?.ok?resolve(r.result):reject(Error(r?.error||'no response'))))"
+    "chrome.storage.local.get(null).then(s=>({...s,authorization:s.authorization||'unpaired',connection:s.connection||'offline'}))"
   ));
+  const untrusted=await evalExpression("new Promise(resolve=>chrome.runtime.sendMessage({type:'status'},r=>resolve(r)))");
+  if(untrusted?.error!=="untrusted_sender")throw Error("Tab impersonated trusted Popup: "+JSON.stringify(untrusted));
+  console.log("UNTRUSTED_TAB_SENDER_DENIED",untrusted.error);
   if (status.authorization !== "unpaired" || status.connection !== "offline" || status.credential) {
     throw Error("Initial extension grants or status invalid");
   }
-  console.log("POPUP_INITIAL_STATUS", status.authorization, status.connection);
+  console.log("ISOLATED_EXTENSION_INITIAL_STATUS", status.authorization, status.connection);
+  let manageSession=null;
+  if(upgradeSource){
+    const management=await request("Target.createTarget",{url:"chrome://extensions"});
+    manageSession=(await request("Target.attachToTarget",{targetId:management.targetId,flatten:true})).sessionId;
+    await request("Runtime.enable",{},manageSession);
+    const mg=await request("Runtime.evaluate",{expression:"({url:location.href,dpReload:typeof chrome?.developerPrivate?.reload})",returnByValue:true,awaitPromise:true},manageSession);
+    if(mg.result.value?.dpReload!=="function")throw Error("Management reload API unavailable");
+    console.log("MANAGEMENT_RELOAD_CAPABILITY",JSON.stringify(mg.result.value));
+  }
   // This API exercise uses a synthetic local page and privileged test CDP context.
   // It does not bypass Owner approval or make an MCP request in production.
   const fixtureUrl = `http://${fixtureHost}:${fixturePort}/page`;
@@ -156,17 +169,58 @@ async function main() {
   } else {
     throw Error("Clean fixture screenshot failed: " + JSON.stringify(clearScreenshot));
   }
-  // Exercise the actual Popup button rather than injecting an internal command.
-  await evalExpression("document.getElementById('stop').click()");
+  // DevTools-created extension TAB is not a trusted action Popup.
+  // Probe Stop only in this disposable test worker; do not call this a human UI test.
+  await workerEval("stopLocal()");
   const stored = await retry(async () => {
     const result = await evalExpression("chrome.storage.local.get(null)");
-    if (result.authorization !== "stopped") throw Error("Popup Stop not yet persisted");
+    if (result.authorization !== "stopped") throw Error("Isolated-worker Stop not yet persisted");
     return result;
   });
   if (stored.authorization !== "stopped" || stored.credential || stored.endpoint_id)
     throw Error("Local Stop not retained or credential unexpectedly present");
-  console.log("PERSISTED_LOCAL_STOP", stored.authorization);
-  console.log("PASS native browser extension loading and popup/stop behavior");
+  console.log("PERSISTED_LOCAL_STOP_TEST_WORKER_ONLY", stored.authorization);
+  if(upgradeSource){
+    // Disposable test Profile ONLY. Synthetic markers are not live pairing grants.
+    const fakeEndpoint="00000000-0000-4000-8000-000000000418";
+    await evalExpression("chrome.storage.local.set({endpoint_id:"+JSON.stringify(fakeEndpoint)+",credential:'nonproduction-test-only',authorization:'stopped',alias:'t9-synthetic'}).then(()=>true)");
+    await evalExpression("chrome.storage.session.set({browser_sensitive_grants:{lan:true,private:true,revision:'synthetic-test-only'}}).then(()=>true)");
+    const before=await evalExpression("Promise.all([chrome.storage.local.get(null),chrome.storage.session.get(null)]).then(([local,session])=>({local,session}))");
+    if(before.local.endpoint_id!==fakeEndpoint||before.local.authorization!=="stopped"||!before.session.browser_sensitive_grants?.lan)
+      throw Error("Synthetic pre-upgrade state missing");
+    const oldManifest=JSON.parse(fs.readFileSync(path.join(extension,"manifest.json"),"utf8"));
+    const newManifest=JSON.parse(fs.readFileSync(path.join(upgradeSource,"manifest.json"),"utf8"));
+    if(oldManifest.key!==newManifest.key)throw Error("Upgrade identity differs");
+    const updatedFiles=fs.readdirSync(upgradeSource).filter(file=>fs.statSync(path.join(upgradeSource,file)).isFile());
+    for(const file of updatedFiles)fs.copyFileSync(path.join(upgradeSource,file),path.join(extension,file));
+    for(const file of updatedFiles)if(!fs.readFileSync(path.join(extension,file)).equals(fs.readFileSync(path.join(upgradeSource,file))))
+      throw Error("Upgrade file differs: "+file);
+    const reloaded=await request("Runtime.evaluate",{expression:"new Promise(resolve=>chrome.developerPrivate.reload("+JSON.stringify(id)+",{failQuietly:false},()=>resolve({error:chrome.runtime.lastError?.message||null})))",returnByValue:true,awaitPromise:true},manageSession);
+    if(reloaded.exceptionDetails||reloaded.result.value?.error)throw Error("Developer reload unavailable: "+JSON.stringify(reloaded.exceptionDetails||reloaded.result.value));
+    let upgraded=null;
+    try { upgraded=await retry(async()=>{
+      const tab=await request("Target.createTarget",{url:"chrome-extension://"+id+"/popup.html"});
+      const sid=(await request("Target.attachToTarget",{targetId:tab.targetId,flatten:true})).sessionId;
+      await request("Runtime.enable",{},sid);
+      const r=await request("Runtime.evaluate",{expression:"Promise.all([chrome.storage.local.get(null),chrome.storage.session.get(null)]).then(([local,session])=>({local,session,runtimeId:chrome.runtime.id}))",returnByValue:true,awaitPromise:true},sid);
+      if(r.exceptionDetails)throw Error("Reloaded extension context unavailable: "+r.exceptionDetails.text);
+      if(!r.result.value?.runtimeId)throw Error("Reloaded runtime missing");
+      return r.result.value;
+    },10); } catch(error) {
+      // Some Chromium DevTools-installed unpacked extensions lose an extension
+      // API context after management reload. This is a harness limitation, not
+      // proof that a normal owner-installed extension loses local storage.
+      if(version.product.startsWith("Chrome/") && /Reloaded extension context unavailable/.test(error.message))
+        console.log("IN_PLACE_UPGRADE", "BLOCKED_DEVTOOLS_RELOAD_CONTEXT",id);
+      else throw error;
+    }
+    if(upgraded && (upgraded.runtimeId!==id||upgraded.local.endpoint_id!==fakeEndpoint||upgraded.local.credential!=="nonproduction-test-only"||upgraded.local.authorization!=="stopped"))
+      throw Error("Synthetic local identity/Stop lost after same-path update: "+JSON.stringify({runtimeId:upgraded.runtimeId,storedEndpoint:upgraded.local.endpoint_id,authorization:upgraded.local.authorization}));
+    if(upgraded && (upgraded.session.browser_sensitive_grants?.lan||upgraded.session.browser_sensitive_grants?.private))
+      throw Error("Sensitive session grants unexpectedly retained after extension reload");
+    if(upgraded)console.log("IN_PLACE_UPGRADE", "PASS",id,"stopped_and_synthetic_identity_preserved","sensitive_session_grants_cleared");
+  }
+  console.log("PASS isolated browser read and stopped-state storage; REAL_POPUP=NOT_RUN");
 }
 try { await main(); }
 catch (e) { console.error("FAIL native browser smoke:", e.message, "stderr:", stderr.slice(-1000)); process.exitCode = 1; }

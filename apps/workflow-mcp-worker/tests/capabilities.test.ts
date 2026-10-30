@@ -20,7 +20,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
-  for(const id of ['flow.loop','flow.saga']){
+  for(const id of ['action.http','action.mcp.write','flow.child.detached','flow.loop','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
@@ -302,4 +302,24 @@ test('external event wait has one bounded, digest-only compiler contract and mat
   assert.equal((await compilePlan(detail.example.definition)).digest,detail.example.digest);
   assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.flow.enum,
     ['repeat','foreach','child','wait','wait_event']);
+});
+
+test('not-yet-supported write, HTTP, detached and Saga contracts are discoverable but never executable',async()=>{
+ for(const id of ['action.http','action.mcp.write','flow.loop','flow.child.detached','flow.saga']){
+  const detail=await workflowCapabilities(env,id);
+  assert.equal(detail.availability,'unsupported');
+  const design=detail.design_contract as {executable:boolean;source_schema:string};
+  assert.equal(design.executable,false);
+  assert.equal(design.source_schema,'not_accepted');
+  assert.equal('example' in detail,false);
+ }
+ for(const flow of ['while','until','saga','child_workflow']){
+  await assert.rejects(()=>compilePlan({version:1,name:'Unsupported',
+   steps:[{id:'one',flow,times:2,template:{uses:'result.emit',with:{data:1}}}]}));
+ }
+ await assert.rejects(()=>compilePlan({version:1,name:'Unsupported HTTP',
+  steps:[{id:'one',uses:'http.request',with:{url:'https://example.com'}}]}),/unsupported_capability/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Unsupported MCP write',
+  steps:[{id:'one',uses:'mcp.call',with:{endpoint:PRODUCTION_PORTAL_ENDPOINT,
+   tool:'ima_create_note',scope:'write',arguments:{},input_schema:{type:'object'}}}]}),/unsupported_operation_scope/);
 });

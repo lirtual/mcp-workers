@@ -3,7 +3,7 @@ import {cancelAwaitedChild} from './child-cancel.ts';
 import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
-import {releaseVerifiedSessionSlot} from './github-action-session.ts';
+import {releaseVerifiedSessionSlot,releaseNeverDispatchedSessionSlot} from './github-action-session.ts';
 import { discoverGitHubActions } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSessionDurationInputRef} from './github-action-inputs.ts';
@@ -473,6 +473,72 @@ export class WorkflowService {
     if(planRow){
       let published:Plan|null=null;
       try{published=JSON.parse(planRow.plan) as Plan;}catch{}
+      // A waiting runtime approval has no physical GitHub Attempt yet.
+      // Cancellation competes with the first approval decision through D1;
+      // after the first Attempt, use physical GitHub cancellation/reconciliation.
+      const approval=published?.steps.find(s=>s.id===step_id&&
+        s.uses==='github.run'&&s.approval?.required===true);
+      if(approval){
+        const step=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+          .bind(run_id,step_id).first<{status:string}>();
+        if(step && (step.status==='waiting_approval'||step.status==='running')){
+          if(force){
+            // Force cancellation is only meaningful once a physical Attempt
+            // exists; hand that case to the existing guarded GitHub path.
+            const prior=await this.db.prepare(`SELECT 1 AS present FROM step_attempts
+              WHERE run_id=? AND step_id=? LIMIT 1`)
+              .bind(run_id,step_id).first<{present:number}>();
+            if(!prior)throw new StateError('approval_force_not_supported');
+          }else{
+          // A recorded (even consumed) approval is not an external effect.
+          // Race the FIRST GitHub Attempt using the same durable Run row:
+          // cancellation wins before Attempt INSERT, or Attempt wins and
+          // ordinary physical GitHub cancellation owns the request.
+          const updates=await this.db.batch([
+            this.db.prepare(`UPDATE runs SET outcome='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE id=? AND outcome='running'
+              AND EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id=? AND s.status IN ('waiting_approval','running'))
+              AND NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=runs.id
+                AND a.step_id=?)
+              AND NOT EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id<>? AND s.status IN ('running','waiting','waiting_approval'))`)
+              .bind(now(),run_id,step_id,step_id,step_id),
+            this.db.prepare(`UPDATE run_steps SET status='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE run_id=? AND step_id=? AND status IN ('waiting_approval','running')
+                AND EXISTS(SELECT 1 FROM runs WHERE id=?
+                  AND outcome='cancelled' AND error_code='approval_cancel_requested')`)
+              .bind(now(),run_id,step_id,run_id),
+          ]);
+          if(updates[0].meta.changes===1&&updates[1].meta.changes===1){
+            // Session quota can be reserved immediately before Attempt INSERT.
+            // Its never-dispatched slot is safe to release after the Run CAS.
+            if((approval.with.action as {type?:unknown}|undefined)?.type==='session'){
+              try{await releaseNeverDispatchedSessionSlot(this.db,run_id,step_id,now());}
+              catch{/* Cancellation is already durable; do not claim slot release. */}
+            }
+            let wake:'sent'|'unknown'='sent';
+            try{
+              const row=await this.db.prepare('SELECT instance_id FROM runs WHERE id=?')
+                .bind(run_id).first<{instance_id:string}>();
+              if(!row)throw Error('run_missing');
+              const native=await this.env.WORKFLOW.get(row.instance_id);
+              if(!native.sendEvent)throw Error('send_event_unavailable');
+              await native.sendEvent({type:'approval-'+step_id,payload:{run_id}});
+            }catch{wake='unknown';}
+            return {run_id,step_id,cancellation:'requested',wake,physical_terminated:false};
+          }
+          // If physical dispatch already reserved an Attempt, do not silently
+          // give up cancellation: fall through to GitHub terminal reconciliation.
+          const attempt=await this.db.prepare(`SELECT 1 AS present FROM step_attempts
+            WHERE run_id=? AND step_id=? LIMIT 1`)
+            .bind(run_id,step_id).first<{present:number}>();
+          if(!attempt)throw new StateError('approval_cancel_conflict');
+          }
+        }
+      }
       const cloudflare=published?.steps.find(s=>s.id===step_id&&s.uses==='action.run');
       if(cloudflare){
         if(force)throw new StateError('cloudflare_force_not_supported');

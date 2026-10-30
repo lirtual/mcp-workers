@@ -30,6 +30,8 @@ function ids(row: RegistryMetadata): string {
 }
 function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' | 'delete'): string {
   return `<form action="/setup/${verb}" method="post">${token(csrf)}${ids(row)}` +
+    (verb === 'delete' && row.transport === 'hyperdrive'
+      ? '<p class="muted">Discard this never-activated reference only. The immutable Connection ID is permanently retired; the Cloudflare Hyperdrive config and Worker Binding are not removed.</p>' : '') +
     (verb === 'delete' ? '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' : '') +
     (verb === 'enable' && row.transport === 'direct' ? '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>' : '') +
     `<button type="submit">${verb}</button></form>`;
@@ -64,7 +66,8 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
     (row.status === 'active' ? action(row, csrf, 'disable') :
       row.transport === 'direct' && isAvailableMode(row.transport, row.dialect)
         ? action(row, csrf, 'enable') + action(row, csrf, 'delete') :
-      row.transport === 'hyperdrive' ? '' : action(row, csrf, 'delete')) +
+      row.transport === 'hyperdrive' && row.status === 'disabled' && row.revision === 1
+        ? action(row, csrf, 'delete') : row.transport === 'hyperdrive' ? '' : action(row, csrf, 'delete')) +
     (row.transport === 'hyperdrive'
       ? '<p class="muted">Hyperdrive actions run in protected GitHub Actions after exact binding, CA and cache verification. A successful request does not confirm completion.</p>' +
         (row.status === 'disabled'
@@ -129,6 +132,14 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
     '<p class="muted">After preparation, review the exact nonsecret PR and required checks. Return to Operation status for a separate final Apply confirmation. Only the verified release and disabled D1 handoff count as completion.</p>' +
     '<details><summary>Prepare unbound Hyperdrive</summary>' + hyperdriveForm(csrf, 'hyperdrive-prepare') + '</details>' +
     '<details><summary>Operation status</summary><ul>' + (history || '<li>No operations</li>') + '</ul></details></fieldset>' +
+    '<details><summary>Add existing Hyperdrive reference</summary><p class="muted">First create a dedicated Hyperdrive config with strict CA/hostname verification and caching disabled. Select the same dialect as the actual Cloudflare origin. The reference starts disabled; only protected Actions may activate it.</p>' +
+    '<form method="post" action="/setup/add">' + token(csrf) +
+    '<input type="hidden" name="transport" value="hyperdrive">' +
+    '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
+    '<label>Dialect<select name="dialect" required><option value="" disabled selected>Choose database dialect</option><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
+    '<label>Cloudflare config ID<input name="config_id" maxlength="64" required></label>' +
+    '<label>Binding name<input name="binding_name" pattern="HYPERDRIVE_[A-Z0-9_]{1,54}" maxlength="65" required></label>' +
+    '<button type="submit">Save disabled reference</button></form></details>' +
     '<details class="maintenance"><summary>Maintenance</summary>' +
     '<p class="muted">Test GitHub Actions dispatch without deploying a Worker or changing any database connection. This only confirms GitHub accepted the request; check the workflow run separately.</p>' +
     '<form method="post" action="/setup/github-actions-check">' + token(csrf) +

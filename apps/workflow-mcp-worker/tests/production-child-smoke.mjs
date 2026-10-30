@@ -60,8 +60,11 @@ async function settle(runId){
   throw Error('Native parent Workflow did not settle within acceptance bound');
 }
 async function accept(){
-  const preflight=(await databaseQuery("SELECT (SELECT COUNT(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS active,(SELECT COUNT(*) FROM session_executions WHERE state IS NULL OR state!='terminated') AS sessions"))[0];
-  assert.equal(preflight?.active,0,'Nonterminal production Run blocks acceptance');
+  // Native result-only parent/child acceptance has no external effects.
+  // Preserve historical indeterminate receipts while refusing concurrent
+  // queued/running Runs and every live or uncertain physical Session.
+  const preflight=(await databaseQuery("SELECT (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) AS active,(SELECT COUNT(*) FROM session_executions WHERE state IS NULL OR state!='terminated') AS sessions"))[0];
+  assert.equal(preflight?.active,0,'Active production Run blocks acceptance');
   assert.equal(preflight?.sessions,0,'Nonterminal production Session blocks acceptance');
   await client.connect(transport);
   const advertised=await client.listTools();
