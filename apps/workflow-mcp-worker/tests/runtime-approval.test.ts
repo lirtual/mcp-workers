@@ -289,7 +289,7 @@ test('registered Attempt wins pre-dispatch cancellation and retains physical-can
   ctx.sqlite.prepare(`INSERT INTO step_attempts
    (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,
     repository_id,workflow_ref,ref,created_at,updated_at)
-   VALUES(?,?,'run_task','github.action',?,'created',?,?,?,?,?,?)`).run(
+   VALUES(?,?,'run_task','heavy.github.echo',?,'created',?,?,?,?,?,?)`).run(
     '44444444-4444-4444-8444-444444444444',runId,
     '55555555-5555-4555-8555-555555555555',action.repository,
     String(action.repositoryId),action.repository+'/'+action.workflowPath+'@'+action.ref,
