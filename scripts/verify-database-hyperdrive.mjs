@@ -91,10 +91,29 @@ export async function main() {
   // No URL, username, account ID, CA or response body is written to CI logs.
   process.stdout.write(`Database Hyperdrive strict origin readback PASS; verified=${result.verified}\n`);
 }
+// Only these fixed, literal codes may reach CI logs. Never include upstream
+// response content, origin metadata, tokens, URLs or arbitrary exception text.
+const READBACK_CODES = new Map([
+  ['Database Hyperdrive verification failed: invalid approved source metadata', 'source_metadata'],
+  ['Database Hyperdrive verification failed: config ID differs from reviewed source', 'config_id_mismatch'],
+  ['Database Hyperdrive verification failed: SQL response caching is not disabled', 'cache_mismatch'],
+  ['Database Hyperdrive verification failed: CA/hostname verification is not strict or does not match reviewed CA', 'tls_mismatch'],
+  ['Database Hyperdrive verification failed: origin identity differs from reviewed source', 'origin_mismatch'],
+  ['Database Hyperdrive verification failed: read-only Cloudflare account access is unavailable', 'credentials_unavailable'],
+  ['Database Hyperdrive verification failed: Cloudflare configuration read rejected', 'cloudflare_read_rejected'],
+  ['Database Hyperdrive verification failed: Cloudflare did not confirm the configuration', 'cloudflare_unconfirmed'],
+  ['Database Hyperdrive verification failed: unreadable Cloudflare response', 'cloudflare_unreadable'],
+  ['Database Hyperdrive verification failed: Cloudflare read unavailable', 'cloudflare_unavailable'],
+  ['Database Hyperdrive manifest/source mismatch', 'manifest_mismatch'],
+  ['Database Hyperdrive binding not uniquely represented in protected release manifest', 'manifest_binding_mismatch']
+]);
+export function safeReadbackFailureCode(error) {
+  return READBACK_CODES.get(error instanceof Error ? error.message : '') ?? 'unknown';
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(() => {
-    // Do not reveal Cloudflare API content or exception internals.
-    process.stderr.write('Database Hyperdrive security readback: FAIL\n');
+  main().catch(error => {
+    process.stderr.write('Database Hyperdrive security readback: FAIL (' + safeReadbackFailureCode(error) + ')\n');
     process.exitCode = 1;
   });
 }
