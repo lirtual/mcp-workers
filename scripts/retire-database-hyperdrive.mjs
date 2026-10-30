@@ -120,6 +120,74 @@ export async function retireDatabaseHyperdrive({
     }
   }
   if (!verifiedLive) fail('active version was not verified');
+  // A logical connection must not be tombstoned while another Worker can
+  // still use its config, including a rollback-eligible immutable version.
+  // deployable=true explicitly ignores pagination; fail closed on unknown
+  // account script inventories or version lists, without deleting resources.
+  const versionIdPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  const scriptInventory = await cloud('/workers/scripts');
+  if (!Array.isArray(scriptInventory) || scriptInventory.length === 0 ||
+      scriptInventory.length >= 100) fail('account Worker inventory incomplete');
+  const scriptNames = scriptInventory.map(x => x.id ?? x.name);
+  if (scriptNames.some(n => typeof n !== 'string' || !n) ||
+      new Set(scriptNames).size !== scriptNames.length ||
+      !scriptNames.includes('database-mcp-worker'))
+    fail('account Worker identity inventory incomplete');
+  const hasRetiredBinding = bs => bs.some(b => b.type === 'hyperdrive' &&
+    (b.id === row.config_id || b.name === row.binding_name));
+  const otherWorkers = [];
+  for (const name of scriptNames.filter(n => n !== 'database-mcp-worker')) {
+    const path = '/workers/scripts/' + encodeURIComponent(name);
+    const current = await cloud(path + '/settings');
+    if (!Array.isArray(current?.bindings)) fail('other Worker settings unavailable');
+    if (hasRetiredBinding(current.bindings)) fail('another Worker still references config');
+    const deployment = await cloud(path + '/deployments');
+    const liveVersions = deployment?.deployments?.[0]?.versions;
+    if (!Array.isArray(liveVersions) || liveVersions.length !== 1 ||
+        liveVersions[0].percentage !== 100 ||
+        !versionIdPattern.test(liveVersions[0].version_id ?? ''))
+      fail('other Worker deployment unconfirmed');
+    const otherVersions = await cloud(path + '/versions?deployable=true');
+    const ids = otherVersions?.items?.map(v => v.id);
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 ||
+        new Set(ids).size !== ids.length ||
+        ids.some(id => !versionIdPattern.test(id)) ||
+        !ids.includes(liveVersions[0].version_id))
+      fail('other Worker rollback inventory incomplete');
+    for (const id of ids) {
+      const detail = await cloud(path + '/versions/' + id);
+      if (detail?.id !== id || !Array.isArray(detail.resources?.bindings))
+        fail('other Worker rollback detail unavailable');
+      if (hasRetiredBinding(detail.resources.bindings))
+        fail('another Worker rollback version references config');
+    }
+    otherWorkers.push({path,activeId:liveVersions[0].version_id,ids:ids.sort()});
+    const again = await cloud(path + '/deployments');
+    if (again?.deployments?.[0]?.versions?.length !== 1 ||
+        again.deployments[0].versions[0].percentage !== 100 ||
+        again.deployments[0].versions[0].version_id !== liveVersions[0].version_id)
+      fail('other Worker deployment changed during check');
+  }
+  const inventoryAgain = await cloud('/workers/scripts');
+  if (!Array.isArray(inventoryAgain) || inventoryAgain.length !== scriptNames.length ||
+      inventoryAgain.map(x => x.id ?? x.name).sort().some((n,i) =>
+        n !== [...scriptNames].sort()[i]))
+    fail('account Worker inventory changed during check');
+  for (const {path,activeId,ids} of otherWorkers) {
+    const latest = await cloud(path + '/settings');
+    if (!Array.isArray(latest?.bindings) || hasRetiredBinding(latest.bindings))
+      fail('other Worker settings changed during check');
+    const versionsAgain = await cloud(path + '/versions?deployable=true');
+    if (!Array.isArray(versionsAgain?.items) ||
+        versionsAgain.items.length !== ids.length ||
+        versionsAgain.items.map(x => x.id).sort().some((id,i) => id !== ids[i]))
+      fail('other Worker rollback inventory changed during check');
+    const deploymentAgain = await cloud(path + '/deployments');
+    if (deploymentAgain?.deployments?.[0]?.versions?.length !== 1 ||
+        deploymentAgain.deployments[0].versions[0].percentage !== 100 ||
+        deploymentAgain.deployments[0].versions[0].version_id !== activeId)
+      fail('other Worker deployment changed during check');
+  }
   const shared = await sql('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',
     [connectionId, row.config_id, row.binding_name]);
   if (shared.results?.[0]?.n !== 0) fail('another D1 connection references this config');
@@ -131,6 +199,14 @@ export async function retireDatabaseHyperdrive({
       liveAgain.deployments[0].versions[0].version_id!==activeVersionId) {
     fail('live production deployment changed during retirement verification');
   }
+  // A different version may become rollback-eligible while other Workers are
+  // scanned, without changing the currently serving production version.
+  const latestOwnRollback = await cloud('/workers/scripts/database-mcp-worker/versions?deployable=true');
+  const initialOwnIds = rollback.items.map(v => v.id).sort();
+  if (!Array.isArray(latestOwnRollback?.items) ||
+      latestOwnRollback.items.length !== initialOwnIds.length ||
+      latestOwnRollback.items.map(v => v.id).sort().some((id,i) => id !== initialOwnIds[i]))
+    fail('database Worker rollback inventory changed');
   // No upstream delete: older retained Worker versions, other apps, and shared
   // CA are outside this D1 CAS. They remain subject to separate human review.
   try {

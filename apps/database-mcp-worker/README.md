@@ -174,8 +174,12 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   races and uncertain completion; they do not claim production Worker/SQL E2E.
   Final D1 retirement additionally checks the precise live 100%-traffic
   `version_id` in the rollback inventory, validates its immutable D1 and
-  Hyperdrive binding resources, then rechecks the live deployment before the
-  D1 CAS. Unverifiable active or rollback versions block retirement.
+  Hyperdrive binding resources, and scans every current account Worker and
+  its deployable rollback versions for the same config/binding. The account
+  inventory, other Worker deployments/settings and version IDs are reread
+  before the D1 CAS. Any missing, changed or retained reference blocks the
+  tombstone; this does not authorize deleting an upstream Hyperdrive or CA.
+  Unverifiable active or rollback versions block retirement.
   On 2026-10-30 an **unmodified production read-only inventory** found 26
   deployable Database Worker versions: 13 still hold the existing Aiven
   Hyperdrive binding and 13 do not. The current deployment uses one version
