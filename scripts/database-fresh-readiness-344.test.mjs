@@ -60,8 +60,14 @@ const postgresHyperdrive = {
   config_id: 'b2c7dab22f594bbca255827065e19bce',
   binding_name: 'HYPERDRIVE_AIVEN_POSTGRES'
 };
-test('fresh release accepts active reviewed OpenList Hyperdrive and disabled legacy PostgreSQL reference', async () => {
-  const rows = [mysqlHyperdrive, postgresHyperdrive];
+test('deleted OpenList Hyperdrive must be CAS-disabled before a new Worker binding release', async () => {
+  // The Cloudflare config has been deleted; an Active registry row must still
+  // block release until its own reviewed Owner lifecycle transition occurs.
+  await assert.rejects(
+    checkFreshRegistry(env, mocked({ rows: [mysqlHyperdrive, postgresHyperdrive] }).fetcher),
+    /preflight (?:rejected|failed)/
+  );
+  const rows = [{ ...mysqlHyperdrive, status: 'disabled', revision: 3 }, postgresHyperdrive];
   const mock = mocked({ rows });
   assert.deepEqual(await checkFreshRegistry(env, mock.fetcher), {
     valid: true, phase: 'managed', records: 2
