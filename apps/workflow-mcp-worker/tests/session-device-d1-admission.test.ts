@@ -15,7 +15,7 @@ const plan={github_execution_approved:true,github_action_approvals:[action],
   steps:[{id:'launch',uses:'github.run',with:{capability:'github.action',
     action:{...action,ref,inputs:{duration_mode:'explicit',duration_minutes:20}}}}]};
 
-function fixture(){
+function fixture(onRead?: (readCount:number)=>void){
   const db=new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys=ON');
   for(const name of ['0001_s1.sql','0014_workflow_deletion.sql',
@@ -47,8 +47,13 @@ function fixture(){
   db.prepare(`INSERT INTO session_executions
     (run_id,step_id,slot,state,created_at,updated_at)
     VALUES(?,'launch',1,'ready',1,1)`).run(runId);
+  let readCount=0;
   const adapter={prepare:(sql:string)=>({bind:(...values:unknown[])=>({
-    first:async<T>()=>(db.prepare(sql).get(...(values as []))??null) as T|null,
+    first:async<T>()=>{
+      const result=db.prepare(sql).get(...(values as []))??null;
+      onRead?.(++readCount);
+      return result as T|null;
+    },
   })})} as unknown as D1Database;
   const env={DB:adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
     GITHUB_ACTION_OIDC_AUDIENCE:'test-audience'} as Env;
@@ -99,6 +104,24 @@ test('physical Session leaving Ready while inspection is in flight denies',async
       f.db.prepare(`UPDATE session_executions SET state='stopping' WHERE run_id=?`).run(runId);
       return Date.now()-60_000;
     }});
+    assert.deepEqual(result,{allowed:false});
+  }finally{f.db.close();}
+});
+
+
+test('expired during final cancellation read is denied at the return boundary',async t=>{
+  const started=Date.parse('2026-10-30T00:00:00Z');
+  const deadline=started+20*60_000;
+  let now=deadline-1;
+  let reads=0;
+  t.mock.method(Date,'now',()=>now);
+  const f=fixture(count=>{
+    reads=count;
+    if(count===2) now=deadline+1;
+  });
+  try {
+    const result=await f.admit({jobStart:async()=>started});
+    assert.equal(reads,2,'the final D1 read must have occurred');
     assert.deepEqual(result,{allowed:false});
   }finally{f.db.close();}
 });

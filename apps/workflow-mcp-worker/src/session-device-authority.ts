@@ -132,7 +132,8 @@ export async function decideSessionAdmission(
      current.candidate_run_attempt!==row.candidate_run_attempt||
      current.owner_run_id!==row.owner_run_id||
      current.owner_run_attempt!==row.owner_run_attempt||
-     current.plan!==row.plan||current.run_inputs!==row.run_inputs)return DENY;
+     current.plan!==row.plan||current.run_inputs!==row.run_inputs||
+     deadline<=Date.now())return DENY;
   return {allowed:true,attempt_id:attemptId,
     github_run_id:row.candidate_run_id,github_run_attempt:row.candidate_run_attempt,
     expires_at:deadline,workflow_name:approved.action.workflowPath.endsWith('/windows.yml')
