@@ -18,5 +18,15 @@
     "origin_database": "aiven_mysql_test",
     "origin_user": "db344_e2e",
     "ca_certificate_id": "c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a"
+  },
+  {
+    "binding": "HYPERDRIVE_SPEC476_HD_MYSQL_LIFECYCLE_F149B4FD",
+    "dialect": "mysql",
+    "origin_host": "mysql-zeroverse.d.aivencloud.com",
+    "origin_port": 18691,
+    "origin_database": "aiven_mysql_test",
+    "origin_user": "db344_e2e",
+    "ca_certificate_id": "c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a",
+    "id": "701af4817e6041a7a8b1ebdf8a6f9697"
   }
 ]
