@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - production-native
+          - detached-child-cloud
           - production-child
           - production-mcp
           - production-github
@@ -101,6 +102,54 @@ jobs:
           else
             node apps/workflow-mcp-worker/tests/production-smoke.mjs
           fi
+
+  workflow-detached-child-isolated:
+    name: PR #529 isolated native detached-child acceptance (auto-cleanup)
+    # Temporary exact-branch Owner-only dispatch: no production Release.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.repository == 'lirtual/mcp-workers' &&
+          github.actor == 'lirtual' &&
+          github.ref == 'refs/heads/feat/spec176-detached-child-20261030' &&
+          inputs.test_type == 'detached-child-cloud' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: workflow-detached-child-isolated
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact trusted PR head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          test "$GITHUB_SHA" = "$(git ls-remote https://github.com/lirtual/mcp-workers.git refs/heads/feat/spec176-detached-child-20261030 | cut -f1)"
+          test "$GITHUB_SHA" = "$(gh api repos/lirtual/mcp-workers/pulls/529 --jq .head.sha)"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run genuine isolated Cloudflare Workflow, verify and clean up
+        run: node apps/workflow-mcp-worker/tests/detached-child-cloud-acceptance.mjs
 
   workflow-mcp-portal-probe:
     name: Authenticated MCP Portal read-only check (no deploy)
