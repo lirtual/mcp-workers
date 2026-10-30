@@ -250,7 +250,7 @@ test('reviewed Linux and Windows v0.1.38 public installers pin immutable local u
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /v0\.1\.37/);
+  assert.match(ps1, /v0\.1\.38/);
   assert.match(ps1, /9536205d8aeeea3b551fa24c608c954ab8d2ad0f/);
   assert.match(ps1, /3db494f2787a332b8aa5953ccfa4ffb1a1305e9864c65bb0576620fc95dda87d/);
   assert.match(ps1, /84931e64077108f1c24c1a2bc5d000074b196a8b28f6b69f8212500c298d1c76/);
