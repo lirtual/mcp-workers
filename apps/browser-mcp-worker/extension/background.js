@@ -140,18 +140,46 @@ async function beginActivation(){
       alias:s.alias||"Browser profile",mode,...(s.endpoint_id?{endpoint_id:s.endpoint_id,credential:s.credential}:{})});
     if(result.state!=="pending"||localDenialEpoch!==epoch||
        (await activationAttempt())?.attempt_id!==attempt_id)throw Error("activation_superseded");
-    await chrome.tabs.create({url:BROWSER_MCP_SERVICE_ORIGIN+"/activate/verify/"+attempt_id+"?extension="+chrome.runtime.id,active:true});
+    const tab=await chrome.tabs.create({url:BROWSER_MCP_SERVICE_ORIGIN+"/activate/verify/"+attempt_id+"?extension="+chrome.runtime.id,active:true});
+    // The auth page is the only tab this extension may close automatically.
+    if(Number.isSafeInteger(tab.id))await chrome.storage.session.set({
+      browser_activation_tab:{attempt_id,tab_id:tab.id,epoch}});
     await chrome.alarms.create("browser-activation",{periodInMinutes:0.5});
     void pollActivation();
     await render();
     return {state:"authenticating"};
   }catch(error){await chrome.storage.session.remove("browser_activation_attempt");await render();throw error;}
 }
-let pollingActivation=false;
+// Access success wakes the local proof-bound completion immediately; the
+// 30-second alarm remains only as a recovery fallback.
+let pollingActivation=false,activationWakePending=false;
+function wakeActivation(){
+  if(pollingActivation){activationWakePending=true;return;}
+  void pollActivation();
+}
+async function closeVerifiedActivationTab(){
+  await trustedSession;
+  const marker=(await chrome.storage.session.get("browser_activation_tab")).browser_activation_tab;
+  if(!marker?.confirmed_endpoint_id||!Number.isSafeInteger(marker.tab_id)||
+     marker.epoch!==localDenialEpoch||currentGeneration<=0)return;
+  const s=await state();
+  if(s.authorization!=="enabled"||s.endpoint_id!==marker.confirmed_endpoint_id||
+     s.connection!=="online")return;
+  const expected=BROWSER_MCP_SERVICE_ORIGIN+"/activate/verify/"+marker.attempt_id+
+    "?extension="+chrome.runtime.id;
+  try {
+    const tab=await chrome.tabs.get(marker.tab_id);
+    // Do not close reused, navigated, or pre-existing browser tabs.
+    if(tab.id===marker.tab_id&&tab.url===expected&&
+       localDenialEpoch===marker.epoch&&(await state()).authorization==="enabled")
+      await chrome.tabs.remove(marker.tab_id);
+  } catch {/* Tab was closed by the user or the browser; not an auth failure. */}
+  await chrome.storage.session.remove("browser_activation_tab");
+}
 async function pollActivation(){
   if(pollingActivation)return;pollingActivation=true;try{
   const a=await activationAttempt();if(!a)return;
-  if(Date.now()-a.created_at>=300000){await chrome.storage.session.remove("browser_activation_attempt");await render();return;}
+  if(Date.now()-a.created_at>=300000){await chrome.storage.session.remove(["browser_activation_attempt","browser_activation_tab"]);await render();return;}
   const s=await state();
   if(s.authorization==="enabled"||s.pending_cloud_stop)return;
   let result;
@@ -195,16 +223,22 @@ async function pollActivation(){
       credential:result.credential||s.credential,pairing_mode:"permanent",alias:s.alias||"Browser profile",
       authorization:"enabled",connection:"connecting",pending_cloud_stop:false});
   }
+  const marker=(await chrome.storage.session.get("browser_activation_tab")).browser_activation_tab;
+  if(marker?.attempt_id===a.attempt_id&&marker.epoch===a.epoch&&localDenialEpoch===a.epoch)
+    await chrome.storage.session.set({browser_activation_tab:{...marker,confirmed_endpoint_id:result.endpoint_id}});
   await chrome.storage.session.remove("browser_activation_attempt");
   if(localDenialEpoch!==a.epoch){await stopLocal();return;}
   localBlocked=false;connect();await render();
-  }finally{pollingActivation=false;}
+  }finally{
+    pollingActivation=false;
+    if(activationWakePending){activationWakePending=false;void pollActivation();}
+  }
 }
 async function stopLocal() {
   localBlocked=true;
   localDenialEpoch++;
   const active=await activationAttempt();
-  await chrome.storage.session.remove("browser_activation_attempt");
+  await chrome.storage.session.remove(["browser_activation_attempt","browser_activation_tab"]);
   if(active)void activationRequest("cancel",{attempt_id:active.attempt_id,proof:active.proof}).catch(()=>{});
   const sensitiveClear=clearSensitivePermissions();
   void sensitiveClear.catch(()=>{});
@@ -248,7 +282,7 @@ async function revokeLocal() {
   localBlocked=true;
   localDenialEpoch++;
   const active=await activationAttempt();
-  await chrome.storage.session.remove("browser_activation_attempt");
+  await chrome.storage.session.remove(["browser_activation_attempt","browser_activation_tab"]);
   if(active)void activationRequest("cancel",{attempt_id:active.attempt_id,proof:active.proof}).catch(()=>{});
   const sensitiveClear=clearSensitivePermissions();
   void sensitiveClear.catch(()=>{});
@@ -292,6 +326,7 @@ function connect() {
       if(message.type==="authenticated"&&message.endpoint_id===s.endpoint_id&&Number.isInteger(message.generation)){
         currentGeneration=message.generation;
         await persist({connection:"online"});
+        void closeVerifiedActivationTab().catch(()=>{});
         timer=setInterval(()=>{if(socket===ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:"ping",generation:currentGeneration}));},20000);
       } else if(message.type==="prepare_request") {
         if(message.generation!==currentGeneration||typeof message.operation_id!=="string"||
@@ -455,11 +490,23 @@ chrome.runtime.onMessageExternal.addListener((message,sender,sendResponse)=>{
     const id=/^\/activate\/verify\/([a-f0-9-]{36})$/.exec(url.pathname)?.[1];
     ok=sender.origin===BROWSER_MCP_SERVICE_ORIGIN && url.origin===BROWSER_MCP_SERVICE_ORIGIN &&
       url.searchParams.size===1 && url.searchParams.get("extension")===chrome.runtime.id &&
-      message?.type==="activation-presence" && message.attempt_id===id && Boolean(id);
+      ["activation-presence","activation-verified"].includes(message?.type) &&
+      message.attempt_id===id && Boolean(id);
   }catch{}
   if(!ok){sendResponse({ok:false});return false;}
-  void activationAttempt().then(a=>sendResponse({ok:Boolean(a && a.attempt_id===message.attempt_id &&
-    a.epoch===localDenialEpoch && Date.now()-a.created_at<300000)}),()=>sendResponse({ok:false}));
+  void (async()=>{
+    const a=await activationAttempt();
+    if(!a||a.attempt_id!==message.attempt_id||a.epoch!==localDenialEpoch||
+       Date.now()-a.created_at>=300000)return {ok:false};
+    if(message.type==="activation-presence")return {ok:true};
+    if(message.type!=="activation-verified"||!Number.isSafeInteger(sender.tab?.id))
+      return {ok:false};
+    const marker=(await chrome.storage.session.get("browser_activation_tab")).browser_activation_tab;
+    if(marker?.attempt_id!==a.attempt_id||marker.epoch!==a.epoch||
+       marker.tab_id!==sender.tab.id)return {ok:false};
+    wakeActivation();
+    return {ok:true};
+  })().then(sendResponse,()=>sendResponse({ok:false}));
   return true;
 });
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
