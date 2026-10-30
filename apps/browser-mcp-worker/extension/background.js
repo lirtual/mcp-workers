@@ -312,7 +312,7 @@ function connect() {
     // may delay registering handlers and lose a fast WSS open/authentication.
     ws.onopen=()=>{
       if(socket!==ws)return;
-      ws.send(JSON.stringify({type:"authenticate",protocol:2,extension_version:"0.2.0",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
+      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.2.1",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
     };
     ws.onmessage=async event=>{
       if(socket!==ws)return;

@@ -53,10 +53,17 @@ test("recognizable sensitive surfaces fail closed before screenshot API",async()
   assert.equal(result.error_code,"sensitive_surface");
   assert.equal(f.calls.includes("capture"),false);
   const docFixture=fixture();
-  docFixture.ctx.document={body:{innerText:"Use OTP code 123456"},querySelector:()=>null};
+  const item=(tag,attrs={},hidden=false)=>({tagName:tag,id:attrs.id||"",getAttribute:k=>attrs[k]??null,
+    labels:[],closest:()=>null,getClientRects:()=>hidden?[]:[{}]});
+  docFixture.ctx.getComputedStyle=()=>({display:"block",visibility:"visible"});
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("INPUT",{autocomplete:"one-time-code"})]};
   assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),false);
-  docFixture.ctx.document={body:{innerText:"Public home"},querySelector:()=>({tagName:"INPUT"})};
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("INPUT",{type:"text"}),item("FORM")]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),true);
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("IFRAME")]};
   assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),false);
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("IFRAME",{},true)]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),true);
 });
 test("screenshot refuses stale document or oversized image instead of returning partial sensitive data",async()=>{
   const race=fixture({change:true});assert.equal((await race.read()).error_code,"stale_target");

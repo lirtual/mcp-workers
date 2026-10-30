@@ -43,33 +43,31 @@ test('retired owner approval URL and POST never authorize, even with valid signe
   }finally{await f.close();}
 });
 
-test('consequential button is rejected without approval URL or effects, regardless of Owner configuration',async()=>{
+test('business-labeled buttons execute without an Owner approval route but retain stable receipts',async()=>{
   for(const env of [{},config]){
     const f=await fixture(env);try{
       const args=await f.command('click',e=>e.tag==='button');
       const before=f.effects.length;
       const {admitted,result}=await f.perform('click',args);
       assert.equal(admitted.state,'admitted');
-      assert.equal(result.state,'failed');
-      assert.equal(result.error_code,'forbidden');
-      assert.equal(result.safe_next_action,'blocked_forbidden_target');
+      assert.equal(result.state,'completed');
       assert.equal(result.approval_url,undefined);
-      assert.equal(f.effects.length,before);
+      assert.equal(f.effects.length,before+1);
       assert.equal((await opStatus(f,args)).operation_id,admitted.operation_id);
-      assert.equal((await opStatus(f,args)).state,'failed');
+      assert.equal((await opStatus(f,args)).state,'completed');
     }finally{await f.close();}
   }
 });
 
-test('consequential navigation is denied at original endpoint while ordinary tab open works',async()=>{
+test('ordinary business navigation is allowed while Owner verification origin is protected',async()=>{
   const f=await fixture(config);try{
     const start=f.effects.length;
-    const bad={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://example.com/delete'};
+    const bad={endpoint_id:f.local.endpoint_id,intent_key:intent(),url:'https://browser.example/owner/unknown/123'};
     const submitted=await f.rpc('browser_tab_open',bad);await f.flush();
     const receipt=await opStatus(f,bad);
     assert.equal(receipt.state,'failed');assert.equal(receipt.error_code,'forbidden');
     assert.equal(receipt.approval_url,undefined);assert.equal(f.effects.length,start);
-    const safe={...bad,intent_key:intent(),url:'https://example.org/public'};
+    const safe={...bad,intent_key:intent(),url:'https://example.org/post/save#editor'};
     await f.rpc('browser_tab_open',safe);await f.flush();
     assert.equal((await opStatus(f,safe)).state,'completed');
     assert.ok(f.effects.some(e=>e[0]==='tab_open'&&e[1]===safe.url));
