@@ -4,7 +4,8 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars, BROWSER_APPROVAL_VARIABLES } from "./worker-release-variables.mjs";
-import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
 const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
 const REQUIRED_SECRETS = {
@@ -423,10 +424,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
           : ["DEVICE_COORDINATOR"]) : []);
   if (worker === "workflow-mcp-worker" && options.mode === "readback") {
-    invariant(bindings.filter(x=>x.name==="ACTIONS").length===1 &&
-      find("ACTIONS","service")?.service==="cloudflare-actions" &&
-      !bindings.some(x=>["WEIXIN_ACTION_PROVIDER","BARK_ACTION_PROVIDER"].includes(x.name)),
-      "Workflow single Actions Service Binding missing after release");
+    invariant(bindings.filter(x=>x.name === "ACTIONS").length === 1 &&
+      find("ACTIONS", "service")?.service === "cloudflare-actions" &&
+      find("ACTIONS", "service")?.entrypoint === "ActionsEntrypoint",
+      "Workflow unified Actions Service Binding missing or drifted after release");
   }
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
@@ -484,6 +485,8 @@ function reviewedTerminalRunSql(sql) {
     [process.env.WORKFLOW_FOURTH_TERMINAL_RUN_ID,FOURTH_TERMINAL_RUN_ID],
     [process.env.WORKFLOW_FIFTH_TERMINAL_RUN_ID,FIFTH_TERMINAL_RUN_ID],
     [process.env.WORKFLOW_SIXTH_TERMINAL_RUN_ID,SIXTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_SEVENTH_TERMINAL_RUN_ID,SEVENTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_EIGHTH_TERMINAL_RUN_ID,EIGHTH_MCP_RUN_ID],
   ].filter(([supplied,exact])=>supplied===exact).map(([,exact])=>exact);
   if(exclusions.length===0)return sql;
   const sqlIds=exclusions.map(id=>"'"+id+"'").join(",");
@@ -581,11 +584,18 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.mcp_fence_table === 1 && row?.migration_v15 === 1 &&
     row?.approval_gates_table === 1 && row?.approvals_table === 1 &&
     row?.deleted_column === 1 && fullV11Schema;
-  const complete = row?.migration_count === 17 &&
-    row?.migration_v17 === 1 && row?.cloudflare_gate_table === 1 &&
-    row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
-    row?.mcp_fence_table === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || complete)),
+  const completeV17 = row?.migration_count === 17 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  const complete = row?.migration_count === 18 && row?.migration_v18 === 1 &&
+    row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -615,7 +625,7 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
     '0014_workflow_deletion.sql','0015_runtime_approval.sql',
     '0016_portal_connection_revocation.sql',
-    '0017_cloudflare_action_migration_fence.sql')) AS expected_migrations,
+    '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -661,7 +671,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15,16,17].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17,18].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
@@ -696,7 +706,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===17 && row.expected_migrations===17,
+  invariant(row.migration_count===18 && row.expected_migrations===18,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps","undelivered_callbacks",

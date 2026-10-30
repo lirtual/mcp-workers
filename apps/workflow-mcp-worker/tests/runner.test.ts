@@ -17,6 +17,10 @@ const PINNED_DIGEST=await toolSchemaDigest(PINNED_SCHEMA);
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { success } from '../src/tools.ts';
 import readonlyWorker from './fixtures/readonly-worker.ts';
+import {McpServer,createMcpHandler} from '@modelcontextprotocol/server';
+import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
+import {z} from 'zod';
+import {reviewedWriteTool} from '../src/mcp-write-contract.ts';
 import {listAvailableGitHubActions} from '../src/github-action-catalog.ts';
 import {parseGitHubAction} from '../src/github-action-contract.ts';
 import {reviewedGitHubAction} from '../src/github-action-review.ts';
@@ -88,9 +92,11 @@ function setup(t:test.TestContext){
     await service.publish(w.workflow_id,1,approvals,approvals.length>0);
     return service.start(w.workflow_id,inputs);
   }
-  async function run(run_id:string){
+  async function run(run_id:string,onStep?:(name:string,options:unknown)=>void){
     await new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id}} as WorkflowEvent<{run_id:string}>,
-      {do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback()} as unknown as WorkflowStep);
+      {do:async(name:string,options:unknown,callback:()=>Promise<unknown>)=>{
+        onStep?.(name,options);return callback();
+      }} as unknown as WorkflowStep);
   }
   return {service,admit,run,env,sqlite};
 }
@@ -2371,4 +2377,114 @@ test('event wait timeout fails and nonrunning owner fences downstream',async t=>
   assert.equal(cancelledResult.status,'cancelled');
   assert.equal(cancelledResult.steps.find(x=>x.step_id==='done')?.status,'skipped');
   assert.equal((await handleWaitEvent(signalRequest(cancelled.run_id),env)).status,409);
+});
+
+test('reviewed MCP write calls exactly one IMA ima_create_note after pinned publish approval',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let writes=0;
+  let dropAcknowledgment=false;
+  const createPeer=()=>{
+    const server=new McpServer({name:'workflow-reviewed-write-fixture',version:'0.1.0'},
+      {capabilities:{tools:{}}});
+    server.registerTool('ima_create_note',{
+      description:'One reviewed, non-idempotent IMA note creation',
+      inputSchema:z.object({content:z.string().min(1).max(2048)}).strict(),
+      annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false},
+    },async({content})=>{writes++;return {content:[{type:'text',text:'note created: '+content}]};});
+    return server;
+  };
+  const peer=createMcpHandler(createPeer,{legacy:'stateless'});
+  const oldFetch=globalThis.fetch;
+  const target=ECHO_GRANT.endpoint;
+  let manualRequests=0;
+  const handler=async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    assert.equal(request.url,target);
+    if(request.redirect==='manual')manualRequests++;
+    const isCall=request.method==='POST' &&
+      (await request.clone().json() as {method?:string}).method==='tools/call';
+    const response=await peer.fetch(request);
+    if(dropAcknowledgment && isCall)throw Error('simulated_ack_lost_after_note_created');
+    return response;
+  };
+  globalThis.fetch=handler as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  const client=new Client({name:'write-contract-test',version:'0.1.0'});
+  const transport=new StreamableHTTPClientTransport(new URL(target),{fetch:handler as typeof fetch});
+  let schema:unknown;
+  try{
+    await client.connect(transport);
+    const live=await client.listTools();
+    const candidate=live.tools.find(x=>x.name==='ima_create_note');
+    assert.ok(candidate);
+    assert.equal(reviewedWriteTool(candidate),true);
+    schema=candidate.inputSchema;
+  }finally{await client.close().catch(()=>{});}
+  const {plan}=await compilePlan({version:1,name:'Reviewed write fixture',steps:[
+    {id:'write',uses:'mcp.call',with:{endpoint:target,tool:'ima_create_note',
+      scope:'write',arguments:{content:'One safe static note'},input_schema:schema}},
+  ]});
+  const grant:ReadonlyOperation={endpoint:target,tool:'ima_create_note',scope:'write',
+    schema_digest:String(plan.steps[0]?.with.schema_digest)};
+  const created=await service.create(JSON.stringify({version:1,name:'Reviewed write fixture',steps:[
+    {id:'write',uses:'mcp.call',with:{endpoint:target,tool:'ima_create_note',
+      scope:'write',arguments:{content:'One safe static note'},input_schema:schema}},
+  ]}));
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant],true),
+    /mcp_write_approval_required/);
+  assert.equal(writes,0);
+  await service.publish(created.workflow_id,1,[grant],true,false,[],[],[],false,[],false,true);
+  const started=await service.start(created.workflow_id,{});
+  const timeouts:Array<{name:string;options:unknown}>=[];
+  await run(started.run_id,(name,options)=>timeouts.push({name,options}));
+  assert.deepEqual(timeouts.filter(x=>x.name==='workflow-write').map(x=>x.options),[
+    {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},
+  ]);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.steps[0]?.status,'succeeded');
+  assert.equal(writes,1);
+  assert.ok(manualRequests>0);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?')
+    .get(started.run_id)?.n,1);
+  // Native duplicate replay is harmless: a terminal Run never gets a second
+  // business effect or dispatch reservation.
+  await run(started.run_id);
+  assert.equal(writes,1);
+
+  // Physical write happens but its response is lost. The immutable Run must
+  // stay indeterminate; neither native replay nor caller retry can write twice.
+  dropAcknowledgment=true;
+  const unknown=await service.start(created.workflow_id,{});
+  await run(unknown.run_id);
+  const unknownResult=await service.result(unknown.run_id);
+  assert.equal(unknownResult.status,'indeterminate');
+  assert.equal(unknownResult.error_code,'external_outcome_unknown');
+  assert.equal(writes,2);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?')
+    .get(unknown.run_id)?.n,1);
+  dropAcknowledgment=false;
+  await run(unknown.run_id);
+  assert.equal(writes,2);
+
+  // Revocation after publication fences a new call from the old generation.
+  await service.portalConnectionRevoke();
+  const revoked=await service.start(created.workflow_id,{});
+  await run(revoked.run_id);
+  const denied=await service.result(revoked.run_id);
+  assert.equal(denied.status,'failed');
+  assert.equal(denied.steps[0]?.error_code,'portal_connection_revoked');
+  assert.equal(writes,2);
+});
+
+// The longer MCP budget must not silently extend unrelated Step types.
+test('non-MCP result.emit keeps the existing 30-second native Step timeout',async t=>{
+  const {admit,run,service}=setup(t);
+  const started=await admit([{id:'out',uses:'result.emit',with:{data:'ok'}}]);
+  const observed:Array<{name:string;options:unknown}>=[];
+  await run(started.run_id,(name,options)=>observed.push({name,options}));
+  assert.deepEqual(observed.filter(x=>x.name==='workflow-out').map(x=>x.options),[
+    {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+  ]);
+  assert.equal((await service.result(started.run_id)).status,'succeeded');
 });

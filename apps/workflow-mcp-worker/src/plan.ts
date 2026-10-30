@@ -1,12 +1,14 @@
 import YAML from 'yaml';
+import {httpOperation,type HttpOperation} from './http-action.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
+import {REVIEWED_WRITE_TOOL,reviewedWriteArguments} from './mcp-write-contract.ts';
 import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
-export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run'] as const;
+export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run','http.request'] as const;
 export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300,maxEventWaitSeconds:3600});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
@@ -18,11 +20,11 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
 };
-export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
+export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
 export type GithubEventTrigger = {type:'github_event';repository:string;repository_id:number;event:'push';ref:string;workflow_path:string};
 export const GITHUB_EVENT_PATTERNS=Object.freeze({
@@ -31,7 +33,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_connection_generation?: number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -212,6 +214,19 @@ function checkGitHubActionWith(withData:Record<string,unknown>,path:string):void
     if(action.type==='task')continue;
     throw new PlanError('invalid_github_action_inputs',path+'/action/inputs/'+name);
   }
+}
+
+// The first HTTP slice intentionally fixes POST bodies at Publish time.
+// Runtime-evaluated body references would need a reviewed typed operation
+// schema to prove parameters cannot widen the owner-approved effect scope.
+function assertLiteralHttpBody(value:unknown,path:string,depth=0):void{
+  if(depth>15)throw new PlanError('http_body_too_deep',path);
+  if(Array.isArray(value)){for(const part of value)assertLiteralHttpBody(part,path,depth+1);return;}
+  if(!value||typeof value!=='object')return;
+  const entries=Object.entries(value as Record<string,unknown>);
+  if(entries.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(entries[0]![0]))
+    throw new PlanError('http_dynamic_body_unsupported',path);
+  for(const [,part] of entries)assertLiteralHttpBody(part,path,depth+1);
 }
 
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
@@ -504,7 +519,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       throw new PlanError('invalid_repeat_count',path+'/times');
     const template=object(candidate.template,'invalid_repeat_template');
     keys(template,['uses','with','if'],path+'/template');
-    if(!isSupportedStepUse(template.uses))
+    if(!isSupportedStepUse(template.uses)||template.uses==='http.request')
       throw new PlanError('unsupported_capability',path+'/template/uses');
     if(template.uses==='action.run' &&
        (template.with as {executor?:unknown}|undefined)?.executor==='cloudflare')
@@ -597,7 +612,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.provider==='bark'?'bark':'weixin');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'weixin');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -610,6 +625,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(!Object.hasOwn(notification,'body'))throw new PlanError('missing_bark_body',stepPath+'/with/input/notification');
         if(typeof notification.body==='string'&&notification.body.length>2400)
           throw new PlanError('bark_body_too_large',stepPath+'/with/input/notification');
+      }else if(manifest.action==='weixin.notify_download'){
+        keys(input,['download_step_id'],stepPath+'/with/input');
+        if(typeof input.download_step_id!=='string'||!SAFE_ID.test(input.download_step_id))
+          throw new PlanError('invalid_trusted_download_reference',stepPath+'/with/input/download_step_id');
       }else{
         keys(input,['session_step_id'],stepPath+'/with/input');
         if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
@@ -627,14 +646,22 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('invalid_session_duration_binding',
             stepPath+'/with/action/inputs/duration_minutes');
       }
+    }else if(s.uses==='http.request'){
+      keys(withData,['url','method','body'],stepPath+'/with');
+      try{httpOperation(withData);}catch{throw new PlanError('invalid_http_operation',stepPath+'/with');}
+      if(withData.method!=='POST'&&Object.hasOwn(withData,'body'))
+        throw new PlanError('invalid_http_body',stepPath+'/with/body');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint');
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
       catch { throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint'); }
       if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool',stepPath+'/with/tool');
-      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
+      if(withData.scope!=='read'&&withData.scope!=='write')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
       object(withData.arguments,'invalid_step_arguments');
+      if(withData.scope==='write' && (withData.tool!==REVIEWED_WRITE_TOOL ||
+         !reviewedWriteArguments(withData.arguments)))
+        throw new PlanError('unreviewed_write_operation',stepPath+'/with');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
       await toolSchemaDigest(withData.input_schema,withData.output_schema);
@@ -647,7 +674,18 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       ...(s.approval===undefined?{}:{approval:{required:true}})});
   }
   for(const s of steps){
-    if(s.uses==='action.run'&&s.with.provider==='weixin'){
+    if(s.uses==='action.run'&&s.with.action==='weixin.notify_download'){
+      const source=(s.with.input as {download_step_id:string}).download_step_id;
+      const upstream=steps.find(x=>x.id===source);
+      const template=upstream?.with.template as {uses?:unknown;action?:unknown;with?:{action?:unknown}}|undefined;
+      const action=(template?.with?.action??template?.action) as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+      if(!s.needs.includes(source)||upstream?.uses!=='flow.foreach'||
+         upstream.with.max_items!==1||template?.uses!=='github.run'||
+         action?.repository!=='lirtual/session-actions'||
+         action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
+        throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
+    }
+    if(s.uses==='action.run'&&s.with.action==='weixin.send_text'){
       // Provider URL and recipient never come from a Draft or ordinary Step output.
       const source=(s.with.input as {session_step_id:string}).session_step_id;
       const upstream=steps.find(x=>x.id===source);
@@ -715,6 +753,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
             throw new PlanError('invalid_condition',childPath+'/if');
         }
       }
+    }else if(s.uses==='http.request'){
+      if(Object.hasOwn(s.with,'body')){
+        const path='/steps/'+steps.indexOf(s)+'/with/body';
+        expression(s.with.body,s,0,true,false,path);
+        assertLiteralHttpBody(s.with.body,path);
+        if(new TextEncoder().encode(JSON.stringify(s.with.body)).byteLength>4096)
+          throw new PlanError('http_body_too_large',path);
+      }
     }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/arguments');
     else if(s.uses==='github.run' && s.with.capability==='github.action') {
       // Action identity is an immutable literal, never a runtime expression.
@@ -732,6 +778,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }
   }
+  // Initial reviewed-write slice permits one static external write per Plan.
+  // Do not turn a single owner grant into a multi-write fan-out.
+  const writeSteps=steps.filter(s=>s.uses==='mcp.call'&&s.with.scope==='write');
+  if(writeSteps.length>1)
+    throw new PlanError('excessive_mcp_write_steps','/steps');
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){
     const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);

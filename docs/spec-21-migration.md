@@ -1,11 +1,11 @@
 # Spec #21 Workflow cutover notes
 
 The new source accepts only `ACTIONS` -> `cloudflare-actions#ActionsEntrypoint`
-for fresh Weixin/Bark sends. `ACTIONS_DEPLOYMENT_ID` is frozen in each newly
+for fresh Weixin Session Ready, verified download notifications and Bark sends. `ACTIONS_DEPLOYMENT_ID` is frozen in each newly
 published grant, and new Action reservations check `cloudflare_action_gate`
 inside the same D1 INSERT, preventing a separate-check race.
 
-Migration 0017 introduces a single D1 singleton gate (default `open`). For
+Migration 0018 introduces a single D1 singleton gate (default `open`). For
 production cutover, after old Workflow instances have **physically** drained,
 use the protected GitHub Actions mechanism to freeze via a conditional D1 UPDATE:
 
@@ -17,7 +17,7 @@ WHERE id=1 AND state='open';
 This SQL is descriptive, **not automatically applied**. It cannot stop old
 previously deployed source code which does not inspect the gate. Only physical
 drain plus atomic admission provide the necessary stop. The protected release
-checks new migration 0017, exactly one Actions Service Binding and its pinned
+checks new migration 0018, exactly one Actions Service Binding and its pinned
 single active version. Retain old historical Weixin receipt access and prevent
 Bark history sends; an old Weixin Published Plan can only query original
 receipts and cannot issue a second notification.
@@ -37,7 +37,7 @@ require a permanently frozen dispatch gate.
 The 2026-10-30 UTC production read-only audit observed 6 nonterminal Runs,
 15 historical Action Invocation rows, 0 nonterminated physical Sessions,
 and a separate still-running old-version native Workflow instance. The
-0017 table is not installed. These facts do **not** satisfy the old-code
+0018 table is not installed. These facts do **not** satisfy the old-code
 physical drain condition; a new release must independently recheck the
 then-current state. See the Producer cutover document for the full evidence.
 
@@ -46,7 +46,7 @@ then-current state. See the Producer cutover document for the full evidence.
 Owner explicitly accepted a NEW WEIXIN_ENCRYPTION_KEY and one QR/OTP
 re-pair; transferring the old encryption Secret is no longer required.
 The old Worker must use its existing Access-protected /setup/unbind
-operation after native Workflow drain and an atomic frozen 0017 gate.
+operation after native Workflow drain and an atomic frozen 0018 gate.
 This increments binding Generation and clears old ciphertext. The
 original Weixin D1 and immutable receipt/unknown rows remain. After
 read-only confirmation that no encrypted session/pending pairing or
@@ -64,8 +64,9 @@ statuses (`queued`, `running`, `paused`, `waiting`, `waitingForPause`,
 This is a necessary snapshot, **not** a guarantee against an old-code
 instance starting after the check; the ingress/admission quiescence and
 physical drain requirement remains a separate hard operator prerequisite.
-A running native instance was observed on 2026-10-30, so this gate would
-currently fail closed. The candidate unified Worker deliberately has **no**
+A running native instance was observed earlier on 2026-10-30; a later
+read-only check saw no nonterminal native instances. Neither snapshot prevents
+new old-code admissions, so quiescence must be proved at cutover. The candidate unified Worker deliberately has **no**
 Owner custom-domain `routes` in its initial Wrangler configuration; the
 existing Weixin Owner route must be transferred separately in an authorized
 protected operation after staging and successful rebind preflight.
@@ -80,23 +81,8 @@ unexpected target is rejected. The gate reports native-instance inventory
 only when it actually performed that read. This does not eliminate the
 race against newly admitted old-version instances.
 
-
-## Production old-native Task poller diagnosis (read-only, 2026-10-30)
-
-A native Workflow instance `158fbbd6-ecdf-41cf-8c7f-806561bb44e6`
-continued periodic `github-action-check-verify` and
-`github-action-sleep-verify` even though its D1 parent Run and Run Step
-were already cancelled. The linked physical GitHub Action Run
-`lirtual/session-actions#41017369338` reached terminal failure at
-2026-10-30 07:00:13 UTC; its D1 Attempt is also `failed`.
-The old deployed Workflow version instead sees `unknown` when attempting
-to inspect this already-cancelled parent and keeps its bounded poll loop.
-
-A forward-only fix in `github-action-task.ts` stops future native Task
-polling **only if both the parent Run and the durable physical Attempt are
-terminal**; a cancelled parent with an unconfirmed physical Attempt must
-continue bounded read-only checks. No new GitHub dispatch, D1 result
-rewrite, or automatic native-instance termination follows.
-The old native instance is pinned to its original version and **is not
-fixed by a future source deployment**. The first cutover must still prove
-it has physically drained through the existing protected readiness gate.
+**Mainline compatibility (2026-10-30):** Preserve the already merged
+'weixin.notify_download' Action and 'http.request' capability. The old
+'0017_http_connection_auth.sql' remains immutable; the unified Action
+migration is numbered '0018_cloudflare_action_migration_fence.sql'.
+Final source/local tests do not authorize production freeze, owner unbind or send.

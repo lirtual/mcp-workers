@@ -5,7 +5,8 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 ## Capabilities
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
-- **MCP tool calls (`mcp.call`):** read-only operations routed through the existing, server-pinned MCP Portal. Publish requires the exact endpoint, tool, `read` scope and schema digest, plus `accept_target_risks: true`. Runtime checks revalidate the published grant and live tool schema. The remote `readOnlyHint` is untrusted: network isolation and absence of remote side effects are not guaranteed.
+- **MCP tool calls (`mcp.call`):** the existing read-only operations plus one source-reviewed write operation, IMA `ima_create_note`. Both require the exact pinned Portal endpoint, tool, scope and schema digest plus `accept_target_risks: true`; write additionally requires `approve_mcp_write_execution: true`. The first write slice accepts only a top-level literal `content` string (1–2048 chars), with no folder, dynamic input or Foreach writes. Runtime verifies the live schema and explicitly reviewed tool before a single D1 dispatch reservation. Upstream `readOnlyHint` never authorizes a write; an unknown call result remains `indeterminate` without an automatic resend.
+- **HTTP Action (`http.request`):** one literal, canonical public HTTPS URL and GET/HEAD/POST operation approved verbatim at Publish. No dynamic URL, query, credentials, caller headers or redirect following. A durable D1 fence prevents blind retries, and the independently revocable HTTP Connection prevents older Plans being revived.
 - **GitHub Actions (`github.run`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed SHA, tag, workflow, input contract and `approve_heavy_execution: true`; automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
 - **Result emission (`result.emit`)** for Workflow results.
 
@@ -29,7 +30,9 @@ identity, deployment ID and explicit approval. Previously cached MCP tool
 metadata may require a one-time client refresh.
 
 Cloudflare `action.run` supports the reviewed `weixin.send_text` (requiring a
-verified same-Run OpenList Session Ready) and `bark.send_notification` Actions.
+verified same-Run OpenList Session Ready), `weixin.notify_download`
+(requiring a single-item reviewed GitHub download Task with OIDC Claim and physical success proof
+and physically verified completion), and `bark.send_notification` Actions.
 Publish requires separate explicit grants, the exact contract digest and
 Worker Version ID; the Service Binding must independently confirm live identity.
 D1 grants a single first-dispatch right. Weixin can recover by historical
@@ -153,6 +156,40 @@ Environment bindings and credentials:
 
 There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.
 
+### Bounded public HTTP Action and live revocation (Spec #176)
+
+A Draft Step may use `uses: http.request` with literal `with.url` and
+`with.method` (`GET`, `HEAD`, `POST`). `POST` alone may provide
+`with.body` as immutable JSON (up to 4 KiB); runtime references in the body are not supported in this first slice. The URL must be a
+canonical public HTTPS hostname and path (standard port only), without
+query, fragment, credentials or URL-encoded path. Private/IP-literal and
+special-use hostnames are rejected before Publish and again at runtime.
+No user-supplied headers, managed upstream credentials, automatic redirects,
+or dynamic URL/method expressions are accepted.
+
+`workflow_validate` returns `required_http_operations`. The owner must
+Publish the exact array as `approved_http_operations`, plus
+`approve_http_execution: true` and `accept_target_risks: true`.
+There is **no** implicit permission from the Draft or discovered capability.
+`workflow_connection_status/revoke/enable` accept optional `target: http`;
+omitting it retains the original Portal behavior. HTTP has its own D1
+`http_connection_auth` generation (migration 0017). Revoke serializes
+against the first HTTP effect reservation in the existing unique Run/Step
+D1 fence; after enable, only a newly Published Plan with exact original
+grants and the current generation can dispatch. Requests already sent cannot
+be withdrawn. Replays after a reservation never re-POST.
+
+The JSON request body is at most 4 KiB; response text is capped at 8 KiB,
+with 12-second timeout and `redirect: manual`. Only HTTP 2xx represents a
+successful **HTTP response**, not confirmed downstream business completion.
+POST transport failure, redirect or non-2xx remains indeterminate; never
+automatically retry unknown upstream effects. Nonmutating GET/HEAD errors
+are reported as failures. DNS rebinding and arbitrary unreviewed hosts are
+not independently proven safe by a hostname syntax check; use trusted
+approved HTTPS domains and verify the real Workers egress boundary before
+expanding target scope. No second scheduler, HTTP Worker binding, secrets
+broker or standalone action registry is introduced.
+
 ### Live Portal Connection revocation (Spec #176 incremental vertical)
 
 The **single fixed production MCP Portal** has an owner-controlled authorization state,
@@ -170,16 +207,18 @@ call; a reservation winning it can still reach the external service and is
 **not** physically cancelled by revocation. Never reissue an uncertain call.
 Enabling again **does not revive** a previously revoked Published Plan: explicitly
 republish the Draft (including its original exact `approved_operations` and
-`accept_target_risks`) to receive the new generation. No HTTP Action, write-scope
-MCP, generic Provider registry, or cross-Provider revocation is implied.
+`accept_target_risks`) to receive the new generation. Write-capable MCP
+plans also need a fresh, exact `approve_mcp_write_execution` grant. This
+uses the same Portal generation and one-shot fence; it does not authorize
+arbitrary write tools, a generic Provider registry or cross-Provider revocation.
 
 ## MCP owner tools
 
 `workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
 
-`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
+`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP and one reviewed top-level IMA note write, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
 Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.
-Dynamic while/until, nested loops, Saga compensation, write-scope MCP Actions and generic HTTP Actions remain **unsupported** and fail at compilation. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+Dynamic while/until, nested loops, Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. The initial `action.mcp.write` slice is restricted to static IMA `ima_create_note` and has no general write-catalog, dynamic/foreach write, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
 
@@ -462,3 +501,20 @@ delete is idempotent. Unsettled Runs, nonterminated physical Sessions and
 published active/paused parent references block removal. No purging or restore
 API is exposed. Migration `0014_workflow_deletion.sql` is additive and must
 be applied through the existing guarded main-only release.
+
+### Koofr download completed → Owner Weixin notification
+
+The existing `download` Workflow may append one top-level `action.run` using
+`executor: cloudflare`, `provider: weixin`, `action: weixin.notify_download`,
+`input: {download_step_id: download_task}` and `needs: [download_task]`.
+The `download_task` must be a `max_items: 1` foreach containing the pinned
+`lirtual/session-actions/.github/workflows/download.yml` GitHub Task; no
+arbitrary Result or user-supplied success may authorize the notification.
+The existing OIDC Claim and verified GitHub physical Task success prove completion;
+the reviewed download Task only exits successfully after remote readback.
+A D1 admission fence checks the same Run, both succeeded Steps, approved Task
+Attempt, physical terminal and cancellation status atomically. The Weixin Provider
+sends a fixed Owner-only success text without paths, URLs, tokens or arbitrary
+message input. Failed, skipped and indeterminate downloads cannot notify.
+Notifications remain at-most-one invocation with read-only recovery, and
+the phone's receipt must be checked separately from an upstream acceptance.

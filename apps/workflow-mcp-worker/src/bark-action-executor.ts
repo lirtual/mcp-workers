@@ -23,8 +23,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   g.contract_digest===manifest.contract_digest);
  if(plan.cloudflare_execution_approved!==true||action.uses!=='action.run'||
   action.with.executor!=='cloudflare'||action.with.provider!=='bark'||
-  action.with.action!==manifest.action||action.with.contract_digest!==manifest.contract_digest||
-  !grant)return deny('cloudflare_action_approval_required');
+  action.with.action!==manifest.action)return deny('cloudflare_action_approval_required');
  const db=env.DB;
  const existing=()=>db.prepare(`SELECT invocation_id,source_attempt_id,input_digest,
     binding_generation,contract_digest,deployment_id
@@ -34,10 +33,14 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
  try{
   const prior=await existing();
   if(prior){
-   // A consumed, version-incompatible or ambiguous slot is never re-sent.
-   return unknown(prior.binding_generation===0&&prior.contract_digest===manifest.contract_digest&&
-      prior.deployment_id===grant.deployment_id?'bark_receipt_unavailable':'cloudflare_invocation_conflict');
+   // Historical identity comes from immutable original grant, never current deployment.
+   const approved=plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&
+     g.provider==='bark'&&g.action==='bark.send_notification'&&
+     g.contract_digest===prior.contract_digest&&g.deployment_id===prior.deployment_id);
+   return unknown(approved&&prior.binding_generation===0?'bark_receipt_unavailable':'cloudflare_invocation_conflict');
   }
+  if(!grant||action.with.contract_digest!==manifest.contract_digest)
+   return deny('cloudflare_action_approval_required');
   if(!provider||!version)return deny('cloudflare_provider_not_configured');
   if(grant.deployment_id!==version)return deny('cloudflare_provider_version_changed');
   let notification:Record<string,unknown>;

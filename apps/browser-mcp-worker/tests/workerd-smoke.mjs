@@ -9,7 +9,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 const cwd=new URL('../',import.meta.url).pathname;
 const persistence=fs.mkdtempSync(path.join(os.tmpdir(),'browser531-workerd-'));
 const port=18984,origin='http://127.0.0.1:'+port;
-const extensionOrigin='chrome-extension://'+'a'.repeat(32);
+const extensionOrigin='chrome-extension://jhifaghneomgcfollcdbncjkcloedfem';
 const bearer='test-only-portal-credential';
 const child=spawn(path.join(cwd,'node_modules/.bin/wrangler'),['dev','--local','--port',String(port),'--ip','127.0.0.1','--persist-to',persistence],{
   cwd,detached:true,env:{...process.env,MCP_ACCESS_TOKEN:bearer},stdio:['ignore','pipe','pipe']});

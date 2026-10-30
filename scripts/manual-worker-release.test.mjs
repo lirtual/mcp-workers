@@ -578,7 +578,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,cloudflare_gate_table:0,portal_auth_table:0,mcp_fence_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,migration_v18:0,portal_auth_table:0,mcp_fence_table:0,http_auth_table:0,cloudflare_gate_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
     child_terminate_fence_column:0,capacity_guard_trigger:0,
     locator_column:0,fixed_column:0,fixed_index:0,
@@ -612,9 +612,14 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false),true);
   const portalComplete={...approvalComplete,migration_count:16,migration_v16:1,portal_auth_table:1,mcp_fence_table:1};
   assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false),true);
-  const actionsComplete={...portalComplete,migration_count:17,migration_v17:1,cloudflare_gate_table:1};
+  const httpComplete={...portalComplete,migration_count:17,migration_v17:1,http_auth_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(portalComplete),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(portalComplete),false,true),/schema migrations/);
+  const actionsComplete={...httpComplete,migration_count:18,migration_v18:1,cloudflare_gate_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(httpComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(actionsComplete),false,true),true);
-  for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},{migration_v17:0},{cloudflare_gate_table:0}])
+  for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},
+    {migration_v17:0},{http_auth_table:0},{migration_v18:0},{cloudflare_gate_table:0},{migration_count:17}])
     assert.throws(()=>verifyWorkflowD1Readiness(result({...actionsComplete,...broken}),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(deletedComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
@@ -685,6 +690,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...portalComplete,active_sessions:1}),false),/active physical Sessions/);
   assert.equal(verifyWorkflowD1Readiness(result({...actionsComplete,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
@@ -743,7 +749,10 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0016_portal_connection_revocation.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0017_cloudflare_action_migration_fence.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0017_http_connection_auth.sql/);
+  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  assert.equal((release.match(/AS migration_v17/g)??[]).length,2);
+  assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
 });
 
@@ -792,7 +801,7 @@ test('cancelled Workflow Steps count as terminal only with matched cancelled Run
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:17,expected_migrations:17,
+    migration_count:18,expected_migrations:18,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
@@ -829,7 +838,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
-    {name:"ACTIONS",type:"service",service:"cloudflare-actions"},
+    {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
@@ -840,6 +849,10 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),
+    /Unexpected production resource binding/);
+  assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS"?{...x,entrypoint:"UnexpectedEntrypoint"}:x)),
+    /Service Binding/);
   assert.throws(()=>check(bindings.filter(x=>x.name!=="ACTIONS_DEPLOYMENT_ID")),/Provider Version ID/);
   assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS_DEPLOYMENT_ID"?{...x,text:"latest"}:x)),/Provider Version ID/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"}]),/Unexpected production resource binding/);
@@ -871,12 +884,15 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
   const publish=ci.indexOf("      - name: Publish exactly selected Worker");
   assert.ok(pre>0 && migration>pre && publish>migration);
-  const actionsGate=ci.indexOf("      - name: Verify Actions binding transition has an atomic D1 fence (read-only)");
-  assert.ok(actionsGate>migration && actionsGate<publish);
-  assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
   assert.match(ci,/wrangler d1 migrations apply workflow-mcp-db --remote/);
   const finalQuiescence=ci.indexOf("      - name: Verify code-only Workflow D1 gate at publication (Ready Sessions preserved)");
   assert.ok(finalQuiescence>migration && finalQuiescence<publish);
+  const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
+  const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
+  const freeze=ci.indexOf("      - name: Verify unified Actions binding transition (read-only)");
+  assert.ok(pin>0 && recheck>pin && freeze>recheck && freeze<publish);
+  assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
+  assert.equal(ci.split('0018_cloudflare_action_migration_fence.sql').length,3);
   assert.match(ci,/pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "\$query"/);
 
   for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql","0009_fixed_sessions.sql","0010_session_runtime_data.sql","0011_awaited_child_capacity.sql"]){
@@ -901,7 +917,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
-    {name:"ACTIONS",type:"service",service:"cloudflare-actions"},
+    {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
@@ -927,7 +943,7 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
-    {name:"ACTIONS",type:"service",service:"cloudflare-actions"},
+    {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},

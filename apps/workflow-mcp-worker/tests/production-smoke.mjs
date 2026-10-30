@@ -29,6 +29,7 @@ let runId;
 let failure;
 let githubPhysicalCompleted = false;
 let webhookCredential;
+let httpConnectionTouched=false;
 
 function sql(statement) {
   // stdout contains JSON only; do not log credentials, SQL args or Wrangler internals.
@@ -557,6 +558,91 @@ async function runWebhookSmoke() {
   console.log('WEBHOOK_PRODUCTION_SMOKE_OK: wrong-token denied, duplicate stable event deduplicated, two immutable-version Runs succeeded, pause protected');
 }
 
+async function runHttpSmoke(){
+  // Real Cloudflare Worker egress; only owner-approved public HTTPS GET,
+  // and no effect-producing POST or live user business operation.
+  const active=sql("SELECT count(*) AS n FROM runs WHERE outcome IN ('queued','running')");
+  assert.equal(active[0]?.n,0,'HTTP acceptance blocked by active production Runs');
+  const otherHttp=sql("SELECT count(*) AS n FROM workflows w JOIN workflow_versions v ON w.active_version_id=v.id WHERE w.state='active' AND w.deleted_at IS NULL AND instr(v.plan,'http.request')>0");
+  assert.equal(otherHttp[0]?.n,0,'HTTP acceptance requires no existing active HTTP Plans');
+  await client.connect(transport);
+  const tools=(await client.listTools()).tools;
+  for(const name of ['workflow_connection_status','workflow_connection_revoke',
+    'workflow_connection_enable','workflow_validate','workflow_publish']){
+    assert.ok(tools.some(t=>t.name===name),'HTTP acceptance missing tool '+name);
+  }
+  const initial=await tool('workflow_connection_status',{target:'http'});
+  assert.equal(initial.state,'enabled','HTTP Connection must start enabled');
+  const definition={version:1,name:'spec176-http-acceptance-'+label,
+    steps:[{id:'fetch',uses:'http.request',
+      with:{url:'https://example.com/',method:'GET'}}]};
+  const invalid=await tool('workflow_validate',{definition:JSON.stringify({
+    ...definition,steps:[{id:'fetch',uses:'http.request',
+      with:{url:'https://127.0.0.1/',method:'GET'}}]})});
+  assert.equal(invalid.valid,false,'Private IP must be rejected before Publish');
+  const draft=await tool('workflow_create',{definition:JSON.stringify(definition)});
+  workflowId=draft.workflow_id;
+  assert.match(workflowId,uuid);
+  const validated=await tool('workflow_validate',{workflow_id:workflowId,revision:1});
+  assert.equal(validated.valid,true);
+  const grant=[{url:'https://example.com/',method:'GET'}];
+  assert.deepEqual(validated.required_http_operations,grant);
+  // A Draft and a URL are not authorization.
+  const denied=await client.callTool({name:'workflow_publish',arguments:{
+    workflow_id:workflowId,expected_revision:1}});
+  assert.equal(denied.isError,true,'Publish without explicit HTTP grant must fail');
+  const approval={workflow_id:workflowId,expected_revision:1,
+    approved_http_operations:grant,approve_http_execution:true,accept_target_risks:true};
+  const first=await tool('workflow_publish',approval);
+  assert.match(first.published_version_id,uuid);
+  async function checkedRun(suffix,expected,code){
+    const started=await tool('workflow_run',{workflow_id:workflowId,
+      idempotency_key:'spec176-http-'+suffix+'-'+label});
+    runId=started.run_id;
+    assert.match(runId,uuid);
+    let state;
+    for(let n=0;n<90;n++){
+      state=await tool('workflow_status',{run_id:runId});
+      if(terminal.has(state.status)||state.status==='indeterminate')break;
+      await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+    assert.equal(state?.status,expected,'HTTP Run did not reach expected terminal state '+suffix);
+    const entry=state.steps?.find(x=>x.step_id==='fetch');
+    assert.equal(entry?.status,expected,'HTTP Step did not match terminal state '+suffix);
+    if(code)assert.equal(entry.error_code,code,'Unexpected HTTP denial code');
+    if(expected==='succeeded'){
+      const out=await tool('workflow_result',{run_id:runId});
+      assert.equal(out.status,'succeeded');
+      assert.equal(out.result?.status,200);
+      assert.equal(out.result?.ok,true);
+    }
+    return started;
+  }
+  await checkedRun('initial','succeeded');
+  // Independently revoke *only* the HTTP Connection. The preflight proved no
+  // other active HTTP Plan, while existing MCP Portal grants remain unchanged.
+  httpConnectionTouched=true;
+  const revoked=await tool('workflow_connection_revoke',{target:'http'});
+  assert.equal(revoked.state,'revoked');
+  assert.equal(revoked.generation,initial.generation+1);
+  await checkedRun('revoked','failed','http_dispatch_not_authorized');
+  const enabled=await tool('workflow_connection_enable',{target:'http'});
+  assert.equal(enabled.state,'enabled');
+  assert.equal(enabled.generation,revoked.generation);
+  await checkedRun('stale','failed','http_dispatch_not_authorized');
+  const fresh=await tool('workflow_publish',approval);
+  assert.notEqual(fresh.published_version_id,first.published_version_id,
+    'Re-enable must not revive or recycle the old Published Plan');
+  await checkedRun('fresh','succeeded');
+  const fenced=sql(`SELECT generation FROM mcp_dispatch_fences
+    WHERE run_id IN (SELECT id FROM runs WHERE workflow_id=${quotedId(workflowId)})
+    ORDER BY created_at`);
+  assert.equal(fenced.length,2,'Only successful HTTP Runs reserve effects');
+  assert.deepEqual(fenced.map(x=>x.generation).sort((a,b)=>a-b),
+    [initial.generation,enabled.generation]);
+  console.log('SPEC176_HTTP_PRODUCTION_PASS: public GET, private IP denied, grants enforced, revoke/stale plan denied, explicit republish restored, two durable fences');
+}
+
 async function runSessionDataReadAcceptance() {
   // Read-only: never log the short-lived credentials returned by the owner API.
   const id=process.env.WORKFLOW_SESSION_DATA_RUN_ID || '';
@@ -599,12 +685,23 @@ try {
     process.env.WORKFLOW_ACTION_TASK_SMOKE==='true'?runActionTaskSmoke():
     process.env.WORKFLOW_GITHUB_SMOKE==='true'?runS3Smoke():
     process.env.WORKFLOW_MCP_SMOKE==='true'?runS2Smoke():
+    process.env.WORKFLOW_HTTP_SMOKE==='true'?runHttpSmoke():
     process.env.WORKFLOW_WEBHOOK_SMOKE==='true'?runWebhookSmoke():runSmoke());
 } catch (e) {
   failure = e;
   if(process.env.WORKFLOW_SESSION_DATA_SMOKE==='true')console.error('SESSION_DATA_ACCEPTANCE_FAILED: no sensitive values logged');
   else console.error('SMOKE_FAILED:', String(e?.message ?? e).replaceAll(token, '[redacted]').replaceAll(webhookCredential ?? '__no_webhook_credential__', '[redacted]'));
 } finally {
+  if(process.env.WORKFLOW_HTTP_SMOKE==='true' && httpConnectionTouched){
+    try{
+      const restored=await tool('workflow_connection_enable',{target:'http'});
+      if(restored.state!=='enabled')throw Error('HTTP Connection not restored');
+      console.log('HTTP_CONNECTION_RESTORED');
+    }catch(e){
+      failure ??= e;
+      console.error('HTTP_CONNECTION_RESTORE_FAILED: requires owner verification');
+    }
+  }
   try { await client.close(); } catch { /* No successful state assumed from close */ }
   try { cleanup(); } catch (e) {
     failure ??= e;

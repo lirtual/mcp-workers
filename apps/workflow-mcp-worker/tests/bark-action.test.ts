@@ -49,7 +49,7 @@ async function fixture(t:test.TestContext){
  sql.exec("CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT NOT NULL);");
  sql.exec("INSERT INTO runs(id,outcome) VALUES('11111111-1111-4111-8111-111111111111','running')");
  sql.exec(readFileSync(new URL('../migrations/0013_cloudflare_action_invocations.sql',import.meta.url),'utf8'));
- sql.exec(readFileSync(new URL('../migrations/0017_cloudflare_action_migration_fence.sql',import.meta.url),'utf8'));
+ sql.exec(readFileSync(new URL('../migrations/0018_cloudflare_action_migration_fence.sql',import.meta.url),'utf8'));
  const prepare=(query:string)=>{
   const bound=(args:unknown[])=>({
    first:async<T>()=>(sql.prepare(query).get(...(args as []))??null) as T|null,
@@ -119,6 +119,22 @@ test('after persisted send, version drift and lost ACK remain unknown without re
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'indeterminate');
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'indeterminate');
  assert.equal(attempts,1);
+});
+
+test('legacy Bark immutable grant preserves an earlier reserved unknown without retry',async t=>{
+ const f=await fixture(t);
+ assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'succeeded');
+ const previousContract='a'.repeat(64);
+ const previousVersion='44444444-4444-4444-8444-444444444444';
+ f.sql.prepare('UPDATE cloudflare_action_invocations SET contract_digest=?,deployment_id=?')
+   .run(previousContract,previousVersion);
+ f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'bark',
+   action:'bark.send_notification',contract_digest:previousContract,
+   deployment_id:previousVersion}];
+ f.action.with.contract_digest=previousContract;
+ const historical=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
+ assert.deepEqual(historical,{status:'indeterminate',error_code:'bark_receipt_unavailable'});
+ assert.equal(f.sent(),1,'historical response does not trigger a new RPC');
 });
 
 test('D1 reservation failure prevents every Bark side effect',async t=>{

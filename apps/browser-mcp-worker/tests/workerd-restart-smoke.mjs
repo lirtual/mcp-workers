@@ -9,7 +9,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 const cwd=new URL('../',import.meta.url).pathname;
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'spec531-restart-'));
 const port=18985,service='http://127.0.0.1:'+port;
-const origin='chrome-extension://'+'a'.repeat(32);
+const origin='chrome-extension://jhifaghneomgcfollcdbncjkcloedfem';
 let child=null;
 async function start(){
   child=spawn(path.join(cwd,'node_modules/.bin/wrangler'),['dev','--local','--ip','127.0.0.1','--port',String(port),'--persist-to',dir],

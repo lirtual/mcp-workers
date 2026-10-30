@@ -5,6 +5,8 @@ import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import {waitForRuntimeApproval} from './runtime-approval.ts';
 import {reservePortalCall} from './portal-authorization.ts';
+import {REVIEWED_WRITE_TOOL,reviewedWriteTool,reviewedWriteArguments} from './mcp-write-contract.ts';
+import {callApprovedHttp,HttpDispatchError} from './http-action.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -33,20 +35,27 @@ const now=()=>Date.now();
 const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
-async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,
+async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,
   runId:string,stepId:string):Promise<unknown>{
   // Enforce the approved published contract before any remote call.
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
-  const grant=plan.mcp_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope==='read'&&g.schema_digest===schema_digest);
-  if(!grant||step.with.scope!=='read'||typeof endpoint!=='string'||typeof tool!=='string'||
+  const scope=step.with.scope;
+  const write=scope==='write';
+  if(scope!=='read'&&!write)throw Error('external_approval_required');
+  if(write&&(plan.mcp_write_execution_approved!==true||tool!==REVIEWED_WRITE_TOOL||
+     !plan.steps.some(x=>x.id===stepId&&x.uses==='mcp.call'&&x.with.scope==='write')||
+     !reviewedWriteArguments(args)||!reviewedWriteArguments(step.with.arguments)))
+    throw Error('mcp_write_approval_required');
+  const grant=plan.mcp_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope===scope&&g.schema_digest===schema_digest);
+  if(!grant||typeof endpoint!=='string'||typeof tool!=='string'||
      typeof schema_digest!=='string'||!/^[0-9a-f]{64}$/.test(schema_digest))
     throw Error('external_approval_required');
   // Recompute from the pinned contract so a tampered Plan cannot replace the
   // expected schema while keeping an older authorized digest.
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
     throw Error('approved_schema_changed');
-  const client=new Client({name:'workflow-mcp-readonly-candidate',version:'0.1.0'});
+  const client=new Client({name:'workflow-mcp-reviewed-candidate',version:'0.1.0'});
   // Environment-scoped Portal identity cannot be changed by a Draft, a
   // Published Plan, or Run inputs. Only the production Portal is supported.
   const chosenPortal=env.MCP_PORTAL_ENDPOINT;
@@ -67,11 +76,14 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
   try{
     await client.connect(transport);
     const discovered=await client.listTools();
-    const candidate=discovered.tools.find(t=>t.name===tool);
-    // Tool annotations are untrusted claims, not a grant. This is a second
-    // restrictive gate on top of the owner's exact publish approval.
-    if(!candidate||candidate.annotations?.readOnlyHint!==true||
-       candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
+    const matches=discovered.tools.filter(t=>t.name===tool);
+    const candidate=matches[0];
+    // A live advertised tool is not a grant. Fail closed on identity drift,
+    // duplicate names or an unexpected write contract, before reserving.
+    if(matches.length!==1 || !candidate ||
+       (write?!reviewedWriteTool(candidate):
+        candidate.annotations?.readOnlyHint!==true||candidate.annotations?.destructiveHint===true))
+      throw Error(write?'write_tool_unconfirmed':'readonly_tool_unconfirmed');
     if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
       throw Error('tool_schema_drift');
     const reservation=await reservePortalCall(env.DB,runId,stepId,plan.mcp_connection_generation??0);
@@ -250,7 +262,7 @@ async function runMultiForeach(
                 const childStep:Step={id:childId,uses:'mcp.call',needs:s.needs,with:child.with};
                 try{
                   return {status:'succeeded',
-                    output:await callApprovedReadonly(env,plan,childStep,args,runId,childId)};
+                    output:await callApprovedMcp(env,plan,childStep,args,runId,childId)};
                 }catch(error){
                   return error instanceof Error&&error.message==='portal_connection_revoked'
                     ?{status:'failed',error_code:'portal_connection_revoked'}
@@ -418,7 +430,7 @@ async function runForeachStep(
           const child:Step={id:entry.id,uses:'mcp.call',needs:s.needs,with:template.with};
           try{
             const args=entry.output as Record<string,unknown>;
-            return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args,runId,entry.id)};
+            return {status:'succeeded',output:await callApprovedMcp(env,plan,child,args,runId,entry.id)};
           }catch(error){
             return error instanceof Error&&error.message==='portal_connection_revoked'
               ?{status:'failed',error_code:'portal_connection_revoked'}
@@ -770,7 +782,10 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                 return {status:'indeterminate',error_code:'github_dispatch_unknown'} as Outcome;
               }
             })()
-            : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async ():Promise<Outcome>=>{
+            // Portal MCP handshake + live tool discovery occur before the D1 call fence.
+            // Bound those reads and a single call together without permitting retries.
+            : await step.do('workflow-'+s.id,{retries:{limit:0,delay:'1 second'},
+              timeout:s.uses==='mcp.call'?'90 seconds':'30 seconds'},async ():Promise<Outcome>=>{
             try{
               // Only an executing callback marks a Step running. Cached replay
               // must never replace a previously persisted terminal Step state.
@@ -784,12 +799,28 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               // a successful result.emit operation.
               if(s.uses==='result.emit')
                 return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              if(s.uses==='http.request'){
+                try{
+                  const body=Object.hasOwn(s.with,'body')?evaluateArguments(s.with.body,ctx):undefined;
+                  const response=await callApprovedHttp(db,plan,s,id,body);
+                  const unknown=!response.ok&&s.with.method==='POST';
+                  return {status:response.ok?'succeeded':unknown?'indeterminate':'failed',
+                    output:limitResult(response),
+                    ...(response.ok?{}:{error_code:unknown?'http_outcome_unknown':'http_response_error'})};
+                }catch(error){
+                  if(error instanceof HttpDispatchError)
+                    return {status:error.uncertain?'indeterminate':'failed',
+                      error_code:error.code};
+                  // Unknown exceptions after a possible dispatch must fail closed.
+                  return {status:'indeterminate',error_code:'http_outcome_unknown'};
+                }
+              }
               if(s.uses==='mcp.call'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))
                   throw Error('invalid_arguments');
                 try{
-                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>,id,s.id)};
+                  return {status:'succeeded',output:await callApprovedMcp(this.env,plan,s,a as Record<string,unknown>,id,s.id)};
                 }catch(error){
                   if(error instanceof Error&&error.message==='portal_connection_revoked')
                     return {status:'failed',error_code:'portal_connection_revoked'};

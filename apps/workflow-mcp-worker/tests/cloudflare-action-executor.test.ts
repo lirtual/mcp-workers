@@ -23,7 +23,7 @@ async function fixture(t:test.TestContext){
  for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql',
    '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql',
-   '0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql','0017_cloudflare_action_migration_fence.sql'])
+   '0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
   sql.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  const m=await cloudflareActionManifest();
  const notify:Step={id:'notify',uses:'action.run',needs:['openlist'],with:{
