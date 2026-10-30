@@ -56,7 +56,11 @@ GitHub operations. A best-effort native wake is not business success; D1 is
 the durable decision and the existing GitHub Attempt/OIDC ledger still
 controls physical dispatch and result. The gate is an authenticated **MCP
 API assertion**, not independently verified presence of a human, and it
-cannot expand existing execution permissions. A paused Workflow blocks new
+cannot expand existing execution permissions. `workflow_cancel` may cancel
+a still-undecided gate if no other Step is active; a D1 atomic fence records
+the cancellation before any GitHub Attempt. Once a decision has been recorded,
+the ordinary GitHub cancellation and physical-state reconciliation rules apply.
+Cancellation is a request, not proof that an external GitHub task stopped. A paused Workflow blocks new
 Runs; it does not reverse an in-flight approved operation.
 
 The additional D1 migration `0015_runtime_approval.sql` is applied only by
@@ -144,9 +148,11 @@ There are **no independent capability enable flags**. The documented per-operati
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
+`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
 
-`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress currently supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay. It does **not** support direct GitHub webhooks, pull requests or other GitHub event types, repeat/expand, child calls or Saga. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
+Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, awaited, nonrecursive** `flow: child` under exact Publish grants. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.
+Dynamic while/until, nested loops, detached child Runs, Saga compensation, write-scope MCP Actions and generic HTTP Actions remain **unsupported** and fail at compilation. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
 

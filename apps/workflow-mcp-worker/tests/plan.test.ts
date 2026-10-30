@@ -343,9 +343,9 @@ test('bounded foreach rejects unbounded, unsafe, colliding or unauthorized expan
 test('foreach invalid references point at source or template instead of leaking payloads',async()=>{
   const root={version:1,name:'Precise foreach issue',inputs:{values:['x']}};
   for(const [items,data,expected] of [
-    [{ref:'steps.undeclared.output'},{ref:'item.value'},'/steps/0/items'],
-    [{ref:'inputs.values'},{ref:'steps.undeclared.output'},'/steps/0/template/steps/0/with/data'],
-    [{ref:'inputs.values'},{ref:'item.secret'},'/steps/0/template/steps/0/with/data'],
+    [{ref:'steps.undeclared.output'},{ref:'item.value'},'/steps/0/items/ref'],
+    [{ref:'inputs.values'},{ref:'steps.undeclared.output'},'/steps/0/template/steps/0/with/data/ref'],
+    [{ref:'inputs.values'},{ref:'item.secret'},'/steps/0/template/steps/0/with/data/ref'],
   ] as const){
     await assert.rejects(()=>compilePlan({...root,steps:[
       {id:'each',flow:'foreach',items,max_items:2,
@@ -424,7 +424,7 @@ test('bounded pure multi-step foreach reserves child IDs and checks local output
   const forward=structuredClone(source);
   forward.steps[0]!.template!.steps[0]!.with.data={ref:'steps.finish.output'};
   await assert.rejects(()=>compilePlan(forward),
-    e=>e instanceof PlanError&&e.path==='/steps/0/template/steps/0/with/data');
+    e=>e instanceof PlanError&&e.path==='/steps/0/template/steps/0/with/data/ref');
   const crossItem=structuredClone(source);
   crossItem.steps[0]!.template!.steps[1]!.with.data={ref:'steps.each_0_prepare.output'};
   await assert.rejects(()=>compilePlan(crossItem),PlanError);

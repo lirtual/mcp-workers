@@ -52,36 +52,39 @@ function object(value: unknown, message: string): Record<string, unknown> {
   if(!value || typeof value !== 'object' || Array.isArray(value)) throw new PlanError(message);
   return value as Record<string, unknown>;
 }
-function refCheck(ref: string, step?: {id:string;needs:string[]}, allowItem=false) {
+function refCheck(ref: string, step?: {id:string;needs:string[]}, allowItem=false, path='/') {
   const parts=ref.split('.');
-  if(parts.length<2 || parts.slice(1).some(p=>!SAFE_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference');
+  if(parts.length<2 || parts.slice(1).some(p=>!SAFE_ID.test(p)||['__proto__','constructor','prototype'].includes(p))) throw new PlanError('invalid_reference',path);
   if(parts[0]==='inputs') return;
   if(allowItem&&parts[0]==='item'&&['value','index'].includes(parts[1])&&
      (parts[1]==='value'||parts.length===2))return;
   if(parts[0]==='steps' && step && step.needs.includes(parts[1]) && parts.length>=3 && ['status','output'].includes(parts[2])) return;
-  throw new PlanError('invalid_step_reference');
+  throw new PlanError('invalid_step_reference',path);
 }
-function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, allowItem=false): void {
-  if(depth>15) throw new PlanError('expression_too_deep');
+function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opaqueKeys=false, allowItem=false, path='/'): void {
+  if(depth>15) throw new PlanError('expression_too_deep',path);
   if(v===null || typeof v==='string'||typeof v==='number'||typeof v==='boolean') return;
-  if(Array.isArray(v)) { if(v.length>100) throw new PlanError('expression_too_large'); for(const x of v) expression(x,step,depth+1,opaqueKeys,allowItem); return; }
+  if(Array.isArray(v)) { if(v.length>100) throw new PlanError('expression_too_large',path); for(const [index,x] of v.entries()) expression(x,step,depth+1,opaqueKeys,allowItem,path+'/'+index); return; }
+  if(!v||typeof v!=='object')throw new PlanError('invalid_expression',path);
   const o=object(v,'invalid_expression');
   const names=Object.keys(o);
   if(names.length===1 && names[0]==='ref'){
-    if(typeof o.ref!=='string') throw new PlanError('invalid_reference');
-    refCheck(o.ref,step,allowItem);return;
+    if(typeof o.ref!=='string') throw new PlanError('invalid_reference',path+'/ref');
+    refCheck(o.ref,step,allowItem,path+'/ref');return;
   }
   if(names.length===1 && ['eq','ne','gt','lt','and','or','not'].includes(names[0])) {
     const op=names[0], arg=o[op];
-    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,allowItem);return;}
-    if(!Array.isArray(arg)||arg.length<(op==='and'||op==='or'?1:2)||arg.length>(op==='and'||op==='or'?16:2))throw new PlanError('invalid_operator');
-    for(const x of arg)expression(x,step,depth+1,opaqueKeys,allowItem);
+    if(op==='not'){expression(arg,step,depth+1,opaqueKeys,allowItem,path+'/not');return;}
+    if(!Array.isArray(arg)||arg.length<(op==='and'||op==='or'?1:2)||arg.length>(op==='and'||op==='or'?16:2))throw new PlanError('invalid_operator',path+'/'+op);
+    for(const [index,x] of arg.entries())expression(x,step,depth+1,opaqueKeys,allowItem,path+'/'+op+'/'+index);
     return;
   }
   for(const [name,x] of Object.entries(o)){
-    if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key');
-    if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression');
-    expression(x,step,depth+1,opaqueKeys,allowItem);
+    if(name==='__proto__'||name==='prototype'||name==='constructor')throw new PlanError('invalid_argument_key',path);
+    if(!opaqueKeys&&RESERVED.has(name.toLowerCase()))throw new PlanError('unsafe_expression',path);
+    // Arbitrary object keys may contain secrets; only include a known schema key in a public path.
+    expression(x,step,depth+1,opaqueKeys,allowItem,
+      ['data','arguments','inputs','notification'].includes(name)?path+'/'+name:path);
   }
 }
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
@@ -662,16 +665,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
          Number(s.with.timeout_seconds)>PLAN_LIMITS.maxEventWaitSeconds)
         throw new PlanError('invalid_event_wait_timeout','/steps/'+steps.indexOf(s)+'/timeout_seconds');
     }else if(s.uses==='flow.child'){
-      try{expression(s.with.inputs,s,0,true);}catch(error){
-        if(error instanceof PlanError)throw new PlanError(error.message,'/steps/'+steps.indexOf(s)+'/inputs');
+      try{expression(s.with.inputs,s,0,true,false,'/steps/'+steps.indexOf(s)+'/inputs');}catch(error){
+        if(error instanceof PlanError)throw new PlanError(error.message,error.path==='/'?'/steps/'+steps.indexOf(s)+'/inputs':error.path);
         throw error;
       }
     }else if(s.uses==='flow.foreach'){
       const sourcePath='/steps/'+steps.indexOf(s);
       const check=(value:unknown,path:string,allowItem=false)=>{
-        try{expression(value,s,0,false,allowItem);}
+        try{expression(value,s,0,false,allowItem,path);}
         catch(error){
-          if(error instanceof PlanError)throw new PlanError(error.message,path);
+          if(error instanceof PlanError)throw new PlanError(error.message,error.path==='/'?path:error.path);
           throw error;
         }
       };
@@ -682,9 +685,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         const childPath=sourcePath+'/template/steps/'+index;
         const localStep={id:child.id,needs:[...s.needs,...children.slice(0,index).map(x=>x.id)]};
         const checkChild=(value:unknown,path:string,opaque=false)=>{
-          try{expression(value,localStep,0,opaque,true);}
+          try{expression(value,localStep,0,opaque,true,path);}
           catch(error){
-            if(error instanceof PlanError)throw new PlanError(error.message,path);
+            if(error instanceof PlanError)throw new PlanError(error.message,error.path==='/'?path:error.path);
             throw error;
           }
         };
@@ -707,19 +710,19 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
             throw new PlanError('invalid_condition',childPath+'/if');
         }
       }
-    }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true);
+    }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/arguments');
     else if(s.uses==='github.run' && s.with.capability==='github.action') {
       // Action identity is an immutable literal, never a runtime expression.
       const a=s.with.action as Record<string,unknown>;
       for(const [key,value] of Object.entries(a)) {
-        if(key==='inputs') expression(value,s,0,true);
+        if(key==='inputs') expression(value,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/inputs');
         else if(typeof value==='string'&&value.includes('\${{'))throw new PlanError('dynamic_github_identity');
       }
     } else if(s.uses==='action.run'&&s.with.provider==='bark') {
-      expression((s.with.input as {notification:unknown}).notification,s,0,true);
-    } else expression(s.with,s);
+      expression((s.with.input as {notification:unknown}).notification,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/input/notification');
+    } else expression(s.with,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with');
     if(s.if!==undefined){
-      expression(s.if,s);
+      expression(s.if,s,0,false,false,'/steps/'+steps.indexOf(s)+'/if');
       const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }

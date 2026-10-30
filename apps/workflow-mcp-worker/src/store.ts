@@ -473,6 +473,51 @@ export class WorkflowService {
     if(planRow){
       let published:Plan|null=null;
       try{published=JSON.parse(planRow.plan) as Plan;}catch{}
+      // A waiting runtime approval has no physical GitHub Attempt yet.
+      // Cancellation competes with the first approval decision through D1;
+      // after approval, use the ordinary GitHub cancellation/reconciliation path.
+      const approval=published?.steps.find(s=>s.id===step_id&&
+        s.uses==='github.run'&&s.approval?.required===true);
+      if(approval){
+        const step=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+          .bind(run_id,step_id).first<{status:string}>();
+        if(step?.status==='waiting_approval'){
+          if(force)throw new StateError('approval_force_not_supported');
+          const updates=await this.db.batch([
+            this.db.prepare(`UPDATE runs SET outcome='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE id=? AND outcome='running'
+              AND EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id=? AND s.status='waiting_approval')
+              AND NOT EXISTS(SELECT 1 FROM runtime_approvals a WHERE a.run_id=runs.id
+                AND a.step_id=?)
+              AND NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=runs.id
+                AND a.step_id=?)
+              AND NOT EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id<>? AND s.status IN ('running','waiting','waiting_approval'))`)
+              .bind(now(),run_id,step_id,step_id,step_id,step_id),
+            this.db.prepare(`UPDATE run_steps SET status='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE run_id=? AND step_id=? AND status='waiting_approval'
+                AND EXISTS(SELECT 1 FROM runs WHERE id=?
+                  AND outcome='cancelled' AND error_code='approval_cancel_requested')`)
+              .bind(now(),run_id,step_id,run_id),
+          ]);
+          if(!updates[0].meta.changes||!updates[1].meta.changes)
+            throw new StateError('approval_cancel_conflict');
+          // Best-effort wake only: D1 cancellation is authoritative.
+          let wake:'sent'|'unknown'='sent';
+          try{
+            const row=await this.db.prepare('SELECT instance_id FROM runs WHERE id=?')
+              .bind(run_id).first<{instance_id:string}>();
+            if(!row)throw Error('run_missing');
+            const native=await this.env.WORKFLOW.get(row.instance_id);
+            if(!native.sendEvent)throw Error('send_event_unavailable');
+            await native.sendEvent({type:'approval-'+step_id,payload:{run_id}});
+          }catch{wake='unknown';}
+          return {run_id,step_id,cancellation:'requested',wake,physical_terminated:false};
+        }
+      }
       const cloudflare=published?.steps.find(s=>s.id===step_id&&s.uses==='action.run');
       if(cloudflare){
         if(force)throw new StateError('cloudflare_force_not_supported');
