@@ -10,14 +10,14 @@ function resolver(address: string): typeof fetch {
 describe('eligible public database endpoints', () => {
   it('accepts eligible DNS names only when public resolver answers are present', async () => {
     await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one', resolver('1.1.1.1')))
-      .resolves.toMatchObject({ dialect: 'postgres', host: 'db.example.org' });
+      .resolves.toMatchObject({ dialect: 'postgres', host: 'db.example.org', dialHost: '1.1.1.1' });
   });
   it('accepts globally routable literal IPs for MySQL Direct without a DNS lookup', async () => {
     const noDns = vi.fn(async (): Promise<Response> => { throw new Error('DNS lookup not expected'); }) as unknown as typeof fetch;
     await expect(validatePublicEndpoint('mysql://reader:password@93.184.216.34:3306/app', 'one', noDns))
-      .resolves.toMatchObject({ dialect: 'mysql', host: '93.184.216.34', port: 3306 });
+      .resolves.toMatchObject({ dialect: 'mysql', host: '93.184.216.34', dialHost: '93.184.216.34', port: 3306 });
     await expect(validatePublicEndpoint('mysql://reader:password@[2606:4700::1111]:3306/app', 'one', noDns))
-      .resolves.toMatchObject({ dialect: 'mysql', host: '2606:4700::1111', port: 3306 });
+      .resolves.toMatchObject({ dialect: 'mysql', host: '2606:4700::1111', dialHost: '2606:4700::1111', port: 3306 });
     expect(noDns).not.toHaveBeenCalled();
   });
   it('rejects private, special-use, mapped, and loopback literal IPs for MySQL Direct', async () => {
@@ -60,6 +60,21 @@ describe('eligible public database endpoints', () => {
     }
     await expect(validatePublicEndpoint('postgres://user@db.example.org/app', 'one',
       resolver6('2606:4700::1111'))).resolves.toMatchObject({ host: 'db.example.org' });
+  });
+  it('pins IPv6-only DNS answers while preserving the original logical host', async () => {
+    const answer = vi.fn(async (url: RequestInfo | URL) => Response.json({
+      Status: 0, Answer: String(url).includes('type=AAAA') ? [{ type: 28, data: '2606:4700::1111' }] : []
+    })) as unknown as typeof fetch;
+    await expect(validatePublicEndpoint('mysql://reader:pass@db.example.org/app', 'id', answer))
+      .resolves.toMatchObject({ host: 'db.example.org', dialHost: '2606:4700::1111' });
+  });
+  it('rejects mixed public and private DNS answers before choosing any dial target', async () => {
+    const answer = vi.fn(async (url: RequestInfo | URL) => Response.json({
+      Status: 0, Answer: String(url).includes('type=AAAA')
+        ? [{ type: 28, data: 'fd00::1' }] : [{ type: 1, data: '1.1.1.1' }]
+    })) as unknown as typeof fetch;
+    await expect(validatePublicEndpoint('mysql://reader:pass@db.example.org/app', 'id', answer))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
   });
   it('uses Workers-compatible manual redirect mode for every DNS lookup', async () => {
     const request = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {

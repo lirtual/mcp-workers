@@ -65,10 +65,10 @@ export async function validatePublicEndpoint(raw: string, id: string, requestFet
   const ip = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   if (isIP(ip)) {
     if (!publicAddress(ip)) invalid('nonpublic_address');
-    return parsed;
+    return { ...parsed, dialHost: ip };
   }
   if (!allowedHostname(host)) invalid('invalid_hostname');
-  let addresses = 0;
+  const addresses: string[] = [];
   try {
     const answers = await Promise.all(['A', 'AAAA'].map(async type => {
       const response = await requestFetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, {
@@ -83,15 +83,15 @@ export async function validatePublicEndpoint(raw: string, id: string, requestFet
       for (const record of answer.Answer ?? []) {
         if (record.type !== 1 && record.type !== 28) continue;
         if (typeof record.data !== 'string' || !publicAddress(record.data)) invalid('nonpublic_address');
-        addresses++;
+        addresses.push(record.data);
       }
     }
   } catch (error) {
     if (error instanceof PublicError) throw error;
     return unavailable();
   }
-  if (addresses === 0) unavailable();
-  // DNS-to-connect binding cannot be guaranteed by mysql2/pg; residual rebinding
-  // and TOCTOU risks are documented. Workers outbound restrictions are additive.
-  return parsed;
+  if (addresses.length === 0) unavailable();
+  // Bind the actual Direct TCP destination to this already-vetted public address.
+  // Keep the original hostname in the immutable logical source identity.
+  return { ...parsed, dialHost: addresses[0]! };
 }

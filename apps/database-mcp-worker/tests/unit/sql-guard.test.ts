@@ -13,12 +13,17 @@ const rejected = [
   'SELECT /*+ MAX_EXECUTION_TIME(0) */ 1',
   'SELECT pg_advisory_lock(42)',
   "SELECT nextval('orders_id_seq')",
-  "SELECT set_config('statement_timeout', '0', false)"
+  "SELECT set_config('statement_timeout', '0', false)",
+  "SELECT lo_export(42, '/tmp/export')",
+  "SELECT dblink_exec('other', 'DELETE FROM t')",
+  "SELECT pg_read_file('/etc/passwd')",
+  "SELECT LOAD_FILE('/etc/passwd')",
+  "SELECT sys_eval('id')"
 ];
 
 describe('read query guard', () => {
   it.each(rejected)('rejects unsafe SQL: %s', sql => {
-    expect(() => guardReadQuery(sql, sql.includes('GET_LOCK') || sql.includes('OUTFILE') || sql.includes('FOR SHARE') ? 'mysql' : 'postgres')).toThrow();
+    expect(() => guardReadQuery(sql, sql.includes('GET_LOCK') || sql.includes('OUTFILE') || sql.includes('FOR SHARE') || sql.includes('LOAD_FILE') || sql.includes('sys_eval') ? 'mysql' : 'postgres')).toThrow();
   });
 
   it('accepts select and CTE reads with literals/comments containing scary words', () => {

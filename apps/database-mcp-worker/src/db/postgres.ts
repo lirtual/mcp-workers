@@ -26,6 +26,27 @@ async function withClient<T>(connection: EffectiveConnection, operation: (client
   }
 }
 
+
+/** A SELECT can invoke a stored function. The server's read-only transaction
+ * rejects ordinary database mutations even when the SQL scanner permits it.
+ * Hyperdrive pins the backend for this short transaction.
+ */
+async function withReadOnlyClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
+  return withClient(connection, async client => {
+    await withTimeout(client.query('BEGIN READ ONLY'), connection.limits.queryTimeoutMs, () => {
+      void client.end().catch(() => undefined);
+    });
+    try {
+      return await operation(client);
+    } finally {
+      // ROLLBACK releases a successful read-only transaction just as COMMIT does.
+      await withTimeout(client.query('ROLLBACK'), connection.limits.queryTimeoutMs, () => {
+        void client.end().catch(() => undefined);
+      }).catch(() => undefined);
+    }
+  });
+}
+
 export async function postgresQueryRead(
   connection: EffectiveConnection,
   sql: string,
@@ -35,7 +56,7 @@ export async function postgresQueryRead(
   const guarded = guardReadQuery(sql, 'postgres');
   const limitedSql = toReadLimitedSql(guarded.sql, 'postgres', rowLimit + 1);
 
-  return withClient(connection, async client => {
+  return withReadOnlyClient(connection, async client => {
     const result = await withTimeout(
       client.query({ text: limitedSql, values: params, rowMode: 'array' }),
       connection.limits.queryTimeoutMs,
@@ -56,7 +77,7 @@ export async function postgresExplain(
 ): Promise<unknown> {
   const guarded = guardReadQuery(sql, 'postgres');
   const explainSql = `EXPLAIN (FORMAT JSON, ANALYZE FALSE, VERBOSE FALSE, COSTS TRUE) ${guarded.sql}`;
-  return withClient(connection, async client => {
+  return withReadOnlyClient(connection, async client => {
     const result = await withTimeout(
       client.query({ text: explainSql, values: params, rowMode: 'array' }),
       connection.limits.queryTimeoutMs,

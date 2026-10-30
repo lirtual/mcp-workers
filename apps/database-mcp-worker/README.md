@@ -124,7 +124,7 @@ The existing MCP tools remain: `list_connections`, `inspect_schema`, `get_schema
 
 ## Security and release checks
 
-Direct public-host/DNS/address checks are retained, with documented DNS rebinding/TOCTOU residual risk. Never use Direct with a server requiring encrypted database traffic. Database GRANT/RLS and transactional engine properties remain the authorization and rollback boundaries.
+Direct validates all returned DNS A/AAAA addresses as public and pins a validated address for each TCP connection attempt, while keeping the original hostname as the immutable logical target. This removes the second DNS lookup during a single Direct connection; it does **not** provide TLS peer authentication, prevent legitimate DNS changes between invocations, or guarantee every public address belongs to the intended server. Never use Direct with a server requiring encrypted database traffic. PostgreSQL user-provided read/EXPLAIN queries run within a short native READ ONLY transaction; the scanner also blocks known side-effecting functions. MySQL read access continues to depend on explicit database-native least-privilege grants (and the SQL guard); no blacklist can classify arbitrary user-defined routines. Database GRANT/RLS and transactional engine properties remain the authorization and rollback boundaries.
 
 The Worker requires `MCP_ACCESS_TOKEN`, `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, `DATABASE_GITHUB_ACTIONS_TOKEN`, a dedicated D1 `DB` binding, `RATE_LIMITER`, `SETUP_RATE_LIMITER`, and the existing Owner Access Variables. Bounded CAS key rotation applies **only to encrypted Direct records**; retained rollback versions and backups must be compatible with both current and historic encryption keys.
 

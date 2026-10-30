@@ -63,6 +63,8 @@ export interface EffectiveConnection {
   dialect: Dialect;
   connectionString: string;
   host: string;
+  // Public IP vetted by DNS admission, pinned for the Direct TCP dial only.
+  dialHost?: string;
   user: string;
   password: string;
   database: string;
