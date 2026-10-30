@@ -482,7 +482,14 @@ export class WorkflowService {
         const step=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
           .bind(run_id,step_id).first<{status:string}>();
         if(step && (step.status==='waiting_approval'||step.status==='running')){
-          if(force)throw new StateError('approval_force_not_supported');
+          if(force){
+            // Force cancellation is only meaningful once a physical Attempt
+            // exists; hand that case to the existing guarded GitHub path.
+            const prior=await this.db.prepare(`SELECT 1 AS present FROM step_attempts
+              WHERE run_id=? AND step_id=? LIMIT 1`)
+              .bind(run_id,step_id).first<{present:number}>();
+            if(!prior)throw new StateError('approval_force_not_supported');
+          }else{
           // A recorded (even consumed) approval is not an external effect.
           // Race the FIRST GitHub Attempt using the same durable Run row:
           // cancellation wins before Attempt INSERT, or Attempt wins and
@@ -529,6 +536,7 @@ export class WorkflowService {
             WHERE run_id=? AND step_id=? LIMIT 1`)
             .bind(run_id,step_id).first<{present:number}>();
           if(!attempt)throw new StateError('approval_cancel_conflict');
+          }
         }
       }
       const cloudflare=published?.steps.find(s=>s.id===step_id&&s.uses==='action.run');
