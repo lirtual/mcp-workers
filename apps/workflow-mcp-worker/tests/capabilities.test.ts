@@ -296,6 +296,41 @@ test('ordered mixed Task discovery enforces one literal Task and read-only MCP',
 });
 
 
+test('Foreach discovery matches compiler: read-only MCP and GitHub Tasks only',async()=>{
+ const foreachSteps=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+ assert.ok(foreachSteps);
+ const items=foreachSteps.items as unknown as {allOf:Array<{
+     if:{properties:{uses:{const:string}}};
+     then:{properties:{with:{properties:Record<string,any>}}};
+   }>};
+ const withFor=(uses:string)=>{
+   const rule=items.allOf.find(rule=>rule.if.properties.uses.const===uses);
+   assert.ok(rule,'missing Foreach schema for '+uses);
+   return rule.then.properties.with;
+ };
+ assert.deepEqual(withFor('mcp.call').properties.scope,{const:'read'});
+ assert.deepEqual(withFor('github.run').properties.action.properties.type,{const:'task'});
+ assert.deepEqual(withFor('action.run').properties.executor,{const:'github'});
+ assert.deepEqual(withFor('action.run').properties.action.properties.type,{const:'task'});
+ // These restrictions must not narrow independent top-level Action contracts.
+ assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties.scope,{enum:['read','write']});
+ const standaloneCloudflare=WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[1] as {
+   properties:{executor:{const:string}};
+ };
+ assert.equal(standaloneCloudflare.properties.executor.const,'cloudflare');
+
+ const definition=(scope:'read'|'write')=>({version:1,name:'Foreach discovery audit',steps:[
+   {id:'source',uses:'result.emit',with:{data:[1]}},
+   {id:'each',flow:'foreach',needs:['source'],items:{ref:'steps.source.output'},max_items:1,
+     template:{steps:[{id:'read',uses:'mcp.call',with:{
+       endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'ima_list_notebooks',
+       scope,arguments:{limit:1},input_schema:{type:'object'},
+     }}]}},
+ ]});
+ assert.equal((await compilePlan(definition('read'))).plan.steps[1]?.uses,'flow.foreach');
+ await assert.rejects(()=>compilePlan(definition('write')),/unsupported_operation_scope/);
+});
+
 test('external event wait has one bounded, digest-only compiler contract and matching discovery',async()=>{
   const d=(timeout_seconds=30)=>({version:1,name:'Event wait',steps:[
     {id:'signal',flow:'wait_event',timeout_seconds,token_sha256:'a'.repeat(64)},
