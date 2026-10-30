@@ -59,8 +59,11 @@ API assertion**, not independently verified presence of a human, and it
 cannot expand existing execution permissions. `workflow_cancel` may cancel
 a waiting gate or an already-approved Step before its first durable GitHub
 Attempt, provided no other Step is active. The D1 Run cancellation and Attempt
-insert race atomically: cancellation first forbids GitHub dispatch; Attempt
-first routes cancellation through existing physical GitHub cancellation and
+insert race atomically: cancellation first forbids GitHub dispatch. If the
+Attempt was inserted but its physical GitHub Run ID is still unconfirmed,
+cancellation durably closes the business Run, denying any subsequent signed
+physical Claim while retaining an unverified external-dispatch outcome. An
+already confirmed physical Run instead uses existing GitHub cancellation and
 terminal reconciliation. An approval decision, even if consumed, is not itself
 an external Attempt. Force cancellation requires an existing Attempt and the
 normal physical safeguards. Cancellation is a request, not proof of physical
