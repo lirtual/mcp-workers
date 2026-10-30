@@ -277,7 +277,8 @@ export class WorkflowService {
         }));
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
-        const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+        const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
+          scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
       const required_http_operations=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
@@ -291,7 +292,8 @@ export class WorkflowService {
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
-        ...(required_approvals.length?{required_approvals}:{}),
+        ...(required_approvals.length?{required_approvals,
+          ...(required_approvals.some(x=>x.scope==='write')?{requires_mcp_write_execution_approval:true}:{})}:{}),
         ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
         ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
@@ -350,7 +352,8 @@ export class WorkflowService {
   async httpConnectionEnable(){return changeHttpAuthorization(this.db,'enable');}
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
-    approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false){
+    approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false,
+    approve_mcp_write_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -364,11 +367,15 @@ export class WorkflowService {
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const required=[...new Map(approvedMcpSteps(plan).map(s=>{
-      const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+      const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
+        scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
       return [JSON.stringify(grant),grant] as const;
     })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
+    const hasMcpWrite=required.some(g=>g.scope==='write');
+    if(hasMcpWrite!==approve_mcp_write_execution)
+      throw new StateError('mcp_write_approval_required');
     if(required.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
@@ -422,6 +429,7 @@ export class WorkflowService {
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true,
+      ...(hasMcpWrite?{mcp_write_execution_approved:true as const}:{}),
       mcp_connection_generation:portalConnection!.generation}:plan;
     const httpPlan:Plan=httpRequired.length?{...scopedPlan,http_approvals:httpRequired,
       http_execution_approved:true,http_connection_generation:httpConnection!.generation}:scopedPlan;

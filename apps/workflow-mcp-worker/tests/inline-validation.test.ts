@@ -101,7 +101,7 @@ test('MCP field errors include stable paths while inline validation stays D1-fre
   for(const [property,value,code,path] of [
     ['endpoint','http://localhost/mcp','invalid_endpoint','/steps/0/with/endpoint'],
     ['tool','invalid tool!','invalid_tool','/steps/0/with/tool'],
-    ['scope','write','unsupported_operation_scope','/steps/0/with/scope'],
+    ['scope','write','unreviewed_write_operation','/steps/0/with'],
   ] as const){
     const malformed={...base,steps:[{...base.steps[0],
       with:{...base.steps[0].with,[property]:value}}]};

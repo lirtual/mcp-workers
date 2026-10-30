@@ -3,6 +3,7 @@ import {httpOperation,type HttpOperation} from './http-action.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
+import {REVIEWED_WRITE_TOOL,reviewedWriteArguments} from './mcp-write-contract.ts';
 import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
@@ -23,7 +24,7 @@ export type Step = {
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
 };
-export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
+export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
 export type GithubEventTrigger = {type:'github_event';repository:string;repository_id:number;event:'push';ref:string;workflow_path:string};
 export const GITHUB_EVENT_PATTERNS=Object.freeze({
@@ -32,7 +33,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -656,8 +657,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
       catch { throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint'); }
       if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool',stepPath+'/with/tool');
-      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
+      if(withData.scope!=='read'&&withData.scope!=='write')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
       object(withData.arguments,'invalid_step_arguments');
+      if(withData.scope==='write' && (withData.tool!==REVIEWED_WRITE_TOOL ||
+         !reviewedWriteArguments(withData.arguments)))
+        throw new PlanError('unreviewed_write_operation',stepPath+'/with');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
       await toolSchemaDigest(withData.input_schema,withData.output_schema);
@@ -774,6 +778,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }
   }
+  // Initial reviewed-write slice permits one static external write per Plan.
+  // Do not turn a single owner grant into a multi-write fan-out.
+  const writeSteps=steps.filter(s=>s.uses==='mcp.call'&&s.with.scope==='write');
+  if(writeSteps.length>1)
+    throw new PlanError('excessive_mcp_write_steps','/steps');
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){
     const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
