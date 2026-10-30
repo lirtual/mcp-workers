@@ -15,14 +15,18 @@ import { withTimeout } from './timeout.js';
 
 async function withConnection<T>(
   connection: EffectiveConnection,
-  operation: (client: Connection) => Promise<T>
+  operation: (client: Connection) => Promise<T>,
+  readOnly = false
 ): Promise<T> {
   let client: Connection | undefined;
   try {
     client = await createMysqlClient(connection, true);
-    if (connection.transport === 'hyperdrive') {
-      // Pin the backend session during SQL-mode check and client interpolation.
-      await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+    if (connection.transport === 'hyperdrive' || readOnly) {
+      // MySQL READ ONLY is a server-enforced guard against persistent-table
+      // changes from SELECT-invoked routines, even for a writable DB principal.
+      // It also pins the Hyperdrive backend during SQL-mode verification.
+      await withTimeout(readOnly ? client.query('START TRANSACTION READ ONLY').then(() => undefined) : client.beginTransaction(),
+        connection.limits.queryTimeoutMs, () => client?.destroy());
       try {
         await assertMysqlHyperdriveSqlMode(client, connection);
         return await operation(client);
@@ -78,7 +82,7 @@ export async function mysqlQueryRead(
       rowLimit,
       connection.limits.maxResultBytes
     );
-  });
+  }, true);
 }
 
 export async function mysqlExplain(
@@ -96,7 +100,7 @@ export async function mysqlExplain(
     const value = jsonSafe(rows);
     assertJsonWithinBytes(value, connection.limits.maxResultBytes);
     return value;
-  });
+  }, true);
 }
 
 export async function mysqlHealthCheck(connection: EffectiveConnection): Promise<HealthResult> {
