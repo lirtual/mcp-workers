@@ -9,10 +9,13 @@
   `38bf39b569484dbb8a9fe1b24f0df854`
   (`VERIFY_IDENTITY`); each has a CA and disabled SQL caching.
 - Current D1: **active** `db344_pg_e2e`, `b2b`,
-  `scrape_relay`; **disabled** `aiven_mysql_e2e` and
-  `aiven_mysql_openlist`. Prior MySQL test activation was a
-  historical successful test and does not imply it is active today.
-  PostgreSQL Hyperdrive health remains **PASS**.
+  `scrape_relay`; **disabled** `aiven_mysql_e2e`. Legacy
+  `aiven_mysql_openlist` was **permanently retired** with an immutable
+  D1 retired-ID marker via the protected, no-deploy
+  [Action #41007072427](https://github.com/lirtual/mcp-workers/actions/runs/41007072427).
+  All three active connections passed fresh health and constant `SELECT 1`
+  checks (6/6) after retirement. The earlier MySQL test activation is
+  historical and does not mean that test reference is active today.
 - Live isolated PostgreSQL Hyperdrive read/DDL/write, actual RLS
   tenant enforcement, guarded UPDATE/DELETE transaction rollback
   and final cleanup have all **PASS** evidence in
@@ -31,9 +34,9 @@
   succeeded; there was no new Worker publication. An offline
   regression is not a substitute for real Hyperdrive handshake failure.
 
-Only resume blocked Hyperdrive-client negative E2E with a separately
-allowed disposable config/origin and protected credential handling;
-otherwise leave #344 Open until an explicit Owner evidence-gap waiver.
+The Owner explicitly closed #344 with the remaining evidence gaps documented
+as **Waived / Not performed**, not PASS. Do not retry a platform-blocked
+Hyperdrive-client negative test without separately allowed conditions.
 See [current operator runbook](../../docs/database-cutover-344.md).
 
 ## Earlier Aiven MySQL test activation record (historical)

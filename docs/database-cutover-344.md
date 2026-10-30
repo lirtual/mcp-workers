@@ -11,10 +11,12 @@ live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
   MySQL `38bf39b569484dbb8a9fe1b24f0df854` (`VERIFY_IDENTITY`).
   Both have an approved CA and query caching **disabled**.
 - D1 logical connection inventory: `db344_pg_e2e`, `b2b` and
-  `scrape_relay` are **active**; `aiven_mysql_e2e` and legacy
-  `aiven_mysql_openlist` are **disabled**. Do **not** reactivate a test
-  reference solely to recreate historical acceptance results. PostgreSQL
-  `db344_pg_e2e` health **PASS**.
+  `scrape_relay` are **active**; `aiven_mysql_e2e` remains **disabled**.
+  The legacy `aiven_mysql_openlist` ID was permanently retired through
+  [protected no-deploy Action #41007072427](https://github.com/lirtual/mcp-workers/actions/runs/41007072427):
+  D1 row absent, `retired_connection_ids` marker present, and the three
+  still-active connections passed fresh health + constant SELECT (6/6).
+  Do **not** reactivate test references solely to recreate historical acceptance.
 - Real isolated PostgreSQL Hyperdrive SQL/read, structured DDL/DML,
   RLS policy enforcement (including denied tenant access), 21-row
   UPDATE/DELETE transaction rollback and full test-table cleanup
@@ -41,13 +43,13 @@ live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
   **PASS**. Offline tests are not Hyperdrive-client negative E2E.
   No production Worker redeployment is needed for this CI-only change.
 
-**Only remaining TLS decision:** keep #344 **Open** with its Hyperdrive-client
-negative E2E explicitly blocked until an allowed disposable configuration and
-separate credential/cleanup proof path exists, or the Owner explicitly
-accepts that residual evidence gap as a documented waiver. Neither an OpenSSL
-origin test, a strict configured TLS mode nor a CI unit test silently
-substitutes for this acceptance gate. Do not create a new Worker, deploy
-system or Acceptance environment just to satisfy it.
+**Owner disposition:** #344 was subsequently **closed with explicit waivers**
+for Hyperdrive-client negative TLS injection and independent historical-key
+loss/recovery drill; neither is PASS. The Owner-approved current-copy D1
+export/import/temporary restore check is separate from a historical-key-loss
+recovery drill. Do not reopen #344 merely because older sections say Open.
+Do not create a new Worker, deploy system or Acceptance environment to
+recreate blocked security tests. Refer to the Issue's newest closeout record.
 
 ## Aiven MySQL test replacement — historical live read-only E2E (2026-10-30)
 
