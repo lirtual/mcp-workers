@@ -16,7 +16,7 @@ export interface HyperdriveCandidate {
 export interface HyperdriveOperation {
   operationId: string;
   id: string;
-  action: 'create';
+  action: 'create' | 'rotate_credentials';
   phase: 'pending';
 }
 export interface HyperdriveOperationSummary {
@@ -153,7 +153,8 @@ export async function listHyperdriveOperations(db: D1Database): Promise<Hyperdri
         'apply_policy_unavailable','apply_pr_stale','apply_pr_draft','apply_merge_denied',
         'apply_ci_receipt_unknown','apply_ci_failed','apply_ci_pending','apply_review_missing','apply_checks_unknown','apply_main_advanced','apply_merge_sha_unknown',
         'apply_read_unavailable','apply_write_rejected','apply_outcome_unknown','apply_cas_failed',
-        'apply_logical_id_unavailable','apply_source_invalid','apply_config_drift','apply_release_receipt_unknown'].includes(row.error_class)) {
+        'apply_logical_id_unavailable','apply_source_invalid','apply_config_drift','apply_release_receipt_unknown',
+        'credential_isolation_blocked','credential_outcome_unknown','credential_health_unverified'].includes(row.error_class)) {
         row.error_class = 'operation_blocked';
       }
     }
@@ -227,9 +228,16 @@ export async function recordHyperdriveDispatch(
 export async function expireHyperdrivePreparations(db: D1Database): Promise<void> {
   try {
     await db.prepare(`UPDATE hyperdrive_operations SET
-      phase=CASE WHEN phase='pending' THEN 'failed' ELSE phase END,
+      phase=CASE WHEN phase='pending' OR
+        (action='rotate_credentials' AND phase='running' AND resource_write_started_at IS NULL)
+        THEN 'failed' WHEN action='rotate_credentials' AND phase='running'
+          AND resource_write_started_at IS NOT NULL THEN 'unknown' ELSE phase END,
       ciphertext=NULL,key_id=NULL,updated_at=?,
-      error_class=CASE WHEN phase='pending' THEN 'preparation_expired' ELSE error_class END
+      error_class=CASE WHEN phase='pending' THEN 'preparation_expired'
+        WHEN action='rotate_credentials' AND phase='running' AND resource_write_started_at IS NULL
+          THEN 'credential_isolation_blocked'
+        WHEN action='rotate_credentials' AND phase='running' AND resource_write_started_at IS NOT NULL
+          THEN 'credential_outcome_unknown' ELSE error_class END
       WHERE operation_id IN (SELECT operation_id FROM hyperdrive_operations
         WHERE expires_at<=? AND (ciphertext IS NOT NULL OR phase='pending') LIMIT 20)`)
       .bind(Date.now(),Date.now()).run();
@@ -272,4 +280,41 @@ export async function recordHyperdriveApplyDispatch(db: D1Database, operationId:
       .bind(runId ? 'running' : 'unknown',runId ?? null,
         runId ? 'github_apply_accepted' : 'github_apply_receipt_unknown',Date.now(),operationId).run();
   } catch { unavailable(); }
+}
+
+/** Owner approval reserves one password-only change without exposing the password to GitHub inputs. */
+export async function createHyperdriveCredentialRotation(
+  db: D1Database, keys: EncryptionKeys, id: string, expectedRevision: number, password: string
+): Promise<HyperdriveOperation> {
+  if (!idPattern.test(id) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 ||
+      typeof password !== 'string' || password.length < 1 || encoder.encode(password).byteLength > 2048) invalid();
+  if (!db) unavailable();
+  const operationId = crypto.randomUUID();
+  const key = await cryptoKey(keys);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const aad = encoder.encode('database-mcp:hyperdrive-operation:v1:' + operationId +
+    ':rotate_credentials:' + id + ':' + expectedRevision);
+  const ciphertext = encode(iv) + '.' + encode(new Uint8Array(await crypto.subtle.encrypt({
+    name: 'AES-GCM', iv: new Uint8Array(iv), additionalData: aad
+  }, key, encoder.encode(JSON.stringify({password})))));
+  const now = Date.now();
+  try {
+    const result = await db.prepare(`INSERT INTO hyperdrive_operations
+      (operation_id,logical_id,action,expected_revision,phase,ciphertext,key_id,
+       config_id,binding_name,created_at,updated_at,expires_at)
+      SELECT ?,c.id,'rotate_credentials',c.revision,'pending',?,?,c.config_id,c.binding_name,?,?,?
+      FROM database_connections c WHERE c.id=? AND c.transport='hyperdrive'
+        AND c.status='disabled' AND c.revision=? AND c.in_flight_count=0
+        AND c.target_metadata IS NOT NULL AND length(c.config_id)=32
+        AND c.binding_name LIKE 'HYPERDRIVE_%'
+        AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations o WHERE o.logical_id=c.id
+          AND o.phase IN ('pending','running','awaiting_confirmation','unknown'))`)
+      .bind(operationId,ciphertext,keys.DATABASE_KEY_ID,now,now,now+15*60_000,id,expectedRevision).run();
+    if (result.meta.changes !== 1) conflict();
+  } catch(error) {
+    if (error instanceof PublicError) throw error;
+    if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) conflict();
+    unavailable();
+  }
+  return {operationId,id,action:'rotate_credentials',phase:'pending'};
 }

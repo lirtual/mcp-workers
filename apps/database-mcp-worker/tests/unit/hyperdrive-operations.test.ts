@@ -171,3 +171,49 @@ it('exposes only validated candidate CI receipts and fixed blocked reasons',asyn
     await expect(listHyperdriveOperations(db)).rejects.toMatchObject({code:'CONFIGURATION_UNAVAILABLE'});
   } finally {sqlite.close();}
 });
+
+
+it('Owner stores a revision-bound, encrypted credential rotation request', async () => {
+ const {createHyperdriveCredentialRotation}=await import('../../src/setup/hyperdrive-operations.js');
+ const {sqlite,db}=fixture();
+ try {
+  sqlite.prepare(`INSERT INTO database_connections
+   (id,dialect,transport,status,revision,config_id,binding_name,target_metadata,created_at,updated_at)
+   VALUES ('isolated','mysql','hyperdrive','disabled',4,?,?,?,1,1)`)
+   .run('a'.repeat(32),'HYPERDRIVE_ISOLATED','{"dialect":"mysql"}');
+  const op=await createHyperdriveCredentialRotation(db,keys,'isolated',4,'synthetic-test-credential');
+  expect(op).toMatchObject({id:'isolated',phase:'pending',action:'rotate_credentials'});
+  const stored=sqlite.prepare('SELECT action,expected_revision,config_id,binding_name,ciphertext,key_id FROM hyperdrive_operations WHERE operation_id=?').get(op.operationId) as Record<string,unknown>;
+  expect(stored).toMatchObject({action:'rotate_credentials',expected_revision:4,config_id:'a'.repeat(32),binding_name:'HYPERDRIVE_ISOLATED',key_id:'active'});
+  expect(JSON.stringify(stored)).not.toContain('synthetic-test-credential');
+  expect(JSON.stringify(await listHyperdriveOperations(db))).not.toContain('synthetic-test-credential');
+  await expect(createHyperdriveCredentialRotation(db,keys,'isolated',4,'synthetic-new')).rejects.toMatchObject({code:'REVISION_CONFLICT'});
+  await expect(createHyperdriveCredentialRotation(db,keys,'isolated',5,'synthetic-new')).rejects.toMatchObject({code:'REVISION_CONFLICT'});
+  await expect(createHyperdriveCredentialRotation(db,keys,'isolated',4,'')).rejects.toMatchObject({code:'INVALID_INPUT'});
+ } finally {sqlite.close();}
+});
+
+
+it('expired credential operation preserves ambiguity only after the upstream write is claimed',async()=>{
+ const {createHyperdriveCredentialRotation}=await import('../../src/setup/hyperdrive-operations.js');
+ const {sqlite,db}=fixture();
+ try{
+  sqlite.prepare(`INSERT INTO database_connections
+    (id,dialect,transport,status,revision,config_id,binding_name,target_metadata,created_at,updated_at)
+    VALUES ('expiring','mysql','hyperdrive','disabled',4,?,?,?,1,1)`)
+   .run('b'.repeat(32),'HYPERDRIVE_EXPIRING','{"dialect":"mysql"}');
+  const before=await createHyperdriveCredentialRotation(db,keys,'expiring',4,'synthetic-secret-one');
+  await claimHyperdriveDispatch(db,before.operationId);
+  sqlite.prepare('UPDATE hyperdrive_operations SET expires_at=1 WHERE operation_id=?').run(before.operationId);
+  await expireHyperdrivePreparations(db);
+  expect(sqlite.prepare('SELECT phase,ciphertext,key_id FROM hyperdrive_operations WHERE operation_id=?').get(before.operationId))
+   .toMatchObject({phase:'failed',ciphertext:null,key_id:null});
+  const after=await createHyperdriveCredentialRotation(db,keys,'expiring',4,'synthetic-secret-two');
+  await claimHyperdriveDispatch(db,after.operationId);
+  sqlite.prepare('UPDATE hyperdrive_operations SET resource_write_started_at=100,expires_at=1 WHERE operation_id=?').run(after.operationId);
+  await expireHyperdrivePreparations(db);
+  expect(sqlite.prepare('SELECT phase,error_class,ciphertext,key_id FROM hyperdrive_operations WHERE operation_id=?').get(after.operationId))
+   .toMatchObject({phase:'unknown',error_class:'credential_outcome_unknown',ciphertext:null,key_id:null});
+  await expect(createHyperdriveCredentialRotation(db,keys,'expiring',4,'synthetic-secret-three')).rejects.toMatchObject({code:'REVISION_CONFLICT'});
+ }finally{sqlite.close();}
+});

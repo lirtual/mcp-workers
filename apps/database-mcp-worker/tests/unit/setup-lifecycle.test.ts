@@ -557,3 +557,46 @@ it('Owner rotation readiness is read-only in D1 and rejects stale, invalid or mi
   .toEqual({status:'disabled',revision:4,updated_at:1});
  expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toEqual({n:0});
 });
+
+
+it('Owner credential-rotation confirmation never includes plaintext in GitHub dispatch or response',async()=>{
+ const {sqlite,env}=fixture();instances.push(sqlite);
+ sqlite.prepare(`INSERT INTO database_connections
+  (id,dialect,transport,status,revision,config_id,binding_name,target_metadata,created_at,updated_at)
+  VALUES ('rotatable','mysql','hyperdrive','disabled',4,?,?,?,1,1)`)
+  .run('a'.repeat(32),'HYPERDRIVE_UNBOUND','{"dialect":"mysql"}');
+ env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
+ const {jwt,certificates}=await auth();
+ const sends:unknown[]=[];
+ const requestFetch:typeof fetch=async(input,init)=>{
+  if(String(input).includes('api.github.com')){
+   sends.push(JSON.parse(String(init?.body)));return Response.json({workflow_run_id:476});
+  }
+  return certificates();
+ };
+ const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+ const html=await page.text();
+ expect(html).toContain('action="/setup/hyperdrive-credentials"');
+ const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+ const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+ const post=(changes:Record<string,string>)=>handleSetup(new Request(pageUrl+'/hyperdrive-credentials',{
+  method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+   cookie,'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({csrf,id:'rotatable',revision:'4',confirm_id:'rotatable',
+   confirm_credentials:'1',new_password:'synthetic-secret-value',...changes})
+ }),env,requestFetch);
+ expect((await post({confirm_credentials:'0'})).status).toBe(422);
+ expect((await post({confirm_id:'other'})).status).toBe(422);
+ expect((await post({revision:'5'})).status).toBe(409);
+ expect(sends).toHaveLength(0);
+ const reply=await post({});expect(reply.status).toBe(200);
+ expect(await reply.text()).not.toContain('synthetic-secret-value');
+ expect(sends).toHaveLength(1);
+ expect(JSON.stringify(sends)).not.toContain('synthetic-secret-value');
+ expect(sends[0]).toMatchObject({inputs:{database_hyperdrive_rotation_mode:'credentials_apply',
+  deploy_to_production:'false'}});
+ const persisted=sqlite.prepare('SELECT action,phase,ciphertext,prepare_run_id FROM hyperdrive_operations').get() as Record<string,unknown>;
+ expect(persisted).toMatchObject({action:'rotate_credentials',phase:'running',prepare_run_id:476});
+ expect(JSON.stringify(persisted)).not.toContain('synthetic-secret-value');
+ expect((await post({})).status).toBe(409);
+});

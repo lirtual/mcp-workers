@@ -7,8 +7,8 @@ import {verifyCloudflareHyperdriveConfig} from './verify-database-hyperdrive.mjs
 const REGISTRY='cbfe6a05-4979-4e6a-9cc2-4f6468586e4a';
 const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const fail=code=>{throw Error('Hyperdrive rotation preflight blocked: '+code)};
-export async function checkDatabaseHyperdriveRotation({mode,connectionId,expectedRevision,actor,ref,sourceSha,accountId,token,source,manifest,request=fetch}){
- if(!['credentials','ca'].includes(mode)||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(connectionId??'')||
+export async function checkDatabaseHyperdriveRotation({mode,connectionId,expectedRevision,actor,ref,sourceSha,accountId,token,source,manifest,operationId,request=fetch}){
+ if((operationId!==undefined && !UUID.test(operationId))||!['credentials','ca'].includes(mode)||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(connectionId??'')||
  !/^[1-9][0-9]{0,12}$/.test(expectedRevision??'')||!Number.isSafeInteger(Number(expectedRevision))||
  actor!=='lirtual'||ref!=='refs/heads/main'||!/^[a-f0-9]{40}$/.test(sourceSha??'')||
  !/^[a-f0-9]{32}$/i.test(accountId??'')||!token)fail('identity');
@@ -44,7 +44,8 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
  !['mysql','postgres'].includes(row.dialect))fail('disabled_drain_unproven');
  const shared=await query('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',[connectionId,row.config_id,row.binding_name]);
  if(shared.length!==1||shared[0].n!==0)fail('shared_registry_reference');
- const ops=await query("SELECT COUNT(*) AS n FROM hyperdrive_operations WHERE logical_id=? AND phase IN ('pending','running','awaiting_confirmation','unknown')",[connectionId]);
+ const ops=await query("SELECT COUNT(*) AS n FROM hyperdrive_operations WHERE logical_id=? AND phase IN (\'pending\',\'running\',\'awaiting_confirmation\',\'unknown\')"+
+  (operationId?' AND operation_id<>?':''), operationId?[connectionId,operationId]:[connectionId]);
  if(ops.length!==1||ops[0].n!==0)fail('unfinished_operation');
  if((source.hyperdrive??[]).some(x=>x.id===row.config_id||x.binding===row.binding_name)||
    manifest.some(x=>x.id===row.config_id||x.binding===row.binding_name))fail('reviewed_source_reference');
@@ -167,7 +168,8 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
    fail('registry_changed_during_check');
  const recentShared=await query('SELECT COUNT(*) AS n FROM database_connections WHERE id<>? AND (config_id=? OR binding_name=?)',[connectionId,row.config_id,row.binding_name]);
  if(recentShared.length!==1||recentShared[0].n!==0)fail('shared_registry_reference');
- const recentOps=await query("SELECT COUNT(*) AS n FROM hyperdrive_operations WHERE logical_id=? AND phase IN ('pending','running','awaiting_confirmation','unknown')",[connectionId]);
+ const recentOps=await query("SELECT COUNT(*) AS n FROM hyperdrive_operations WHERE logical_id=? AND phase IN (\'pending\',\'running\',\'awaiting_confirmation\',\'unknown\')"+
+  (operationId?' AND operation_id<>?':''), operationId?[connectionId,operationId]:[connectionId]);
  if(recentOps.length!==1||recentOps[0].n!==0)fail('unfinished_operation');
  // An eligibility observation is neither an Owner mutation approval nor an
  // exclusive lock. Any future write must repeat the checks under approval.

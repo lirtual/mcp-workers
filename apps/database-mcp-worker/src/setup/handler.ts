@@ -9,9 +9,9 @@ import { createRegistryConnection, deleteRegistryConnection, getRegistryConnecti
 import { rotateRegistryKeys } from '../registry/rotation.js';
 import type { Dialect, Env } from '../types.js';
 import { validateCsrf, verifyAccess } from './access.js';
-import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, dispatchHyperdrivePrepare, dispatchHyperdriveApply, verifyGithubActionsDispatch,
+import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, dispatchHyperdriveCredentialRotation, dispatchHyperdrivePrepare, dispatchHyperdriveApply, verifyGithubActionsDispatch,
   verifyGithubPrCapability, readHyperdriveUnbindStatus } from './github-actions.js';
-import { previewHyperdriveCreation, createHyperdrivePreparation, listHyperdriveOperations,
+import { previewHyperdriveCreation, createHyperdrivePreparation, createHyperdriveCredentialRotation, listHyperdriveOperations,
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
 import { setupFailure, setupPage, setupResult, setupUnbindStatusResult } from './page.js';
 
@@ -165,7 +165,7 @@ export async function handleSetup(
       const operations = await listHyperdriveOperations(env.DB);
       return setupPage(connections, token, operations);
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|github-actions-check)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|hyperdrive-credentials|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
@@ -244,6 +244,23 @@ export async function handleSetup(
         '. This is not a Hyperdrive configuration or deployment confirmation.');
     }
     const id = required(form, 'id');
+    if (action === 'hyperdrive-credentials') {
+      if (required(form, 'confirm_id') !== id || required(form, 'confirm_credentials') !== '1') invalid();
+      const expected = revision(form);
+      const newPassword = required(form, 'new_password');
+      const prepared = await createHyperdriveCredentialRotation(env.DB, env, id, expected, newPassword);
+      await claimHyperdriveDispatch(env.DB, prepared.operationId);
+      let runId: number | undefined;
+      try { runId = (await dispatchHyperdriveCredentialRotation(env, prepared.operationId, requestFetch)).runId; }
+      catch (error) {
+        await recordHyperdriveDispatch(env.DB, prepared.operationId);
+        throw error;
+      }
+      await recordHyperdriveDispatch(env.DB, prepared.operationId, runId);
+      return setupResult('Password update request accepted. Connection remains disabled. Operation ID: ' +
+        prepared.operationId + (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
+        '. Write-only credentials require independent validation; API acceptance is not success.');
+    }
     if (action === 'add') {
       const dialect = required(form, 'dialect');
       if (dialect !== 'mysql' && dialect !== 'postgres') invalid();

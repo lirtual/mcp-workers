@@ -248,3 +248,30 @@ test('Hyperdrive credentials and CA checks cannot mutate or start any other rele
   assert.throws(()=>verifyDatabaseRotationGate(release,script+"\nconst bad={method:'PATCH'};"));
   assert.throws(()=>verifyDatabaseRotationGate(release,script+"\nawait query('DELETE FROM database_connections');"));
 });
+
+
+test('Owner password rotation dispatch cannot enable, retire, deploy, or bypass exact operation confirmation',()=>{
+ const job=release.split('\n  database-hyperdrive-credentials:\n')[1]?.split('\n  database-hyperdrive-rotation-check:\n')[0];
+ assert.ok(job);
+ const expression=job.match(/    if: >-\n\s*\$\{\{([\s\S]*?)\}\}/)?.[1];
+ assert.ok(expression);
+ const evaluate=Function('github','inputs','return '+expression);
+ const github={event_name:'workflow_dispatch',ref:'refs/heads/main',actor:'lirtual'};
+ const inputs={worker:'database-mcp-worker',deploy_to_production:false,
+  database_hyperdrive_rotation_mode:'credentials_apply',database_hyperdrive_prepare_id:'12345678-1234-1234-1234-123456789abc',
+  database_hyperdrive_apply_id:'',database_hyperdrive_id:'',database_hyperdrive_revision:'',
+  database_expected_release_sha:'',database_hyperdrive_enable_approved:false,
+  database_hyperdrive_retire_approved:false};
+ assert.equal(evaluate(github,inputs),true);
+ for(const inputPatch of [{deploy_to_production:true},{database_hyperdrive_prepare_id:''},
+  {database_hyperdrive_rotation_mode:'credentials'},
+  {database_hyperdrive_rotation_mode:'ca'},{database_hyperdrive_enable_approved:true},
+  {database_hyperdrive_retire_approved:true},{database_hyperdrive_apply_id:'other'},
+  {database_hyperdrive_id:'other'}])assert.equal(evaluate(github,{...inputs,...inputPatch}),false);
+ for(const contextPatch of [{actor:'untrusted'},{event_name:'pull_request'},
+  {ref:'refs/heads/feature'}])assert.equal(evaluate({...github,...contextPatch},inputs),false);
+ assert.match(job,/group: worker-release-database-mcp-worker/);
+ assert.match(job,/run: node scripts\/rotate-database-hyperdrive-476.mjs/);
+ assert.match(job,/contents: read/);
+ assert.doesNotMatch(job,/contents: write|pull-requests: write|wrangler deploy/);
+});

@@ -163,3 +163,19 @@ test('a Worker settings change after the historical scan invalidates rotation el
  await assert.rejects(run(f,{request}),/worker_settings_changed/);
  onlyRead(f);
 });
+
+
+test('the protected rotation Runner can exclude only its own reserved operation from the unresolved census',async()=>{
+ const f=fixture({operations:1});
+ await assert.rejects(run(f),/unfinished_operation/);
+ const operationId='12345678-1234-1234-1234-123456789abc';
+ const request=async(url,init)=>{
+  if(url.includes('/d1/database/')&&String(init?.body??'').includes('operation_id<>?')){
+   const params=JSON.parse(String(init.body)).params;
+   assert.equal(params[1],operationId);
+   return {ok:true,json:async()=>({success:true,result:[{success:true,results:[{n:0}]}]})};
+  }
+  return f.request(url,init);
+ };
+ assert.equal((await run(f,{request,operationId})).eligible,true);
+});

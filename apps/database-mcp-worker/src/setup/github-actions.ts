@@ -287,3 +287,17 @@ export async function readHyperdriveUnbindStatus(
   }
   return {phase,prNumber:number as number};
 }
+
+/** Protected password-only rotation: only an encrypted D1 operation UUID is dispatched. */
+export async function dispatchHyperdriveCredentialRotation(
+ env: Env, operationId: string, request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+ if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(operationId)) {
+  throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive operation ID.');
+ }
+ return dispatchWorkflow(env, {
+  worker:'database-mcp-worker', deploy_to_production:'false',
+  database_hyperdrive_prepare_id:operationId,
+  database_hyperdrive_rotation_mode:'credentials_apply'
+ }, request);
+}

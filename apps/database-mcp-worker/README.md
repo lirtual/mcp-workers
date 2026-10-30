@@ -78,9 +78,19 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   claim, deterministic certificate name and strict CA PEM content/ID readback. Lost upload
   acknowledgements are reconciled by read-only inventory, not a second POST. Existing CA IDs
   are verified read-only. Neither case changes the current OpenList CA or live configs.
-  Password/CA rotations remain blocked until write-only password reconciliation and shared,
-  in-flight and rollback isolation can be established. Disabling new SQL does not drain
-  existing SQL. No nonfunctional password/CA apply controls are exposed.
+- Isolated password-only rotation can now be explicitly confirmed in /setup.
+  It stores only an AES-GCM-encrypted operation in D1, dispatches the existing
+  Owner-only release workflow, and rechecks current/rollback isolation before
+  the one-shot Cloudflare PATCH and connection-pool restart. The original
+  connection remains disabled. As Cloudflare never returns the write-only
+  password, accepted PATCH/restart plus nonsecret GET is only
+  awaiting_confirmation, not completed health/SQL verification. An unknown
+  outcome is never replayed; passwords are cleared from D1 after the guarded
+  attempt, with sanitized operation status. CA rotation still requires an
+  independently prepared candidate and reviewed binding/manifest switch.
+  An in-place password change is rejected while current, shared, in-flight or
+  rollback dependencies remain. Disabling new SQL does not drain existing SQL.
+  CA apply remains unavailable until the independently verified candidate switch is complete.
 - `/setup/hyperdrive-apply` requires Owner Access, CSRF, the exact typed logical ID,
   immutable operation UUID and explicit final confirmation checkbox. Only unexpired
   `awaiting_confirmation` creations expose it. D1 claims the dispatch before GitHub I/O;

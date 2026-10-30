@@ -79,6 +79,12 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
             '<label>Rotation readiness<select name="rotation_mode"><option value="credentials">Password</option><option value="ca">CA certificate</option></select></label>' +
             '<p class="muted">Only checks whether an in-place rotation might be isolated. No password or CA material is submitted. Existing rollback versions may block this check.</p>' +
             '<button type="submit">Check rotation isolation (read-only)</button></form>' +
+            '<form method="post" action="/setup/hyperdrive-credentials">' + token(csrf) + ids(row) +
+            '<p class="muted">This update is only for an isolated, disabled, unbound Hyperdrive with no current or rollback references. The protected Runner rejects unsafe changes.</p>' +
+            '<label>New password<input name="new_password" type="password" maxlength="2048" autocomplete="off" required></label>' +
+            '<label>Type connection ID to confirm password update<input name="confirm_id" required></label>' +
+            '<label class="check"><input type="checkbox" name="confirm_credentials" value="1" required>I authorize a password update. Connection stays disabled and requires independent verification.</label>' +
+            '<button type="submit">Confirm isolated password update</button></form>' +
             '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
             '<button type="submit">Check unbinding PR (read-only)</button></form></details>'
           : '') +

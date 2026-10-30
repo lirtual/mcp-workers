@@ -203,6 +203,49 @@ jobs:
           DATABASE_ACTIVATION_REVISION: ${{ inputs.database_hyperdrive_revision }}
         run: node scripts/activate-database-hyperdrive.mjs
 
+  database-hyperdrive-credentials:
+    name: Owner-confirmed isolated Hyperdrive password update (no deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false &&
+          inputs.database_hyperdrive_rotation_mode == 'credentials_apply' &&
+          inputs.database_hyperdrive_prepare_id != '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' &&
+          inputs.database_expected_release_sha == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Recheck isolation, attempt password update and require independent SQL verification
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
+          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
+          DATABASE_HYPERDRIVE_OPERATION_ID: ${{ inputs.database_hyperdrive_prepare_id }}
+        run: node scripts/rotate-database-hyperdrive-476.mjs
+
   database-hyperdrive-rotation-check:
     name: Check Hyperdrive rotation safety (read-only, no deployment)
     if: >-
