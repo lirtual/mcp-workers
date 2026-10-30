@@ -11,7 +11,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "apps/browser-mcp-worker/extension"
-FILES = ("background.js", "config.js", "manifest.json", "observation.js", "mutations.js", "popup.html", "popup.js", "INSTALL.md", "NOTICES.md")
+FILES = ("background.js", "config.js", "manifest.json", "observation.js", "mutations.js", "options.html", "options.js", "INSTALL.md", "NOTICES.md")
 # Public installation identity, never an authentication or signing secret.
 KEY_SHA256 = "9785067d4ec625ebb231d29a2be4354c6d9622a68cc6ac6e5ad0105c0a353075"
 

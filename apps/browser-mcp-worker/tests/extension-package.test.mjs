@@ -28,7 +28,7 @@ test("one reproducible Chrome/Edge extension ZIP is source-bound and refuses tam
       encoding:"utf8",env:{...process.env,GIT_DIR:join(repo,".git"),GIT_WORK_TREE:repo}});
     const first=invoke("--out-dir",dir);
     assert.equal(first.status,0,first.stderr);
-    const zip=join(dir,"browser-mcp-extension-v0.1.0.zip");
+    const zip=join(dir,"browser-mcp-extension-v0.2.0.zip");
     const hash=()=>createHash("sha256").update(readFileSync(zip)).digest("hex");
     const before=hash();
     assert.equal(invoke("--out-dir",dir).status,0);

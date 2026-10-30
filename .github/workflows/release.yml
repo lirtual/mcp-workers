@@ -222,7 +222,7 @@ jobs:
         if: inputs.worker == 'browser-mcp-worker'
         run: |
           python3 scripts/build-browser-extension.py --out-dir "$RUNNER_TEMP/browser-extension"
-          python3 scripts/build-browser-extension.py --verify "$RUNNER_TEMP/browser-extension/browser-mcp-extension-v0.1.0.zip"
+          python3 scripts/build-browser-extension.py --verify "$RUNNER_TEMP/browser-extension/browser-mcp-extension-v0.2.0.zip"
 
       - name: Retain Browser ZIP and provenance for separately authorized GitHub Release publication
         if: inputs.worker == 'browser-mcp-worker'
@@ -279,6 +279,8 @@ jobs:
           BROWSER_ACCESS_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACCESS_AUDIENCE || '' }}
           BROWSER_OWNER_EMAIL: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_OWNER_EMAIL || '' }}
           BROWSER_APPROVAL_ISOLATION: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ISOLATION || '' }}
+          BROWSER_ACTIVATION_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
+          BROWSER_ACTIVATION_ORIGIN: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_ORIGIN || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
@@ -711,7 +713,7 @@ jobs:
           DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
         run: node scripts/probe-database-github-dispatch.mjs
 
-      - name: Verify Browser isolated Owner Access before optional approval activation (read-only)
+      - name: Verify Browser Owner Approval and Profile Activation Access (read-only)
         if: inputs.worker == 'browser-mcp-worker'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -721,6 +723,8 @@ jobs:
           BROWSER_ACCESS_AUDIENCE: ${{ vars.BROWSER_ACCESS_AUDIENCE }}
           BROWSER_OWNER_EMAIL: ${{ vars.BROWSER_OWNER_EMAIL }}
           BROWSER_APPROVAL_ISOLATION: ${{ vars.BROWSER_APPROVAL_ISOLATION }}
+          BROWSER_ACTIVATION_AUDIENCE: ${{ vars.BROWSER_ACTIVATION_AUDIENCE }}
+          BROWSER_ACTIVATION_ORIGIN: ${{ vars.BROWSER_ACTIVATION_ORIGIN }}
         run: node scripts/browser-owner-access.mjs
 
       - name: Recheck Weixin Provider Version before Workflow publication (read-only)

@@ -79,10 +79,17 @@ export async function fixture(config={},options={}){
     HTMLInputElement:Element,HTMLTextAreaElement:Element,HTMLSelectElement:Element,
     Event:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},
     KeyboardEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}}});
-  const chrome={extension:{isAllowedIncognitoAccess:async()=>{if(pageState.nativeFailure)throw Error("native failure");return pageState.nativePrivate===true;}},storage:{local:storage(local),session:storage(session)},action:{setBadgeText:async()=>{},setTitle:async()=>{}},
-    runtime:{id:"a".repeat(32),getURL:p=>extensionOrigin+"/"+p,onMessage:{addListener(fn){receiver=fn;}},onStartup:event(),onInstalled:event()},
+  const actionClicked=event(),activationAlarm=event();
+  const chrome={extension:{isAllowedIncognitoAccess:async()=>{if(pageState.nativeFailure)throw Error("native failure");return pageState.nativePrivate===true;}},storage:{local:storage(local),session:storage(session)},action:{setBadgeText:async()=>{},setTitle:async()=>{},onClicked:actionClicked},alarms:{create:async()=>{},onAlarm:activationAlarm},
+    runtime:{id:"a".repeat(32),getURL:p=>extensionOrigin+"/"+p,onMessage:{addListener(fn){receiver=fn;}},onMessageExternal:event(),onStartup:event(),onInstalled:event()},
     tabs:{onRemoved:event(),onActivated:event(),captureVisibleTab:async()=>"data:image/png;base64,SCREENSHOT_SEED",
-      create:async opts=>{effects.push(["tab_open",opts.url,opts.windowId]);return {id:2,windowId:1};},
+      create:async opts=>{
+        if(opts.url.startsWith(service+"/activate/verify/")){
+          const attempt_id=new URL(opts.url).pathname.split("/").at(-1);
+          const r=await owner.fetch(new Request("https://owner.internal/activate-authorize",{method:"POST",body:JSON.stringify({attempt_id})}));
+          assert.equal(r.status,200);return {id:42,windowId:1};
+        }
+        effects.push(["tab_open",opts.url,opts.windowId]);return {id:2,windowId:1};},
       update:async(id,opts)=>{effects.push(["tab_navigate",id,opts.url]);return {id};},
       remove:async id=>{effects.push(["tab_close",id]);},get:async id=>({id,url:pageState.url,incognito:pageState.incognito,windowId:pageState.incognito?2:1,active:true}),query:async()=>[{id:1,url:pageState.url,incognito:pageState.incognito,windowId:pageState.incognito?2:1},{id:9,url:"https://ordinary.example/",incognito:false,windowId:1}]},
     windows:{get:async id=>({id,focused:true,incognito:pageState.incognito}),onFocusChanged:event()},
@@ -105,8 +112,19 @@ export async function fixture(config={},options={}){
   vm.runInContext(fs.readFileSync(new URL("../../extension/background.js",import.meta.url),"utf8"),ctx);
   }
   loadExtension();await pause();
-  async function popup(type,extra={}){return new Promise((resolve,reject)=>receiver({type,...extra},{id:chrome.runtime.id,url:chrome.runtime.getURL("popup.html")},r=>r.ok?resolve(r.result):reject(Error(r.error))));}
-  const pair=await rpc("browser_pair");await popup("pair",{service,code:pair.pairing_code,alias:"test"});await popup("resume");await pause();ws.onopen();
+  async function popup(type,extra={}){
+    if(type==="resume"){
+      await clickOn();ws.onopen();await flush();return {authorization:"enabled"};
+    }
+    return new Promise((resolve,reject)=>receiver({type,...extra},{id:chrome.runtime.id,url:chrome.runtime.getURL("options.html")},r=>r.ok?resolve(r.result):reject(Error(r.error))));}
+  async function clickOn(){
+    await actionClicked.emit();
+    for(let i=0;i<120&&local.authorization!=="enabled";i++){await new Promise(r=>setTimeout(r,5));await activationAlarm.emit({name:"browser-activation"});}
+    assert.ok(local.endpoint_id&&local.authorization==="enabled","toolbar activation must pair after Access verification");
+    for(let i=0;i<20&&!ws;i++)await pause();
+    assert.ok(ws,"verified activation opens WSS");
+  }
+  await clickOn();await pause();ws.onopen();
   async function flush(){for(let i=0;i<30;i++){await pause();if(!pending.length)return;await Promise.all(pending.splice(0));}throw Error("unsettled socket");}
   await flush();const endpoint_id=local.endpoint_id;
   async function snapshot(){const result=await rpc("browser_snapshot",{endpoint_id,tab_id:1});await flush();return result;}

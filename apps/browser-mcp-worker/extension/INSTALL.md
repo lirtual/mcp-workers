@@ -1,13 +1,3 @@
-# Browser MCP extension (unpacked release)
+# Browser MCP extension source directory
 
-This checkout is NOT an approved release. The service origin is pinned to a non-routable .invalid domain. Never change it to an arbitrary host or use live credentials for a development build.
-
-For an authorized, independently verified release, compare the ZIP SHA-256 against its published .sha256 sidecar and check the version/build-source JSON metadata. Extract it to a stable directory. In a separate Chrome/Edge Profile open chrome://extensions or edge://extensions, enable Developer mode, and use Load unpacked on that directory. Review broad website permissions before pairing.
-
-Use the independently authenticated browser_pair tool to obtain a short-lived code. Enter it in the extension Popup, review the pinned service URL and confirm pairing locally. A newly paired Profile remains Stopped until locally enabled. Stop and Revoke are separate; a remote Agent cannot enable a Stopped Profile. Never operate the owner approval page from an Agent-controlled Profile.
-
-For an in-place update, preserve the installed directory and extension ID, keep the Profile Stopped, replace files with a verified compatible build and choose Reload. Recheck Stop, identity and cleared transient permissions before resuming. For a failed upgrade restore the previously verified files in the SAME directory and Reload; browser effects already executed cannot be rolled back. Avoid removing/reinstalling unless you intend to pair again; do not clear Durable Object records or Unknown receipts.
-
-Minimum supported Chromium major version: 137 (shared tab-group identification). Packaging is NOT proof of browser lifecycle or Cloudflare production acceptance.
-
-Sensitive permissions are OFF by default. After local Enable, use the Popup's separate direct localhost/LAN and private/incognito buttons and review each confirmation. Private access also requires Chrome/Edge's native Allow in Incognito/InPrivate setting; DENIED/unavailable means no private control. Permissions last only this browser session; Stop/Resume, restart, disable/reload/update clear them. They do not grant independent consequential-action approval. LAN consent permits ordinary direct LAN HTTP(S), without per-origin registration, but never cloud metadata/authentication/approval/protected surfaces. It does not provide full DNS rebinding protection or page network isolation. Ordinary and private tab enumeration are separate; existing private tabs keep their grouping, while new Agent tabs are ordinary only. Stable-path native lifecycle and privacy behavior still require separate Chrome/Edge acceptance.
+The canonical installation, activation, permission, update and rollback instructions for Spec #531 are in [`../../../docs/browser-extension/INSTALL.md`](../../../docs/browser-extension/INSTALL.md). The verified release ZIP embeds that document as its `INSTALL.md`; do not maintain a second divergent copy here.

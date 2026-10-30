@@ -24,7 +24,7 @@ function fixture(){
   const socket={
     readyState:1,
     deserializeAttachment(){return {
-      authenticated:true,endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+      authenticated:true,protocol:2,endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
     };},
     send(message){sent.push(JSON.parse(message));},
     close(){sent.push({type:"closed"});}
