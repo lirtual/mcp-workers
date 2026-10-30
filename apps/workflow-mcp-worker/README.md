@@ -40,22 +40,32 @@ receipts; Bark preserves unknown outcomes without a second send. No public
 Weixin MCP write is used.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
-### Bounded pure while / until (Spec #176)
+### Bounded while / until (Spec #176)
 
-A flow: while or flow: until Step has a literal max_iterations (1–8),
-a safe Boolean condition, optional needs, and exactly one result.emit
-template with data. The only extra references are item.index (zero-based)
-and item.value (initially null, then the previous result). While evaluates
-the condition before each iteration; until evaluates after each iteration
-against the current result. Early exit returns {iterations, value};
-exhaustion fails with loop_budget_exceeded instead of succeeding.
+A `flow: while` or `flow: until` Step has a literal `max_iterations` (1–8),
+a safe Boolean `condition`, optional `needs`, and exactly one template:
+pure `result.emit` with `data`, or reviewed `mcp.call` with `scope: read`,
+exact Portal endpoint/tool/input schema and `arguments`. The only extra
+references are `item.index` (zero-based) and `item.value` (initially null,
+then the previous result); safe input and declared dependency references
+remain available. While checks the condition *before* each iteration; until
+checks *after* the current result. Early exit returns `{iterations, value}`;
+exhaustion fails with `loop_budget_exceeded`, never silent success.
 
-Every possible iteration counts against the existing 32-step budget.
-Each decision and iteration uses a stable Cloudflare native checkpoint;
-no new D1 table, Worker or queue is introduced. Nested loops, external
-MCP/HTTP/GitHub/Cloudflare calls, multiple templates and dynamic limits
-are rejected. External-effect loops need a separate explicit grant and
-dispatch-fence review before future support.
+For MCP bodies, Publish requires the existing exact `approved_operations`
+and `accept_target_risks`; the Portal's current generation is pinned to
+the immutable Plan. Per-iteration effective arguments are frozen in a native
+checkpoint **before** dispatch, followed by a D1 one-shot child fence and
+the existing Portal reservation. A revoked connection, failed child or
+uncertain external result halts further iterations; replay never blindly
+repeats a remote `tools/call`. These are tool-advertised *read-only* calls,
+not a claim that external systems are intrinsically side-effect-free.
+
+Every possible iteration counts toward the existing 32-step Plan budget.
+Each decision and iteration has a stable native checkpoint. No new D1 table,
+Worker, queue or scheduler is introduced. Nested loops, multiple body
+Actions, write-scope MCP, HTTP, GitHub and Cloudflare Action bodies and
+dynamic iteration limits remain unsupported.
 
 ### Optional runtime approval before GitHub dispatch (Spec #176)
 
@@ -358,7 +368,7 @@ A bounded template can instead call an **explicitly approved read-only MCP tool*
 
 Multi-step GitHub support permits **one reviewed, literal-input `github.run` Task among 2–4 ordered `result.emit` and reviewed read-only `mcp.call` children** per item. The previously shipped `result.emit → github.run → result.emit` path retains its checkpoint semantics. New mixed sequences require every earlier stage to succeed before running another stage; skipped, failed or indeterminate stages never authorize another external effect. Later children can use `steps.<Task-id>.output` only after a signed OIDC receipt and independently verified physical GitHub success. MCP children still use their own frozen arguments and one-shot D1 fences. No dynamic Task inputs, second GitHub Task, Session, write-scope tool or nested flow is supported in this multi-step path.
 
-GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **multiple GitHub Tasks in one per-item template or write-scope external Actions**, nested loops, external-effect while/until loops, child workflows, general arbitrary HTTP Actions and Saga remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
+GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **multiple GitHub Tasks in one per-item template or write-scope external Actions**, nested loops, write-scope/external-effect while/until loops beyond reviewed MCP reads, child workflows, general arbitrary HTTP Actions and Saga remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
 
 `workflow_validate` accepts either `{workflow_id, revision}` for a saved Draft or `{definition}` with inline YAML/JSON. Inline validation uses the same compiler and reviewed Action checks, returns required Publish approvals or bounded structured issues, and never creates a Draft, writes D1, publishes, or dispatches external jobs. The two input modes cannot be combined. For a new workflow, validate inline before `workflow_create`.
 

@@ -119,7 +119,7 @@ const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_r
 function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
   return plan.steps.flatMap(s=>{
     if(s.uses==='mcp.call')return [s];
-    if(s.uses!=='flow.foreach')return [];
+    if(s.uses!=='flow.foreach'&&s.uses!=='flow.loop')return [];
     const templates=(Array.isArray(s.with.templates)?s.with.templates:[s.with.template]) as
       Array<{uses?:unknown;with?:Record<string,unknown>}|undefined>;
     return templates.filter(t=>t?.uses==='mcp.call'&&!!t.with)

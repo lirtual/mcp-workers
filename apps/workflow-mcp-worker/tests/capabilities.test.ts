@@ -325,12 +325,12 @@ test('external event wait has one bounded, digest-only compiler contract and mat
 test('bounded dynamic while/until discovery compiles and refuses nested/effect bodies',async()=>{
  const detail=await workflowCapabilities(env,'flow.loop');
  assert.equal(detail.availability,'supported');
- assert.equal((detail.loop_policy as {body:string}).body,'single result.emit only');
+ assert.equal((detail.loop_policy as {body:string}).body,'single result.emit or approved read-only mcp.call');
  const {definition,digest}=detail.example as {definition:unknown;digest:string};
  assert.equal((await compilePlan(definition)).digest,digest);
  assert.equal((await compilePlan(definition)).plan.steps[0].uses,'flow.loop');
  assert.match(String(((await workflowCapabilities(env)).expression_rules as {supported_loop:string}).supported_loop),/exhaustion/);
- for(const uses of ['mcp.call','github.run','http.request','flow.loop']){
+ for(const uses of ['github.run','http.request','flow.loop']){
    await assert.rejects(()=>compilePlan({version:1,name:'Unsafe loop',steps:[{
      id:'loop',flow:'until',max_iterations:3,condition:true,
      template:{uses,with:{data:1}},
@@ -366,4 +366,20 @@ test('unreviewed writes are blocked; nested loops and Saga remain design-only',a
  await assert.rejects(()=>compilePlan({version:1,name:'Unsupported MCP write',
   steps:[{id:'one',uses:'mcp.call',with:{endpoint:PRODUCTION_PORTAL_ENDPOINT,
    tool:'ima_create_note',scope:'write',arguments:{},input_schema:{type:'object'}}}]}),/unreviewed_write_operation/);
+});
+
+
+test('reviewed read-only bounded loop is discoverable but never grants execution',async()=>{
+ const detail=await workflowCapabilities(env,'flow.loop_mcp_read');
+ assert.ok(['unavailable','revoked','configured_unverified'].includes(String(detail.availability)));
+ assert.deepEqual((detail.template_policy as {required_publish_grants:string[]}).required_publish_grants,
+   ['approved_operations','accept_target_risks']);
+ const source={version:1,name:'Schema read only',steps:[{
+   id:'loop',flow:'until',max_iterations:2,condition:true,template:{uses:'mcp.call',with:{
+     endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+     input_schema:{type:'object',properties:{value:{type:'string'}}},arguments:{value:'read'},
+   }},
+ }]};
+ assert.equal((await compilePlan(source)).plan.steps[0].uses,'flow.loop');
+ assert.ok(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items);
 });

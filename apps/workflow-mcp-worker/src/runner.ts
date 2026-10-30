@@ -458,22 +458,29 @@ async function runForeachStep(
   }
 }
 
-/** Bounded pure loop: each decision and iteration has a stable native
- * checkpoint. No MCP, GitHub, HTTP, child, or Provider dispatch is permitted
- * inside this first slice. A replay therefore cannot repeat an external effect.
+/** Bounded loop with stable decision/iteration checkpoints. The only
+ * permitted external body is a single reviewed read-only MCP call. Its
+ * arguments are checkpointed before dispatch; an existing D1 child row
+ * and the Portal generation fence prohibit a second tools/call on replay.
  */
-async function runPureLoop(s:Step,step:WorkflowStep,
+async function runBoundedLoop(env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep,
   ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}):Promise<Outcome>{
   if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
   const mode=s.with.mode;
   const max=s.with.max_iterations;
-  const template=s.with.template as {uses?:unknown;with?:{data?:unknown}}|undefined;
+  const template=s.with.template as
+    {uses?:unknown;with?:{data?:unknown;arguments?:unknown;scope?:unknown}}|undefined;
+  const external=template?.uses==='mcp.call';
   if((mode!=='while'&&mode!=='until')||!Number.isSafeInteger(max)||
-     Number(max)<1||Number(max)>PLAN_LIMITS.maxRepeat||template?.uses!=='result.emit'||
-     !template.with||!Object.hasOwn(template.with,'data'))
+     Number(max)<1||Number(max)>PLAN_LIMITS.maxRepeat||
+     (template?.uses!=='result.emit'&&!external)||
+     !template.with||(external?
+       template.with.scope!=='read'||!template.with.arguments:
+       !Object.hasOwn(template.with,'data')))
     return {status:'failed',error_code:'invalid_loop_plan'};
   let value:unknown=null;
   let count=0;
+  let dispatchUnconfirmed=false;
   try{
     const complete=():Outcome=>({status:'succeeded',output:limitResult({iterations:count,value})});
     const check=async(index:number,current:unknown):Promise<boolean> =>
@@ -481,26 +488,79 @@ async function runPureLoop(s:Step,step:WorkflowStep,
         {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
         async()=>evaluateCondition(s.with.condition,{...ctx,item:{index,value:current}}));
     for(let index=0;index<Number(max);index++){
-      if(mode==='while'&&!(await check(index,value)))
-        return complete();
-      value=await step.do('workflow-'+s.id+':loop:iteration:'+index,
-        {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
-        async()=>{
-          const output=evaluateArguments(template.with!.data,{...ctx,item:{index,value}});
-          if(hasUnresolvedArgument(output))throw Error('invalid_loop_output');
-          return limitResult(output);
-        });
+      if(mode==='while'&&!(await check(index,value)))return complete();
+      if(external){
+        const childId=s.id+':loop:read:'+index;
+        // This immutable checkpoint freezes current-item references and
+        // effective argument values before any external operation.
+        const frozen=await step.do('workflow-'+s.id+':loop:args:'+index,
+          {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},async()=>{
+            const resolved=evaluateArguments(template.with!.arguments,
+              {...ctx,item:{index,value}});
+            if(!resolved||typeof resolved!=='object'||Array.isArray(resolved)||
+               hasUnresolvedArgument(resolved))throw Error('invalid_loop_arguments');
+            return JSON.stringify(limitResult(resolved));
+          });
+        if(typeof frozen!=='string')return {status:'failed',error_code:'invalid_loop_arguments'};
+        const args=JSON.parse(frozen) as unknown;
+        if(!args||typeof args!=='object'||Array.isArray(args)||hasUnresolvedArgument(args))
+          return {status:'failed',error_code:'invalid_loop_arguments'};
+        dispatchUnconfirmed=true;
+        const outcome=await step.do('workflow-'+s.id+':loop:iteration:'+index,
+          {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},async():Promise<Outcome>=>{
+            // Existing D1 run_steps is a once-only admission fence. A lost
+            // native callback may return Unknown but must not call again.
+            const fenced=await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+              SELECT ?,?,'running',? WHERE EXISTS (
+                SELECT 1 FROM runs WHERE id=? AND outcome='running'
+              ) ON CONFLICT(run_id,step_id) DO NOTHING`)
+              .bind(runId,childId,now(),runId).run();
+            if(fenced.meta.changes!==1)
+              return {status:'indeterminate',error_code:'loop_dispatch_unconfirmed'};
+            const child:Step={id:childId,uses:'mcp.call',needs:s.needs,with:template.with as Record<string,unknown>};
+            try{
+              return {status:'succeeded',output:await callApprovedMcp(
+                env,plan,child,args as Record<string,unknown>,runId,childId)};
+            }catch(error){
+              return error instanceof Error&&error.message==='portal_connection_revoked'
+                ?{status:'failed',error_code:'portal_connection_revoked'}
+                :error instanceof Error&&
+                   ['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
+                ?{status:'indeterminate',error_code:'external_outcome_unknown'}
+                :{status:'failed',error_code:'step_execution_failed'};
+            }
+          });
+        await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id)
+          DO UPDATE SET status=excluded.status,output=excluded.output,
+          error_code=excluded.error_code,updated_at=excluded.updated_at
+          WHERE run_steps.status IN ('waiting','running')`)
+          .bind(runId,childId,outcome.status,
+            outcome.output===undefined?null:JSON.stringify(outcome.output),
+            outcome.error_code??null,now()).run();
+        dispatchUnconfirmed=false;
+        if(outcome.status!=='succeeded')return {status:outcome.status,
+          error_code:outcome.status==='indeterminate'?'loop_child_indeterminate':
+            outcome.error_code??'loop_child_failed'};
+        value=outcome.output;
+      }else{
+        value=await step.do('workflow-'+s.id+':loop:iteration:'+index,
+          {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+          async()=>{
+            const output=evaluateArguments(template.with!.data,{...ctx,item:{index,value}});
+            if(hasUnresolvedArgument(output))throw Error('invalid_loop_output');
+            return limitResult(output);
+          });
+      }
       count++;
-      if(mode==='until'&&await check(index,value))
-        return complete();
+      if(mode==='until'&&await check(index,value))return complete();
     }
-    // A true while condition after the last permitted iteration must fail:
-    // budget exhaustion is never reported as a successful early exit.
-    if(mode==='while'&&!(await check(Number(max),value)))
-      return complete();
+    if(mode==='while'&&!(await check(Number(max),value)))return complete();
     return {status:'failed',error_code:'loop_budget_exceeded'};
   }catch{
-    return {status:'failed',error_code:'loop_evaluation_failed'};
+    return dispatchUnconfirmed?
+      {status:'indeterminate',error_code:'loop_execution_unconfirmed'}:
+      {status:'failed',error_code:'loop_evaluation_failed'};
   }
 }
 
@@ -789,7 +849,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
             : s.uses==='flow.child'
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.loop'
-            ? await runPureLoop(s,step,ctx)
+            ? await runBoundedLoop(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
             : s.uses==='action.run'

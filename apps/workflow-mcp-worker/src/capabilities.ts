@@ -297,7 +297,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
   loop_item_refs:['item.index','item.value[.<field>]'],
-  supported_loop:'flow: while checks condition before each pure result.emit iteration; flow: until checks after each iteration. item.index is zero-based; item.value is the previous (while) or current (until) output, initially null. max_iterations 1–8; exhaustion fails closed. No nested or external Action body.',
+  supported_loop:'flow: while checks condition before each result.emit or granted read-only mcp.call; flow: until checks after each iteration. item.index is zero-based; item.value is previous (while) or current (until) output, initially null. max_iterations 1–8; exhaustion fails closed. No nesting or unreviewed effects.',
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
   session_duration_binding:'For reviewed GitHub Session Actions only: Plan inputs.duration_minutes=300, Action inputs.duration_minutes={ref: inputs.duration_minutes}, Action inputs.duration_mode=explicit; workflow_run.inputs.duration_minutes is optional whole minutes 1–300. This does not authorize arbitrary Action input references; old literal Session Plans require one-time republish.',
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
@@ -344,7 +344,11 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {required:['flow','condition','max_iterations','template'],
           properties:{flow:{enum:['while','until']},
             template:{type:'object',additionalProperties:false,required:['uses','with'],
-              properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
+              properties:{uses:{enum:['result.emit','mcp.call']},with:{type:'object'}},
+              oneOf:[
+                {properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}},
+                {properties:{uses:{const:'mcp.call'},with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}},
+              ]}},
           not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},
             {required:['needs_policy']},{required:['times']},{required:['items']},{required:['max_items']}]}},
         {required:['flow','duration_seconds'],properties:{flow:{const:'wait'}},
@@ -478,7 +482,9 @@ const entries=[
   {id:'flow.wait_event',kind:'flow',availability:'supported',
     description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
   {id:'flow.loop',kind:'flow',availability:'supported',
-   description:'Bounded dynamic while/until with one pure result.emit body, 1–8 iterations, stable Cloudflare native checkpoints and fail-closed budget. Nested loops and external Action bodies remain unsupported.'},
+   description:'Bounded dynamic while/until, 1–8 iterations, with one pure result.emit body or separately granted read-only mcp.call. Nested loops and other external Action bodies remain unsupported.'},
+  {id:'flow.loop_mcp_read',kind:'flow',availability:'supported_with_grant',
+   description:'One owner-reviewed read-only MCP Action per bounded iteration. Native argument snapshot, D1 one-shot child fence and Portal generation-scoped approval; unknown effects stop the loop.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
    description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
   {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
@@ -518,14 +524,14 @@ export async function workflowCapabilities(env:Pick<Env,
     (!!env.BARK_ACTION_PROVIDER&&!!env.BARK_ACTION_DEPLOYMENT_ID);
   const availability=(entry:Entry)=>
     entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
-    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
-    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -569,7 +575,7 @@ export async function workflowCapabilities(env:Pick<Env,
   if(id==='flow.loop'){
     detail.example=await compilingExample(boundedLoop);
     detail.loop_policy={modes:['while','until'],max_iterations:PLAN_LIMITS.maxRepeat,
-      body:'single result.emit only',nested:false,external_actions:false,
+      body:'single result.emit or approved read-only mcp.call',nested:false,external_actions:'reviewed mcp.call only',
       refs:['item.index','item.value'],native_checkpoint:'step.do per condition and iteration (reserved identity)',
       budget:'Maximum iterations reserved in the same 32-step Plan budget',
       exhaustion:'failed:loop_budget_exceeded',replay:'fixed checkpoint identity per iteration'};
@@ -792,6 +798,29 @@ export async function workflowCapabilities(env:Pick<Env,
       replay:'D1 child dispatch fence before tools/call; lost checkpoints stay indeterminate, never re-dispatched',
       required_publish_grants:['approved_operations','accept_target_risks'],
       unsupported:['github.run','nested templates','write-scope tools']};
+  }
+  if(id==='flow.loop_mcp_read'){
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length){
+      const tool=discovered.tools[0]!;
+      detail.example=await compilingExample({version:1,name:'Bounded read-only MCP until',
+        steps:[{id:'loop',flow:'until',max_iterations:2,
+          condition:{eq:[{ref:'item.index'},0]},
+          template:{uses:'mcp.call',with:{endpoint:tool.endpoint,tool:tool.tool,
+            scope:'read',input_schema:tool.input_schema,
+            ...(tool.output_schema?{output_schema:tool.output_schema}:{}),
+            arguments:tool.arguments}}}]});
+    }
+    detail.template_policy={allowed_action:'mcp.call',scope:'read',
+      max_iterations:PLAN_LIMITS.maxRepeat,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      args_snapshot:'Native per-iteration argument checkpoint before external dispatch',
+      replay:'D1 one-shot child dispatch fence and Portal generation binding; no blind retry',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['nested loops','write-scope tools','GitHub/HTTP/Cloudflare Actions']};
   }
   if(id==='flow.foreach_mcp_read'){
     const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
