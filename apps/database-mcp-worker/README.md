@@ -260,8 +260,8 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   write. The original connection may remain active and is never changed by
   this preparation; consumers must migrate to the newly published ID before
   separately approved old Binding retirement. A legacy metadata-free ID can use a uniquely matching, reviewed and deployed
-  Hyperdrive Binding manifest for new-ID Edit provenance; any mismatch or
-  unreviewed Binding fails closed. The protected Runner still independently
+  Hyperdrive Binding manifest for new-ID Edit and same-origin CA reuse;
+  any mismatch or unreviewed Binding fails closed. The protected Runner still independently
   verifies live Cloudflare origin, TLS, CA and Binding before preparation.
   Unverified legacy IDs cannot claim CA lineage and must use independent Add.
   This is a safe independent replacement, **not** an in-place CA patch or an

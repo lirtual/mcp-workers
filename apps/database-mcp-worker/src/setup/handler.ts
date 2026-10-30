@@ -103,15 +103,16 @@ function sourceMetadata(
 async function findRecordedCa(env: Env, dialect: Dialect, host: string, port: number): Promise<string | undefined> {
   if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE','Database registry is unavailable.');
   const rows = await env.DB.prepare(`SELECT dialect,status,config_id,binding_name,target_metadata
-    FROM database_connections WHERE transport='hyperdrive' AND status='active'
-    AND target_metadata IS NOT NULL LIMIT 11`).all<{
-      dialect:string; status:string; config_id:string; binding_name:string; target_metadata:string
+    FROM database_connections WHERE transport='hyperdrive' AND status='active' LIMIT 11`).all<{
+      dialect:Dialect; status:string; config_id:string; binding_name:string; target_metadata:string|null
     }>();
   const matches = new Set<string>();
   for (const row of rows.results) {
     if (row.dialect !== dialect) continue;
+    const reviewed = sourceMetadata(row);
+    if (!reviewed) continue;
     let metadata: Record<string,unknown>;
-    try { metadata = JSON.parse(row.target_metadata) as Record<string,unknown>; }
+    try { metadata = JSON.parse(reviewed) as Record<string,unknown>; }
     catch { continue; }
     const expected = ['binding','id','dialect','origin_host','origin_port',
       'origin_database','origin_user','ca_certificate_id'];

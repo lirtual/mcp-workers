@@ -786,6 +786,16 @@ it('accepts only a uniquely reviewed manifest as legacy Hyperdrive Edit provenan
   expect(await readHyperdrivePreparation(env.DB!,env,row.operation_id)).toMatchObject({
     host:prior.origin_host,caCertificateId:prior.ca_certificate_id
   });
+  // A current, uniquely reviewed legacy source can also supply an existing
+  // CA to ordinary Add without manual Cloudflare Config IDs or CA reentry.
+  sqlite.prepare("UPDATE database_connections SET status='active' WHERE id='legacy_mysql'").run();
+  expect((await save({id:'legacy_ca_reuse',replacement_for:''})).status).toBe(200);
+  const reused=sqlite.prepare("SELECT operation_id FROM hyperdrive_operations WHERE logical_id='legacy_ca_reuse'")
+    .get() as {operation_id:string};
+  expect(await readHyperdrivePreparation(env.DB!,env,reused.operation_id)).toMatchObject({
+    caCertificateId:prior.ca_certificate_id
+  });
+  expect(dispatches).toHaveLength(2);
   const unreviewed=await getPage('legacy_unreviewed');
   const unknownHtml=await unreviewed.text();
   expect(unknownHtml).not.toContain('name="host" autocomplete="off" maxlength="253" value="mysql-zeroverse.d.aivencloud.com" readonly');
