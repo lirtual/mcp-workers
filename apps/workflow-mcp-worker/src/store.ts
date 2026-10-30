@@ -25,6 +25,8 @@ function draftName(definition:string):string {
   return 'Untitled Draft';
 }
 import type { Plan, Step, ReadonlyOperation } from './plan.ts';
+import {httpOperation,type HttpOperation} from './http-action.ts';
+import {httpAuthorization,changeHttpAuthorization} from './http-authorization.ts';
 
 export type Env = {
   DB: D1Database;
@@ -246,7 +248,7 @@ export class WorkflowService {
     // Until child cancellation/physical terminal propagation has independent
     // evidence, a child must not launch a GitHub Task or Session whose
     // physical lifecycle might outlast the child Workflow.
-    if(childPlan.steps.some(s=>s.uses==='github.run'||
+    if(childPlan.steps.some(s=>s.uses==='github.run'||s.uses==='http.request'||
       (s.uses==='flow.foreach'&&
         (Array.isArray(s.with.templates)?s.with.templates:[s.with.template])
           .some((x:unknown)=>x!==null&&typeof x==='object'&&
@@ -278,15 +280,19 @@ export class WorkflowService {
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
+      const required_http_operations=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+        const operation=httpOperation(s.with);return [JSON.stringify(operation),operation] as const;
+      })).values()];
       return {valid:true,digest,steps:plan.steps.length,issues:[],
         ...(required_children.length?{required_children}:{}),
         ...(plan.steps.some(s=>s.approval?.required)?{approval_gates:plan.steps.filter(s=>s.approval?.required).map(s=>({step_id:s.id,when:'before_dispatch',binding:['run_id','step_id','published_version_id'],timeout_seconds:600}))}:{}),
-        contract_validation:reviewed_cloudflare_actions.length?
+        contract_validation:required_http_operations.length?'http_target_pinned_unverified':reviewed_cloudflare_actions.length?
           'cloudflare_contract_pinned_provider_unverified':required_approvals.length?
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
+        ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
         ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
@@ -339,9 +345,12 @@ export class WorkflowService {
   async portalConnectionStatus(){return portalAuthorization(this.db);}
   async portalConnectionRevoke(){return changePortalAuthorization(this.db,'revoke');}
   async portalConnectionEnable(){return changePortalAuthorization(this.db,'enable');}
+  async httpConnectionStatus(){return httpAuthorization(this.db);}
+  async httpConnectionRevoke(){return changeHttpAuthorization(this.db,'revoke');}
+  async httpConnectionEnable(){return changeHttpAuthorization(this.db,'enable');}
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
-    approve_cloudflare_execution=false){
+    approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -399,11 +408,24 @@ export class WorkflowService {
         throw new StateError('cloudflare_action_approval_required');
     }else if(approved_cloudflare_actions.length || approve_cloudflare_execution)
       throw new StateError('unexpected_cloudflare_approval');
+    const httpRequired=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+      const operation=httpOperation(s.with);return [JSON.stringify(operation),operation] as const;
+    })).values()].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const httpProvided=approved_http_operations.slice().sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    if(JSON.stringify(httpRequired)!==JSON.stringify(httpProvided)||
+       (httpRequired.length>0&&(!approve_http_execution||!accept_target_risks))||
+       (httpRequired.length===0&&approve_http_execution))
+      throw new StateError('http_action_approval_required');
+    const httpConnection=httpRequired.length?await httpAuthorization(this.db):null;
+    if(httpConnection&&httpConnection.state!=='enabled')
+      throw new StateError('http_connection_revoked');
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true,
       mcp_connection_generation:portalConnection!.generation}:plan;
-    const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
+    const httpPlan:Plan=httpRequired.length?{...scopedPlan,http_approvals:httpRequired,
+      http_execution_approved:true,http_connection_generation:httpConnection!.generation}:scopedPlan;
+    const grantedPlan:Plan=reviewedActions.length?{...httpPlan,github_action_approvals:reviewedActions}:httpPlan;
     const actionPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
     const withCloudflare:Plan=hasCloudflare?{
       ...actionPlan,cloudflare_execution_approved:true,
@@ -416,7 +438,9 @@ export class WorkflowService {
       const previous=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
         .bind(row.active_version_id).first<{plan:string}>();
       const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
-      if(current?.digest===plan_digest && (!portalConnection ||
+      if(current?.digest===plan_digest &&
+        JSON.stringify(oldPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
+        (!httpConnection || oldPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
         (oldPlan?.mcp_connection_generation??0)===portalConnection.generation))
         return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
     }
@@ -433,7 +457,9 @@ export class WorkflowService {
         const prior=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
           .bind(latest.active_version_id).first<{plan:string}>();
         const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
-        if(current?.digest===plan_digest && (!portalConnection ||
+        if(current?.digest===plan_digest &&
+          JSON.stringify(priorPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
+          (!httpConnection || priorPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
             (priorPlan?.mcp_connection_generation??0)===portalConnection.generation))
           return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
       }

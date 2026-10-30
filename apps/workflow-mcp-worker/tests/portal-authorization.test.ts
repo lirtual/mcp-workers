@@ -20,6 +20,7 @@ function fixture(){
  sqlite.exec(readFileSync(new URL('../migrations/0001_s1.sql',import.meta.url),'utf8'));
  sqlite.exec('ALTER TABLE workflows ADD COLUMN deleted_at INTEGER');
  sqlite.exec(readFileSync(new URL('../migrations/0016_portal_connection_revocation.sql',import.meta.url),'utf8'));
+ sqlite.exec(readFileSync(new URL('../migrations/0017_http_connection_auth.sql',import.meta.url),'utf8'));
  const prepare=(sql:string)=>{
   let args:unknown[]=[];
   return {bind(...v:unknown[]){args=v;return this;},

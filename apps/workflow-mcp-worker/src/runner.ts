@@ -5,6 +5,7 @@ import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import {waitForRuntimeApproval} from './runtime-approval.ts';
 import {reservePortalCall} from './portal-authorization.ts';
+import {callApprovedHttp,HttpDispatchError} from './http-action.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -784,6 +785,22 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               // a successful result.emit operation.
               if(s.uses==='result.emit')
                 return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              if(s.uses==='http.request'){
+                try{
+                  const body=Object.hasOwn(s.with,'body')?evaluateArguments(s.with.body,ctx):undefined;
+                  const response=await callApprovedHttp(db,plan,s,id,body);
+                  const unknown=!response.ok&&s.with.method==='POST';
+                  return {status:response.ok?'succeeded':unknown?'indeterminate':'failed',
+                    output:limitResult(response),
+                    ...(response.ok?{}:{error_code:unknown?'http_outcome_unknown':'http_response_error'})};
+                }catch(error){
+                  if(error instanceof HttpDispatchError)
+                    return {status:error.uncertain?'indeterminate':'failed',
+                      error_code:error.code};
+                  // Unknown exceptions after a possible dispatch must fail closed.
+                  return {status:'indeterminate',error_code:'http_outcome_unknown'};
+                }
+              }
               if(s.uses==='mcp.call'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))

@@ -586,12 +586,17 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
     row?.approvals_table === 1 && row?.migration_v16 !== 1 &&
     row?.portal_auth_table !== 1 && row?.mcp_fence_table !== 1 && fullV11Schema;
-  const complete = row?.migration_count === 16 &&
+  const completeV16 = row?.migration_count === 16 &&
     row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
     row?.mcp_fence_table === 1 && row?.migration_v15 === 1 &&
     row?.approval_gates_table === 1 && row?.approvals_table === 1 &&
     row?.deleted_column === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || complete)),
+  const complete = row?.migration_count === 17 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -620,7 +625,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
    '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
     '0014_workflow_deletion.sql','0015_runtime_approval.sql',
-    '0016_portal_connection_revocation.sql')) AS expected_migrations,
+    '0016_portal_connection_revocation.sql',
+    '0017_http_connection_auth.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -666,7 +672,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15,16].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
@@ -701,7 +707,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===16 && row.expected_migrations===16,
+  invariant(row.migration_count===17 && row.expected_migrations===17,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps","undelivered_callbacks",

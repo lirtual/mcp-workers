@@ -1,6 +1,7 @@
 import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {portalAuthorization} from './portal-authorization.ts';
+import {httpAuthorization} from './http-authorization.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
@@ -212,6 +213,9 @@ const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contr
 export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
   'result.emit':{type:'object',additionalProperties:false,
     properties:{data:{description:'Bounded literal or safe expression; omitted data emits null at runtime.'}}},
+  'http.request':{type:'object',additionalProperties:false,required:['url','method'],
+    properties:{url:{type:'string',format:'uri',description:'Literal, canonical public HTTPS target without query, fragment or credentials'},
+      method:{enum:['GET','HEAD','POST']},body:{description:'Bounded immutable JSON literal for POST only; runtime refs and expressions are not authorized'}}},
   'mcp.call':{type:'object',additionalProperties:false,
     required:['endpoint','tool','scope','arguments','input_schema'],
     properties:{
@@ -341,7 +345,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
         template:{oneOf:[
           {type:'object',additionalProperties:false,required:['uses','with'],
-            properties:{uses:{enum:[...SUPPORTED_STEP_USES]},with:{type:'object'},
+            properties:{uses:{enum:SUPPORTED_STEP_USES.filter(x=>x!=='http.request')},with:{type:'object'},
               if:{anyOf:[{type:'boolean'},{type:'object'}]}}},
           {type:'object',additionalProperties:false,required:['steps'],
             properties:{steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxForeachTemplateSteps,
@@ -375,6 +379,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       allOf:[
         {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
         {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+        {if:{properties:{uses:{const:'http.request'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['http.request']}}},
         {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
         {if:{properties:{uses:{const:'action.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
       ],
@@ -397,8 +402,8 @@ const entries=[
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
   {id:'action.mcp.write',kind:'action',availability:'unsupported',
    description:'Write-scope MCP calls and live Connection revocation are not implemented; read-scope mcp.call cannot be widened.'},
-  {id:'action.http',kind:'action',availability:'unsupported',
-   description:'Registered HTTP Action with reviewed origin, method, redirects, credentials and replay-safe semantics is not implemented; arbitrary URLs are forbidden.'},
+  {id:'action.http',kind:'action',availability:'supported_with_grant',
+   description:'Bounded literal public HTTPS GET/HEAD/POST (JSON) using an exact owner-approved URL/method; no caller headers, query, credentials, redirects or automatic retries. Unknown effects remain indeterminate.'},
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
    description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
   {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
@@ -464,6 +469,7 @@ export async function workflowCapabilities(env:Pick<Env,
   // that intentionally omit DB continue to show configured_unverified.
   const portalState=env.DB?await portalAuthorization(env.DB):null;
   const portalRevoked=portalState?.state==='revoked';
+  const httpState=env.DB?await httpAuthorization(env.DB):null;
   let githubReady=false;
   try {
     githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
@@ -472,6 +478,7 @@ export async function workflowCapabilities(env:Pick<Env,
   const cloudflareReady=(!!env.WEIXIN_ACTION_PROVIDER&&!!env.WEIXIN_ACTION_DEPLOYMENT_ID&&githubReady)||
     (!!env.BARK_ACTION_PROVIDER&&!!env.BARK_ACTION_DEPLOYMENT_ID);
   const availability=(entry:Entry)=>
+    entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&portalRevoked?'revoked':
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
@@ -488,9 +495,12 @@ export async function workflowCapabilities(env:Pick<Env,
     capability_ids:entries.map(entry=>({
       id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
     })),
-    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+    connections:{portal:portalReady?{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
       availability:portalRevoked?'revoked':'configured_unverified',
-      ...(portalState?{generation:portalState.generation}:{})}}:{portal:{availability:'unavailable'}},
+      ...(portalState?{generation:portalState.generation}:{})}:{availability:'unavailable'},
+      http:{availability:httpState?.state??'not_checked',
+        generation:httpState?.generation??null,
+        reenable_requires_new_published_plan:true}},
     availability_note:'Configured means credentials exist, not verified access or publication permission.',
     github_repository_scope:githubReady?'configured':'unavailable',
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
@@ -506,6 +516,7 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='flow.condition'?{expression_rules:WORKFLOW_EXPRESSION_RULES}:{}),
     ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
+    ...(id==='action.http'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['http.request']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
@@ -546,15 +557,23 @@ export async function workflowCapabilities(env:Pick<Env,
       replay:'One durable attempt per compensation effect, with indeterminate outcome on unknown dispatch',
       result:'Record partial, failed and unknown compensation; never claim ACID rollback'};
   }
-  if(id==='action.mcp.write'||id==='action.http'){
+  if(id==='action.http'){
+    detail.example=await compilingExample({version:1,name:'Approved public HTTPS request',
+      steps:[{id:'fetch',uses:'http.request',with:{url:'https://example.com/',method:'GET'}}]});
+    detail.connection_auth={state:httpState?.state??'not_checked',
+      generation:httpState?.generation??null,revocation_fence:'durable_effect_reservation'};
+    detail.grant={required:['approved_http_operations','approve_http_execution','accept_target_risks'],
+      target:'literal HTTPS URL, no query, no credentials',methods:['GET','HEAD','POST'],
+      response_limit_bytes:8192,one_shot:'durable Run/Step fence; ambiguous outcomes never retried',
+      unsupported:['credentials','custom_headers','redirects','dynamic_url','foreach_http']};
+  }
+  if(id==='action.mcp.write'){
     detail.design_contract={executable:false,source_schema:'not_accepted',
       registry:'Static source-reviewed capability and input/output schema, no arbitrary target or dynamic plugin marketplace',
       grants:'Exact published Action/Connection/operation rights; parameters only narrow scope',
       revocation:'Recheck current grants before protected dispatch, including restart and compensation',
       effects:'Persistent one-shot dispatch fence; ambiguous outcomes remain indeterminate',
-      network:id==='action.http'?
-        'Only explicitly approved public HTTPS origins/methods/paths; deny credentials on redirects and private-address pivots':
-        'Pinned MCP Portal and explicitly reviewed write-capable tools, never readOnlyHint as authorization'};
+      network:'Pinned MCP Portal and explicitly reviewed write-capable tools, never readOnlyHint as authorization'};
   }
   if(id==='flow.approval_gate'){
     detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
