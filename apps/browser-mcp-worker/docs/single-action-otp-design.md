@@ -151,3 +151,26 @@ This test is an explicit gate before any code implementation or production migra
 - https://developers.cloudflare.com/changelog/post/2026-09-14-saml-force-authentication/
 - https://developer.chrome.com/docs/extensions/reference/api/identity
 - https://developer.chrome.com/docs/extensions/reference/api/storage
+
+## Isolated feasibility spike results — 2026-10-30
+
+**Scope and authorization:** User approved the next minimal authentication-flow experiment. This run used read-only Cloudflare API inspection, actual existing extension unit harness, and one scratch-only synthetic test in an approved WSL2 device at `/tmp/spec418-otp-readonly-20261030`. It did not change Cloudflare Access apps/policies, send OTP emails, touch owner approval, change the main branch, merge, or deploy.
+
+### Evidence
+
+1. **Access inventory (read-only live API).** There are 22 Access application entries, six self-hosted. The two Browser-related self-hosted apps are exclusively for the production and isolated **Owner Approval** `/owner/*` routes; both allow only the One-time PIN IdP and use 15-minute session duration. Neither is an endpoint activation app. No existing dedicated Access-protected browser **activation** path was found in this application inventory. The Portal's `Browser` MCP application has a separate auth scope. Repurposing `/owner/*` for activation would conflate independent Owner Approval and pairing authority, so it is explicitly disallowed.
+2. **Provider capability.** Cloudflare supports OTP-only login method selection and restricting allowed email identities. The global Access session can still issue app JWTs without a fresh PIN. Newer `force_authn` applies to SAML IdPs, not Access native OTP. `chrome.identity.launchWebAuthFlow` supports an extension redirect but does not promise a fresh empty Access cookie jar; requires real Chrome/Edge compatibility testing.
+3. **Access auth logs (read-only live API).** `GET /accounts/{account_id}/access/logs/access_requests?limit=5` returned HTTP 200; the sampled log records have fields `action, allowed, app_domain, app_name, app_type, app_uid, connection, country, created_at, ip_address, ray_id, user_email, user_id`. No sample has an extension activation nonce or OTP-redemption-proof field. Samples are not Browser OTP login events and are insufficient to establish whether any real OTP was performed. Privacy-sensitive log values were not copied into this design record.
+4. **Current code baseline (actual local test).** On isolated WSL2 source checkout at SHA `3a081c6`, `node --test tests/extension.test.mjs` passed **23/23**, including local Stop winning over delayed Resume, late storage writes, and Revoke.
+5. **New scratch-only focused probe (actual legacy source under VM).** Reused the existing Chrome extension `background.js` test harness and mocked only the Worker endpoint responses. A trusted Popup `resume` successfully called `/extension/resume` and changed local state to `enabled` with **no new OTP challenge or proof**. Focused probe passed **1/1** (expected old-code behavior). This is a **confirmed implementation gap relative to the NEW design**, not proof of a defect in the current published Spec. The probe file was created only in a temporary WSL2 checkout, not committed to GitHub.
+6. **Not tested:** No real Cloudflare Access OTP was requested or entered; no actual `identity.launchWebAuthFlow` Chrome/Edge auth redirect was exercised; no genuine Access session-isolation / freshness / one-use binding evidence was obtained. Thus the confirmed blocker remains **unresolved**.
+
+### Shortest safe remaining path
+
+- **Do not reuse** production `Browser Production Owner Approval` or the isolated `Browser Spec418 Isolated Owner Approval` Access app as a pairing login callback.
+- In a distinct, explicitly authorized activation route protected by OTP-only Access, verify two consecutive user-entered email PIN logins with a normal existing Cloudflare global session, and confirm the authentication callback binds to a unique extension-held one-time challenge. A new JWT plus timestamp or an Access log entry does not alone establish fresh OTP for this attempt.
+- Scope any future temporary Access application/path configuration and test-origin setup as a separate owner-approved infrastructure change. **No new Access resource or deployment was created by this spike.** Do not call the current test complete until a real Owner independently enters a PIN and verifies expiry/replay/Stop cases.
+- Tests for Stop, Revoke, and Unknown already present should be **extended**, not duplicated into a second test suite. Keep one existing GitHub Actions production release path.
+
+**Result:** Partial technical spike completed. Existing control-race tests remain green, missing OTP enforcement is demonstrated, Cloudflare account has an appropriate OTP IdP but lacks a dedicated activation path, and the real authentication proof remains **Blocked on protected activation entry + owner-interactive Chrome/Edge test**.
+
