@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {deviceIsAuthorized,listApprovedDevices} from '../src/v2-session.ts';
+import {deviceIsAuthorized,listApprovedDevices,type V2Device} from '../src/v2-session.ts';
 const now=Date.now();
 const session={
   device_id:'123e4567-e89b-42d3-a456-426614174001',name:'session-ubuntu',
@@ -24,7 +24,7 @@ test('temporary and permanent grants retain their established local semantics',(
 test('Session devices are only listed after fresh workflow approval and do not affect personal devices',async()=>{
   const personal={...session,device_id:'123e4567-e89b-42d3-a456-426614174003',
     grant_type:'permanent' as const,name:'personal'};
-  const values=new Map([['device:'+session.device_id,session],['device:'+personal.device_id,personal]]);
+  const values=new Map<string,V2Device>([['device:'+session.device_id,session],['device:'+personal.device_id,personal]]);
   const storage={list:async()=>values,delete:async()=>true,
     get:async()=>undefined};
   const state={storage,getWebSockets:()=>[]} as any;
@@ -39,7 +39,7 @@ test('Session devices are only listed after fresh workflow approval and do not a
 test('Workflow RPC outage hides only Session devices, not personal permanent devices',async()=>{
   const personal={...session,device_id:'123e4567-e89b-42d3-a456-426614174003',
     grant_type:'permanent' as const,name:'personal'};
-  const values=new Map([['device:'+session.device_id,session],['device:'+personal.device_id,personal]]);
+  const values=new Map<string,V2Device>([['device:'+session.device_id,session],['device:'+personal.device_id,personal]]);
   const state={storage:{list:async()=>values,delete:async()=>true,get:async()=>undefined},
     getWebSockets:()=>[]} as any;
   const result=await listApprovedDevices(state,async()=>{throw Error('rpc unavailable')});
