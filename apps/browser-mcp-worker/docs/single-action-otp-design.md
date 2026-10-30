@@ -1,117 +1,68 @@
-# Browser MCP — Single Toolbar Action + Fresh Email OTP (Design Draft)
+# Browser MCP — Single Toolbar Action + Access-bound Automatic Pairing (Spec #418 Amendment)
 
-> Spec [#418](https://github.com/lirtual/mcp-workers/issues/418) · Grill With Docs · 2026-10-30  
-> **Status: Q1–Q6=A, Q7′=B, Q8=A, Q10=A confirmed; fresh-OTP proof and session E2E remain validation gates. Design only — not implemented, merged or released.**  
-> This is an incremental design draft. Existing #418 security and lifecycle contracts remain authoritative until the complete amendment is accepted.
+> **Final owner decisions (2026-10-30): Q1=A, Q2=A, Q3′=B, Q4=A (conditional OTP), Q5′=B, Q6=A, Q7′=B, Q8=A, Q10=A, Q11=B.**
+>
+> **Status: Owner-confirmed incremental design; implementation and native Chrome/Edge E2E not performed. NOT merged or released.** Q11=B explicitly supersedes the previously confirmed Q3=A and Q5=A **fresh email PIN on every activation** requirement. The older investigation and failure evidence are retained below strictly as history, not current acceptance gates.
+>
+> Parent issue: https://github.com/lirtual/mcp-workers/issues/418. Existing security guarantees for pairing identity, local Stop, one-use operation receipts, independent consequential-action Owner Approval, session-only LAN/private grants, Chrome/Edge Profile separation and GitHub Actions releases remain binding.
 
-## Confirmed owner decisions
+## Final decisions and user-facing contract
 
-| Decision | Selected | Product contract |
-| --- | --- | --- |
-| Q1 | A | **Clicking the Chrome/Edge toolbar extension icon itself** toggles local control. No default Popup or second primary button. |
-| Q2 | A | Newly installed/ungranted Profile is **OFF** by default. Restart preserves the owner's selected ON/OFF state, and Stop cannot be undone by reconnect. |
-| Q3 | A | **Every deliberate OFF → ON transition requires a newly completed email OTP**. An existing Access cookie/JWT or previously used PIN does **not** count as fresh verification. |
-| Q4 | A | Reuse **Cloudflare Access email One-time PIN** and a trusted owner authentication page; never read, automate or fill the email OTP through Browser MCP/the extension. Do not create an independent OTP issuer. |
-
-## Additional confirmed owner decisions (2026-10-30)
-
-| Decision | Chosen contract |
+| Decision | Final contract |
 | --- | --- |
-| Q5=A | Use an independent authentication context with no reusable Access login sessions. If a newly entered email OTP cannot be proven, do not enable. Do not log the owner out of unrelated applications. |
-| Q6=A | Preserve existing per-Profile Endpoint identity and credentials, but migrate an already ON Profile to OFF once when introducing OTP-gated activation. |
-| Q7′=B (supersedes Q7=A) | First OTP completes both pairing and activation automatically. No user-entered pairing code; keep a non-human, short-lived challenge bound to the same extension instance and owner. |
-| Q8=A | Toolbar OFF = Stop, not Revoke. The extension Options page exposes Pairing details, Revoke, LAN, private browsing, cloud confirmation and Diagnostics without hiding these behind nested controls. |
-| Q10=A | Permanent pairing is the default; first activation can select temporary pairing, which expires when the browser Profile session ends. |
+| Q1=A | Toolbar icon itself toggles ON/OFF. No default popup; native Extension Options houses advanced management. |
+| Q2=A | Unpaired starts OFF. Permanent pairing preserves explicitly chosen ON/OFF on normal restart; remote Stop/revoke can still deny it. This restart is **not** a deliberate OFF→ON action. |
+| Q3′=B / Q11=B | On each deliberate OFF→ON, require a **local owner click**, a valid Cloudflare Access owner-authenticated identity (existing SSO **may** be reused), and a fresh extension-bound one-use authorization challenge. **A newly entered email PIN on every toggle is NOT required or promised.** |
+| Q4=A, narrowed | Reuse Cloudflare Access **One-time PIN as its existing login method when Access actually asks for authentication**; never read, collect or autofill email codes through Browser MCP or the extension. No custom OTP provider. |
+| Q5′=B / Q11=B | Do **not** force-clear cookies, globally log out Access, require disposable profiles, or claim a new PIN was redeemed based on JWT issue time. A current verified Access identity/session is acceptable **only with local user gesture and secure per-attempt extension binding**. |
+| Q6=A | On rollout, preserve existing permanently paired Endpoint identity, credentials and operation receipts; migrate currently ON installs to OFF exactly once. Owner re-enables through the new flow. |
+| Q7′=B | First activation **automatically pairs and enables**, without a user-entered pairing code. Access might prompt for an email OTP or might reuse SSO. A hidden short-lived challenge securely binds this authorization to the initiating Profile. |
+| Q8=A | OFF = reversible Stop, NOT Revoke. Revoke remains explicit, separately confirmed and accessible in Options; expose LAN, Private/Incognito, pairing lifetime, cloud confirmation and diagnostics there. |
+| Q10=A | Default = Permanent Pairing. On first activation offer Temporary Pairing; it ends at the complete browser Profile session end, not a window closure or extension service-worker sleep. |
+| Q11=B | Owner **explicitly accepts reduced reauthentication assurance** in return for a reliable one-button UX. Existing independent, operation-specific Owner Approval remains unchanged. |
 
-## Precise domain distinctions
+**Honest UI labels:** Display “Access verified” / “Owner authorization pending” / “Connecting” / “ON” / “OFF”, not “Fresh OTP verified” when SSO was reused. A valid Access session is not itself proof of a new human-entered PIN.
 
-- **Browser Endpoint / Extension Grant**: the existing, per-Profile paired identity and its long-lived control permission. Pairing alone never means that control is currently ON.
-- **Local Activation Attempt** *(proposed term)*: a trusted owner toolbar-click request to change OFF to ON; it is pending, **not** a Browser Control Session in the enabled state.
-- **Fresh Activation Proof** *(proposed term)*: server-verified evidence that this particular pending activation completed a new owner-entered Cloudflare Access email OTP login. Q5 requires an isolated authentication context, but the exact mechanism and independently verifiable evidence of a **new** Cloudflare OTP have not yet been established. Access session presence alone is not proof.
-- **Browser Control Session**: owner-selected ON/OFF authority. It is distinct from WSS online/readiness and from Consequential Action Owner Approval.
-- **Owner Approval**: an independent, operation-specific approval boundary; a successful activation OTP is **never** approval for consequential browser operations.
+## Minimal activation protocol
 
-## Intended interaction (pending dependency decisions)
+1. **Initial OFF:** the toolbar click is a trusted extension-local user gesture. Choose Permanent (default) or Temporary once before first pairing. Do not enable browser commands while pending.
+2. **One-use attempt:** extension creates a cryptographically random secret unavailable to webpages, ordinary Agent tools or other Profiles. The existing Browser Worker / owner Durable Object records an expiring attempt with exact Endpoint/installation identity, pairing mode, owner identity expectation and Stop/authorization epoch. One attempt cannot authorize more than one Endpoint or one ON transition.
+3. **Owner authentication:** use a **separate activation authentication boundary** from consequential-action Owner Approval, but reuse the current Cloudflare Access identity provider and existing Worker. Validate Access JWT signature, audience, issuer, expiry and exact allowed owner identity on the backend; do not trust arbitrary redirect URLs, app JWT timestamps, browser-supplied emails or a page-originated extension ID. A valid Access session may immediately satisfy identity authentication.
+4. **Callback binding:** only the originally initiating trusted extension context can finish its own activation attempt by proving possession of the local secret, with CSRF/state validation and an authenticated Access result tied to that attempt. Redirect state, callbacks and proof are single-use, short lived, nontransferable across Profiles and invalid on Stop/Revoke. No callback from an arbitrary webpage may create or enable a Browser Endpoint.
+5. **Atomic commit:** the Durable Object checks current stop/revoke state and epoch **at the final authorization point**, consumes the attempt, creates the Endpoint if unpaired (without manual code) or reuses the Endpoint if paired, and permits the correct WSS generation to connect. The extension independently rechecks its current local state before opening WSS.
+6. **Failure:** cancelled authentication, stale/mismatched state, invalid Access identity, expired challenge, an offline/unconfirmed cloud Stop, or callback replay => remain OFF; show a grounded error and retry by a **new local click**, never silently enable.
 
-1. User clicks the toolbar extension icon on an OFF Profile. It remains non-executable while waiting for trusted owner OTP verification. Show `VERIFY` / pending status without reporting that remote control is active.
-2. Only after server-verified, **fresh, activation-bound** OTP evidence and current Stop/revoke/version checks may the same Profile become ON and attempt its existing WSS connection. A failed, cancelled, timed-out or unverifiable attempt remains OFF.
-3. User clicks the icon on an ON Profile: deny new local actions **immediately**, persist OFF/Stop, terminate the transport and reconcile cloud Stop using existing semantics. Stop always wins over a concurrent verification/enable acknowledgement.
-4. ON while connecting is still ON (not OFF); connection/readiness is shown separately in tooltip/diagnostics. An online socket does not by itself grant control.
-5. Chrome/Edge Profile identity is distinct. Browser restart retains deliberate ON/OFF per Q2; it does not synthesize an OFF→ON transition. Extra LAN/private permissions remain session-only and are never restored by activation OTP.
-6. Revoked cannot return to ON by a click. Revoke, LAN/private, cloud Stop confirmation and diagnostics remain directly reachable from the browser's native extension Options page, separately from the single primary toolbar action.
+**Authorization separation:** This login/activation **never** approves a consequential browser action; the existing independent Owner Approval remains mandatory and fail-closed. A controlled browser tab, Agent, or page script must not automatically operate the owner identity login or consent UI.
 
-## Implementation implications and non-negotiable checks
+## Lifecycle and race rules
 
-- Chrome documents that `chrome.action.onClicked` is not dispatched while the action has a popup; Q1 requires removing `action.default_popup` on the primary click path. The existing code still uses `popup.html` / `popup.js` and `resumeLocal`; there is **no** OTP activation in the current implementation.
-- Cloudflare Access maintains global and application sessions. A valid global session can renew an application token without a new email challenge. **Simply opening an Access-protected page, inspecting an Access JWT, setting a short app timeout or changing the URL cannot prove Q3**. Do not silently log the user out of unrelated Access applications as a workaround. Q5 must select and validate a genuine fresh-login mechanism, or activation must fail closed.
-- Keep pairing credentials, Access identity for activation, and independent high-impact Owner Approval separated; never expose activation secrets to page scripts, MCP tools, logs or URLs. Maintain Stop/Revoke linearization, old-operation receipts/Unknown rules, no remote Resume, and per-Profile targeting.
-- Current Cloudflare Access OTP PIN is single-use and expires after ten minutes; an activation challenge must also expire/cancel independently, with a one-use, attempt-bound final authorization result (concrete bound fields and expiry are later security design work, not decided here).
-- Do not silently extend `<all_urls>`, privacy/LAN permissions or grant scope for the new UX; do not build another Worker, authentication platform, or parallel deployment route merely for the UI simplification.
-- Preserve source/Release artifact identity for Chrome+Edge. Native E2E must separately cover new Profile, upgrading already paired Profiles, repeated OFF→ON OTP, logout/session-reuse negative, Stop while pending, reconnect, revocation and high-impact approval independence.
+- **OFF:** local denial is committed immediately **before** network I/O and closes WSS; clear LAN/private session grants. Cloud Stop is reconciled using existing pending/unconfirmed semantics. A late prior Resume, Access callback, socket generation or browser startup cannot override Stop.
+- **Revoke:** independently invalidates the pairing identity and credentials. Changing Temporary/Permanent lifetime requires explicit Revoke then new Pair; never silently convert.
+- **Permanent:** credentials retained in trusted persistent extension storage; normal browser restart may resume the last **deliberately enabled** state after remote authorization is checked, without synthesizing a new OTP or ON click. Explicit user OFF survives restart.
+- **Temporary:** pairing secret/session identity only in trusted chrome.storage.session; a browser restart, extension disable/reload/update destroys it and the next session starts unpaired/OFF. Service worker suspension, a single closed window, and temporary network outage do **not** end the session. The server requires a current authenticated WSS generation and bounded temporary lease to deny new work when local session proof is lost; an abnormal exit cannot guarantee instantaneous cloud-side revoke.
+- **Stop vs activation:** use the existing control epoch and deny-first ordering. Stop/Revoke cancels pending attempts and wins against delayed responses, including storage writes and cloud enable acknowledgements. Do not re-dispatch already-issued site effects or mint fresh operation IDs for Unknown outcomes.
+- **Transport vs control:** show Connecting vs Ready distinctly. An online WSS does not by itself authorize commands. Owner-approved LAN and Incognito scope remains separately opted in, session-only and non-persistent.
 
-## Agreed minimal design: OTP-based pairing and activation
+## Required implementation gates (not yet tested)
 
-1. **First use:** initial OFF state, owner clicks the toolbar icon and chooses temporary or permanent pairing (permanent default). The extension creates a one-use activation attempt bound to this exact local installation and redirects the owner to a trusted, independent Access authentication context. Owner completes a **fresh** Cloudflare email OTP; the verified result is matched to the same attempt and allowed owner identity. Only then create the Endpoint and enable its control session. No manual code is typed into the extension.
-2. **Previously paired, OFF → ON:** repeat the fresh OTP and attempt binding; reuse the existing Endpoint, not the pairing step. Existing valid global/app Access sessions, redirected pages or newer JWT issue times alone must **not** silently satisfy the fresh-OTP condition.
-3. **ON → OFF:** an immediate local Stop blocks new execution, invalidates any pending activation, clears session-only LAN/private grants, and asks the existing Worker to persist Stop. If cloud Stop is unconfirmed, show that fact in Options while retaining the local denial.
-4. **Revoke:** a distinct, explicitly confirmed operation invalidates the Endpoint and clears credentials. Temporary-to-permanent or permanent-to-temporary changes require revoke and re-pair; never silently change a grant's lifetime.
-5. **Chrome and Edge:** each Profile remains an independent Endpoint. One cross-browser extension artifact and the existing Worker/DO infrastructure are retained.
-
-## Fresh OTP: safety and feasibility gate
-
-- The activation attempt must bind a server-side unguessable one-use identifier to the owner's identity, exact extension instance/paired Endpoint (when present), control generation, creation/expiry, and browser-local proof of possession. The original extension must demonstrate it owns the pending attempt before the server creates or enables a grant. An arbitrary webpage's claim of an extension ID, Access JWT, or claimed redirect is insufficient.
-- A Cloudflare Access session proves **access authorization**, not necessarily that a fresh OTP was entered for this attempt. Cloudflare documents automatic application-token renewal from valid global SSO. Its documented app token and ordinary login callback do not establish an attempt-specific, newly redeemed OTP. **Do not present any redirect, JWT `iat`, ordinary Access audit log, or short session setting as proof without an independently verified contract.**
-- Q5=A selects isolation rather than global SSO logout. Verify that the chosen trusted context is genuinely free from both global and application Access cookies and that Cloudflare actually prompts for a new PIN. Additionally, independently establish the fresh OTP result and the binding to this attempt. The exact browser technique and callback integration are **unverified engineering prerequisites**, not an authorization to create a second OTP service, bypass Access, or weaken the requirement.
-- If the platform cannot demonstrate fresh OTP plus safe extension binding without additional consent or capabilities, leave activation OFF and record the blocking feasibility gap. The owner can revisit the design later; no silent downgrade.
-- The Browser MCP agent must never read or fill the OTP, manipulate the trusted authentication tab, or approve consequential site actions by reusing the activation result. The existing independent Owner Approval remains fail-closed.
-- Challenges are one-use, expiring and non-replayable; failed, cancelled, delayed or mismatched callbacks grant nothing. The pre-existing security boundaries for authentication surfaces, CSRF and allowed owner identity remain intact.
-
-## Temporary pairing: scope and revocation
-
-- The **temporary pairing credential** and current browser-session identifier belong in trusted `chrome.storage.session`, inaccessible to ordinary page scripts. They must not be copied into persistent `storage.local`, sync, ordinary web pages or logs. Persistent minimal metadata can indicate that the previous temporary grant needs re-pairing without retaining a reusable credential.
-- `storage.session` is cleared when the browser restarts and when an extension is disabled, reloaded or updated. Treat these as an end to temporary pairing. A routine MV3 service-worker suspension or loss of internet is **not** a new browser session; closing a single window does not revoke a still-running browser Profile.
-- Cloud authorization is separately constrained: a temporary Endpoint permits new work **only while a matching, authenticated, currently live WSS generation and browser-session proof are valid**. A bounded server lease expires without renewal. No offline mutation queue and no automatic re-enablement from stale durable state.
-- Unexpected shutdown cannot guarantee an immediate cloud-side revocation request. Cloud Stop/Revoke may be best-effort; expiration and the absence of a live session block new execution. Explicit Revoke still invalidates the server authorization; no old credential may be re-used in the next browser session. An already-dispatched website action cannot be rolled back.
-- Permanent pairing keeps the original credential and the owner's chosen ON/OFF across restart after initial migration; it still requires fresh OTP at every **deliberate** OFF → ON and must honor a remote Stop. Temporary pairing **overrides** that persistence contract and always returns unpaired/OFF on the next browser session.
-
-## Stop / OTP / WSS race priorities
-
-1. A local Stop or Revoke invalidates the pending challenge and increments a control epoch **before** network I/O.
-2. Cloud Stop/Revoke persists a denial that a late OTP callback, prior Resume response, old WSS generation, worker restart or browser reload cannot override.
-3. Commit the newly verified OTP and grant only if the matching epoch, pairing identity, browser-session proof and current stop/revoke state remain valid at the final atomic check. The extension independently rechecks before connecting.
-4. If an earlier enable wins before a Stop, Stop closes subsequent admissions; actions already dispatched may remain Unknown or complete, but are not retried with a new key.
-5. Badge and tooltip distinguish **OFF**, **VERIFY**, **ON but connecting**, **ON and ready**, and **REVOKED/unpaired**. Transport offline is not the same thing as owner OFF.
-
-## Verification gates before any implementation/production claims
-
-| Scenario | Required result |
+| Test | Acceptance requirement |
 | --- | --- |
-| New Chrome and Edge Profile | Starts OFF; fresh OTP + extension-bound callback creates exactly one Endpoint without a manual code |
-| SSO already valid / forged or stale redirect | Remains OFF unless independently proven fresh OTP and current extension binding |
-| Two deliberate OFF → ON toggles | Each requires a new OTP; previously redeemed result cannot activate again |
-| Existing ON installation upgrade | Reuses Endpoint and historical receipts; begins OFF exactly once |
-| Temporary pairing: browser restart, extension reload/update | Next session unpaired; old credential cannot open WSS or execute |
-| Temporary pairing: worker suspend, single-window close, transient disconnect | Does not spuriously re-pair while the browser session is still valid |
-| Cloud lease expiry / copied credential / network loss | No new execution without valid current WSS generation and server grant |
-| Stop during OTP or while Resume is in flight | Stop wins, including delayed callbacks, old generations and offline cloud Stop |
-| Revoke versus Stop | Stop leaves pairing; Revoke invalidates identity and requires fresh pairing |
-| Advanced Options & sensitive permissions | Pair/Revoke/LAN/private/diagnostics accessible; LAN/private remain local, session-only grants |
-| High-impact actions | OTP activation does not replace independent Owner Approval; failed isolation remains blocked |
-| T9/T10 production E2E | Native Chrome/Edge and true owner-inaccessible OTP/approval channel, errors, unknown receipts, replay, and rollback verified separately |
+| New Chrome and Edge Profiles | Local click starts OFF→authentication; valid Access identity **with and without SSO reuse** plus extension-bound one-use challenge yields exactly one pairing and ON. No manual pairing code. |
+| First-use UX | If an existing Access SSO session is valid, no new email PIN need appear; the UI states this honestly. If Access requests OTP, only the human enters it. |
+| Cross-Profile / replay / CSRF | A different Profile, copied callback URL, stale Access result, forged web origin or repeated nonce cannot claim or resume an Endpoint. |
+| Deliberate OFF→ON twice | Each has a **new** one-use activation challenge and local gesture; OTP is required only if Access actually prompts. |
+| Stop during login, delayed Resume, offline Stop | Local/cloud Stop wins; no late callback or old WSS generation expands authorization. |
+| Permanent upgrade | Existing Endpoint/receipts survive; ON→OFF migration exactly once; thereafter restart respects last deliberate ON/OFF. |
+| Temporary lifetime | After browser restart or extension update credential and remote grant are unusable; worker sleep or closing one window does not falsely unpair. |
+| Revoke/Options/scope | Revoke distinct from Stop; LAN/private not auto-enabled; browser Options directly exposes diagnostics and cloud Stop confirmation. |
+| Independent approval | Authentication/activation cannot bypass consequential-action Owner Approval or inspect the protected login surface. |
+| Release | Reuse existing CI / GitHub Actions workflow, production approval gates and rollback; native Chrome and Edge E2E required before calling done. |
 
-This is a **design acceptance matrix**, not completed testing. The existing #418 Spec, security invariants, release machinery and T9/T10 dependencies remain authoritative until formally amended.
+**Remaining engineering work:** implement a separate activation-authenticated callback path in the **existing** Browser Worker/DO; prove valid Access identity can securely complete a one-use extension-bound activation without coupling to `/owner/*`; implement Temporary Pairing storage and server lease; migrate existing Profiles; execute native browser and failure-injection tests. These are normal implementation/test gates, **not** the previously blocking “fresh PIN every activation” research prerequisite. Do not create another Worker, auth provider, database, duplicate CI or release route.
 
-## Open feasibility decision (not implicitly resolved)
+## Historical investigations and completed negative experiments (pre Q11=B)
 
-**Fresh Cloudflare OTP evidence:** Q5=A requires proof of a new OTP login for every activation. Neither a session-free login page nor a new Access JWT on its own proves that the user's particular activation consumed a new OTP. Determine whether a supported Access capability can supply reliable evidence and safely return a one-use, extension-bound result. If it cannot, flag a genuine design blocker for the owner instead of implementing a weaker flow.
-
-## Official references
-
-- https://developer.chrome.com/docs/extensions/reference/api/action
-- https://developer.chrome.com/docs/extensions/reference/api/storage
-- https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/
-- https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/
-- https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/
+Everything below records the earlier strict Q3=A/Q5=A experiment, including the Cloudflare Access same-session OTP-bypass result, and the temporary test Access app's verified deletion. **Those old fresh-PIN acceptance gates and the old Q11=A/B open choice were superseded by Owner-selected Q11=B. They are historical evidence, not normative instructions for this amendment.** The temporary test path was deleted and must not be reused as an active test endpoint.
 
 ## Read-only OTP feasibility audit — 2026-10-30
 
