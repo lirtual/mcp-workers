@@ -252,7 +252,9 @@ async function runMultiForeach(
                   return {status:'succeeded',
                     output:await callApprovedReadonly(env,plan,childStep,args,runId,childId)};
                 }catch(error){
-                  return error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
+                  return error instanceof Error&&error.message==='portal_connection_revoked'
+                    ?{status:'failed',error_code:'portal_connection_revoked'}
+                    :error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
                     ?{status:'indeterminate',error_code:'external_outcome_unknown'}
                     :{status:'failed',error_code:'step_execution_failed'};
                 }
@@ -418,7 +420,9 @@ async function runForeachStep(
             const args=entry.output as Record<string,unknown>;
             return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args,runId,entry.id)};
           }catch(error){
-            return error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
+            return error instanceof Error&&error.message==='portal_connection_revoked'
+              ?{status:'failed',error_code:'portal_connection_revoked'}
+              :error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
               ?{status:'indeterminate',error_code:'external_outcome_unknown'}
               :{status:'failed',error_code:'step_execution_failed'};
           }
@@ -787,6 +791,8 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                 try{
                   return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>,id,s.id)};
                 }catch(error){
+                  if(error instanceof Error&&error.message==='portal_connection_revoked')
+                    return {status:'failed',error_code:'portal_connection_revoked'};
                   if(error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message))
                     return {status:'indeterminate',error_code:'external_outcome_unknown'};
                   throw error;

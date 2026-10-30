@@ -385,6 +385,7 @@ test('revoke and enable cannot revive a prior MCP Published Plan or dispatch too
   const outcome=await service.result(started.run_id);
   assert.equal(outcome.status,'failed');
   assert.equal(outcome.steps[0].status,'failed');
+  assert.equal(outcome.steps[0].error_code,'portal_connection_revoked');
 });
 
 test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{
