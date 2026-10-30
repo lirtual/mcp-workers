@@ -174,3 +174,33 @@ This test is an explicit gate before any code implementation or production migra
 
 **Result:** Partial technical spike completed. Existing control-race tests remain green, missing OTP enforcement is demonstrated, Cloudflare account has an appropriate OTP IdP but lacks a dedicated activation path, and the real authentication proof remains **Blocked on protected activation entry + owner-interactive Chrome/Edge test**.
 
+## Owner-authorized isolated Access test entry — 2026-10-30
+
+**Status: Access gate deployed and verified; real owner OTP and extension-bound activation callback NOT performed.** This is a narrowly scoped temporary Access infrastructure change authorized by the Owner. It must not be confused with an implementation of Browser MCP auto-pairing.
+
+### Actual infrastructure changes
+
+- Created one **self-hosted Cloudflare Access application** named `Browser Spec418 Temporary OTP Activation Probe`, app ID `a24c5ac7-4d81-4688-9ad4-383f641ae147`, matching only `browser.lirtual.dpdns.org/activation-test-418/*`.
+- Application's only allowed IdP: the existing Cloudflare One-time PIN provider. Session duration: `15m`. Hidden from the App Launcher. No other owner approval or MCP Portal application changed.
+- Created one application-scoped Allow policy `Browser Spec418 OTP Probe Owner Email Only`, policy ID `73a8dc57-60e0-4fc3-b1ea-37e6b5f98920`. Include is the existing explicitly authorized Owner Outlook email only; Require pins `login_method` to the same One-time PIN IdP. No broad email-domain include, service tokens, nonidentity bypass or public access.
+- No additional Worker, DNS record, Durable Object, GitHub CI, secret, credential, or production Worker code change. Existing `browser-mcp-worker` custom domain handles the request only **after** Access. The main Worker has **no** `/activation-test-418/` route, so post-login origin response is currently HTTP 404. This test checks the Access authentication gate only; it does not create an activation callback, issue Endpoint credentials, or grant browser control.
+
+### Live access control verification (no OTP email generated)
+
+- API GET readback returned app HTTP 200 and policy HTTP 200. The policy contains exactly one specific Owner email include and OTP `login_method` requirement.
+- Unauthenticated GET `https://browser.lirtual.dpdns.org/activation-test-418/start` returned **302 to Cloudflare Access**, as did a second path under the same test prefix.
+- Unauthenticated existing `/owner/operations/<uuid>` remained **302 to Cloudflare Access** with its own application; original independent Owner Approval remains untouched.
+- Adjacent unmatched path `/activation-test-419/start` remained Worker **404**, confirming no wildcard spill beyond the new test prefix.
+- Explicitly **not yet tested:** whether the Owner gets a new PIN in a browser already holding a valid global Access session; completing a real OTP; subsequent SSO reuse; extension-specific redirect and one-use challenge binding; replay/Stop behavior. A normal 404 after the Owner authenticates will be the expected origin response and **must not** be reported as a completed automatic pairing or a successful activation callback.
+
+### Owner-facing test and narrow evidence needed
+
+1. From an Owner-controlled Chrome/Edge browser, open `https://browser.lirtual.dpdns.org/activation-test-418/start`. Do **not** expose the PIN to ChatGPT, Browser MCP, a shared screenshot or an Agent-controlled page. Record only whether a new emailed PIN was requested and whether the Access challenge completed.
+2. A `Not found` origin page after Access is expected and means **only** the protected route's Access gate passed. If Access never prompts for a fresh PIN due to a reusable global session, record this negative result; do not call Q3 Pass.
+3. For an independent session, close **all** InPrivate/Incognito windows and launch a new isolated browser session before repeating; confirm the PIN prompt without transferring any OTP to automation.
+4. Do **not** convert the existing `/owner/*` Access app into an activation callback. The future full proof requires a distinct trusted endpoint handler with one-use challenge, authenticated callback provenance, and extension-held proof of possession.
+
+### Cleanup
+
+Once authentication evidence has been collected or the Owner cancels the experiment, **delete only the temporary Access app by its exact app ID** (this should also remove its app-scoped policy) and verify that the test URL returns the prior Worker HTTP 404 without Access redirect. Do not remove the underlying OTP IdP or either existing Browser Owner Approval Access app. The application's 15-minute **session** duration does *not* automatically delete the application, so cleanup is explicitly pending.
+
