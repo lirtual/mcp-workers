@@ -5,7 +5,7 @@ import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import {waitForRuntimeApproval} from './runtime-approval.ts';
 import {reservePortalCall} from './portal-authorization.ts';
-import {REVIEWED_WRITE_TOOL,reviewedWriteTool,reviewedWriteArguments} from './mcp-write-contract.ts';
+import {reviewedWriteTool,reviewedWriteArguments} from './mcp-write-contract.ts';
 import {callApprovedHttp,HttpDispatchError} from './http-action.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
@@ -43,9 +43,10 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
   const scope=step.with.scope;
   const write=scope==='write';
   if(scope!=='read'&&!write)throw Error('external_approval_required');
-  if(write&&(plan.mcp_write_execution_approved!==true||tool!==REVIEWED_WRITE_TOOL||
+  if(write&&(plan.mcp_write_execution_approved!==true||
      !plan.steps.some(x=>x.id===stepId&&x.uses==='mcp.call'&&x.with.scope==='write')||
-     !reviewedWriteArguments(args)||!reviewedWriteArguments(step.with.arguments)))
+     !reviewedWriteArguments(args,tool as string)||
+     !reviewedWriteArguments(step.with.arguments,tool as string)))
     throw Error('mcp_write_approval_required');
   const grant=plan.mcp_approvals?.some(g=>g.endpoint===endpoint&&g.tool===tool&&g.scope===scope&&g.schema_digest===schema_digest);
   if(!grant||typeof endpoint!=='string'||typeof tool!=='string'||

@@ -131,3 +131,85 @@ test('write Publish requires exact immutable grant, explicit write approval and 
       .get(newVersion.published_version_id) as {plan:string}).plan)).mcp_connection_generation,1);
   }finally{sqlite.close();}
 });
+
+const appendSchema={type:'object',properties:{
+  note_id:{type:'string'},content:{type:'string',minLength:1}},
+  required:['note_id','content'],
+  '$schema':'https://json-schema.org/draft/2020-12/schema'};
+const appendTool={name:'ima_append_note',inputSchema:appendSchema,
+  annotations:{readOnlyHint:false,destructiveHint:false}};
+const appendDefinition=(note_id='7521947772530780',content='Reviewed append content')=>({
+  version:1,name:'Reviewed IMA append',steps:[{id:'append',uses:'mcp.call',
+    with:{endpoint,tool:'ima_append_note',scope:'write',
+      input_schema:appendSchema,arguments:{note_id,content}}}],
+});
+test('only exact source-reviewed append note schema and bounded literal inputs are accepted',async()=>{
+  assert.equal(reviewedWriteTool(appendTool),true);
+  assert.equal(reviewedWriteArguments({note_id:'7521947772530780',content:'safe'},'ima_append_note'),true);
+  for(const args of [
+    {note_id:'',content:'safe'},
+    {note_id:'not-an-actual-id',content:'safe'},
+    {note_id:'7521947772530780',content:''},
+    {note_id:'7521947772530780',content:'x'.repeat(2049)},
+    {note_id:{ref:'inputs.note'},content:'safe'},
+    {note_id:'7521947772530780',content:{ref:'steps.a.output'}},
+    {note_id:'7521947772530780',content:'safe',folder_id:'private'},
+  ]){
+    assert.equal(reviewedWriteArguments(args,'ima_append_note'),false);
+    await assert.rejects(()=>compilePlan({version:1,name:'bad append',steps:[
+      {id:'append',uses:'mcp.call',with:{...appendDefinition().steps[0].with,arguments:args}},
+    ]}),/unreviewed_write_operation/);
+  }
+  for(const altered of [
+    {...appendTool,name:'append_note'},
+    {...appendTool,annotations:{readOnlyHint:true,destructiveHint:false}},
+    {...appendTool,annotations:{readOnlyHint:false,destructiveHint:true}},
+    {...appendTool,inputSchema:{...appendSchema,required:['content']}},
+    {...appendTool,inputSchema:{...appendSchema,properties:{
+      ...appendSchema.properties,folder_id:{type:'string'}}}},
+  ])assert.equal(reviewedWriteTool(altered),false);
+  const contracts=await reviewedPortalWriteTools([upstream,appendTool]);
+  assert.deepEqual(contracts.map(x=>x.tool),['ima_create_note','ima_append_note']);
+  assert.deepEqual(contracts[1].arguments,{note_id:'0000000000000000',
+    content:'Owner-reviewed append content'});
+  assert.equal(contracts[1].schema_digest,await toolSchemaDigest(appendSchema));
+  assert.deepEqual((await reviewedPortalWriteTools([upstream,appendTool,appendTool]))
+    .map(x=>x.tool),['ima_create_note']);
+  const compiled=await compilePlan(appendDefinition());
+  assert.equal(compiled.plan.steps[0].with.scope,'write');
+  assert.equal(compiled.plan.steps[0].with.schema_digest,await toolSchemaDigest(appendSchema));
+  await assert.rejects(()=>compilePlan({...appendDefinition(),steps:[
+    appendDefinition().steps[0],{...appendDefinition().steps[0],id:'append_again'}]}),
+    /excessive_mcp_write_steps/);
+  const env={MCP_PORTAL_ENDPOINT:endpoint,MCP_PORTAL_CLIENT_ID:'test-id',
+    MCP_PORTAL_CLIENT_SECRET:'test-secret'};
+  const detail=await workflowCapabilities(env,'action.mcp.write',
+    async()=>({availability:'verified_contract' as const,tools:[],write_tools:contracts}));
+  assert.deepEqual((detail.discovered_tools as Array<{tool:string}>).map(x=>x.tool),
+    ['ima_create_note','ima_append_note']);
+});
+
+test('append requires its own exact immutable write grant and fresh Connection generation',async()=>{
+  const {sqlite,service}=fixture();
+  try{
+    const draft=await service.create(JSON.stringify(appendDefinition()));
+    const ownGrant={endpoint,tool:'ima_append_note',scope:'write' as const,
+      schema_digest:await toolSchemaDigest(appendSchema)};
+    const foreignGrant={...ownGrant,tool:'ima_create_note'};
+    const publish=(g=[ownGrant],allow=true)=>service.publish(
+      draft.workflow_id,1,g,true,false,[],[],[],false,[],false,allow);
+    await assert.rejects(()=>publish([foreignGrant]),/external_approval_required/);
+    await assert.rejects(()=>publish([ownGrant],false),/mcp_write_approval_required/);
+    const version=await publish();
+    const original=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .get(version.published_version_id) as {plan:string};
+    const plan=JSON.parse(original.plan);
+    assert.equal(plan.mcp_write_execution_approved,true);
+    assert.deepEqual(plan.mcp_approvals,[ownGrant]);
+    await service.portalConnectionRevoke();
+    await assert.rejects(()=>publish(),/portal_connection_revoked/);
+    await service.portalConnectionEnable();
+    const next=await publish();
+    assert.notEqual(next.published_version_id,version.published_version_id);
+  }finally{sqlite.close();}
+});
