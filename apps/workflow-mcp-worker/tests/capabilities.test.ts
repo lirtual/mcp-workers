@@ -21,7 +21,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.write')?.availability,'unavailable');
-  for(const id of ['flow.loop','flow.saga']){
+  for(const id of ['flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
@@ -115,6 +115,7 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
     ['uses','with'],['flow','times','template'],
+    ['flow','condition','max_iterations','template'],
     ['flow','duration_seconds'],['flow','token_sha256','timeout_seconds'],
     ['flow','workflow_id','version_id','inputs'],
     ['flow','items','max_items','template'],
@@ -318,15 +319,31 @@ test('external event wait has one bounded, digest-only compiler contract and mat
   assert.equal(detail.event_policy.native_checkpoint,'step.waitForEvent');
   assert.equal((await compilePlan(detail.example.definition)).digest,detail.example.digest);
   assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.flow.enum,
-    ['repeat','foreach','child','wait','wait_event']);
+    ['repeat','foreach','child','wait','wait_event','while','until']);
 });
 
-test('unreviewed writes are blocked; dynamic loops and Saga remain design-only',async()=>{
+test('bounded dynamic while/until discovery compiles and refuses nested/effect bodies',async()=>{
+ const detail=await workflowCapabilities(env,'flow.loop');
+ assert.equal(detail.availability,'supported');
+ assert.equal((detail.loop_policy as {body:string}).body,'single result.emit only');
+ const {definition,digest}=detail.example as {definition:unknown;digest:string};
+ assert.equal((await compilePlan(definition)).digest,digest);
+ assert.equal((await compilePlan(definition)).plan.steps[0].uses,'flow.loop');
+ assert.match(String(((await workflowCapabilities(env)).expression_rules as {supported_loop:string}).supported_loop),/exhaustion/);
+ for(const uses of ['mcp.call','github.run','http.request','flow.loop']){
+   await assert.rejects(()=>compilePlan({version:1,name:'Unsafe loop',steps:[{
+     id:'loop',flow:'until',max_iterations:3,condition:true,
+     template:{uses,with:{data:1}},
+   }]}),/unsupported_loop_action/);
+ }
+});
+
+test('unreviewed writes are blocked; nested loops and Saga remain design-only',async()=>{
  const write=await workflowCapabilities(env,'action.mcp.write');
  assert.equal(write.availability,'unavailable');
  assert.deepEqual((write.grant as {required:string[]}).required,
    ['approved_operations','approve_mcp_write_execution','accept_target_risks']);
- for(const id of ['flow.loop','flow.saga']){
+ for(const id of ['flow.saga']){
   const detail=await workflowCapabilities(env,id);
   assert.equal(detail.availability,'unsupported');
   const design=detail.design_contract as {executable:boolean;source_schema:string};

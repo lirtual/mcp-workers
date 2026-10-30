@@ -12,7 +12,7 @@ import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskIn
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { evaluateArguments, evaluateCondition, toolSchemaDigest } from './plan.ts';
+import { evaluateArguments, evaluateCondition, toolSchemaDigest, PLAN_LIMITS } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
 import type { Env } from './store.ts';
 import { limitResult,WorkflowService } from './store.ts';
@@ -458,6 +458,52 @@ async function runForeachStep(
   }
 }
 
+/** Bounded pure loop: each decision and iteration has a stable native
+ * checkpoint. No MCP, GitHub, HTTP, child, or Provider dispatch is permitted
+ * inside this first slice. A replay therefore cannot repeat an external effect.
+ */
+async function runPureLoop(s:Step,step:WorkflowStep,
+  ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}):Promise<Outcome>{
+  if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+  const mode=s.with.mode;
+  const max=s.with.max_iterations;
+  const template=s.with.template as {uses?:unknown;with?:{data?:unknown}}|undefined;
+  if((mode!=='while'&&mode!=='until')||!Number.isSafeInteger(max)||
+     Number(max)<1||Number(max)>PLAN_LIMITS.maxRepeat||template?.uses!=='result.emit'||
+     !template.with||!Object.hasOwn(template.with,'data'))
+    return {status:'failed',error_code:'invalid_loop_plan'};
+  let value:unknown=null;
+  let count=0;
+  try{
+    const complete=():Outcome=>({status:'succeeded',output:limitResult({iterations:count,value})});
+    const check=async(index:number,current:unknown):Promise<boolean> =>
+      step.do('workflow-'+s.id+':loop:condition:'+index,
+        {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+        async()=>evaluateCondition(s.with.condition,{...ctx,item:{index,value:current}}));
+    for(let index=0;index<Number(max);index++){
+      if(mode==='while'&&!(await check(index,value)))
+        return complete();
+      value=await step.do('workflow-'+s.id+':loop:iteration:'+index,
+        {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+        async()=>{
+          const output=evaluateArguments(template.with!.data,{...ctx,item:{index,value}});
+          if(hasUnresolvedArgument(output))throw Error('invalid_loop_output');
+          return limitResult(output);
+        });
+      count++;
+      if(mode==='until'&&await check(index,value))
+        return complete();
+    }
+    // A true while condition after the last permitted iteration must fail:
+    // budget exhaustion is never reported as a successful early exit.
+    if(mode==='while'&&!(await check(Number(max),value)))
+      return complete();
+    return {status:'failed',error_code:'loop_budget_exceeded'};
+  }catch{
+    return {status:'failed',error_code:'loop_evaluation_failed'};
+  }
+}
+
 /** A bounded time wait uses Cloudflare's native, replayable sleep checkpoint.
  * No JS timer, external poller, D1 deadline table or second scheduler. The
  * persisted waiting Step is readable while the Workflow instance is asleep.
@@ -742,6 +788,8 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
             ? await runWaitForEvent(this.env,s,id,step,ctx.steps)
             : s.uses==='flow.child'
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
+            : s.uses==='flow.loop'
+            ? await runPureLoop(s,step,ctx)
             : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
             : s.uses==='action.run'

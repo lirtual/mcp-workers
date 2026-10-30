@@ -20,7 +20,7 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event' | 'flow.loop'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
 };
@@ -277,20 +277,20 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         ref:item.ref as string,workflow_path:item.workflow_path as string}];
     }else throw new PlanError('unsupported_trigger','/triggers/0/type');
   }
-  // Literal repeat is compiled to existing, ordered DAG Steps at Publish time.
-  // There is no runtime re-evaluation, dynamic item list or second scheduler.
+  // Literal repeat compiles to ordinary DAG Steps. Dynamic foreach/loop
+  // reserve the full possible expansion budget before any execution.
   const expanded:unknown[]=[];
-  let foreachReserved=0;
+  let dynamicReserved=0;
   const foreachChildren=new Set<string>();
   for(let i=0;i<o.steps.length;i++){
     const candidate=object(o.steps[i],'invalid_step');
     if(!Object.hasOwn(candidate,'flow')){
       // Source callers cannot masquerade as an internal compiled Flow Step.
-      // Only the validated flow:foreach branch below may produce this opcode.
-      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait'||candidate.uses==='flow.wait_event')
+      // Only validated source Flow branches may produce these internal opcodes.
+      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait'||candidate.uses==='flow.wait_event'||candidate.uses==='flow.loop')
         throw new PlanError('unsupported_capability','/steps/'+i+'/uses');
       expanded.push(candidate);
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -312,7 +312,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.wait',needs:deps,
         with:{duration_seconds:candidate.duration_seconds}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -333,7 +333,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.wait_event',needs:deps,
         with:{token_sha256:candidate.token_sha256,timeout_seconds:candidate.timeout_seconds}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -355,7 +355,50 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       expanded.push({id:candidate.id,uses:'flow.child',needs:deps,
         with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs,
           ...(candidate.mode==='detached'?{mode:'detached'}:{})}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
+      continue;
+    }
+    if(candidate.flow==='while'||candidate.flow==='until'){
+      // First dynamic-loop slice: a single pure emit expression, no repeated
+      // external effects or nested Actions. Every potential body iteration
+      // consumes the existing maximum 32-step budget before publication.
+      keys(candidate,['id','flow','needs','condition','max_iterations','template'],path);
+      if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
+         OBJECT_PROTOTYPE_KEYS.has(candidate.id))
+        throw new PlanError('invalid_step_id',path+'/id');
+      const deps=candidate.needs??[];
+      if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||
+         new Set(deps).size!==deps.length)
+        throw new PlanError('invalid_dependencies',path+'/needs');
+      if(!Number.isSafeInteger(candidate.max_iterations)||
+         Number(candidate.max_iterations)<1||
+         Number(candidate.max_iterations)>PLAN_LIMITS.maxRepeat)
+        throw new PlanError('invalid_loop_limit',path+'/max_iterations');
+      const template=object(candidate.template,'invalid_loop_template');
+      keys(template,['uses','with'],path+'/template');
+      if(template.uses!=='result.emit')
+        throw new PlanError('unsupported_loop_action',path+'/template/uses');
+      const withData=object(template.with,'invalid_loop_template');
+      keys(withData,['data'],path+'/template/with');
+      if(!Object.hasOwn(withData,'data'))
+        throw new PlanError('invalid_loop_template',path+'/template/with/data');
+      const ctx={id:candidate.id,needs:deps};
+      const check=(value:unknown,field:string)=>
+        expression(value,ctx,0,false,true,path+field);
+      check(candidate.condition,'/condition');
+      const op=candidate.condition&&typeof candidate.condition==='object'&&
+        !Array.isArray(candidate.condition)?Object.keys(candidate.condition):[];
+      if(typeof candidate.condition!=='boolean'&&
+         !(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
+        throw new PlanError('invalid_loop_condition',path+'/condition');
+      check(withData.data,'/template/with/data');
+      dynamicReserved+=Number(candidate.max_iterations);
+      expanded.push({id:candidate.id,uses:'flow.loop',needs:deps,with:{
+        mode:candidate.flow,max_iterations:candidate.max_iterations,
+        condition:candidate.condition,template:{uses:'result.emit',with:{data:withData.data}},
+      }});
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -447,10 +490,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
             throw new PlanError('invalid_step_id',path+'/id');
           foreachChildren.add(generatedId);
         }
-        foreachReserved+=Number(candidate.max_items)*children.length;
+        dynamicReserved+=Number(candidate.max_items)*children.length;
         expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
           with:{items:source,max_items:candidate.max_items,templates:children}});
-        if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+        if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
           throw new PlanError('invalid_step_count','/steps');
         continue;
       }
@@ -502,10 +545,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('invalid_step_id',path+'/id');
         foreachChildren.add(generatedId);
       }
-      foreachReserved+=Number(candidate.max_items);
+      dynamicReserved+=Number(candidate.max_items);
       expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
         with:{items:source,max_items:candidate.max_items,template:compiledChild}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -535,7 +578,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       expanded.push({id:generatedId,uses:template.uses,with:template.with,
         ...(template.if===undefined?{}:{if:template.if}),
         needs:[...originalNeeds,...(n? [candidate.id+'_'+(n-1)]:[])]});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
     }
   }
@@ -590,7 +633,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(!['flow.foreach','flow.child','flow.wait','flow.wait_event'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
+    if(!['flow.foreach','flow.child','flow.wait','flow.wait_event','flow.loop'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     // Opt-in branch fan-in: completed/skipped dependencies may join, but a
@@ -600,7 +643,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.needs_policy==='allow_skipped'&&!needs.length)
       throw new PlanError('invalid_needs_policy',stepPath+'/needs_policy');
     const withData=object(s.with,'invalid_step_arguments');
-    if(s.uses==='flow.foreach'){
+    if(s.uses==='flow.loop'){
+      keys(withData,['mode','condition','max_iterations','template'],stepPath+'/with');
+    }else if(s.uses==='flow.foreach'){
       keys(withData,['items','max_items','template','templates'],stepPath+'/with');
     }else if(s.uses==='flow.child'){
       keys(withData,['workflow_id','version_id','inputs','mode'],stepPath+'/with');
@@ -706,6 +751,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Number.isSafeInteger(s.with.timeout_seconds)||Number(s.with.timeout_seconds)<1||
          Number(s.with.timeout_seconds)>PLAN_LIMITS.maxEventWaitSeconds)
         throw new PlanError('invalid_event_wait_timeout','/steps/'+steps.indexOf(s)+'/timeout_seconds');
+    }else if(s.uses==='flow.loop'){
+      // Source validation above owns item-context expressions and mode limits.
     }else if(s.uses==='flow.child'){
       try{expression(s.with.inputs,s,0,true,false,'/steps/'+steps.indexOf(s)+'/inputs');}catch(error){
         if(error instanceof PlanError)throw new PlanError(error.message,error.path==='/'?'/steps/'+steps.indexOf(s)+'/inputs':error.path);
