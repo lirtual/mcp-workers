@@ -774,6 +774,17 @@ test('cancelled Workflow Steps count as terminal only with matched cancelled Run
     db.exec("UPDATE runs SET outcome='cancelled',error_code=NULL");assert.equal(count(),1);
     db.exec("UPDATE runs SET error_code='approval_cancel_requested';UPDATE run_steps SET error_code=NULL");assert.equal(count(),1);
     db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),0);
+    // Event Wait cancellation is a separate supported, durable Run/Step pair.
+    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code='event_wait_cancel_requested'");
+    assert.equal(count(),0);
+    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),1);
+    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code='unknown_cancel_requested'");
+    assert.equal(count(),1);
+    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code=NULL");
+    assert.equal(count(),1);
+    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code=NULL");
+    assert.equal(count(),1);
+    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested'");assert.equal(count(),0);
   }finally{db.close();}
 });
 
