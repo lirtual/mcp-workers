@@ -1,6 +1,6 @@
 # Database MCP Worker · Spec #344
 
-## Spec #476 update — local Draft only, not production (2026-10-30)
+## Spec #476 — Draft PR #490 (not deployed; 2026-10-30)
 
 The unmerged `#490` draft now implements one `/setup` Add surface for MySQL and PostgreSQL
 with plaintext Direct or strict-TLS Hyperdrive, accepts a Connection URL or explicit
@@ -37,6 +37,23 @@ now rejected. The old `/setup/hyperdrive-preview` and
 replaces the old two-stage credential submission. Owner and Runner GitHub
 checks no longer misinterpret `can_approve_pull_request_reviews` as
 PR-creation permission.
+
+### Safe new-ID replacement cutover (requires deployed verification)
+
+1. Use the authenticated `/setup` Edit entry to prepare a new logical ID. The
+   origin host/port/database are prefilled only from verified D1 metadata; no
+   existing passwords, users or CA values are disclosed or reused blindly.
+2. Verify reviewed PR checks and protected release, the exact deployed Worker
+   Binding/TLS/CA readback, and the new ID's separate health-based activation.
+   A dispatched workflow or green CI alone is **not** activation proof.
+3. Update consumers explicitly from the old ID to the new ID, verify their
+   real read paths, then Disable the old ID using its current D1 revision.
+4. Retire the old logical ID only after its in-flight work is settled. Keep
+   historic Cloudflare bindings, configs and CA until current and rollback
+   reference checks independently prove physical cleanup safe.
+
+No implicit alias, same-ID rebinding, automatic consumer cutover or TTL reset
+is provided. A blocked or unknown result must remain visible, not guessed done.
 
 **Locally implemented, not live:** a disabled Hyperdrive logical ID can be
 retired regardless of prior activation when D1 reports no unresolved execution
