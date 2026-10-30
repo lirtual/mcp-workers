@@ -727,6 +727,80 @@ it('prepares a replacement from active or disabled Hyperdrive without mutating o
  expect(JSON.stringify(dispatches)).not.toContain(base.password);
 });
 
+it('accepts only a uniquely reviewed manifest as legacy Hyperdrive Edit provenance', async () => {
+  const {sqlite,env}=fixture();instances.push(sqlite);
+  const prior={binding:'HYPERDRIVE_DB344_MYSQL_E2E',
+    id:'38bf39b569484dbb8a9fe1b24f0df854',dialect:'mysql',
+    origin_host:'mysql-zeroverse.d.aivencloud.com',origin_port:18691,
+    origin_database:'aiven_mysql_test',origin_user:'db344_e2e',
+    ca_certificate_id:'c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a'};
+  sqlite.prepare(`INSERT INTO database_connections
+    (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
+    VALUES ('legacy_mysql','mysql','hyperdrive','disabled',?,?,3,NULL,1,1)`)
+    .run(prior.id,prior.binding);
+  // A matching ID but a different Binding must not borrow reviewed provenance.
+  sqlite.prepare(`INSERT INTO database_connections
+    (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
+    VALUES ('legacy_unreviewed','mysql','hyperdrive','disabled',?,'HYPERDRIVE_UNREVIEWED',3,NULL,1,1)`)
+    .run('f'.repeat(32));
+  env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
+  const {jwt,certificates}=await auth();
+  const dispatches:string[]=[];
+  const requestFetch:typeof fetch=async(input,options)=>{
+    const url=String(input);
+    if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:false});
+    if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+    if(url.endsWith('/actions/workflows/release.yml/dispatches')){
+      dispatches.push(String(options?.body));return Response.json({workflow_run_id:476});
+    }
+    return certificates();
+  };
+  const getPage=(id:string)=>handleSetup(new Request(pageUrl+'?edit='+id,
+    {headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+  const page=await getPage('legacy_mysql'),html=await page.text();
+  expect(page.status).toBe(200);
+  expect(html).toContain('name="host" autocomplete="off" maxlength="253" value="mysql-zeroverse.d.aivencloud.com" readonly');
+  expect(html).toContain('name="port" inputmode="numeric" type="number" min="1" max="65535" value="18691" readonly');
+  expect(html).toContain('name="database" maxlength="128" value="aiven_mysql_test" readonly');
+  expect(html).not.toContain(prior.origin_user);
+  expect(html).not.toContain(prior.ca_certificate_id);
+  const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+  const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+  const submission={csrf,id:'legacy_mysql_replacement',dialect:'mysql',transport:'hyperdrive',
+    input_mode:'fields',host:prior.origin_host,port:String(prior.origin_port),
+    database:prior.origin_database,username:'new_reader',password:'new-synthetic-secret',
+    replacement_for:'legacy_mysql'};
+  const save=(values:Record<string,string>)=>handleSetup(new Request(pageUrl+'/add',{
+    method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+      cookie,'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({...submission,...values})
+  }),env,requestFetch);
+  expect((await save({host:'unreviewed.example.org'})).status).toBe(422);
+  expect((await save({replacement_for:'legacy_unreviewed'})).status).toBe(422);
+  expect((await save({})).status).toBe(200);
+  expect(dispatches).toHaveLength(1);
+  expect(JSON.stringify(dispatches)).not.toContain(submission.password);
+  const {readHyperdrivePreparation}=await import('../../src/setup/hyperdrive-operations.js');
+  const row=sqlite.prepare("SELECT operation_id FROM hyperdrive_operations WHERE logical_id='legacy_mysql_replacement'")
+    .get() as {operation_id:string};
+  expect(await readHyperdrivePreparation(env.DB!,env,row.operation_id)).toMatchObject({
+    host:prior.origin_host,caCertificateId:prior.ca_certificate_id
+  });
+  // A current, uniquely reviewed legacy source can also supply an existing
+  // CA to ordinary Add without manual Cloudflare Config IDs or CA reentry.
+  sqlite.prepare("UPDATE database_connections SET status='active' WHERE id='legacy_mysql'").run();
+  expect((await save({id:'legacy_ca_reuse',replacement_for:''})).status).toBe(200);
+  const reused=sqlite.prepare("SELECT operation_id FROM hyperdrive_operations WHERE logical_id='legacy_ca_reuse'")
+    .get() as {operation_id:string};
+  expect(await readHyperdrivePreparation(env.DB!,env,reused.operation_id)).toMatchObject({
+    caCertificateId:prior.ca_certificate_id
+  });
+  expect(dispatches).toHaveLength(2);
+  const unreviewed=await getPage('legacy_unreviewed');
+  const unknownHtml=await unreviewed.text();
+  expect(unknownHtml).not.toContain('name="host" autocomplete="off" maxlength="253" value="mysql-zeroverse.d.aivencloud.com" readonly');
+});
+
 it('unified Save reuses strict CA replacement provenance without altering its active source', async () => {
  const {sqlite,env}=fixture();instances.push(sqlite);
  const prior={binding:'HYPERDRIVE_PRIOR',id:'a'.repeat(32),dialect:'postgres',
