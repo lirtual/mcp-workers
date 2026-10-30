@@ -14,6 +14,7 @@ import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTermina
 import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
+import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
   if(!definition || new TextEncoder().encode(definition).byteLength>32768)throw new StateError('definition_too_large');
   try {
@@ -333,6 +334,9 @@ export class WorkflowService {
         ...(suggestion?{suggestion}:{})}]};
     }
   }
+  async portalConnectionStatus(){return portalAuthorization(this.db);}
+  async portalConnectionRevoke(){return changePortalAuthorization(this.db,'revoke');}
+  async portalConnectionEnable(){return changePortalAuthorization(this.db,'enable');}
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
     approve_cloudflare_execution=false){
@@ -364,6 +368,9 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
+    const portalConnection=required.length?await portalAuthorization(this.db):null;
+    if(portalConnection&&portalConnection.state!=='enabled')
+      throw new StateError('portal_connection_revoked');
     const hasCloudflare=plan.steps.some(s=>s.uses==='action.run');
     let cloudflareGrants:typeof approved_cloudflare_actions=[];
     if(hasCloudflare){
@@ -391,7 +398,8 @@ export class WorkflowService {
       throw new StateError('unexpected_cloudflare_approval');
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
-    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
+    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true,
+      mcp_connection_generation:portalConnection!.generation}:plan;
     const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
     const actionPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
     const withCloudflare:Plan=hasCloudflare?{
@@ -401,7 +409,13 @@ export class WorkflowService {
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
-      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
+      // A revoked generation must never be revived by a same-Draft Publish.
+      const previous=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+        .bind(row.active_version_id).first<{plan:string}>();
+      const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
+      if(current?.digest===plan_digest && (!portalConnection ||
+        (oldPlan?.mcp_connection_generation??0)===portalConnection.generation))
+        return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
     }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
@@ -413,7 +427,12 @@ export class WorkflowService {
       const latest=await this.row(workflow_id);
       if(latest.draft_revision===expected_revision&&latest.active_version_id){
         const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(latest.active_version_id,workflow_id).first<{digest:string}>();
-        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
+        const prior=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(latest.active_version_id).first<{plan:string}>();
+        const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
+        if(current?.digest===plan_digest && (!portalConnection ||
+            (priorPlan?.mcp_connection_generation??0)===portalConnection.generation))
+          return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
       }
       throw new StateError('revision_conflict');
     }

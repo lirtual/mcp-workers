@@ -578,7 +578,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,portal_auth_table:0,mcp_fence_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
     child_terminate_fence_column:0,capacity_guard_trigger:0,
     locator_column:0,fixed_column:0,fixed_index:0,
@@ -610,7 +610,11 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false,true),true);
+  const portalComplete={...approvalComplete,migration_count:16,migration_v16:1,portal_auth_table:1,mcp_fence_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false),true);
+  assert.equal(verifyWorkflowD1Readiness(result(portalComplete),false,true),true);
+  for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0}])
+    assert.throws(()=>verifyWorkflowD1Readiness(result({...portalComplete,...broken}),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(deletedComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
@@ -670,7 +674,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
       /schema migrations/);
   }
-  assert.equal(verifyWorkflowD1Readiness(result({...approvalComplete,run_count:3,
+  assert.equal(verifyWorkflowD1Readiness(result({...portalComplete,run_count:3,
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
@@ -679,7 +683,8 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
     /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result({...portalComplete,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
@@ -736,6 +741,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0012_event_wait_receipts.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0016_portal_connection_revocation.sql/);
 });
 
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
@@ -746,12 +752,13 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
   assert.match(fn,/sql\(WORKFLOW_MIGRATION_READINESS_SQL\)/);
   assert.doesNotMatch(fn,/session_executions WHERE state != 'terminated'/);
   assert.match(source,/DELETE FROM step_attempts WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
+  assert.match(source,/DELETE FROM mcp_dispatch_fences WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
   assert.match(source,/Refusing GitHub cleanup until physical GitHub Job is completed/);
 });
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:15,expected_migrations:15,
+    migration_count:16,expected_migrations:16,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,

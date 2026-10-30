@@ -60,7 +60,7 @@ function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
+  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -366,6 +366,26 @@ test('approved MCP public read-only call succeeds through pinned Portal',async t
   assert.equal(result.steps[0].status,'succeeded');
   assert.ok(JSON.stringify(result.result).includes('hello MCP'));
   assert.ok(publicCalls>0);
+});
+
+test('revoke and enable cannot revive a prior MCP Published Plan or dispatch tools/call',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const started=await admit([echoStep('read',{value:'blocked'})],{},[ECHO_GRANT]);
+  assert.deepEqual(await service.portalConnectionRevoke(),{state:'revoked',generation:1});
+  assert.deepEqual(await service.portalConnectionEnable(),{state:'enabled',generation:1});
+  let called=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(request.method==='POST'&&(await request.clone().json() as {method?:string}).method==='tools/call')called++;
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(started.run_id);}finally{globalThis.fetch=previous;}
+  assert.equal(called,0);
+  const outcome=await service.result(started.run_id);
+  assert.equal(outcome.status,'failed');
+  assert.equal(outcome.steps[0].status,'failed');
+  assert.equal(outcome.steps[0].error_code,'portal_connection_revoked');
 });
 
 test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{
