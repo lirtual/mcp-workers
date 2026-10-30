@@ -45,6 +45,9 @@ async function fixture(t:test.TestContext){
  sql.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,? ,?,'github.action','dispatch','succeeded','lirtual/session-actions','10','lirtual/session-actions/.github/workflows/download.yml@refs/tags/v1','refs/tags/v1',42,1,42,1,1,1)").run(attempt,runId,childId);
 
  const prepare=(query:string)=>{
+  // Production D1 rejects the long LIKE prefix with SQLITE_ERROR; the vetted
+  // exact Workflow source check must use instr(...)=1 instead.
+  if(/a\.workflow_ref\s+LIKE\b/.test(query))throw Error('D1 incompatible LIKE source check');
   const bound=(args:unknown[])=>({
    first:async<T>()=>(sql.prepare(query).get(...(args as []))??null) as T|null,
    all:async()=>({results:sql.prepare(query).all(...(args as []))}),
