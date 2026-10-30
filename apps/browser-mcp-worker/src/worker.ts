@@ -134,10 +134,11 @@ async function handleMcp(request:Request,env:Env):Promise<Response> {
     return reply(call.id,toolText(data.data,data.status>=400));
   } catch {return reply(call.id,toolText({error_code:"unavailable"},true));}
 }
+// Stable Chrome/Edge installation ID derived from the reviewed public manifest key.
+// This restricts eligible extension origins; it is NOT a substitute for proof or Access.
+const BROWSER_EXTENSION_ID = "jhifaghneomgcfollcdbncjkcloedfem";
 function extensionOrigin(request:Request) {
-  const origin=request.headers.get("origin")??"";
-  // Extension origin is a coarse ingress filter, never an identity credential.
-  return /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
+  return request.headers.get("origin") === "chrome-extension://" + BROWSER_EXTENSION_ID;
 }
 async function handleExtension(request:Request,env:Env,path:string) {
   if (request.method==="OPTIONS"&&extensionOrigin(request))
@@ -177,7 +178,7 @@ export default {
       const config=activationConfig(env);
       const extension=url.searchParams.get("extension");
       if(!config||url.origin!==config.origin||!activationMatch||
-         url.searchParams.size!==1||!extension||!/^[a-p]{32}$/.test(extension)||
+         url.searchParams.size!==1||extension!==BROWSER_EXTENSION_ID||
          !["GET","POST"].includes(request.method)||
          request.headers.has("origin") && request.headers.get("origin")!==config.origin||
          !await verifyActivationOwner(request,env))

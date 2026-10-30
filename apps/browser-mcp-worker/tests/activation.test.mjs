@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {BrowserOwner} from '../src/coordinator.ts';
 import worker from '../src/worker.ts';
+const OFFICIAL_EXTENSION_ID='jhifaghneomgcfollcdbncjkcloedfem';
 const hash=async x=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(x))),b=>b.toString(16).padStart(2,'0')).join('');
 const proof='b'.repeat(64);
 function fixture(){
@@ -148,9 +149,18 @@ test('signed Access GET is read-only, same-origin POST verifies once, wrong audi
   }
   const originalFetch=globalThis.fetch;globalThis.fetch=async()=>Response.json({keys:[publicKey]});
   try{
-    const path='/activate/verify/'+id+'?extension='+'a'.repeat(32);
+    const path='/activate/verify/'+id+'?extension='+OFFICIAL_EXTENSION_ID;
     const request=(method,auth,headers={})=>new Request('https://browser.example'+path,{method,headers:{'cf-access-jwt-assertion':auth,...headers},...(method==='POST'?{body:JSON.stringify({presence:true})}:{})});
     const signed=await token();
+    for(const method of ['GET','POST']){
+      const invalid=new URL('https://browser.example'+path);
+      invalid.searchParams.set('extension','a'.repeat(32));
+      const rejected=await worker.fetch(new Request(invalid,{method,headers:{'cf-access-jwt-assertion':signed,
+        ...(method==='POST'?{origin:'https://browser.example','content-type':'application/json'}:{})},
+        ...(method==='POST'?{body:JSON.stringify({presence:true})}:{})}),env);
+      assert.equal(rejected.status,404,'wrong extension ID cannot use signed Access verification');
+    }
+    assert.equal((await f.post('activate-complete',{attempt_id:id,proof})).state,'awaiting_owner');
     const get=await worker.fetch(request('GET',signed),env);
     assert.equal(get.status,200);const verificationPage=await get.text();
     assert.match(verificationPage,/activation-presence/);
@@ -179,7 +189,7 @@ test('activation GET only renders a protected Profile callback; signed same-orig
  const existing=globalThis.fetch;globalThis.fetch=async(url,options)=>{
   assert.equal(url,issuer+'/cdn-cgi/access/certs');assert.equal(options.redirect,'manual');return Response.json({keys:[jwk]});};
  try{
-  const path='/activate/verify/'+crypto.randomUUID()+'?extension='+'a'.repeat(32);
+  const path='/activate/verify/'+crypto.randomUUID()+'?extension='+OFFICIAL_EXTENSION_ID;
   const run=async(jwt,suffix='',method='GET')=>worker.fetch(new Request('https://browser.example'+path+suffix,{method,headers:{'cf-access-jwt-assertion':jwt,...(method==='POST'?{'origin':'https://browser.example','content-type':'application/json'}:{})},...(method==='POST'?{body:JSON.stringify({presence:true})}:{})}),env);
   assert.equal((await run(await token({aud:['d'.repeat(64)]}))).status,404);
   assert.equal((await run(await token({email:'attacker@example.com'}))).status,404);

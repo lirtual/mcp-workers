@@ -4,7 +4,7 @@ import fs from "node:fs";
 import {DatabaseSync} from "node:sqlite";
 import worker from "../../src/worker.ts";
 import {BrowserOwner} from "../../src/coordinator.ts";
-const service="https://browser.example",extensionOrigin="chrome-extension://"+"a".repeat(32);
+const service="https://browser.example",extensionOrigin="chrome-extension://jhifaghneomgcfollcdbncjkcloedfem";
 const pause=()=>new Promise(resolve=>setImmediate(resolve));
 let sequence=0;
 export function intent(){const t=Date.now().toString(16).padStart(12,"0");return t.slice(0,8)+"-"+t.slice(8)+"-7000-8000-"+(++sequence).toString(16).padStart(12,"0");}
@@ -81,7 +81,7 @@ export async function fixture(config={},options={}){
     KeyboardEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}}});
   const actionClicked=event(),activationAlarm=event();
   const chrome={extension:{isAllowedIncognitoAccess:async()=>{if(pageState.nativeFailure)throw Error("native failure");return pageState.nativePrivate===true;}},storage:{local:storage(local),session:storage(session)},action:{setBadgeText:async()=>{},setTitle:async()=>{},onClicked:actionClicked},alarms:{create:async()=>{},onAlarm:activationAlarm},
-    runtime:{id:"a".repeat(32),getURL:p=>extensionOrigin+"/"+p,onMessage:{addListener(fn){receiver=fn;}},onMessageExternal:event(),onStartup:event(),onInstalled:event()},
+    runtime:{id:"jhifaghneomgcfollcdbncjkcloedfem",getURL:p=>extensionOrigin+"/"+p,onMessage:{addListener(fn){receiver=fn;}},onMessageExternal:event(),onStartup:event(),onInstalled:event()},
     tabs:{onRemoved:event(),onActivated:event(),captureVisibleTab:async()=>"data:image/png;base64,SCREENSHOT_SEED",
       create:async opts=>{
         if(opts.url.startsWith(service+"/activate/verify/")){
