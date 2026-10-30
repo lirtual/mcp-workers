@@ -151,6 +151,21 @@ test('a paginated second Worker inventory never confirms rotation eligibility',a
  onlyRead(f);
 });
 
+test('a contradictory Worker inventory count blocks rotation before and after a historical scan',async()=>{
+ for(const conflictingScan of [1,2]){
+  const f=fixture();let scans=0;
+  const request=async(url,init)=>{
+   const response=await f.request(url,init);
+   if(!url.endsWith('/workers/scripts'))return response;
+   scans++;
+   const data=await response.json();
+   return {ok:true,json:async()=>({...data,result_info:{page:1,count:2,total_count:scans===conflictingScan?3:2,total_pages:1}})};
+  };
+  await assert.rejects(run(f,{request}),conflictingScan===1?/worker_inventory_incomplete/:/worker_inventory_changed/);
+  onlyRead(f);
+ }
+});
+
 test('a Worker settings change after the historical scan invalidates rotation eligibility',async()=>{
  const f=fixture();let settingReads=0;
  const request=async(url,init)=>{

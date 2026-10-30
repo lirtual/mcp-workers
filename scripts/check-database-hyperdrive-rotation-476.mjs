@@ -66,8 +66,13 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
    fail('target_identity_unconfirmed');
  try{verifyCloudflareHyperdriveConfig(target,config)}catch{fail('target_identity_unconfirmed')}
  const scripts=await read('/workers/scripts');
- if(!Array.isArray(scripts.result)||scripts.result.length>100||scripts.result_info?.total_pages>1||
-   (scripts.result.length===100&&scripts.result_info?.total_pages!==1))
+ const completeInventory=(items,info)=>Array.isArray(items)&&items.length<=100&&
+   (info?.page===undefined||info.page===1)&&
+   (info?.count===undefined||info.count===items.length)&&
+   (info?.total_count===undefined||info.total_count===items.length)&&
+   (info?.total_pages===undefined||info.total_pages===1)&&
+   (items.length!==100||info?.total_pages===1);
+ if(!completeInventory(scripts.result,scripts.result_info))
   fail('worker_inventory_incomplete');
  const names=scripts.result.map(x=>x.id??x.name);
  if(new Set(names).size!==names.length||!names.includes('database-mcp-worker')||
@@ -126,10 +131,7 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
     fail('other_worker_deployment_changed');
  }
  const {result:latestScripts,result_info:latestInfo}=await read('/workers/scripts');
- if(!Array.isArray(latestScripts)||latestScripts.length!==names.length||
-   latestInfo?.total_pages>1||
-   (latestInfo?.total_count!==undefined&&latestInfo.total_count!==latestScripts.length)||
-   (latestInfo?.page!==undefined&&latestInfo.page!==1)||
+ if(!completeInventory(latestScripts,latestInfo)||latestScripts.length!==names.length||
    latestScripts.map(x=>x.id??x.name).sort().some((name,i)=>name!==[...names].sort()[i]))
    fail('worker_inventory_changed');
  for(const [name,ids] of versionSnapshots){
