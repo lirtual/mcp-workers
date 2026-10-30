@@ -23,23 +23,22 @@ export function verifyApplyIdentity(env) {
       typeof env[k] === 'string' && env[k].length > 0), 'apply_credentials_unavailable');
 }
 
-// Only an explicit HTTP 404 is absence. Permission errors and rulesets are
-// independent facts; never turn a failed policy read into an unprotected policy.
+// Read the ordinary branch metadata and effective rules independently.
+// An Admin API permission error NEVER means the branch is unprotected.
 async function readApplyPolicy(github) {
-  let policy;
+  let branch, rules;
   try {
-    policy = await github('/branches/main/protection');
-    gate(policy !== null && typeof policy === 'object' && !Array.isArray(policy), 'apply_policy_unavailable');
-  }
-  catch (error) {
-    gate(error?.status === 404, 'apply_policy_unavailable');
-    policy = null;
-  }
-  let rules;
-  try { rules = await github('/rulesets?includes_parents=true&per_page=100'); }
+    branch = await github('/branches/main');
+    rules = await github('/rulesets?includes_parents=true&per_page=100');
+  } catch { gate(false, 'apply_policy_unavailable'); }
+  gate(branch?.name === 'main' && typeof branch.protected === 'boolean' &&
+    Array.isArray(rules) && rules.length === 0, 'apply_policy_unavailable');
+  if (!branch.protected) return null;
+  let policy;
+  try { policy = await github('/branches/main/protection'); }
   catch { gate(false, 'apply_policy_unavailable'); }
-  gate(Array.isArray(rules) && rules.length === 0, 'apply_policy_unavailable');
-  gate(policy === null || policy?.enforce_admins?.enabled === true, 'apply_policy_unavailable');
+  gate(policy !== null && typeof policy === 'object' && !Array.isArray(policy) &&
+    policy?.enforce_admins?.enabled === true, 'apply_policy_unavailable');
   return policy;
 }
 

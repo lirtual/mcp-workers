@@ -154,29 +154,16 @@ export async function verifyGithubPrCapability(
   if (typeof token !== 'string' || token.length < 20) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch is not configured.');
   }
-  let response: Response;
-  try {
-    response = await request('https://api.github.com/repos/lirtual/mcp-workers/actions/permissions/workflow', {
-      method: 'GET', redirect: 'manual', headers: {
-        Authorization: 'Bearer ' + token,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'lirtual-database-mcp-worker',
-        'X-GitHub-Api-Version': '2022-11-28'
-      }, signal: AbortSignal.timeout(10000)
-    });
-  } catch {
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
-  }
-  if (response.status !== 200) {
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
-  }
-  // can_approve_pull_request_reviews only controls GitHub Actions review approval.
-  // It cannot establish or deny PR creation. The actual PR write and repository
-  // rules remain protected by the Runner and reviewed release path.
+  // The workflow-default-settings endpoint requires repository Administration
+  // read permission, not PR creation permission. Do not demand it from the
+  // Actions-only Owner token. Preparation still uses the protected Runner;
+  // review, required CI and release are independently gated after PR creation.
   await verifyGithubRequiredChecks(env, request);
 }
 
-/** A classic 404 permits the no-protection path only after separately checking inherited rulesets. */
+/** Explicit branch metadata and effective rulesets are readable without
+ * Administration permission. Unknown settings and protected branches lacking
+ * a verifiable required-check policy remain fail-closed. */
 export async function verifyGithubRequiredChecks(env: Env, request: typeof fetch = fetch): Promise<void> {
   const headers = {
     Authorization: 'Bearer ' + env.DATABASE_GITHUB_ACTIONS_TOKEN,
@@ -184,26 +171,29 @@ export async function verifyGithubRequiredChecks(env: Env, request: typeof fetch
     'User-Agent': 'lirtual-database-mcp-worker',
     'X-GitHub-Api-Version': '2022-11-28'
   };
+  const get = (path: string) => request('https://api.github.com/repos/lirtual/mcp-workers' + path, {
+    method: 'GET', redirect: 'manual', headers, signal: AbortSignal.timeout(10000)
+  });
   try {
-    const classic = await request('https://api.github.com/repos/lirtual/mcp-workers/branches/main/protection', {
-      method: 'GET', redirect: 'manual', headers, signal: AbortSignal.timeout(10000)
-    });
-    if (classic.status === 200) {
-      const policy = await classic.json() as {required_status_checks?: {strict?: unknown; contexts?: unknown}};
-      if (policy.required_status_checks?.strict === true &&
-        Array.isArray(policy.required_status_checks.contexts) &&
-        policy.required_status_checks.contexts.includes('Required checks gate')) return;
-      throw Error('unconfirmed classic PR checks');
-    }
-    if (classic.status !== 404) throw Error('classic protection unknown');
-    // The alternative is an explicitly unprotected main, not a substitute
-    // for mandatory checks. Unknown/inherited rulesets must fail closed.
-    const rules = await request('https://api.github.com/repos/lirtual/mcp-workers/rulesets?includes_parents=true&per_page=100', {
-      method: 'GET', redirect: 'manual', headers, signal: AbortSignal.timeout(10000)
-    });
+    const branchResponse = await get('/branches/main');
+    if (branchResponse.status !== 200) throw Error('branch policy unknown');
+    const branch = await branchResponse.json() as {name?: unknown; protected?: unknown};
+    if (branch.name !== 'main' || typeof branch.protected !== 'boolean') throw Error('invalid branch metadata');
+    const rules = await get('/rulesets?includes_parents=true&per_page=100');
     if (rules.status !== 200) throw Error('rulesets unavailable');
     const inventory: unknown = await rules.json();
     if (!Array.isArray(inventory) || inventory.length !== 0) throw Error('rulesets unknown or present');
+    // An explicit false (not a 403/404 from the Admin-only endpoint) proves
+    // no active branch protection. The Runner later verifies exact PR/CI.
+    if (!branch.protected) return;
+    const classic = await get('/branches/main/protection');
+    if (classic.status !== 200) throw Error('protected policy unavailable');
+    const policy = await classic.json() as {required_status_checks?: {strict?: unknown; contexts?: unknown}};
+    if (policy.required_status_checks?.strict !== true ||
+        !Array.isArray(policy.required_status_checks.contexts) ||
+        !policy.required_status_checks.contexts.includes('Required checks gate')) {
+      throw Error('unconfirmed classic PR checks');
+    }
   } catch {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub required PR checks could not be verified.');
   }

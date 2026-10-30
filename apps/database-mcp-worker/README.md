@@ -207,14 +207,18 @@ candidate/allowlisted PR preparation, plus Owner final confirmation and protecte
 API, D1 migration, deployment, database probe or lifecycle E2E was performed in this phase.
 The three connection baseline and OpenList CA above are prior evidence, not a fresh readback.
 
-- Preview is read-only. Prepare requires separate confirmation, Access/CSRF and
-  verified Actions PR permission plus either a strict required-check policy or explicit
-  unprotected main (classic protection HTTP 404, independently empty inherited rulesets,
-  exact current main SHA and active existing CI with the expected candidate-dispatch
-  definition). Unknown/403 policy responses, ambiguous rules or ineligible CI block.
-  Current reported `can_approve_pull_request_reviews=false` still blocks before **any
-  Cloudflare call**; only the Owner may separately enable it. No setting changes occur
-  automatically. Do not broaden the existing Actions-only Owner PAT.
+- Owner Save checks Access/CSRF and reads ordinary GitHub `branches/main`
+  metadata plus inherited rulesets using the existing Actions-only PAT.
+  `protected=false` with an empty ruleset inventory permits the existing
+  exact-main-SHA/active-CI prepare path without requiring Administration:read.
+  Protected main requires an independently readable strict required-check
+  policy. Unknown branch protection, nonempty/unreadable rulesets, stale SHA,
+  inactive/mismatched CI or permission errors fail closed; a 401/403 from a
+  settings API is **never** proof that main is unprotected. Workflow-default
+  `can_approve_pull_request_reviews` is unrelated to PR creation and is not
+  used as a gate. The protected Runner and Apply still enforce exact candidate
+  source, GitHub PR/CI eligibility and the separate approved release. No PAT
+  expansion or repository setting change is required for unprotected main.
 - `0003_hyperdrive_operations.sql` is the single additive migration (including apply run receipts), **not applied** here. Ordinary Database releases now fail their read-only
   schema gate until this migration is independently authorized and applied.
   Existing migrations, bindings and provenance are retained.
