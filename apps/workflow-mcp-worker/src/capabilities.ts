@@ -287,6 +287,25 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
         }},
     }},
 });
+// Nested dynamic loops and Foreach can only expose the compiler-reviewed operations.
+// Top-level MCP writes and Cloudflare Actions keep their independent contracts.
+const REVIEWED_READ_MCP_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties,scope:{const:'read'}},
+});
+const FOREACH_TASK_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties,
+    action:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties.action,
+      properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties.action.properties,
+        type:{const:'task'}}}},
+});
+const FOREACH_TASK_ACTION_RUN_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0].properties,
+    action:FOREACH_TASK_WITH_SCHEMA.properties.action},
+});
+
 export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   refs:['inputs.<name>','steps.<declared-needs-id>.status',
     'steps.<declared-needs-id>.output[.<field>]'],
@@ -347,11 +366,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
               properties:{uses:{enum:['result.emit','mcp.call']},with:{type:'object'}},
               oneOf:[
                 {properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}},
-                {properties:{uses:{const:'mcp.call'},with:{
-                  ...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'],
-                  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties,
-                    scope:{const:'read'}},
-                }}},
+                {properties:{uses:{const:'mcp.call'},with:REVIEWED_READ_MCP_WITH_SCHEMA}},
               ]}},
           not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},
             {required:['needs_policy']},{required:['times']},{required:['items']},{required:['max_items']}]}},
@@ -405,11 +420,11 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                 {if:{required:['uses'],properties:{uses:{const:'result.emit'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
                 {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+                  then:{properties:{with:REVIEWED_READ_MCP_WITH_SCHEMA}}},
                 {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+                  then:{properties:{with:FOREACH_TASK_WITH_SCHEMA}}},
                 {if:{required:['uses'],properties:{uses:{const:'action.run'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
+                  then:{properties:{with:FOREACH_TASK_ACTION_RUN_WITH_SCHEMA}}},
               ]},allOf:[{if:{minItems:2},then:{anyOf:[
                 {items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}}},
                 {contains:{type:'object',required:['uses'],
