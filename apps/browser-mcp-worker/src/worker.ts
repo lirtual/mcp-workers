@@ -204,7 +204,15 @@ if(!globalThis.chrome?.runtime?.sendMessage){status.textContent="Open this page 
 else chrome.runtime.sendMessage(target,{type:"activation-presence",attempt_id:attempt},async answer=>{
   if(!answer?.ok||chrome.runtime.lastError){status.textContent="No matching local activation. Return to the initiating Profile.";return;}
   try{const r=await fetch(location.href,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({presence:true}),credentials:"same-origin",redirect:"error"});
-    status.textContent=r.ok?"Access identity verified. Return to the Browser MCP extension.":"Activation expired or unavailable.";
+    if(!r.ok){status.textContent="Activation expired or unavailable.";return;}
+    status.textContent="Identity verified. Connecting Browser MCP…";
+    // This is only a wake-up hint: the extension still must prove its own
+    // secret to the server, receive the grant and authenticate its socket.
+    chrome.runtime.sendMessage(target,{type:"activation-verified",attempt_id:attempt},answer=>{
+      if(chrome.runtime.lastError||!answer?.ok)
+        status.textContent="Identity verified. Return to the Browser MCP extension.";
+      // The extension closes only its own verified tab once WSS is online.
+    });
   }catch{status.textContent="Activation could not be confirmed.";}
 });`;
       return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser MCP activation</title><h1>Browser MCP</h1><p id="status">Checking this Profile's pending activation…</p><script nonce="${nonce}">${script}</script></html>`,

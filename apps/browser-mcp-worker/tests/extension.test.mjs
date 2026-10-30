@@ -14,15 +14,16 @@ const credential="a".repeat(64);
 const service="https://browser-mcp-worker.invalid";
 async function setup(initial={},respond=async()=>{throw Error("network_offline");},options={}) {
   const local={...initial,...(initial.endpoint_id?{activation_protocol:2}:{})}; const session={}; const events=[]; const sockets=[];
+  const createdTabs=new Map();
   let handler, startup, installed, onRemoved,actionClick,alarm,externalHandler;
   const chrome={
     tabs:{
       query:async()=>[{id:73,windowId:5,incognito:false}],
       onRemoved:{addListener(fn){onRemoved=fn;}},
-      async get(tabId){events.push({type:"lookup-tab",tabId});return {id:73,url:"https://example.com/public",windowId:5,incognito:false,active:false};},
+      async get(tabId){events.push({type:"lookup-tab",tabId});return createdTabs.get(tabId)??{id:73,url:"https://example.com/public",windowId:5,incognito:false,active:false};},
       async update(tabId,options){events.push({type:"focus-tab",tabId,options});return {id:tabId};},
-      async create(options){events.push({type:"create-tab",options});return {id:74,...options};},
-      async remove(tabId){events.push({type:"remove-tab",tabId});},
+      async create(options){events.push({type:"create-tab",options});const tab={id:74,...options};createdTabs.set(74,tab);return tab;},
+      async remove(tabId){events.push({type:"remove-tab",tabId});createdTabs.delete(tabId);},
       async group(options){events.push({type:"group-tab",options});return 8;}
     },
     tabGroups:{query:async()=>[],async update(groupId,options){events.push({type:"group-title",groupId,options});}},
@@ -71,7 +72,7 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
     });
   }
   const sendSpoof=(type,sender)=>new Promise(resolve=>handler({type},sender,resolve));
-  return {local,session,events,send,sendSpoof,chrome,startup,installed,click:()=>actionClick(),external:(message,sender)=>new Promise(resolve=>externalHandler(message,sender,resolve)),alarm:()=>alarm({name:"browser-activation"}),removed:tabId=>onRemoved(tabId),ctx,sockets};
+  return {local,session,events,createdTabs,send,sendSpoof,chrome,startup,installed,click:()=>actionClick(),external:(message,sender)=>new Promise(resolve=>externalHandler(message,sender,resolve)),alarm:()=>alarm({name:"browser-activation"}),removed:tabId=>onRemoved(tabId),ctx,sockets};
 }
 test("fast WSS open authenticates before any asynchronous connection bookkeeping",async()=>{
   const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{fastOpen:true});
@@ -331,6 +332,86 @@ test('only toolbar clicks start new Access activation, no runtime message can Re
   await tickUntil(()=>e.local.authorization==='enabled');
   assert.equal(e.local.endpoint_id,id);assert.ok(e.sockets.length>=1);
   await e.send('stop');assert.equal(e.local.authorization,'stopped');
+});
+test('Access verified wake finishes immediately and closes only the verified extension-created tab once WSS authenticates',async()=>{
+  let verified=false;
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return verified?
+      Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'}):
+      Response.json({state:'awaiting_owner'},{status:409});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    throw Error('unexpected_route');
+  },{fastOpen:true});
+  e.click();
+  await tickUntil(()=>e.session.browser_activation_tab?.tab_id===74);
+  const attempt=e.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension',tab:{id:74}};
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},{...sender,tab:{id:83}})).ok,false);
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},{...sender,origin:'https://evil.example'})).ok,false);
+  assert.equal(e.local.authorization,'stopped','external wake never grants without server proof');
+  verified=true;
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,true);
+  await tickUntil(()=>e.local.authorization==='enabled');
+  assert.equal(e.events.filter(x=>x.type==='remove-tab').length,0,'never close on Access POST alone');
+  assert.equal(e.session.browser_activation_tab.confirmed_endpoint_id,id);
+  await tickUntil(()=>e.sockets.some(x=>x.readyState===1));
+  const ws=e.sockets.at(-1);
+  await ws.onmessage({data:JSON.stringify({type:'authenticated',endpoint_id:id,generation:1})});
+  await tickUntil(()=>e.events.some(x=>x.type==='remove-tab'));
+  assert.deepEqual(e.events.filter(x=>x.type==='remove-tab').map(x=>x.tabId),[74]);
+  assert.equal(e.session.browser_activation_tab,undefined);
+  assert.equal(e.local.authorization,'enabled');
+  await e.send('stop');
+});
+test('Access wake is not lost when an initial completion poll is still in flight',async()=>{
+  let releaseFirst,first=true;
+  const hold=new Promise(resolve=>{releaseFirst=resolve;});
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete')){
+      if(first){first=false;await hold;return Response.json({state:'awaiting_owner'},{status:409});}
+      return Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'});
+    }
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    throw Error('unexpected_route');
+  });
+  e.click();
+  await tickUntil(()=>e.session.browser_activation_tab?.tab_id===74 &&
+    e.events.some(x=>x.url?.endsWith('/extension/activate-complete')));
+  const attempt=e.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension',tab:{id:74}};
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,true);
+  releaseFirst();
+  await tickUntil(()=>e.local.authorization==='enabled');
+  assert.equal(e.events.filter(x=>x.url?.endsWith('/extension/activate-complete')).length,2,
+    'the pending wake must trigger immediate recheck rather than a 30-second alarm');
+  await e.send('stop');
+});
+test('successful Access never auto-closes a navigated tab, and Stop rejects stale confirmation',async()=>{
+  let verified=false;
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return verified?
+      Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'}):
+      Response.json({state:'awaiting_owner'},{status:409});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    if(url.endsWith('/extension/activate-cancel'))return Response.json({state:'cancelled'});
+    throw Error('unexpected_route');
+  },{fastOpen:true});
+  e.click();await tickUntil(()=>e.session.browser_activation_tab?.tab_id===74);
+  const attempt=e.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension',tab:{id:74}};
+  verified=true;assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,true);
+  await tickUntil(()=>e.local.authorization==='enabled');
+  e.createdTabs.set(74,{...e.createdTabs.get(74),url:'https://example.org/other'});
+  await tickUntil(()=>e.sockets.some(x=>x.readyState===1));
+  await e.sockets.at(-1).onmessage({data:JSON.stringify({type:'authenticated',endpoint_id:id,generation:1})});
+  await tickUntil(()=>e.session.browser_activation_tab===undefined);
+  assert.equal(e.events.some(x=>x.type==='remove-tab'),false,'navigated tab must be preserved');
+  await e.send('stop');
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,false);
+  assert.equal(e.events.some(x=>x.type==='remove-tab'),false);
 });
 test('Stop during pending Access completion blocks late Enable and never persists proof',async()=>{
   let release;

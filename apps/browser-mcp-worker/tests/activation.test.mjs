@@ -87,7 +87,11 @@ test('signed Access GET is read-only, same-origin POST verifies once, wrong audi
     const request=(method,auth,headers={})=>new Request('https://browser.example'+path,{method,headers:{'cf-access-jwt-assertion':auth,...headers},...(method==='POST'?{body:JSON.stringify({presence:true})}:{})});
     const signed=await token();
     const get=await worker.fetch(request('GET',signed),env);
-    assert.equal(get.status,200);assert.match(await get.text(),/activation-presence/);
+    assert.equal(get.status,200);const verificationPage=await get.text();
+    assert.match(verificationPage,/activation-presence/);
+    assert.match(verificationPage,/activation-verified/);
+    assert.match(verificationPage,/Identity verified[.] Connecting Browser MCP/);
+    assert.doesNotMatch(verificationPage,/window[.]close/);
     assert.equal((await f.post('activate-complete',{attempt_id:id,proof})).state,'awaiting_owner');
     assert.equal((await worker.fetch(request('GET',await token('c'.repeat(64))),env)).status,404);
     assert.equal((await worker.fetch(request('POST',signed,{'content-type':'application/json'}),env)).status,404);
