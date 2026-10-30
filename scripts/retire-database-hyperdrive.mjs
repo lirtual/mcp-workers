@@ -78,18 +78,20 @@ export async function retireDatabaseHyperdrive({
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(activeVersionId ?? '')) {
     fail('active production version ID unconfirmed');
   }
-  const settings = await cloud('/workers/scripts/database-mcp-worker/settings');
-  const bindings = settings?.bindings;
-  if (!Array.isArray(bindings) || bindings.filter(x => x.type === 'd1' &&
-      x.name === 'DB' && (x.id === REGISTRY || x.database_id === REGISTRY)).length !== 1 ||
-      bindings.some(x => x.type === 'hyperdrive' &&
-      (x.id === row.config_id || x.name === row.binding_name))) fail('still bound in deployed Worker');
   const expectedBindings = source.hyperdrive ?? [];
-  const deployedBindings = bindings.filter(x => x.type === 'hyperdrive');
-  if (deployedBindings.length !== expectedBindings.length || expectedBindings.some(e =>
-      deployedBindings.filter(x => x.id === e.id && x.name === e.binding).length !== 1)) {
-    fail('deployed Hyperdrive manifest drift');
+  function assertReviewedSettings(settings) {
+    const bindings = settings?.bindings;
+    if (!Array.isArray(bindings) || bindings.filter(x => x.type === 'd1' &&
+        x.name === 'DB' && (x.id === REGISTRY || x.database_id === REGISTRY)).length !== 1 ||
+        bindings.some(x => x.type === 'hyperdrive' &&
+        (x.id === row.config_id || x.name === row.binding_name))) fail('still bound in deployed Worker');
+    const deployedBindings = bindings.filter(x => x.type === 'hyperdrive');
+    if (deployedBindings.length !== expectedBindings.length || expectedBindings.some(e =>
+        deployedBindings.filter(x => x.id === e.id && x.name === e.binding).length !== 1)) {
+      fail('deployed Hyperdrive manifest drift');
+    }
   }
+  assertReviewedSettings(await cloud('/workers/scripts/database-mcp-worker/settings'));
   // The deployable=true API explicitly ignores pagination and returns all
   // rollback-eligible versions. Missing/ambiguous inventory cannot prove safety.
   const rollback = await cloud('/workers/scripts/database-mcp-worker/versions?deployable=true');
@@ -217,6 +219,9 @@ export async function retireDatabaseHyperdrive({
       latestOwnRollback.items.length !== initialOwnIds.length ||
       latestOwnRollback.items.map(v => v.id).sort().some((id,i) => id !== initialOwnIds[i]))
     fail('database Worker rollback inventory changed');
+  // Current script settings may change independently of the immutable live version.
+  // Recheck immediately before the D1 tombstone after scanning all rollback versions.
+  assertReviewedSettings(await cloud('/workers/scripts/database-mcp-worker/settings'));
   // No upstream delete: older retained Worker versions, other apps, and shared
   // CA are outside this D1 CAS. They remain subject to separate human review.
   try {

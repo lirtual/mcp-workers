@@ -297,6 +297,23 @@ test('unknown or drifting account-wide Worker inventory blocks retirement',async
   }
 });
 
+test('a newly reintroduced target Binding in Database Worker settings blocks final D1 retirement',async()=>{
+ const f=fixture();let reads=0;
+ const request=async(url,init)=>{
+  if(url.endsWith('/workers/scripts/database-mcp-worker/settings')){
+   reads++;
+   if(reads===2)return {ok:true,json:async()=>({success:true,result:{bindings:[
+    {type:'d1',name:'DB',id:registry},
+    {type:'hyperdrive',name:binding,id:configId}
+   ]}})};
+  }
+  return f.request(url,init);
+ };
+ await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/retirement blocked/);
+ assert.equal(reads,2);
+ assert.equal(f.state.writes,0);
+});
+
 test('clean other Worker version history is required before retiring D1 identity',async()=>{
   const f=fixture();
   await retireDatabaseHyperdrive({...inputs,request:f.request});
