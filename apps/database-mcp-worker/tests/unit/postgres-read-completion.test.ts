@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import type {EffectiveConnection} from '../../src/types.js';
-import {ConfirmedReadFailure} from '../../src/db/completion.js';
+import {ConfirmedReadFailure,ConfirmedNoSqlFailure} from '../../src/db/completion.js';
 
 const {clientConstructor}=vi.hoisted(()=>({clientConstructor:vi.fn()}));
 vi.mock('pg',()=>({Client:class { constructor(config:unknown){return clientConstructor(config);} }}));
@@ -14,6 +14,14 @@ const connection: EffectiveConnection={
 };
 
 describe('PostgreSQL read completion evidence',()=>{
+  it('marks a rejected connection handshake as pre-SQL without simulating rollback',async()=>{
+    const end=vi.fn().mockResolvedValue(undefined);
+    const query=vi.fn();
+    clientConstructor.mockImplementation(()=>({connect:async()=>{throw Error('handshake refused');},query,end}));
+    await expect(postgresQueryRead(connection,'SELECT 1',[],2))
+      .rejects.toBeInstanceOf(ConfirmedNoSqlFailure);
+    expect(query).not.toHaveBeenCalled();
+  });
   it('only a completed ROLLBACK can establish a failed read is settled',async()=>{
     const failure=Object.assign(new Error('relation missing'),{code:'42P01'});
     const query=vi.fn().mockImplementation(async(input:string|object)=>{

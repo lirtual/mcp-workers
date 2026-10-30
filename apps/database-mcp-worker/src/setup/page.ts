@@ -21,7 +21,7 @@ export function htmlResponse(body: string, csrf?: string, status = 200): Respons
     'form{display:grid;gap:12px;margin:12px 0}input,select,button{padding:8px;font:inherit;border-radius:5px}label{display:grid;gap:4px}' +
     'label:not(.check)>input{box-sizing:border-box;width:100%}.check{display:flex;align-items:center;gap:8px}.check input{margin:0;width:17px;height:17px;flex:none}' +
     'button{justify-self:start;cursor:pointer;padding:8px 16px}summary{cursor:pointer}details{margin:10px 0}.connections{padding-left:22px}' +
-    '.connections li{margin:12px 0;padding:0 0 12px;border-bottom:1px solid #7775}.connections form{margin:8px 0}.maintenance{margin:16px 0}.choices{display:flex;flex-wrap:wrap;gap:12px}.choices label{display:flex;align-items:center;gap:5px}.add-connection .fields-input,.add-connection .hyperdrive-ca{display:none}.add-connection:has(input[name=input_mode][value=fields]:checked) .fields-input{display:grid;gap:12px}.add-connection:has(input[name=input_mode][value=fields]:checked) .url-input{display:none}.add-connection:has(input[name=transport][value=hyperdrive]:checked) .hyperdrive-ca{display:block}.add-connection:has(input[name=transport][value=hyperdrive]:checked) .direct-warning{display:none}.add-connection .hyperdrive-ca textarea{box-sizing:border-box;width:100%}</style><main>' + body + '</main></html>',
+    '.connections li{margin:12px 0;padding:0 0 12px;border-bottom:1px solid #7775}.connections form{margin:8px 0}.maintenance{margin:16px 0}.choices{display:flex;flex-wrap:wrap;gap:12px}.choices label{display:flex;align-items:center;gap:5px}.add-connection .fields-input,.add-connection .hyperdrive-ca{display:none}.add-connection:has(input[name=input_mode][value=fields]:checked) .fields-input{display:grid;gap:12px}.add-connection:has(input[name=input_mode][value=fields]:checked) .url-input{display:none}.add-connection:has(input[name=transport][value=hyperdrive]:checked) .hyperdrive-ca{display:block}.add-connection:has(input[name=transport][value=hyperdrive]:checked) .direct-warning{display:none}.add-connection.replacement .hyperdrive-ca{display:block}.add-connection.replacement .direct-warning{display:none}.add-connection .hyperdrive-ca textarea{box-sizing:border-box;width:100%}</style><main>' + body + '</main></html>',
     { status, headers });
 }
 function token(csrf: string): string { return `<input type="hidden" name="csrf" value="${escape(csrf)}">`; }
@@ -35,11 +35,12 @@ function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' 
     (verb === 'delete' ? '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' : '') +
     `<button type="submit">${verb}</button></form>`;
 }
-function addConnectionForm(csrf: string): string {
-  return `<fieldset><legend>Add connection</legend><form class="add-connection" id="add-connection" method="post" action="/setup/add">${token(csrf)}
+function addConnectionForm(csrf: string, replacing?: RegistryMetadata): string {
+  return `<fieldset><legend>${replacing ? 'Edit Hyperdrive (new Connection ID)' : 'Add connection'}</legend><form class="add-connection${replacing ? ' replacement' : ''}" id="add-connection" method="post" action="/setup/add">${token(csrf)}
+    ${replacing ? '<p class="muted">Replace ' + escape(replacing.id) + ' with a new Connection ID using the same database target. The existing connection stays active until separately verified cutover.</p>' : ''}
     <label>Connection ID<input name="id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required></label>
-    <label>Database<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>
-    <div class="choices" role="group" aria-label="Connection transport"><label><input type="radio" name="transport" value="direct" checked>Direct (plaintext)</label><label><input type="radio" name="transport" value="hyperdrive">Hyperdrive (strict TLS)</label></div>
+    ${replacing ? '<p>Database: ' + escape(replacing.dialect === 'mysql' ? 'MySQL' : 'PostgreSQL') + '</p><input type="hidden" name="dialect" value="' + escape(replacing.dialect) + '">' : '<label>Database<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>'}
+    ${replacing ? '<p>Transport: Hyperdrive (strict TLS)</p><input type="hidden" name="transport" value="hyperdrive">' : '<div class="choices" role="group" aria-label="Connection transport"><label><input type="radio" name="transport" value="direct" checked>Direct (plaintext)</label><label><input type="radio" name="transport" value="hyperdrive">Hyperdrive (strict TLS)</label></div>'}
     <div class="choices" role="group" aria-label="Connection input"><label><input type="radio" name="input_mode" value="url" checked>Connection URL</label><label><input type="radio" name="input_mode" value="fields">Host and credentials</label></div>
     <div class="url-input"><label>Connection URL<input name="url" type="password" autocomplete="off" maxlength="8192" placeholder="postgresql://user:password@host/database"></label></div>
     <div class="fields-input"><label>Host<input name="host" autocomplete="off" maxlength="253"></label>
@@ -51,13 +52,12 @@ function addConnectionForm(csrf: string): string {
     <div class="hyperdrive-ca"><p class="muted">Hyperdrive strictly verifies certificates and hostnames with caching disabled. Provide the origin CA PEM where needed. Protected GitHub Actions prepares the config and Binding; a reviewed production release requires one separate approval.</p>
     <details><summary>CA PEM (only if no suitable CA is on record)</summary>
     <label>Certificate PEM<textarea name="ca_pem" rows="3" maxlength="16384" autocomplete="off"></textarea></label></details>
-    <details><summary>Prepare a Hyperdrive replacement (new ID)</summary><p class="muted">Use a new Connection ID and the same database host, port and database. You may change the username, password and CA while the original stays active. The old config and rollback references remain unchanged; protected release and health verification still apply.</p>
-    <label>Existing Hyperdrive Connection ID (active or disabled)<input name="replacement_for" maxlength="64" autocomplete="off"></label></details>
+    ${replacing ? '<input type="hidden" name="replacement_for" value="' + escape(replacing.id) + '">' : '<details><summary>Prepare a Hyperdrive replacement (new ID)</summary><p class="muted">Use a new Connection ID and the same database host, port and database. You may change the username, password and CA while the original stays active. The old config and rollback references remain unchanged; protected release and health verification still apply.</p><label>Existing Hyperdrive Connection ID (active or disabled)<input name="replacement_for" maxlength="64" autocomplete="off"></label></details>'}
 </div>
     <button type="submit">Save connection</button></form></fieldset>`;
 }
 export function setupPage(rows: RegistryMetadata[], csrf: string,
-  operations: HyperdriveOperationSummary[] = [], retiredHyperdriveIds: string[] = []): Response {
+  operations: HyperdriveOperationSummary[] = [], retiredHyperdriveIds: string[] = [], replacing?: RegistryMetadata): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} / ${escape(row.transport)} · ${escape(row.status)}</span>` +
     (row.transport === 'hyperdrive' && (row.in_flight_count ?? 0) > 0
       ? `<p><strong>Blocked: ${row.in_flight_count} unresolved execution(s).</strong> New SQL is disabled when this connection is disabled. Do not delete or rotate its resources without independently verified completion; no automatic timeout or count reset is performed.</p>` : '') +
@@ -79,7 +79,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<label>Type connection ID to confirm password update<input name="confirm_id" required></label>' +
           '<label class="check"><input type="checkbox" name="confirm_credentials" value="1" required>Update password only after protected isolation checks</label>' +
           '<button type="submit">Save new password</button></form>' +
-          '<p class="muted">To change the username or CA without breaking a rollback version, use <a href="#add-connection">Add connection</a>, choose a new ID and expand “Prepare a Hyperdrive replacement”. The original connection is never modified by candidate preparation; switch consumers only after protected release and health checks.</p></details>' +
+          '<p class="muted">To change the username or CA safely, <a href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Edit through a new Connection ID</a>. Existing rollback references stay unchanged until separately verified cutover.</p></details>' +
           '<details><summary>Advanced resource cleanup</summary><p class="muted">Logical Delete above does not remove Cloudflare resources. Release or delete historical bindings and certificates only after independently verifying all active and rollback references.</p>' +
           '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
           '<input type="hidden" name="hyperdrive_action" value="retire">' +
@@ -87,7 +87,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<button type="submit">Stage unbinding review</button></form>' +
           '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
           '<button type="submit">Read unbinding status</button></form></details>'
-        : '<p class="muted"><a href="#add-connection">Prepare replacement while active</a> using a new Connection ID while the original remains available. Disable the original only before retirement.</p>') +
+        : '<p class="muted"><a href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Edit connection</a> using a new Connection ID while the original remains available. Disable the original only before retirement.</p>') +
         '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion.</p>' +
         '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a></p>'
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
@@ -114,7 +114,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
       '<button type="submit">Confirm final apply</button></form>' : '') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections. Credentials are never displayed.</p>' +
     `<ul class="connections">${list || '<li>No database connections configured</li>'}</ul>` +
-    addConnectionForm(csrf) +
+    addConnectionForm(csrf, replacing) +
     '<details><summary>Recent operations</summary><ul>' + (history || '<li>No operations</li>') + '</ul></details>' +
     (retiredHyperdriveIds.length ? '<details><summary>Cloudflare cleanup unverified (' + retiredHyperdriveIds.length + ')</summary>' +
       '<p class="muted">These retired connection IDs no longer admit MCP SQL. Historical Hyperdrive/CA resources are retained; physical cleanup needs separate live and rollback reference proof.</p><ul>' +

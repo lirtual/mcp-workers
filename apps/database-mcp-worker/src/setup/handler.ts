@@ -274,7 +274,11 @@ export async function handleSetup(
       const retired = await env.DB.prepare(`SELECT id FROM retired_connection_ids
         WHERE upstream_config_id IS NOT NULL AND upstream_binding_name IS NOT NULL
         ORDER BY retired_at DESC,id ASC LIMIT 10`).all<{id:string}>();
-      return setupPage(connections, token, operations, retired.results.map(row=>row.id));
+      const selected = new URL(request.url).searchParams.getAll('edit');
+      const replacing = selected.length === 1
+        ? connections.find(row => row.transport === 'hyperdrive' && row.id === selected[0])
+        : undefined;
+      return setupPage(connections, token, operations, retired.results.map(row=>row.id), replacing);
     }
     if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|hyperdrive-credentials|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
@@ -337,6 +341,8 @@ export async function handleSetup(
       const transport = required(form, 'transport');
       if (transport !== 'direct' && transport !== 'hyperdrive') invalid();
       requireAvailableMode(transport, dialect);
+      // An Edit replacement must never fall through to creating a plaintext Direct connection.
+      if (transport !== 'hyperdrive' && form.getAll('replacement_for').some(Boolean)) invalid();
       if (transport === 'hyperdrive' && form.has('input_mode')) {
         const entry = normalizeConnectionInput(form, dialect, transport);
         const candidate: HyperdriveCandidate = {

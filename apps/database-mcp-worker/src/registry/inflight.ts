@@ -1,7 +1,7 @@
 import { PublicError } from '../errors.js';
 import type {Env} from '../types.js';
 import {getRegistryConnection,listRegistryConnections} from './store.js';
-import { ConfirmedReadFailure } from '../db/completion.js';
+import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from '../db/completion.js';
 
 /** A persisted counter is conservative: unknown executions keep a positive
  * count, rather than claiming a globally empty set. It never times out or
@@ -30,12 +30,12 @@ async function fenced<T>(env:Env,id:string,revision:number,status:'active'|'disa
  // If UPDATE committed but its response was lost, the count stays positive.
  // Failed, timed-out or cancelled executions also retain their count, because
  // remote database work may outlive the initiating Cloudflare request.
- // Only a confirmed backend ROLLBACK can settle a failed read. Unknown
- // outcomes still retain the claim indefinitely, without a timer reset.
+ // A failed connection attempt (before SQL) or confirmed ROLLBACK settles
+ // the claim. A failed post-dispatch query with unknown completion stays held.
  let value:T;
  try { value=await execute(); }
  catch(error){
-  if(!(error instanceof ConfirmedReadFailure)) throw error;
+  if(!(error instanceof ConfirmedReadFailure || error instanceof ConfirmedNoSqlFailure)) throw error;
   await releaseClaim(env,id);
   throw error.publicError;
  }

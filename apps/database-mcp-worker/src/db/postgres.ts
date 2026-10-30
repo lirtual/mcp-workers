@@ -11,17 +11,23 @@ import type {
   SchemaInspection
 } from '../types.js';
 import { withTimeout } from './timeout.js';
-import { ConfirmedReadFailure } from './completion.js';
+import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from './completion.js';
 
 async function withClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
   const client = createPostgresClient(connection);
   try {
-    await withTimeout(client.connect(), Math.min(connection.limits.queryTimeoutMs, 5_000), () => {
-      void client.end().catch(() => undefined);
-    });
+    // Connection failure is provably pre-SQL; later errors are NOT.
+    try {
+      await withTimeout(client.connect(), Math.min(connection.limits.queryTimeoutMs, 5_000), () => {
+        void client.end().catch(() => undefined);
+      });
+    } catch (error) {
+      if (connection.transport === 'hyperdrive') throw new ConfirmedNoSqlFailure(error);
+      throw error;
+    }
     return await operation(client);
   } catch (error) {
-    if (error instanceof ConfirmedReadFailure) throw error;
+    if (error instanceof ConfirmedReadFailure || error instanceof ConfirmedNoSqlFailure) throw error;
     throw mapDatabaseError(error);
   } finally {
     await client.end().catch(() => undefined);

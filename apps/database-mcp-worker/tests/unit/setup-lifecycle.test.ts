@@ -655,6 +655,14 @@ it('prepares a replacement from active or disabled Hyperdrive without mutating o
  };
  const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
  const html=await page.text();expect(html).toContain('name="replacement_for"');
+ const editPage=await handleSetup(new Request(pageUrl+'?edit=old_conn',{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+ const editHtml=await editPage.text();
+ expect(editPage.status).toBe(200);
+ expect(editHtml).toContain('<legend>Edit Hyperdrive (new Connection ID)</legend>');
+ expect(editHtml).toContain('name="replacement_for" value="old_conn"');
+ expect(editHtml).toContain('name="dialect" value="postgres"');
+ expect(editHtml).toContain('name="transport" value="hyperdrive"');
+ expect(editHtml).not.toContain('name="transport" value="direct"');
  const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
  const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
  const base={csrf,id:'new_conn',transport:'hyperdrive',dialect:'postgres',input_mode:'fields',
@@ -665,7 +673,7 @@ it('prepares a replacement from active or disabled Hyperdrive without mutating o
    cookie,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...base,...override})
  }),env,requestFetch);
  for(const invalid of [{host:'different.example.net'},{database:'other'},
-   {replacement_for:'nonexistent'},{id:'old_conn'},
+   {transport:'direct'},{replacement_for:'nonexistent'},{id:'old_conn'},
    {ca_certificate_id:'manual-override-forbidden'}])expect((await save(invalid)).status).toBe(422);
  // Staging a separate candidate does not patch the active source, nor
  // interrupt a source read already holding a durable SQL admission claim.

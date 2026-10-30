@@ -5,6 +5,15 @@
 The unmerged `#490` draft now implements one `/setup` Add surface for MySQL and PostgreSQL
 with plaintext Direct or strict-TLS Hyperdrive, accepts a Connection URL or explicit
 host/port/database/username/password, and offers Direct Edit with either input.
+Hyperdrive Edit preselects the source dialect and transport in a new-ID replacement
+form, and server admission rejects an attempt to turn that replacement into
+Direct. Neither the original Hyperdrive reference nor its rollback consumers
+are modified during candidate preparation. A rejected MySQL/PostgreSQL
+connection handshake before any SQL is sent now provides explicit no-SQL
+completion evidence for releasing that request's D1 in-flight claim. Failed
+queries without confirmed ROLLBACK, lost responses after dispatch and unknown
+completion still retain their claims (no automatic expiry or manual reset).
+
 The explicit Direct plaintext acknowledgement is collected at Add only, not
 repeated at Edit or Enable for an unchanged transport. The
 common server normalizer applies dialect and URL-option checks; PostgreSQL Direct now
@@ -45,9 +54,9 @@ This is partial, evidence-based recovery rather than automatic reconciliation
 for arbitrary unknown SQL. Provider usernames containing `@` or `+` now pass
 the Hyperdrive candidate validator without leaking them to URLs or logs.
 `0003` now contains this additive
-ledger evolution and its exact read-only publication checks. A fresh read-only
-production D1 query on 2026-10-30 verified that only `0001` and `0002` are
-applied: `0003` has **not** been applied in production. Existing isolated CA renewal via new logical ID is
+ledger evolution and its exact read-only publication checks. A production D1 read-only check on 2026-10-30 confirmed that `0003` was
+applied at 11:56:15 UTC; this is schema readiness only, not publication of
+PR #490 or evidence that the new lifecycle works in production. Existing isolated CA renewal via new logical ID is
 available on the unified Add form with provenance and target verification.
 The same collapsed replacement input now accepts an active or disabled Hyperdrive source:
 new username/password or new CA material is prepared under a **new ID**
@@ -61,7 +70,8 @@ unsafe-PATCH a rollback-referenced config.
 credential rotation while rollback bindings remain, evidence-backed recovery
 of ambiguous in-flight SQL, independently verified physical cleanup after
 logical deletion, and the real isolated PostgreSQL Direct/Hyperdrive Worker E2E,
-Owner/CI release gates, production migration `0003`, publication and activation.
+Owner/CI release gates, publication and activation. Migration `0003` is
+already applied to production, but is not proof that #476 was released.
 Do not mark these as Pass based on mocks/local tests. Keep current active production
 connections and historical Cloudflare resources unchanged. Existing historical
 production status below remains authoritative until fresh release/readback evidence.

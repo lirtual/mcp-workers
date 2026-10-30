@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {afterEach,describe,expect,it} from 'vitest';
 import type {Env} from '../../src/types.js';
 import {withHyperdriveExecutionFence,withDisabledHyperdriveProbeFence} from '../../src/registry/inflight.js';
-import {ConfirmedReadFailure} from '../../src/db/completion.js';
+import {ConfirmedReadFailure,ConfirmedNoSqlFailure} from '../../src/db/completion.js';
 
 const opened:DatabaseSync[]=[];
 afterEach(()=>{for(const db of opened.splice(0))db.close();});
@@ -53,6 +53,13 @@ describe('durable Hyperdrive request admission fence',()=>{
   const serverError=Object.assign(new Error('relation does not exist'),{code:'42P01'});
   await expect(withHyperdriveExecutionFence(f.env,'hd',async()=>{
     throw new ConfirmedReadFailure(serverError);
+  })).rejects.toMatchObject({code:'DATABASE_ERROR'});
+  expect(f.count('hd')).toBe(0);
+ });
+ it('releases a claim after a confirmed connection failure before any SQL is sent',async()=>{
+  const f=fixture();f.insert('hd','hyperdrive');
+  await expect(withHyperdriveExecutionFence(f.env,'hd',async()=>{
+    throw new ConfirmedNoSqlFailure(new Error('handshake refused'));
   })).rejects.toMatchObject({code:'DATABASE_ERROR'});
   expect(f.count('hd')).toBe(0);
  });

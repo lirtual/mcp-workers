@@ -6,7 +6,7 @@ const { createConnectionMock } = vi.hoisted(() => ({ createConnectionMock: vi.fn
 vi.mock('mysql2/promise', () => ({ createConnection: createConnectionMock }));
 
 import { mysqlExplain, mysqlInspectSchema, mysqlQueryRead } from '../../src/db/mysql.js';
-import { ConfirmedReadFailure } from '../../src/db/completion.js';
+import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from '../../src/db/completion.js';
 
 const base: EffectiveConnection = {
   config: { id: 'example', transport: 'direct', url: 'mysql://reader@db.example.org/app' },
@@ -36,6 +36,14 @@ function mockClient(sqlMode = 'STRICT_TRANS_TABLES') {
 describe('MySQL read interpolation safety and Direct compatibility', () => {
   afterEach(() => vi.clearAllMocks());
 
+  it('marks a failed Hyperdrive connection before query creation as no-SQL evidence', async () => {
+    createConnectionMock.mockRejectedValueOnce(new Error('handshake refused'));
+    await expect(mysqlQueryRead({ ...base, transport: 'hyperdrive' }, 'SELECT 1', [], 2))
+      .rejects.toBeInstanceOf(ConfirmedNoSqlFailure);
+    createConnectionMock.mockRejectedValueOnce(new Error('handshake refused'));
+    await expect(mysqlQueryRead(base, 'SELECT 1', [], 2))
+      .rejects.not.toBeInstanceOf(ConfirmedNoSqlFailure);
+  });
   it('checks Direct session SQL mode before interpolating SQL-mode-sensitive values, without COM_STMT_PREPARE', async () => {
     const client = mockClient();
     const value = "a'\\\\b";

@@ -12,7 +12,7 @@ import type {
   SchemaInspection
 } from '../types.js';
 import { withTimeout } from './timeout.js';
-import { ConfirmedReadFailure } from './completion.js';
+import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from './completion.js';
 
 async function withConnection<T>(
   connection: EffectiveConnection,
@@ -20,7 +20,13 @@ async function withConnection<T>(
 ): Promise<T> {
   let client: Connection | undefined;
   try {
-    client = await createMysqlClient(connection, true);
+    // No SQL can have been sent by this Worker until the connection resolves.
+    // A failed handshake is evidence to release its admission claim.
+    try { client = await createMysqlClient(connection, true); }
+    catch (error) {
+      if (connection.transport === 'hyperdrive') throw new ConfirmedNoSqlFailure(error);
+      throw error;
+    }
     if (connection.transport === 'hyperdrive') {
       // Pin the backend session during SQL-mode check and client interpolation.
       await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
@@ -47,7 +53,7 @@ async function withConnection<T>(
     }
     return await operation(client);
   } catch (error) {
-    if (error instanceof ConfirmedReadFailure) throw error;
+    if (error instanceof ConfirmedReadFailure || error instanceof ConfirmedNoSqlFailure) throw error;
     throw mapDatabaseError(error);
   } finally {
     if (client !== undefined) await client.end().catch(() => undefined);
