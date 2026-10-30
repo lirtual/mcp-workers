@@ -229,3 +229,16 @@ Once authentication evidence has been collected or the Owner cancels the experim
 
 **Test infrastructure:** A temporary Access self-hosted app ID `a24c5ac7-4d81-4688-9ad4-383f641ae147` had been created solely for this test, independent of the production Owner Approval `/owner/*` app. The expected cleanup is to delete only that exact test app, verify the route returns Worker 404 without Access redirection, and confirm the production Owner Approval app remains unchanged.
 
+## Temporary activation probe cleanup verified — 2026-10-30
+
+The Owner's same-session `Not found` negative test completed the authorized Access-gate experiment. Cleanup executed against the **exact** temporary Access application ID `a24c5ac7-4d81-4688-9ad4-383f641ae147`:
+
+- Pre-deletion GET confirmed that the app matched the intended name and `browser.lirtual.dpdns.org/activation-test-418/*` domain, and was separate from the existing Owner Approval app.
+- Cloudflare Access DELETE returned `202` and `success=true`.
+- Read-only app-list verification returned `temp_present=false`, `temp_policy_present=false`. A direct GET of the removed app returned `404 unknown_application`.
+- Independent WSL2 HTTP test returned `temporary_removed code=404 access_redirect=no` for `/activation-test-418/start`. Existing Owner Approval `/owner/operations/<uuid>` still returned `302 access_redirect=yes`.
+- Production Owner Approval Access app was independently queried after cleanup and remains present with its original app ID and `/owner/*` domain.
+
+**Final experiment outcome:** Single successful OTP login observed; the Owner subsequently reached Worker 404 without another challenge in the *same browser session*. This is a **FAIL for the simple Access-only per-activation fresh OTP assumption**, and **NOT TESTED** for the planned real extension challenge/callback binding. Temporary Access resource and its policy are removed; do not reuse the now-unprotected test path. No Browser Worker code, existing approval policy, `main`, or release changed.
+
+**Implementation gate:** Do not mark Q3/Q5 feasible on the basis of the deleted probe. Either validate a demonstrably fresh OTP with a properly isolated auth context and verified one-use extension-bound result, or explicitly revisit the owner-confirmed `Q3=A` and `Q5=A` requirements before implementation. No second OTP issuer or global Access logout is authorized.
