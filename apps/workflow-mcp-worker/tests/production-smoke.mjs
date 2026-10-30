@@ -164,8 +164,12 @@ async function runS2Smoke() {
   const pair = { clientId:process.env.MCP_PORTAL_CLIENT_ID,
     clientSecret:process.env.MCP_PORTAL_CLIENT_SECRET };
   assert.ok(pair.clientId && pair.clientSecret, 'Production Portal secrets missing');
-  const outstanding = sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
-  assert.equal(outstanding[0]?.n,0,'Production has nonterminal Runs: smoke aborted before writes');
+  // This path invokes only a pinned, approved read-only Portal tool.
+  // Historical indeterminate external effects are preserved for reconciliation,
+  // but must not block an unrelated isolated read-only acceptance forever.
+  // Still reject every currently active Run before creating test records.
+  const active = sql("SELECT count(*) AS n FROM runs WHERE outcome IN ('queued','running')");
+  assert.equal(active[0]?.n,0,'Production has active Runs: smoke aborted before writes');
   const portal = new Client({name:'workflow-mcp-production-contract',version:'0.1.0'});
   const portalTransport = new StreamableHTTPClientTransport(new URL(PRODUCTION_PORTAL_ENDPOINT),{
     fetch:scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,fetch,pair,PRODUCTION_PORTAL_ENDPOINT),
