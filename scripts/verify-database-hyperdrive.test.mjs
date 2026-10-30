@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyCloudflareHyperdriveConfig, verifyDatabaseHyperdriveCloudReadback } from './verify-database-hyperdrive.mjs';
+import { verifyCloudflareHyperdriveConfig, verifyDatabaseHyperdriveCloudReadback, safeReadbackFailureCode } from './verify-database-hyperdrive.mjs';
 
 const configId = '12345678-1234-1234-1234-123456789abc';
 const caId = 'abcd1234-0000-1111-2222-123456789abc';
@@ -68,4 +68,22 @@ test('requires Cloudflare access, exact manifest/source matching and successful 
   await assert.rejects(verifyDatabaseHyperdriveCloudReadback({
     ...options, request: async () => { throw Error('sensitive database password'); }
   }), /unavailable/);
+});
+
+test('release diagnostic allows only fixed codes and never prints thrown secret/error text', () => {
+  assert.equal(safeReadbackFailureCode(new Error(
+    'Database Hyperdrive verification failed: origin identity differs from reviewed source'
+  )), 'origin_mismatch');
+  assert.equal(safeReadbackFailureCode(new Error(
+    'Database Hyperdrive verification failed: Cloudflare configuration read rejected'
+  )), 'cloudflare_read_rejected');
+  assert.equal(safeReadbackFailureCode(new Error(
+    'Database Hyperdrive manifest/source mismatch'
+  )), 'manifest_mismatch');
+  for (const unexpected of [
+    new Error('Database Hyperdrive verification failed: Origin password=sensitive'),
+    new Error('Cloudflare secret response details'),
+    { message: 'Database Hyperdrive verification failed: origin identity differs from reviewed source' },
+    null
+  ]) assert.equal(safeReadbackFailureCode(unexpected), 'unknown');
 });
