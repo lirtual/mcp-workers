@@ -1,5 +1,6 @@
 import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {portalAuthorization} from './portal-authorization.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
@@ -452,10 +453,15 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'WEIXIN_ACTION_DEPLOYMENT_ID'|'WEIXIN_ACTION_PROVIDER'|'BARK_ACTION_DEPLOYMENT_ID'|'BARK_ACTION_PROVIDER'>,
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'WEIXIN_ACTION_DEPLOYMENT_ID'|'WEIXIN_ACTION_PROVIDER'|'BARK_ACTION_DEPLOYMENT_ID'|'BARK_ACTION_PROVIDER'> & {DB?:Env['DB']},
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
+  // Discover runtime state without broadening the reviewed Portal target.
+  // Missing/unreadable D1 fails closed in production; compiler-only fixtures
+  // that intentionally omit DB continue to show configured_unverified.
+  const portalState=env.DB?await portalAuthorization(env.DB):null;
+  const portalRevoked=portalState?.state==='revoked';
   let githubReady=false;
   try {
     githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
@@ -464,9 +470,11 @@ export async function workflowCapabilities(env:Pick<Env,
   const cloudflareReady=(!!env.WEIXIN_ACTION_PROVIDER&&!!env.WEIXIN_ACTION_DEPLOYMENT_ID&&githubReady)||
     (!!env.BARK_ACTION_PROVIDER&&!!env.BARK_ACTION_DEPLOYMENT_ID);
   const availability=(entry:Entry)=>
+    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&portalRevoked?'revoked':
     (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
+    entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
     ['action.run.cloudflare','action.mcp.call','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
@@ -478,11 +486,14 @@ export async function workflowCapabilities(env:Pick<Env,
     capability_ids:entries.map(entry=>({
       id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
     })),
-    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',availability:'configured_unverified'}}:{portal:{availability:'unavailable'}},
+    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+      availability:portalRevoked?'revoked':'configured_unverified',
+      ...(portalState?{generation:portalState.generation}:{})}}:{portal:{availability:'unavailable'}},
     availability_note:'Configured means credentials exist, not verified access or publication permission.',
     github_repository_scope:githubReady?'configured':'unavailable',
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
+      connection_status:'workflow_connection_status',connection_revoke:'workflow_connection_revoke',connection_enable:'workflow_connection_enable',
       status:'workflow_status',result:'workflow_result',approval:'workflow_approval'},
     admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
     note:'Discovery and inline validation never publish or grant execution.',
@@ -733,6 +744,8 @@ export async function workflowCapabilities(env:Pick<Env,
       detail.example=await compilingExample(mcpRead(discovered.tools[0]));
       detail.example_validation='compiler_valid_and_live_contract_discovered; tools/call not performed';
     }
+    detail.connection_auth={state:portalState?.state??'not_checked',generation:portalState?.generation??null,
+      reenable_requires_new_published_plan:true,revocation_fence:'durable_effect_reservation'};
     detail.grant={scope:'read',...(portalReady?{pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT}:{}),
       required:['approved_operations','accept_target_risks'],
       warning:'Only source-reviewed, live-advertised read tools; exact schema is rechecked at execution. Discovery is not an execution or permission grant.'};

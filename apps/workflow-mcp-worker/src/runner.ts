@@ -4,6 +4,7 @@ import {awaitedChildRunId,transferAwaitedChildCapacity,admitDetachedChild,startR
 import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import {waitForRuntimeApproval} from './runtime-approval.ts';
+import {reservePortalCall} from './portal-authorization.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -32,7 +33,8 @@ const now=()=>Date.now();
 const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
-async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
+async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,
+  runId:string,stepId:string):Promise<unknown>{
   // Enforce the approved published contract before any remote call.
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
@@ -72,6 +74,9 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
        candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
     if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
       throw Error('tool_schema_drift');
+    const reservation=await reservePortalCall(env.DB,runId,stepId,plan.mcp_connection_generation??0);
+    if(reservation!=='reserved')throw Error(reservation==='revoked'?
+      'portal_connection_revoked':'mcp_dispatch_already_reserved');
     // Once tools/call is attempted, a thrown error, remote error, or unreadable
     // result does not prove the external tool had no side effects.
     try{
@@ -245,9 +250,9 @@ async function runMultiForeach(
                 const childStep:Step={id:childId,uses:'mcp.call',needs:s.needs,with:child.with};
                 try{
                   return {status:'succeeded',
-                    output:await callApprovedReadonly(env,plan,childStep,args)};
+                    output:await callApprovedReadonly(env,plan,childStep,args,runId,childId)};
                 }catch(error){
-                  return error instanceof Error&&error.message==='external_outcome_unknown'
+                  return error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
                     ?{status:'indeterminate',error_code:'external_outcome_unknown'}
                     :{status:'failed',error_code:'step_execution_failed'};
                 }
@@ -411,9 +416,9 @@ async function runForeachStep(
           const child:Step={id:entry.id,uses:'mcp.call',needs:s.needs,with:template.with};
           try{
             const args=entry.output as Record<string,unknown>;
-            return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args)};
+            return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args,runId,entry.id)};
           }catch(error){
-            return error instanceof Error&&error.message==='external_outcome_unknown'
+            return error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
               ?{status:'indeterminate',error_code:'external_outcome_unknown'}
               :{status:'failed',error_code:'step_execution_failed'};
           }
@@ -780,9 +785,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                 if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))
                   throw Error('invalid_arguments');
                 try{
-                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>,id,s.id)};
                 }catch(error){
-                  if(error instanceof Error&&error.message==='external_outcome_unknown')
+                  if(error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message))
                     return {status:'indeterminate',error_code:'external_outcome_unknown'};
                   throw error;
                 }

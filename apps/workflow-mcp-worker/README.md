@@ -153,9 +153,29 @@ Environment bindings and credentials:
 
 There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.
 
+### Live Portal Connection revocation (Spec #176 incremental vertical)
+
+The **single fixed production MCP Portal** has an owner-controlled authorization state,
+not an arbitrary connection registry. Owner tools `workflow_connection_status`,
+`workflow_connection_revoke`, and `workflow_connection_enable` manage one durable
+D1 generation. The new `0016_portal_connection_revocation.sql` migration initializes
+`enabled`, generation `0`: older Published read-only MCP Plans remain valid until
+revoke. The first revoke increments the generation and immediately denies new
+protected `tools/call` reservations; repeated revoke/enable is idempotent.
+
+The MCP invocation reserves a unique `(run_id, step_id)` D1 record with a single
+SQL statement that also checks active Run, enabled Connection and the exact
+Published Plan generation. A revocation winning this serialization forbids the
+call; a reservation winning it can still reach the external service and is
+**not** physically cancelled by revocation. Never reissue an uncertain call.
+Enabling again **does not revive** a previously revoked Published Plan: explicitly
+republish the Draft (including its original exact `approved_operations` and
+`accept_target_risks`) to receive the new generation. No HTTP Action, write-scope
+MCP, generic Provider registry, or cross-Provider revocation is implied.
+
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
+`workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
 Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.

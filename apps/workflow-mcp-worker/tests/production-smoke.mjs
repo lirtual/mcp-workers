@@ -62,6 +62,8 @@ function cleanup() {
     sql('DELETE FROM callback_receipts WHERE attempt_id IN (SELECT attempt_id FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + '))');
     sql('DELETE FROM step_attempts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ' + id + ')');
   }
+  // Revoke-safe one-shot MCP calls now retain their own D1 reservation.
+  sql(`DELETE FROM mcp_dispatch_fences WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ${id})`);
   // Foreign-key order; scoped by the server-returned random Workflow UUID.
   sql(`DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ${id})`);
   sql(`DELETE FROM runs WHERE workflow_id = ${id}`);
@@ -71,7 +73,8 @@ function cleanup() {
     (SELECT count(*) FROM workflows WHERE id = ${id}) AS workflows,
     (SELECT count(*) FROM workflow_versions WHERE workflow_id = ${id}) AS versions,
     (SELECT count(*) FROM runs WHERE workflow_id = ${id}) AS runs,
-    (SELECT count(*) FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ${id})) AS steps`);
+    (SELECT count(*) FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ${id})) AS steps,
+    (SELECT count(*) FROM mcp_dispatch_fences WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ${id})) AS mcp_fences`);
   assert.ok(rows.length === 1 && Object.values(rows[0]).every(n => n === 0),
     'Temporary D1 rows were not fully removed');
   console.log('CLEANUP_OK: temporary Workflow, versions, Runs and Steps are absent from D1');
