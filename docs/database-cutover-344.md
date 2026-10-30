@@ -1,5 +1,18 @@
 # Database MCP #344 — production release and recovery (managed D1 only)
 
+## Aiven MySQL test replacement — staged source only
+
+The owner-created test config `38bf39b569484dbb8a9fe1b24f0df854`
+was independently read back as MySQL `aiven_mysql_test` /
+`db344_e2e` on the existing Aiven host:18691, strict
+`VERIFY_IDENTITY`, shared CA, cache disabled. The protected release now
+stages a separate reviewed `HYPERDRIVE_DB344_MYSQL_E2E` Binding alongside
+the PostgreSQL E2E Binding. The deleted old OpenList config is **not**
+restored. The old D1 row was separately disabled (revision 3), not
+deleted. Until publication and protected activation, this is **not** a
+working MCP logical connection or completed MySQL SQL E2E. Use an
+unretired new logical ID for the isolated test database.
+
 ## Latest inventory correction (2026-10-30, supersedes historical state below)
 
 - Independent Cloudflare account inventory now contains only PostgreSQL Hyperdrive `eb4ccbd231ea44beabc72b3f2b483d69`; TLS is `verify-full` and caching is disabled. The former MySQL OpenList Hyperdrive `135ef2e15db049c68e99b0849f9a3da0` was deleted. Both the GitHub release readback and independent Cloudflare GET return HTTP 404 for this first manifest entry. This is a missing resource, **not evidence of a missing Hyperdrive Token permission**.

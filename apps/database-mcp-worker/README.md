@@ -1,5 +1,20 @@
 # Database MCP Worker · Spec #344
 
+## Pending reviewed MySQL test-binding release (not yet deployed)
+
+The Owner has created an independent Aiven MySQL **test** Hyperdrive config
+`38bf39b569484dbb8a9fe1b24f0df854` for database `aiven_mysql_test`
+and user `db344_e2e`. Cloudflare GET verified strict
+`VERIFY_IDENTITY` TLS, shared CA and disabled caching. The reviewed Wrangler
+and manifest now stage `HYPERDRIVE_DB344_MYSQL_E2E`, preserving the separate
+PostgreSQL test binding. **This source change does not publish the Worker or
+create/activate a D1 connection.** Only the existing protected GitHub Actions
+release may publish. Once published, create a *new disabled* D1 logical ID,
+then invoke the existing protected Owner activation and confirm real Worker
+`SELECT 1`. Do not reuse the retired logical ID `aiven_mysql_test`
+or reactivate the broken `aiven_mysql_openlist` D1 record. The two
+production Direct connections remain unchanged.
+
 ## Latest Cloudflare and D1 state (2026-10-30)
 
 - Cloudflare lists only the isolated PostgreSQL Hyperdrive E2E config `eb4ccbd231ea44beabc72b3f2b483d69` (`verify-full`, caching disabled). The old OpenList MySQL config `135ef2e15db049c68e99b0849f9a3da0` is **deleted**: direct API GET returns 404, which blocked the protected release. The reviewed Wrangler and manifest entry for the deleted config have now been removed in source.
