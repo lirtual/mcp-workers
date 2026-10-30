@@ -18,33 +18,43 @@ on:
           - github-actions-mcp-worker
           - http-mcp-worker
           - workflow-mcp-worker
+      database_hyperdrive_apply_id:
+        description: 'Database only: Owner final confirmation operation UUID (protected merge and release request)'
+        required: false
+        type: string
+        default: ''
+      database_hyperdrive_prepare_id:
+        description: 'Database only: Owner-confirmed unbound Hyperdrive preparation operation UUID (no Worker deployment)'
+        required: false
+        type: string
+        default: ''
       database_hyperdrive_enable_approved:
         description: 'Database only: protected strict-TLS Hyperdrive activation after binding and Owner disabled reference'
         required: false
         type: boolean
         default: false
-      database_hyperdrive_enable_id:
-        description: 'Database Hyperdrive activation only: exact disabled connection ID'
-        required: false
-        type: string
-        default: ''
-      database_hyperdrive_enable_revision:
-        description: 'Database Hyperdrive activation only: current disabled revision'
-        required: false
-        type: string
-        default: ''
       database_hyperdrive_retire_approved:
         description: 'Database only: retire a disabled Hyperdrive D1 ID after a separately verified unbinding release'
         required: false
         type: boolean
         default: false
-      database_hyperdrive_retire_id:
-        description: 'Database retirement only: exact disabled and unbound logical ID'
+      database_hyperdrive_id:
+        description: 'Database enable/retire: exact disabled logical connection ID'
         required: false
         type: string
         default: ''
-      database_hyperdrive_retire_revision:
-        description: 'Database retirement only: expected disabled revision'
+      database_hyperdrive_revision:
+        description: 'Database enable/retire: expected disabled revision'
+        required: false
+        type: string
+        default: ''
+      database_hyperdrive_rotation_mode:
+        description: 'Database only: Owner read-only rotation eligibility (credentials or ca), no writes'
+        required: false
+        type: string
+        default: ''
+      database_expected_release_sha:
+        description: 'Database production release: exact Owner-reviewed main commit SHA'
         required: false
         type: string
         default: ''
@@ -62,15 +72,104 @@ env:
   HUSKY: "0"
 
 jobs:
+  database-hyperdrive-prepare:
+    name: Owner-approved Hyperdrive preparation (no deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id != '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_hyperdrive_enable_approved != true &&
+          inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_rotation_mode == '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to current reviewed main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Prepare an isolated unbound candidate and bounded PR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
+          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
+          DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
+          DATABASE_HYPERDRIVE_OPERATION_ID: ${{ inputs.database_hyperdrive_prepare_id }}
+        run: node scripts/prepare-database-hyperdrive-476.mjs
+
+  database-hyperdrive-apply:
+    name: Owner final Hyperdrive confirmation (protected merge and release request)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false && inputs.database_hyperdrive_apply_id != '' &&
+          inputs.database_hyperdrive_prepare_id == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true &&
+          inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' &&
+          inputs.database_expected_release_sha == '' && inputs.database_hyperdrive_rotation_mode == '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to current reviewed main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify exact PR, required checks and merge eligibility before requesting existing release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_HYPERDRIVE_OPERATION_ID: ${{ inputs.database_hyperdrive_apply_id }}
+        run: node scripts/apply-database-hyperdrive-476.mjs
+
   database-hyperdrive-enable:
     name: Protected Hyperdrive Owner activation (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
           inputs.database_hyperdrive_enable_approved == true &&
-          inputs.deploy_to_production == false &&
+          inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_retire_approved != true &&
-          inputs.database_hyperdrive_enable_id != '' && inputs.database_hyperdrive_enable_revision != '' }}
+          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' && inputs.database_hyperdrive_rotation_mode == '' }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -100,19 +199,69 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
-          DATABASE_ACTIVATION_ID: ${{ inputs.database_hyperdrive_enable_id }}
-          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_hyperdrive_enable_revision }}
+          DATABASE_ACTIVATION_ID: ${{ inputs.database_hyperdrive_id }}
+          DATABASE_ACTIVATION_REVISION: ${{ inputs.database_hyperdrive_revision }}
         run: node scripts/activate-database-hyperdrive.mjs
 
-  database-hyperdrive-retire:
-    name: Protected Hyperdrive D1 identity retirement (no Worker deployment)
+  database-hyperdrive-credentials:
+    name: Owner-confirmed isolated Hyperdrive password update (no deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
-          inputs.database_hyperdrive_retire_approved == true &&
           inputs.deploy_to_production == false &&
-          inputs.database_hyperdrive_enable_approved != true &&
-          inputs.database_hyperdrive_retire_id != '' && inputs.database_hyperdrive_retire_revision != '' }}
+          inputs.database_hyperdrive_rotation_mode == 'credentials_apply' &&
+          inputs.database_hyperdrive_prepare_id != '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' &&
+          inputs.database_expected_release_sha == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - name: Install existing read-only MySQL/PostgreSQL probe drivers
+        run: pnpm install --frozen-lockfile --filter database-mcp-worker...
+      - name: Recheck isolation, attempt password update and require independent SQL verification
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_ENCRYPTION_KEY: ${{ secrets.DATABASE_ENCRYPTION_KEY }}
+          DATABASE_KEY_ID: ${{ vars.DATABASE_KEY_ID }}
+          DATABASE_HYPERDRIVE_OPERATION_ID: ${{ inputs.database_hyperdrive_prepare_id }}
+        run: node scripts/rotate-database-hyperdrive-476.mjs
+
+  database-hyperdrive-rotation-check:
+    name: Check Hyperdrive rotation safety (read-only, no deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == false &&
+          (inputs.database_hyperdrive_rotation_mode == 'credentials' || inputs.database_hyperdrive_rotation_mode == 'ca') &&
+          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' &&
+          inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_expected_release_sha == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: database-mcp-worker
@@ -136,17 +285,70 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Retire only disabled and fully unbound D1 Hyperdrive reference
+      - name: Inspect disabled D1, current Workers and rollback references only
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          DATABASE_RETIRE_ID: ${{ inputs.database_hyperdrive_retire_id }}
-          DATABASE_RETIRE_REVISION: ${{ inputs.database_hyperdrive_retire_revision }}
+          DATABASE_ROTATION_MODE: ${{ inputs.database_hyperdrive_rotation_mode }}
+          DATABASE_ROTATION_ID: ${{ inputs.database_hyperdrive_id }}
+          DATABASE_ROTATION_REVISION: ${{ inputs.database_hyperdrive_revision }}
+        run: node scripts/check-database-hyperdrive-rotation-476.mjs
+
+  database-hyperdrive-retire:
+    name: Protected Hyperdrive D1 identity retirement (no Worker deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.database_hyperdrive_retire_approved == true &&
+          inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_hyperdrive_enable_approved != true &&
+          inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' && inputs.database_hyperdrive_rotation_mode == '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin Owner to current reviewed main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Stage safe source unbinding as Draft PR, or prove source already unbound
+        id: unbind
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_RETIRE_ID: ${{ inputs.database_hyperdrive_id }}
+          DATABASE_RETIRE_REVISION: ${{ inputs.database_hyperdrive_revision }}
+        run: node scripts/prepare-database-hyperdrive-unbind-476.mjs
+      - name: Retire only disabled, released and proven-unbound D1 reference
+        if: steps.unbind.outputs.action == 'retire'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_RETIRE_ID: ${{ inputs.database_hyperdrive_id }}
+          DATABASE_RETIRE_REVISION: ${{ inputs.database_hyperdrive_revision }}
         run: node scripts/retire-database-hyperdrive.mjs
 
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_rotation_mode == '' }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -154,12 +356,15 @@ jobs:
   deploy:
     name: Manual selected Worker release
     needs: checks
+    outputs:
+      version_id: ${{ steps.publish.outputs.version_id }}
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' &&
+          needs.checks.outputs.release_ready == 'true' && inputs.database_hyperdrive_rotation_mode == '' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
@@ -190,15 +395,24 @@ jobs:
           fetch-depth: 0
 
       - name: Validate current trusted main without deployment credentials
+        env:
+          DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" == "refs/heads/main" && "$GITHUB_ACTOR" == "lirtual" ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]] || {
             echo "Manual dispatch source no longer matches main HEAD" >&2
             exit 1
           }
+          if [[ "$SELECTED_WORKER" == 'database-mcp-worker' ]]; then
+            [[ "$DATABASE_EXPECTED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]] || {
+              echo 'Database release source differs from Owner-reviewed SHA' >&2
+              exit 1
+            }
+          fi
 
       - uses: pnpm/action-setup@v4
         with:
@@ -812,10 +1026,17 @@ jobs:
         id: publish
         shell: bash
         env:
+          DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          if [[ "$SELECTED_WORKER" == 'database-mcp-worker' ]]; then
+            [[ "$DATABASE_EXPECTED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]
+          fi
           case "$SELECTED_WORKER" in
             browser-mcp-worker|raindrop-mcp-worker|ima-mcp-worker|database-mcp-worker|email-mcp-worker|ssh-mcp-worker|remote-control-mcp-worker|github-actions-mcp-worker|http-mcp-worker|workflow-mcp-worker) ;;
             *) echo "Invalid Worker target" >&2; exit 1 ;;
@@ -1007,3 +1228,42 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-browser-portal.mjs
+
+  database-hyperdrive-finalize:
+    name: Verify published Hyperdrive and hand off disabled D1 reference
+    needs: deploy
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          inputs.deploy_to_production == true && needs.deploy.result == 'success' &&
+          inputs.database_hyperdrive_apply_id != '' && inputs.database_expected_release_sha != '' &&
+          inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true &&
+          inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' &&
+          inputs.database_hyperdrive_revision == '' && inputs.database_hyperdrive_rotation_mode == '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: database-mcp-worker
+    concurrency:
+      group: worker-release-database-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Reconcile exact published version before disabled handoff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_HYPERDRIVE_OPERATION_ID: ${{ inputs.database_hyperdrive_apply_id }}
+          DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
+          EXPECTED_VERSION_ID: ${{ needs.deploy.outputs.version_id }}
+          DATABASE_RELEASE_ENVIRONMENT: database-mcp-worker
+        run: node scripts/finalize-database-hyperdrive-476.mjs

@@ -36,6 +36,33 @@ describe('Database Owner setup authorization', () => {
       expect(body).toContain('&lt;svg');
     });
   });
+  it('offers a safe new-ID replacement for an active Hyperdrive connection without requiring downtime', async () => {
+    const response = setupPage([{ id: 'primary_pg', dialect: 'postgres', transport: 'hyperdrive', status: 'active',
+      revision: 3, created_at: 1, updated_at: 2 }], 'a'.repeat(43));
+    const body = await response.text();
+    expect(body).toContain('Edit connection');
+    expect(body).toContain('href="/setup?edit=primary_pg#add-connection"');
+    expect(body).toContain('Existing Hyperdrive Connection ID (active or disabled)');
+    expect(body).not.toContain('Existing disabled Connection ID');
+    expect(body).not.toContain('Disable this connection before editing credentials or retiring its logical ID.');
+  });
+  it('preselects the safe new-ID Hyperdrive edit without exposing config IDs or prior credentials', async () => {
+    const source = { id: 'primary_pg', dialect: 'postgres' as const, transport: 'hyperdrive' as const,
+      status: 'active' as const, revision: 3, created_at: 1, updated_at: 2 };
+    const response = setupPage([source], 'a'.repeat(43), [], [], source);
+    const body = await response.text();
+    expect(body).toContain('<legend>Edit Hyperdrive (new Connection ID)</legend>');
+    expect(body).toContain('name="replacement_for" value="primary_pg"');
+    expect(body).toContain('Database: PostgreSQL');
+    expect(body).toContain('name="dialect" value="postgres"');
+    expect(body).toContain('name="transport" value="hyperdrive"');
+    expect(body).not.toContain('name="transport" value="direct"');
+    expect(body).toContain('class="add-connection replacement"');
+    expect(body).toContain('name="id" maxlength="64"');
+    expect(body).not.toContain('name="config_id"');
+    expect(body).not.toContain('name="binding_name"');
+    expect(body).toContain('same database target');
+  });
 });
 
 describe('Cloudflare-native Owner identity', () => {

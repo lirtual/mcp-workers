@@ -19,6 +19,10 @@ import { getSchemaContext } from './db/schema-context.js';
 import { PublicError, toPublicError } from './errors.js';
 import { emitLog, principalLogId, sqlLogFields } from './logging.js';
 import { clampRequestedLimit, jsonSafe } from './result.js';
+import {withHyperdriveExecutionFence} from './registry/inflight.js';
+import { guardReadQuery } from './sql/guard.js';
+import { mysqlSafeParams } from './db/mysql-mode.js';
+import {getRegistryConnection,listRegistryConnections} from './registry/store.js';
 import type { Env } from './types.js';
 
 interface ToolContextLike {
@@ -72,6 +76,8 @@ interface ToolRunOptions<T> {
   connectionId?: string | undefined;
   sql?: string;
   run: () => Promise<T>;
+  /** Pure validation before any durable Hyperdrive execution claim. */
+  preflight?: () => Promise<void>;
   summarize?: (value: T) => Record<string, unknown>;
 }
 
@@ -82,7 +88,9 @@ async function runTool<T>(options: ToolRunOptions<T>): Promise<ToolResult> {
   try {
     principalId = principal(options.ctx);
     await enforceRateLimit(options.env, principalId, options.connectionId ?? '__catalog__');
-    const value = await options.run();
+    await options.preflight?.();
+    const value = options.tool === 'list_connections' ? await options.run() :
+      await withHyperdriveExecutionFence(options.env,options.connectionId,options.run);
     const sqlFields = options.sql ? await sqlLogFields(options.sql) : {};
     emitLog({
       event: 'mcp_tool',
@@ -112,6 +120,27 @@ async function runTool<T>(options: ToolRunOptions<T>): Promise<ToolResult> {
     });
     return failure(error);
   }
+}
+
+/** Reject reads that can be ruled out without contacting a database, before
+ * reserving an in-flight Hyperdrive claim. Do not release any claimed execution
+ * merely because a later database error has the same public error code. */
+async function validateReadBeforeAdmission(env: Env, id: string | undefined,
+  sql: string, params: unknown[]): Promise<void> {
+  if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE','Registry unavailable.');
+  let connectionId = id;
+  if (connectionId === undefined) {
+    const rows = await listRegistryConnections(env.DB);
+    if (rows.length !== 1) return; // existing admission reports missing/ambiguous IDs
+    connectionId = rows[0]!.id;
+  }
+  const row = await getRegistryConnection(env.DB, connectionId);
+  if (!row || row.status !== 'active') return; // existing admission rejects it
+  guardReadQuery(sql, row.dialect);
+  if (row.dialect === 'mysql') mysqlSafeParams(params);
+  // Hyperdrive binding resolution itself does not contact origin SQL; fail
+  // before claiming when a binding is absent. Direct must not repeat DNS I/O.
+  if (row.transport === 'hyperdrive') await admitConnection(env,connectionId);
 }
 
 const connectionIdSchema = z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -271,6 +300,7 @@ export function buildMcpServer(env: Env): McpServer {
         tool: 'query_read',
         connectionId: connection,
         sql,
+        preflight: () => validateReadBeforeAdmission(env,connection,sql,params),
         run: async () => {
           const resolved = await admitConnection(env, connection);
           const effectiveLimit = clampRequestedLimit(rowLimit, resolved.limits.maxRows);
@@ -294,6 +324,7 @@ export function buildMcpServer(env: Env): McpServer {
         tool: 'explain',
         connectionId: connection,
         sql,
+        preflight: () => validateReadBeforeAdmission(env,connection,sql,params),
         run: async () => explainRead(await admitConnection(env, connection), sql, params)
       })
   );

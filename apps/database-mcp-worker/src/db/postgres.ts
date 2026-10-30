@@ -11,15 +11,23 @@ import type {
   SchemaInspection
 } from '../types.js';
 import { withTimeout } from './timeout.js';
+import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from './completion.js';
 
 async function withClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
   const client = createPostgresClient(connection);
   try {
-    await withTimeout(client.connect(), Math.min(connection.limits.queryTimeoutMs, 5_000), () => {
-      void client.end().catch(() => undefined);
-    });
+    // Connection failure is provably pre-SQL; later errors are NOT.
+    try {
+      await withTimeout(client.connect(), Math.min(connection.limits.queryTimeoutMs, 5_000), () => {
+        void client.end().catch(() => undefined);
+      });
+    } catch (error) {
+      if (connection.transport === 'hyperdrive') throw new ConfirmedNoSqlFailure(error);
+      throw error;
+    }
     return await operation(client);
   } catch (error) {
+    if (error instanceof ConfirmedReadFailure || error instanceof ConfirmedNoSqlFailure) throw error;
     throw mapDatabaseError(error);
   } finally {
     await client.end().catch(() => undefined);
@@ -33,17 +41,35 @@ async function withClient<T>(connection: EffectiveConnection, operation: (client
  */
 async function withReadOnlyClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
   return withClient(connection, async client => {
-    await withTimeout(client.query('BEGIN READ ONLY'), connection.limits.queryTimeoutMs, () => {
+    const rollback = () => withTimeout(client.query('ROLLBACK'), connection.limits.queryTimeoutMs, () => {
       void client.end().catch(() => undefined);
     });
     try {
-      return await operation(client);
-    } finally {
-      // ROLLBACK releases a successful read-only transaction just as COMMIT does.
-      await withTimeout(client.query('ROLLBACK'), connection.limits.queryTimeoutMs, () => {
+      await withTimeout(client.query('BEGIN READ ONLY'), connection.limits.queryTimeoutMs, () => {
         void client.end().catch(() => undefined);
-      }).catch(() => undefined);
+      });
+    } catch (error) {
+      // No workload statement has run yet; only the pinned backend's
+      // acknowledged ROLLBACK proves this attempted BEGIN is settled.
+      let rolledBack = false;
+      try { await rollback(); rolledBack = true; } catch { /* Unknown: retain claim. */ }
+      if (rolledBack) throw new ConfirmedReadFailure(error);
+      throw error;
     }
+    let result: T;
+    try { result = await operation(client); }
+    catch(error){
+      // Only the same pinned backend acknowledging ROLLBACK proves a failed
+      // read has ended. A timed-out or disconnected session remains unknown.
+      let rolledBack = false;
+      try { await rollback(); rolledBack = true; } catch { /* Preserve unknown. */ }
+      if(rolledBack) throw new ConfirmedReadFailure(error);
+      throw error;
+    }
+    // Do not report an apparently successful read as fully drained when
+    // its transaction cannot be conclusively released.
+    await rollback();
+    return result;
   });
 }
 

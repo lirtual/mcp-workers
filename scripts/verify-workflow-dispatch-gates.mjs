@@ -22,7 +22,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.database_hyperdrive_rotation_mode == '' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -51,23 +51,122 @@ export function verifyDatabaseActivationGate(source) {
       "github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'",
       "github.actor == 'lirtual'", "inputs.worker == 'database-mcp-worker'",
       'inputs.database_hyperdrive_enable_approved == true',
-      'inputs.deploy_to_production == false',
-      "inputs.database_hyperdrive_enable_id != ''", "inputs.database_hyperdrive_enable_revision != ''",
+      'inputs.deploy_to_production == false', "inputs.database_hyperdrive_prepare_id == ''",
+      "inputs.database_hyperdrive_id != ''", "inputs.database_hyperdrive_revision != ''",
       'name: database-mcp-worker', 'group: worker-release-database-mcp-worker',
       'secrets.CLOUDFLARE_API_TOKEN', 'secrets.MCP_ACCESS_TOKEN',
-      'inputs.database_hyperdrive_enable_id', 'inputs.database_hyperdrive_enable_revision',
+      'inputs.database_hyperdrive_id', 'inputs.database_hyperdrive_revision',
       'run: node scripts/activate-database-hyperdrive.mjs'
     ]) assert.ok(job.includes(clause), 'Unsafe Hyperdrive activation job: ' + clause);
   }
   for (const legacy of [
-    'database_prepare_approved:', 'database_direct_preflight_approved:',
-    'database_restore_approved:', 'database_restore_expected_version:',
     'database_aiven_provision_approved:', '\n  database-aiven-provision:\n',
     'node scripts/database-aiven-hyperdrive-prepare-344.mjs',
+    'database_prepare_approved:', 'database_direct_preflight_approved:',
+    'database_restore_approved:', 'database_restore_expected_version:',
     '\n  database-prepare:\n', '\n  database-direct-preflight:\n',
     '\n  database-restore:\n', 'node scripts/database-legacy-restore-',
     'node scripts/database-prep-344.mjs', 'node scripts/database-direct-preflight-344.mjs'
   ]) assert.ok(!source.includes(legacy), 'Retired Database compatibility entry remains: ' + legacy);
+}
+
+/** Final apply is mutually exclusive with deploy and all other lifecycle actions. */
+export function verifyDatabaseApplyGate(source) {
+  const {content,gate} = job(source,'database-hyperdrive-apply');
+  const expected = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && inputs.database_hyperdrive_apply_id != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' && inputs.database_expected_release_sha == '' && inputs.database_hyperdrive_rotation_mode == '' }}";
+  assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe Hyperdrive apply gate');
+  for (const clause of ['name: database-mcp-worker','group: worker-release-database-mcp-worker',
+    'cancel-in-progress: false','contents: write','pull-requests: write','checks: read','statuses: read','actions: read',
+    'persist-credentials: false','secrets.DATABASE_GITHUB_ACTIONS_TOKEN',
+    'DATABASE_HYPERDRIVE_OPERATION_ID: '+dollar+'{{ inputs.database_hyperdrive_apply_id }}',
+    'run: node scripts/apply-database-hyperdrive-476.mjs']) {
+    assert.ok(content.includes(clause),'Unsafe Hyperdrive apply job: '+clause);
+  }
+  assert.equal(source.split('run: node scripts/apply-database-hyperdrive-476.mjs').length-1,1);
+  assert.ok(!content.includes('wrangler deploy') && !content.includes('DATABASE_ENCRYPTION_KEY'));
+  for(const name of ['database-hyperdrive-prepare','database-hyperdrive-enable','database-hyperdrive-retire']) {
+    assert.ok(job(source,name).gate.includes("inputs.database_hyperdrive_apply_id == ''"),'Conflicting lifecycle action');
+  }
+  assert.ok(job(source,'checks').gate.includes("inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == ''"));
+  verifyDatabaseFinalizeGate(source);
+  const inputs=source.slice(source.indexOf('    inputs:'),source.indexOf('\npermissions:'));
+  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,10,'Expected exactly ten inputs');
+}
+
+/** Only the successful existing deploy can supply a published version receipt. */
+export function verifyDatabaseFinalizeGate(source) {
+  const {content,gate}=job(source,'database-hyperdrive-finalize');
+  const expected=dollar+"{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == true && needs.deploy.result == 'success' && inputs.database_hyperdrive_apply_id != '' && inputs.database_expected_release_sha != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' && inputs.database_hyperdrive_rotation_mode == '' }}";
+  assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe postrelease gate');
+  for(const clause of ['needs: deploy','name: database-mcp-worker','group: worker-release-database-mcp-worker',
+    'cancel-in-progress: false','persist-credentials: false','ref: '+dollar+'{{ github.sha }}',
+    'DATABASE_EXPECTED_RELEASE_SHA: '+dollar+'{{ inputs.database_expected_release_sha }}',
+    'DATABASE_HYPERDRIVE_OPERATION_ID: '+dollar+'{{ inputs.database_hyperdrive_apply_id }}',
+    'EXPECTED_VERSION_ID: '+dollar+'{{ needs.deploy.outputs.version_id }}',
+    'DATABASE_RELEASE_ENVIRONMENT: database-mcp-worker',
+    'run: node scripts/finalize-database-hyperdrive-476.mjs'])assert.ok(content.includes(clause),'Missing protected reconciliation: '+clause);
+  assert.match(content,/permissions:\n      contents: read\n      actions: read\n    steps:/);
+  assert.ok(!content.includes('wrangler') && !content.includes('DATABASE_ENCRYPTION_KEY'));
+  assert.equal(source.split('run: node scripts/finalize-database-hyperdrive-476.mjs').length-1,1);
+  assert.ok(job(source,'deploy').content.includes('version_id: '+dollar+'{{ steps.publish.outputs.version_id }}'));
+  assert.ok(!job(source,'checks').gate.includes("inputs.database_hyperdrive_apply_id == ''"));
+}
+
+/** No automatic unbinding merge or production deployment until an independent
+ * in-flight and rollback isolation proof exists. This is a release contract,
+ * not a replacement for executing Owner approval or Cloudflare readback. */
+export function verifyDatabaseRetireStagingGate(source,stageSource) {
+  const {content,gate}=job(source,'database-hyperdrive-retire');
+  const expected=dollar+"{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.database_hyperdrive_retire_approved == true && inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' && inputs.database_hyperdrive_rotation_mode == '' }}";
+  assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe Hyperdrive retire gate');
+  for(const required of ['name: database-mcp-worker','group: worker-release-database-mcp-worker',
+    'cancel-in-progress: false','contents: write','pull-requests: write',
+    'id: unbind','run: node scripts/prepare-database-hyperdrive-unbind-476.mjs',
+    "if: steps.unbind.outputs.action == 'retire'",
+    'run: node scripts/retire-database-hyperdrive.mjs']){
+    assert.ok(content.includes(required),'Unsafe Hyperdrive retire staging: '+required);
+  }
+  for(const forbidden of ['wrangler deploy','/pulls/merge','DATABASE_ENCRYPTION_KEY:'])
+    assert.ok(!content.includes(forbidden),'Unreviewed unbind or release action');
+  assert.ok(stageSource.includes('draft:true,body:') &&
+    stageSource.includes("return {phase:'awaiting_unbind_review'") &&
+    !/github\(\s*['"][^'"]*\/merge['"]/.test(stageSource) &&
+    !/github\(\s*['"][^'"]*actions\/workflows\/release\.yml\/dispatches/.test(stageSource),
+    'Unbinding stage must not merge or deploy');
+  assert.equal(source.split('run: node scripts/prepare-database-hyperdrive-unbind-476.mjs').length-1,1);
+}
+
+/** This mode is read-only and must be mutually exclusive with every write,
+ * activation, retirement and deploy entrypoint. Do not repurpose as an Apply. */
+export function verifyDatabaseRotationGate(source, script){
+  const {content,gate}=job(source,'database-hyperdrive-rotation-check');
+  const expected=dollar+"{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && inputs.deploy_to_production == false && (inputs.database_hyperdrive_rotation_mode == 'credentials' || inputs.database_hyperdrive_rotation_mode == 'ca') && inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' && inputs.database_expected_release_sha == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true }}";
+  assert.equal(gate.replace(/\s+/g,' ').trim(),expected,'Unsafe rotation preflight job');
+  for(const text of ['name: database-mcp-worker','group: worker-release-database-mcp-worker',
+    'cancel-in-progress: false','permissions:\n      contents: read',
+    'persist-credentials: false','git ls-remote origin refs/heads/main',
+    'DATABASE_ROTATION_MODE: '+dollar+'{{ inputs.database_hyperdrive_rotation_mode }}',
+    'DATABASE_ROTATION_ID: '+dollar+'{{ inputs.database_hyperdrive_id }}',
+    'DATABASE_ROTATION_REVISION: '+dollar+'{{ inputs.database_hyperdrive_revision }}',
+    'run: node scripts/check-database-hyperdrive-rotation-476.mjs']){
+    assert.ok(content.includes(text),'Missing read-only rotation gate: '+text);
+  }
+  for(const forbidden of ['contents: write','pull-requests: write','wrangler deploy',
+    'DATABASE_ENCRYPTION_KEY:','DATABASE_GITHUB_ACTIONS_TOKEN:','/merge','/dispatches']){
+    assert.ok(!content.includes(forbidden),'Unsafe read-only rotation action: '+forbidden);
+  }
+  for(const name of ['database-hyperdrive-prepare','database-hyperdrive-apply',
+    'database-hyperdrive-enable','database-hyperdrive-retire','checks','deploy',
+    'database-hyperdrive-finalize']){
+    assert.ok(job(source,name).gate.includes("inputs.database_hyperdrive_rotation_mode == ''"),
+      'Rotation conflicts with '+name);
+  }
+  assert.equal(source.split('run: node scripts/check-database-hyperdrive-rotation-476.mjs').length-1,1);
+  assert.ok(script.includes("method:sql?'POST':'GET'") &&
+    !/method\s*:\s*['"](?:PATCH|PUT|DELETE)['"]/.test(script) &&
+    !/wrangler\s+deploy|\/restart['"]/.test(script) &&
+    !/\b(?:UPDATE|INSERT|DELETE|ALTER|DROP|CREATE|REPLACE)\s+(?:FROM\s+|INTO\s+)?(?:database_connections|hyperdrive_operations|d1_migrations)\b/i.test(script),
+    'Rotation readiness must only read Cloudflare and query D1');
 }
 
 // This is deliberately not a YAML or shell interpreter. It recognizes only
@@ -107,9 +206,28 @@ function job(source, name) {
   const rest = source.slice(start + name.length + 6);
   const next = /\n  [a-z][a-z0-9-]*:\n/.exec(rest);
   const content = source.slice(start, next ? start + name.length + 6 + next.index : undefined);
-  const gate = content.match(/\n    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1];
+  const gate = content.match(/\n    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1] ?? content.match(/\n    if: (\$\{\{[^\n]+\}\})\n/)?.[1];
   assert.ok(gate, 'Missing gated job ' + name);
   return { content, gate };
+}
+export function verifyCandidateCiGate(workflow) {
+  assert.match(workflow, /  workflow_dispatch:/);
+  assert.match(workflow, /      candidate_sha:/);
+  assert.ok(workflow.includes("if: ${{ github.event_name != 'workflow_dispatch' || !contains(github.workflow_ref, '/.github/workflows/ci.yml@') || (github.repository == 'lirtual/mcp-workers' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && startsWith(github.ref, 'refs/heads/db476-')) }}"));
+  assert.ok(workflow.includes("if: github.event_name == 'workflow_dispatch' && contains(github.workflow_ref, '/.github/workflows/ci.yml@')"));
+  assert.doesNotMatch(workflow, /\$\{\{[^}]*secrets\.|^\s*(?:secrets|environment):|^  deploy:/m);
+  assert.match(workflow, /permissions:\n  contents: read\n/);
+  for (const invariant of ['Verify candidate provenance',
+    '"$GITHUB_SHA" == "$CANDIDATE_SHA"', 'git rev-parse HEAD',
+    'git show -s --format=%P HEAD', 'git fetch --no-tags origin main',
+    'git diff --no-renames --name-status "$parent" HEAD',
+    'git ls-tree HEAD -- "$file"',
+    "expected=$'M\\tapps/database-mcp-worker/hyperdrive-bindings.json\\nM\\tapps/database-mcp-worker/wrangler.jsonc'",
+    '^refs/heads/db476-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$']) {
+    assert.ok(workflow.includes(invariant), 'Missing candidate CI gate: ' + invariant);
+  }
+  assert.ok(workflow.indexOf('Verify candidate provenance') < workflow.indexOf('run: node scripts/'),
+    'Candidate provenance must precede candidate scripts');
 }
 assert.match(ci, /  push:/);
 assert.match(ci, /  pull_request:/);
@@ -119,8 +237,8 @@ assert.match(ci, /release-gate:/);
 assert.match(ci, /needs: \[checks, database-integration\]/);
 assert.match(ci, /if: \$\{\{ always\(\) \}\}/);
 assert.match(ci, /true:success\|false:skipped/);
-assert.match(ci, /REUSABLE_WORKER: \$\{\{ inputs.worker \}\}/);
-assert.doesNotMatch(ci.slice(0, ci.indexOf('permissions:')), /workflow_dispatch:/);
+assert.ok(ci.includes("REUSABLE_WORKER: ${{ !contains(github.workflow_ref, '/.github/workflows/ci.yml@') && inputs.worker || '' }}"));
+verifyCandidateCiGate(ci);
 assert.doesNotMatch(ci, /^  deploy:$/m);
 assert.match(ci, /node scripts\/select-affected-apps\.mjs/);
 assert.match(ci, /database-integration:/);
@@ -141,8 +259,17 @@ for (const clause of [
   "needs.checks.outputs.release_ready == 'true'",
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
+const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 10,
+  'Release workflow_dispatch must have exactly ten inputs');
+assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');
+assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]'),
+  'Database release expected SHA gate missing');
 verifyReleaseWorkers(release, RELEASE_WORKERS);
 verifyDatabaseActivationGate(release);
+verifyDatabaseApplyGate(release);
+verifyDatabaseRotationGate(release,readFileSync(new URL('./check-database-hyperdrive-rotation-476.mjs',import.meta.url),'utf8'));
+verifyDatabaseRetireStagingGate(release,readFileSync(new URL('./prepare-database-hyperdrive-unbind-476.mjs',import.meta.url),'utf8'));
 assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');
 for (const marker of [
