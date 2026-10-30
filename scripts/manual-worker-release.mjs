@@ -379,25 +379,35 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "browser-mcp-worker") {
     const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
-    // The default release has only its DO and Bearer. An approved activation
-    // must supply every owner binding with an exact production identity; never
-    // accept a partially applied approval configuration or stale extra bindings.
-    const approval = BROWSER_APPROVAL_VARIABLES.map(name => find(name, "plain_text"));
-    const count = approval.filter(Boolean).length;
-    invariant(count === 0 || count === BROWSER_APPROVAL_VARIABLES.length,
+    // Owner Approval and Profile Activation use distinct Access applications.
+    // Validate every observed binding as a single reviewed, exact configuration.
+    const approvalFields = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
+      "BROWSER_APPROVAL_ISOLATION"];
+    const activationFields = ["BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"];
+    const names = [...new Set([...BROWSER_APPROVAL_VARIABLES, ...activationFields])];
+    const fields = names.map(name => [name, find(name, "plain_text")]);
+    const env = Object.fromEntries(fields.filter(([, value]) => !!value)
+      .map(([name, value]) => [name, value.text]));
+    const approvalCount = approvalFields.filter(name => Object.hasOwn(env, name)).length;
+    const activationCount = activationFields.filter(name => Object.hasOwn(env, name)).length;
+    invariant(approvalCount === 0 || approvalCount === approvalFields.length,
       "Browser approval binding inventory incomplete");
-    if (count) {
-      const env = Object.fromEntries(BROWSER_APPROVAL_VARIABLES.map((name, i) => [name, approval[i].text]));
-      collectWorkerVars("browser-mcp-worker", env);
-    }
-    if (options.mode === "readback")
-      invariant(count === (options.expectedBrowserApproval ? BROWSER_APPROVAL_VARIABLES.length : 0),
+    invariant(activationCount === 0 || activationCount === activationFields.length,
+      "Browser activation binding inventory incomplete");
+    if (Object.keys(env).length) collectWorkerVars("browser-mcp-worker", env);
+    if (options.mode === "readback") {
+      invariant((approvalCount === approvalFields.length) === !!options.expectedBrowserApproval,
         "Browser approval binding inventory differs from reviewed GitHub Environment");
+      invariant(activationCount === (options.expectedBrowserActivationAudience ? activationFields.length : 0) &&
+        (!options.expectedBrowserActivationAudience ||
+          env.BROWSER_ACTIVATION_AUDIENCE === options.expectedBrowserActivationAudience),
+        "Browser activation binding inventory differs from reviewed GitHub Environment");
+    }
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
-      !coordinator.script_name && bindings.length === 2 + count &&
+      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
-      !bindings.some(b => b.type === "plain_text" && !BROWSER_APPROVAL_VARIABLES.includes(b.name)),
+      !bindings.some(b => b.type === "plain_text" && !names.includes(b.name)),
       "Browser binding inventory drift");
     invariant(settings.observability?.logs?.head_sampling_rate === 0,
       "Browser logs sampling must remain zero");
@@ -1024,6 +1034,8 @@ async function main() {
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
       expectedBrowserApproval: worker === "browser-mcp-worker" &&
         process.env.BROWSER_APPROVAL_EXPECTED === "isolated-owner-profile-and-mailbox-v1",
+      expectedBrowserActivationAudience: worker === "browser-mcp-worker"
+        ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Keep identity and binding drift failures fatal.
