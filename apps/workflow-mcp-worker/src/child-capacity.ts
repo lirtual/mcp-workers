@@ -192,7 +192,7 @@ export async function startReservedDetachedChild(
   };
   if(row.start_state!=='reserved'){
     if(!['dispatching','start_unknown'].includes(row.start_state)||
-       !['queued','running'].includes(row.outcome))
+       !['queued','running','succeeded','failed'].includes(row.outcome))
       return {childRunId,start_state:'indeterminate'};
     const observed=await observeInstance(env.WORKFLOW,childRunId);
     if(observed.kind==='found')return markStarted();

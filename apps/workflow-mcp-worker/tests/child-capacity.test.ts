@@ -418,3 +418,21 @@ test('detached child never starts if parent ended before native dispatch claim',
   assert.equal(creates,0);
   assert.equal(f.count(),0);
 });
+
+test('detached child completion after lost create ACK proves native start without replay',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  f.sqlite.prepare("UPDATE runs SET start_state='start_unknown',outcome='succeeded' WHERE id='c1'").run();
+  let creates=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;throw Error('must_never_recreate');},
+    async get(){return {async status(){return {status:'complete'};}};},
+  }};
+  const result=await startReservedDetachedChild(env as never,
+    {parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:4000});
+  assert.deepEqual(result,{childRunId:'c1',start_state:'started'});
+  assert.equal(creates,0);
+  assert.equal((f.sqlite.prepare("SELECT start_state FROM runs WHERE id='c1'").get() as
+    {start_state:string}).start_state,'started');
+});
