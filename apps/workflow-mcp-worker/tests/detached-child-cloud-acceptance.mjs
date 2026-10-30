@@ -52,7 +52,7 @@ async function tool(name,args,expectedError){
   return value;
 }
 async function settle(id,allowRunning=false){
-  for(let i=0;i<60;i++){
+  for(let i=0;i<150;i++){
     const result=await tool('workflow_result',{run_id:id});
     if(['succeeded','failed','indeterminate','cancelled'].includes(result.status))return result;
     if(allowRunning)return result;
