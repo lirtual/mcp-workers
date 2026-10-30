@@ -514,7 +514,7 @@ test('child source rejects unpinned, recursive syntax, extra effects and direct 
     [{...one,version_id:'moving'}],
     [{...one,inputs:null}],
     [{...one,inputs:{value:{ref:'steps.missing.output'}}}],
-    [{...one,mode:'detached'}],
+    [{...one,mode:'arbitrary'}],
     [one,{...one,id:'second'}],
     [{id:'forge',uses:'flow.child',with:{workflow_id:child,version_id:version,inputs:{}}}],
   ])await assert.rejects(()=>compilePlan(root(steps)),PlanError);

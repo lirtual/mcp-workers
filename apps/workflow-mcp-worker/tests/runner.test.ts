@@ -1757,6 +1757,83 @@ test('awaited child publish requires exact reviewed target; one native child and
   assert.equal(rows.every(x=>x.capacity_weight===1),true);
 });
 
+test('detached child completes independently after parent reaches terminal success',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Detached result',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'independent completion'}}]}));
+  const childVersion=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Detached launch',steps:[
+    {id:'launch',flow:'child',mode:'detached',workflow_id:child.workflow_id,
+      version_id:childVersion.published_version_id,inputs:{}},
+    {id:'result',uses:'result.emit',needs:['launch'],with:{data:{ref:'steps.launch.output'}}},
+  ]}));
+  const checked=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {valid:boolean;required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  assert.equal(checked.valid,true);
+  await assert.rejects(()=>service.publish(parent.workflow_id,1),/child_approval_required/);
+  await service.publish(parent.workflow_id,1,[],false,false,[],checked.required_children!);
+  const native={do:async(_n:unknown,_o:unknown,callback:()=>Promise<unknown>)=>callback(),
+    sleep:async()=>{}} as unknown as WorkflowStep;
+  const nativeCreated:string[]=[];
+  env.WORKFLOW.create=async({id})=>{nativeCreated.push(id);};
+  const started=await service.start(parent.workflow_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const parentResult=await service.result(started.run_id);
+  assert.equal(parentResult.status,'succeeded');
+  const ref=parentResult.result as {run_id:string;published_version_id:string};
+  assert.equal(ref.published_version_id,childVersion.published_version_id);
+  assert.equal(nativeCreated.length,2);
+  const childRow=sqlite.prepare('SELECT outcome,capacity_weight FROM runs WHERE id=?')
+    .get(ref.run_id) as {outcome:string;capacity_weight:number};
+  assert.equal(childRow.outcome,'queued');
+  assert.equal(childRow.capacity_weight,1);
+  assert.equal((sqlite.prepare('SELECT capacity_weight FROM runs WHERE id=?')
+    .get(started.run_id) as {capacity_weight:number}).capacity_weight,1);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:ref.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  assert.equal((await service.result(ref.run_id)).status,'succeeded');
+  assert.equal((await service.result(started.run_id)).status,'succeeded');
+  await assert.rejects(()=>service.cancel(started.run_id,'launch'),/child_not_cancellable/);
+  assert.equal((await service.result(ref.run_id)).status,'succeeded');
+  assert.equal(nativeCreated.length,2,'parent replay must not create another child');
+});
+
+test('detached child at capacity limit fails definitely without a native child create',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Only emit',
+    steps:[{id:'emit',uses:'result.emit',with:{data:1}}]}));
+  const childPublished=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Bounded detached',steps:[
+    {id:'launch',flow:'child',mode:'detached',workflow_id:child.workflow_id,
+      version_id:childPublished.published_version_id,inputs:{}},
+  ]}));
+  const check=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await service.publish(parent.workflow_id,1,[],false,false,[],check.required_children!);
+  let nativeCreates=0;
+  env.WORKFLOW.create=async()=>{nativeCreates++;};
+  const started=await service.start(parent.workflow_id);
+  const filler=await service.create(JSON.stringify({version:1,name:'Filler',steps:[
+    {id:'emit',uses:'result.emit',with:{data:1}},
+  ]}));
+  await service.publish(filler.workflow_id,1);
+  for(let i=0;i<7;i++)await service.start(filler.workflow_id,{},'filler-'+i);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')")
+    .get() as {n:number}).n,8);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,cb:()=>Promise<unknown>)=>cb(),
+      sleep:async()=>{}} as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='launch')?.error_code,
+    'detached_child_admission_rejected');
+  assert.equal(nativeCreates,8,'only parent and seven previously reserved Runs were created');
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?')
+    .get(started.run_id) as {n:number}).n,0);
+});
+
 test('late child success after an uncertain native cancellation never authorizes parent output',async t=>{
   const {service,env,sqlite}=setup(t);
   const child=await service.create(JSON.stringify({version:1,name:'Child finishes late',

@@ -19,7 +19,7 @@ export async function cancelAwaitedChild(
  let published:any;
  try{published=JSON.parse(child.parent_plan);}catch{return 'not_found';}
  if(!Array.isArray(published.steps)||!published.steps.some((s:any)=>
-   s.id===stepId&&s.uses==='flow.child'))return 'not_found';
+   s.id===stepId&&s.uses==='flow.child'&&s.with?.mode!=='detached'))return 'not_found';
  if(child.outcome==='cancelled')
    return child.start_state==='cancelled_before_start'?'cancelled_before_start':'terminal_confirmed';
  if(!['queued','running'].includes(child.outcome))return 'already_terminal';

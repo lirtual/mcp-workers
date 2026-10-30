@@ -2,12 +2,9 @@ import {observeInstance} from './instance-observation.ts';
 import {cancelAwaitedChild} from './child-cancel.ts';
 import type {Env} from './store.ts';
 
-/**
- * One-Cloudflare-Workflow awaited-child capacity primitive.
- *
- * Deliberately not wired to workflow_run/runner yet: flow.child remains
- * unsupported until target-pinned admission, native start reconciliation,
- * cancellation and real Cloudflare E2E are verified together.
+/** One Cloudflare Workflow owns both awaited and detached child execution.
+ * Children use their own immutable Plan and deterministic native identity;
+ * awaited children transfer capacity and detached children reserve separately.
  */
 /** Stable UUID for one awaited child path. Never derive from current time,
  * mutable input values, retries or an untrusted external ID.
@@ -113,6 +110,120 @@ export async function transferAwaitedChildCapacity(
      child.capacity_weight!==1)
     throw Error('child_capacity_transfer_rejected');
   return {childRunId:child.id,alreadyReserved:!inserted[0]?.meta?.changes};
+}
+
+/** Independent capacity for an explicitly detached child. Parent keeps its
+ * own slot; no reservation transfer or borrowed child capacity is possible.
+ * The deterministic identity and immutable target still enforce replay safety.
+ */
+export async function admitDetachedChild(
+  db:Pick<D1Database,'prepare'>,args:ChildReservation,
+):Promise<{childRunId:string;alreadyReserved:boolean}>{
+  if(!args.parentRunId||!args.parentStepId||!args.childRunId||
+     args.parentRunId===args.childRunId||!args.childWorkflowId||
+     !args.childVersionId||!args.admissionKey||!args.requestDigest||
+     !args.inputJson||!Number.isSafeInteger(args.timestamp))
+    throw Error('invalid_detached_child_request');
+  const inserted=await db.prepare(`INSERT OR IGNORE INTO runs
+    (id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,
+     start_state,outcome,created_at,updated_at,capacity_weight,parent_run_id,parent_step_id)
+    SELECT ?,c.id,v.id,?,?,?,?,'reserved','queued',?,?,1,p.id,?
+    FROM runs p JOIN workflows c ON c.id=?
+    JOIN workflow_versions v ON v.id=? AND v.workflow_id=c.id
+    WHERE p.id=? AND p.outcome='running' AND p.capacity_weight=1
+      AND p.parent_run_id IS NULL AND p.workflow_id!=c.id
+      AND c.state='active' AND c.active_version_id=v.id
+      AND ${capacityAdmissionPredicate(1)}`)
+    .bind(args.childRunId,args.childRunId,args.admissionKey,
+      args.requestDigest,args.inputJson,args.timestamp,args.timestamp,
+      args.parentStepId,args.childWorkflowId,args.childVersionId,args.parentRunId).run();
+  const child=await db.prepare(`SELECT id,workflow_id,version_id,parent_run_id,
+    parent_step_id,admission_key,request_digest,inputs,capacity_weight
+    FROM runs WHERE parent_run_id=? AND parent_step_id=?`)
+    .bind(args.parentRunId,args.parentStepId).first<ChildRow>();
+  if(!child||child.id!==args.childRunId||child.workflow_id!==args.childWorkflowId||
+     child.version_id!==args.childVersionId||child.parent_run_id!==args.parentRunId||
+     child.parent_step_id!==args.parentStepId||child.admission_key!==args.admissionKey||
+     child.request_digest!==args.requestDigest||child.inputs!==args.inputJson||
+     child.capacity_weight!==1)
+    throw Error('detached_child_admission_rejected');
+  return {childRunId:child.id,alreadyReserved:!inserted.meta.changes};
+}
+
+/** Detached start is independent of parent cancellation after reservation.
+ * A lost native ACK is observed but NEVER blindly reissued: Cloudflare may
+ * have created the instance even if its acknowledgement was lost.
+ */
+export async function startReservedDetachedChild(
+  env:Pick<Env,'DB'|'WORKFLOW'>,
+  args:{parentRunId:string;parentStepId:string;childRunId:string;timestamp:number},
+):Promise<{childRunId:string;start_state:'started'|'start_unknown'|'indeterminate'|'rejected'}>{
+  const {parentRunId,parentStepId,childRunId,timestamp}=args;
+  if(!parentRunId||!parentStepId||!childRunId||!Number.isSafeInteger(timestamp))
+    throw Error('invalid_detached_start_request');
+  const row=await env.DB.prepare(`SELECT c.start_state,c.outcome,
+    c.instance_id,c.capacity_weight,c.created_at,p.outcome AS parent_outcome
+    FROM runs c JOIN runs p ON p.id=c.parent_run_id
+    WHERE c.id=? AND c.parent_run_id=? AND c.parent_step_id=?`)
+    .bind(childRunId,parentRunId,parentStepId)
+    .first<{start_state:string;outcome:string;instance_id:string;
+      capacity_weight:number;created_at:number;parent_outcome:string}>();
+  if(!row||row.instance_id!==childRunId||row.capacity_weight!==1)
+    throw Error('detached_child_start_not_authorized');
+  if(row.start_state==='started')return {childRunId,start_state:'started'};
+  // An undecided native dispatch is never retried. After the same bounded
+  // observation window used by awaited children, preserve unknown physical
+  // effects as indeterminate rather than leaking a queued D1 capacity slot.
+  const expire=async()=>{
+    await env.DB.prepare(`UPDATE runs SET outcome='indeterminate',
+      error_code='detached_child_start_unconfirmed',updated_at=?
+      WHERE id=? AND parent_run_id=? AND parent_step_id=?
+      AND start_state IN ('dispatching','start_unknown') AND outcome='queued'`)
+      .bind(timestamp,childRunId,parentRunId,parentStepId).run();
+    return {childRunId,start_state:'indeterminate' as const};
+  };
+  const markStarted=async()=>{
+    await env.DB.prepare(`UPDATE runs SET start_state='started',updated_at=?
+      WHERE id=? AND parent_run_id=? AND parent_step_id=?
+      AND start_state IN ('dispatching','start_unknown')
+      AND outcome IN ('queued','running','succeeded','failed')`)
+      .bind(timestamp,childRunId,parentRunId,parentStepId).run();
+    return {childRunId,start_state:'started' as const};
+  };
+  if(row.start_state!=='reserved'){
+    if(!['dispatching','start_unknown'].includes(row.start_state)||
+       !['queued','running'].includes(row.outcome))
+      return {childRunId,start_state:'indeterminate'};
+    const observed=await observeInstance(env.WORKFLOW,childRunId);
+    if(observed.kind==='found')return markStarted();
+    return timestamp-row.created_at>=10*60_000?expire():
+      {childRunId,start_state:'start_unknown'};
+  }
+  if(row.parent_outcome!=='running'){
+    // The parent became terminal before native dispatch: abandon only the
+    // still-reserved child; no native effect was authorized.
+    await env.DB.prepare(`UPDATE runs SET outcome='failed',
+      error_code='detached_parent_not_active',updated_at=?
+      WHERE id=? AND start_state='reserved' AND outcome='queued'`)
+      .bind(timestamp,childRunId).run();
+    return {childRunId,start_state:'rejected'};
+  }
+  const claim=await env.DB.prepare(`UPDATE runs SET start_state='dispatching',updated_at=?
+    WHERE id=? AND parent_run_id=? AND parent_step_id=?
+      AND start_state='reserved' AND outcome='queued'
+      AND EXISTS(SELECT 1 FROM runs p WHERE p.id=? AND p.outcome='running')`)
+    .bind(timestamp,childRunId,parentRunId,parentStepId,parentRunId).run();
+  if(claim.meta.changes!==1)return {childRunId,start_state:'start_unknown'};
+  try{
+    await env.WORKFLOW.create({id:childRunId,params:{run_id:childRunId}});
+    return markStarted();
+  }catch{
+    await env.DB.prepare(`UPDATE runs SET start_state='start_unknown',updated_at=?
+      WHERE id=? AND start_state='dispatching' AND outcome IN ('queued','running')`)
+      .bind(timestamp,childRunId).run();
+    const observed=await observeInstance(env.WORKFLOW,childRunId);
+    return observed.kind==='found'?markStarted():{childRunId,start_state:'start_unknown'};
+  }
 }
 
 /** Only a D1 claim may initiate a native child create. A cancellation of a
