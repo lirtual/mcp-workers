@@ -124,7 +124,10 @@ function openPayload(row, keyBase64) {
       /^[A-Za-z0-9_.-]{1,128}$/.test(result.user) &&
       /^[A-Za-z0-9_.-]{1,128}$/.test(result.database) &&
       typeof result.password === 'string' && result.password.length > 0 &&
-      result.password.length <= 2048, 'payload_invalid');
+      result.password.length <= 2048 &&
+      (result.caReplaces === undefined ||
+        (/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(result.caReplaces) &&
+          result.caReplaces !== result.id)), 'payload_invalid');
     return result;
   } catch (error) {
     if (error?.reason) throw error;
@@ -308,6 +311,34 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
   requireGate(unique.results?.length === 2 && unique.results.every(r => r.n === 0),
     'logical_id_unavailable');
   const candidate = openPayload(row, env.DATABASE_ENCRYPTION_KEY);
+  // An independent CA replacement must retain the old origin identity.
+  // Recheck trusted immutable D1 provenance at the protected Runner, not
+  // solely at the Owner preview. Never PATCH the old config or CA.
+  if (candidate.caReplaces) {
+    const previous = await sql(`SELECT id,dialect,transport,config_id,binding_name,target_metadata
+      FROM database_connections WHERE id=?`, [candidate.caReplaces]);
+    requireGate(previous.results?.length === 1, 'ca_replacement_target_changed');
+    const prior = previous.results[0];
+    let metadata;
+    try { metadata = JSON.parse(prior.target_metadata); }
+    catch { fail('ca_replacement_target_changed'); }
+    const fields = ['binding','id','dialect','origin_host','origin_port',
+      'origin_database','origin_user','ca_certificate_id'];
+    requireGate(prior.transport === 'hyperdrive' && prior.id !== candidate.id &&
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata) &&
+      Object.keys(metadata).length === fields.length &&
+      fields.every(field => Object.hasOwn(metadata, field)) &&
+      metadata.binding === prior.binding_name && metadata.id === prior.config_id &&
+      prior.dialect === candidate.dialect && metadata.dialect === candidate.dialect &&
+      metadata.origin_host === candidate.host.toLowerCase() &&
+      metadata.origin_port === Number(candidate.port) &&
+      metadata.origin_database === candidate.database &&
+      metadata.origin_user === candidate.user &&
+      typeof metadata.ca_certificate_id === 'string' &&
+      (!candidate.caCertificateId ||
+        candidate.caCertificateId !== metadata.ca_certificate_id),
+      'ca_replacement_target_changed');
+  }
   const binding = checkedManifestSource(source, manifest, candidate, operationId);
   // Before Cloudflare POST: CAS the operation and source identity. Unknown
   // outcomes must be reconciled using the deterministic name rather than retried.

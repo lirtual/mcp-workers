@@ -600,3 +600,90 @@ it('Owner credential-rotation confirmation never includes plaintext in GitHub di
  expect(JSON.stringify(persisted)).not.toContain('synthetic-secret-value');
  expect((await post({})).status).toBe(409);
 });
+
+
+it('CA replacement previews a distinct matching target without touching the original Hyperdrive',async()=>{
+ const {sqlite,env}=fixture();instances.push(sqlite);
+ const {jwt,certificates}=await auth();
+ const original={binding:'HYPERDRIVE_ORIGINAL',id:'a'.repeat(32),dialect:'mysql',
+  origin_host:'mysql.example.net',origin_port:3306,origin_database:'catalog',origin_user:'reader',
+  ca_certificate_id:'old-ca-1234567890'};
+ sqlite.prepare(`INSERT INTO database_connections
+  (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
+  VALUES ('original','mysql','hyperdrive','active',?,?,2,?,1,1)`)
+  .run(original.id,original.binding,JSON.stringify(original));
+ const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,certificates);
+ const html=await page.text();expect(html).toContain('name="ca_replaces"');
+ const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+ const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+ const send=(fields:Record<string,string>)=>handleSetup(new Request(pageUrl+'/hyperdrive-preview',{
+  method:'POST',headers:{'cf-access-jwt-assertion':jwt,
+   origin:'https://db-owner.example.net',cookie,'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({csrf,id:'renewed',dialect:'mysql',origin_host:original.origin_host,
+   origin_port:'3306',origin_database:'catalog',origin_user:'reader',
+   origin_password:'synthetic-test-password',ca_certificate_id:'new-ca-1234567890',
+   ca_replaces:'original',...fields})
+ }),env,certificates);
+ const accepted=await send({});expect(accepted.status).toBe(200);
+ const acceptedText=await accepted.text();expect(acceptedText).toContain('independent CA replacement');
+ expect(acceptedText).not.toContain('synthetic-test-password');
+ for(const rejected of [{id:'original'},{origin_host:'different.example.net'},
+  {origin_database:'changed'},{origin_port:'3307'},{dialect:'postgres'},
+  {ca_certificate_id:'old-ca-1234567890'},{ca_replaces:'missing'}]){
+  const response=await send(rejected);expect(response.status).toBeGreaterThanOrEqual(400);
+ }
+ expect(sqlite.prepare('SELECT status,revision,config_id FROM database_connections WHERE id=?').get('original'))
+  .toMatchObject({status:'active',revision:2,config_id:original.id});
+ expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toMatchObject({n:0});
+});
+
+
+it('CA replacement Prepare reuses the existing protected candidate action and leaves the old active connection untouched',async()=>{
+ const {sqlite,env}=fixture();instances.push(sqlite);
+ const previous={binding:'HYPERDRIVE_OLD',id:'c'.repeat(32),dialect:'postgres',
+  origin_host:'postgres.example.net',origin_port:5432,origin_database:'analytics',
+  origin_user:'reader',ca_certificate_id:'existing-ca-123456789'};
+ sqlite.prepare(`INSERT INTO database_connections
+  (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
+  VALUES ('old_ref','postgres','hyperdrive','active',?,?,3,?,1,1)`)
+  .run(previous.id,previous.binding,JSON.stringify(previous));
+ env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
+ const {jwt,certificates}=await auth();
+ const dispatched:unknown[]=[];
+ const requestFetch:typeof fetch=async(input,options)=>{
+  const url=String(input);
+  if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:true});
+  if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+  if(url.endsWith('/actions/workflows/release.yml/dispatches')){
+   dispatched.push(JSON.parse(String(options?.body)));
+   return Response.json({workflow_run_id:476});
+  }
+  return certificates();
+ };
+ const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+ const html=await page.text(), csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+ const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+ const values={csrf,id:'replacement_ref',ca_replaces:'old_ref',dialect:'postgres',
+  origin_host:previous.origin_host,origin_port:'5432',origin_database:'analytics',
+  origin_user:'reader',origin_password:'synthetic-password-never-export',
+  ca_certificate_id:'replacement-ca-12345',confirm_prepare:'1'};
+ const prepare=(override:Record<string,string>={})=>handleSetup(new Request(pageUrl+'/hyperdrive-prepare',{
+  method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+   cookie,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...values,...override})
+ }),env,requestFetch);
+ expect((await prepare({ca_certificate_id:previous.ca_certificate_id})).status).toBe(422);
+ expect(dispatched).toHaveLength(0);
+ const accepted=await prepare();expect(accepted.status).toBe(200);
+ expect(await accepted.text()).not.toContain(values.origin_password);
+ expect(dispatched).toHaveLength(1);
+ expect(dispatched[0]).toMatchObject({inputs:{worker:'database-mcp-worker',
+  deploy_to_production:'false'}});
+ expect(JSON.stringify(dispatched)).not.toContain(values.origin_password);
+ const saved=sqlite.prepare('SELECT logical_id,action,phase,ciphertext,prepare_run_id FROM hyperdrive_operations').get() as Record<string,unknown>;
+ expect(saved).toMatchObject({logical_id:'replacement_ref',action:'create',phase:'running',prepare_run_id:476});
+ expect(saved.ciphertext).not.toContain(values.origin_password);
+ expect(sqlite.prepare('SELECT status,revision,config_id,target_metadata FROM database_connections WHERE id=?').get('old_ref'))
+  .toMatchObject({status:'active',revision:3,config_id:previous.id,target_metadata:JSON.stringify(previous)});
+ expect((await prepare()).status).toBe(409);
+ expect(dispatched).toHaveLength(1);
+});

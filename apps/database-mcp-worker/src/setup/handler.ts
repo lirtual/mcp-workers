@@ -206,7 +206,7 @@ export async function handleSetup(
       const dialect = required(form, 'dialect');
       if (dialect !== 'mysql' && dialect !== 'postgres') invalid();
       for (const field of ['id','dialect','origin_host','origin_port','origin_database',
-        'origin_user','origin_password','ca_certificate_id','ca_pem']) {
+        'origin_user','origin_password','ca_certificate_id','ca_pem','ca_replaces']) {
         if (form.getAll(field).length > 1) invalid();
       }
       const candidate: HyperdriveCandidate = {
@@ -215,13 +215,45 @@ export async function handleSetup(
         database: required(form, 'origin_database'), user: required(form, 'origin_user'),
         password: required(form, 'origin_password'),
         caCertificateId: form.get('ca_certificate_id') || undefined,
-        caPem: form.get('ca_pem') || undefined
+        caPem: form.get('ca_pem') || undefined,
+        caReplaces: form.get('ca_replaces') || undefined
       };
       const preview = previewHyperdriveCreation(candidate);
+      // CA renewal is an independent creation using a NEW logical ID and CA.
+      // Do not modify a live config or presume old rollback versions are gone.
+      const replaces = candidate.caReplaces;
+      if (replaces) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(replaces) ||
+            replaces === candidate.id) invalid();
+        const original = await env.DB.prepare(`SELECT id,dialect,transport,config_id,binding_name,target_metadata
+          FROM database_connections WHERE id=?`).bind(replaces).first<{
+            id:string; dialect:Dialect; transport:string; config_id:string;
+            binding_name:string; target_metadata:string|null
+          }>();
+        if (!original || original.transport !== 'hyperdrive' ||
+            !original.target_metadata) invalid();
+        let prior: Record<string, unknown>;
+        try { prior = JSON.parse(original.target_metadata) as Record<string, unknown>; }
+        catch { return invalid(); }
+        const expectedFields = ['binding','id','dialect','origin_host','origin_port',
+          'origin_database','origin_user','ca_certificate_id'];
+        if (!prior || typeof prior !== 'object' || Array.isArray(prior) ||
+            Object.keys(prior).length !== expectedFields.length ||
+            expectedFields.some(field => !Object.hasOwn(prior, field)) ||
+            prior.binding !== original.binding_name || prior.id !== original.config_id ||
+            prior.dialect !== original.dialect || prior.dialect !== preview.dialect ||
+            prior.origin_host !== preview.host || prior.origin_port !== preview.port ||
+            prior.origin_database !== preview.database ||
+            prior.origin_user !== preview.user ||
+            typeof prior.ca_certificate_id !== 'string' ||
+            (candidate.caCertificateId && candidate.caCertificateId === prior.ca_certificate_id))
+          invalid();
+      }
       if (action === 'hyperdrive-preview') {
         return setupResult('Preview only (no resources changed): ' + preview.id + ' · ' +
           preview.dialect + ' · ' + preview.host + ':' + preview.port + '/' + preview.database +
           ' · strict ' + preview.tls + ' · caching disabled · CA ' + preview.caSource +
+          (replaces ? '. This is an independent CA replacement; the existing connection and its CA remain unchanged' : '') +
           '. Return to /setup and separately confirm Prepare with your credentials.');
       }
       if (form.getAll('confirm_prepare').length !== 1 || form.get('confirm_prepare') !== '1') invalid();

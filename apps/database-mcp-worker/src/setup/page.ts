@@ -43,6 +43,8 @@ function hyperdriveForm(csrf: string, route: 'hyperdrive-preview' | 'hyperdrive-
   const confirm = route === 'hyperdrive-prepare';
   return '<form method="post" action="/setup/' + route + '">' + token(csrf) +
     '<label>Logical ID<input name="id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required></label>' +
+    '<label>CA renewal: existing logical ID (optional)<input name="ca_replaces" maxlength="64" autocomplete="off"></label>' +
+    '<p class="muted">For CA renewal, use a new logical ID and a different CA with the same origin. The existing connection and CA remain intact. After separately reviewed release, migrate consumers and retire the old Binding only when safe.</p>' +
     '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
     '<label>Origin hostname<input name="origin_host" maxlength="253" autocomplete="off" required></label>' +
     '<label>Port<input name="origin_port" type="number" min="1" max="65535" required></label>' +

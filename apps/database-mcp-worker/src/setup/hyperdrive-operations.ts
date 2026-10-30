@@ -12,6 +12,7 @@ export interface HyperdriveCandidate {
   password: string;
   caCertificateId?: string | undefined;
   caPem?: string | undefined;
+  caReplaces?: string | undefined;
 }
 export interface HyperdriveOperation {
   operationId: string;
@@ -59,6 +60,8 @@ export function previewHyperdriveCreation(candidate: HyperdriveCandidate) {
     encoder.encode(candidate.password).byteLength > 2048 ||
     !/^[1-9][0-9]{0,4}$/.test(candidate.port) ||
     Number(candidate.port) > 65535) invalid();
+  if (candidate.caReplaces !== undefined &&
+      (!safeName(candidate.caReplaces, 64, idPattern) || candidate.caReplaces === candidate.id)) invalid();
   const hasCaId = !!candidate.caCertificateId;
   const hasPem = !!candidate.caPem;
   if (hasCaId === hasPem) invalid();

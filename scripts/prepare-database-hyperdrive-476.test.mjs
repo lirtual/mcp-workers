@@ -146,7 +146,7 @@ test('PR confirmation renews a nonsecret seven-day review window but never the e
   assert.match(source,/updated_at=\?,expires_at=\?,error_class='github_pr_ci_pending'/);
   assert.match(source,/AND phase='running' AND expected_source_sha=\? AND expires_at>\?/);
 });
-for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected'])
+for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected','ca-replacement-unprotected','ca-replacement-drift-unprotected'])
 test('preparation preserves policy and resource receipt safety: '+mode,async()=>{
   const {DatabaseSync}=await import('node:sqlite');
   const {createCipheriv}=await import('node:crypto');
@@ -161,6 +161,17 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
     database:'catalog',user:'reader',password:'synthetic-password',
     ...(mode.startsWith('ca-') ? {caPem:'-----BEGIN CERTIFICATE-----\nQUJDRA==\n-----END CERTIFICATE-----'} :
       {caCertificateId:'b0e4a5d3-1665-4e3c-a0a0-28f9a2b9b1c0'})};
+  if(mode.startsWith('ca-replacement-')){
+    candidate.caReplaces='old_ref';
+    const prior={binding:'HYPERDRIVE_OLD',id:'e'.repeat(32),dialect:'mysql',
+      origin_host:mode==='ca-replacement-drift-unprotected'?'wrong.example.net':'mysql.example.net',
+      origin_port:3306,origin_database:'catalog',origin_user:'reader',
+      ca_certificate_id:'old-ca-123456789'};
+    db.prepare(`INSERT INTO database_connections
+      (id,dialect,transport,status,revision,config_id,binding_name,target_metadata,created_at,updated_at)
+      VALUES ('old_ref','mysql','hyperdrive','active',3,?,?,?,1,1)`)
+      .run(prior.id,prior.binding,JSON.stringify(prior));
+  }
   const cipher=createCipheriv('aes-256-gcm',key,iv);
   cipher.setAAD(Buffer.from('database-mcp:hyperdrive-operation:v1:'+operationId+':create:isolated:0'));
   const encrypted=Buffer.concat([cipher.update(JSON.stringify(candidate)),cipher.final(),cipher.getAuthTag()]);
@@ -170,7 +181,7 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
     .run(operationId,candidate.id,iv.toString('base64')+'.'+encrypted.toString('base64'),Date.now()+600000);
   let creates=0, caUploads=0, caWritten=false;
   const isCa=mode.startsWith('ca-');
-  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-') || mode.startsWith('ca-success');
+  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-') || mode.startsWith('ca-success') || mode==='ca-replacement-unprotected';
   const configId='1'.repeat(32), head='b'.repeat(40), blobs=new Map();
   let createdConfig;
   const request=async(url,init={})=>{
@@ -250,6 +261,15 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
   };
   try {
     const runnerEnv={...env,DATABASE_ENCRYPTION_KEY:key.toString('base64'),GITHUB_RUN_ID:'42'};
+    if(mode==='ca-replacement-drift-unprotected'){
+      await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),
+        error=>error.reason==='ca_replacement_target_changed');
+      assert.equal(creates,0);
+      assert.equal(caUploads,0);
+      assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('old_ref')},
+        {status:'active',revision:3});
+      return;
+    }
     if(['ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected'].includes(mode)) {
       await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>
         error.reason===(mode==='ca-duplicate-unprotected'?'ca_inventory_ambiguous':
@@ -266,6 +286,10 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
       const result=await prepareDatabaseHyperdrive(runnerEnv,request);
       assert.equal(result.phase,'awaiting_confirmation');
       assert.equal(creates,1);
+      if(mode==='ca-replacement-unprotected'){
+        assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('old_ref')},
+          {status:'active',revision:3});
+      }
       if(isCa){assert.equal(caUploads,1);assert.equal(createdConfig.mtls.ca_certificate_id,'6'.repeat(36));}
       assert.deepEqual({...db.prepare('SELECT phase,pr_number,head_sha,ciphertext,key_id FROM hyperdrive_operations').get()},
         {phase:'awaiting_confirmation',pr_number:3,head_sha:head,ciphertext:null,key_id:null});
