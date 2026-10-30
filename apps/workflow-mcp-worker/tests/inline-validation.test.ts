@@ -111,3 +111,36 @@ test('MCP field errors include stable paths while inline validation stays D1-fre
     assert.equal(result.issues[0].path,path);
   }
 });
+
+test('nested references pinpoint safe fields without reflecting private argument names or values',async()=>{
+  const service=new WorkflowService({DB:{
+    prepare(){throw Error('inline validation touched D1');},
+  }} as unknown as Env);
+  for(const [definition,expectedPath] of [
+    [{version:1,name:'Unknown dependency',steps:[
+      {id:'one',uses:'result.emit',with:{data:{ref:'steps.missing.output'}}},
+    ]},'/steps/0/with/data/ref'],
+    [{version:1,name:'Broken conditional',steps:[
+      {id:'one',uses:'result.emit',if:{and:[true,{eq:[{ref:'steps.secret.output'},'ok']} ]},with:{data:'ok'}},
+    ]},'/steps/0/if/and/1/eq/0/ref'],
+    [{version:1,name:'Malformed reference',steps:[
+      {id:'one',uses:'result.emit',with:{data:{ref:'bad token'}}},
+    ]},'/steps/0/with/data/ref'],
+  ] as const){
+    const answer=await validateWorkflowTarget(service,{definition:JSON.stringify(definition)});
+    assert.equal(answer.valid,false);
+    assert.equal(answer.issues[0].path,expectedPath);
+    assert.ok(['invalid_reference','invalid_step_reference'].includes(answer.issues[0].code));
+  }
+  const privateField='DoNotExposePrivateAccountNumber';
+  const privateValue='DoNotExposeRawSecretValue';
+  const answer=await validateWorkflowTarget(service,{definition:JSON.stringify({
+    version:1,name:'Private fields',steps:[{
+      id:'one',uses:'result.emit',with:{data:{[privateField]:{ref:privateValue}}},
+    }],
+  })});
+  assert.equal(answer.valid,false);
+  assert.equal(answer.issues[0].path,'/steps/0/with/data/ref');
+  assert.equal(JSON.stringify(answer).includes(privateField),false);
+  assert.equal(JSON.stringify(answer).includes(privateValue),false);
+});

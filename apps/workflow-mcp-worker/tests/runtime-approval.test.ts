@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 import {compilePlan} from '../src/plan.ts';
 import {WorkflowService} from '../src/store.ts';
-import {waitForRuntimeApproval} from '../src/runtime-approval.ts';
+import {waitForRuntimeApproval,recordRuntimeApproval} from '../src/runtime-approval.ts';
 import type {Env} from '../src/store.ts';
 import type {WorkflowStep,WorkflowEvent} from 'cloudflare:workers';
 const hook=registerHooks({resolve(specifier,context,next){
@@ -27,7 +27,7 @@ const definition={version:1,name:'Reviewed approved Task',steps:[
 ]};
 function fixture(){
  const sqlite=new DatabaseSync(':memory:');
- for(const name of ['0001_s1.sql','0015_runtime_approval.sql'])
+ for(const name of ['0001_s1.sql','0003_s3_attempt_claim.sql','0015_runtime_approval.sql'])
   sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  const prepare=(sql:string)=>{
   let args:unknown[]=[];
@@ -40,7 +40,16 @@ function fixture(){
  let wakeCount=0;
  const step={async do(_name:string,_opts:unknown,fn:()=>Promise<unknown>){return fn();},
   async waitForEvent(){return new Promise(resolve=>{wake=resolve;});}} as unknown as WorkflowStep;
- const env={DB:{prepare},WORKFLOW:{async get(){return {async status(){return {status:'running'};},
+ const batch=async(statements:Array<{run:()=>Promise<{meta:{changes:number}}>}> )=>{
+  sqlite.exec('BEGIN');
+  try{
+    const results=[] as Array<{meta:{changes:number}}>;
+    for(const statement of statements)results.push(await statement.run());
+    sqlite.exec('COMMIT');
+    return results;
+  }catch(error){sqlite.exec('ROLLBACK');throw error;}
+ };
+ const env={DB:{prepare,batch},WORKFLOW:{async get(){return {async status(){return {status:'running'};},
   async sendEvent(){wakeCount++;wake?.({});}};}}} as unknown as Env;
  const service=new WorkflowService(env);
  const setup=async()=>{
@@ -127,7 +136,7 @@ test('full native runner refuses GitHub dispatch when owner explicitly denies th
   }
   assert.equal(ctx.sqlite.prepare("SELECT status FROM run_steps WHERE step_id='run_task'").get()?.status,'waiting_approval');
   assert.equal(settled,false,'no external action or terminal result before decision');
-  assert.equal(ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='step_attempts'").get()!.n,0);
+  assert.equal(ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM step_attempts").get()!.n,0);
   await ctx.decide('deny');
   await execute;
   const run=ctx.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(runId)!;
@@ -193,6 +202,64 @@ test('approved native gate still cannot elevate missing published GitHub grants'
   assert.equal(result.status,'failed');
   assert.equal(result.error_code,'github_action_approval_missing');
   assert.equal(typeof ctx.sqlite.prepare('SELECT consumed_at FROM runtime_approvals').get()?.consumed_at,'number');
-  assert.equal(ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='step_attempts'").get()?.n,0);
+  assert.equal(ctx.sqlite.prepare("SELECT COUNT(*) AS n FROM step_attempts").get()?.n,0);
+ }finally{ctx.sqlite.close();}
+});
+
+test('cancelling a pending approval atomically prevents late approval and native GitHub dispatch',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup();
+  const execute=new WorkflowOrchestrator({} as ExecutionContext,ctx.env).run(
+    {payload:{run_id:runId}} as WorkflowEvent<{run_id:string}>,ctx.step);
+  for(let n=0;n<100;n++){
+   if(ctx.sqlite.prepare("SELECT status FROM run_steps WHERE step_id='run_task'").get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  assert.equal(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status,'waiting_approval');
+  const cancelled=await ctx.service.cancel(runId,'run_task');
+  assert.equal(cancelled.cancellation,'requested');
+  assert.equal(cancelled.physical_terminated,false);
+  await assert.rejects(()=>ctx.decide('approve'),/approval_run_not_active/);
+  // Simulate an already in-flight approval handler that passed its initial
+  // Run read before cancellation: the authoritative SQL INSERT still rejects it.
+  await assert.rejects(()=>recordRuntimeApproval(ctx.env.DB,runId,'run_task',
+    versionId,'approved',Date.now()),/approval_not_open/);
+  await execute;
+  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'cancelled');
+  assert.equal(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status,'cancelled');
+  assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM runtime_approvals').get()?.n,0);
+  assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);
+ }finally{ctx.sqlite.close();}
+});
+test('cancel cannot revoke a recorded approval or terminate a parallel active Step',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup();
+  const pending=ctx.waiting();
+  for(let n=0;n<100;n++){
+   if(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  await ctx.decide('approve');
+  await assert.rejects(()=>ctx.service.cancel(runId,'run_task'),/approval_cancel_conflict/);
+  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+  assert.deepEqual(await pending,{ok:true});
+ }finally{ctx.sqlite.close();}
+});
+
+test('pending approval cancellation refuses to terminate another active Step',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup();
+  const pending=ctx.waiting();
+  for(let n=0;n<100;n++){
+   if(ctx.sqlite.prepare('SELECT status FROM run_steps').get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  ctx.sqlite.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,?,?)")
+   .run(runId,'other_step','running',Date.now());
+  await assert.rejects(()=>ctx.service.cancel(runId,'run_task'),/approval_cancel_conflict/);
+  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+  assert.equal(ctx.sqlite.prepare("SELECT status FROM run_steps WHERE step_id='other_step'").get()?.status,'running');
+  await ctx.decide('deny');
+  assert.deepEqual(await pending,{ok:false,error_code:'approval_denied'});
  }finally{ctx.sqlite.close();}
 });
