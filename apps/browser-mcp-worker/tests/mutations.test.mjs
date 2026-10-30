@@ -51,8 +51,8 @@ test("stale document identity and sensitive URLs never call tab mutation APIs",a
   const {execute,calls}=setup();
   const stale=await execute(cmd("tab_close",{tab_id:42,document_id:"wrong-document"}));
   assert.equal(stale.error_code,"stale_target");
-  for(const url of ["file:///etc/passwd","https://accounts.google.com/",
-    "http://127.0.0.1/private","https://example.com/logout","https://example.com/delete"]){
+  for(const url of ["file:///etc/passwd","https://browser-mcp-worker.invalid/owner/unknown",
+    "http://127.0.0.1/private","http://169.254.169.254/latest/meta-data/"]){
     const r=await execute(cmd("tab_open",{url}));
     assert.equal(r.error_code,"forbidden",url);
   }
@@ -124,17 +124,16 @@ test("shared groups with the same neutral title are not adopted automatically",a
   assert.equal(calls.filter(x=>x[0]==="name-group").length,1);
 });
 
-test("consequential GET query and encoded routes are denied without a remote approval bypass",async()=>{
+test("ordinary query, business routes and hash navigation are admitted; schemes and owner targets remain denied",async()=>{
   const {execute,calls}=setup();
-  for(const url of [
-    "https://example.com/operations?confirm=1",
-    "https://example.com/item?delete=true",
-    "https://example.com/api?transfer=100",
-    "https://example.com/%70ayment",
-    "https://example.com/%ZZ/confirm"
-  ]){
+  for(const url of ["https://example.com/operations?confirm=1","https://example.com/item?delete=true",
+    "https://example.com/api?transfer=100","https://example.com/%70ayment","https://example.com/#/post/save"]){
     const r=await execute(cmd("tab_open",{url}));
-    assert.equal(r.error_code,"forbidden",url);
+    assert.equal(r.state,"completed",url);
   }
-  assert.equal(calls.filter(x=>x[0]==="create").length,0);
+  assert.equal(calls.filter(x=>x[0]==="create").length,5);
+  for(const url of ["javascript:alert(1)","https://browser-mcp-worker.invalid/#/post",
+    "http://169.254.169.254/latest/meta-data/"]){
+    assert.equal((await execute(cmd("tab_open",{url}))).error_code,"forbidden",url);
+  }
 });

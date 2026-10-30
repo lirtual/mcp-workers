@@ -47,18 +47,18 @@ test('native denial/failure is fail closed and untrusted messages cannot enable 
   }finally{await f.close();}
 });
 
-test('LAN consent normalizes misleading URLs and keeps metadata/auth/protected targets prohibited',async()=>{
+test('LAN consent retains metadata/scheme/Owner boundaries without business-route restrictions',async()=>{
   const f=await fixture();try{
     await grant(f,'lan',true);
     for(const url of ['http://localhost:8000/app','http://printer.lan/app','http://127.1/app','http://0x7f000001/app','http://2130706433/app','http://[::1]/app','http://[fd12::1]/app']){
       f.pageState.url=url;assert.equal((await f.snapshot()).document_id,'doc-1',url);
     }
-    for(const url of ['http://169.254.169.254/latest/meta-data/','http://0xa9fea9fe/','http://2852039166/','http://metadata.google.internal/','http://100.100.100.200/','http://168.63.129.16/','http://[fd00:ec2::254]/','http://[fd20:ce::254]/','http://metadata.tencentyun.com/','http://[::ffff:a9fe:a9fe]/','https://localhost@metadata.google.internal/','file:///x','chrome://settings','chrome-extension://abc/','https://chromewebstore.google.com/','https://localhost/%6cogin','https://localhost/#/login','https://localhost/#/%61pprove','http://printer.lan/approval','https://browser.example/owner/operations/a','https://browser.example.:8443/','http://localhost/auth','https://fixture.cloudflareaccess.com/']){
+    for(const url of ['http://169.254.169.254/latest/meta-data/','http://0xa9fea9fe/','http://2852039166/','http://metadata.google.internal/','http://100.100.100.200/','http://168.63.129.16/','http://[fd00:ec2::254]/','http://[fd20:ce::254]/','http://metadata.tencentyun.com/','http://[::ffff:a9fe:a9fe]/','https://localhost@metadata.google.internal/','file:///x','chrome://settings','chrome-extension://abc/','https://browser.example/owner/operations/a','https://browser.example.:8443/']){
       f.pageState.url=url;assert.equal((await f.snapshot()).error_code,'forbidden',url);
     }
     f.pageState.url='http://localhost/app';f.pageState.frameUrl='http://169.254.169.254/';
     assert.equal((await f.snapshot()).error_code,'stale_target');delete f.pageState.frameUrl;
-    f.pageState.embedded=true;assert.equal((await f.snapshot()).error_code,'sensitive_surface');
+    f.pageState.embedded=true;assert.equal((await f.snapshot()).document_id,'doc-1','embedded children do not suppress parent observation');
   }finally{await f.close();}
 });
 

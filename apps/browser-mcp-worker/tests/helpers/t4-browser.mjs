@@ -73,9 +73,9 @@ export async function fixture(config={},options={}){
     querySelectorAll:selector=>nodes.slice(1,pageState.sensitive?undefined:5).filter(n=>selector==="input,textarea,select"?["INPUT","TEXTAREA","SELECT"].includes(n.tagName):true),
     createTreeWalker:()=>({nextNode:()=>false})};
   Object.defineProperty(nodes[0],"innerText",{get:()=>pageState.text});
-  const page=vm.createContext({document,location:{get href(){return pageState.url;}},crypto,Date:class extends Date{static now(){return pageState.now??Date.now();}},Map,
+  const page=vm.createContext({URL,document,location:{get href(){return pageState.url;}},crypto,Date:class extends Date{static now(){return pageState.now??Date.now();}},Map,
     getComputedStyle:()=>({display:"block",visibility:"visible"}),NodeFilter:{SHOW_TEXT:4},
-    MutationObserver:class{observe(){}disconnect(){}takeRecords(){if(pageState.mutated){pageState.mutated=false;return [{}];}return [];}},
+    MutationObserver:class{observe(){}disconnect(){}takeRecords(){if(pageState.mutated){pageState.mutated=false;return [{type:"attributes",target:pageState.mutationTarget??nodes[1]}];}return [];}},
     HTMLInputElement:Element,HTMLTextAreaElement:Element,HTMLSelectElement:Element,
     Event:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},
     KeyboardEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}}});
