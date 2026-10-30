@@ -487,6 +487,33 @@ jobs:
               FROM cloudflare_action_invocations WHERE run_id='3e312105-b40e-49ea-a037-c3359074be2b'
           ") | node scripts/workflow-terminal-run-exception.mjs
 
+      # Exact 2026-10-30 verified Koofr download / no Weixin invocation.
+      # Do not rewrite the indeterminate result or exempt any other Run.
+      - name: Verify seventh terminal download Run proof (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        id: terminal_seventh
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TERMINAL_PROOF_KIND: seventh
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
+            SELECT id,outcome,start_state,error_code FROM runs
+              WHERE id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
+            SELECT run_id,step_id,status,error_code FROM run_steps
+              WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d' ORDER BY step_id;
+            SELECT run_id,step_id,state FROM session_executions
+              WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
+            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
+              FROM step_attempts WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
+            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
+              FROM cloudflare_action_invocations WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d'
+          ") | node scripts/workflow-terminal-run-exception.mjs
+
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
@@ -500,6 +527,7 @@ jobs:
           WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
           WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
+          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
@@ -548,7 +576,7 @@ jobs:
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID') AS active_runs,
+             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
              (SELECT count(*) FROM runs) AS run_count,
              (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -592,6 +620,7 @@ jobs:
           WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
           WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
+          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -642,7 +671,7 @@ jobs:
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
               (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID') AS active_runs,
+              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
               (SELECT count(*) FROM runs) AS run_count,
               (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -660,6 +689,7 @@ jobs:
           WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
           WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
+          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
         run: |
           set -euo pipefail
           query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
