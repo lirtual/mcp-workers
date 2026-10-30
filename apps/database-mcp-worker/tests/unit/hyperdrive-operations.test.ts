@@ -62,6 +62,12 @@ describe('Hyperdrive prepare: Owner preview → encrypted D1 operation', () => {
       expect((sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get() as {n:number}).n).toBe(0);
     } finally { sqlite.close(); }
   });
+  it('accepts percent-decoded provider usernames without exposing credentials', () => {
+    expect(previewHyperdriveCreation({...candidate,user:'tenant+reader@project'})).toMatchObject({
+      user:'tenant+reader@project',tls:'VERIFY_IDENTITY'
+    });
+    expect(() => previewHyperdriveCreation({...candidate,user:'user\npassword'})).toThrow();
+  });
   it('rejects malformed targets and secrets before storing or exposing them', () => {
     expect(() => previewHyperdriveCreation({...candidate, host:'localhost'})).toThrow();
     expect(() => previewHyperdriveCreation({...candidate, port:'0'})).toThrow();

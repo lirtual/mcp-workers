@@ -1,11 +1,22 @@
 import { PublicError } from '../errors.js';
 import type {Env} from '../types.js';
 import {getRegistryConnection,listRegistryConnections} from './store.js';
+import { ConfirmedReadFailure } from '../db/completion.js';
 
 /** A persisted counter is conservative: unknown executions keep a positive
  * count, rather than claiming a globally empty set. It never times out or
  * self-expires. Do not infer quiescence until all deployed/rollback versions
  * use this fence and disabled probes can no longer start. */
+async function releaseClaim(env:Env,id:string):Promise<void>{
+ if(!env.DB)throw new PublicError('CONFIGURATION_UNAVAILABLE','Registry unavailable.');
+ let release;
+ try{
+  release=await env.DB.prepare(`UPDATE database_connections SET in_flight_count=in_flight_count-1
+    WHERE id=? AND transport='hyperdrive' AND in_flight_count>0`).bind(id).run();
+ }catch{throw new PublicError('CONFIGURATION_UNAVAILABLE','Execution completion could not be confirmed.');}
+ if(release.meta.changes!==1)throw new PublicError('CONFIGURATION_UNAVAILABLE','Execution completion could not be confirmed.');
+}
+
 async function fenced<T>(env:Env,id:string,revision:number,status:'active'|'disabled',execute:()=>Promise<T>):Promise<T>{
  if(!env.DB)throw new PublicError('CONFIGURATION_UNAVAILABLE','Registry unavailable.');
  let claimed;
@@ -19,13 +30,16 @@ async function fenced<T>(env:Env,id:string,revision:number,status:'active'|'disa
  // If UPDATE committed but its response was lost, the count stays positive.
  // Failed, timed-out or cancelled executions also retain their count, because
  // remote database work may outlive the initiating Cloudflare request.
- const value=await execute();
- let release;
- try{
-  release=await env.DB.prepare(`UPDATE database_connections SET in_flight_count=in_flight_count-1
-    WHERE id=? AND transport='hyperdrive' AND in_flight_count>0`).bind(id).run();
- }catch{throw new PublicError('CONFIGURATION_UNAVAILABLE','Execution completion could not be confirmed.');}
- if(release.meta.changes!==1)throw new PublicError('CONFIGURATION_UNAVAILABLE','Execution completion could not be confirmed.');
+ // Only a confirmed backend ROLLBACK can settle a failed read. Unknown
+ // outcomes still retain the claim indefinitely, without a timer reset.
+ let value:T;
+ try { value=await execute(); }
+ catch(error){
+  if(!(error instanceof ConfirmedReadFailure)) throw error;
+  await releaseClaim(env,id);
+  throw error.publicError;
+ }
+ await releaseClaim(env,id);
  return value;
 }
 

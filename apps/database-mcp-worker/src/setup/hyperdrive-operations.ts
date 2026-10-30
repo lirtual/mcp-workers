@@ -55,7 +55,7 @@ export function previewHyperdriveCreation(candidate: HyperdriveCandidate) {
     /\.(?:localhost|local|internal|test|invalid|example|arpa)$/i.test(candidate.host) ||
     /^[0-9.]+$/.test(candidate.host) ||
     !safeName(candidate.database, 128, /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/) ||
-    !safeName(candidate.user, 128, /^[A-Za-z0-9_.-]{1,128}$/) ||
+    !safeName(candidate.user, 128, /^[A-Za-z0-9_.@+-]{1,128}$/) ||
     typeof candidate.password !== 'string' || candidate.password.length < 1 ||
     encoder.encode(candidate.password).byteLength > 2048 ||
     !/^[1-9][0-9]{0,4}$/.test(candidate.port) ||

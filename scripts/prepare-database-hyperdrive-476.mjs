@@ -35,15 +35,14 @@ export async function verifyGithubPrPreflight({ request = fetch, token, sourceSh
     authorization: 'Bearer ' + token, accept: 'application/vnd.github+json',
     'user-agent': 'lirtual-database-hyperdrive-476', 'x-github-api-version': '2022-11-28'
   };
-  let permissions;
   try {
     const result = await request('https://api.github.com/repos/' + REPO + '/actions/permissions/workflow', {
       headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
     });
     requireGate(result.ok, 'github_pr_permission_unavailable');
-    permissions = await result.json();
   } catch { fail('github_pr_permission_unavailable'); }
-  requireGate(permissions?.can_approve_pull_request_reviews === true, 'github_pr_creation_disabled');
+  // GitHub's review-approval permission is unrelated to creating a PR.
+  // Check actual PR creation during the protected write, never infer it here.
   // A 404 means classic branch protection is absent. Other responses require
   // a known, reviewed eligibility path rather than claiming that checks passed.
   let protection, rules;

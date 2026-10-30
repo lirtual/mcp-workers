@@ -9,6 +9,8 @@ export interface RegistryMetadata {
   dialect: Dialect;
   transport: DatabaseTransport;
   status: RegistryStatus;
+  /** Active Hyperdrive executions with unknown completion remain persistently reserved. */
+  in_flight_count?: number;
   revision: number;
   created_at: number;
   updated_at: number;
@@ -67,7 +69,7 @@ async function dbCall<T>(operation: () => Promise<T>): Promise<T> {
 export async function listRegistryConnections(db: Db): Promise<RegistryMetadata[]> {
   if (!db) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is unavailable.');
   return dbCall(async () => {
-    const { results } = await db.prepare('SELECT id,dialect,transport,status,revision,created_at,updated_at FROM database_connections ORDER BY id LIMIT 11').all<RegistryMetadata>();
+    const { results } = await db.prepare('SELECT id,dialect,transport,status,revision,created_at,updated_at,in_flight_count FROM database_connections ORDER BY id LIMIT 11').all<RegistryMetadata>();
     if (results.length > 10 || results.some(row => !['direct','hyperdrive'].includes(row.transport))) {
       throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The database registry is invalid.');
     }

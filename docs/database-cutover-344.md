@@ -1,3 +1,13 @@
+> **Spec #476 implementation (2026-10-30, unmerged Draft):** PostgreSQL Direct,
+> unified `/setup` URL/Fields Add/Direct Edit, and Hyperdrive protected Save are
+> in local code and tests only. No Worker release, D1 `0003` production migration,
+> Cloudflare CA/config mutation or live database test was performed in this phase.
+> Logical retirement now preserves immutable Cloudflare cleanup references in
+> the existing retired-ID ledger. Unknown in-flight SQL still blocks retirement,
+> while physical cleanup/rollback safety and full Hyperdrive Edit remain separate.
+> True runtime E2E remains incomplete. Do not
+> confuse CI/dry-run PASS with production availability or authorization.
+
 # Database MCP #344 — production release and recovery (managed D1 only)
 
 ## Latest verified state and TLS acceptance boundary (2026-10-30)
@@ -245,3 +255,33 @@ locked; no manual row deletion/recreation is authorized by this runbook. The old
 test provisioning script is retired and must not return; deleted test databases stay
 deleted. Retirement retains Cloudflare resources and shared CA, and now refuses D1
 retirement while any enumerated rollback version still references its config or binding.
+
+## Spec #476 local recovery amendment (2026-10-30; not deployed)
+
+- PostgreSQL/MySQL pinned read failures may decrement the existing Hyperdrive
+  `in_flight_count` only after a successful same-session `ROLLBACK` receipt.
+  Unknown rollback, connection loss and timeout must retain an unresolved claim.
+  A successful SQL result also requires confirmed transaction rollback before
+  the resource fence reports completion. No timer or Owner zero-count button.
+- Direct plaintext transport acceptance happens on Add, not repeatedly on
+  Edit/Enable. CA PEM is collapsed under the optional Hyperdrive input section;
+  provider usernames may contain `+` and `@` while control bytes remain invalid.
+- The Owner page retains a collapsed, read-only list of recently retired
+  Hyperdrive IDs with unverified physical resource cleanup; internal config and
+  binding references are retained in D1, never rendered to the browser.
+- Cloudflare D1 read-only verification returned `0001`, `0002` only; the local
+  editable `0003` remains un-applied and requires an authorized, guarded
+  production migration. Synthetic tests are not production release evidence.
+
+## Spec #476 replacement candidate update (2026-10-30; local Draft)
+
+- Hyperdrive username or CA changes are submitted from the existing unified
+  Add form using a new logical ID and an optional disabled source ID. The
+  source target must have complete, exact D1 provenance and zero unresolved
+  executions; the new candidate must preserve dialect, host, port and
+  database. The old config, Binding and CA are never patched by this flow.
+- A suitable recorded CA can be provisionally reused, but still requires the
+  protected Runner's independent strict certificate readback. An explicit
+  replacement CA PEM creates a separate candidate asset. Normal final PR,
+  release, Worker Binding and health gates still apply. No production
+  connection has been changed in this local draft.

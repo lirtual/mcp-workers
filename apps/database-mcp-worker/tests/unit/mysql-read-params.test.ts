@@ -6,6 +6,7 @@ const { createConnectionMock } = vi.hoisted(() => ({ createConnectionMock: vi.fn
 vi.mock('mysql2/promise', () => ({ createConnection: createConnectionMock }));
 
 import { mysqlExplain, mysqlInspectSchema, mysqlQueryRead } from '../../src/db/mysql.js';
+import { ConfirmedReadFailure } from '../../src/db/completion.js';
 
 const base: EffectiveConnection = {
   config: { id: 'example', transport: 'direct', url: 'mysql://reader@db.example.org/app' },
@@ -86,6 +87,20 @@ describe('MySQL read interpolation safety and Direct compatibility', () => {
     expect(client.execute).not.toHaveBeenCalled();
   });
 
+  it('reports a failed Hyperdrive read as settled only when rollback is acknowledged',async()=>{
+    const client=mockClient();
+    const serverError=Object.assign(new Error('unknown table'),{code:'ER_NO_SUCH_TABLE'});
+    client.query.mockImplementation(async (sql:string)=>{
+      if(sql.startsWith('SHOW SESSION VARIABLES')) return [[{Variable_name:'sql_mode',Value:'STRICT_TRANS_TABLES'}],[]];
+      throw serverError;
+    });
+    await expect(mysqlQueryRead({...base,transport:'hyperdrive'},'SELECT 1',[],2))
+      .rejects.toBeInstanceOf(ConfirmedReadFailure);
+    expect(client.rollback).toHaveBeenCalledOnce();
+    client.rollback.mockRejectedValue(new Error('lost backend connection'));
+    await expect(mysqlQueryRead({...base,transport:'hyperdrive'},'SELECT 1',[],2))
+      .rejects.not.toBeInstanceOf(ConfirmedReadFailure);
+  });
   it('rejects Hyperdrive interpolation on incompatible SQL mode', async () => {
     const client = mockClient('NO_BACKSLASH_ESCAPES');
     await expect(mysqlQueryRead({ ...base, transport: 'hyperdrive' }, 'SELECT ? AS value', ['safe'], 2))

@@ -205,7 +205,7 @@ for(const fault of ['legacy204','dispatch-timeout','wrong-run']) {
 for(const fault of ['no-protection-204','no-protection-timeout','no-protection-bad-id',
   'no-protection-sha','no-protection-branch','no-protection-owner','no-protection-workflow',
   'no-protection-pending','no-protection-failed','no-protection-skipped','no-protection-ref',
-  'no-protection-pr-disabled','no-protection-policy-changed','no-protection-rules-unavailable',
+  'no-protection-policy-changed','no-protection-rules-unavailable',
   'no-protection-job-sha','no-protection-job-queued','no-protection-gate-failed','no-protection-missing-job',
   'no-protection-duplicate-job','no-protection-late-content','no-protection-late-main','no-protection-rerun','no-protection-event']) {
   test('unprotected policy never merges/deploys without exact successful CI: '+fault,async()=>{
@@ -221,7 +221,7 @@ for(const fault of ['no-protection-204','no-protection-timeout','no-protection-b
     } finally {db.close();}
   });
 }
-for(const fault of ['no-protection','no-protection-wait-success']) {
+for(const fault of ['no-protection','no-protection-wait-success','no-protection-pr-disabled']) {
   test('unprotected exact candidate with successful full CI may merge and dispatch pinned release: '+fault,async()=>{
     const {db,request,writes}=fixture(fault);
     try {

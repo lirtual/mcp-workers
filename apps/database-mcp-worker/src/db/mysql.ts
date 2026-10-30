@@ -12,6 +12,7 @@ import type {
   SchemaInspection
 } from '../types.js';
 import { withTimeout } from './timeout.js';
+import { ConfirmedReadFailure } from './completion.js';
 
 async function withConnection<T>(
   connection: EffectiveConnection,
@@ -23,15 +24,30 @@ async function withConnection<T>(
     if (connection.transport === 'hyperdrive') {
       // Pin the backend session during SQL-mode check and client interpolation.
       await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      let result: T;
       try {
         await assertMysqlHyperdriveSqlMode(client, connection);
-        return await operation(client);
-      } finally {
-        await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy()).catch(() => undefined);
+        result = await operation(client);
+      } catch (error) {
+        // The pinned session's successful ROLLBACK is observable evidence that
+        // the rejected statement has terminated. An unknown/failed rollback is
+        // NOT evidence of completion: the durable claim must remain held.
+        let rolledBack = false;
+        try {
+          await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
+          rolledBack = true;
+        } catch { /* Unknown backend state; retain the original failure. */ }
+        if (rolledBack) throw new ConfirmedReadFailure(error);
+        throw error;
       }
+      // A successful read without confirmed rollback cannot be treated as a
+      // completely drained backend session for resource-retirement purposes.
+      await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      return result;
     }
     return await operation(client);
   } catch (error) {
+    if (error instanceof ConfirmedReadFailure) throw error;
     throw mapDatabaseError(error);
   } finally {
     if (client !== undefined) await client.end().catch(() => undefined);

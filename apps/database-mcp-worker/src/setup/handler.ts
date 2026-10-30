@@ -14,6 +14,7 @@ import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, dispatchHype
 import { previewHyperdriveCreation, createHyperdrivePreparation, createHyperdriveCredentialRotation, listHyperdriveOperations,
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
 import { setupFailure, setupPage, setupResult, setupUnbindStatusResult } from './page.js';
+import { normalizeConnectionInput } from './connection-input.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
 function required(form: URLSearchParams, field: string): string {
@@ -78,6 +79,108 @@ async function testCandidate(env: Env, id: string, url: string, dialect: Dialect
   await healthCheck({ config: { id, transport: 'direct', url }, transport: 'direct',
     ...parsed, ...(ca ? { ca } : {}), limits: { ...getRuntimeLimits(env), queryTimeoutMs: 5000 } });
 }
+/** A CA may be reused without user input only from exact active, recorded
+ * Hyperdrive target provenance. The protected Runner must independently read
+ * and validate the CA before a candidate can be created or enabled. */
+async function findRecordedCa(env: Env, dialect: Dialect, host: string, port: number): Promise<string | undefined> {
+  if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE','Database registry is unavailable.');
+  const rows = await env.DB.prepare(`SELECT dialect,status,config_id,binding_name,target_metadata
+    FROM database_connections WHERE transport='hyperdrive' AND status='active'
+    AND target_metadata IS NOT NULL LIMIT 11`).all<{
+      dialect:string; status:string; config_id:string; binding_name:string; target_metadata:string
+    }>();
+  const matches = new Set<string>();
+  for (const row of rows.results) {
+    if (row.dialect !== dialect) continue;
+    let metadata: Record<string,unknown>;
+    try { metadata = JSON.parse(row.target_metadata) as Record<string,unknown>; }
+    catch { continue; }
+    const expected = ['binding','id','dialect','origin_host','origin_port',
+      'origin_database','origin_user','ca_certificate_id'];
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) ||
+      Object.keys(metadata).length !== expected.length ||
+      expected.some(key => !Object.hasOwn(metadata,key)) ||
+      metadata.binding !== row.binding_name || metadata.id !== row.config_id ||
+      metadata.dialect !== dialect || metadata.origin_host !== host.toLowerCase() ||
+      metadata.origin_port !== port ||
+      typeof metadata.ca_certificate_id !== 'string' ||
+      !/^[A-Za-z0-9-]{8,128}$/.test(metadata.ca_certificate_id)) continue;
+    matches.add(metadata.ca_certificate_id);
+  }
+  // Unknown/contradictory provenance is never guessed into a certificate.
+  return matches.size === 1 ? [...matches][0] : undefined;
+}
+
+/** Replacement uses a new isolated config/Binding and a new logical ID.
+ * Only the immutable origin is carried across. No old Cloudflare resource
+ * is patched or released; the Runner verifies the CA independently. */
+async function replacementCaFromSource(
+ env: Env, sourceId: string, candidate: HyperdriveCandidate
+): Promise<string> {
+ if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE','Database registry is unavailable.');
+ if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(sourceId) || sourceId === candidate.id) invalid();
+ const old = await env.DB.prepare('SELECT id,dialect,transport,status,config_id,binding_name,target_metadata,in_flight_count FROM database_connections WHERE id=?')
+  .bind(sourceId).first<{
+   id:string;dialect:Dialect;transport:string;status:string;config_id:string;
+   binding_name:string;target_metadata:string|null;in_flight_count:number
+  }>();
+ if (!old || old.transport !== 'hyperdrive' || old.status !== 'disabled' ||
+   old.dialect !== candidate.dialect || old.in_flight_count !== 0 ||
+   !/^[a-f0-9]{32}$/i.test(old.config_id) || !/^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(old.binding_name) ||
+   !old.target_metadata) invalid();
+ let metadata:Record<string,unknown>;
+ try { metadata=JSON.parse(old.target_metadata) as Record<string,unknown>; }
+ catch { return invalid(); }
+ const keys=['binding','id','dialect','origin_host','origin_port','origin_database','origin_user','ca_certificate_id'];
+ if (!metadata || typeof metadata!=='object' || Array.isArray(metadata) ||
+   Object.keys(metadata).length !== keys.length || keys.some(key=>!Object.hasOwn(metadata,key)) ||
+   metadata.binding!==old.binding_name || metadata.id!==old.config_id ||
+   metadata.dialect!==candidate.dialect || metadata.origin_host!==candidate.host.toLowerCase() ||
+   metadata.origin_port!==Number(candidate.port) || metadata.origin_database!==candidate.database ||
+   typeof metadata.origin_user!=='string' ||
+   typeof metadata.ca_certificate_id!=='string' ||
+   !/^[A-Za-z0-9-]{8,128}$/.test(metadata.ca_certificate_id)) invalid();
+ const pending=await env.DB.prepare("SELECT 1 AS blocked FROM hyperdrive_operations WHERE logical_id=? AND phase IN ('pending','running','awaiting_confirmation','unknown') LIMIT 1")
+  .bind(sourceId).first<{blocked:number}>();
+ if (pending) throw new PublicError('REVISION_CONFLICT','Original Hyperdrive connection has an unfinished operation.');
+ return metadata.ca_certificate_id;
+}
+
+async function requireCaReplacementIdentity(
+  env: Env, candidate: HyperdriveCandidate,
+  preview: ReturnType<typeof previewHyperdriveCreation>
+): Promise<void> {
+  if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE','Database registry is unavailable.');
+    const replaces = candidate.caReplaces;
+    if (replaces) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(replaces) ||
+          replaces === candidate.id) invalid();
+      const original = await env.DB.prepare(`SELECT id,dialect,transport,config_id,binding_name,target_metadata
+        FROM database_connections WHERE id=?`).bind(replaces).first<{
+          id:string; dialect:Dialect; transport:string; config_id:string;
+          binding_name:string; target_metadata:string|null
+        }>();
+      if (!original || original.transport !== 'hyperdrive' ||
+          !original.target_metadata) invalid();
+      let prior: Record<string, unknown>;
+      try { prior = JSON.parse(original.target_metadata) as Record<string, unknown>; }
+      catch { return invalid(); }
+      const expectedFields = ['binding','id','dialect','origin_host','origin_port',
+        'origin_database','origin_user','ca_certificate_id'];
+      if (!prior || typeof prior !== 'object' || Array.isArray(prior) ||
+          Object.keys(prior).length !== expectedFields.length ||
+          expectedFields.some(field => !Object.hasOwn(prior, field)) ||
+          prior.binding !== original.binding_name || prior.id !== original.config_id ||
+          prior.dialect !== original.dialect || prior.dialect !== preview.dialect ||
+          prior.origin_host !== preview.host || prior.origin_port !== preview.port ||
+          prior.origin_database !== preview.database ||
+          prior.origin_user !== preview.user ||
+          typeof prior.ca_certificate_id !== 'string' ||
+          (candidate.caCertificateId && candidate.caCertificateId === prior.ca_certificate_id))
+        invalid();
+    }
+}
+
 async function requiredRow(env: Env, id: string) {
   if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Database registry is unavailable.');
   const row = await getRegistryConnection(env.DB, id);
@@ -163,9 +266,14 @@ export async function handleSetup(
       const token = btoa(String.fromCharCode(...raw)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
       const connections = await listRegistryConnections(env.DB);
       const operations = await listHyperdriveOperations(env.DB);
-      return setupPage(connections, token, operations);
+      // Read-only UI provenance: no Config ID, Binding name or CA is rendered.
+      // A tombstone does NOT prove physical resources have been cleaned up.
+      const retired = await env.DB.prepare(`SELECT id FROM retired_connection_ids
+        WHERE upstream_config_id IS NOT NULL AND upstream_binding_name IS NOT NULL
+        ORDER BY retired_at DESC,id ASC LIMIT 10`).all<{id:string}>();
+      return setupPage(connections, token, operations, retired.results.map(row=>row.id));
     }
-    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-preview|hyperdrive-prepare|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|hyperdrive-credentials|github-actions-check)$/.test(path))
+    if (request.method !== 'POST' || !/^\/setup\/(add|edit|enable|disable|delete|rotate|hyperdrive-action|hyperdrive-apply|hyperdrive-unbind-status|hyperdrive-rotation-check|hyperdrive-credentials|github-actions-check)$/.test(path))
       return setupFailure('not_found', 404);
     const form = await formData(request);
     validateCsrf(request, env, required(form, 'csrf'));
@@ -202,79 +310,6 @@ export async function handleSetup(
         (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
         '. Merge, release and activation remain subject to protected verification.');
     }
-    if (action === 'hyperdrive-preview' || action === 'hyperdrive-prepare') {
-      const dialect = required(form, 'dialect');
-      if (dialect !== 'mysql' && dialect !== 'postgres') invalid();
-      for (const field of ['id','dialect','origin_host','origin_port','origin_database',
-        'origin_user','origin_password','ca_certificate_id','ca_pem','ca_replaces']) {
-        if (form.getAll(field).length > 1) invalid();
-      }
-      const candidate: HyperdriveCandidate = {
-        id: required(form, 'id'), dialect,
-        host: required(form, 'origin_host'), port: required(form, 'origin_port'),
-        database: required(form, 'origin_database'), user: required(form, 'origin_user'),
-        password: required(form, 'origin_password'),
-        caCertificateId: form.get('ca_certificate_id') || undefined,
-        caPem: form.get('ca_pem') || undefined,
-        caReplaces: form.get('ca_replaces') || undefined
-      };
-      const preview = previewHyperdriveCreation(candidate);
-      // CA renewal is an independent creation using a NEW logical ID and CA.
-      // Do not modify a live config or presume old rollback versions are gone.
-      const replaces = candidate.caReplaces;
-      if (replaces) {
-        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(replaces) ||
-            replaces === candidate.id) invalid();
-        const original = await env.DB.prepare(`SELECT id,dialect,transport,config_id,binding_name,target_metadata
-          FROM database_connections WHERE id=?`).bind(replaces).first<{
-            id:string; dialect:Dialect; transport:string; config_id:string;
-            binding_name:string; target_metadata:string|null
-          }>();
-        if (!original || original.transport !== 'hyperdrive' ||
-            !original.target_metadata) invalid();
-        let prior: Record<string, unknown>;
-        try { prior = JSON.parse(original.target_metadata) as Record<string, unknown>; }
-        catch { return invalid(); }
-        const expectedFields = ['binding','id','dialect','origin_host','origin_port',
-          'origin_database','origin_user','ca_certificate_id'];
-        if (!prior || typeof prior !== 'object' || Array.isArray(prior) ||
-            Object.keys(prior).length !== expectedFields.length ||
-            expectedFields.some(field => !Object.hasOwn(prior, field)) ||
-            prior.binding !== original.binding_name || prior.id !== original.config_id ||
-            prior.dialect !== original.dialect || prior.dialect !== preview.dialect ||
-            prior.origin_host !== preview.host || prior.origin_port !== preview.port ||
-            prior.origin_database !== preview.database ||
-            prior.origin_user !== preview.user ||
-            typeof prior.ca_certificate_id !== 'string' ||
-            (candidate.caCertificateId && candidate.caCertificateId === prior.ca_certificate_id))
-          invalid();
-      }
-      if (action === 'hyperdrive-preview') {
-        return setupResult('Preview only (no resources changed): ' + preview.id + ' · ' +
-          preview.dialect + ' · ' + preview.host + ':' + preview.port + '/' + preview.database +
-          ' · strict ' + preview.tls + ' · caching disabled · CA ' + preview.caSource +
-          (replaces ? '. This is an independent CA replacement; the existing connection and its CA remain unchanged' : '') +
-          '. Return to /setup and separately confirm Prepare with your credentials.');
-      }
-      if (form.getAll('confirm_prepare').length !== 1 || form.get('confirm_prepare') !== '1') invalid();
-      await verifyGithubPrCapability(env, requestFetch);
-      const prepared = await createHyperdrivePreparation(env.DB, env, candidate);
-      await claimHyperdriveDispatch(env.DB, prepared.operationId);
-      let runId: number | undefined;
-      try {
-        const receipt = await dispatchHyperdrivePrepare(env, prepared.operationId, requestFetch);
-        runId = receipt.runId;
-      } catch (error) {
-        // The upstream may have accepted an operation before the HTTP failure.
-        // Preserve its unique D1 identity; never auto-retry a possible Cloudflare mutation.
-        await recordHyperdriveDispatch(env.DB, prepared.operationId);
-        throw error;
-      }
-      await recordHyperdriveDispatch(env.DB, prepared.operationId, runId);
-      return setupResult('Preparation request accepted. Operation ID: ' + prepared.operationId +
-        (runId ? '. GitHub Run ID: ' + runId : '. GitHub run receipt unknown; reconcile before retry.') +
-        '. This is not a Hyperdrive configuration or deployment confirmation.');
-    }
     const id = required(form, 'id');
     if (action === 'hyperdrive-credentials') {
       if (required(form, 'confirm_id') !== id || required(form, 'confirm_credentials') !== '1') invalid();
@@ -299,19 +334,47 @@ export async function handleSetup(
       const transport = required(form, 'transport');
       if (transport !== 'direct' && transport !== 'hyperdrive') invalid();
       requireAvailableMode(transport, dialect);
-      if (transport === 'hyperdrive') {
-        // An existing externally prepared config may be registered disabled.
-        // No SQL starts until the separately protected Owner activation verifies
-        // the reviewed binding, config identity, strict TLS and live Worker health.
-        await createRegistryConnection(env.DB, {
-          id, dialect, transport, configId: required(form, 'config_id'), bindingName: required(form, 'binding_name')
-        });
-        return setupResult('Hyperdrive reference saved disabled. Publish and verify its dedicated binding and strict TLS before enabling.');
+      if (transport === 'hyperdrive' && form.has('input_mode')) {
+        const entry = normalizeConnectionInput(form, dialect, transport);
+        const candidate: HyperdriveCandidate = {
+          id, dialect, host: entry.host, port: String(entry.port), database: entry.database,
+          user: entry.user, password: entry.password,
+          caPem: form.get('ca_pem') || undefined,
+          caCertificateId: form.get('ca_certificate_id') || undefined,
+          caReplaces: form.get('ca_replaces') || undefined
+        };
+        const replaces = form.getAll('replacement_for');
+        if (replaces.length > 1 || (replaces[0] && (candidate.caReplaces || candidate.caCertificateId))) invalid();
+        if (replaces[0]) {
+          const priorCa = await replacementCaFromSource(env, replaces[0], candidate);
+          if (!candidate.caPem) candidate.caCertificateId = priorCa;
+        } else if (!candidate.caReplaces && !candidate.caPem && !candidate.caCertificateId) {
+          candidate.caCertificateId = await findRecordedCa(env, dialect, entry.host, entry.port);
+        }
+        const preview = previewHyperdriveCreation(candidate);
+        await requireCaReplacementIdentity(env, candidate, preview);
+        // One Save authorizes unbound preparation only; a source/Binding release
+        // still requires the reviewed, explicit final confirmation.
+        await verifyGithubPrCapability(env, requestFetch);
+        const prepared = await createHyperdrivePreparation(env.DB, env, candidate);
+        await claimHyperdriveDispatch(env.DB, prepared.operationId);
+        let runId: number | undefined;
+        try { runId = (await dispatchHyperdrivePrepare(env, prepared.operationId, requestFetch)).runId; }
+        catch (error) {
+          await recordHyperdriveDispatch(env.DB, prepared.operationId);
+          throw error;
+        }
+        await recordHyperdriveDispatch(env.DB, prepared.operationId, runId);
+        return setupResult('Hyperdrive preparation accepted. Operation ID: ' + prepared.operationId +
+          (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
+          '. No connection is active until reviewed release and independent validation.');
       }
+      if (transport === 'hyperdrive') invalid(); // Manual Config ID/Binding registration is retired.
       if (transport !== 'direct' || formCa(form)) invalid();
       if (form.get('plaintext_ack') !== '1')
         throw new PublicError('INVALID_INPUT', 'Direct plaintext acceptance is required.');
-      const url = required(form, 'url');
+      const url = form.has('input_mode')
+        ? normalizeConnectionInput(form, dialect, transport).url : required(form, 'url');
       const parsed = await validatePublicEndpoint(url, id);
       if (parsed.dialect !== dialect) invalid();
       let healthy = false;
@@ -355,15 +418,11 @@ export async function handleSetup(
       return setupResult('Connection disabled for new operations.');
     }
     if (action === 'delete') {
-      if (row.transport === 'hyperdrive') {
-        // Only an untouched, never-activated disabled reference (revision 1) may
-        // be discarded by its Owner. No origin/CA/Binding is modified. Any
-        // previously activated/updated Hyperdrive still requires protected
-        // unbinding and retirement proof, and CAS prevents a concurrent enable.
-        if (row.status !== 'disabled' || row.revision !== 1) invalid();
-      }
+      // Logical deletion requires Disabled + revision CAS and is guarded by
+      // durable in-flight / unresolved-operation SQL triggers. Historical
+      // Cloudflare bindings, configs and CA MUST NOT be deleted here.
       await deleteRegistryConnection(env.DB, id, version, required(form, 'confirm_id'));
-      return setupResult('Disabled connection record retired. No upstream database was altered.');
+      return setupResult('Logical connection retired. Its ID cannot be reused. The Cloudflare Hyperdrive configuration, Binding and CA remain intact for separately verified cleanup. No database data was altered.');
     }
     if (action === 'enable') {
       requireAvailableMode(row.transport, row.dialect);
@@ -374,7 +433,6 @@ export async function handleSetup(
         throw new PublicError('CONFIGURATION_UNAVAILABLE',
           'Hyperdrive activation requires protected Cloudflare readback and live health verification.');
       }
-      if (form.get('plaintext_ack') !== '1') invalid();
       const config = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
       await testCandidate(env, id, config.url, row.dialect);
@@ -387,12 +445,11 @@ export async function handleSetup(
         'Hyperdrive credential isolation could not be verified.');
       const mode = required(form, 'credential_mode');
       if (mode !== 'keep' && mode !== 'replace') invalid();
-      // Any sensitive Direct update is a new explicit acceptance of plaintext risk.
-      if (mode === 'replace' && form.get('plaintext_ack') !== '1') invalid();
       if (formCa(form)) invalid();
       const previous = await openConnectionConfig(env, id, row.dialect,
         { keyId: row.key_id, ciphertext: row.ciphertext });
-      const url = mode === 'keep' ? previous.url : required(form, 'url');
+      const url = mode === 'keep' ? previous.url : form.has('input_mode')
+        ? normalizeConnectionInput(form, row.dialect, 'direct').url : required(form, 'url');
       if (mode === 'replace') {
         const current = parseDirectDatabaseUrl(previous.url, id);
         const next = parseDirectDatabaseUrl(url, id);

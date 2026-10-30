@@ -170,16 +170,9 @@ export async function verifyGithubPrCapability(
   if (response.status !== 200) {
     throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
   }
-  let enabled: unknown;
-  try {
-    enabled = ((await response.json()) as {can_approve_pull_request_reviews?: unknown})
-      .can_approve_pull_request_reviews;
-  } catch {
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub PR permissions could not be verified.');
-  }
-  if (enabled !== true) {
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub Actions PR creation is disabled.');
-  }
+  // can_approve_pull_request_reviews only controls GitHub Actions review approval.
+  // It cannot establish or deny PR creation. The actual PR write and repository
+  // rules remain protected by the Runner and reviewed release path.
   await verifyGithubRequiredChecks(env, request);
 }
 

@@ -28,7 +28,7 @@ function fixture(fault) {
   if(fault==='expired')db.exec('UPDATE hyperdrive_operations SET expires_at=1');
   if(fault==='unknown')db.exec("UPDATE hyperdrive_operations SET phase='unknown'");
   if(fault==='release-run')db.exec('UPDATE hyperdrive_operations SET release_run_id=100');
-  if(fault==='retired')db.exec("INSERT INTO retired_connection_ids VALUES ('isolated',1)");
+  if(fault==='retired')db.exec("INSERT INTO retired_connection_ids(id,retired_at) VALUES ('isolated',1)");
   // Simulate preexisting identity from outside the operation, without letting the fixture's
   // reservation trigger prevent injection of a conflicting legacy row.
   if(fault==='active-direct'||fault==='d1-conflict') {

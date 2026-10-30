@@ -199,6 +199,21 @@ test('missing required-check evidence blocks even when Actions PR creation is en
   }
 });
 
+test('PR approval setting false does not prevent read-only PR creation preflight', async () => {
+  const seen: string[] = [];
+  const request: typeof fetch = async (url) => {
+    seen.push(String(url));
+    if (String(url).endsWith('/actions/permissions/workflow'))
+      return Response.json({can_approve_pull_request_reviews: false});
+    if (String(url).endsWith('/branches/main/protection'))
+      return new Response(null, {status: 404});
+    if (String(url).includes('/rulesets?')) return Response.json([]);
+    throw Error('Unexpected GitHub request');
+  };
+  await verifyGithubPrCapability(env(), request);
+  assert.equal(seen.length, 3);
+});
+
 test('unprotected main requires both explicit classic-protection 404 and an empty inherited ruleset inventory', async () => {
   const calls: string[] = [];
   const request: typeof fetch = async (url, init) => {

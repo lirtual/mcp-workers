@@ -123,3 +123,28 @@ WHEN OLD.in_flight_count > 0 AND
  (NEW.config_id IS NOT OLD.config_id OR NEW.binding_name IS NOT OLD.binding_name OR
   NEW.transport IS NOT OLD.transport)
 BEGIN SELECT RAISE(ABORT, 'hyperdrive execution still in flight'); END;
+
+-- Until a separately reviewed, version-aware, rollback-safe cutover exists,
+-- both Hyperdrive resource references remain immutable even with zero SQL
+-- in flight. Otherwise an ad-hoc D1 UPDATE could silently rebind an older
+-- Worker version to a config it has never published or verified.
+CREATE TRIGGER database_connection_blocks_unreviewed_rebind
+BEFORE UPDATE OF config_id,binding_name ON database_connections
+WHEN OLD.transport='hyperdrive' AND
+  (NEW.config_id IS NOT OLD.config_id OR NEW.binding_name IS NOT OLD.binding_name)
+BEGIN SELECT RAISE(ABORT, 'unreviewed Hyperdrive rebind'); END;
+
+-- Logical deletion is independent of physical Cloudflare unbinding or CA cleanup.
+-- Retain the immutable resource identity in the existing retired-ID ledger so
+-- cleanup provenance survives D1 row removal without creating a new table.
+ALTER TABLE retired_connection_ids ADD COLUMN upstream_config_id TEXT;
+ALTER TABLE retired_connection_ids ADD COLUMN upstream_binding_name TEXT;
+DROP TRIGGER database_connections_retire_id;
+CREATE TRIGGER database_connections_retire_id
+AFTER DELETE ON database_connections
+BEGIN
+  INSERT INTO retired_connection_ids
+    (id,retired_at,upstream_config_id,upstream_binding_name)
+    VALUES (OLD.id,CAST(strftime('%s','now') AS INTEGER),
+      OLD.config_id,OLD.binding_name);
+END;

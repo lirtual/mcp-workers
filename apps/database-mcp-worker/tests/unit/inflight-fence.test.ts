@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {afterEach,describe,expect,it} from 'vitest';
 import type {Env} from '../../src/types.js';
 import {withHyperdriveExecutionFence,withDisabledHyperdriveProbeFence} from '../../src/registry/inflight.js';
+import {ConfirmedReadFailure} from '../../src/db/completion.js';
 
 const opened:DatabaseSync[]=[];
 afterEach(()=>{for(const db of opened.splice(0))db.close();});
@@ -36,7 +37,7 @@ describe('durable Hyperdrive request admission fence',()=>{
   await new Promise(r=>setImmediate(r));
   expect(f.count('hd')).toBe(1);
   expect(()=>f.sql.prepare("DELETE FROM database_connections WHERE id='hd'").run()).toThrow(/execution still in flight/);
-  expect(()=>f.sql.prepare("UPDATE database_connections SET config_id='other' WHERE id='hd'").run()).toThrow(/execution still in flight/);
+  expect(()=>f.sql.prepare("UPDATE database_connections SET config_id='other' WHERE id='hd'").run()).toThrow(/unreviewed Hyperdrive rebind/);
   f.sql.prepare("UPDATE database_connections SET status='disabled',revision=revision+1 WHERE id='hd'").run();
   await expect(withHyperdriveExecutionFence(f.env,'hd',async()=> 'bad')).rejects.toMatchObject({code:'CONNECTION_DISABLED'});
   expect(f.count('hd')).toBe(1);
@@ -46,6 +47,14 @@ describe('durable Hyperdrive request admission fence',()=>{
   const f=fixture();f.insert('plain','direct');
   expect(await withHyperdriveExecutionFence(f.env,undefined,async()=>42)).toBe(42);
   expect(f.count('plain')).toBe(0);
+ });
+ it('releases a failed read only when the backend has confirmed a completed rollback',async()=>{
+  const f=fixture();f.insert('hd','hyperdrive');
+  const serverError=Object.assign(new Error('relation does not exist'),{code:'42P01'});
+  await expect(withHyperdriveExecutionFence(f.env,'hd',async()=>{
+    throw new ConfirmedReadFailure(serverError);
+  })).rejects.toMatchObject({code:'DATABASE_ERROR'});
+  expect(f.count('hd')).toBe(0);
  });
  it('retains uncertain execution count rather than claiming drain after failure or timeout',async()=>{
   const f=fixture();f.insert('hd','hyperdrive');

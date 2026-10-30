@@ -89,8 +89,13 @@ test('Spec #476 Wrangler local D1 migration and admission/disable/retire safety'
     rejectsSql(root,"UPDATE database_connections SET binding_name='HYPERDRIVE_CHANGED' WHERE id='ephemeral'");
     execute(root,"UPDATE database_connections SET in_flight_count=in_flight_count-1 WHERE id='ephemeral' AND in_flight_count>0");
     assert.equal(execute(root,"SELECT in_flight_count FROM database_connections WHERE id='ephemeral'")[0].in_flight_count,0);
+    // A drained and disabled connection still cannot bypass reviewed release
+    // by directly updating its Cloudflare binding or config reference.
+    rejectsSql(root,"UPDATE database_connections SET binding_name='HYPERDRIVE_CHANGED' WHERE id='ephemeral'");
+    rejectsSql(root,"UPDATE database_connections SET config_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' WHERE id='ephemeral'");
     execute(root,"DELETE FROM database_connections WHERE id='ephemeral' AND revision=4 AND status='disabled' AND in_flight_count=0");
-    assert.equal(execute(root,"SELECT id FROM retired_connection_ids WHERE id='ephemeral'").length,1);
+    assert.deepEqual(execute(root,"SELECT id,upstream_config_id,upstream_binding_name FROM retired_connection_ids WHERE id='ephemeral'"),
+      [{id:'ephemeral',upstream_config_id:'12345678-aaaa-4abc-8000-aaaaaaaaaaaa',upstream_binding_name:'HYPERDRIVE_TEST'}]);
     rejectsSql(root,`INSERT INTO database_connections
       (id,dialect,transport,status,config_id,binding_name,revision,created_at,updated_at)
       VALUES ('ephemeral','mysql','hyperdrive','disabled','12345678-aaaa-4abc-8000-aaaaaaaaaaaa','HYPERDRIVE_TEST',1,1,1)`);

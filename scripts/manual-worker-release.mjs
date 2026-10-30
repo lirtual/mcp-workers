@@ -74,6 +74,10 @@ export function databaseD1ReadinessSql(expectedIds) {
     "  (SELECT COUNT(*) FROM pragma_table_info('database_connections') WHERE name='in_flight_count' AND type='INTEGER' AND \"notnull\"=1) AS inflight_column,",
     "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_inflight_delete') AS inflight_delete_trigger,",
     "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_inflight_rebind') AS inflight_rebind_trigger,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_unreviewed_rebind') AS reviewed_rebind_trigger,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('retired_connection_ids') WHERE name='upstream_config_id') AS retired_config_column,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('retired_connection_ids') WHERE name='upstream_binding_name') AS retired_binding_column,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connections_retire_id' AND sql LIKE '%upstream_config_id%' AND sql LIKE '%upstream_binding_name%') AS retired_resource_trigger,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ") AND status='active') AS active_count,",
     "  (SELECT COUNT(*) FROM retired_connection_ids) AS retired_count,",
@@ -94,11 +98,12 @@ export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cuto
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
   const row = response[0].results[0];
-  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count", "reserved_count", "resource_claim_column", "apply_receipt_column", "inflight_column", "inflight_delete_trigger", "inflight_rebind_trigger"])
+  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count", "reserved_count", "resource_claim_column", "apply_receipt_column", "inflight_column", "inflight_delete_trigger", "inflight_rebind_trigger", "reviewed_rebind_trigger", "retired_config_column", "retired_binding_column", "retired_resource_trigger"])
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
   invariant(row.migration_count === 3 && row.resource_claim_column === 1 && row.apply_receipt_column === 1 &&
-    row.inflight_column === 1 && row.inflight_delete_trigger === 1 && row.inflight_rebind_trigger === 1,
+    row.inflight_column === 1 && row.inflight_delete_trigger === 1 && row.inflight_rebind_trigger === 1 && row.reviewed_rebind_trigger === 1 &&
+    row.retired_config_column === 1 && row.retired_binding_column === 1 && row.retired_resource_trigger === 1,
     "Database D1 additive lifecycle migration not applied (including in-flight fence)");
   // The separate, always-on encrypted Direct prepublication gate enforces
   // exact active revision-2 legacy records while the old Worker is deployed.

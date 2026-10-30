@@ -28,7 +28,7 @@ test('permission unavailable blocks before any Cloudflare resource write',async(
     request:async(url)=>{
       requests++;
       assert.match(String(url),/actions\/permissions\/workflow$/);
-      return Response.json({can_approve_pull_request_reviews:false});
+      return new Response(null, {status: 403});
     }}),/preparation blocked/i);
   assert.equal(requests,1);
 });
@@ -127,14 +127,14 @@ test('PR source verification rejects extra files, different parent, base advance
   }
 });
 
-test('preparation entrypoint performs zero Cloudflare calls when PR creation is disabled',async()=>{
+test('preparation entrypoint performs zero Cloudflare calls when preflight is unreadable',async()=>{
   const {prepareDatabaseHyperdrive}=await import('./prepare-database-hyperdrive-476.mjs');
   let calls=0;
   await assert.rejects(prepareDatabaseHyperdrive(env,async(url)=>{
     calls++;
     assert.match(String(url),/^https:\/\/api.github.com\//);
-    return Response.json({can_approve_pull_request_reviews:false});
-  }),error=>error.reason==='github_pr_creation_disabled');
+    return new Response(null,{status:403});
+  }),error=>error.reason==='github_pr_permission_unavailable');
   assert.equal(calls,1);
 });
 

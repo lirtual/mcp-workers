@@ -11,6 +11,7 @@ import type {
   SchemaInspection
 } from '../types.js';
 import { withTimeout } from './timeout.js';
+import { ConfirmedReadFailure } from './completion.js';
 
 async function withClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
   const client = createPostgresClient(connection);
@@ -20,6 +21,7 @@ async function withClient<T>(connection: EffectiveConnection, operation: (client
     });
     return await operation(client);
   } catch (error) {
+    if (error instanceof ConfirmedReadFailure) throw error;
     throw mapDatabaseError(error);
   } finally {
     await client.end().catch(() => undefined);
@@ -36,14 +38,23 @@ async function withReadOnlyClient<T>(connection: EffectiveConnection, operation:
     await withTimeout(client.query('BEGIN READ ONLY'), connection.limits.queryTimeoutMs, () => {
       void client.end().catch(() => undefined);
     });
-    try {
-      return await operation(client);
-    } finally {
-      // ROLLBACK releases a successful read-only transaction just as COMMIT does.
-      await withTimeout(client.query('ROLLBACK'), connection.limits.queryTimeoutMs, () => {
-        void client.end().catch(() => undefined);
-      }).catch(() => undefined);
+    const rollback = () => withTimeout(client.query('ROLLBACK'), connection.limits.queryTimeoutMs, () => {
+      void client.end().catch(() => undefined);
+    });
+    let result: T;
+    try { result = await operation(client); }
+    catch(error){
+      // Only the same pinned backend acknowledging ROLLBACK proves a failed
+      // read has ended. A timed-out or disconnected session remains unknown.
+      let rolledBack = false;
+      try { await rollback(); rolledBack = true; } catch { /* Preserve unknown. */ }
+      if(rolledBack) throw new ConfirmedReadFailure(error);
+      throw error;
     }
+    // Do not report an apparently successful read as fully drained when
+    // its transaction cannot be conclusively released.
+    await rollback();
+    return result;
   });
 }
 

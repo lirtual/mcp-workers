@@ -61,6 +61,39 @@ describe('actual D1 registry SQL', () => {
     await deleteRegistryConnection(f.db, 'primary', 4, 'primary');
     expect(await listRegistryConnections(f.db)).toEqual([]);
   });
+  it('retains a disabled Hyperdrive cleanup pointer and blocks unresolved SQL or operations', async () => {
+    const f=fixture(); all.push(f.sqlite);
+    const configId='11223344-5566-7788-99aa-bbccddeeff00';
+    await createRegistryConnection(f.db,{id:'hd',dialect:'postgres',transport:'hyperdrive',
+      configId,bindingName:'HYPERDRIVE_OLD'});
+    f.sqlite.prepare("UPDATE database_connections SET in_flight_count=1 WHERE id='hd'").run();
+    await expect(deleteRegistryConnection(f.db,'hd',1,'hd')).rejects.toMatchObject({code:'CONFIGURATION_UNAVAILABLE'});
+    f.sqlite.prepare("UPDATE database_connections SET in_flight_count=0 WHERE id='hd'").run();
+    f.sqlite.prepare(`INSERT INTO hyperdrive_operations
+      (operation_id,logical_id,action,expected_revision,phase,created_at,updated_at,expires_at)
+      VALUES (?,'hd','rotate_credentials',1,'unknown',1,1,9999999999999)`).run(crypto.randomUUID());
+    await expect(deleteRegistryConnection(f.db,'hd',1,'hd')).rejects.toMatchObject({code:'REVISION_CONFLICT'});
+    f.sqlite.prepare("UPDATE hyperdrive_operations SET phase='failed' WHERE logical_id='hd'").run();
+    await deleteRegistryConnection(f.db,'hd',1,'hd');
+    expect(f.sqlite.prepare("SELECT id,upstream_config_id,upstream_binding_name FROM retired_connection_ids WHERE id='hd'").get())
+      .toEqual({id:'hd',upstream_config_id:configId,upstream_binding_name:'HYPERDRIVE_OLD'});
+    await expect(createRegistryConnection(f.db,{id:'hd',dialect:'postgres',transport:'hyperdrive',
+      configId,bindingName:'HYPERDRIVE_OLD'})).rejects.toMatchObject({code:'REVISION_CONFLICT'});
+  });
+  it('refuses silent Hyperdrive rebind even after disable and confirmed in-flight drain',async()=>{
+    const f=fixture();all.push(f.sqlite);
+    await createRegistryConnection(f.db,{id:'stable',dialect:'mysql',transport:'hyperdrive',
+      configId:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',bindingName:'HYPERDRIVE_OLD'});
+    for(const status of ['disabled','active']){
+      f.sqlite.prepare('UPDATE database_connections SET status=? WHERE id=?').run(status,'stable');
+      expect(()=>f.sqlite.prepare("UPDATE database_connections SET binding_name='HYPERDRIVE_NEW' WHERE id='stable'").run())
+        .toThrow(/unreviewed Hyperdrive rebind/);
+      expect(()=>f.sqlite.prepare("UPDATE database_connections SET config_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' WHERE id='stable'").run())
+        .toThrow(/unreviewed Hyperdrive rebind/);
+    }
+    expect(f.sqlite.prepare("SELECT config_id,binding_name FROM database_connections WHERE id='stable'").get())
+      .toEqual({config_id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',binding_name:'HYPERDRIVE_OLD'});
+  });
   it('rejects simultaneous updates on the same revision; does not clobber newer ciphertext', async () => {
     const f = fixture(); all.push(f.sqlite);
     await createRegistryConnection(f.db, input('primary'));
@@ -108,23 +141,28 @@ describe('fresh admission of a validated connection', () => {
   });
 });
 
-describe('three-mode Owner and MCP admission enforcement', () => {
-  it('permits only MySQL Direct plus both Hyperdrive dialects', () => {
+describe('four-mode Owner and MCP admission enforcement', () => {
+  it('permits MySQL and PostgreSQL over Direct or Hyperdrive', () => {
     expect(isAvailableMode('direct', 'mysql')).toBe(true);
     expect(isAvailableMode('hyperdrive', 'mysql')).toBe(true);
     expect(isAvailableMode('hyperdrive', 'postgres')).toBe(true);
-    expect(isAvailableMode('direct', 'postgres')).toBe(false);
+    expect(isAvailableMode('direct', 'postgres')).toBe(true);
   });
-  it('rejects an already-active PostgreSQL Direct row before credential decryption', async () => {
+  it('admits encrypted PostgreSQL Direct without relaxing Hyperdrive binding checks', async () => {
     const f = fixture(); all.push(f.sqlite);
-    const env = { DB: f.db } as Parameters<typeof admitConnection>[0];
-    await createRegistryConnection(f.db, input('pg_active'));
+    const env = { DB: f.db, DATABASE_ENCRYPTION_KEY: btoa('q'.repeat(32)), DATABASE_KEY_ID: 'key1' } as Parameters<typeof admitConnection>[0];
+    const sealed = await sealConnectionConfig(env, 'pg_active', 'postgres',
+      { url: 'postgres://reader:pass@db.example.net/catalog' });
+    await createRegistryConnection(f.db, { id: 'pg_active', dialect:'postgres',
+      ciphertext: sealed.ciphertext, keyId: sealed.keyId });
     await setRegistryConnectionStatus(f.db, 'pg_active', 1, 'active');
-    await expect(admitConnection(env, 'pg_active'))
-      .rejects.toMatchObject({
-        code: 'CONFIGURATION_UNAVAILABLE',
-        message: 'This connection mode is not enabled for this release.'
+    const previous = globalThis.fetch;
+    globalThis.fetch = async () => Response.json({Status:0, Answer:[{type:1,data:'1.1.1.1'}]});
+    try {
+      expect(await admitConnection(env, 'pg_active')).toMatchObject({
+        dialect:'postgres', transport:'direct', host:'db.example.net', dialHost:'1.1.1.1'
       });
+    } finally { globalThis.fetch = previous; }
     await createRegistryConnection(f.db, { id: 'hyperdrive_active', dialect: 'mysql', transport: 'hyperdrive',
       configId: '11111111-2222-3333-4444-555555555555', bindingName: 'HYPERDRIVE_MYSQL' });
     await setRegistryConnectionStatus(f.db, 'hyperdrive_active', 1, 'active');

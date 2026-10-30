@@ -4,6 +4,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {createMcpHandler} from '@modelcontextprotocol/server';
 import {buildMcpServer} from '../../src/mcp.js';
+import {ConfirmedReadFailure} from '../../src/db/completion.js';
 import {queryRead,healthCheck,insertRows} from '../../src/db/index.js';
 import type {Env} from '../../src/types.js';
 
@@ -97,6 +98,18 @@ it('MCP health tool claims and releases while read tool failures retain unresolv
   }finally{await client.close()}
 });
 
+it('real MCP HTTP recovers a failed read only after backend-confirmed rollback',async()=>{
+  const f=fixture();const client=await clientFor(f.env);
+  try{
+    const rejection=Object.assign(new Error('missing table'),{code:'ER_NO_SUCH_TABLE'});
+    vi.mocked(queryRead).mockRejectedValueOnce(new ConfirmedReadFailure(rejection));
+    const failed=await client.callTool(query);
+    expect(failed.isError).toBe(true);
+    expect(JSON.stringify(failed)).toContain('DATABASE_ERROR');
+    expect(f.count()).toBe(0);
+  }finally{await client.close();}
+});
+
 it('implicit single connection and list_connections use the correct admission mode',async()=>{
   const f=fixture();const client=await clientFor(f.env);
   try{
@@ -129,5 +142,22 @@ it('structured MCP writes are also held until confirmed completion',async()=>{
     resolve({affectedRows:1});
     expect((await written).isError).not.toBe(true);
     expect(f.count()).toBe(0);
+  }finally{await client.close()}
+});
+
+it('invalid read SQL and parameters never acquire an in-flight claim or reach the database',async()=>{
+  const f=fixture();const client=await clientFor(f.env);
+  try {
+    for(const arguments_ of [
+      {connection:'synthetic_hd',sql:'UPDATE items SET id=1',params:[]},
+      {connection:'synthetic_hd',sql:'SELECT 1; DELETE FROM items',params:[]},
+      {connection:'synthetic_hd',sql:'SELECT SLEEP(3)',params:[]},
+      {connection:'synthetic_hd',sql:'SELECT 7',params:[{unsupported:'complex'}]}
+    ]) {
+      const failed=await client.callTool({name:'query_read',arguments:arguments_});
+      expect(failed.isError).toBe(true);
+      expect(f.count()).toBe(0);
+    }
+    expect(queryRead).not.toHaveBeenCalled();
   }finally{await client.close()}
 });

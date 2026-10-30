@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../src/types.js';
 import { PublicError } from '../../src/errors.js';
 import { openConnectionConfig } from '../../src/registry/crypto.js';
+import { createRegistryConnection } from '../../src/registry/store.js';
 const { fakeHealth } = vi.hoisted(() => ({ fakeHealth: vi.fn() }));
 vi.mock('../../src/db/index.js', () => ({ healthCheck: fakeHealth }));
 import { handleSetup } from '../../src/setup/handler.js';
@@ -51,7 +52,7 @@ async function auth() {
 }
 
 describe('Owner HTML → D1 real-SQL lifecycle', () => {
-  it('Owner can discard an unactivated disabled Hyperdrive reference, but never an activated one', async () => {
+  it('Owner retires a disabled Hyperdrive logical ID and retains upstream cleanup pointers', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
     const { jwt, certificates } = await auth();
     const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
@@ -65,14 +66,15 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     }), env, certificates);
     const old = { id: 'mistyped_pg', dialect: 'mysql', transport: 'hyperdrive',
       config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' };
-    expect((await post('add', old)).status).toBe(200);
+    expect((await post('add', old)).status).toBe(422);
+    await createRegistryConnection(env.DB!, {id:old.id,dialect:'mysql',transport:'hyperdrive',configId:old.config_id,bindingName:old.binding_name});
     expect(sqlite.prepare('SELECT status,revision FROM database_connections WHERE id=?').get(old.id))
       .toMatchObject({ status: 'disabled', revision: 1 });
     const listing = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const listText = await listing.text();
-    expect(listText).toContain('Choose database dialect');
-    expect(listText).toContain('name="dialect" required');
-    expect(listText).toContain('The immutable Connection ID is permanently retired');
+    expect(listText).toContain('name="dialect"');
+    expect(listText).toContain('name="dialect"');
+    expect(listText).toContain('Its immutable ID is never reusable');
     const wrongConfirm = await post('delete', { id: old.id, revision: '1', confirm_id: 'wrong' });
     expect(wrongConfirm.status).toBe(422);
     expect(sqlite.prepare('SELECT id FROM database_connections WHERE id=?').get(old.id)).toBeDefined();
@@ -81,17 +83,31 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(sqlite.prepare('SELECT id FROM database_connections WHERE id=?').get(old.id)).toBeUndefined();
     expect(sqlite.prepare('SELECT id FROM retired_connection_ids WHERE id=?').get(old.id))
       .toEqual({ id: old.id });
+    const afterDelete=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,certificates);
+    const retiredPage=await afterDelete.text();
+    expect(retiredPage).toContain('Cloudflare cleanup unverified');
+    expect(retiredPage).toContain(old.id);
+    expect(retiredPage).not.toContain(old.config_id);
+    expect(retiredPage).not.toContain(old.binding_name);
     // Config and Binding can be referenced by a NEW logical ID, never by the retired ID.
-    expect((await post('add', old)).status).toBe(409);
-    expect((await post('add', { ...old, id: 'correct_pg', dialect: 'postgres' })).status).toBe(200);
+    expect((await post('add', old)).status).toBe(422); // Manual cloud reference registration is no longer exposed.
+    await createRegistryConnection(env.DB!, {id:'correct_pg',dialect:'postgres',transport:'hyperdrive',configId:old.config_id,bindingName:old.binding_name});
     expect(sqlite.prepare('SELECT dialect,status,revision FROM database_connections WHERE id=?').get('correct_pg'))
       .toMatchObject({ dialect: 'postgres', status: 'disabled', revision: 1 });
-    // No enabled or revision-bumped Hyperdrive row may use this shortcut,
-    // even if the row was disabled again later.
+    // A previous activation is not a reason to retain a logically disabled ID
+    // once no unresolved in-flight work exists. Upstream config/CA stay untouched.
     sqlite.prepare("UPDATE database_connections SET status='disabled',revision=3 WHERE id='correct_pg'").run();
-    expect((await post('delete', { id: 'correct_pg', revision: '3', confirm_id: 'correct_pg' })).status).toBe(422);
+    sqlite.prepare("UPDATE database_connections SET in_flight_count=1 WHERE id='correct_pg'").run();
+    const blockedPage = await handleSetup(new Request(pageUrl, {headers:{'cf-access-jwt-assertion':jwt}}),env,certificates);
+    expect(await blockedPage.text()).toContain('Blocked: 1 unresolved execution(s)');
+    expect((await post('delete', {id:'correct_pg',revision:'3',confirm_id:'correct_pg'})).status).toBe(503);
+    sqlite.prepare("UPDATE database_connections SET in_flight_count=0 WHERE id='correct_pg'").run();
+    expect((await post('delete', { id: 'correct_pg', revision: '3', confirm_id: 'correct_pg' })).status).toBe(200);
     expect(sqlite.prepare('SELECT id FROM database_connections WHERE id=?').get('correct_pg'))
-      .toBeDefined();
+      .toBeUndefined();
+    expect(sqlite.prepare('SELECT id,upstream_config_id,upstream_binding_name FROM retired_connection_ids WHERE id=?').get('correct_pg'))
+      .toMatchObject({id:'correct_pg', upstream_config_id:old.config_id, upstream_binding_name:old.binding_name});
+    expect((await post('delete', {id:'correct_pg',revision:'3',confirm_id:'correct_pg'})).status).toBe(404);
   });
   it('preserves active configuration after a failed edit, and requires disable to delete', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
@@ -101,8 +117,8 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     const page = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     expect(page.status).toBe(200);
     const markup = await page.text();
-    expect(markup).toContain('CA PEM<textarea name="ca_pem"');
-    expect(markup).toContain('Account: SSL and Certificates Write');
+    expect(markup).toContain('name="ca_pem"');
+    expect(markup).toContain('Hyperdrive strictly verifies certificates');
     const csrf = markup.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
     expect(csrf).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
@@ -157,6 +173,10 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(row).toMatchObject({ status: 'active', revision: 2, ciphertext });
     expect((await post('delete', { id: 'main', revision: '2', confirm_id: 'main' })).status).toBe(422);
     expect((await post('disable', { id: 'main', revision: '2' })).status).toBe(200);
+    const disabledPage=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,certificates);
+    const enableForm=(await disabledPage.text()).split('action="/setup/enable"')[1]?.split('</form>')[0]??'';
+    expect(enableForm).toContain('name="revision"');
+    expect(enableForm).not.toContain('name="plaintext_ack"');
     const disabledEdit = await post('edit', { id: 'main', revision: '3', credential_mode: 'replace',
       plaintext_ack: '1', allow_disabled: '1', url: 'mysql://reader:pass@new.example.net/catalog' });
     expect(disabledEdit.status).toBe(422);
@@ -166,14 +186,15 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     // A disabled placeholder with unreachable credentials can be repaired without
     // making it active. An active connection must never accept failed edits.
     fakeHealth.mockRejectedValueOnce(new PublicError('CONNECTION_UNAVAILABLE', 'Unreachable fixture'));
-    expect((await post('edit', { id: 'main', revision: '3', credential_mode: 'replace', plaintext_ack: '1',
+    expect((await post('edit', { id: 'main', revision: '3', credential_mode: 'replace',
       url: 'mysql://reader:replacement@db.example.net/catalog', allow_disabled: '1' })).status).toBe(200);
     row = sqlite.prepare('SELECT status,revision,ciphertext FROM database_connections WHERE id=?').get('main') as { status: string; revision: number; ciphertext: string };
     expect(row.status).toBe('disabled');
     expect(row.revision).toBe(4);
     expect((await openConnectionConfig(env, 'main', 'mysql', {keyId: 'key-one', ciphertext: row.ciphertext})).ca).toBeUndefined();
-    expect((await post('enable', { id: 'main', revision: '4' })).status).toBe(422);
-    expect((await post('enable', { id: 'main', revision: '4', plaintext_ack: '1' })).status).toBe(200);
+    // The plaintext risk was explicitly accepted once at Add; subsequent CRUD
+    // does not demand another checkbox for the same immutable transport.
+    expect((await post('enable', { id: 'main', revision: '4' })).status).toBe(200);
     expect(fakeHealth.mock.lastCall?.[0]).not.toHaveProperty('ca');
     expect((await post('disable', { id: 'main', revision: '5' })).status).toBe(200);
     expect((await post('edit', { id: 'main', revision: '6', credential_mode: 'keep' })).status).toBe(200);
@@ -187,8 +208,8 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     // Existing Cloudflare Hyperdrive references can be staged as disabled only.
     // Actual SQL activation still requires the reviewed protected workflow.
     const checkedBeforeCloud = fakeHealth.mock.calls.length;
-    expect((await post('add', { id: 'cloud_ref', dialect: 'mysql', transport: 'hyperdrive',
-      config_id: '11111111-2222-3333-4444-555555555555', binding_name: 'HYPERDRIVE_TEST' })).status).toBe(200);
+    await createRegistryConnection(env.DB!, {id:'cloud_ref',dialect:'mysql',transport:'hyperdrive',
+      configId:'11111111-2222-3333-4444-555555555555',bindingName:'HYPERDRIVE_TEST'});
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
     expect(sqlite.prepare("SELECT dialect,status,revision FROM database_connections WHERE id='cloud_ref'").get())
       .toMatchObject({dialect:'mysql',status:'disabled',revision:1});
@@ -201,88 +222,64 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(unsafeEdit.status).toBe(503);
     expect(await unsafeEdit.text()).toContain('hyperdrive_isolation_unknown');
     expect(fakeHealth.mock.calls.length).toBe(checkedBeforeCloud);
-    // PostgreSQL Direct is excluded from the approved three modes, even with plaintext acknowledgment.
+    // PostgreSQL Direct shares the same guarded, explicitly plaintext Owner flow as MySQL.
     const healthBeforeUnsupportedMode = fakeHealth.mock.calls.length;
     expect((await post('add', { id: 'pg_direct', dialect: 'postgres', transport: 'direct',
-      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(503);
-    expect(sqlite.prepare("SELECT id FROM database_connections WHERE id='pg_direct'").get()).toBeUndefined();
-    expect(fakeHealth.mock.calls.length).toBe(healthBeforeUnsupportedMode);
+      plaintext_ack: '1', url: 'postgres://reader:pass@db.example.net/catalog' })).status).toBe(200);
+    expect(sqlite.prepare("SELECT status,dialect,transport FROM database_connections WHERE id='pg_direct'").get())
+      .toMatchObject({status:'active', dialect:'postgres',transport:'direct'});
+    expect(fakeHealth.mock.calls.length).toBe(healthBeforeUnsupportedMode + 1);
+    // The unified Fields input is equivalent to URL submission.
+    expect((await post('add', { id: 'pg_fields', dialect: 'postgres', transport: 'direct',
+      input_mode: 'fields', host: 'db.example.net', database: 'catalog', username: 'reader',
+      password: 'pass', plaintext_ack: '1' })).status).toBe(200);
+    expect(sqlite.prepare("SELECT status,dialect FROM database_connections WHERE id='pg_fields'").get())
+      .toMatchObject({ status:'active', dialect:'postgres' });
+    expect((await post('edit', {id:'pg_fields',revision:'2',credential_mode:'replace',input_mode:'fields',
+      host:'db.example.net',database:'catalog',username:'new_reader',password:'new_pass',plaintext_ack:'1'})).status).toBe(200);
+
     // PostgreSQL Hyperdrive reference registration is disabled by default
     // and cannot bypass protected activation.
-    expect((await post('add', { id: 'pg_proxy', dialect: 'postgres', transport: 'hyperdrive',
-      config_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', binding_name: 'HYPERDRIVE_PG' })).status).toBe(200);
+    await createRegistryConnection(env.DB!, {id:'pg_proxy',dialect:'postgres',transport:'hyperdrive',
+      configId:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',bindingName:'HYPERDRIVE_PG'});
     expect(sqlite.prepare("SELECT status,transport,dialect FROM database_connections WHERE id='pg_proxy'").get())
       .toMatchObject({ status: 'disabled', transport: 'hyperdrive', dialect: 'postgres' });
     const initialPage = await handleSetup(new Request(pageUrl, { headers: { 'cf-access-jwt-assertion': jwt } }), env, certificates);
     const initialPageHtml = await initialPage.text();
-    expect(initialPageHtml.split('<fieldset><legend>Hyperdrive lifecycle</legend>')[0]).not.toContain('<option value="postgres">');
-    expect(initialPageHtml).toContain('<input type="hidden" name="dialect" value="mysql">');
+    expect(initialPageHtml).toContain('Add connection');
+    expect(initialPageHtml).toContain('name="input_mode"');
+    expect(initialPageHtml).not.toContain('name="config_id"');
+    expect(initialPageHtml).not.toContain('Preview new Hyperdrive');
+
+    expect(initialPageHtml).toContain('<option value="postgres">');
+    expect(initialPageHtml).toContain('<select name="dialect">');
     expect(initialPageHtml).toContain('<option value="postgres">');
     expect(initialPageHtml).toContain('name="transport" value="direct"');
     expect(initialPageHtml).toContain('name="transport" value="hyperdrive"');
-    expect(initialPageHtml).toContain('Hyperdrive actions run in protected GitHub Actions');
+    expect(initialPageHtml).toContain('Hyperdrive operations require protected Binding/TLS/CA verification');
     expect(initialPageHtml).toContain('action="/setup/hyperdrive-action"');
-    expect(initialPageHtml).toContain('Request enable');
-    expect(initialPageHtml).toContain('Stage unbinding or verify retirement');
+    expect(initialPageHtml).toContain('<button type="submit">Enable</button>');
+    expect(initialPageHtml).toContain('Advanced resource cleanup');
     expect(initialPageHtml).not.toContain('name="ciphertext"');
     expect(initialPageHtml).not.toContain('reader:pass');
     vi.unstubAllGlobals();
   });
-  it('Owner Hyperdrive preview is read-only and Prepare requires distinct explicit confirmation', async () => {
-    const { sqlite, env } = fixture(); instances.push(sqlite);
-    const { jwt, certificates } = await auth();
-    const dispatches: string[] = [];
-    env.DATABASE_GITHUB_ACTIONS_TOKEN = 't'.repeat(40);
-    const requestFetch: typeof fetch = async (url, options) => {
-      if (String(url).endsWith('/branches/main/protection')) {
-        return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
-      }
-      if (String(url).endsWith('/actions/permissions/workflow')) {
-        return Response.json({can_approve_pull_request_reviews:true});
-      }
-      if (String(url).endsWith('/actions/workflows/release.yml/dispatches')) {
-        dispatches.push(String(options?.body ?? ''));
-        return new Response(null, {status: 204});
-      }
-      return certificates();
-    };
-    const page = await handleSetup(new Request(pageUrl, {
-      headers: { 'cf-access-jwt-assertion': jwt }
-    }), env, requestFetch);
-    expect(page.status).toBe(200);
-    const html = await page.text();
-    expect(html).toContain('action="/setup/hyperdrive-preview"');
-    expect(html).toContain('action="/setup/hyperdrive-prepare"');
-    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
-    const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
-    const submit = (action: string, params: Record<string,string>) => handleSetup(new Request(pageUrl + '/' + action, {
-      method:'POST', headers: { 'cf-access-jwt-assertion':jwt,
-        origin:'https://db-owner.example.net', cookie,
-        'content-type':'application/x-www-form-urlencoded' },
-      body:new URLSearchParams({csrf,...params})
-    }), env, requestFetch);
-    const fields = {id:'brand_new',dialect:'postgres',
-      origin_host:'pg.example.net',origin_port:'5432',origin_database:'app',
-      origin_user:'owner',origin_password:'highly-sensitive-secret',
-      ca_certificate_id:'11111111-2222-3333-4444-555555555555'};
-    const preview = await submit('hyperdrive-preview', fields);
-    expect(preview.status).toBe(200);
-    expect(await preview.text()).not.toContain(fields.origin_password);
-    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toMatchObject({n:0});
-    expect(dispatches).toHaveLength(0);
-    expect((await submit('hyperdrive-prepare',fields)).status).toBe(422);
-    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toMatchObject({n:0});
-    const result = await submit('hyperdrive-prepare',{...fields,confirm_prepare:'1'});
-    expect(result.status).toBe(200);
-    expect(await result.text()).not.toContain(fields.origin_password);
-    expect(dispatches).toHaveLength(1);
-    expect(dispatches[0]).not.toContain(fields.origin_password);
-    expect(JSON.parse(dispatches[0]!).inputs).toHaveProperty('database_hyperdrive_prepare_id');
-    expect(sqlite.prepare('SELECT phase,key_id FROM hyperdrive_operations').get())
-      .toMatchObject({phase:'unknown',key_id:'key-one'});
-    const replay = await submit('hyperdrive-prepare',{...fields,confirm_prepare:'1'});
-    expect(replay.status).toBe(409);
-    expect(dispatches).toHaveLength(1);
+  it('retired multi-stage Preview/Prepare endpoints no longer accept requests',async()=>{
+    const {sqlite,env}=fixture();instances.push(sqlite);
+    const {jwt,certificates}=await auth();
+    const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,certificates);
+    const html=await page.text();
+    const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+    const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+    for(const path of ['hyperdrive-preview','hyperdrive-prepare']) {
+      const result=await handleSetup(new Request(pageUrl+'/'+path,{
+        method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+          cookie,'content-type':'application/x-www-form-urlencoded'},
+        body:new URLSearchParams({csrf,id:'synthetic',origin_password:'do-not-send'})
+      }),env,certificates);
+      expect(result.status).toBe(404);
+    }
+    expect(sqlite.prepare('SELECT COUNT(*) n FROM hyperdrive_operations').get()).toEqual({n:0});
   });
   it('requires explicit rollback and retained-key confirmation before Owner key rotation', async () => {
     const { sqlite, env } = fixture(); instances.push(sqlite);
@@ -363,19 +360,19 @@ describe('Owner HTML → D1 real-SQL lifecycle', () => {
     expect(html).toContain('action="/setup/add"');
     expect(html).toContain('action="/setup/rotate"');
     expect(html).toContain('action="/setup/github-actions-check"');
-    expect(html).toContain('<input type="hidden" name="dialect" value="mysql">');
-    expect(html.split('<fieldset><legend>Hyperdrive lifecycle</legend>')[0]).not.toContain('<option value="postgres">');
+    expect(html).toContain('<select name="dialect">');
+    expect(html).toContain('<option value="postgres">');
     expect(html).toContain('<option value="mysql">');
     expect(html).toContain('<option value="postgres">');
     expect(html).toContain('name="transport" value="direct"');
     expect(html).toContain('name="transport" value="hyperdrive"');
     expect(html).not.toContain('placeholder="b2b"');
-    expect(html).toContain('<select name="dialect" required>');
+    expect(html).toContain('<select name="dialect">');
     expect(html).not.toContain('<select name="transport">');
-    expect(html).toContain('<details><summary>Advanced options</summary>');
+    expect(html).not.toContain('<details><summary>Advanced options</summary>');
     expect(html).toContain('<details class="maintenance"><summary>Maintenance</summary>');
-    expect(html).toContain('type="checkbox" name="plaintext_ack" value="1" required');
-    expect(html).toContain('Save disabled if connection test fails');
+    expect(html).toContain('type="checkbox" name="plaintext_ack" value="1"');
+    expect(html).toContain('Save connection');
     expect(html).not.toContain('Owner-only. Passwords and origin URLs');
     expect(html).not.toContain('protected atomic activation');
     expect(html).not.toContain('Final apply from this page is blocked until');
@@ -567,7 +564,7 @@ it('Owner rotation readiness is read-only in D1 and rejects stale, invalid or mi
  const open=()=>handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
  const page=await open();expect(page.status).toBe(200);
  const html=await page.text();
- expect(html).toContain('action="/setup/hyperdrive-rotation-check"');
+ expect(html).not.toContain('action="/setup/hyperdrive-rotation-check"');
  const rotationForm=html.split('action="/setup/hyperdrive-rotation-check"')[1]?.split('</form>')[0]??'';
  expect(rotationForm).not.toContain('name="origin_password"');
  const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
@@ -636,88 +633,117 @@ it('Owner credential-rotation confirmation never includes plaintext in GitHub di
 });
 
 
-it('CA replacement previews a distinct matching target without touching the original Hyperdrive',async()=>{
+it('replaces a disabled Hyperdrive username through a separate reviewed candidate without changing the original',async()=>{
  const {sqlite,env}=fixture();instances.push(sqlite);
- const {jwt,certificates}=await auth();
- const original={binding:'HYPERDRIVE_ORIGINAL',id:'a'.repeat(32),dialect:'mysql',
-  origin_host:'mysql.example.net',origin_port:3306,origin_database:'catalog',origin_user:'reader',
+ const prior={binding:'HYPERDRIVE_ORIGINAL',id:'a'.repeat(32),dialect:'postgres',
+  origin_host:'pg.example.net',origin_port:5432,origin_database:'app',origin_user:'oldreader',
   ca_certificate_id:'old-ca-1234567890'};
  sqlite.prepare(`INSERT INTO database_connections
   (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
-  VALUES ('original','mysql','hyperdrive','active',?,?,2,?,1,1)`)
-  .run(original.id,original.binding,JSON.stringify(original));
- const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,certificates);
- const html=await page.text();expect(html).toContain('name="ca_replaces"');
- const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
- const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
- const send=(fields:Record<string,string>)=>handleSetup(new Request(pageUrl+'/hyperdrive-preview',{
-  method:'POST',headers:{'cf-access-jwt-assertion':jwt,
-   origin:'https://db-owner.example.net',cookie,'content-type':'application/x-www-form-urlencoded'},
-  body:new URLSearchParams({csrf,id:'renewed',dialect:'mysql',origin_host:original.origin_host,
-   origin_port:'3306',origin_database:'catalog',origin_user:'reader',
-   origin_password:'synthetic-test-password',ca_certificate_id:'new-ca-1234567890',
-   ca_replaces:'original',...fields})
- }),env,certificates);
- const accepted=await send({});expect(accepted.status).toBe(200);
- const acceptedText=await accepted.text();expect(acceptedText).toContain('independent CA replacement');
- expect(acceptedText).not.toContain('synthetic-test-password');
- for(const rejected of [{id:'original'},{origin_host:'different.example.net'},
-  {origin_database:'changed'},{origin_port:'3307'},{dialect:'postgres'},
-  {ca_certificate_id:'old-ca-1234567890'},{ca_replaces:'missing'}]){
-  const response=await send(rejected);expect(response.status).toBeGreaterThanOrEqual(400);
- }
- expect(sqlite.prepare('SELECT status,revision,config_id FROM database_connections WHERE id=?').get('original'))
-  .toMatchObject({status:'active',revision:2,config_id:original.id});
- expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toMatchObject({n:0});
-});
-
-
-it('CA replacement Prepare reuses the existing protected candidate action and leaves the old active connection untouched',async()=>{
- const {sqlite,env}=fixture();instances.push(sqlite);
- const previous={binding:'HYPERDRIVE_OLD',id:'c'.repeat(32),dialect:'postgres',
-  origin_host:'postgres.example.net',origin_port:5432,origin_database:'analytics',
-  origin_user:'reader',ca_certificate_id:'existing-ca-123456789'};
- sqlite.prepare(`INSERT INTO database_connections
-  (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
-  VALUES ('old_ref','postgres','hyperdrive','active',?,?,3,?,1,1)`)
-  .run(previous.id,previous.binding,JSON.stringify(previous));
+  VALUES ('old_conn','postgres','hyperdrive','disabled',?,?,2,?,1,1)`)
+  .run(prior.id,prior.binding,JSON.stringify(prior));
  env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
- const {jwt,certificates}=await auth();
- const dispatched:unknown[]=[];
+ const {jwt,certificates}=await auth();const dispatches:string[]=[];
  const requestFetch:typeof fetch=async(input,options)=>{
   const url=String(input);
-  if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:true});
+  if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:false});
   if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
   if(url.endsWith('/actions/workflows/release.yml/dispatches')){
-   dispatched.push(JSON.parse(String(options?.body)));
-   return Response.json({workflow_run_id:476});
+   dispatches.push(String(options?.body));return Response.json({workflow_run_id:476});
   }
   return certificates();
  };
  const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
- const html=await page.text(), csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+ const html=await page.text();expect(html).toContain('name="replacement_for"');
+ const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
  const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
- const values={csrf,id:'replacement_ref',ca_replaces:'old_ref',dialect:'postgres',
-  origin_host:previous.origin_host,origin_port:'5432',origin_database:'analytics',
-  origin_user:'reader',origin_password:'synthetic-password-never-export',
-  ca_certificate_id:'replacement-ca-12345',confirm_prepare:'1'};
- const prepare=(override:Record<string,string>={})=>handleSetup(new Request(pageUrl+'/hyperdrive-prepare',{
+ const base={csrf,id:'new_conn',transport:'hyperdrive',dialect:'postgres',input_mode:'fields',
+  host:'pg.example.net',database:'app',username:'newreader+tenant@project',
+  password:'synthetic-secret',replacement_for:'old_conn'};
+ const save=(override:Record<string,string>={})=>handleSetup(new Request(pageUrl+'/add',{
   method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
-   cookie,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...values,...override})
+   cookie,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...base,...override})
  }),env,requestFetch);
- expect((await prepare({ca_certificate_id:previous.ca_certificate_id})).status).toBe(422);
- expect(dispatched).toHaveLength(0);
- const accepted=await prepare();expect(accepted.status).toBe(200);
- expect(await accepted.text()).not.toContain(values.origin_password);
- expect(dispatched).toHaveLength(1);
- expect(dispatched[0]).toMatchObject({inputs:{worker:'database-mcp-worker',
-  deploy_to_production:'false'}});
- expect(JSON.stringify(dispatched)).not.toContain(values.origin_password);
- const saved=sqlite.prepare('SELECT logical_id,action,phase,ciphertext,prepare_run_id FROM hyperdrive_operations').get() as Record<string,unknown>;
- expect(saved).toMatchObject({logical_id:'replacement_ref',action:'create',phase:'running',prepare_run_id:476});
- expect(saved.ciphertext).not.toContain(values.origin_password);
- expect(sqlite.prepare('SELECT status,revision,config_id,target_metadata FROM database_connections WHERE id=?').get('old_ref'))
-  .toMatchObject({status:'active',revision:3,config_id:previous.id,target_metadata:JSON.stringify(previous)});
- expect((await prepare()).status).toBe(409);
- expect(dispatched).toHaveLength(1);
+ for(const invalid of [{host:'different.example.net'},{database:'other'},
+   {replacement_for:'nonexistent'},{id:'old_conn'},
+   {ca_certificate_id:'manual-override-forbidden'}])expect((await save(invalid)).status).toBe(422);
+ sqlite.prepare("UPDATE database_connections SET status='active' WHERE id='old_conn'").run();
+ expect((await save()).status).toBe(422);
+ sqlite.prepare("UPDATE database_connections SET status='disabled',in_flight_count=1 WHERE id='old_conn'").run();
+ expect((await save()).status).toBe(422);
+ sqlite.prepare("UPDATE database_connections SET in_flight_count=0 WHERE id='old_conn'").run();
+ // Immutable metadata cannot be corrupted after creation; use a distinct
+ // malformed historical source to test fail-closed provenance validation.
+ sqlite.prepare("INSERT INTO database_connections (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at) VALUES ('malformed_source','postgres','hyperdrive','disabled',?,?,2,'{}',1,1)")
+  .run('b'.repeat(32),'HYPERDRIVE_BAD_SOURCE');
+ expect((await save({replacement_for:'malformed_source'})).status).toBe(422);
+ expect(dispatches).toHaveLength(0);
+ const accepted=await save();expect(accepted.status).toBe(200);
+ expect(await accepted.text()).not.toContain(base.password);
+ expect(dispatches).toHaveLength(1);
+ expect(dispatches[0]).not.toContain(base.password);
+ expect(sqlite.prepare("SELECT status,revision,config_id FROM database_connections WHERE id='old_conn'").get())
+  .toMatchObject({status:'disabled',revision:2,config_id:prior.id});
+ const row=sqlite.prepare("SELECT operation_id,phase,key_id FROM hyperdrive_operations WHERE logical_id='new_conn'").get() as {
+  operation_id:string;phase:string;key_id:string
+ };
+ expect(row).toMatchObject({phase:'running',key_id:'key-one'});
+ const {readHyperdrivePreparation}=await import('../../src/setup/hyperdrive-operations.js');
+ const candidate=await readHyperdrivePreparation(env.DB!,env,row.operation_id);
+ expect(candidate).toMatchObject({user:'newreader+tenant@project',caCertificateId:prior.ca_certificate_id});
+ const pem='-----BEGIN CERTIFICATE-----\n'+btoa('isolated-new-ca-fixture')+'\n-----END CERTIFICATE-----';
+ expect((await save({id:'with_new_ca',ca_pem:pem})).status).toBe(200);
+ const second=sqlite.prepare("SELECT operation_id FROM hyperdrive_operations WHERE logical_id='with_new_ca'").get() as {operation_id:string};
+ expect(await readHyperdrivePreparation(env.DB!,env,second.operation_id)).toMatchObject({
+  user:'newreader+tenant@project',caPem:pem
+ });
+ expect(dispatches).toHaveLength(2);
+ expect(JSON.stringify(dispatches)).not.toContain(base.password);
+});
+
+it('unified Save reuses strict CA replacement provenance without altering its active source', async () => {
+ const {sqlite,env}=fixture();instances.push(sqlite);
+ const prior={binding:'HYPERDRIVE_PRIOR',id:'a'.repeat(32),dialect:'postgres',
+  origin_host:'pg.example.net',origin_port:5432,origin_database:'app',origin_user:'reader',
+  ca_certificate_id:'old-ca-1234567890'};
+ sqlite.prepare(`INSERT INTO database_connections
+  (id,dialect,transport,status,config_id,binding_name,revision,target_metadata,created_at,updated_at)
+  VALUES ('original','postgres','hyperdrive','active',?,?,2,?,1,1)`)
+  .run(prior.id,prior.binding,JSON.stringify(prior));
+ env.DATABASE_GITHUB_ACTIONS_TOKEN='t'.repeat(40);
+ const {jwt,certificates}=await auth();
+ const dispatches:string[]=[];
+ const requestFetch:typeof fetch=async(input,options)=>{
+  const url=String(input);
+  if(url.endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:false});
+  if(url.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+  if(url.endsWith('/actions/workflows/release.yml/dispatches')){
+   dispatches.push(String(options?.body));return Response.json({workflow_run_id:476});
+  }
+  return certificates();
+ };
+ const page=await handleSetup(new Request(pageUrl,{headers:{'cf-access-jwt-assertion':jwt}}),env,requestFetch);
+ const html=await page.text();expect(html).toContain('Replace a disabled Hyperdrive connection (new ID)');
+ const csrf=html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1]??'';
+ const cookie=page.headers.get('set-cookie')!.split(';')[0]!;
+ const input={csrf,id:'replacement',transport:'hyperdrive',dialect:'postgres',input_mode:'fields',
+  host:'pg.example.net',database:'app',username:'reader',password:'synthetic-secret',
+  ca_replaces:'original',ca_pem:'-----BEGIN CERTIFICATE-----\n'+btoa('new-ca-fixture')+'\n-----END CERTIFICATE-----'};
+ const save=(override:Record<string,string>={})=>handleSetup(new Request(pageUrl+'/add',{
+  method:'POST',headers:{'cf-access-jwt-assertion':jwt,origin:'https://db-owner.example.net',
+   cookie,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...input,...override})
+ }),env,requestFetch);
+ for(const invalid of [{host:'different.example.net'},{database:'other'},
+   {ca_replaces:'missing'},{id:'original'}, {ca_pem:''}]) {
+  expect((await save(invalid)).status).toBe(422);
+ }
+ expect(dispatches).toHaveLength(0);
+ const accepted=await save();expect(accepted.status).toBe(200);
+ expect(await accepted.text()).not.toContain(input.password);
+ expect(dispatches).toHaveLength(1);
+ expect(dispatches[0]).not.toContain(input.password);
+ expect(sqlite.prepare("SELECT status,revision,config_id FROM database_connections WHERE id='original'").get())
+  .toMatchObject({status:'active',revision:2,config_id:prior.id});
+ expect(sqlite.prepare("SELECT phase,key_id FROM hyperdrive_operations WHERE logical_id='replacement'").get())
+  .toMatchObject({phase:'running',key_id:'key-one'});
 });

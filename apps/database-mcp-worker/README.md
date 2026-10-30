@@ -1,5 +1,72 @@
 # Database MCP Worker · Spec #344
 
+## Spec #476 update — local Draft only, not production (2026-10-30)
+
+The unmerged `#490` draft now implements one `/setup` Add surface for MySQL and PostgreSQL
+with plaintext Direct or strict-TLS Hyperdrive, accepts a Connection URL or explicit
+host/port/database/username/password, and offers Direct Edit with either input.
+The explicit Direct plaintext acknowledgement is collected at Add only, not
+repeated at Edit or Enable for an unchanged transport. The
+common server normalizer applies dialect and URL-option checks; PostgreSQL Direct now
+passes the Owner/MCP admission gate using the pre-existing plaintext pg client.
+
+A new Hyperdrive Save reserves an encrypted pending operation and delegates unbound
+preparation to the existing protected GitHub Actions path. It does **not** create an
+active MCP connection or bypass the reviewed Binding release and final confirmation.
+A CA can be inferred only from a single matching active Hyperdrive target with intact
+D1 provenance, and the Runner must still verify the certificate. Otherwise a CA PEM
+is needed; absence of a demonstrably suitable CA blocks preparation. No Config ID or
+Binding name is entered by the Owner, and the legacy direct registration endpoint is
+now rejected. The old `/setup/hyperdrive-preview` and
+`/setup/hyperdrive-prepare` POST endpoints now return 404: a single Save
+replaces the old two-stage credential submission. Owner and Runner GitHub
+checks no longer misinterpret `can_approve_pull_request_reviews` as
+PR-creation permission.
+
+**Locally implemented, not live:** a disabled Hyperdrive logical ID can be
+retired regardless of prior activation when D1 reports no unresolved execution
+or operation. Retired-ID tombstones retain the original Config ID and Binding
+for future resource cleanup; Cloudflare assets and real database data remain
+untouched. A collapsed Owner section lists recent retired IDs whose physical
+Cloudflare cleanup is unverified, without exposing Config/Binding identifiers.
+D1 additionally refuses **all unreviewed changes to an existing
+Hyperdrive Config ID or Binding**, including after a connection has been
+disabled and its in-flight count returns to zero. A same-ID in-place
+resource swap would require a separately proven deployed-version/rollback
+cutover, not a D1 pointer update. The existing new-ID replacement
+candidate remains the safe supported workflow.
+The Owner page displays unresolved Hyperdrive execution counts as
+Blocked and hides the unsafe Delete action. Deterministically invalid
+`query_read` and `explain` SQL/parameter requests are rejected before
+acquiring an execution claim. A failed pinned MySQL/PostgreSQL read is released
+only when its backend explicitly acknowledges ROLLBACK; connection loss,
+timeout, failed rollback and unobservable backend completion retain claims.
+This is partial, evidence-based recovery rather than automatic reconciliation
+for arbitrary unknown SQL. Provider usernames containing `@` or `+` now pass
+the Hyperdrive candidate validator without leaking them to URLs or logs.
+`0003` now contains this additive
+ledger evolution and its exact read-only publication checks. A fresh read-only
+production D1 query on 2026-10-30 verified that only `0001` and `0002` are
+applied: `0003` has **not** been applied in production. Existing isolated CA renewal via new logical ID is
+available on the unified Add form with provenance and target verification.
+The same collapsed replacement input now accepts a disabled Hyperdrive source:
+new username/password or new CA material is prepared under a **new ID**
+with unchanged dialect/host/port/database, validated provenance and no
+mutation of the source configuration or historical bindings. The source
+remains disabled; a protected reviewed release and actual health proof
+are still required before the replacement is Active. Password-only
+in-place rotation remains isolation-gated; username/CA edits never
+unsafe-PATCH a rollback-referenced config.
+
+**Not yet delivered:** in-place Hyperdrive username/CA edits, broader safe
+credential rotation while rollback bindings remain, evidence-backed recovery
+of ambiguous in-flight SQL, independently verified physical cleanup after
+logical deletion, and the real isolated PostgreSQL Direct/Hyperdrive Worker E2E,
+Owner/CI release gates, production migration `0003`, publication and activation.
+Do not mark these as Pass based on mocks/local tests. Keep current active production
+connections and historical Cloudflare resources unchanged. Existing historical
+production status below remains authoritative until fresh release/readback evidence.
+
 ## Latest verified state (2026-10-30; supersedes historical sections below)
 
 - Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f`

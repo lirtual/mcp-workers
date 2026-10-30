@@ -21,7 +21,7 @@ export function htmlResponse(body: string, csrf?: string, status = 200): Respons
     'form{display:grid;gap:12px;margin:12px 0}input,select,button{padding:8px;font:inherit;border-radius:5px}label{display:grid;gap:4px}' +
     'label:not(.check)>input{box-sizing:border-box;width:100%}.check{display:flex;align-items:center;gap:8px}.check input{margin:0;width:17px;height:17px;flex:none}' +
     'button{justify-self:start;cursor:pointer;padding:8px 16px}summary{cursor:pointer}details{margin:10px 0}.connections{padding-left:22px}' +
-    '.connections li{margin:12px 0;padding:0 0 12px;border-bottom:1px solid #7775}.connections form{margin:8px 0}.maintenance{margin:16px 0}</style><main>' + body + '</main></html>',
+    '.connections li{margin:12px 0;padding:0 0 12px;border-bottom:1px solid #7775}.connections form{margin:8px 0}.maintenance{margin:16px 0}.choices{display:flex;flex-wrap:wrap;gap:12px}.choices label{display:flex;align-items:center;gap:5px}.add-connection .fields-input,.add-connection .hyperdrive-ca{display:none}.add-connection:has(input[name=input_mode][value=fields]:checked) .fields-input{display:grid;gap:12px}.add-connection:has(input[name=input_mode][value=fields]:checked) .url-input{display:none}.add-connection:has(input[name=transport][value=hyperdrive]:checked) .hyperdrive-ca{display:block}.add-connection:has(input[name=transport][value=hyperdrive]:checked) .direct-warning{display:none}.add-connection .hyperdrive-ca textarea{box-sizing:border-box;width:100%}</style><main>' + body + '</main></html>',
     { status, headers });
 }
 function token(csrf: string): string { return `<input type="hidden" name="csrf" value="${escape(csrf)}">`; }
@@ -31,76 +31,73 @@ function ids(row: RegistryMetadata): string {
 function action(row: RegistryMetadata, csrf: string, verb: 'enable' | 'disable' | 'delete'): string {
   return `<form action="/setup/${verb}" method="post">${token(csrf)}${ids(row)}` +
     (verb === 'delete' && row.transport === 'hyperdrive'
-      ? '<p class="muted">Discard this never-activated reference only. The immutable Connection ID is permanently retired; the Cloudflare Hyperdrive config and Worker Binding are not removed.</p>' : '') +
+      ? '<p class="muted">Retire this disabled logical connection only. Its immutable ID is never reusable. Hyperdrive config, Binding and CA remain for separate cleanup.</p>' : '') +
     (verb === 'delete' ? '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' : '') +
-    (verb === 'enable' && row.transport === 'direct' ? '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>' : '') +
     `<button type="submit">${verb}</button></form>`;
 }
-const plaintextAck = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1">I accept unencrypted Direct transport.</label>';
-const plaintextAckRequired = '<label class="check"><input type="checkbox" name="plaintext_ack" value="1" required>I accept unencrypted Direct transport.</label>';
-const directUrlHint = '<details><summary>URL format help</summary><p class="muted">' +
-  '<code>mysql://USER:PASSWORD@HOST:3306/DATABASE</code>. ' +
-  'Use a public IP or hostname; no URL query parameters. Direct is unencrypted.</p></details>';
-function hyperdriveForm(csrf: string, route: 'hyperdrive-preview' | 'hyperdrive-prepare'): string {
-  const confirm = route === 'hyperdrive-prepare';
-  return '<form method="post" action="/setup/' + route + '">' + token(csrf) +
-    '<label>Logical ID<input name="id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required></label>' +
-    '<label>CA renewal: existing logical ID (optional)<input name="ca_replaces" maxlength="64" autocomplete="off"></label>' +
-    '<p class="muted">For CA renewal, use a new logical ID and a different CA with the same origin. The existing connection and CA remain intact. After separately reviewed release, migrate consumers and retire the old Binding only when safe.</p>' +
-    '<label>Dialect<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
-    '<label>Origin hostname<input name="origin_host" maxlength="253" autocomplete="off" required></label>' +
-    '<label>Port<input name="origin_port" type="number" min="1" max="65535" required></label>' +
-    '<label>Database<input name="origin_database" maxlength="128" required></label>' +
-    '<label>Username<input name="origin_user" maxlength="128" required></label>' +
-    '<label>Password<input name="origin_password" type="password" maxlength="2048" autocomplete="off" required></label>' +
-    '<p class="muted">' + (confirm ? 'Use an existing CA ID or upload a CA PEM. Upload requires Account: SSL and Certificates Write and remains unbound until reviewed release.' : 'Provide one existing CA ID or CA PEM. Preview does not upload or expose the certificate.') + '</p>' +
-    '<label>Existing CA certificate ID<input name="ca_certificate_id" maxlength="128"></label>' +
-    '<label>CA PEM<textarea name="ca_pem" rows="3" maxlength="16384"></textarea></label>' +
-    (confirm ? '<label class="check"><input type="checkbox" name="confirm_prepare" value="1" required>' +
-      'I authorize an unbound Cloudflare resource preparation. This does not enable the connection.</label>' : '') +
-    '<button type="submit">' + (confirm ? 'Confirm Prepare' : 'Preview (read-only)') + '</button></form>';
+function addConnectionForm(csrf: string): string {
+  return `<fieldset><legend>Add connection</legend><form class="add-connection" id="add-connection" method="post" action="/setup/add">${token(csrf)}
+    <label>Connection ID<input name="id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required></label>
+    <label>Database<select name="dialect"><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>
+    <div class="choices" role="group" aria-label="Connection transport"><label><input type="radio" name="transport" value="direct" checked>Direct (plaintext)</label><label><input type="radio" name="transport" value="hyperdrive">Hyperdrive (strict TLS)</label></div>
+    <div class="choices" role="group" aria-label="Connection input"><label><input type="radio" name="input_mode" value="url" checked>Connection URL</label><label><input type="radio" name="input_mode" value="fields">Host and credentials</label></div>
+    <div class="url-input"><label>Connection URL<input name="url" type="password" autocomplete="off" maxlength="8192" placeholder="postgresql://user:password@host/database"></label></div>
+    <div class="fields-input"><label>Host<input name="host" autocomplete="off" maxlength="253"></label>
+    <label>Port (optional; MySQL 3306 / PostgreSQL 5432)<input name="port" inputmode="numeric" type="number" min="1" max="65535"></label>
+    <label>Database<input name="database" maxlength="128"></label><label>Username<input name="username" maxlength="128" autocomplete="off"></label>
+    <label>Password<input name="password" type="password" maxlength="2048" autocomplete="off"></label></div>
+    <div class="direct-warning"><p><strong>Direct is unencrypted TCP.</strong> Credentials and SQL travel without transport encryption. Use Hyperdrive when TLS is required.</p>
+    <label class="check"><input type="checkbox" name="plaintext_ack" value="1">I accept plaintext Direct transport for this new connection.</label></div>
+    <div class="hyperdrive-ca"><p class="muted">Hyperdrive strictly verifies certificates and hostnames with caching disabled. Provide the origin CA PEM where needed. Protected GitHub Actions prepares the config and Binding; a reviewed production release requires one separate approval.</p>
+    <details><summary>CA PEM (only if no suitable CA is on record)</summary>
+    <label>Certificate PEM<textarea name="ca_pem" rows="3" maxlength="16384" autocomplete="off"></textarea></label></details>
+    <details><summary>Replace a disabled Hyperdrive connection (new ID)</summary><p class="muted">Use a new Connection ID and the same database host, port and database. You may change the username, password and CA. The existing connection and all rollback references are kept; protected release and health verification still apply.</p>
+    <label>Existing disabled Connection ID<input name="replacement_for" maxlength="64" autocomplete="off"></label></details>
+</div>
+    <button type="submit">Save connection</button></form></fieldset>`;
 }
 export function setupPage(rows: RegistryMetadata[], csrf: string,
-  operations: HyperdriveOperationSummary[] = []): Response {
+  operations: HyperdriveOperationSummary[] = [], retiredHyperdriveIds: string[] = []): Response {
   const list = rows.map(row => `<li><strong>${escape(row.id)}</strong> <span class="meta">${escape(row.dialect)} / ${escape(row.transport)} · ${escape(row.status)}</span>` +
+    (row.transport === 'hyperdrive' && (row.in_flight_count ?? 0) > 0
+      ? `<p><strong>Blocked: ${row.in_flight_count} unresolved execution(s).</strong> New SQL is disabled when this connection is disabled. Do not delete or rotate its resources without independently verified completion; no automatic timeout or count reset is performed.</p>` : '') +
     (row.status === 'active' ? action(row, csrf, 'disable') :
       row.transport === 'direct' && isAvailableMode(row.transport, row.dialect)
         ? action(row, csrf, 'enable') + action(row, csrf, 'delete') :
-      row.transport === 'hyperdrive' && row.status === 'disabled' && row.revision === 1
-        ? action(row, csrf, 'delete') : row.transport === 'hyperdrive' ? '' : action(row, csrf, 'delete')) +
+      row.status === 'disabled' ? (row.transport === 'direct'
+        ? action(row, csrf, 'enable') : '') +
+        ((row.in_flight_count ?? 0) === 0 ? action(row, csrf, 'delete') : '') : '') +
     (row.transport === 'hyperdrive'
-      ? '<p class="muted">Hyperdrive actions run in protected GitHub Actions after exact binding, CA and cache verification. A successful request does not confirm completion.</p>' +
-        (row.status === 'disabled'
-          ? '<details><summary>Manage Hyperdrive via GitHub Actions</summary>' +
-            '<p class="muted">Enable requires a published, reviewed binding. Retirement first stages a Draft unbinding PR if still bound; final D1 retirement requires a separately approved exact release and no remaining rollback dependency.</p>' +
-            '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
-            '<input type="hidden" name="hyperdrive_action" value="enable">' +
-            '<button type="submit">Request enable</button></form>' +
-            '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
-            '<input type="hidden" name="hyperdrive_action" value="retire">' +
-            '<label>Type connection ID to confirm retirement<input name="confirm_id" required></label>' +
-            '<button type="submit">Stage unbinding or verify retirement</button></form>' +
-            '<form method="post" action="/setup/hyperdrive-rotation-check">' + token(csrf) + ids(row) +
-            '<label>Rotation readiness<select name="rotation_mode"><option value="credentials">Password</option><option value="ca">CA certificate</option></select></label>' +
-            '<p class="muted">Only checks whether an in-place rotation might be isolated. No password or CA material is submitted. Existing rollback versions may block this check.</p>' +
-            '<button type="submit">Check rotation isolation (read-only)</button></form>' +
-            '<form method="post" action="/setup/hyperdrive-credentials">' + token(csrf) + ids(row) +
-            '<p class="muted">This update is only for an isolated, disabled, unbound Hyperdrive with no current or rollback references. The protected Runner rejects unsafe changes.</p>' +
-            '<label>New password<input name="new_password" type="password" maxlength="2048" autocomplete="off" required></label>' +
-            '<label>Type connection ID to confirm password update<input name="confirm_id" required></label>' +
-            '<label class="check"><input type="checkbox" name="confirm_credentials" value="1" required>I authorize a password update. Connection stays disabled and requires independent verification.</label>' +
-            '<button type="submit">Confirm isolated password update</button></form>' +
-            '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
-            '<button type="submit">Check unbinding PR (read-only)</button></form></details>'
-          : '') +
-        '<p class="muted">Password and CA changes are blocked until in-flight, shared and rollback isolation can be verified. Disable alone does not prove isolation. Existing config and CA remain intact.</p>' +
-        '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View GitHub Actions results</a></p>'
+      ? (row.status === 'disabled'
+        ? '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
+          '<input type="hidden" name="hyperdrive_action" value="enable">' +
+          '<button type="submit">Enable</button></form>' +
+          '<details><summary>Edit connection</summary>' +
+          '<p class="muted">Only isolated, disabled and unbound credentials can be updated without affecting a live or rollback Worker. Existing credentials are never shown. Unsafe changes are blocked.</p>' +
+          '<form method="post" action="/setup/hyperdrive-credentials">' + token(csrf) + ids(row) +
+          '<label>New password<input name="new_password" type="password" maxlength="2048" autocomplete="off" required></label>' +
+          '<label>Type connection ID to confirm password update<input name="confirm_id" required></label>' +
+          '<label class="check"><input type="checkbox" name="confirm_credentials" value="1" required>Update password only after protected isolation checks</label>' +
+          '<button type="submit">Save new password</button></form>' +
+          '<p class="muted">To change the username or CA without breaking a rollback version, use <a href="#add-connection">Add connection</a>, choose a new ID and expand “Replace a disabled Hyperdrive connection”. The old connection stays disabled until your new candidate passes protected release and health checks.</p></details>' +
+          '<details><summary>Advanced resource cleanup</summary><p class="muted">Logical Delete above does not remove Cloudflare resources. Release or delete historical bindings and certificates only after independently verifying all active and rollback references.</p>' +
+          '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
+          '<input type="hidden" name="hyperdrive_action" value="retire">' +
+          '<label>Type connection ID to request an unbinding review<input name="confirm_id" required></label>' +
+          '<button type="submit">Stage unbinding review</button></form>' +
+          '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
+          '<button type="submit">Read unbinding status</button></form></details>'
+        : '<p class="muted">Disable this connection before editing credentials or retiring its logical ID.</p>') +
+        '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion.</p>' +
+        '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a></p>'
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
-    `<details><summary>Edit connection</summary><form action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
+    `<details><summary>Edit connection</summary><form class="add-connection" action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credentials<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
-    '<label>New URL (only when replacing)<input type="password" name="url" autocomplete="off" maxlength="8192"></label>' +
+    '<div class="choices"><label><input type="radio" name="input_mode" value="url" checked>Connection URL</label><label><input type="radio" name="input_mode" value="fields">Host and credentials</label></div>' +
+    '<div class="url-input"><label>New URL (when replacing)<input type="password" name="url" autocomplete="off" maxlength="8192"></label></div>' +
+    '<div class="fields-input"><label>Host<input name="host"></label><label>Port<input name="port" type="number" min="1" max="65535"></label><label>Database<input name="database"></label><label>Username<input name="username"></label><label>Password<input type="password" name="password" autocomplete="off"></label></div>' +
     '<p class="muted">Host, port and database cannot change for this ID. Use a new ID for a new target.</p>' +
-    plaintextAck +
+    '<p class="muted">Direct uses plaintext TCP. This Connection ID retains its original transport.</p>' +
     (row.status === 'disabled' ? '<label class="check"><input type="checkbox" name="allow_disabled" value="1">Keep disabled if unreachable</label>' : '') +
     '<button type="submit">Test and save</button></form></details>') + '</li>').join('');
   const history = operations.map(op => '<li><strong>' + escape(op.logical_id) + '</strong> · ' +
@@ -117,29 +114,12 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
       '<button type="submit">Confirm final apply</button></form>' : '') + '</li>').join('');
   return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections. Credentials are never displayed.</p>' +
     `<ul class="connections">${list || '<li>No database connections configured</li>'}</ul>` +
-    '<fieldset><legend>Add Direct connection</legend><form method="post" action="/setup/add">' + token(csrf) +
-    '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
-    '<input type="hidden" name="transport" value="direct">' +
-    '<input type="hidden" name="dialect" value="mysql"><p class="muted">Direct supports MySQL only.</p>' +
-    '<label>Database URL<input type="password" name="url" maxlength="8192" autocomplete="off" required></label>' +
-    directUrlHint + plaintextAckRequired +
-    '<details><summary>Advanced options</summary><label class="check"><input type="checkbox" name="allow_disabled" value="1">Save disabled if connection test fails</label>' +
-    '<p class="muted">A disabled connection cannot be used until it passes a connection check.</p></details>' +
-    '<button type="submit">Add Direct connection</button></form></fieldset>' +
-    '<fieldset><legend>Hyperdrive lifecycle</legend>' +
-    '<p class="muted">Step 1: Preview without changes. Step 2: separately re-enter credentials and confirm Prepare. No logical connection is enabled until a reviewed binding is published and verified.</p>' +
-    '<details><summary>Preview new Hyperdrive</summary>' + hyperdriveForm(csrf, 'hyperdrive-preview') + '</details>' +
-    '<p class="muted">After preparation, review the exact nonsecret PR and required checks. Return to Operation status for a separate final Apply confirmation. Only the verified release and disabled D1 handoff count as completion.</p>' +
-    '<details><summary>Prepare unbound Hyperdrive</summary>' + hyperdriveForm(csrf, 'hyperdrive-prepare') + '</details>' +
-    '<details><summary>Operation status</summary><ul>' + (history || '<li>No operations</li>') + '</ul></details></fieldset>' +
-    '<details><summary>Add existing Hyperdrive reference</summary><p class="muted">First create a dedicated Hyperdrive config with strict CA/hostname verification and caching disabled. Select the same dialect as the actual Cloudflare origin. The reference starts disabled; only protected Actions may activate it.</p>' +
-    '<form method="post" action="/setup/add">' + token(csrf) +
-    '<input type="hidden" name="transport" value="hyperdrive">' +
-    '<label>Connection ID<input name="id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" required></label>' +
-    '<label>Dialect<select name="dialect" required><option value="" disabled selected>Choose database dialect</option><option value="mysql">MySQL</option><option value="postgres">PostgreSQL</option></select></label>' +
-    '<label>Cloudflare config ID<input name="config_id" maxlength="64" required></label>' +
-    '<label>Binding name<input name="binding_name" pattern="HYPERDRIVE_[A-Z0-9_]{1,54}" maxlength="65" required></label>' +
-    '<button type="submit">Save disabled reference</button></form></details>' +
+    addConnectionForm(csrf) +
+    '<details><summary>Recent operations</summary><ul>' + (history || '<li>No operations</li>') + '</ul></details>' +
+    (retiredHyperdriveIds.length ? '<details><summary>Cloudflare cleanup unverified (' + retiredHyperdriveIds.length + ')</summary>' +
+      '<p class="muted">These retired connection IDs no longer admit MCP SQL. Historical Hyperdrive/CA resources are retained; physical cleanup needs separate live and rollback reference proof.</p><ul>' +
+      retiredHyperdriveIds.map(id=>'<li>'+escape(id)+' · retired, resource cleanup unverified</li>').join('') +
+      '</ul></details>' : '') +
     '<details class="maintenance"><summary>Maintenance</summary>' +
     '<p class="muted">Test GitHub Actions dispatch without deploying a Worker or changing any database connection. This only confirms GitHub accepted the request; check the workflow run separately.</p>' +
     '<form method="post" action="/setup/github-actions-check">' + token(csrf) +
