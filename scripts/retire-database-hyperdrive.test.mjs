@@ -319,3 +319,23 @@ test('new rollback version discovered after account scan blocks D1 retirement',a
  await assert.rejects(retireDatabaseHyperdrive({...inputs,request}),/rollback.*changed/);
  assert.equal(inventories,2);assert.equal(f.state.writes,0);
 });
+
+test('paginated account Worker inventory refuses irreversible retirement even if first page appears clean', async () => {
+  for (const paginatedRead of [1, 2]) {
+    const f = fixture();
+    let reads = 0;
+    const request = async (url, init) => {
+      const response = await f.request(url, init);
+      if (!url.endsWith('/workers/scripts')) return response;
+      reads++;
+      const json = await response.json();
+      return { ok: true, json: async () => ({ ...json, result_info: {
+        page: 1, per_page: 2, count: 2, total_count: paginatedRead === reads ? 3 : 2,
+        total_pages: paginatedRead === reads ? 2 : 1
+      } }) };
+    };
+    await assert.rejects(retireDatabaseHyperdrive({ ...inputs, request }),
+      /inventory (?:incomplete|changed)/);
+    assert.equal(f.state.writes, 0);
+  }
+});

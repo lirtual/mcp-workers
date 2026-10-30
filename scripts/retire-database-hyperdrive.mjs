@@ -24,7 +24,7 @@ export async function retireDatabaseHyperdrive({
       source.d1_databases[0].database_name !== 'database-mcp-registry') fail('managed D1 source');
   verifyDatabaseHyperdriveSource(source, manifest);
   const base = 'https://api.cloudflare.com/client/v4/accounts/' + accountId;
-  async function cloud(path, method = 'GET', body) {
+  async function cloud(path, method = 'GET', body, returnEnvelope = false) {
     // Emit only a bounded operation class on failure; never emit Cloudflare
     // payloads, SQL parameters, credentials, row IDs or raw provider errors.
     const phase = path.includes('/d1/database/')
@@ -46,7 +46,7 @@ export async function retireDatabaseHyperdrive({
     let envelope;
     try { envelope = await response.json(); } catch { fail('invalid Cloudflare response'); }
     if (!envelope || envelope.success !== true || envelope.result == null) fail('unconfirmed API result');
-    return envelope.result;
+    return returnEnvelope ? envelope : envelope.result;
   }
   async function sql(statement, params = []) {
     const result = await cloud('/d1/database/' + REGISTRY + '/query', 'POST',
@@ -125,9 +125,19 @@ export async function retireDatabaseHyperdrive({
   // deployable=true explicitly ignores pagination; fail closed on unknown
   // account script inventories or version lists, without deleting resources.
   const versionIdPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-  const scriptInventory = await cloud('/workers/scripts');
-  if (!Array.isArray(scriptInventory) || scriptInventory.length === 0 ||
-      scriptInventory.length >= 100) fail('account Worker inventory incomplete');
+  async function workerInventory() {
+    const envelope = await cloud('/workers/scripts', 'GET', undefined, true);
+    const rows = envelope.result;
+    const pages = envelope.result_info;
+    if (!Array.isArray(rows) || rows.length === 0 || rows.length >= 100 ||
+        (pages && (pages.total_pages !== 1 ||
+          (pages.page !== undefined && pages.page !== 1) ||
+          (pages.total_count !== undefined && pages.total_count !== rows.length) ||
+          (pages.count !== undefined && pages.count !== rows.length))))
+      fail('account Worker inventory incomplete');
+    return rows;
+  }
+  const scriptInventory = await workerInventory();
   const scriptNames = scriptInventory.map(x => x.id ?? x.name);
   if (scriptNames.some(n => typeof n !== 'string' || !n) ||
       new Set(scriptNames).size !== scriptNames.length ||
@@ -168,7 +178,7 @@ export async function retireDatabaseHyperdrive({
         again.deployments[0].versions[0].version_id !== liveVersions[0].version_id)
       fail('other Worker deployment changed during check');
   }
-  const inventoryAgain = await cloud('/workers/scripts');
+  const inventoryAgain = await workerInventory();
   if (!Array.isArray(inventoryAgain) || inventoryAgain.length !== scriptNames.length ||
       inventoryAgain.map(x => x.id ?? x.name).sort().some((n,i) =>
         n !== [...scriptNames].sort()[i]))

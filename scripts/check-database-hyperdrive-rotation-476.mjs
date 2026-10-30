@@ -124,9 +124,11 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
     againOther.deployments[0].versions[0].version_id!==active[0].version_id)
     fail('other_worker_deployment_changed');
  }
- const {result:latestScripts}=await read('/workers/scripts');
+ const {result:latestScripts,result_info:latestInfo}=await read('/workers/scripts');
  if(!Array.isArray(latestScripts)||latestScripts.length!==names.length||
-   latestScripts.result_info?.total_pages>1||
+   latestInfo?.total_pages>1||
+   (latestInfo?.total_count!==undefined&&latestInfo.total_count!==latestScripts.length)||
+   (latestInfo?.page!==undefined&&latestInfo.page!==1)||
    latestScripts.map(x=>x.id??x.name).sort().some((name,i)=>name!==[...names].sort()[i]))
    fail('worker_inventory_changed');
  for(const [name,ids] of versionSnapshots){
@@ -135,6 +137,13 @@ export async function checkDatabaseHyperdriveRotation({mode,connectionId,expecte
      latestVersions.items.some(v=>!UUID.test(v.id??''))||
      latestVersions.items.map(v=>v.id).sort().some((id,i)=>id!==ids[i]))
      fail('rollback_inventory_changed');
+ }
+ // Worker settings can change while immutable versions are scanned.
+ // A stale current-binding read is not sufficient rotation isolation.
+ for(const name of names){
+  const {result:latestSettings}=await read('/workers/scripts/'+encodeURIComponent(name)+'/settings');
+  if(!Array.isArray(latestSettings?.bindings)||hasTarget(latestSettings.bindings))
+    fail('worker_settings_changed');
  }
  // Read the write-sensitive origin and strict TLS settings again: a
  // configuration edit during the rollback scan invalidates the observation.

@@ -137,3 +137,29 @@ test('rotation rejects altered origin identity and absent immutable D1 target me
   onlyRead(f);
  }
 });
+
+test('a paginated second Worker inventory never confirms rotation eligibility',async()=>{
+ const f=fixture();let scans=0;
+ const request=async(url,init)=>{
+  const response=await f.request(url,init);
+  if(!url.endsWith('/workers/scripts'))return response;
+  scans++;
+  const data=await response.json();
+  return {ok:true,json:async()=>({...data,result_info:{page:1,count:2,total_count:scans===2?3:2,total_pages:scans===2?2:1}})};
+ };
+ await assert.rejects(run(f,{request}),/worker_inventory_changed/);
+ onlyRead(f);
+});
+
+test('a Worker settings change after the historical scan invalidates rotation eligibility',async()=>{
+ const f=fixture();let settingReads=0;
+ const request=async(url,init)=>{
+  const response=await f.request(url,init);
+  if(!url.endsWith('/workers/scripts/other-worker/settings'))return response;
+  settingReads++;
+  if(settingReads<2)return response;
+  return {ok:true,json:async()=>({success:true,result:{bindings:[{type:'hyperdrive',name:'HYPERDRIVE_TEST',id:configId}]}})};
+ };
+ await assert.rejects(run(f,{request}),/worker_settings_changed/);
+ onlyRead(f);
+});
