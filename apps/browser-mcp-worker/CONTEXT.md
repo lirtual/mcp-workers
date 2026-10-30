@@ -17,3 +17,15 @@ This implementation contains the **T1 pairing/control foundation**, **partial T2
 The eventual T2–T10 semantics and security limits remain canonical in [Spec #418](https://github.com/lirtual/mcp-workers/issues/418).
 
 T2 still requires Chrome/Edge real-device tests, screenshot safety review, and complete DOM/element reference behavior before it can be accepted. The read-only relay has a 5-second bounded response window; it never queues offline work.
+
+## Proposed single-action local activation (design only; not implemented)
+
+Owner-confirmed 2026-10-30 Grill With Docs decisions [Q1–Q4](./docs/single-action-otp-design.md) change the **proposed interface**, not current executable authorization:
+
+- **Toolbar Action** is the Profile's single primary ON/OFF control; initial ungranted state is OFF, and deliberate local ON/OFF survives restarts. There is no new remote Resume authority.
+- **Local Activation Attempt** is a local OFF→ON request pending a **new** owner-entered Cloudflare Access email OTP. Pending is not enabled; a prior Access session/JWT is not fresh authentication evidence.
+- **Fresh Activation Proof** denotes the as-yet-unspecified, server-verifiable result of a *new* OTP for this attempt. Its isolation/binding method remains under Q5 review; do not treat a normal Access redirect as proof.
+- **Browser Control Session**, WSS connection readiness, the persistent **Extension Grant**, and consequence-specific **Owner Approval** remain independent concepts. This activation OTP cannot substitute for Owner Approval.
+- Chrome's current Popup-only Resume, pairing UI and badge behavior are still **the live implementation**. Do not mistake this proposed contract for a shipped feature. Existing paired-Profile migration and setup/advanced-controls entry remain pending Q6–Q8.
+
+No new bounded context, ADR or additional service is needed merely to define this UX amendment; see the linked draft for unresolved security dependencies and negative tests.
