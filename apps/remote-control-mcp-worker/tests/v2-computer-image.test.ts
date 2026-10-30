@@ -1,24 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { monitorDeviceSocket } from "../../remote-control-agent/src/v2-connection-lifecycle.ts";
-import type { DesktopImage } from "../../remote-control-agent/src/desktop-observe.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
-class ClientSocket extends EventTarget {
-  readyState:number=WebSocket.OPEN;
-  sent: Array<Record<string,any>>=[];
-  private respond:(data:string)=>void;
-  constructor(respond:(data:string)=>void){super();this.respond=respond;}
-  send(text:string){this.sent.push(JSON.parse(text));this.respond(text);}
-  close(){this.readyState=WebSocket.CLOSED;}
-  receive(data:string){this.dispatchEvent(new MessageEvent("message",{data}));}
-}
-test("real MCP routing reassembles signed device screenshot frames without durable image storage",async()=>{
+test("Worker reassembles bounded signed-device image frames without durable image storage",async()=>{
   const deviceId=randomUUID(),epoch="epoch-image";
   const uuid=randomUUID();
   const jpeg=Buffer.from([255,216,255,224,...Array.from({length:32000},()=>0),255,217]).toString("base64");
-  const observed:DesktopImage={
+  const observed={
     type:"desktop_image",mime_type:"image/jpeg",data:jpeg,
     width:800,height:450,native_width:1600,native_height:900,
     origin_x:0,origin_y:0,target_id:"primary",session_id:1,
@@ -33,26 +22,37 @@ test("real MCP routing reassembles signed device screenshot frames without durab
     get:async<T>(key:string)=>records.get(key) as T|undefined,
     put:async()=>{writes++;throw Error("Screenshot should not persist in Durable Object");},
   };
-  let owner!:V2OwnerCoordinator, client!:ClientSocket;
+  let owner!:V2OwnerCoordinator;
   let corruptNext=false, simulateStop=false;
-  const abort=new AbortController();
+  const fromDevice:Array<Record<string,unknown>>=[];
   const server={
     readyState:WebSocket.OPEN,
     deserializeAttachment:()=>({device_id:deviceId,epoch}),
-    send(text:string){queueMicrotask(()=>client.receive(text));},
-    close(){client.close();},
+    send(text:string){
+      const request=JSON.parse(text) as Record<string,unknown>;
+      assert.equal(request.kind,"read");
+      assert.equal(request.tool,"computer_observe");
+      assert.deepEqual(request.arguments,{target_kind:"display",target_id:"primary"});
+      const id=request.request_id;
+      const deliver=(frame:Record<string,unknown>)=>{
+        fromDevice.push(frame);
+        queueMicrotask(()=>{void owner.webSocketMessage(server as WebSocket,JSON.stringify(frame));});
+      };
+      queueMicrotask(()=>{
+        if(simulateStop){
+          deliver({kind:"read_result",request_id:id,status:"failed",error:"desktop_stopped"});
+          return;
+        }
+        for(let offset=0,seq=0;offset<observed.data.length;offset+=24000,seq++){
+          deliver({kind:"image_chunk",request_id:id,
+            seq:corruptNext?99:seq,chunk:observed.data.slice(offset,offset+24000)});
+        }
+        const {data,...metadata}=observed;
+        deliver({kind:"image_result",request_id:id,status:"completed",metadata});
+      });
+    },
+    close(){ /* simulated peer closure */ },
   } as unknown as WebSocket;
-  client=new ClientSocket(text=>{
-    const frame=JSON.parse(text) as Record<string,unknown>;
-    if(corruptNext && frame.kind==="image_chunk") frame.seq=99;
-    queueMicrotask(()=>{void owner.webSocketMessage(server,JSON.stringify(frame));});
-  });
-  const lifecycle=monitorDeviceSocket(client as unknown as WebSocket,abort.signal,
-    {intervalMs:60000,timeoutMs:10000},async(tool,args)=>{
-      assert.equal(tool,"computer_observe");
-      assert.deepEqual(args,{target_kind:"display",target_id:"primary"});
-      return simulateStop ? {type:"desktop_error" as const,code:"desktop_stopped" as const} : observed;
-    });
   owner=new V2OwnerCoordinator({
     storage,getWebSockets:()=>[server],
   } as unknown as DurableObjectState);
@@ -78,8 +78,8 @@ test("real MCP routing reassembles signed device screenshot frames without durab
     assert.equal(good.result.content[0]?.type,"image");
     assert.equal(good.result.content[0]?.data,jpeg);
     assert.match(good.result.content[1]?.text??"",/native_width/);
-    assert.ok(client.sent.filter(f=>f.kind==="image_chunk").length>1);
-    assert.equal(client.sent.at(-1)?.kind,"image_result");
+    assert.ok(fromDevice.filter(f=>f.kind==="image_chunk").length>1);
+    assert.equal(fromDevice.at(-1)?.kind,"image_result");
     assert.equal(writes,0);
     simulateStop=true;
     const stopped=await call(deviceId);
@@ -97,7 +97,6 @@ test("real MCP routing reassembles signed device screenshot frames without durab
     assert.equal(missing.result.isError,true);
     assert.equal(writes,0);
   } finally{
-    abort.abort();
-    assert.equal(await lifecycle,"aborted");
+    server.close();
   }
 });
