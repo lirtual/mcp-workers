@@ -552,3 +552,41 @@ test('bounded durable waits compile to deterministic native steps with a total t
     {id:'forged',uses:'flow.wait',with:{duration_seconds:1}},
   ])),PlanError);
 });
+
+
+test('pure dynamic while/until compiles with strict iteration and graph budget',async()=>{
+ const def=(flow:'while'|'until',max_iterations=4)=>({version:1,name:'Dynamic loop',
+   inputs:{limit:2},steps:[
+     {id:'before',uses:'result.emit',with:{data:'ok'}},
+     {id:'loop',flow,needs:['before'],max_iterations,
+       condition:{lt:[{ref:'item.index'},{ref:'inputs.limit'}]},
+       template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+     {id:'done',uses:'result.emit',needs:['loop'],with:{data:{ref:'steps.loop.output.value'}}},
+   ],
+ });
+ for(const flow of ['while','until'] as const){
+   const {plan}=await compilePlan(def(flow));
+   assert.equal(plan.steps.find(s=>s.id==='loop')?.uses,'flow.loop');
+   assert.equal(plan.steps.length,3);
+ }
+ for(const max_iterations of [0,9,1.2,-1]){
+   await assert.rejects(()=>compilePlan(def('while',max_iterations)),
+     (e:unknown)=>e instanceof PlanError&&e.message==='invalid_loop_limit');
+ }
+ const over=Array.from({length:5},(_,i)=>({
+   id:'loop'+i,flow:'until',max_iterations:8,condition:false,
+   template:{uses:'result.emit',with:{data:0}},
+ }));
+ await assert.rejects(()=>compilePlan({version:1,name:'Budget',steps:over}),/invalid_step_count/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Invalid loop',steps:[{
+   id:'loop',flow:'while',max_iterations:2,condition:{ref:'steps.other.output'},
+   template:{uses:'result.emit',with:{data:0}},
+ }]}),/invalid_step_reference/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Invalid loop',steps:[{
+   id:'loop',flow:'while',max_iterations:2,condition:true,
+   template:{uses:'result.emit',with:{data:0},approval:{required:true}},
+ }]}),/unsupported_field/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Spoof loop',steps:[{
+   id:'loop',uses:'flow.loop',with:{mode:'until',max_iterations:2,condition:true,template:{uses:'result.emit',with:{data:0}}},
+ }]}),/unsupported_capability/);
+});

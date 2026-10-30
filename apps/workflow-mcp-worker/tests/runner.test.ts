@@ -2570,3 +2570,74 @@ test('reviewed IMA append: exactly one effect, no replay on lost ACK, revoke blo
   assert.equal(denied.steps[0]?.error_code,'portal_connection_revoked');
   assert.equal(calls,2);
 });
+
+test('bounded pure while/until use deterministic native checkpoints and terminate from prior output',async t=>{
+  const {service,admit,run,sqlite,env}=setup(t);
+  const whileRun=await admit([
+    {id:'loop',flow:'while',max_iterations:5,
+      condition:{lt:[{ref:'item.index'},{ref:'inputs.limit'}]},
+      template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+    {id:'done',uses:'result.emit',needs:['loop'],with:{data:{ref:'steps.loop.output.value'}}},
+  ],{limit:3});
+  const checkpoints:string[]=[];
+  await run(whileRun.run_id,(name)=>checkpoints.push(name));
+  const result=await service.result(whileRun.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result,2);
+  assert.deepEqual(checkpoints.filter(x=>x.includes(':loop:iteration:')),[
+    'workflow-loop:loop:iteration:0','workflow-loop:loop:iteration:1','workflow-loop:loop:iteration:2']);
+  assert.deepEqual(checkpoints.filter(x=>x.includes(':loop:condition:')),[
+    'workflow-loop:loop:condition:0','workflow-loop:loop:condition:1',
+    'workflow-loop:loop:condition:2','workflow-loop:loop:condition:3']);
+
+  const untilRun=await admit([
+    {id:'loop',flow:'until',max_iterations:5,
+      condition:{eq:[{ref:'item.value'},2]},
+      template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+  ]);
+  const durable=new Map<string,unknown>();
+  let callbacks=0;
+  const orchestrate=()=>new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:untilRun.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,options:unknown,cb:()=>Promise<unknown>)=>{
+      if(durable.has(name))return durable.get(name);
+      callbacks++;
+      const value=await cb();
+      durable.set(name,value);
+      return value;
+    }} as unknown as WorkflowStep);
+  await orchestrate();
+  const completed=await service.result(untilRun.run_id);
+  assert.equal(completed.status,'succeeded');
+  assert.deepEqual(completed.result,{iterations:3,value:2});
+  assert.equal([...durable.keys()].filter(x=>x.includes(':loop:iteration:')).length,3);
+  const firstCallbacks=callbacks;
+  // Simulate a replay of native checkpoints: no computation callback repeats.
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(untilRun.run_id);
+  await orchestrate();
+  assert.equal(callbacks,firstCallbacks);
+  assert.equal((await service.result(untilRun.run_id)).status,'succeeded');
+});
+
+test('bounded loops fail closed on exhaustion, invalid Boolean conditions, and zero-iteration while',async t=>{
+  const {service,admit,run}=setup(t);
+  const zero=await admit([{id:'loop',flow:'while',max_iterations:2,
+    condition:false,template:{uses:'result.emit',with:{data:'never'}}}]);
+  await run(zero.run_id);
+  assert.deepEqual((await service.result(zero.run_id)).result,{iterations:0,value:null});
+  const overflow=await admit([
+    {id:'loop',flow:'until',max_iterations:2,condition:false,
+      template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+    {id:'dependent',needs:['loop'],uses:'result.emit',with:{data:'must not execute'}},
+  ]);
+  await run(overflow.run_id);
+  const result=await service.result(overflow.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find(x=>x.step_id==='loop')?.error_code,'loop_budget_exceeded');
+  assert.equal(result.steps.find(x=>x.step_id==='dependent')?.status,'skipped');
+  const invalid=await admit([{id:'loop',flow:'while',max_iterations:2,
+    condition:{ref:'inputs.count'},
+    template:{uses:'result.emit',with:{data:42}}}],{count:2});
+  await run(invalid.run_id);
+  assert.equal((await service.result(invalid.run_id)).steps[0]?.error_code,'loop_evaluation_failed');
+});

@@ -146,6 +146,12 @@ const eventWait={version:1,name:'Event wait (illustrative credential)',steps:[
   {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output'}}},
 ]};
 // Supply a 32-byte random external-event secret and publish only its digest.
+const boundedLoop={version:1,name:'Bounded dynamic until',steps:[
+  {id:'loop',flow:'until',max_iterations:4,
+    condition:{eq:[{ref:'item.value'},2]},
+    template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+  {id:'done',needs:['loop'],uses:'result.emit',with:{data:{ref:'steps.loop.output'}}},
+]};
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -290,12 +296,14 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
+  loop_item_refs:['item.index','item.value[.<field>]'],
+  supported_loop:'flow: while checks condition before each pure result.emit iteration; flow: until checks after each iteration. item.index is zero-based; item.value is the previous (while) or current (until) output, initially null. max_iterations 1–8; exhaustion fails closed. No nested or external Action body.',
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
   session_duration_binding:'For reviewed GitHub Session Actions only: Plan inputs.duration_minutes=300, Action inputs.duration_minutes={ref: inputs.duration_minutes}, Action inputs.duration_mode=explicit; workflow_run.inputs.duration_minutes is optional whole minutes 1–300. This does not authorize arbitrary Action input references; old literal Session Plans require one-time republish.',
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant; awaited by default or mode: detached for an independent child Run. The legacy child_workflow field is not accepted.',
-  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
+  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','nested_loop','dynamic_repeat','saga'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -333,6 +341,12 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['items']},{required:['max_items']},
         ]}},
+        {required:['flow','condition','max_iterations','template'],
+          properties:{flow:{enum:['while','until']},
+            template:{type:'object',additionalProperties:false,required:['uses','with'],
+              properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
+          not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},
+            {required:['needs_policy']},{required:['times']},{required:['items']},{required:['max_items']}]}},
         {required:['flow','duration_seconds'],properties:{flow:{const:'wait'}},
           not:{anyOf:[
             {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
@@ -355,7 +369,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach','child','wait','wait_event']},
+        flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
+        max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
+        condition:{anyOf:[{type:'boolean'},{type:'object'}]},
         duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
         timeout_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxEventWaitSeconds},
         token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
@@ -461,8 +477,8 @@ const entries=[
    description:'Optional one-use owner API decision before a reviewed top-level GitHub Task/Session. Runs wait up to 600 seconds. Decision must match Run, Step, and Published Version; approval never substitutes for Publish grants.'},
   {id:'flow.wait_event',kind:'flow',availability:'supported',
     description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
-  {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
+  {id:'flow.loop',kind:'flow',availability:'supported',
+   description:'Bounded dynamic while/until with one pure result.emit body, 1–8 iterations, stable Cloudflare native checkpoints and fail-closed budget. Nested loops and external Action bodies remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
    description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
   {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
@@ -551,13 +567,12 @@ export async function workflowCapabilities(env:Pick<Env,
   // Design-only contracts make unsupported features discoverable without
   // advertising a second compiler or presenting a publishable DSL example.
   if(id==='flow.loop'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      constructs:['while','until','nested_foreach','dynamic_repeat'],
-      evaluation:'Conditions read only frozen inputs and preceding published Step results',
-      bounds:'Explicit finite iteration/depth/expanded-step/time limits required before any external effect',
-      replay:'Deterministic iteration identities and immutable expansion snapshots before dispatch',
-      failure:'Budget exhaustion must fail closed, never silently count as success',
-      dependencies:'Nested effects must retain the parent Published Plan grants and one-shot dispatch fences'};
+    detail.example=await compilingExample(boundedLoop);
+    detail.loop_policy={modes:['while','until'],max_iterations:PLAN_LIMITS.maxRepeat,
+      body:'single result.emit only',nested:false,external_actions:false,
+      refs:['item.index','item.value'],native_checkpoint:'step.do per condition and iteration (reserved identity)',
+      budget:'Maximum iterations reserved in the same 32-step Plan budget',
+      exhaustion:'failed:loop_budget_exceeded',replay:'fixed checkpoint identity per iteration'};
   }
   if(id==='flow.child.detached'){
     detail.example=await compilingExample({...awaitedChildExample,
