@@ -1,6 +1,6 @@
 import {runPublishedCloudflareAction} from './cloudflare-action-executor.ts';
 import {watchPersistedSessions} from './github-action-session-watch.ts';
-import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
+import {awaitedChildRunId,transferAwaitedChildCapacity,admitDetachedChild,startReservedDetachedChild,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import {waitForRuntimeApproval} from './runtime-approval.ts';
@@ -533,6 +533,7 @@ async function runAwaitedChild(
  ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
 ):Promise<Outcome>{
  if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+ const detached=s.with.mode==='detached';
  const target=s.with.workflow_id,version=s.with.version_id;
  const approval=plan.child_approvals?.find(x=>x.workflow_id===target&&x.version_id===version);
  if(!approval||typeof target!=='string'||typeof version!=='string')
@@ -565,13 +566,43 @@ async function runAwaitedChild(
    // predicate as the final authority if this state races with a change.
    if(published.state!=='active'||published.active_version_id!==version)
      return {status:'failed',error_code:'child_target_unavailable'};
-   await transferAwaitedChildCapacity(env.DB,{
-     parentRunId:runId,parentStepId:s.id,childRunId:childId,
+   const reservation={parentRunId:runId,parentStepId:s.id,childRunId:childId,
      childWorkflowId:target,childVersionId:version,
      admissionKey:'child-'+childId,requestDigest:frozen.digest,
-     inputJson:frozen.inputJson,timestamp:now(),
-   });
- }catch{return {status:'indeterminate',error_code:'child_admission_unconfirmed'};}
+     inputJson:frozen.inputJson,timestamp:now()};
+   if(detached)await admitDetachedChild(env.DB,reservation);
+   else await transferAwaitedChildCapacity(env.DB,reservation);
+ }catch(error){
+   if(detached&&error instanceof Error&&error.message==='detached_child_admission_rejected')
+     return {status:'failed',error_code:'detached_child_admission_rejected'};
+   return {status:'indeterminate',error_code:'child_admission_unconfirmed'};
+ }
+ if(detached){
+   const childReference={run_id:childId,published_version_id:version};
+   for(let i=0;i<=20;i++){
+     try{
+       const started=await step.do('workflow-'+s.id+'-detached-child-start-'+i,
+         {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+         async()=>startReservedDetachedChild(env,{
+           parentRunId:runId,parentStepId:s.id,childRunId:childId,timestamp:now(),
+         }));
+       // A detached child completes the calling Step at confirmed native
+       // creation, not after its independent business Run completes.
+       if(started.start_state==='started')
+         return {status:'succeeded',output:childReference};
+       if(started.start_state==='rejected')
+         return {status:'failed',error_code:'detached_parent_not_active'};
+       if(started.start_state==='indeterminate')break;
+     }catch{
+       // Unknown native creation must not trigger a second create().
+     }
+     if(i<20)await step.sleep('workflow-'+s.id+'-detached-child-reconcile-'+i,30_000);
+   }
+   // Keep the child identity visible even when a native ACK cannot be
+   // established. A provider outcome is never guessed from a timeout.
+   return {status:'indeterminate',output:childReference,
+     error_code:'detached_child_start_unconfirmed'};
+ }
  // Child start and every observation use the SAME derived ID. If an ACK
  // disappears, the helper only retries on a proven native not-found.
  for(let i=0;i<120;i++){

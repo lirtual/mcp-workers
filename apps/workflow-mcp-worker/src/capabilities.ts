@@ -264,7 +264,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   session_duration_binding:'For reviewed GitHub Session Actions only: Plan inputs.duration_minutes=300, Action inputs.duration_minutes={ref: inputs.duration_minutes}, Action inputs.duration_mode=explicit; workflow_run.inputs.duration_minutes is optional whole minutes 1–300. This does not authorize arbitrary Action input references; old literal Session Plans require one-time republish.',
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
-  supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',
+  supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant; awaited by default or mode: detached for an independent child Run. The legacy child_workflow field is not accepted.',
   unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
 });
 
@@ -311,7 +311,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {required:['flow','token_sha256','timeout_seconds'],properties:{flow:{const:'wait_event'}},
           not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
             {required:['times']},{required:['items']},{required:['max_items']},{required:['template']}] }},
-        {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'}},not:{anyOf:[
+        {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'},mode:{const:'detached'}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['times']},
           {required:['items']},{required:['max_items']},{required:['template']},
         ]}},
@@ -329,6 +329,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
         timeout_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxEventWaitSeconds},
         token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
+        mode:{const:'detached'},
         workflow_id:{type:'string',format:'uuid'},
         version_id:{type:'string',format:'uuid'},
         inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
@@ -432,9 +433,9 @@ const entries=[
   {id:'flow.loop',kind:'flow',availability:'unsupported',
    description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
-   description:'At most one awaited, non-recursive child per parent (flow: child, not child_workflow). Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
-  {id:'flow.child.detached',kind:'flow',availability:'unsupported',
-   description:'Detached child Run initiation and independent cancellation ownership are not implemented; one pinned awaited child is the only supported composition.'},
+   description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
+  {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
+   description:'Explicit mode: detached on one pinned flow: child; exact approved_children required. Child consumes its own 1-of-8 slot and starts under its own immutable Plan. Parent returns a child Run reference after confirmed native creation without waiting; parent completion does not stop it. An uncertain native start is never blindly retried.'},
   {id:'flow.saga',kind:'flow',availability:'unsupported',
    description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
 ] as const;
@@ -512,12 +513,16 @@ export async function workflowCapabilities(env:Pick<Env,
       dependencies:'Nested effects must retain the parent Published Plan grants and one-shot dispatch fences'};
   }
   if(id==='flow.child.detached'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      ownership:'Explicit independent child Run; no inherited Connection, Secret or approval',
-      version:'Pinned active immutable child Published Version at admission',
-      cancellation:'Parent cancellation does not terminate detached child',
-      capacity:'Separate bounded child admission; no implicit reservation/deadlock bypass',
-      idempotency:'Stable identity and no retry of unknown native child creation'};
+    detail.example=await compilingExample({...awaitedChildExample,
+      name:'Pinned detached child (illustrative)',
+      steps:awaitedChildExample.steps.map(s=>('flow' in s&&s.flow==='child'?{...s,mode:'detached'}:s))});
+    detail.grant={required:['approved_children'],version:'active_immutable_child_version',
+      note:'Illustrative UUIDs must be replaced with the real active child and immutable Version. Validate and approve the exact required_children before publication.',
+      limits:'One non-recursive child per parent; parent and child independently consume 1 of 8 Run slots'};
+    detail.detached_policy={ownership:'Independent child Published Plan and grants',
+      completion:'Parent returns pinned child Run reference after confirmed native creation',
+      cancellation:'Parent completion or cancellation does not cancel the detached child',
+      replay:'Stable child identity; unknown native creation is never blindly retried'};
   }
   if(id==='flow.saga'){
     detail.design_contract={executable:false,source_schema:'not_accepted',
@@ -608,7 +613,7 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(awaitedChildExample);
     detail.grant={required:['approved_children'],version:'active_immutable_child_version',
       note:'Example UUIDs are illustrative, not deployed Workflows. First publish a real child, replace both identifiers with its real workflow_id and published_version_id, call workflow_validate for required_children and approve that exact list before workflow_publish. Compilation alone is not publication authority.',
-      limits:'One awaited non-recursive child per parent; parent reserves 2 of 8 Run units'};
+      limits:'One non-recursive child per parent; awaited reserves 2 of 8 Run units, detached consumes two independent 1-of-8 slots'};
   }
   if(id==='flow.foreach_multi_emit'){
     detail.example=await compilingExample(foreachMultiEmit);

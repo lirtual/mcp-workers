@@ -323,7 +323,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       continue;
     }
     if(candidate.flow==='child'){
-      keys(candidate,['id','flow','workflow_id','version_id','inputs','needs'],path);
+      keys(candidate,['id','flow','workflow_id','version_id','inputs','needs','mode'],path);
+      if(candidate.mode!==undefined&&candidate.mode!=='detached')
+        throw new PlanError('invalid_child_mode',path+'/mode');
       if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||OBJECT_PROTOTYPE_KEYS.has(candidate.id))
         throw new PlanError('invalid_step_id',path+'/id');
       if(typeof candidate.workflow_id!=='string'||!UUID_RE.test(candidate.workflow_id)||
@@ -336,7 +338,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||new Set(deps).size!==deps.length)
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.child',needs:deps,
-        with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs}});
+        with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs,
+          ...(candidate.mode==='detached'?{mode:'detached'}:{})}});
       if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
@@ -585,7 +588,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.uses==='flow.foreach'){
       keys(withData,['items','max_items','template','templates'],stepPath+'/with');
     }else if(s.uses==='flow.child'){
-      keys(withData,['workflow_id','version_id','inputs'],stepPath+'/with');
+      keys(withData,['workflow_id','version_id','inputs','mode'],stepPath+'/with');
+      if(withData.mode!==undefined&&withData.mode!=='detached')
+        throw new PlanError('invalid_child_mode',stepPath+'/with/mode');
     }else if(s.uses==='flow.wait'){
       keys(withData,['duration_seconds'],stepPath+'/with');
     }else if(s.uses==='flow.wait_event'){

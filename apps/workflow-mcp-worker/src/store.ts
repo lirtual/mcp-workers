@@ -750,8 +750,9 @@ export class WorkflowService {
     if(protocolActions.length &&
        (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
-    const weight=activePlan.steps.some(s=>s.uses==='flow.child')?2:1;
-    if(weight===2&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
+    const hasChild=activePlan.steps.some(s=>s.uses==='flow.child');
+    const weight=activePlan.steps.some(s=>s.uses==='flow.child'&&s.with.mode!=='detached')?2:1;
+    if(hasChild&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
       throw new StateError('child_approval_required');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
