@@ -95,6 +95,18 @@ describe('MySQL read interpolation safety and Direct compatibility', () => {
     expect(client.execute).not.toHaveBeenCalled();
   });
 
+  it('reconciles a failed Hyperdrive BEGIN only after same-session ROLLBACK succeeds', async () => {
+    const client = mockClient();
+    client.beginTransaction.mockRejectedValue(new Error('begin rejected'));
+    await expect(mysqlQueryRead({...base,transport:'hyperdrive'}, 'SELECT 1', [], 2))
+      .rejects.toBeInstanceOf(ConfirmedReadFailure);
+    expect(client.rollback).toHaveBeenCalledOnce();
+    expect(client.query).not.toHaveBeenCalled();
+    client.rollback.mockRejectedValue(new Error('rollback receipt missing'));
+    await expect(mysqlQueryRead({...base,transport:'hyperdrive'}, 'SELECT 1', [], 2))
+      .rejects.not.toBeInstanceOf(ConfirmedReadFailure);
+    expect(client.query).not.toHaveBeenCalled();
+  });
   it('reports a failed Hyperdrive read as settled only when rollback is acknowledged',async()=>{
     const client=mockClient();
     const serverError=Object.assign(new Error('unknown table'),{code:'ER_NO_SUCH_TABLE'});

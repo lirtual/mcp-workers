@@ -16,9 +16,12 @@ no transparent alias, unsafe same-ID rebind or automatic consumer cutover.
 Neither the original Hyperdrive reference nor its rollback consumers
 are modified during candidate preparation. A rejected MySQL/PostgreSQL
 connection handshake before any SQL is sent now provides explicit no-SQL
-completion evidence for releasing that request's D1 in-flight claim. Failed
-queries without confirmed ROLLBACK, lost responses after dispatch and unknown
-completion still retain their claims (no automatic expiry or manual reset).
+completion evidence for releasing that request's D1 in-flight claim. A failed
+MySQL transaction start or PostgreSQL BEGIN READ ONLY can also settle the
+claim only if the same pinned backend acknowledges a subsequent ROLLBACK;
+without that receipt it remains unknown. Failed queries without confirmed
+ROLLBACK, lost responses after dispatch and unknown completion still retain
+their claims (no automatic expiry or manual reset).
 
 The explicit Direct plaintext acknowledgement is collected at Add only, not
 repeated at Edit or Enable for an unchanged transport. The

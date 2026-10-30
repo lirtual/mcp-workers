@@ -22,6 +22,28 @@ describe('PostgreSQL read completion evidence',()=>{
       .rejects.toBeInstanceOf(ConfirmedNoSqlFailure);
     expect(query).not.toHaveBeenCalled();
   });
+  it('reconciles a failed BEGIN READ ONLY only with same-session ROLLBACK evidence',async()=>{
+    const query=vi.fn().mockImplementation(async(input:string|object)=>{
+      if(input==='BEGIN READ ONLY')throw new Error('begin rejected');
+      if(input==='ROLLBACK')return {rows:[],fields:[]};
+      throw new Error('workload SQL must never execute');
+    });
+    clientConstructor.mockImplementation(()=>({
+      connect:async()=>undefined,query,end:vi.fn().mockResolvedValue(undefined)
+    }));
+    await expect(postgresQueryRead(connection,'SELECT 1',[],2))
+      .rejects.toBeInstanceOf(ConfirmedReadFailure);
+    expect(query.mock.calls.map(call=>call[0])).toEqual(['BEGIN READ ONLY','ROLLBACK']);
+    query.mockImplementation(async(input:string|object)=>{
+      if(input==='ROLLBACK')throw new Error('rollback receipt missing');
+      if(input==='BEGIN READ ONLY')throw new Error('begin rejected');
+      throw new Error('workload SQL must never execute');
+    });
+    query.mockClear();
+    await expect(postgresQueryRead(connection,'SELECT 1',[],2))
+      .rejects.not.toBeInstanceOf(ConfirmedReadFailure);
+    expect(query.mock.calls.map(call=>call[0])).toEqual(['BEGIN READ ONLY','ROLLBACK']);
+  });
   it('only a completed ROLLBACK can establish a failed read is settled',async()=>{
     const failure=Object.assign(new Error('relation missing'),{code:'42P01'});
     const query=vi.fn().mockImplementation(async(input:string|object)=>{

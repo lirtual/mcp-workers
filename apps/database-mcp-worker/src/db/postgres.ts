@@ -41,12 +41,21 @@ async function withClient<T>(connection: EffectiveConnection, operation: (client
  */
 async function withReadOnlyClient<T>(connection: EffectiveConnection, operation: (client: Client) => Promise<T>): Promise<T> {
   return withClient(connection, async client => {
-    await withTimeout(client.query('BEGIN READ ONLY'), connection.limits.queryTimeoutMs, () => {
-      void client.end().catch(() => undefined);
-    });
     const rollback = () => withTimeout(client.query('ROLLBACK'), connection.limits.queryTimeoutMs, () => {
       void client.end().catch(() => undefined);
     });
+    try {
+      await withTimeout(client.query('BEGIN READ ONLY'), connection.limits.queryTimeoutMs, () => {
+        void client.end().catch(() => undefined);
+      });
+    } catch (error) {
+      // No workload statement has run yet; only the pinned backend's
+      // acknowledged ROLLBACK proves this attempted BEGIN is settled.
+      let rolledBack = false;
+      try { await rollback(); rolledBack = true; } catch { /* Unknown: retain claim. */ }
+      if (rolledBack) throw new ConfirmedReadFailure(error);
+      throw error;
+    }
     let result: T;
     try { result = await operation(client); }
     catch(error){

@@ -29,7 +29,20 @@ async function withConnection<T>(
     }
     if (connection.transport === 'hyperdrive') {
       // Pin the backend session during SQL-mode check and client interpolation.
-      await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      try {
+        await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      } catch (error) {
+        // No workload statement has run. If this same session acknowledges
+        // ROLLBACK, its failed transaction start is conclusively settled.
+        // A failed/unknown rollback must retain the durable admission claim.
+        let rolledBack = false;
+        try {
+          await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
+          rolledBack = true;
+        } catch { /* Remote transaction state unknown. */ }
+        if (rolledBack) throw new ConfirmedReadFailure(error);
+        throw error;
+      }
       let result: T;
       try {
         await assertMysqlHyperdriveSqlMode(client, connection);
