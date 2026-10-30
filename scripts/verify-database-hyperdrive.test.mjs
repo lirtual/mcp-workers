@@ -137,3 +137,29 @@ test('denied Hyperdrive read identifies second manifest slot without querying up
   }), error => safeReadbackFailureCode(error) === 'cloudflare_read_404_slot_2');
   assert.equal(count, 2);
 });
+
+
+test('reviewed production manifest has only isolated MySQL and PostgreSQL E2E origins',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const {readConfiguration}=await import('./manual-worker-release.mjs');
+ const root=new URL('../apps/database-mcp-worker/',import.meta.url);
+ const source=readConfiguration('database-mcp-worker',readFileSync(new URL('wrangler.jsonc',root),'utf8'));
+ const reviewed=JSON.parse(readFileSync(new URL('hyperdrive-bindings.json',root),'utf8'));
+ const byBinding=new Map(reviewed.map(x=>[x.binding,x]));
+ assert.equal(byBinding.size,2);
+ assert.deepEqual([...byBinding.keys()].sort(),['HYPERDRIVE_DB344_MYSQL_E2E','HYPERDRIVE_DB344_PG_E2E']);
+ const mysql=byBinding.get('HYPERDRIVE_DB344_MYSQL_E2E');
+ assert.deepEqual(mysql,{
+  binding:'HYPERDRIVE_DB344_MYSQL_E2E',id:'38bf39b569484dbb8a9fe1b24f0df854',
+  dialect:'mysql',origin_host:'mysql-zeroverse.d.aivencloud.com',
+  origin_port:18691,origin_database:'aiven_mysql_test',origin_user:'db344_e2e',
+  ca_certificate_id:'c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a'
+ });
+ assert.deepEqual(source.hyperdrive,reviewed.map(x=>({binding:x.binding,id:x.id})));
+ assert.ok(!JSON.stringify(source.hyperdrive).includes('HYPERDRIVE_AIVEN_OPENLIST'));
+ assert.ok(!JSON.stringify(reviewed).includes('135ef2e15db049c68e99b0849f9a3da0'));
+ assert.equal(verifyCloudflareHyperdriveConfig(mysql,{
+  id:mysql.id,caching:{disabled:true},mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:mysql.ca_certificate_id},
+  origin:{scheme:'mysql',host:mysql.origin_host,port:mysql.origin_port,database:mysql.origin_database,user:mysql.origin_user}
+ }),true);
+});
