@@ -696,7 +696,7 @@ const GET_OPERATION_STATUS_TOOL = {
 
 const START_PROCESS_TOOL = {
   name: "run_command", title: "Start development command",
-  description: "Start a development command with the Agent account's fixed local Shell. Commands run with that Linux account's full OS permissions. Every start requires a stable operation_id; after an uncertain response, query that ID before considering a new intent. A running command returns an Agent-owned session_id. Shell commands use the authorized Linux Agent account's current OS permissions.",
+  description: "Start a development command using the authorized Agent account: the configured local shell on Linux, or Windows PowerShell on native Windows. Commands have that OS account's permissions; the current working directory is not a security sandbox. Every start requires a stable operation_id; after an uncertain response, query that ID before a new intent. A running command returns an Agent-owned session_id.",
   inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
