@@ -16,7 +16,7 @@ test('MySQL verified CA, pinned hostname and read-only SELECT 1',async()=>{
   assert.equal(typeof options.ssl.checkServerIdentity,'function');
   assert.equal(options.multipleStatements,false);
   assert.equal(options.password,password);
-  return {query:async sql=>{assert.equal(sql,'SELECT 1 AS credential_probe');return [[{credential_probe:1}]]},
+  return {query:async sql=>{assert.deepEqual(sql,{sql:'SELECT 1 AS credential_probe',timeout:5000});return [[{credential_probe:1}]]},
    end:async()=>{closed++}};
  }})};
  assert.deepEqual(await verifyOriginSql476({target,password,caPem},drivers),

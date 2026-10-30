@@ -26,7 +26,7 @@ export async function verifyOriginSql476({target,password,caPem},drivers={
    connection=await drivers.mysql().createConnection({host,port:target.origin_port,
     database:target.origin_database,user:target.origin_user,password,ssl,
     connectTimeout:5000,multipleStatements:false});
-   const [rows]=await connection.query('SELECT 1 AS credential_probe');
+   const [rows]=await connection.query({sql:'SELECT 1 AS credential_probe',timeout:5000});
    if(!Array.isArray(rows)||rows.length!==1||Number(rows[0]?.credential_probe)!==1)fail();
   }catch{fail()}
   finally{if(connection)await connection.end().catch(()=>{});}
