@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyCloudflareHyperdriveConfig, verifyDatabaseHyperdriveCloudReadback, safeReadbackFailureCode } from './verify-database-hyperdrive.mjs';
+import { verifyCloudflareHyperdriveConfig, verifyDatabaseHyperdriveCloudReadback, safeReadbackFailureCode, verifyApprovedAccountScope } from './verify-database-hyperdrive.mjs';
 
 const configId = '12345678-1234-1234-1234-123456789abc';
 const caId = 'abcd1234-0000-1111-2222-123456789abc';
@@ -90,12 +90,12 @@ test('release diagnostic allows only fixed codes and never prints thrown secret/
 
 test('classifies only bounded HTTP read failures while discarding provider content', async () => {
   for (const [status, expectedCode] of [
-    [401, 'cloudflare_read_401'],
-    [403, 'cloudflare_read_403'],
-    [404, 'cloudflare_read_404'],
-    [429, 'cloudflare_read_429'],
-    [503, 'cloudflare_read_5xx'],
-    [418, 'cloudflare_read_other']
+    [401, 'cloudflare_read_401_slot_1'],
+    [403, 'cloudflare_read_403_slot_1'],
+    [404, 'cloudflare_read_404_slot_1'],
+    [429, 'cloudflare_read_429_slot_1'],
+    [503, 'cloudflare_read_5xx_slot_1'],
+    [418, 'cloudflare_read_other_slot_1']
   ]) {
     await assert.rejects(
       verifyDatabaseHyperdriveCloudReadback({
@@ -112,4 +112,28 @@ test('classifies only bounded HTTP read failures while discarding provider conte
       }
     );
   }
+});
+
+test('refuses incorrect Cloudflare account without exposing account ID', () => {
+  assert.equal(verifyApprovedAccountScope('8bb496011403552e785ea1b834daffdf'), true);
+  for (const wrong of ['11111111111111111111111111111111', '', undefined]) {
+    assert.throws(() => verifyApprovedAccountScope(wrong), error =>
+      safeReadbackFailureCode(error) === 'account_scope_mismatch' &&
+      !error.message.includes('8bb496011403552e785ea1b834daffdf'));
+  }
+});
+test('denied Hyperdrive read identifies second manifest slot without querying upstream body', async () => {
+  const pg = { ...manifest[0], binding: 'HYPERDRIVE_PG', id: 'eeeeeeee-1234-1234-1234-123456789abc', dialect: 'postgres' };
+  const pgConfig = { ...cloudConfig, id: pg.id, mtls: { ...cloudConfig.mtls, sslmode: 'verify-full' }, origin: { ...cloudConfig.origin, scheme: 'postgres' } };
+  const source2 = { hyperdrive: [...source.hyperdrive, { binding: pg.binding, id: pg.id }] };
+  let count = 0;
+  await assert.rejects(verifyDatabaseHyperdriveCloudReadback({
+    ...options, source: source2, manifest: [...manifest, pg],
+    request: async () => {
+      count++;
+      if (count === 1) return { ok: true, json: async () => ({ success: true, result: cloudConfig }) };
+      return { ok: false, status: 404, json: async () => { throw Error('Must never read upstream error content'); } };
+    }
+  }), error => safeReadbackFailureCode(error) === 'cloudflare_read_404_slot_2');
+  assert.equal(count, 2);
 });
