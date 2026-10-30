@@ -225,35 +225,35 @@ test('homepage copy state follows the separately verified platform pins',async()
 });
 
 
-test('reviewed Linux and Windows v0.1.35 public installers pin immutable local upgrade sources', async () => {
+test('reviewed Linux and Windows v0.1.37 public installers pin immutable local upgrade sources', async () => {
   const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.35');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '3ef5a9c4d8741cba89b28f525dab4692826482f8');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.37');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '104c231dc243bf8f0633783a6192eca5bf2bc05f');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '9f110bbeda33027482a55d7c577ca2975e1b850380f3e57390b2ae4a59c74b1b');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '3c5586f7020e45e4deb4848509175e006d82b8f079535de6d936d9e4938b444f');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.tag, 'v0.1.35');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, '3ef5a9c4d8741cba89b28f525dab4692826482f8');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '0ee9b58b8a5972ea8ac5497e35765798d7e293f4e104f4050b4cea2a2fd4561c');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '4ba573a57d72c306e8e40aea203ced037550913d3f7a3782edadb04fadc04b84');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '2770521c80c195e08de50f837424391f1ee3070114abc66e59d8ae72c6b0de6e');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '235e7058b220ea8a3ec8794c13d7e5c4df50e3b153b8044dbd70272b1b37c5e3');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.tag, 'v0.1.37');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, '104c231dc243bf8f0633783a6192eca5bf2bc05f');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '01594be409c3b05f3501d13cd89fe8e44ec9558a678f70bd1b174a2bafbc2202');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '3db494f2787a332b8aa5953ccfa4ffb1a1305e9864c65bb0576620fc95dda87d');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
   assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.35/);
+  assert.match(shell, /remote-control-agent-v0\.1\.37/);
   assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
   assert.match(shell, /"\$@" < \/dev\/tty/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /v0\.1\.35/);
-  assert.match(ps1, /3ef5a9c4d8741cba89b28f525dab4692826482f8/);
-  assert.match(ps1, /4ba573a57d72c306e8e40aea203ced037550913d3f7a3782edadb04fadc04b84/);
-  assert.match(ps1, /0ee9b58b8a5972ea8ac5497e35765798d7e293f4e104f4050b4cea2a2fd4561c/);
+  assert.match(ps1, /v0\.1\.37/);
+  assert.match(ps1, /104c231dc243bf8f0633783a6192eca5bf2bc05f/);
+  assert.match(ps1, /3db494f2787a332b8aa5953ccfa4ffb1a1305e9864c65bb0576620fc95dda87d/);
+  assert.match(ps1, /01594be409c3b05f3501d13cd89fe8e44ec9558a678f70bd1b174a2bafbc2202/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
