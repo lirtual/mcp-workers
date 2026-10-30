@@ -56,8 +56,9 @@ test('source changes are exactly the fixed binding and reviewed manifest; never 
     'apps/database-mcp-worker/wrangler.jsonc'
   ]);
   const config=JSON.parse(files['apps/database-mcp-worker/wrangler.jsonc']);
-  assert.equal(config.hyperdrive.length,2);
-  assert.equal(config.hyperdrive[1].binding,entry.binding);
+  assert.equal(config.hyperdrive.length,manifest.length+1);
+  assert.deepEqual(config.hyperdrive.slice(0,-1),JSON.parse(input).hyperdrive);
+  assert.equal(config.hyperdrive.at(-1).binding,entry.binding);
   assert.deepEqual(JSON.parse(files['apps/database-mcp-worker/hyperdrive-bindings.json']),[...manifest,entry]);
   assert.ok(!JSON.stringify(files).includes('very-secret-password'));
 });

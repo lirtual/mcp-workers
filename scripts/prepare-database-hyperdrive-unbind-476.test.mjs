@@ -12,8 +12,10 @@ test('unbinding stages precisely the reviewed Wrangler binding and manifest, lea
   assert.deepEqual(Object.keys(files).sort(),['apps/database-mcp-worker/hyperdrive-bindings.json','apps/database-mcp-worker/wrangler.jsonc']);
   const before=JSON.parse(source), after=JSON.parse(files['apps/database-mcp-worker/wrangler.jsonc']);
   assert.deepEqual({...before,hyperdrive:[]},{...after,hyperdrive:[]});
-  assert.deepEqual(after.hyperdrive,[]);
-  assert.deepEqual(JSON.parse(files['apps/database-mcp-worker/hyperdrive-bindings.json']),[]);
+  const retained=before.hyperdrive.filter(x=>x.binding!==target.binding||x.id!==target.id);
+  assert.deepEqual(after.hyperdrive,retained);
+  assert.deepEqual(JSON.parse(files['apps/database-mcp-worker/hyperdrive-bindings.json']),
+    manifest.filter(x=>x.binding!==target.binding||x.id!==target.id));
   assert.ok(files['apps/database-mcp-worker/wrangler.jsonc'].includes('"database_id": "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a"'));
   assert.ok(!JSON.stringify(files).includes('PASSWORD'));
 });
@@ -109,7 +111,8 @@ test('already unbound changes do not create a new PR and leave final retirement 
   const files=removeHyperdriveBindingSource(source,manifest,target.binding,target.id);
   const f=mockStage();
   assert.deepEqual(await stageHyperdriveUnbind({env:jobEnv,request:f.request,
-    sourceText:files['apps/database-mcp-worker/wrangler.jsonc'],manifest:[]}),
+    sourceText:files['apps/database-mcp-worker/wrangler.jsonc'],
+    manifest:manifest.filter(x=>x.binding!==target.binding||x.id!==target.id)}),
     {phase:'already_unbound'});
   assert.ok(!f.writes.some(x=>x.path.includes('/git/')||x.path.endsWith('/pulls')));
 });
