@@ -57,11 +57,15 @@ the durable decision and the existing GitHub Attempt/OIDC ledger still
 controls physical dispatch and result. The gate is an authenticated **MCP
 API assertion**, not independently verified presence of a human, and it
 cannot expand existing execution permissions. `workflow_cancel` may cancel
-a still-undecided gate if no other Step is active; a D1 atomic fence records
-the cancellation before any GitHub Attempt. Once a decision has been recorded,
-the ordinary GitHub cancellation and physical-state reconciliation rules apply.
-Cancellation is a request, not proof that an external GitHub task stopped. A paused Workflow blocks new
-Runs; it does not reverse an in-flight approved operation.
+a waiting gate or an already-approved Step before its first durable GitHub
+Attempt, provided no other Step is active. The D1 Run cancellation and Attempt
+insert race atomically: cancellation first forbids GitHub dispatch; Attempt
+first routes cancellation through existing physical GitHub cancellation and
+terminal reconciliation. An approval decision, even if consumed, is not itself
+an external Attempt. Force cancellation requires an existing Attempt and the
+normal physical safeguards. Cancellation is a request, not proof of physical
+termination. A paused Workflow blocks new Runs; it does not reverse an
+in-flight approved operation.
 
 The additional D1 migration `0015_runtime_approval.sql` is applied only by
 the existing selected-Worker GitHub Actions release path, after read-only

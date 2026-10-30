@@ -1,34 +1,63 @@
 # Database MCP #344 — production release and recovery (managed D1 only)
 
-## Aiven MySQL test replacement — verified live read-only E2E (2026-10-30)
+## Latest verified state and TLS acceptance boundary (2026-10-30)
 
-The independently created `38bf39b569484dbb8a9fe1b24f0df854`
-uses the isolated Aiven MySQL database `aiven_mysql_test` and user
-`db344_e2e`, strict `VERIFY_IDENTITY`, the existing CA and disabled
-SQL caching. Reviewed [PR #518](https://github.com/lirtual/mcp-workers/pull/518)
-merged; the **only** production publication was existing
-[Owner Release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654),
-which passed all required checks and readbacks. Worker version
-`ea5e9c45-7f43-44c5-bf19-67d08da9d962` is serving **100%** with
-both `HYPERDRIVE_DB344_MYSQL_E2E` and
-`HYPERDRIVE_DB344_PG_E2E` bound exactly to reviewed IDs.
+This section supersedes the historical snapshots below. Independently checked against
+live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
 
-An available, nonretired logical ID `aiven_mysql_e2e` was first
-registered disabled (revision 1), then
-[Owner Activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557)
-completed after real deployed Worker Hyperdrive preflight. Independent
-D1 readback shows **active, revision 2**. Live Database MCP health
-returned PASS (713ms), and bounded `SELECT 1 AS acceptance_ok`
-returned `1`. Both Direct connections (`b2b`, `scrape_relay`)
-passed health checks. No business-data writes or DDL were issued.
+- Production Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f` serves **100%**.
+  The two reviewed Hyperdrive configs are PostgreSQL
+  `eb4ccbd231ea44beabc72b3f2b483d69` (`verify-full`) and isolated
+  MySQL `38bf39b569484dbb8a9fe1b24f0df854` (`VERIFY_IDENTITY`).
+  Both have an approved CA and query caching **disabled**.
+- D1 logical connection inventory: `db344_pg_e2e`, `b2b` and
+  `scrape_relay` are **active**; `aiven_mysql_e2e` and legacy
+  `aiven_mysql_openlist` are **disabled**. Do **not** reactivate a test
+  reference solely to recreate historical acceptance results. PostgreSQL
+  `db344_pg_e2e` health **PASS**.
+- Real isolated PostgreSQL Hyperdrive SQL/read, structured DDL/DML,
+  RLS policy enforcement (including denied tenant access), 21-row
+  UPDATE/DELETE transaction rollback and full test-table cleanup
+  **PASS**. See [RLS](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514431922)
+  and [rollback](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514478063).
+  All synthetic test tables and RLS policies were cleaned up.
+- Independent OpenSSL **origin** TLS handshake matrix on real Aiven
+  PostgreSQL/MySQL was **6/6 PASS** (valid CA+hostname, bad CA rejection,
+  bad hostname rejection): [evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514521721).
+  This is **not** a deliberately misconfigured **Cloudflare Hyperdrive**
+  handshake. The actual Hyperdrive-client bad-CA/bad-hostname negative
+  test remains **NOT PERFORMED / BLOCKED**.
+- The Cloudflare Hyperdrive API inventory has no separate read-only
+  handshake-test endpoint. The supported create/update path tests an
+  upstream connection but changes resources and requires an origin
+  password. An attempted **isolated create** was blocked by platform
+  safety controls; no alternate execution route or retry may be used
+  to bypass this. Existing live configurations **must not** be modified
+  to induce failure. See [blocker](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514561715).
+- Existing [PR #523](https://github.com/lirtual/mcp-workers/pull/523)
+  adds the existing strict TLS/config drift regression suite to the
+  existing mandatory CI. Both [PR CI](https://github.com/lirtual/mcp-workers/actions/runs/41000198731)
+  and [merged main CI](https://github.com/lirtual/mcp-workers/actions/runs/41000595512)
+  **PASS**. Offline tests are not Hyperdrive-client negative E2E.
+  No production Worker redeployment is needed for this CI-only change.
 
-The previously deleted OpenList config is **not** restored; its stale
-D1 reference `aiven_mysql_openlist` remains **disabled, revision 3**,
-pending separate reviewed retirement. The retired legacy logical ID
-`aiven_mysql_test` was not reused. This is MySQL Hyperdrive **read-only**
-production-path E2E PASS, but PostgreSQL Hyperdrive E2E, negative TLS,
-write/DDL/rollback, and full #476 lifecycle acceptance remain NOT
-PERFORMED.
+**Only remaining TLS decision:** keep #344 **Open** with its Hyperdrive-client
+negative E2E explicitly blocked until an allowed disposable configuration and
+separate credential/cleanup proof path exists, or the Owner explicitly
+accepts that residual evidence gap as a documented waiver. Neither an OpenSSL
+origin test, a strict configured TLS mode nor a CI unit test silently
+substitutes for this acceptance gate. Do not create a new Worker, deploy
+system or Acceptance environment just to satisfy it.
+
+## Aiven MySQL test replacement — historical live read-only E2E (2026-10-30)
+
+The separate isolated MySQL Hyperdrive config and its initial protected
+activation were successfully tested in [PR #518](https://github.com/lirtual/mcp-workers/pull/518),
+[release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654)
+and [activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557).
+These are historical PASS records. The MySQL test logical reference is
+**currently disabled**, as independently read back above; do not infer
+its current Active state from the earlier activation receipt.
 
 ## Original deleted-MySQL incident snapshot (2026-10-30; historical)
 

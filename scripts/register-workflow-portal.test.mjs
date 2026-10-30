@@ -21,9 +21,20 @@ const portal=()=>({
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),
   CLOUDFLARE_API_TOKEN:'secure-cloudflare-api-test',
   MCP_ACCESS_TOKEN:'secure-worker-bearer-test'};
+const publishedTools=[
+  'workflow_capabilities','workflow_action_list',
+  'workflow_list','workflow_get','workflow_create','workflow_update',
+  'workflow_validate','workflow_publish','workflow_approval','workflow_pause',
+  'workflow_delete','workflow_resume','workflow_run','workflow_cancel',
+  'workflow_status','workflow_result','workflow_session_data_get',
+].sort();
 const originalServer={id:'workflow',name:'Workflow',hostname:host,
   auth_type:'bearer',status:'ready',
   tools:EXPECTED_TOOLS.map(name=>({name}))};
+
+test('exact Portal tool contract includes all 17 published Workflow tools',()=>{
+  assert.deepEqual(EXPECTED_TOOLS,publishedTools);
+});
 
 test('keeps every old server, flags and tool enable/alias overrides',()=>{
   const source=portal();
@@ -62,7 +73,8 @@ function accessApplications(name, withPolicies=true){
   return [{name:'One-MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies:policies()},
     {name, type:'mcp',policies:withPolicies?policies():[]}];
 }
-function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true){
+function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,
+  toolNames=EXPECTED_TOOLS){
   let current=portal();
   let upstream;
   const requests=[];
@@ -83,7 +95,7 @@ function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true){
     if(request.method==='POST'&&tail==='/servers'){
       const value=JSON.parse(await request.text());
       assert.equal(value.auth_credentials,expectedToken);
-      upstream={...originalServer};
+      upstream={...originalServer,tools:toolNames.map(name=>({name}))};
       return res(200,upstream);
     }
     if(request.method==='POST'&&tail==='/servers/workflow/sync')return res(200,{status:'ready'});
@@ -122,6 +134,20 @@ test('comparison ignores ordering but rejects altered capability settings',()=>{
   const altered=structuredClone(reordered);
   altered[0].updated_tools[1].enabled=true;
   assert.throws(()=>assertSamePortalMappings(original,altered),/portal_existing_mapping_changed/);
+});
+
+test('rejects missing or unknown upstream tools without changing Portal',async()=>{
+  for(const toolNames of [
+    publishedTools.filter(name=>name!=='workflow_delete'),
+    [...publishedTools,'unexpected_tool'],
+  ]){
+    const api=fake(env.MCP_ACCESS_TOKEN,true,toolNames);
+    await assert.rejects(
+      ()=>attachWorkflowPortal(env,api.send),
+      /portal_server_tool_inventory_drift/);
+    assert.equal(api.requests.filter(x=>x.method==='PUT').length,0);
+    assert.equal(api.getPortal().servers.length,9);
+  }
 });
 
 test('missing credential fails before any network request',async()=>{

@@ -1,33 +1,50 @@
 # Database MCP Worker · Spec #344
 
-## Current production state — 2026-10-30 (verified)
+## Latest verified state (2026-10-30; supersedes historical sections below)
 
-The independent **Aiven MySQL test** Hyperdrive config
-`38bf39b569484dbb8a9fe1b24f0df854` uses database
-`aiven_mysql_test`, user `db344_e2e`, strict `VERIFY_IDENTITY`, the
-approved CA and disabled caching. [PR #518](https://github.com/lirtual/mcp-workers/pull/518)
-merged on reviewed `main`; the existing
-[Owner Release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654)
-**succeeded**. Independent Cloudflare readback found the exact MySQL
-`HYPERDRIVE_DB344_MYSQL_E2E` and PostgreSQL
-`HYPERDRIVE_DB344_PG_E2E` bindings on version
-`ea5e9c45-7f43-44c5-bf19-67d08da9d962` serving 100%.
+- Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f`
+  serves **100%**. Reviewed Hyperdrive bindings point to isolated
+  PostgreSQL `eb4ccbd231ea44beabc72b3f2b483d69`
+  (`verify-full`) and isolated MySQL
+  `38bf39b569484dbb8a9fe1b24f0df854`
+  (`VERIFY_IDENTITY`); each has a CA and disabled SQL caching.
+- Current D1: **active** `db344_pg_e2e`, `b2b`,
+  `scrape_relay`; **disabled** `aiven_mysql_e2e` and
+  `aiven_mysql_openlist`. Prior MySQL test activation was a
+  historical successful test and does not imply it is active today.
+  PostgreSQL Hyperdrive health remains **PASS**.
+- Live isolated PostgreSQL Hyperdrive read/DDL/write, actual RLS
+  tenant enforcement, guarded UPDATE/DELETE transaction rollback
+  and final cleanup have all **PASS** evidence in
+  [Spec #344](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514431922).
+- The live **origin** OpenSSL 6/6 certificate/hostname matrix
+  passed on Aiven PostgreSQL and MySQL
+  ([evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514521721)).
+  It does **not** prove a deliberately misconfigured **Hyperdrive**
+  client's CA/hostname rejection. The latter remains
+  **NOT PERFORMED / BLOCKED**: creation of an isolated proof config
+  was stopped by platform safety checks. Do not bypass the block,
+  reuse live origin secrets or change healthy production configs.
+- The existing strict TLS/config-drift test suite was added to
+  mandatory existing CI via [PR #523](https://github.com/lirtual/mcp-workers/pull/523).
+  Main [CI #41000595512](https://github.com/lirtual/mcp-workers/actions/runs/41000595512)
+  succeeded; there was no new Worker publication. An offline
+  regression is not a substitute for real Hyperdrive handshake failure.
 
-The new and unretired D1 logical ID `aiven_mysql_e2e` was registered
-**disabled**, then enabled only after
-[protected Owner activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557)
-passed the deployed Worker Hyperdrive SQL preflight. It is now
-**active, revision 2**. Independent Database MCP health passed (713ms)
-and a bounded `SELECT 1 AS acceptance_ok` returned `1`.
-The stale `aiven_mysql_openlist` record remains **disabled, revision 3**;
-the previously retired logical ID `aiven_mysql_test` is **not reused**.
-Both original MySQL Direct connections (`b2b`, `scrape_relay`) passed
-independent health checks and were unchanged.
+Only resume blocked Hyperdrive-client negative E2E with a separately
+allowed disposable config/origin and protected credential handling;
+otherwise leave #344 Open until an explicit Owner evidence-gap waiver.
+See [current operator runbook](../../docs/database-cutover-344.md).
 
-This is a real deployed **MySQL Hyperdrive read-only E2E PASS**, not
-permission for business-data writes. PostgreSQL Hyperdrive real SQL E2E,
-negative TLS tests, write/DDL/rollback and complete Spec #476 lifecycle
-acceptance remain separate outstanding work.
+## Earlier Aiven MySQL test activation record (historical)
+
+The independent Aiven MySQL Hyperdrive source was published with
+[release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654)
+and initially activated with
+[Owner activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557).
+That connection subsequently became disabled; its earlier read-only
+E2E remains a historical success, not evidence of a currently
+active connection.
 
 ## Previous incident snapshot (before replacement test config; historical)
 
