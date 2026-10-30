@@ -635,8 +635,10 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
  (SELECT count(*) FROM run_steps s JOIN runs r ON r.id=s.run_id
    WHERE s.status='cancelled' AND (r.outcome IS NOT 'cancelled'
-     OR r.error_code IS NOT 'approval_cancel_requested'
-     OR s.error_code IS NOT 'approval_cancel_requested')) AS invalid_cancelled_steps,
+     OR r.error_code IS NOT s.error_code
+     OR r.error_code IS NULL
+     OR r.error_code NOT IN ('approval_cancel_requested',
+       'event_wait_cancel_requested'))) AS invalid_cancelled_steps,
  (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
    state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
  (SELECT count(*) FROM session_executions WHERE state IS NULL OR
