@@ -237,6 +237,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - name: Install existing read-only MySQL/PostgreSQL probe drivers
+        run: pnpm install --frozen-lockfile --filter database-mcp-worker...
       - name: Recheck isolation, attempt password update and require independent SQL verification
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

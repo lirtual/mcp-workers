@@ -157,7 +157,8 @@ export async function listHyperdriveOperations(db: D1Database): Promise<Hyperdri
         'apply_ci_receipt_unknown','apply_ci_failed','apply_ci_pending','apply_review_missing','apply_checks_unknown','apply_main_advanced','apply_merge_sha_unknown',
         'apply_read_unavailable','apply_write_rejected','apply_outcome_unknown','apply_cas_failed',
         'apply_logical_id_unavailable','apply_source_invalid','apply_config_drift','apply_release_receipt_unknown',
-        'credential_isolation_blocked','credential_outcome_unknown','credential_health_unverified'].includes(row.error_class)) {
+        'credential_isolation_blocked','credential_outcome_unknown','credential_health_unverified',
+        'credential_origin_sql_verified'].includes(row.error_class)) {
         row.error_class = 'operation_blocked';
       }
     }

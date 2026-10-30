@@ -83,11 +83,15 @@ The three connection baseline and OpenList CA above are prior evidence, not a fr
   Owner-only release workflow, and rechecks current/rollback isolation before
   the one-shot Cloudflare PATCH and connection-pool restart. The original
   connection remains disabled. As Cloudflare never returns the write-only
-  password, accepted PATCH/restart plus nonsecret GET is only
-  awaiting_confirmation, not completed health/SQL verification. An unknown
-  outcome is never replayed; passwords are cleared from D1 after the guarded
-  attempt, with sanitized operation status. CA rotation still requires an
-  independently prepared candidate and reviewed binding/manifest switch.
+  password, accepted PATCH/restart plus nonsecret GET is not authentication
+  proof. The protected Runner now loads the registered Cloudflare CA and uses
+  existing mysql2/pg dependencies for exactly one strict-TLS, hostname-verified
+  origin-authentication SELECT 1. A successful origin SQL probe may complete
+  this password-only update while D1 remains disabled. Failed/unreachable SQL
+  stays awaiting_confirmation. This does NOT prove Hyperdrive-to-Worker routing:
+  activation still requires the protected published-Binding health gate.
+  Unknown writes are not replayed, and plaintext is scrubbed from D1.
+  CA rotation still requires a separate candidate and reviewed source switch.
 - CA renewal now reuses the existing `/setup` Preview → Prepare → reviewed
   Binding PR → pinned production release → disabled activation path. The
   optional **CA renewal: existing logical ID** field requires a distinct new

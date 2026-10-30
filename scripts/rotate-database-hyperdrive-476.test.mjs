@@ -24,7 +24,7 @@ const source={name:'database-mcp-worker',main:'src/index.ts',hyperdrive:[],
 const input={operationId:id,runId:'476',actor:'lirtual',ref:'refs/heads/main',
  repo:'lirtual/mcp-workers',event:'workflow_dispatch',sourceSha:'b'.repeat(40),
  accountId:'c'.repeat(32),token:'synthetic-cf-token',encryptionKey:base64,keyId,source,manifest:[]};
-function fixture({blocked=false,patchError=false,restartError=false,sharedDuringClaim=false,unrecordedDispatch=false}={}){
+function fixture({blocked=false,patchError=false,restartError=false,sharedDuringClaim=false,unrecordedDispatch=false,probeFails=false}={}){
  const state={phase:'running',started:null,errors:[],patches:0,restarts:0,recordedRun:unrecordedDispatch?null:476};
  const requests=[];
  const op={operation_id:id,logical_id:'isolated',action:'rotate_credentials',phase:'running',
@@ -63,6 +63,9 @@ function fixture({blocked=false,patchError=false,restartError=false,sharedDuring
    return result({id:configId,origin:{scheme:'mysql',host:target.origin_host,
      port:3306,database:'catalog',user:'reader'},caching:{disabled:true},
      mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:target.ca_certificate_id}});
+  if(url.endsWith('/mtls_certificates/'+target.ca_certificate_id))
+   return result({id:target.ca_certificate_id,ca:true,
+    certificates:'-----BEGIN CERTIFICATE-----\nQUJDRA==\n-----END CERTIFICATE-----'});
   if(url.endsWith('/hyperdrive/configs/'+configId+'/restart')){
    state.restarts++;if(restartError)throw Error('simulated restart lost ack');
    return result({id:configId});
@@ -73,23 +76,29 @@ function fixture({blocked=false,patchError=false,restartError=false,sharedDuring
   assert.equal(args.connectionId,'isolated');assert.equal(args.mode,'credentials');
   if(blocked)throw Error('incomplete account inventory');
   return {eligible:true};};
- return {state,requests,request,preflight};
+ const probeOrigin=async ({target:verified,password,caPem})=>{
+  assert.equal(verified.id,configId);assert.equal(password,secret);
+  assert.ok(caPem.includes('BEGIN CERTIFICATE'));
+  if(probeFails)throw Error('synthetic authentication denied');
+  return {originSqlVerified:true,hyperdriveWorkerVerified:false};
+ };
+ return {state,requests,request,preflight,probeOrigin};
 }
-test('only an isolated Owner operation PATCHes password; restart leaves status awaiting verification',async()=>{
+test('isolated Owner PATCH with strict CA and authenticated origin SQL finishes disabled',async()=>{
  const f=fixture();
- const result=await runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight});
- assert.deepEqual(result,{phase:'awaiting_confirmation',operationId:id,sqlVerified:false});
+ const result=await runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin});
+ assert.deepEqual(result,{phase:'completed',operationId:id,sqlVerified:true,hyperdriveWorkerVerified:false});
  assert.equal(f.state.patches,1);assert.equal(f.state.restarts,1);
- assert.equal(f.state.phase,'awaiting_confirmation');
- assert.deepEqual(f.state.errors,['credential_health_unverified']);
+ assert.equal(f.state.phase,'completed');
+ assert.deepEqual(f.state.errors,['credential_origin_sql_verified']);
  assert.equal(JSON.stringify(result).includes(secret),false);
  assert.equal(f.requests.filter(r=>r.method==='PATCH').length,1);
- await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight}),/operation_invalid/);
+ await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/operation_invalid/);
  assert.equal(f.state.patches,1);
 });
 test('blocked isolation never PATCHes upstream and clears its pending operation',async()=>{
  const f=fixture({blocked:true});
- await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight}),/isolation_unproven/);
+ await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/isolation_unproven/);
  assert.equal(f.state.patches,0);assert.equal(f.state.restarts,0);
  assert.equal(f.state.phase,'failed');
  assert.deepEqual(f.state.errors,['credential_isolation_blocked']);
@@ -97,10 +106,10 @@ test('blocked isolation never PATCHes upstream and clears its pending operation'
 test('unknown PATCH or restart receipt never replays and keeps connection disabled',async()=>{
  for(const condition of [{patchError:true},{restartError:true}]){
   const f=fixture(condition);
-  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight}),/write_outcome_unknown/);
+  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/write_outcome_unknown/);
   assert.equal(f.state.patches,1);assert.equal(f.state.phase,'unknown');
   assert.deepEqual(f.state.errors,['credential_outcome_unknown']);
-  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight}),/operation_invalid/);
+  await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/operation_invalid/);
   assert.equal(f.state.patches,1);
  }
 });
@@ -108,14 +117,14 @@ test('unauthorized or invalid Runner context never reads or writes Cloudflare',a
  const f=fixture();
  for(const changed of [{actor:'other'},{ref:'refs/heads/feature'},{runId:'0'},
   {event:'pull_request'},{encryptionKey:''},{operationId:'invalid'}]){
-  await assert.rejects(runHyperdriveCredentialRotation({...input,...changed,request:f.request,preflight:f.preflight}),/owner_or_identity/);
+  await assert.rejects(runHyperdriveCredentialRotation({...input,...changed,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/owner_or_identity/);
  }
  assert.equal(f.requests.length,0);
 });
 
 test('a new shared D1 binding discovered at the write claim refuses an upstream mutation',async()=>{
  const f=fixture({sharedDuringClaim:true});
- await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight}),/write_claim_failed/);
+ await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin}),/write_claim_failed/);
  assert.equal(f.state.patches,0);
 });
 
@@ -147,11 +156,11 @@ test('Runner claim and final receipt execute against actual migration 0003 SQLit
    const outcome=db.prepare(sql).run(...params);
    return {ok:true,json:async()=>({success:true,result:[{success:true,results:[],meta:{changes:outcome.changes}}]})};
   };
-  const receipt=await runHyperdriveCredentialRotation({...input,request,preflight:upstream.preflight});
-  assert.equal(receipt.phase,'awaiting_confirmation');
+  const receipt=await runHyperdriveCredentialRotation({...input,request,preflight:upstream.preflight,probeOrigin:upstream.probeOrigin});
+  assert.equal(receipt.phase,'completed');
   assert.equal(upstream.state.patches,1);
   assert.deepEqual({...db.prepare('SELECT phase,error_class,ciphertext,key_id FROM hyperdrive_operations WHERE operation_id=?').get(id)},
-   {phase:'awaiting_confirmation',error_class:'credential_health_unverified',ciphertext:null,key_id:null});
+   {phase:'completed',error_class:'credential_origin_sql_verified',ciphertext:null,key_id:null});
   assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('isolated')},
    {status:'disabled',revision:4});
  }finally{db.close()}
@@ -159,8 +168,22 @@ test('Runner claim and final receipt execute against actual migration 0003 SQLit
 
 test('a faster Runner records its exact GitHub Run ID before the Owner dispatch receipt arrives',async()=>{
  const f=fixture({unrecordedDispatch:true});
- const result=await runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight});
- assert.equal(result.phase,'awaiting_confirmation');
+ const result=await runHyperdriveCredentialRotation({...input,request:f.request,preflight:f.preflight,probeOrigin:f.probeOrigin});
+ assert.equal(result.phase,'completed');
  assert.equal(f.state.recordedRun,476);
+ assert.equal(f.state.patches,1);
+});
+
+test('failed origin SQL authentication preserves the disabled connection and no-replay rule',async()=>{
+ const f=fixture({probeFails:true});
+ const result=await runHyperdriveCredentialRotation({...input,request:f.request,
+  preflight:f.preflight,probeOrigin:f.probeOrigin});
+ assert.deepEqual(result,{phase:'awaiting_confirmation',operationId:id,
+  sqlVerified:false,hyperdriveWorkerVerified:false});
+ assert.equal(f.state.patches,1);assert.equal(f.state.restarts,1);
+ assert.equal(f.state.phase,'awaiting_confirmation');
+ assert.deepEqual(f.state.errors,['credential_health_unverified']);
+ await assert.rejects(runHyperdriveCredentialRotation({...input,request:f.request,
+  preflight:f.preflight,probeOrigin:f.probeOrigin}),/operation_invalid/);
  assert.equal(f.state.patches,1);
 });

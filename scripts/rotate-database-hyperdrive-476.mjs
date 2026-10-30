@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {readConfiguration} from './manual-worker-release.mjs';
 import {checkDatabaseHyperdriveRotation} from './check-database-hyperdrive-rotation-476.mjs';
 import {verifyCloudflareHyperdriveConfig} from './verify-database-hyperdrive.mjs';
+import {verifyOriginSql476} from './probe-database-origin-476.mjs';
 
 const REGISTRY='cbfe6a05-4979-4e6a-9cc2-4f6468586e4a';
 const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -39,7 +40,8 @@ function passwordFromOperation(row,keyValue,keyId){
 /** All remote I/O is observed at the protected Runner boundary; no secret in outputs. */
 export async function runHyperdriveCredentialRotation({
  operationId,runId,actor,ref,repo,event,sourceSha,accountId,token,
- encryptionKey,keyId,source,manifest,request=fetch,preflight=checkDatabaseHyperdriveRotation
+ encryptionKey,keyId,source,manifest,request=fetch,preflight=checkDatabaseHyperdriveRotation,
+ probeOrigin=verifyOriginSql476
 }){
  if(!UUID.test(operationId??'')||!/^[1-9][0-9]*$/.test(String(runId??''))||
   !Number.isSafeInteger(Number(runId))||actor!=='lirtual'||repo!=='lirtual/mcp-workers'||
@@ -120,14 +122,28 @@ export async function runHyperdriveCredentialRotation({
   const updated=await api('/hyperdrive/configs/'+op.config_id);
   if(!verifyCloudflareHyperdriveConfig(target,updated))fail('config_readback_failed');
   await api('/hyperdrive/configs/'+op.config_id+'/restart','POST');
-  // Successful PATCH + restart + nonsecret GET never verifies a write-only password.
-  // Leave the connection disabled until independently authenticated SQL is proven.
-  await finish('awaiting_confirmation','credential_health_unverified');
-  return {phase:'awaiting_confirmation',operationId,sqlVerified:false};
  }catch{
   try{await finish('unknown','credential_outcome_unknown')}catch{}
   fail('write_outcome_unknown');
  }
+ // Only the write's result is known. Probe the existing immutable origin with
+ // the write-only password while the protected Runner still holds it in memory.
+ // Even successful direct origin SQL is NOT Hyperdrive/Worker E2E verification.
+ let originSqlVerified=false;
+ try{
+  const cert=await api('/mtls_certificates/'+target.ca_certificate_id);
+  if(cert?.id!==target.ca_certificate_id||cert.ca!==true||
+     typeof cert.certificates!=='string')fail('ca_probe_unavailable');
+  const proof=await probeOrigin({target,password,caPem:cert.certificates});
+  originSqlVerified=proof?.originSqlVerified===true &&
+    proof?.hyperdriveWorkerVerified===false;
+ }catch{/* Read-only probe failure cannot be mistaken for a failed/unknown PATCH. */}
+ if(originSqlVerified){
+  await finish('completed','credential_origin_sql_verified');
+  return {phase:'completed',operationId,sqlVerified:true,hyperdriveWorkerVerified:false};
+ }
+ await finish('awaiting_confirmation','credential_health_unverified');
+ return {phase:'awaiting_confirmation',operationId,sqlVerified:false,hyperdriveWorkerVerified:false};
 }
 
 export async function main(){
@@ -143,7 +159,7 @@ export async function main(){
   encryptionKey:process.env.DATABASE_ENCRYPTION_KEY,keyId:process.env.DATABASE_KEY_ID,
   source,manifest
  });
- process.stdout.write('Password update attempted; connection disabled, independent SQL verification required. Operation '+result.operationId+'\n');
+ process.stdout.write('Password update attempted; connection disabled, inspect sanitized origin SQL probe result. Operation '+result.operationId+'\n');
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  main().catch(()=>{process.stderr.write('Hyperdrive credential update blocked; review sanitized D1 operation state.\n');process.exitCode=1});
