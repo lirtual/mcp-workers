@@ -347,7 +347,7 @@ export class V2OwnerCoordinator {
       this.state.storage.get<V2Device>("device:" + deviceId),
       this.state.storage.get<string>("session:epoch:" + deviceId),
     ]);
-    if (!deviceIsAuthorized(device) || !epoch) {
+    if (device?.grant_type === "session" || !deviceIsAuthorized(device) || !epoch) {
       return Response.json({ error: "offline" }, { status: 503 });
     }
     let active: WebSocket | undefined;
