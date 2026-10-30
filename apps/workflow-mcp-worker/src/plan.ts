@@ -23,6 +23,7 @@ export type Step = {
   id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event' | 'flow.loop'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
+  compensate?: {kind:'github.session.cancel'};
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
@@ -33,7 +34,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; saga?:{on:('failure'|'cancel')[]}; saga_compensation_approved?:true; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -237,7 +238,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
   validateFiniteNumbers(raw);
-  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps']);
+  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps','saga']);
+  let saga:{on:('failure'|'cancel')[]}|undefined;
+  if(o.saga!==undefined){
+    const spec=object(o.saga,'invalid_saga');
+    keys(spec,['on'],'/saga');
+    if(!Array.isArray(spec.on)||spec.on.length<1||spec.on.length>2||
+       new Set(spec.on).size!==spec.on.length||
+       spec.on.some(x=>x!=='failure'&&x!=='cancel'))
+      throw new PlanError('invalid_saga','/saga/on');
+    saga={on:spec.on as ('failure'|'cancel')[]};
+  }
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
   if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
@@ -642,7 +653,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       return {...sourceStep,uses:'github.run',
         with:{capability:withData.capability,action:withData.action}};
     })():sourceStep;
-    keys(s,['id','uses','needs','needs_policy','if','with','approval'],stepPath);
+    keys(s,['id','uses','needs','needs_policy','if','with','approval','compensate'],stepPath);
     if(s.approval!==undefined){
       const a=object(s.approval,'invalid_runtime_approval');
       keys(a,['required'],stepPath+'/approval');
@@ -728,12 +739,29 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       // dynamic expression or network-fetched schema silently approved later.
       await toolSchemaDigest(withData.input_schema,withData.output_schema);
     }else keys(withData,['data'],stepPath+'/with');
+    let compensate:Step['compensate'];
+    if(s.compensate!==undefined){
+      const policy=object(s.compensate,'invalid_compensation');
+      keys(policy,['kind'],stepPath+'/compensate');
+      const action=s.uses==='github.run'?(withData.action as Record<string,unknown>):null;
+      const inputs=action?.inputs as Record<string,unknown>|undefined;
+      if(!saga||policy.kind!=='github.session.cancel'||
+         action?.type!=='session'||inputs?.session_mode!=='temporary'||
+         action?.repository!=='lirtual/session-actions'||
+         action?.workflowPath!=='.github/workflows/ubuntu.yml')
+        throw new PlanError('compensation_not_supported',stepPath+'/compensate');
+      compensate={kind:'github.session.cancel'};
+    }
+    if(saga && ((s.uses==='github.run'&&!compensate)||
+       ['mcp.call','http.request','action.run','flow.foreach','flow.child','flow.loop'].includes(String(s.uses))))
+      throw new PlanError('saga_uncompensated_effect',stepPath);
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     steps.push({id:s.id,uses:s.uses as Step['uses'],needs:needs as string[],
       ...(s.needs_policy==='allow_skipped'?{needs_policy:'allow_skipped' as const}:{}),
       with:compiledWith,...(s.if===undefined?{}:{if:s.if}),
-      ...(s.approval===undefined?{}:{approval:{required:true}})});
+      ...(s.approval===undefined?{}:{approval:{required:true}}),
+      ...(compensate?{compensate}:{})});
   }
   for(const s of steps){
     if(s.uses==='action.run'&&s.with.action==='weixin.notify_download'){
@@ -854,7 +882,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(ready.length>PLAN_LIMITS.maxParallel)throw new PlanError('excessive_parallelism');
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
+  if(saga&&!sorted.some(s=>s.compensate))
+    throw new PlanError('saga_requires_compensation','/saga');
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(saga?{saga}:{}),...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

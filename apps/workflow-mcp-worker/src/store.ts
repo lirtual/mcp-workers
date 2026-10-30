@@ -33,7 +33,7 @@ export type Env = {
   MCP_ACCESS_TOKEN: string;
   WORKFLOW: {
     create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
-    get(id:string):Promise<{status():Promise<{status:string}>;terminate?():Promise<void>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
+    get(id:string):Promise<{status():Promise<{status:string}>;terminate?(options?:{rollback?:boolean}):Promise<void>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
   };
   // Enabled only through the explicit selected-Worker production release.
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
@@ -295,7 +295,8 @@ export class WorkflowService {
         ...(required_approvals.length?{required_approvals,
           ...(required_approvals.some(x=>x.scope==='write')?{requires_mcp_write_execution_approval:true}:{})}:{}),
         ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
-        ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
+        ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{}),
+        ...(plan.saga?{saga:{on:plan.saga.on,compensations:plan.steps.filter(s=>s.compensate).map(s=>({step_id:s.id,kind:s.compensate!.kind,source:'approved_github_session'})),acid_rollback:false},requires_saga_compensation_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
       // Never reflect raw YAML, user keys, credentials or upstream errors.
@@ -353,7 +354,7 @@ export class WorkflowService {
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
     approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false,
-    approve_mcp_write_execution=false){
+    approve_mcp_write_execution=false,approve_saga_compensation=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -426,6 +427,8 @@ export class WorkflowService {
     const httpConnection=httpRequired.length?await httpAuthorization(this.db):null;
     if(httpConnection&&httpConnection.state!=='enabled')
       throw new StateError('http_connection_revoked');
+    if(Boolean(plan.saga)!==approve_saga_compensation)
+      throw new StateError('saga_compensation_approval_required');
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
     const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true,
@@ -438,7 +441,8 @@ export class WorkflowService {
     const withCloudflare:Plan=hasCloudflare?{
       ...actionPlan,cloudflare_execution_approved:true,
       cloudflare_action_approvals:cloudflareGrants}:actionPlan;
-    const publishedPlan:Plan=children.length?{...withCloudflare,child_approvals:children}:withCloudflare;
+    const publishedPlan:Plan={...(children.length?{...withCloudflare,child_approvals:children}:withCloudflare),
+      ...(plan.saga?{saga_compensation_approved:true as const}:{})};
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
@@ -700,7 +704,7 @@ export class WorkflowService {
         let nativeTerminated=false;
         try{
           const instance=await this.env.WORKFLOW.get(row.instance_id);
-          if(instance.terminate)await instance.terminate();
+          if(instance.terminate)await instance.terminate(published?.saga?.on.includes('cancel')?{rollback:true}:undefined);
           nativeTerminated=(await instance.status()).status==='terminated';
         }catch{}
         return {run_id,step_id,cancellation:nativeTerminated?'terminal_confirmed':'requested',
@@ -1038,7 +1042,27 @@ export class WorkflowService {
             'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt):null,
         attempt_state:record.attempt_state,
         physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{})};
+    const saga=publishedPlan.saga?(()=>{
+      const triggered=(row.outcome==='cancelled'&&publishedPlan.saga!.on.includes('cancel'))||
+        (['failed','indeterminate'].includes(row.outcome)&&publishedPlan.saga!.on.includes('failure'));
+      const compensations=publishedPlan.steps.filter(s=>s.compensate).map(s=>{
+        const prior=byId.get('__saga_'+s.id);
+        const session=sessions.find(record=>record.step_id===s.id);
+        const confirmed=prior?.status==='succeeded'||(
+          prior?.status==='requested'&&session?.recorded_state==='terminated');
+        const status=confirmed?'succeeded':prior?.status??(
+          triggered&&byId.get(s.id)?.status==='succeeded'?'unconfirmed':'not_required');
+        return {step_id:s.id,kind:s.compensate!.kind,status,
+          physical_terminated:confirmed};
+      });
+      return {on:publishedPlan.saga!.on,acid_rollback:false,
+        status:!triggered?'not_triggered':
+          compensations.some(x=>['requested','indeterminate','unconfirmed','running'].includes(x.status))?
+            'incomplete':compensations.some(x=>x.status==='uncleared')?'partial':
+            'settled',
+        compensations};
+    })():null;
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{}),...(saga?{saga}:{})};
   }
   async result(run_id:string){
     const meta=await this.status(run_id);

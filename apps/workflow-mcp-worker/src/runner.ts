@@ -1,5 +1,6 @@
 import {runPublishedCloudflareAction} from './cloudflare-action-executor.ts';
 import {watchPersistedSessions} from './github-action-session-watch.ts';
+import {compensateSession} from './saga.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,admitDetachedChild,startReservedDetachedChild,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
@@ -839,10 +840,20 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
           }
           if(owner?.outcome!=='running')return;
         }
-        const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,8);
+        // A failed Saga must not admit unrelated effects in later waves.
+        // Earlier confirmed effects retain their native rollback handlers.
+        if(plan.saga&&(failed||uncertain)){
+          for(const waiting of pending.values()){
+            await db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+              VALUES(?,?,'skipped',?) ON CONFLICT(run_id,step_id) DO NOTHING`)
+              .bind(id,waiting.id,now()).run();
+          }
+          break;
+        }
+        const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,plan.saga?1:8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          const result=(s.uses==='flow.wait'
+          let result=(s.uses==='flow.wait'
             ? await runDurableWait(this.env,s,id,step,ctx.steps)
             : s.uses==='flow.wait_event'
             ? await runWaitForEvent(this.env,s,id,step,ctx.steps)
@@ -941,6 +952,28 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
+          if(result.status==='succeeded'&&plan.saga&&s.compensate){
+            if(plan.saga_compensation_approved!==true){
+              result={status:'indeterminate',error_code:'saga_approval_missing'};
+            }else{
+              try{
+                // Serialize Saga Steps to preserve reverse-dependency order.
+                // Native Workflow rollback is the only compensation scheduler.
+                await step.do('workflow-'+s.id+'-saga-registration',
+                  {retries:{limit:0,delay:'1 second'},timeout:'20 seconds'},
+                  async()=>({step_id:s.id}),
+                  {rollback:async()=>{
+                    // A failed handler must not skip independent later handlers.
+                    // D1 holds the actual outcome; physical GitHub cancellation
+                    // is verified separately. Never pretend 202 means stopped.
+                    try{await compensateSession(this.env,plan,id,s);}
+                    catch{/* Missing receipt is visibly unconfirmed. */}
+                  },rollbackConfig:{retries:{limit:0,delay:'1 second'},timeout:'45 seconds'}});
+              }catch{
+                result={status:'indeterminate',error_code:'saga_registration_unconfirmed'};
+              }
+            }
+          }
           await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running','waiting_approval')")
           .bind(id,s.id,result.status,result.output===undefined?null:JSON.stringify(result.output),result.error_code??null,now()).run();
           return result;
@@ -954,6 +987,10 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
+      // Business failure is normally a structured Outcome, not a thrown
+      // exception. Native Cloudflare rollback requires a failing instance.
+      if(plan.saga?.on.includes('failure')&&(failed||uncertain))
+        throw Error('saga_compensation_trigger');
     }catch{
       await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
       throw Error('execution_interrupted');
@@ -963,7 +1000,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       // sleeping and reconciling until terminal evidence or the bounded
       // watch window. No external scheduler, false completion, or slot leak
       // on a successful Ready. Expiry requests normal cancellation only.
-      if(plan.steps.some(s=>s.uses==='github.run'&&
+      if(!(plan.saga&&(failed||uncertain))&&plan.steps.some(s=>s.uses==='github.run'&&
          s.with.capability==='github.action'&&
          (s.with.action as {type?:unknown}|undefined)?.type==='session')){
         try{await watchPersistedSessions(this.env,id,step);}

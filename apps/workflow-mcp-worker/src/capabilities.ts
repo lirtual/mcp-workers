@@ -322,7 +322,7 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant; awaited by default or mode: detached for an independent child Run. The legacy child_workflow field is not accepted.',
-  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','nested_loop','dynamic_repeat','saga'],
+  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','nested_loop','dynamic_repeat'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -332,6 +332,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     version:{const:1},
     name:{type:'string',minLength:1,maxLength:120},
     inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
+    saga:{type:'object',additionalProperties:false,required:['on'],
+      properties:{on:{type:'array',minItems:1,maxItems:2,uniqueItems:true,
+        items:{enum:['failure','cancel']}}}},
     triggers:{type:'array',minItems:1,maxItems:1,items:{oneOf:[
       {type:'object',additionalProperties:false,required:['type','schedule'],
        properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
@@ -391,6 +394,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
+        compensate:{type:'object',additionalProperties:false,required:['kind'],
+          properties:{kind:{const:'github.session.cancel',
+            description:'Only an explicitly approved temporary lirtual/session-actions Ubuntu Session; cancellation ACK is not terminal proof'}}},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
         flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
         max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
@@ -508,8 +514,8 @@ const entries=[
    description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
   {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
    description:'Explicit mode: detached on one pinned flow: child; exact approved_children required. Child consumes its own 1-of-8 slot and starts under its own immutable Plan. Parent returns a child Run reference after confirmed native creation without waiting; parent completion does not stop it. An uncertain native start is never blindly retried.'},
-  {id:'flow.saga',kind:'flow',availability:'unsupported',
-   description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
+  {id:'flow.saga',kind:'flow',availability:'supported_with_grant',
+   description:'Native Cloudflare rollback for explicitly approved temporary Ubuntu GitHub Sessions only. Serial deterministic DAG; rollback sends one physical cancellation request and reports pending until verified terminal. Other effects cannot declare compensation; no ACID rollback.'},
 ] as const;
 type Entry=typeof entries[number];
 const byId=new Map<string,Entry>(entries.map(entry=>[entry.id,entry]));
@@ -612,13 +618,13 @@ export async function workflowCapabilities(env:Pick<Env,
       replay:'Stable child identity; unknown native creation is never blindly retried'};
   }
   if(id==='flow.saga'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      authorization:'Each compensation Action and its Connection require exact explicit Publish grants',
-      ordering:'Reverse dependency order across confirmed effects; parallel branches require deterministic ordering',
-      trigger:'Only declared failed/cancelled policies; no compensation of uncertain forward effects by guesswork',
-      revocation:'Recheck active grants before a compensation side effect; revoked rights never reused',
+    detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
+      authorization:'Exact pinned GitHub Session grant plus approve_saga_compensation at Publish',
+      ordering:'Saga executions are serialized in canonical DAG order; native rollback reverses step start order',
+      trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu Sessions',
+      revocation:'Check exact Published grant and current GitHub executor credential before cancellation; no independent GitHub Connection revoke exists',
       replay:'One durable attempt per compensation effect, with indeterminate outcome on unknown dispatch',
-      result:'Record partial, failed and unknown compensation; never claim ACID rollback'};
+      result:'Expose requested, indeterminate and verified terminal separately; never claim ACID rollback'};
   }
   if(id==='action.http'){
     detail.example=await compilingExample({version:1,name:'Approved public HTTPS request',
