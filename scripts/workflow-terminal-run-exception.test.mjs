@@ -363,8 +363,8 @@ test("seventh exact download E2E: no Weixin invocation and independently complet
   assert.equal((scoped.match(new RegExp(id,"g"))||[]).length,2);
   assert.equal((unapproved.match(new RegExp(id,"g"))||[]).length,0);
   const release=readFileSync(".github/workflows/release.yml","utf8");
-  assert.equal((release.match(/steps\\.terminal_seventh\\.outputs\\.seventh_terminal_run_id/g)||[]).length,3);
-  assert.equal((release.match(/id <> '\\$WORKFLOW_SEVENTH_TERMINAL_RUN_ID'/g)||[]).length,2);
+  assert.equal(release.split("steps.terminal_seventh.outputs.seventh_terminal_run_id").length-1,3);
+  assert.equal(release.split("id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID'").length-1,2);
   assert.ok(release.indexOf("Verify seventh terminal download Run proof")<
     release.indexOf("Verify Workflow release configuration"));
 });
