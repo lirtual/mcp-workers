@@ -61,3 +61,20 @@ export async function compensateSession(
  }catch{/* An in-flight receipt is observably unknown, not safe to replay. */}
  return result;
 }
+
+
+// Native termination may report RollbackMissing while committing the D1
+// cancellation. Send the same approved, one-shot cancellation through our
+// existing receipt fence as a fallback; native and fallback cannot double
+// dispatch because both reserve the same (Run, __saga_Step) key.
+export async function compensateCancelledSessions(
+ env:Env,plan:Plan,runId:string,
+ compensate:typeof compensateSession=compensateSession,
+):Promise<void>{
+ if(!plan.saga?.on.includes('cancel')||!plan.saga_compensation_approved)return;
+ for(const step of [...plan.steps].reverse()){
+   if(!step.compensate)continue;
+   try{await compensate(env,plan,runId,step);}
+   catch{/* Unknown outbound state is never replayed. Other Steps continue. */}
+ }
+}
