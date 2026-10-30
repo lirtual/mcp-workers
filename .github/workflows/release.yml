@@ -436,7 +436,7 @@ jobs:
         if: inputs.worker == 'browser-mcp-worker'
         run: |
           python3 scripts/build-browser-extension.py --out-dir "$RUNNER_TEMP/browser-extension"
-          python3 scripts/build-browser-extension.py --verify "$RUNNER_TEMP/browser-extension/browser-mcp-extension-v0.1.0.zip"
+          python3 scripts/build-browser-extension.py --verify "$RUNNER_TEMP/browser-extension/browser-mcp-extension-v0.2.0.zip"
 
       - name: Retain Browser ZIP and provenance for separately authorized GitHub Release publication
         if: inputs.worker == 'browser-mcp-worker'
@@ -493,6 +493,8 @@ jobs:
           BROWSER_ACCESS_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACCESS_AUDIENCE || '' }}
           BROWSER_OWNER_EMAIL: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_OWNER_EMAIL || '' }}
           BROWSER_APPROVAL_ISOLATION: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ISOLATION || '' }}
+          BROWSER_ACTIVATION_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
+          BROWSER_ACTIVATION_ORIGIN: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_ORIGIN || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
@@ -699,6 +701,33 @@ jobs:
               FROM cloudflare_action_invocations WHERE run_id='3e312105-b40e-49ea-a037-c3359074be2b'
           ") | node scripts/workflow-terminal-run-exception.mjs
 
+      # Exact 2026-10-30 verified Koofr download / no Weixin invocation.
+      # Do not rewrite the indeterminate result or exempt any other Run.
+      - name: Verify seventh terminal download Run proof (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        id: terminal_seventh
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TERMINAL_PROOF_KIND: seventh
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
+            SELECT id,outcome,start_state,error_code FROM runs
+              WHERE id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
+            SELECT run_id,step_id,status,error_code FROM run_steps
+              WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d' ORDER BY step_id;
+            SELECT run_id,step_id,state FROM session_executions
+              WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
+            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
+              FROM step_attempts WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
+            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
+              FROM cloudflare_action_invocations WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d'
+          ") | node scripts/workflow-terminal-run-exception.mjs
+
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
@@ -712,6 +741,7 @@ jobs:
           WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
           WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
+          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
@@ -733,6 +763,11 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
               (SELECT count(*) FROM d1_migrations WHERE name='0014_workflow_deletion.sql') AS migration_v14,
               (SELECT count(*) FROM d1_migrations WHERE name='0015_runtime_approval.sql') AS migration_v15,
+              (SELECT count(*) FROM d1_migrations WHERE name='0016_portal_connection_revocation.sql') AS migration_v16,
+              (SELECT count(*) FROM d1_migrations WHERE name='0017_http_connection_auth.sql') AS migration_v17,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='http_connection_auth') AS http_auth_table,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approval_gates') AS approval_gates_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approvals') AS approvals_table,
               (SELECT count(*) FROM pragma_table_info('workflows') WHERE name='deleted_at') AS deleted_column,
@@ -755,7 +790,7 @@ jobs:
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID') AS active_runs,
+             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
              (SELECT count(*) FROM runs) AS run_count,
              (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -799,6 +834,7 @@ jobs:
           WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
           WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
+          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -822,6 +858,11 @@ jobs:
              (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
               (SELECT count(*) FROM d1_migrations WHERE name='0014_workflow_deletion.sql') AS migration_v14,
               (SELECT count(*) FROM d1_migrations WHERE name='0015_runtime_approval.sql') AS migration_v15,
+              (SELECT count(*) FROM d1_migrations WHERE name='0016_portal_connection_revocation.sql') AS migration_v16,
+              (SELECT count(*) FROM d1_migrations WHERE name='0017_http_connection_auth.sql') AS migration_v17,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='http_connection_auth') AS http_auth_table,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
+              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approval_gates') AS approval_gates_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approvals') AS approvals_table,
               (SELECT count(*) FROM pragma_table_info('workflows') WHERE name='deleted_at') AS deleted_column,
@@ -844,7 +885,7 @@ jobs:
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
               (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID') AS active_runs,
+              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID') AS active_runs,
               (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
               (SELECT count(*) FROM runs) AS run_count,
               (SELECT count(*) FROM workflows) AS workflow_count") |
@@ -862,6 +903,7 @@ jobs:
           WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
           WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
+          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
         run: |
           set -euo pipefail
           query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
@@ -925,7 +967,7 @@ jobs:
           DATABASE_GITHUB_ACTIONS_TOKEN: ${{ secrets.DATABASE_GITHUB_ACTIONS_TOKEN }}
         run: node scripts/probe-database-github-dispatch.mjs
 
-      - name: Verify Browser isolated Owner Access before optional approval activation (read-only)
+      - name: Verify Browser Owner Approval and Profile Activation Access (read-only)
         if: inputs.worker == 'browser-mcp-worker'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -935,6 +977,8 @@ jobs:
           BROWSER_ACCESS_AUDIENCE: ${{ vars.BROWSER_ACCESS_AUDIENCE }}
           BROWSER_OWNER_EMAIL: ${{ vars.BROWSER_OWNER_EMAIL }}
           BROWSER_APPROVAL_ISOLATION: ${{ vars.BROWSER_APPROVAL_ISOLATION }}
+          BROWSER_ACTIVATION_AUDIENCE: ${{ vars.BROWSER_ACTIVATION_AUDIENCE }}
+          BROWSER_ACTIVATION_ORIGIN: ${{ vars.BROWSER_ACTIVATION_ORIGIN }}
         run: node scripts/browser-owner-access.mjs
 
       - name: Recheck Weixin Provider Version before Workflow publication (read-only)
@@ -1012,6 +1056,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
           BROWSER_APPROVAL_EXPECTED: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ISOLATION || '' }}
+          BROWSER_ACTIVATION_EXPECTED: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
       - name: Verify published Workflow pin still matches current Provider (read-only)

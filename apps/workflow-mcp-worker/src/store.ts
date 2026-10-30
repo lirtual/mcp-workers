@@ -14,6 +14,7 @@ import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTermina
 import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
+import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
   if(!definition || new TextEncoder().encode(definition).byteLength>32768)throw new StateError('definition_too_large');
   try {
@@ -24,6 +25,8 @@ function draftName(definition:string):string {
   return 'Untitled Draft';
 }
 import type { Plan, Step, ReadonlyOperation } from './plan.ts';
+import {httpOperation,type HttpOperation} from './http-action.ts';
+import {httpAuthorization,changeHttpAuthorization} from './http-authorization.ts';
 
 export type Env = {
   DB: D1Database;
@@ -58,6 +61,8 @@ export type Env = {
   WEIXIN_ACTION_PROVIDER?: {
     getBinding():Promise<{generation:number;ready:boolean}>;
     getContract():Promise<{deployment_id:string;contract_digest:string}>;
+    getDownloadContract():Promise<{deployment_id:string;contract_digest:string}>;
+    sendDownloadComplete(input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
   };
@@ -243,7 +248,7 @@ export class WorkflowService {
     // Until child cancellation/physical terminal propagation has independent
     // evidence, a child must not launch a GitHub Task or Session whose
     // physical lifecycle might outlast the child Workflow.
-    if(childPlan.steps.some(s=>s.uses==='github.run'||
+    if(childPlan.steps.some(s=>s.uses==='github.run'||s.uses==='http.request'||
       (s.uses==='flow.foreach'&&
         (Array.isArray(s.with.templates)?s.with.templates:[s.with.template])
           .some((x:unknown)=>x!==null&&typeof x==='object'&&
@@ -265,7 +270,7 @@ export class WorkflowService {
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(bark?'bark':'weixin');
+          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':'weixin');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
               (bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID)??null};
@@ -275,15 +280,19 @@ export class WorkflowService {
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
       })).values()];
+      const required_http_operations=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+        const operation=httpOperation(s.with);return [JSON.stringify(operation),operation] as const;
+      })).values()];
       return {valid:true,digest,steps:plan.steps.length,issues:[],
         ...(required_children.length?{required_children}:{}),
         ...(plan.steps.some(s=>s.approval?.required)?{approval_gates:plan.steps.filter(s=>s.approval?.required).map(s=>({step_id:s.id,when:'before_dispatch',binding:['run_id','step_id','published_version_id'],timeout_seconds:600}))}:{}),
-        contract_validation:reviewed_cloudflare_actions.length?
+        contract_validation:required_http_operations.length?'http_target_pinned_unverified':reviewed_cloudflare_actions.length?
           'cloudflare_contract_pinned_provider_unverified':required_approvals.length?
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
         ...(required_approvals.length?{required_approvals}:{}),
+        ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
         ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
@@ -333,9 +342,15 @@ export class WorkflowService {
         ...(suggestion?{suggestion}:{})}]};
     }
   }
+  async portalConnectionStatus(){return portalAuthorization(this.db);}
+  async portalConnectionRevoke(){return changePortalAuthorization(this.db,'revoke');}
+  async portalConnectionEnable(){return changePortalAuthorization(this.db,'enable');}
+  async httpConnectionStatus(){return httpAuthorization(this.db);}
+  async httpConnectionRevoke(){return changeHttpAuthorization(this.db,'revoke');}
+  async httpConnectionEnable(){return changeHttpAuthorization(this.db,'enable');}
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
-    approve_cloudflare_execution=false){
+    approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -364,6 +379,9 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
+    const portalConnection=required.length?await portalAuthorization(this.db):null;
+    if(portalConnection&&portalConnection.state!=='enabled')
+      throw new StateError('portal_connection_revoked');
     const hasCloudflare=plan.steps.some(s=>s.uses==='action.run');
     let cloudflareGrants:typeof approved_cloudflare_actions=[];
     if(hasCloudflare){
@@ -374,10 +392,11 @@ export class WorkflowService {
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(bark?'bark':'weixin');
+      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':'weixin');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
-      try{live=await provider.getContract();}
+      try{live=step.with.action==='weixin.notify_download'
+        ?await this.env.WEIXIN_ACTION_PROVIDER!.getDownloadContract():await provider.getContract();}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
       if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
         throw new StateError('cloudflare_provider_identity_mismatch');
@@ -389,10 +408,24 @@ export class WorkflowService {
         throw new StateError('cloudflare_action_approval_required');
     }else if(approved_cloudflare_actions.length || approve_cloudflare_execution)
       throw new StateError('unexpected_cloudflare_approval');
+    const httpRequired=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+      const operation=httpOperation(s.with);return [JSON.stringify(operation),operation] as const;
+    })).values()].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const httpProvided=approved_http_operations.slice().sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    if(JSON.stringify(httpRequired)!==JSON.stringify(httpProvided)||
+       (httpRequired.length>0&&(!approve_http_execution||!accept_target_risks))||
+       (httpRequired.length===0&&approve_http_execution))
+      throw new StateError('http_action_approval_required');
+    const httpConnection=httpRequired.length?await httpAuthorization(this.db):null;
+    if(httpConnection&&httpConnection.state!=='enabled')
+      throw new StateError('http_connection_revoked');
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
-    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
-    const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
+    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true,
+      mcp_connection_generation:portalConnection!.generation}:plan;
+    const httpPlan:Plan=httpRequired.length?{...scopedPlan,http_approvals:httpRequired,
+      http_execution_approved:true,http_connection_generation:httpConnection!.generation}:scopedPlan;
+    const grantedPlan:Plan=reviewedActions.length?{...httpPlan,github_action_approvals:reviewedActions}:httpPlan;
     const actionPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
     const withCloudflare:Plan=hasCloudflare?{
       ...actionPlan,cloudflare_execution_approved:true,
@@ -401,7 +434,15 @@ export class WorkflowService {
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
-      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
+      // A revoked generation must never be revived by a same-Draft Publish.
+      const previous=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+        .bind(row.active_version_id).first<{plan:string}>();
+      const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
+      if(current?.digest===plan_digest &&
+        JSON.stringify(oldPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
+        (!httpConnection || oldPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
+        (oldPlan?.mcp_connection_generation??0)===portalConnection.generation))
+        return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
     }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
@@ -413,7 +454,14 @@ export class WorkflowService {
       const latest=await this.row(workflow_id);
       if(latest.draft_revision===expected_revision&&latest.active_version_id){
         const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(latest.active_version_id,workflow_id).first<{digest:string}>();
-        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
+        const prior=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(latest.active_version_id).first<{plan:string}>();
+        const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
+        if(current?.digest===plan_digest &&
+          JSON.stringify(priorPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
+          (!httpConnection || priorPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
+            (priorPlan?.mcp_connection_generation??0)===portalConnection.generation))
+          return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
       }
       throw new StateError('revision_conflict');
     }
@@ -479,6 +527,20 @@ export class WorkflowService {
       const approval=published?.steps.find(s=>s.id===step_id&&
         s.uses==='github.run'&&s.approval?.required===true);
       if(approval){
+        // Repeated cancellation of an already-fenced approval is read-only.
+        // A dispatched-but-unclaimed physical Job may still exist, so never
+        // claim its termination or issue a second GitHub cancel POST.
+        const prior=await this.db.prepare(`SELECT outcome,error_code FROM runs
+          WHERE id=?`).bind(run_id)
+          .first<{outcome:string;error_code:string|null}>();
+        if(!force&&prior?.outcome==='cancelled'&&
+           prior.error_code==='approval_cancel_requested'){
+          const pending=await this.db.prepare(`SELECT 1 AS present FROM step_attempts
+            WHERE run_id=? AND step_id=? LIMIT 1`)
+            .bind(run_id,step_id).first<{present:number}>();
+          return {run_id,step_id,cancellation:pending?'requested_unverified':'requested',
+            physical_terminated:false};
+        }
         const step=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
           .bind(run_id,step_id).first<{status:string}>();
         if(step && (step.status==='waiting_approval'||step.status==='running')){
@@ -536,6 +598,39 @@ export class WorkflowService {
             WHERE run_id=? AND step_id=? LIMIT 1`)
             .bind(run_id,step_id).first<{present:number}>();
           if(!attempt)throw new StateError('approval_cancel_conflict');
+          // The Attempt INSERT can win while its outbound GitHub dispatch
+          // has not yet returned a physical Run ID. Refusing cancellation
+          // here leaves an approved Task able to claim and execute.
+          // Fence the business Run before the signed physical Claim instead;
+          // an in-flight dispatch is NOT proof of physical termination.
+          const preclaim=await this.db.batch([
+            this.db.prepare(`UPDATE runs SET outcome='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE id=? AND outcome='running'
+              AND EXISTS(SELECT 1 FROM step_attempts a
+                WHERE a.run_id=runs.id AND a.step_id=?
+                  AND a.capability_id='github.action'
+                  AND a.state IN ('created','dispatch_unknown')
+                  AND a.candidate_run_id IS NULL AND a.candidate_run_attempt IS NULL
+                  AND a.owner_run_id IS NULL AND a.owner_run_attempt IS NULL)
+              AND NOT EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id<>? AND s.status IN ('running','waiting','waiting_approval'))`)
+              .bind(now(),run_id,step_id,step_id),
+            this.db.prepare(`UPDATE run_steps SET status='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE run_id=? AND step_id=? AND status IN ('waiting_approval','running')
+                AND EXISTS(SELECT 1 FROM runs r WHERE r.id=?
+                  AND r.outcome='cancelled' AND r.error_code='approval_cancel_requested')`)
+              .bind(now(),run_id,step_id,run_id),
+          ]);
+          if(preclaim[0].meta.changes===1){
+            if(preclaim[1].meta.changes!==1)
+              throw new StateError('approval_cancel_state_unconfirmed');
+            return {run_id,step_id,cancellation:'requested_unverified',
+              physical_terminated:false};
+          }
+          // A signed Claim or confirmed candidate may have won instead;
+          // use the existing immutable physical Job cancellation path.
           }
         }
       }
@@ -750,8 +845,9 @@ export class WorkflowService {
     if(protocolActions.length &&
        (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
-    const weight=activePlan.steps.some(s=>s.uses==='flow.child')?2:1;
-    if(weight===2&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
+    const hasChild=activePlan.steps.some(s=>s.uses==='flow.child');
+    const weight=activePlan.steps.some(s=>s.uses==='flow.child'&&s.with.mode!=='detached')?2:1;
+    if(hasChild&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
       throw new StateError('child_approval_required');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(

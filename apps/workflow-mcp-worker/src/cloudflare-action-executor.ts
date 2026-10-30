@@ -1,3 +1,4 @@
+import {runDownloadNotification} from './download-notification-executor.ts';
 import {runBarkAction} from './bark-action-executor.ts';
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
@@ -35,6 +36,8 @@ export async function runPublishedCloudflareAction(
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
 ):Promise<Result>{
  if(action.with.provider==='bark')return runBarkAction(env,plan,action,runId,ctx);
+ if(action.with.action==='weixin.notify_download')
+   return runDownloadNotification(env,plan,action,runId,ctx);
  const provider=env.WEIXIN_ACTION_PROVIDER,version=env.WEIXIN_ACTION_DEPLOYMENT_ID;
  const manifest=await cloudflareActionManifest();
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&

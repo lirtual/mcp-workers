@@ -11,6 +11,7 @@ on:
           - production-native
           - production-child
           - production-mcp
+          - production-http
           - production-github
           - production-action-task
           - production-webhook
@@ -46,7 +47,7 @@ env:
 jobs:
   checks:
     name: Pre-acceptance checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-child","production-mcp","production-github","production-action-task","production-webhook","production-session-data","portal-register"]'), inputs.test_type) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-child","production-mcp","production-http","production-github","production-action-task","production-webhook","production-session-data","portal-register"]'), inputs.test_type) }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: workflow-mcp-worker
@@ -57,7 +58,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           github.ref == 'refs/heads/main' &&
-          contains(fromJSON('["production-native","production-child","production-mcp","production-github","production-action-task","production-webhook","production-session-data"]'), inputs.test_type) &&
+          contains(fromJSON('["production-native","production-child","production-mcp","production-http","production-github","production-action-task","production-webhook","production-session-data"]'), inputs.test_type) &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
@@ -73,6 +74,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WORKFLOW_CHILD_SMOKE: ${{ inputs.test_type == 'production-child' }}
       WORKFLOW_MCP_SMOKE: ${{ inputs.test_type == 'production-mcp' }}
+      WORKFLOW_HTTP_SMOKE: ${{ inputs.test_type == 'production-http' }}
       WORKFLOW_GITHUB_SMOKE: ${{ inputs.test_type == 'production-github' }}
       WORKFLOW_ACTION_TASK_SMOKE: ${{ inputs.test_type == 'production-action-task' }}
       WORKFLOW_WEBHOOK_SMOKE: ${{ inputs.test_type == 'production-webhook' }}

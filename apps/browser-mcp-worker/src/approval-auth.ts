@@ -1,6 +1,8 @@
 // Independent owner ingress. No MCP/Endpoint credential or bare identity header.
 export interface ApprovalEnv {
   BROWSER_APPROVAL_ORIGIN?:string;
+  BROWSER_ACTIVATION_ORIGIN?:string;
+  BROWSER_ACTIVATION_AUDIENCE?:string;
   BROWSER_ACCESS_ISSUER?:string;
   BROWSER_ACCESS_AUDIENCE?:string;
   BROWSER_OWNER_EMAIL?:string;
@@ -21,12 +23,32 @@ export function approvalConfig(env:ApprovalEnv) {
     return {origin:origin.origin,issuer:issuer.origin,audience:env.BROWSER_ACCESS_AUDIENCE!,email:env.BROWSER_OWNER_EMAIL!};
   }catch{return null;}
 }
+// Separate Access application and audience for identity confirmation. No approval
+// isolation assertion or operation nonce is reused for activation.
+export function activationConfig(env:ApprovalEnv) {
+  try {
+    const origin=new URL(env.BROWSER_ACTIVATION_ORIGIN!);
+    const issuer=new URL(env.BROWSER_ACCESS_ISSUER!);
+    if(origin.protocol!=="https:"||origin.origin!==env.BROWSER_ACTIVATION_ORIGIN||
+       issuer.origin!==env.BROWSER_ACCESS_ISSUER||issuer.protocol!=="https:"||
+       !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(issuer.hostname)||
+       !/^[a-f0-9]{64}$/.test(env.BROWSER_ACTIVATION_AUDIENCE??"")||
+       !/^[^\s@]+@[^\s@]+$/.test(env.BROWSER_OWNER_EMAIL??""))return null;
+    return {origin:origin.origin,issuer:issuer.origin,audience:env.BROWSER_ACTIVATION_AUDIENCE!,email:env.BROWSER_OWNER_EMAIL!};
+  }catch{return null;}
+}
 function decode(s:string):Uint8Array<ArrayBuffer> {
   if(!/^[A-Za-z0-9_-]+$/.test(s))throw Error();
   return Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")),c=>c.charCodeAt(0));
 }
 export async function verifyOwner(request:Request,env:ApprovalEnv):Promise<boolean> {
-  const config=approvalConfig(env);if(!config)return false;
+  return verifyIdentity(request,approvalConfig(env));
+}
+export async function verifyActivationOwner(request:Request,env:ApprovalEnv):Promise<boolean> {
+  return verifyIdentity(request,activationConfig(env));
+}
+async function verifyIdentity(request:Request,config:ReturnType<typeof approvalConfig>):Promise<boolean> {
+  if(!config)return false;
   try {
     const token=request.headers.get("cf-access-jwt-assertion")??"";
     if(token.length>16384)return false;

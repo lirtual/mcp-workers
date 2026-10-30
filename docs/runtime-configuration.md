@@ -50,4 +50,7 @@ Use [ingress policy](./ingress-policy.md) rather than deriving `workers.dev` for
 
 Git, Wrangler or README changes cannot decommission live Cloudflare resources or Portal clients. Retire them only under separate authorization and verification.
 
-Browser T8：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret，不沿用共享值），无额外 Variable。Manifest Key 是公开安装标识，不是 Secret。当前 `workers_dev: false`、`preview_urls: false` 且没有生产路由；现有手动 Release 的 Browser 预检将阻断发布。不得以本次接线创建资源、写 Portal/Access 或切换凭据；参见 [T8 发布与验收边界](../apps/browser-mcp-worker/docs/t8-release.md)。
+Browser MCP：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret），服务域名为 `https://browser.lirtual.dpdns.org`，`workers_dev: false`、`preview_urls: false`。Manifest Key 为公开安装标识，不是 Secret。Spec #531 激活需要独立的 Access Audience 与已验证 Owner 身份；高风险操作的独立审批另设隔离校验，未满足时继续拒绝。生产发布和实机验收均须单独授权。
+
+
+Browser MCP Spec #531 activation: In the existing GitHub Actions Environment for `browser-mcp-worker`, provision non-secret Variables `BROWSER_ACTIVATION_ORIGIN=https://browser.lirtual.dpdns.org` and `BROWSER_ACTIVATION_AUDIENCE` (the 64-hex Audience of a separate Cloudflare Access application protecting `/activate/verify/*`). The already-approved `BROWSER_ACCESS_ISSUER` and `BROWSER_OWNER_EMAIL` are also required. Keep the independent consequential-operation approval settings distinct. The release Variable validator requires the activation pair together and pins the origin; unconfigured activation rejects requests. This change neither creates Cloudflare Access resources nor authorizes production release.

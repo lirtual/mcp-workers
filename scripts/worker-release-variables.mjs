@@ -19,7 +19,7 @@ export const BROWSER_APPROVAL_VARIABLES = Object.freeze([
 ]);
 
 export const WORKER_VARIABLES = Object.freeze({
-  "browser-mcp-worker": BROWSER_APPROVAL_VARIABLES,
+  "browser-mcp-worker": [...BROWSER_APPROVAL_VARIABLES, "BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"],
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
@@ -56,16 +56,28 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
   if (worker === "browser-mcp-worker") {
-    const configured = BROWSER_APPROVAL_VARIABLES.filter(name => env[name] != null && env[name] !== "");
-    if (configured.length !== 0 && configured.length !== BROWSER_APPROVAL_VARIABLES.length)
-      throw Error("Browser approval requires all five variables or none");
-    if (configured.length && (
-      env.BROWSER_APPROVAL_ORIGIN !== "https://browser.lirtual.dpdns.org" ||
-      env.BROWSER_ACCESS_ISSUER !== "https://lirtualzero.cloudflareaccess.com" ||
-      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACCESS_AUDIENCE) ||
-      env.BROWSER_OWNER_EMAIL !== "lirtual@outlook.com" ||
-      env.BROWSER_APPROVAL_ISOLATION !== "isolated-owner-profile-and-mailbox-v1"
-    )) throw Error("Browser approval runtime identity or isolation assertion invalid");
+    const identity=["BROWSER_ACCESS_ISSUER","BROWSER_OWNER_EMAIL"];
+    const approval=["BROWSER_APPROVAL_ORIGIN","BROWSER_ACCESS_AUDIENCE","BROWSER_APPROVAL_ISOLATION"];
+    const activation=["BROWSER_ACTIVATION_ORIGIN","BROWSER_ACTIVATION_AUDIENCE"];
+    const populated=group=>group.filter(name=>env[name]!=null&&env[name]!=="");
+    const activeApproval=populated(approval),activeActivation=populated(activation),activeIdentity=populated(identity);
+    if(activeApproval.length!==0&&activeApproval.length!==approval.length)
+      throw Error("Browser approval requires its complete, independently verified configuration");
+    if(activeActivation.length!==0&&activeActivation.length!==activation.length)
+      throw Error("Browser activation requires both Access variables or none");
+    if((activeApproval.length||activeActivation.length||activeIdentity.length)&&activeIdentity.length!==identity.length)
+      throw Error("Browser Access issuer and owner identity must be configured together");
+    if(activeIdentity.length && (env.BROWSER_ACCESS_ISSUER!=="https://lirtualzero.cloudflareaccess.com"||
+       env.BROWSER_OWNER_EMAIL!=="lirtual@outlook.com"))
+      throw Error("Browser Access identity issuer or owner mailbox invalid");
+    if(activeApproval.length && (env.BROWSER_APPROVAL_ORIGIN!=="https://browser.lirtual.dpdns.org"||
+      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACCESS_AUDIENCE)||
+      env.BROWSER_APPROVAL_ISOLATION!=="isolated-owner-profile-and-mailbox-v1"))
+      throw Error("Browser approval runtime identity or isolation assertion invalid");
+    if(activeActivation.length && (env.BROWSER_ACTIVATION_ORIGIN!=="https://browser.lirtual.dpdns.org"||
+      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACTIVATION_AUDIENCE)||
+      env.BROWSER_ACTIVATION_AUDIENCE===env.BROWSER_ACCESS_AUDIENCE))
+      throw Error("Browser activation Access origin or audience invalid");
   }
   if (worker === "workflow-mcp-worker") {
     variables.push(

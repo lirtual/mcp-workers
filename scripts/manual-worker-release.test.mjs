@@ -606,7 +606,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,portal_auth_table:0,mcp_fence_table:0,http_auth_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
     child_terminate_fence_column:0,capacity_guard_trigger:0,
     locator_column:0,fixed_column:0,fixed_index:0,
@@ -638,7 +638,15 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false),true);
   assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false,true),true);
+  const portalComplete={...approvalComplete,migration_count:16,migration_v16:1,portal_auth_table:1,mcp_fence_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false),true);
+  const httpComplete={...portalComplete,migration_count:17,migration_v17:1,http_auth_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(portalComplete),false),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(portalComplete),false,true),/schema migrations/);
+  assert.equal(verifyWorkflowD1Readiness(result(httpComplete),false,true),true);
+  for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},
+    {migration_v17:0},{http_auth_table:0},{migration_count:16}])
+    assert.throws(()=>verifyWorkflowD1Readiness(result({...httpComplete,...broken}),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(deletedComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
@@ -698,7 +706,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
       /schema migrations/);
   }
-  assert.equal(verifyWorkflowD1Readiness(result({...approvalComplete,run_count:3,
+  assert.equal(verifyWorkflowD1Readiness(result({...httpComplete,run_count:3,
     workflow_count:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
     /active or indeterminate/);
@@ -707,7 +715,9 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
     /active physical Sessions/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),/schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...portalComplete,active_sessions:1}),false),/active physical Sessions/);
+  assert.equal(verifyWorkflowD1Readiness(result({...httpComplete,active_sessions:1}),false,true),true);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
     /empty production/);
   assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
@@ -717,7 +727,7 @@ test("Workflow migration preflight requires all independent physical states sett
     migration_count: 12, expected_migrations: 12,
     workflow_count: 7, run_count: 58, session_count: 49,
     attempt_count: 31, callback_count: 4, cancellation_count: 31,
-    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0,
+    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0, invalid_cancelled_steps: 0,
     nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
   };
   const response = row => [{success: true, results: [row]}];
@@ -726,7 +736,7 @@ test("Workflow migration preflight requires all independent physical states sett
     cancellations: 31,
   });
   for (const name of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
@@ -764,6 +774,12 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0012_event_wait_receipts.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0016_portal_connection_revocation.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0017_http_connection_auth.sql/);
+  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  assert.equal((release.match(/AS migration_v17/g)??[]).length,2);
+  assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
 });
 
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
@@ -774,13 +790,45 @@ test("Task-only production acceptance reuses confirmed Ready Session gate and sc
   assert.match(fn,/sql\(WORKFLOW_MIGRATION_READINESS_SQL\)/);
   assert.doesNotMatch(fn,/session_executions WHERE state != 'terminated'/);
   assert.match(source,/DELETE FROM step_attempts WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
+  assert.match(source,/DELETE FROM mcp_dispatch_fences WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
   assert.match(source,/Refusing GitHub cleanup until physical GitHub Job is completed/);
+});
+
+test('cancelled Workflow Steps count as terminal only with matched cancelled Run receipt',()=>{
+  const start=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps s JOIN runs r');
+  const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS invalid_cancelled_steps',start);
+  assert.ok(start>=0&&end>start);
+  const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(start,end+ ' AS invalid_cancelled_steps'.length);
+  const db=new DatabaseSync(':memory:');
+  try{
+    db.exec('CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,error_code TEXT);');
+    db.exec('CREATE TABLE run_steps(run_id TEXT,status TEXT,error_code TEXT);');
+    db.prepare('INSERT INTO runs VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
+    db.prepare('INSERT INTO run_steps VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
+    const count=()=>db.prepare(query).get()?.invalid_cancelled_steps;
+    assert.equal(count(),0);
+    db.exec("UPDATE runs SET outcome='running'");assert.equal(count(),1);
+    db.exec("UPDATE runs SET outcome='cancelled',error_code=NULL");assert.equal(count(),1);
+    db.exec("UPDATE runs SET error_code='approval_cancel_requested';UPDATE run_steps SET error_code=NULL");assert.equal(count(),1);
+    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),0);
+    // Event Wait cancellation is a separate supported, durable Run/Step pair.
+    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code='event_wait_cancel_requested'");
+    assert.equal(count(),0);
+    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),1);
+    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code='unknown_cancel_requested'");
+    assert.equal(count(),1);
+    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code=NULL");
+    assert.equal(count(),1);
+    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code=NULL");
+    assert.equal(count(),1);
+    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested'");assert.equal(count(),0);
+  }finally{db.close();}
 });
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:15,expected_migrations:15,
-    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,
+    migration_count:17,expected_migrations:17,
+    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,
   };
@@ -798,7 +846,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     {migration_count:12},{expected_migrations:12},
     {migration_count:13},{expected_migrations:13},
     {migration_count:14},{expected_migrations:14},
-    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},
+    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},{invalid_cancelled_steps:1},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},
     {confirmed_ready_sessions:-1},{confirmed_ready_sessions:"1"},
@@ -1111,6 +1159,34 @@ test('Browser release pins resources, protects namespace and stages only its ind
   const enabled={...settings,bindings:[...settings.bindings,
     ...Object.entries(approve).map(([name,text])=>({name,type:'plain_text',text}))]};
   assert.equal(verifyBindings(worker,enabled,secrets,{...options,expectedBrowserApproval:true}),true);
+  const activation={BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',
+    BROWSER_ACTIVATION_AUDIENCE:'b'.repeat(64)};
+  const both={...enabled,bindings:[...enabled.bindings,
+    ...Object.entries(activation).map(([name,text])=>({name,type:'plain_text',text}))]};
+  const expectedBoth={...options,expectedBrowserApproval:true,
+    expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE};
+  assert.equal(verifyBindings(worker,both,secrets,expectedBoth),true);
+  assert.equal(verifyBindings(worker,both,secrets,{mode:'preflight'}),true);
+  assert.throws(()=>verifyBindings(worker,both,secrets,{...options,expectedBrowserApproval:true}),
+    /activation binding inventory differs/);
+  assert.throws(()=>verifyBindings(worker,both,secrets,{...expectedBoth,
+    expectedBrowserActivationAudience:'c'.repeat(64)}),/activation binding inventory differs/);
+  assert.throws(()=>verifyBindings(worker,{...both,bindings:both.bindings.filter(x=>
+    x.name!=='BROWSER_ACTIVATION_ORIGIN')},secrets,expectedBoth),/activation binding inventory incomplete/);
+  assert.throws(()=>verifyBindings(worker,{...both,bindings:both.bindings.map(x=>
+    x.name==='BROWSER_ACTIVATION_ORIGIN'?{...x,text:'https://wrong.example'}:x)},
+    secrets,expectedBoth),/activation Access origin/);
+  assert.throws(()=>verifyBindings(worker,{...both,bindings:[...both.bindings,
+    {name:'OTHER_VAR',type:'plain_text',text:'bad'}]},secrets,expectedBoth),/inventory drift/);
+  const temporaryOnly={...settings,bindings:[...settings.bindings,
+    ...Object.entries(Object.fromEntries(Object.entries(approve).filter(([name])=>
+      ['BROWSER_ACCESS_ISSUER','BROWSER_OWNER_EMAIL'].includes(name)))).map(([name,text])=>({name,type:'plain_text',text})),
+    ...Object.entries(activation).map(([name,text])=>({name,type:'plain_text',text}))]};
+  assert.equal(verifyBindings(worker,temporaryOnly,secrets,{
+    ...options,expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE}),true);
+  assert.match(readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8'),
+    /BROWSER_ACTIVATION_EXPECTED:/);
+
   assert.throws(()=>verifyBindings(worker,enabled,secrets,options),/differs from reviewed/);
   assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,expectedBrowserApproval:true}),/differs from reviewed/);
   assert.throws(()=>verifyBindings(worker,{...enabled,bindings:enabled.bindings.slice(0,-1)},secrets,options),/incomplete/);

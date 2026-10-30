@@ -60,7 +60,7 @@ function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
+  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -366,6 +366,26 @@ test('approved MCP public read-only call succeeds through pinned Portal',async t
   assert.equal(result.steps[0].status,'succeeded');
   assert.ok(JSON.stringify(result.result).includes('hello MCP'));
   assert.ok(publicCalls>0);
+});
+
+test('revoke and enable cannot revive a prior MCP Published Plan or dispatch tools/call',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const started=await admit([echoStep('read',{value:'blocked'})],{},[ECHO_GRANT]);
+  assert.deepEqual(await service.portalConnectionRevoke(),{state:'revoked',generation:1});
+  assert.deepEqual(await service.portalConnectionEnable(),{state:'enabled',generation:1});
+  let called=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(request.method==='POST'&&(await request.clone().json() as {method?:string}).method==='tools/call')called++;
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(started.run_id);}finally{globalThis.fetch=previous;}
+  assert.equal(called,0);
+  const outcome=await service.result(started.run_id);
+  assert.equal(outcome.status,'failed');
+  assert.equal(outcome.steps[0].status,'failed');
+  assert.equal(outcome.steps[0].error_code,'portal_connection_revoked');
 });
 
 test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{
@@ -1755,6 +1775,83 @@ test('awaited child publish requires exact reviewed target; one native child and
   assert.equal(rows.filter(x=>x.parent_run_id===started.run_id).length,1);
   assert.equal(rows.every(x=>x.outcome==='succeeded'),true);
   assert.equal(rows.every(x=>x.capacity_weight===1),true);
+});
+
+test('detached child completes independently after parent reaches terminal success',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Detached result',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'independent completion'}}]}));
+  const childVersion=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Detached launch',steps:[
+    {id:'launch',flow:'child',mode:'detached',workflow_id:child.workflow_id,
+      version_id:childVersion.published_version_id,inputs:{}},
+    {id:'result',uses:'result.emit',needs:['launch'],with:{data:{ref:'steps.launch.output'}}},
+  ]}));
+  const checked=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {valid:boolean;required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  assert.equal(checked.valid,true);
+  await assert.rejects(()=>service.publish(parent.workflow_id,1),/child_approval_required/);
+  await service.publish(parent.workflow_id,1,[],false,false,[],checked.required_children!);
+  const native={do:async(_n:unknown,_o:unknown,callback:()=>Promise<unknown>)=>callback(),
+    sleep:async()=>{}} as unknown as WorkflowStep;
+  const nativeCreated:string[]=[];
+  env.WORKFLOW.create=async({id})=>{nativeCreated.push(id);};
+  const started=await service.start(parent.workflow_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const parentResult=await service.result(started.run_id);
+  assert.equal(parentResult.status,'succeeded');
+  const ref=parentResult.result as {run_id:string;published_version_id:string};
+  assert.equal(ref.published_version_id,childVersion.published_version_id);
+  assert.equal(nativeCreated.length,2);
+  const childRow=sqlite.prepare('SELECT outcome,capacity_weight FROM runs WHERE id=?')
+    .get(ref.run_id) as {outcome:string;capacity_weight:number};
+  assert.equal(childRow.outcome,'queued');
+  assert.equal(childRow.capacity_weight,1);
+  assert.equal((sqlite.prepare('SELECT capacity_weight FROM runs WHERE id=?')
+    .get(started.run_id) as {capacity_weight:number}).capacity_weight,1);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:ref.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  assert.equal((await service.result(ref.run_id)).status,'succeeded');
+  assert.equal((await service.result(started.run_id)).status,'succeeded');
+  await assert.rejects(()=>service.cancel(started.run_id,'launch'),/child_not_cancellable/);
+  assert.equal((await service.result(ref.run_id)).status,'succeeded');
+  assert.equal(nativeCreated.length,2,'parent replay must not create another child');
+});
+
+test('detached child at capacity limit fails definitely without a native child create',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Only emit',
+    steps:[{id:'emit',uses:'result.emit',with:{data:1}}]}));
+  const childPublished=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Bounded detached',steps:[
+    {id:'launch',flow:'child',mode:'detached',workflow_id:child.workflow_id,
+      version_id:childPublished.published_version_id,inputs:{}},
+  ]}));
+  const check=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await service.publish(parent.workflow_id,1,[],false,false,[],check.required_children!);
+  let nativeCreates=0;
+  env.WORKFLOW.create=async()=>{nativeCreates++;};
+  const started=await service.start(parent.workflow_id);
+  const filler=await service.create(JSON.stringify({version:1,name:'Filler',steps:[
+    {id:'emit',uses:'result.emit',with:{data:1}},
+  ]}));
+  await service.publish(filler.workflow_id,1);
+  for(let i=0;i<7;i++)await service.start(filler.workflow_id,{},'filler-'+i);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')")
+    .get() as {n:number}).n,8);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,cb:()=>Promise<unknown>)=>cb(),
+      sleep:async()=>{}} as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='launch')?.error_code,
+    'detached_child_admission_rejected');
+  assert.equal(nativeCreates,8,'only parent and seven previously reserved Runs were created');
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?')
+    .get(started.run_id) as {n:number}).n,0);
 });
 
 test('late child success after an uncertain native cancellation never authorizes parent output',async t=>{

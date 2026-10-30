@@ -1,88 +1,23 @@
-# Browser MCP 0.1.0 — installation and update
+# Browser MCP 0.2.0 — installation, local activation, recovery
 
-Spec #418 / #426 production candidate artifact; publishing and installation are separately authorized operations.
-Some Chrome/Edge isolated native tests and owner-reported unpaired restart/reload checks passed; paired production/Portal acceptance is not yet established.
-The fixed service origin is `https://browser.lirtual.dpdns.org`; installation alone does not deploy the Worker or register a Portal.
+Spec #531 v0.2.0 was released through [GitHub Actions run #41031042848](https://github.com/lirtual/mcp-workers/actions/runs/41031042848), with scoped production Chrome/Edge and Chrome Temporary-session acceptance documented in [Issue #531](https://github.com/lirtual/mcp-workers/issues/531#issuecomment-6519345334). Use only the independently verified release artifact with its SHA-256, JSON source manifest and matching Worker release. Neither a published artifact nor partial browser acceptance proves every negative or rollback case.
 
-## Download and verify
+## Install and activate (Chrome and Edge)
 
-The maintainer builds once from the reviewed checkout with
-`python3 scripts/build-browser-extension.py`. Both browsers use the **same ZIP**.
-The ZIP, `.zip.sha256`, `.zip.json` and these notices are retained with the existing
-manual Release Worker run (Browser selection only). After separately authorized
-publication, owners download those exact files from the repository's GitHub Release,
-not an arbitrary third-party mirror. CI artifacts alone are not a published Release.
-The JSON records Version, file hashes, aggregate source hash, Git revision and dirty
-status. A dirty development build is not evidence of a trusted release commit.
+1. Verify the published `browser-mcp-extension-v0.2.0.zip` against the trusted `.zip.sha256` and matching source metadata. Use the same reviewed ZIP for Chrome and Edge; extract each installation into a stable directory.
+2. In the intended desktop browser Profile (Chromium 137+), open `chrome://extensions` or `edge://extensions`, enable Developer Mode, select **Load unpacked**, and choose the extracted directory. Pin the Browser MCP toolbar icon. The fixed production service is `https://browser.lirtual.dpdns.org`. Do not install an arbitrary extension or copy Profile storage.
+3. New Profiles start **OFF**. Click the extension icon once to turn control ON. A dedicated Cloudflare Access identity page opens in that same browser Profile. Supply the one-time email PIN **yourself only if Access actually requests one**; existing valid Access SSO is supported. The page checks the original pending activation in that Profile. After its protected identity confirmation, it wakes the extension immediately; the extension closes only the verification tab that it created after the server confirms activation and the browser socket is authenticated. If verification fails, activation remains pending, the tab stays visible, and the 30-second recovery alarm remains available. Copying the URL to another Profile does not authorize it. No manual pairing code and no default Popup are used.
+4. The toolbar badge distinguishes `OFF`, `AUTH` (authenticating), `WAIT` (connecting), `ON` (live authenticated WSS), `STOP` (unconfirmed cloud Stop) and `REV` (revoked). Online transport is **not** website business success. Click the icon again for immediate local OFF; cloud Stop is separately confirmed or shown pending.
+5. To choose **Temporary** instead of default Permanent, open the extension's native **Options** page *before first activation* and select the lifetime. Permanent pairing keeps credentials in trusted extension local storage and the last intentional ON/OFF choice across normal restarts. Temporary pairing stores credentials in trusted browser-session storage only; browser exit, extension disable, reload, or update ends the local grant. Service-worker suspension, temporary network loss or closing a single window does not end the browser session. A temporary grant also has a bounded server lease; abnormal termination does not promise instant cloud revocation.
 
-Before extraction compare the ZIP SHA-256 with the trusted release record:
-`sha256sum -c browser-mcp-extension-v0.1.0.zip.sha256` (Linux),
-`shasum -a 256 browser-mcp-extension-v0.1.0.zip` (macOS), or
-`Get-FileHash browser-mcp-extension-v0.1.0.zip -Algorithm SHA256` (PowerShell).
-A matching hash establishes integrity relative to that record, not publisher identity.
-Maintainers also run `python3 scripts/build-browser-extension.py --verify <zip>`
-from the matching checkout to compare every ZIP byte against source.
+## Options, permission boundaries and Stop
 
-## Install in each Profile
+Options contains Profile identity, pairing lifetime/expiry, cloud Stop state, diagnostics, separate local LAN/Private permissions, Revoke and a confirmed-cloud-revocation acknowledgment. LAN/private grants are independently approved for the current session and do not become enabled through Access login. Private browsing also needs browser-native Allow in Incognito/InPrivate. No extra permission grants independent consequential-action approval. Never use Browser MCP to interact with its Access authentication, mailbox OTP, or independent Owner Approval pages.
 
-1. Use desktop Chrome **137+**, or desktop Edge with Chromium **137+** as the
-   declared API floor. Edge behavior and the actual oldest working versions remain
-   **Not run** until separate browser acceptance. The manifest enforces the Chromium
-   floor; this is not evidence of Edge compatibility.
-2. Extract into a permanent folder. Open `chrome://extensions` or `edge://extensions`,
-   enable Developer Mode, choose **Load unpacked**, then select that folder containing
-   `manifest.json`. No local Node/Python/build/runtime or Native Messaging host is
-   required for the owner. Developer Mode and broad website/debugger permission
-   warnings are part of this installation, not hidden setup steps.
-3. Pin/open Browser MCP; verify the service address before entering a one-time code
-   issued by the independently authenticated Browser MCP. Confirm locally. Pair each
-   Profile separately; never copy another Profile's storage or credential.
-4. Verify Endpoint alias, connection and control readiness separately. **Stop** persists
-   locally before cloud confirmation. Only local Resume enables control again.
+OFF is **not** Revoke. To change pairing lifetime, explicitly Revoke first and create a new pairing through the toolbar. Revocation rejects old credentials/WSS, but cannot roll back website effects that have already been dispatched. Network failures may leave cloud Stop/Revoke unconfirmed; do not treat those states as success. Consult the explicit Endpoint in the authenticated MCP status and resolve pending cloud state before further activation.
 
-The public Manifest Key keeps the installation ID stable. It is not a credential,
-Portal token, signing key or authorization check. It must remain unchanged on update.
-The actual ID must be recorded during the separate Chrome and Edge acceptance.
+## Update, rollback and acceptance
 
-## In-place update and failed-update recovery
+Before updating, Stop the Profile, record the current Endpoint ID and any Unknown operation receipts (never secrets), and keep a verified prior ZIP. Replace files **in the same stable directory** and Reload without changing extension identity. The 0.2.0 migration is designed to preserve a permanent Endpoint when the extension ID and storage Profile stay stable, while forcing OFF once; an ordinary later restart follows the last intentional ON/OFF. Verify the Endpoint ID after an update: production observations included changed Endpoint IDs of uncertain cause, so do not assume preservation without readback. A reload/upgrade clears temporary pairing. After update, click the toolbar to pass Access activation again before resuming control. A newer Worker refuses obsolete protocol clients, old `browser_pair` and old `/local-resume`; do not restore insecure fallback routes. Restore an older extension only when a separately approved, compatible Worker rollback makes that version safe.
 
-1. Stop locally, record the Endpoint ID/Stop state and unresolved Operation IDs without
-   copying secrets. Obtain and verify the new ZIP and retain the last verified ZIP.
-2. Close current activity. Replace files in the **same installation directory** without
-   removing the extension; Reload on the extensions page. Verify Version, same ID,
-   same paired Endpoint and persistent Stop. Inspect readiness before local Resume.
-   Updates must not automatically pair or enable. A service-worker restart can retain
-   trusted session state; Reload/update/browser restart clears browser session storage.
-3. An incompatible protocol, extension Version or capability handshake refuses control.
-   Stop and inspect the matching Worker/extension release pair; never bypass the check.
-4. If loading/update fails, keep Stop, restore the prior verified files in that same
-   directory and Reload only if that version understands the current protocol and
-   persisted state. Otherwise stay stopped and request a compatible forward fix.
-   Worker rollback requires a separate approved manual release and compatibility review.
-5. Never clear the DO, delete Unknown receipts, change the namespace or issue a new
-   intent key to retry Unknown as a recovery shortcut. Code rollback cannot roll back
-   website effects. Query the original receipt and preserve uncertainty for owner review.
-6. Removing/reinstalling may lose the Profile's local identity. Revoke the old Endpoint
-   through authenticated MCP, then pair afresh with a new code. Do not treat the same
-   public extension ID as proof of retained pairing or silently restore credentials.
-
-Current slice has T1 pairing/Stop, T2 observation and T3 tab operations. Sensitive grants
-and consequential actions remain unavailable. Their final update/rollback/Unknown and
-approval acceptance belongs to T9/T10; do not claim those features are verified here.
-
-## API basis and evidence limits
-
-- [TabGroup.shared](https://developer.chrome.com/docs/extensions/reference/api/tabGroups)
-  is Chrome 137+, used to avoid reusing shared groups; this is the highest current floor.
-- [WSS service-worker activity](https://developer.chrome.com/docs/extensions/how-to/web-platform/websockets)
-  requires Chrome 116+; the extension sends traffic every 20 seconds.
-- [webNavigation documentId](https://developer.chrome.com/docs/extensions/reference/api/webNavigation)
-  is Chrome 106+; [storage](https://developer.chrome.com/docs/extensions/reference/api/storage)
-  trusted contexts/session APIs require Chrome 102+ and define session reset semantics.
-- [Manifest Key](https://developer.chrome.com/docs/extensions/reference/manifest/key)
-  documents the stable development installation identifier.
-
-Local mocked tests cover compatible reconnection, retained pairing and Stop, fresh session
-identity after Reload, stale command rejection and incompatible handshake refusal.
-Real Developer Mode install, replacement/Reload, fallback, uninstall/re-pair and both
-browsers' permission UI/WSS remain **Not run**. Offline tests cannot prove them.
+Operation Receipt and Unknown Outcome remain durable in the Worker. Never use a fresh intent key to retry an Unknown website effect. The dedicated `/activate/verify/*` Cloudflare Access policy, matching activation origin/audience and production release were verified for the published build; Chrome/Edge activation UX and Chrome Temporary lifecycle have separate scoped Pass evidence in [#531](https://github.com/lirtual/mcp-workers/issues/531). Edge live Temporary lifecycle, Access login without an existing SSO cookie, some adversarial negatives and production rollback remain **Not run**. If an MCP client still advertises retired `browser_pair`, refresh its Browser plugin metadata; do not attempt the retired flow. Editing or building source does not modify production.

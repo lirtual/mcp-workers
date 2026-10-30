@@ -1,4 +1,4 @@
-import { type ApprovalEnv, approvalConfig, verifyOwner, ownerPage, ownerUnknownPage, ownerHeaders } from "./approval-auth.ts";
+import { type ApprovalEnv, approvalConfig, verifyOwner, ownerPage, ownerUnknownPage, ownerHeaders, activationConfig, verifyActivationOwner } from "./approval-auth.ts";
 import { interactionActions, interactionExtra, isInteraction, validInteraction } from "./interactions.ts";
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 export { BrowserOwner } from "./coordinator.ts";
@@ -21,7 +21,6 @@ const interactionTools = interactionActions.map(action=>({
 }));
 const tools = [
   ...interactionTools,
-  {name:"browser_pair",description:"Create a short-lived single-use pairing code. The owner must independently enter it and explicitly confirm in the trusted extension popup; this never enables remote control.",inputSchema:{type:"object",properties:{},additionalProperties:false},annotations:{readOnlyHint:false,openWorldHint:false}},
   {name:"browser_endpoints",description:"List owner-approved browser Profiles and separately report authorization, online connection and control readiness. Online is not execution success.",inputSchema:{type:"object",properties:{},additionalProperties:false},annotations:{readOnlyHint:true,openWorldHint:false}},
   {name:"browser_tabs",description:"Read bounded eligible HTTP(S) tabs. scope defaults to ordinary; private must be explicitly requested and locally/native authorized. Direct LAN needs separate local consent. Authentication and approval surfaces remain excluded. No titles, queries or groups.",inputSchema:{type:"object",properties:{endpoint_id:{type:"string",format:"uuid"},scope:{type:"string",enum:["ordinary","private"]}},required:["endpoint_id"],additionalProperties:false},annotations:{readOnlyHint:true,openWorldHint:true}},
   {name:"browser_snapshot",description:"Read bounded visible text from an explicit tab in a connected Endpoint. No input values, no hidden fields, no cross-origin frames, no persistence. Unknown page text may still contain secrets; use browser_screenshot separately for restricted active-tab images.",inputSchema:{type:"object",properties:{endpoint_id:{type:"string",format:"uuid"},tab_id:{type:"integer",minimum:0}},required:["endpoint_id","tab_id"],additionalProperties:false},annotations:{readOnlyHint:true,openWorldHint:true}},
@@ -79,7 +78,7 @@ async function handleMcp(request:Request,env:Env):Promise<Response> {
   } catch{return failure(null,-32700,"Invalid JSON-RPC request",400);}
   if (call.method==="notifications/initialized") return new Response(null,{status:202});
   if (call.id===undefined||typeof call.id!=="number"&&typeof call.id!=="string") return failure(null,-32600,"Missing valid request ID",400);
-  if (call.method==="initialize") return reply(call.id,{protocolVersion:"2025-03-26",capabilities:{tools:{listChanged:false}},serverInfo:{name:"browser-mcp-worker",version:"0.1.0"}});
+  if (call.method==="initialize") return reply(call.id,{protocolVersion:"2025-03-26",capabilities:{tools:{listChanged:false}},serverInfo:{name:"browser-mcp-worker",version:"0.2.0"}});
   if (call.method==="ping") return reply(call.id,{});
   if (call.method==="tools/list") return reply(call.id,{tools});
   if (call.method!=="tools/call") return failure(call.id,-32601,"Method not found");
@@ -118,7 +117,7 @@ async function handleMcp(request:Request,env:Env):Promise<Response> {
   }
   try {
     const endpoint_id=(args as Record<string,unknown>).endpoint_id;
-    const path=name==="browser_pair"?"create-pair":name==="browser_endpoints"?"list":
+    const path=name==="browser_endpoints"?"list":
       name==="browser_stop"?"stop":name==="browser_revoke"?"revoke":
       name==="browser_operation_status"?"operation-status":mutation?"mutate":"read";
     const data=await post(env,path,path==="mutate"?{
@@ -148,15 +147,19 @@ async function handleExtension(request:Request,env:Env,path:string) {
     if (request.headers.get("upgrade")?.toLowerCase()!=="websocket") return new Response(null,{status:426});
     return stub(env).fetch(new Request("https://owner.internal/socket",request));
   }
-  const routes:Record<string,string>={claim:"claim",state:"state",stop:"local-stop",resume:"local-resume",revoke:"local-revoke",summary:"activity-summary"};
+  const routes:Record<string,string>={"activate-begin":"activate-begin","activate-complete":"activate-complete","activate-cancel":"activate-cancel",state:"state",stop:"local-stop",revoke:"local-revoke",summary:"activity-summary"};
   const target=routes[path];
   if (!target||request.method!=="POST"||request.headers.get("content-type")?.split(";")[0]!=="application/json") return new Response(null,{status:404});
   let body:Record<string,unknown>;
   try {const raw=await boundedText(request,4096);body=JSON.parse(raw) as Record<string,unknown>;
   if(!body||typeof body!=="object"||Array.isArray(body))throw Error();
-  if(path==="claim"?!exact(body,["code","alias"]):!exact(body,["endpoint_id","credential"]))throw Error();
+  const activation=path.startsWith("activate-");
+  if(activation){
+    const allowed=path==="activate-begin"?["attempt_id","proof_hash","alias","mode","endpoint_id","credential"]:
+      path==="activate-complete"?["attempt_id","proof","endpoint_id","credential"]:["attempt_id","proof"];
+    if(Object.keys(body).some(k=>!allowed.includes(k)))throw Error();
+  }else if(!exact(body,["endpoint_id","credential"]))throw Error();
   }catch{return Response.json({error:"bad_request"},{status:400});}
-  if (path==="claim") body.client_ip=request.headers.get("cf-connecting-ip")??"unknown";
   const result=await stub(env).fetch("https://owner.internal/"+target,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
   const headers=new Headers(result.headers);headers.set("access-control-allow-origin",request.headers.get("origin")!);headers.set("vary","Origin");headers.set("cache-control","no-store");
   return new Response(result.body,{status:result.status,headers});
@@ -169,6 +172,53 @@ const ownerRejection = (status:number,message:string):Response => new Response(m
 export default {
   async fetch(request:Request,env:Env):Promise<Response> {
     const url=new URL(request.url);
+    const activationMatch=/^\/activate\/verify\/([a-f0-9-]{36})$/.exec(url.pathname);
+    if(url.pathname.startsWith("/activate/")){
+      const config=activationConfig(env);
+      const extension=url.searchParams.get("extension");
+      if(!config||url.origin!==config.origin||!activationMatch||
+         url.searchParams.size!==1||!extension||!/^[a-p]{32}$/.test(extension)||
+         !["GET","POST"].includes(request.method)||
+         request.headers.has("origin") && request.headers.get("origin")!==config.origin||
+         !await verifyActivationOwner(request,env))
+        return new Response("Not found",{status:404,headers:{...ownerHeaders,"content-type":"text/plain; charset=utf-8"}});
+      if(request.method==="POST"){
+        if(request.headers.get("origin")!==config.origin||
+           request.headers.get("content-type")?.split(";")[0]!=="application/json")
+          return new Response("Not found",{status:404,headers:ownerHeaders});
+        try{
+          const data=JSON.parse(await boundedText(request,256));
+          if(!data||Object.keys(data).length!==1||data.presence!==true)throw Error();
+          const confirmed=await post(env,"activate-authorize",{attempt_id:activationMatch[1]});
+          return new Response(confirmed.status===200?"Identity verified; return to extension.":"Not found",
+            {status:confirmed.status===200?200:404,headers:{...ownerHeaders,"content-type":"text/plain; charset=utf-8"}});
+        }catch{return new Response("Not found",{status:404,headers:ownerHeaders});}
+      }
+      // GET is strictly read-only. The script must reach the extension in
+      // this exact local Profile before any protected POST is possible.
+      const nonce=crypto.randomUUID().replace(/-/g,"");
+      const script=`const target=${JSON.stringify(extension)};
+const attempt=${JSON.stringify(activationMatch[1])};
+const status=document.getElementById("status");
+if(!globalThis.chrome?.runtime?.sendMessage){status.textContent="Open this page in the initiating browser Profile.";}
+else chrome.runtime.sendMessage(target,{type:"activation-presence",attempt_id:attempt},async answer=>{
+  if(!answer?.ok||chrome.runtime.lastError){status.textContent="No matching local activation. Return to the initiating Profile.";return;}
+  try{const r=await fetch(location.href,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({presence:true}),credentials:"same-origin",redirect:"error"});
+    if(!r.ok){status.textContent="Activation expired or unavailable.";return;}
+    status.textContent="Identity verified. Connecting Browser MCP…";
+    // This is only a wake-up hint: the extension still must prove its own
+    // secret to the server, receive the grant and authenticate its socket.
+    chrome.runtime.sendMessage(target,{type:"activation-verified",attempt_id:attempt},answer=>{
+      if(chrome.runtime.lastError||!answer?.ok)
+        status.textContent="Identity verified. Return to the Browser MCP extension.";
+      // The extension closes only its own verified tab once WSS is online.
+    });
+  }catch{status.textContent="Activation could not be confirmed.";}
+});`;
+      return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser MCP activation</title><h1>Browser MCP</h1><p id="status">Checking this Profile's pending activation…</p><script nonce="${nonce}">${script}</script></html>`,
+        {headers:{...ownerHeaders,"content-type":"text/html; charset=utf-8",
+         "content-security-policy":`default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`}});
+    }
     if(url.pathname.startsWith("/owner/")) {
       const config=approvalConfig(env);
       if(!config)return ownerRejection(403,"Owner approval is not enabled.");

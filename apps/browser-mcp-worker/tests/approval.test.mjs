@@ -51,7 +51,7 @@ test('unavailable owner approval displays a safe inline error instead of a downl
       assert.equal(response.headers.get('content-disposition'),null);
       assert.equal(response.headers.get('cache-control'),'no-store');
       assert.match(await response.text(),/Owner/);
-      assert.equal(f.effects.length,0);
+      assert.equal(f.effects.filter(e=>e[0]!=="fetch").length,0,"Access pairing network is not a website effect");
     }finally{await f.close();}
   }
 });

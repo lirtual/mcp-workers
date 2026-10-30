@@ -103,7 +103,7 @@ test('delayed local grant cannot beat Stop; failed session revocation stops cont
     f.chrome.storage.session.set=async values=>{if(values.browser_sensitive_grants)throw Error('storage unavailable');return original(values);};
     await assert.rejects(grant(f,'lan',false),/storage unavailable/);assert.equal(f.local.authorization,'stopped');
     await f.restartExtension();assert.equal((await f.snapshot()).error_code,'stopped');
-    await assert.rejects(f.popup('resume'),/storage unavailable/);f.chrome.storage.session.set=original;
+    await assert.rejects(f.popup('resume'),/toolbar activation must pair|storage unavailable/);f.chrome.storage.session.set=original;
   }finally{await f.close();}
 });
 
@@ -129,7 +129,7 @@ test('actual Popup buttons require local confirmation and independently change s
     const popup=vm.createContext({document:{getElementById:element},Date,Number,URL,
       BROWSER_MCP_SERVICE_ORIGIN:'https://browser.example',confirm:()=>confirmed,alert:()=>{},
       chrome:{runtime:{sendMessage:(message,done)=>f.popup(message.type,message).then(result=>done({ok:true,result}),error=>done({ok:false,error:error.message}))}}});
-    vm.runInContext(fs.readFileSync(new URL('../extension/popup.js',import.meta.url),'utf8'),popup);
+    vm.runInContext(fs.readFileSync(new URL('../extension/options.js',import.meta.url),'utf8'),popup);
     await vm.runInContext("refresh()",popup);
     assert.match(element('status').textContent,/native permission: DENIED/);
     await element('lan').onclick();assert.equal((await f.popup('status')).sensitive_permissions.lan,false);

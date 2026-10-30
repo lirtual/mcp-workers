@@ -1,9 +1,11 @@
 import {runPublishedCloudflareAction} from './cloudflare-action-executor.ts';
 import {watchPersistedSessions} from './github-action-session-watch.ts';
-import {awaitedChildRunId,transferAwaitedChildCapacity,startReservedAwaitedChild} from './child-capacity.ts';
+import {awaitedChildRunId,transferAwaitedChildCapacity,admitDetachedChild,startReservedDetachedChild,startReservedAwaitedChild} from './child-capacity.ts';
 import {canonicalJsonString} from './plan.ts';
 import {eventTypeForStep,payloadDigest} from './event-wait.ts';
 import {waitForRuntimeApproval} from './runtime-approval.ts';
+import {reservePortalCall} from './portal-authorization.ts';
+import {callApprovedHttp,HttpDispatchError} from './http-action.ts';
 import { runPublishedGitHubActionTask } from './github-action-task.ts';
 import {dynamicForeachTaskInputs,reviewedForeachTaskContract,checkedFrozenTaskInputs,frozenTaskInputDigest} from './github-action-foreach-inputs.ts';
 import { runPublishedGitHubActionSession } from './github-action-session.ts';
@@ -32,7 +34,8 @@ const now=()=>Date.now();
 const hasUnresolvedArgument=(value:unknown):boolean=>
   value===undefined||(Array.isArray(value)?value.some(hasUnresolvedArgument):
     value!==null&&typeof value==='object'&&Object.values(value).some(hasUnresolvedArgument));
-async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>):Promise<unknown>{
+async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<string,unknown>,
+  runId:string,stepId:string):Promise<unknown>{
   // Enforce the approved published contract before any remote call.
   if(plan.mcp_target_risks_accepted!==true)throw Error('target_risk_acknowledgment_required');
   const endpoint=step.with.endpoint,tool=step.with.tool,schema_digest=step.with.schema_digest;
@@ -72,6 +75,9 @@ async function callApprovedReadonly(env:Env,plan:Plan,step:Step,args:Record<stri
        candidate.annotations?.destructiveHint===true)throw Error('readonly_tool_unconfirmed');
     if(await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema)!==schema_digest)
       throw Error('tool_schema_drift');
+    const reservation=await reservePortalCall(env.DB,runId,stepId,plan.mcp_connection_generation??0);
+    if(reservation!=='reserved')throw Error(reservation==='revoked'?
+      'portal_connection_revoked':'mcp_dispatch_already_reserved');
     // Once tools/call is attempted, a thrown error, remote error, or unreadable
     // result does not prove the external tool had no side effects.
     try{
@@ -245,9 +251,11 @@ async function runMultiForeach(
                 const childStep:Step={id:childId,uses:'mcp.call',needs:s.needs,with:child.with};
                 try{
                   return {status:'succeeded',
-                    output:await callApprovedReadonly(env,plan,childStep,args)};
+                    output:await callApprovedReadonly(env,plan,childStep,args,runId,childId)};
                 }catch(error){
-                  return error instanceof Error&&error.message==='external_outcome_unknown'
+                  return error instanceof Error&&error.message==='portal_connection_revoked'
+                    ?{status:'failed',error_code:'portal_connection_revoked'}
+                    :error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
                     ?{status:'indeterminate',error_code:'external_outcome_unknown'}
                     :{status:'failed',error_code:'step_execution_failed'};
                 }
@@ -411,9 +419,11 @@ async function runForeachStep(
           const child:Step={id:entry.id,uses:'mcp.call',needs:s.needs,with:template.with};
           try{
             const args=entry.output as Record<string,unknown>;
-            return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args)};
+            return {status:'succeeded',output:await callApprovedReadonly(env,plan,child,args,runId,entry.id)};
           }catch(error){
-            return error instanceof Error&&error.message==='external_outcome_unknown'
+            return error instanceof Error&&error.message==='portal_connection_revoked'
+              ?{status:'failed',error_code:'portal_connection_revoked'}
+              :error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message)
               ?{status:'indeterminate',error_code:'external_outcome_unknown'}
               :{status:'failed',error_code:'step_execution_failed'};
           }
@@ -533,6 +543,7 @@ async function runAwaitedChild(
  ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>},
 ):Promise<Outcome>{
  if(!dependenciesPermitRun(s,ctx.steps))return {status:'skipped'};
+ const detached=s.with.mode==='detached';
  const target=s.with.workflow_id,version=s.with.version_id;
  const approval=plan.child_approvals?.find(x=>x.workflow_id===target&&x.version_id===version);
  if(!approval||typeof target!=='string'||typeof version!=='string')
@@ -565,13 +576,43 @@ async function runAwaitedChild(
    // predicate as the final authority if this state races with a change.
    if(published.state!=='active'||published.active_version_id!==version)
      return {status:'failed',error_code:'child_target_unavailable'};
-   await transferAwaitedChildCapacity(env.DB,{
-     parentRunId:runId,parentStepId:s.id,childRunId:childId,
+   const reservation={parentRunId:runId,parentStepId:s.id,childRunId:childId,
      childWorkflowId:target,childVersionId:version,
      admissionKey:'child-'+childId,requestDigest:frozen.digest,
-     inputJson:frozen.inputJson,timestamp:now(),
-   });
- }catch{return {status:'indeterminate',error_code:'child_admission_unconfirmed'};}
+     inputJson:frozen.inputJson,timestamp:now()};
+   if(detached)await admitDetachedChild(env.DB,reservation);
+   else await transferAwaitedChildCapacity(env.DB,reservation);
+ }catch(error){
+   if(detached&&error instanceof Error&&error.message==='detached_child_admission_rejected')
+     return {status:'failed',error_code:'detached_child_admission_rejected'};
+   return {status:'indeterminate',error_code:'child_admission_unconfirmed'};
+ }
+ if(detached){
+   const childReference={run_id:childId,published_version_id:version};
+   for(let i=0;i<=20;i++){
+     try{
+       const started=await step.do('workflow-'+s.id+'-detached-child-start-'+i,
+         {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+         async()=>startReservedDetachedChild(env,{
+           parentRunId:runId,parentStepId:s.id,childRunId:childId,timestamp:now(),
+         }));
+       // A detached child completes the calling Step at confirmed native
+       // creation, not after its independent business Run completes.
+       if(started.start_state==='started')
+         return {status:'succeeded',output:childReference};
+       if(started.start_state==='rejected')
+         return {status:'failed',error_code:'detached_parent_not_active'};
+       if(started.start_state==='indeterminate')break;
+     }catch{
+       // Unknown native creation must not trigger a second create().
+     }
+     if(i<20)await step.sleep('workflow-'+s.id+'-detached-child-reconcile-'+i,30_000);
+   }
+   // Keep the child identity visible even when a native ACK cannot be
+   // established. A provider outcome is never guessed from a timeout.
+   return {status:'indeterminate',output:childReference,
+     error_code:'detached_child_start_unconfirmed'};
+ }
  // Child start and every observation use the SAME derived ID. If an ACK
  // disappears, the helper only retries on a proven native not-found.
  for(let i=0;i<120;i++){
@@ -744,14 +785,32 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               // a successful result.emit operation.
               if(s.uses==='result.emit')
                 return {status:'succeeded',output:limitResult(evaluateArguments(s.with.data,ctx))};
+              if(s.uses==='http.request'){
+                try{
+                  const body=Object.hasOwn(s.with,'body')?evaluateArguments(s.with.body,ctx):undefined;
+                  const response=await callApprovedHttp(db,plan,s,id,body);
+                  const unknown=!response.ok&&s.with.method==='POST';
+                  return {status:response.ok?'succeeded':unknown?'indeterminate':'failed',
+                    output:limitResult(response),
+                    ...(response.ok?{}:{error_code:unknown?'http_outcome_unknown':'http_response_error'})};
+                }catch(error){
+                  if(error instanceof HttpDispatchError)
+                    return {status:error.uncertain?'indeterminate':'failed',
+                      error_code:error.code};
+                  // Unknown exceptions after a possible dispatch must fail closed.
+                  return {status:'indeterminate',error_code:'http_outcome_unknown'};
+                }
+              }
               if(s.uses==='mcp.call'){
                 const a=evaluateArguments(s.with.arguments,ctx);
                 if(!a||typeof a!=='object'||Array.isArray(a)||hasUnresolvedArgument(a))
                   throw Error('invalid_arguments');
                 try{
-                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>)};
+                  return {status:'succeeded',output:await callApprovedReadonly(this.env,plan,s,a as Record<string,unknown>,id,s.id)};
                 }catch(error){
-                  if(error instanceof Error&&error.message==='external_outcome_unknown')
+                  if(error instanceof Error&&error.message==='portal_connection_revoked')
+                    return {status:'failed',error_code:'portal_connection_revoked'};
+                  if(error instanceof Error&&['external_outcome_unknown','mcp_dispatch_already_reserved'].includes(error.message))
                     return {status:'indeterminate',error_code:'external_outcome_unknown'};
                   throw error;
                 }

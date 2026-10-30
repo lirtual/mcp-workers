@@ -4,7 +4,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars, BROWSER_APPROVAL_VARIABLES } from "./worker-release-variables.mjs";
-import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
 const REQUIRED_SECRETS = {
@@ -392,25 +392,35 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "browser-mcp-worker") {
     const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
-    // The default release has only its DO and Bearer. An approved activation
-    // must supply every owner binding with an exact production identity; never
-    // accept a partially applied approval configuration or stale extra bindings.
-    const approval = BROWSER_APPROVAL_VARIABLES.map(name => find(name, "plain_text"));
-    const count = approval.filter(Boolean).length;
-    invariant(count === 0 || count === BROWSER_APPROVAL_VARIABLES.length,
+    // Owner Approval and Profile Activation use distinct Access applications.
+    // Validate every observed binding as a single reviewed, exact configuration.
+    const approvalFields = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
+      "BROWSER_APPROVAL_ISOLATION"];
+    const activationFields = ["BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"];
+    const names = [...new Set([...BROWSER_APPROVAL_VARIABLES, ...activationFields])];
+    const fields = names.map(name => [name, find(name, "plain_text")]);
+    const env = Object.fromEntries(fields.filter(([, value]) => !!value)
+      .map(([name, value]) => [name, value.text]));
+    const approvalCount = approvalFields.filter(name => Object.hasOwn(env, name)).length;
+    const activationCount = activationFields.filter(name => Object.hasOwn(env, name)).length;
+    invariant(approvalCount === 0 || approvalCount === approvalFields.length,
       "Browser approval binding inventory incomplete");
-    if (count) {
-      const env = Object.fromEntries(BROWSER_APPROVAL_VARIABLES.map((name, i) => [name, approval[i].text]));
-      collectWorkerVars("browser-mcp-worker", env);
-    }
-    if (options.mode === "readback")
-      invariant(count === (options.expectedBrowserApproval ? BROWSER_APPROVAL_VARIABLES.length : 0),
+    invariant(activationCount === 0 || activationCount === activationFields.length,
+      "Browser activation binding inventory incomplete");
+    if (Object.keys(env).length) collectWorkerVars("browser-mcp-worker", env);
+    if (options.mode === "readback") {
+      invariant((approvalCount === approvalFields.length) === !!options.expectedBrowserApproval,
         "Browser approval binding inventory differs from reviewed GitHub Environment");
+      invariant(activationCount === (options.expectedBrowserActivationAudience ? activationFields.length : 0) &&
+        (!options.expectedBrowserActivationAudience ||
+          env.BROWSER_ACTIVATION_AUDIENCE === options.expectedBrowserActivationAudience),
+        "Browser activation binding inventory differs from reviewed GitHub Environment");
+    }
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
-      !coordinator.script_name && bindings.length === 2 + count &&
+      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
-      !bindings.some(b => b.type === "plain_text" && !BROWSER_APPROVAL_VARIABLES.includes(b.name)),
+      !bindings.some(b => b.type === "plain_text" && !names.includes(b.name)),
       "Browser binding inventory drift");
     invariant(settings.observability?.logs?.head_sampling_rate === 0,
       "Browser logs sampling must remain zero");
@@ -497,6 +507,7 @@ function reviewedTerminalRunSql(sql) {
     [process.env.WORKFLOW_FOURTH_TERMINAL_RUN_ID,FOURTH_TERMINAL_RUN_ID],
     [process.env.WORKFLOW_FIFTH_TERMINAL_RUN_ID,FIFTH_TERMINAL_RUN_ID],
     [process.env.WORKFLOW_SIXTH_TERMINAL_RUN_ID,SIXTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_SEVENTH_TERMINAL_RUN_ID,SEVENTH_TERMINAL_RUN_ID],
   ].filter(([supplied,exact])=>supplied===exact).map(([,exact])=>exact);
   if(exclusions.length===0)return sql;
   const sqlIds=exclusions.map(id=>"'"+id+"'").join(",");
@@ -504,8 +515,8 @@ function reviewedTerminalRunSql(sql) {
     "outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs",
     "outcome NOT IN ('succeeded','failed','cancelled') AND id NOT IN ("+sqlIds+")) AS nonterminal_runs"
   ).replace(
-    "status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps",
-    "status NOT IN ('succeeded','failed','skipped') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
+    "status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps",
+    "status NOT IN ('succeeded','failed','skipped','cancelled') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
   );
 }
 
@@ -581,14 +592,25 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v14 === 1 && row?.deleted_column === 1 &&
     row?.migration_v15 !== 1 && row?.approval_gates_table !== 1 &&
     row?.approvals_table !== 1 && fullV11Schema;
-  const complete = row?.migration_count === 15 &&
+  const completeV15 = row?.migration_count === 15 &&
     row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
     row?.migration_v13 === 1 && row?.invocations_table === 1 &&
     row?.cloudflare_cancel_table === 1 &&
     row?.migration_v14 === 1 && row?.deleted_column === 1 &&
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || complete)),
+    row?.approvals_table === 1 && row?.migration_v16 !== 1 &&
+    row?.portal_auth_table !== 1 && row?.mcp_fence_table !== 1 && fullV11Schema;
+  const completeV16 = row?.migration_count === 16 &&
+    row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
+    row?.mcp_fence_table === 1 && row?.migration_v15 === 1 &&
+    row?.approval_gates_table === 1 && row?.approvals_table === 1 &&
+    row?.deleted_column === 1 && fullV11Schema;
+  const complete = row?.migration_count === 17 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -616,7 +638,9 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0008_session_locator.sql','0009_fixed_sessions.sql',
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
    '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
-    '0014_workflow_deletion.sql','0015_runtime_approval.sql')) AS expected_migrations,
+    '0014_workflow_deletion.sql','0015_runtime_approval.sql',
+    '0016_portal_connection_revocation.sql',
+    '0017_http_connection_auth.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -628,7 +652,13 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
  (SELECT count(*) FROM runs WHERE start_state IS NULL OR
    start_state IN ('reserved','start_unknown')) AS unresolved_starts,
  (SELECT count(*) FROM run_steps WHERE status IS NULL OR
-   status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps,
+   status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
+ (SELECT count(*) FROM run_steps s JOIN runs r ON r.id=s.run_id
+   WHERE s.status='cancelled' AND (r.outcome IS NOT 'cancelled'
+     OR r.error_code IS NOT s.error_code
+     OR r.error_code IS NULL
+     OR r.error_code NOT IN ('approval_cancel_requested',
+       'event_wait_cancel_requested'))) AS invalid_cancelled_steps,
  (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
    state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
  (SELECT count(*) FROM session_executions WHERE state IS NULL OR
@@ -649,18 +679,18 @@ export function verifyWorkflowMigrationReadiness(response) {
   const nonnegative = [
     "migration_count","expected_migrations","workflow_count","run_count",
     "session_count","attempt_count","callback_count","cancellation_count",
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ];
   for (const key of nonnegative) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ]) {
     invariant(row[key] === 0, "Workflow migration blocked by " + key);
@@ -687,14 +717,14 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
   const row=response[0].results[0];
   for (const key of [
     "migration_count","expected_migrations","nonterminal_runs",
-    "unresolved_starts","unresolved_steps","nonterminal_attempts",
+    "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===15 && row.expected_migrations===15,
+  invariant(row.migration_count===17 && row.expected_migrations===17,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps","undelivered_callbacks",
   ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
   invariant(row.nonterminal_attempts===row.confirmed_ready_sessions &&
     row.nonterminated_sessions===row.confirmed_ready_sessions,
@@ -1037,6 +1067,8 @@ async function main() {
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
       expectedBrowserApproval: worker === "browser-mcp-worker" &&
         process.env.BROWSER_APPROVAL_EXPECTED === "isolated-owner-profile-and-mailbox-v1",
+      expectedBrowserActivationAudience: worker === "browser-mcp-worker"
+        ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Keep identity and binding drift failures fatal.

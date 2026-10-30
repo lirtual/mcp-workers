@@ -20,7 +20,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
-  for(const id of ['action.http','action.mcp.write','flow.child.detached','flow.loop','flow.saga']){
+  for(const id of ['action.mcp.write','flow.loop','flow.saga']){
     assert.equal(catalog.get(id)?.availability,'unsupported',id);
   }
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
@@ -61,7 +61,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
 
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
-    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.wait','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
+    'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.child.detached','flow.wait','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
     const result=await workflowCapabilities(['action.mcp.call','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(id)?portalEnv:env,id,
       async()=>({availability:'verified_contract',tools:[{
         tool:'ima_list_notebooks',endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
@@ -214,6 +214,22 @@ test('awaited-child capability distinguishes valid flow syntax from legacy unsup
   );
 });
 
+test('detached child is compiler-valid but still requires an exact Published child grant',async()=>{
+  const detail=await workflowCapabilities(env,'flow.child.detached');
+  assert.equal(detail.availability,'supported_with_grant');
+  const grant=detail.grant as {required:string[]};
+  assert.deepEqual(grant.required,['approved_children']);
+  const {definition,digest}=detail.example as {definition:unknown;digest:string};
+  const compiled=await compilePlan(definition);
+  assert.equal(compiled.digest,digest);
+  assert.equal(compiled.plan.steps[0]?.uses,'flow.child');
+  assert.equal(compiled.plan.steps[0]?.with.mode,'detached');
+  const copy=JSON.parse(JSON.stringify(definition));
+  copy.steps[0].mode='unexpected';
+  await assert.rejects(()=>compilePlan(copy),
+    (err:unknown)=>err instanceof PlanError&&err.message==='invalid_child_mode');
+});
+
 test('unsupported features are rejected by the same production compiler',async()=>{
   for(const forbidden of [
     {version:1,name:'Cron',triggers:[{id:'timer',type:'cron',expression:'* * * * *'}],
@@ -304,8 +320,8 @@ test('external event wait has one bounded, digest-only compiler contract and mat
     ['repeat','foreach','child','wait','wait_event']);
 });
 
-test('not-yet-supported write, HTTP, detached and Saga contracts are discoverable but never executable',async()=>{
- for(const id of ['action.http','action.mcp.write','flow.loop','flow.child.detached','flow.saga']){
+test('unsupported write, loops and Saga remain design-only; HTTP has an executable scoped contract',async()=>{
+ for(const id of ['action.mcp.write','flow.loop','flow.saga']){
   const detail=await workflowCapabilities(env,id);
   assert.equal(detail.availability,'unsupported');
   const design=detail.design_contract as {executable:boolean;source_schema:string};
@@ -317,8 +333,14 @@ test('not-yet-supported write, HTTP, detached and Saga contracts are discoverabl
   await assert.rejects(()=>compilePlan({version:1,name:'Unsupported',
    steps:[{id:'one',flow,times:2,template:{uses:'result.emit',with:{data:1}}}]}));
  }
- await assert.rejects(()=>compilePlan({version:1,name:'Unsupported HTTP',
-  steps:[{id:'one',uses:'http.request',with:{url:'https://example.com'}}]}),/unsupported_capability/);
+ const http=await workflowCapabilities(env,'action.http');
+ assert.equal(http.availability,'supported_with_grant');
+ const example=http.example as {definition:unknown;digest:string};
+ assert.equal((await compilePlan(example.definition)).digest,example.digest);
+ assert.deepEqual((http.grant as {required:string[]}).required,
+  ['approved_http_operations','approve_http_execution','accept_target_risks']);
+ await assert.rejects(()=>compilePlan({version:1,name:'Invalid HTTP',
+  steps:[{id:'one',uses:'http.request',with:{url:'https://example.com'}}]}),/invalid_http_operation/);
  await assert.rejects(()=>compilePlan({version:1,name:'Unsupported MCP write',
   steps:[{id:'one',uses:'mcp.call',with:{endpoint:PRODUCTION_PORTAL_ENDPOINT,
    tool:'ima_create_note',scope:'write',arguments:{},input_schema:{type:'object'}}}]}),/unsupported_operation_scope/);
