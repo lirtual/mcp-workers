@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {readFileSync} from "node:fs";
-import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifyPriorNativeProof, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifySeventhTerminalEvidence, verifyPriorNativeProof, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, SEVENTH_TASK_GITHUB_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 const ok = () => ({
   d1:[
@@ -317,4 +317,54 @@ test("only previously audited immutable Release proves expired native history",(
   }
   assert.throws(()=>verifyPriorNativeProof(run,{jobs:[]}),/blocked/);
   assert.throws(()=>verifyTerminalRunEvidence(ok().d1,{previously_verified_release:40871993462},ok().github),/blocked/);
+});
+
+test("seventh exact download E2E: no Weixin invocation and independently completed Task",()=>{
+  const id=SEVENTH_TERMINAL_RUN_ID;
+  const data={
+    d1:[
+      {success:true,results:[{id,outcome:"indeterminate",start_state:"started",error_code:"cloudflare_dispatch_unconfirmed"}]},
+      {success:true,results:[
+        {run_id:id,step_id:"download_task",status:"succeeded",error_code:null},
+        {run_id:id,step_id:"download_task_0_submit_download",status:"succeeded",error_code:null},
+        {run_id:id,step_id:"notify_weixin",status:"indeterminate",error_code:"cloudflare_dispatch_unconfirmed"}]},
+      {success:true,results:[]},
+      {success:true,results:[{run_id:id,step_id:"download_task_0_submit_download",
+        state:"succeeded",repository:"lirtual/session-actions",
+        owner_run_id:SEVENTH_TASK_GITHUB_RUN_ID,owner_run_attempt:1,
+        candidate_run_id:SEVENTH_TASK_GITHUB_RUN_ID,candidate_run_attempt:1}]},
+      {success:true,results:[]}
+    ],
+    native:{status:"complete",end:"2026-10-30T11:13:31.271Z"},
+    github:{id:SEVENTH_TASK_GITHUB_RUN_ID,status:"completed",conclusion:"success",
+      run_attempt:1,head_branch:"v0.1.42-rc.7"}
+  };
+  assert.equal(verifySeventhTerminalEvidence(data.d1,data.native,data.github),id);
+  for(const [group,key,bad] of [
+    [0,"outcome","succeeded"],[0,"error_code",null],
+    [1,"status","failed"],[3,"state","unknown"],[3,"owner_run_id",42]]){
+    const x=structuredClone(data);x.d1[group].results[0][key]=bad;
+    assert.throws(()=>verifySeventhTerminalEvidence(x.d1,x.native,x.github),/blocked/);
+  }
+  const sent=structuredClone(data);sent.d1[4].results.push({
+    run_id:id,step_id:"notify_weixin",invocation_id:"some-invocation"});
+  assert.throws(()=>verifySeventhTerminalEvidence(sent.d1,sent.native,sent.github),/blocked/);
+  const session=structuredClone(data);session.d1[2].results.push({run_id:id,state:"ready"});
+  assert.throws(()=>verifySeventhTerminalEvidence(session.d1,session.native,session.github),/blocked/);
+  for(const patch of [{status:"running"},{end:null}])
+    assert.throws(()=>verifySeventhTerminalEvidence(data.d1,{...data.native,...patch},data.github),/blocked/);
+  for(const patch of [{conclusion:"failure"},{head_branch:"main"},{id:4}])
+    assert.throws(()=>verifySeventhTerminalEvidence(data.d1,data.native,{...data.github,...patch}),/blocked/);
+  const args=["scripts/manual-worker-release.mjs","migration-sql","workflow-mcp-worker"];
+  const env={...process.env,WORKFLOW_SEVENTH_TERMINAL_RUN_ID:id};
+  const scoped=execFileSync(process.execPath,args,{encoding:"utf8",env});
+  const unapproved=execFileSync(process.execPath,args,{encoding:"utf8",env:{
+    ...env,WORKFLOW_SEVENTH_TERMINAL_RUN_ID:"ffffffff-ffff-ffff-ffff-ffffffffffff"}});
+  assert.equal((scoped.match(new RegExp(id,"g"))||[]).length,2);
+  assert.equal((unapproved.match(new RegExp(id,"g"))||[]).length,0);
+  const release=readFileSync(".github/workflows/release.yml","utf8");
+  assert.equal((release.match(/steps\\.terminal_seventh\\.outputs\\.seventh_terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/id <> '\\$WORKFLOW_SEVENTH_TERMINAL_RUN_ID'/g)||[]).length,2);
+  assert.ok(release.indexOf("Verify seventh terminal download Run proof")<
+    release.indexOf("Verify Workflow release configuration"));
 });
