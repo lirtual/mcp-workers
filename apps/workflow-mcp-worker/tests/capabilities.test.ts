@@ -21,9 +21,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.write')?.availability,'unavailable');
-  for(const id of ['flow.saga']){
-    assert.equal(catalog.get(id)?.availability,'unsupported',id);
-  }
+  assert.equal(catalog.get('flow.saga')?.availability,'supported_with_grant');
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
   assert.equal(catalog.get('flow.wait')?.availability,'supported');
   const wait=(await workflowCapabilities(env,'flow.wait')) as {example:{definition:unknown;digest:string};wait_policy:{native_checkpoint:string;total_budget_seconds:number}};
@@ -382,19 +380,17 @@ test('bounded dynamic while/until discovery compiles and refuses nested/effect b
  }
 });
 
-test('unreviewed writes are blocked; nested loops and Saga remain design-only',async()=>{
+test('unreviewed writes are blocked; Saga is bounded to reviewed temporary Session cancellation',async()=>{
  const write=await workflowCapabilities(env,'action.mcp.write');
  assert.equal(write.availability,'unavailable');
  assert.deepEqual((write.grant as {required:string[]}).required,
    ['approved_operations','approve_mcp_write_execution','accept_target_risks']);
- for(const id of ['flow.saga']){
-  const detail=await workflowCapabilities(env,id);
-  assert.equal(detail.availability,'unsupported');
-  const design=detail.design_contract as {executable:boolean;source_schema:string};
-  assert.equal(design.executable,false);
-  assert.equal(design.source_schema,'not_accepted');
-  assert.equal('example' in detail,false);
- }
+ const saga=await workflowCapabilities(env,'flow.saga');
+ assert.equal(saga.availability,'supported_with_grant');
+ const design=saga.design_contract as {executable:boolean;source_schema:string};
+ assert.equal(design.executable,true);
+ assert.equal(design.source_schema,'saga.on and step.compensate');
+ assert.equal('example' in saga,false);
  for(const flow of ['while','until','saga','child_workflow']){
   await assert.rejects(()=>compilePlan({version:1,name:'Unsupported',
    steps:[{id:'one',flow,times:2,template:{uses:'result.emit',with:{data:1}}}]}));

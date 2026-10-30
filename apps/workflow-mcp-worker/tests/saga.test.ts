@@ -1,0 +1,86 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {compilePlan,PlanError} from '../src/plan.ts';
+import {WORKFLOW_DEFINITION_SCHEMA,workflowCapabilities} from '../src/capabilities.ts';
+import {compensateSession,sagaReceiptId} from '../src/saga.ts';
+import type {Env} from '../src/store.ts';
+import type {requestGitHubActionCancellation} from '../src/github-action-cancel.ts';
+
+const ACTION={
+ repository:'lirtual/session-actions',repositoryId:1430925009,
+ workflowId:395929968,workflowPath:'.github/workflows/ubuntu.yml',
+ commitSha:'a'.repeat(40),type:'session' as const,contractDigest:'b'.repeat(64),
+ ref:'refs/tags/v0.1.42-rc.8',inputs:{session_mode:'temporary',duration_mode:'explicit',duration_minutes:5},
+};
+const step=(id:string,needs:string[]=[])=>({
+ id,uses:'github.run' as const,needs,
+ with:{capability:'github.action',action:ACTION},
+ compensate:{kind:'github.session.cancel'},
+});
+const sample=()=>({version:1,name:'Temporary Session saga',saga:{on:['failure','cancel']},
+ steps:[step('first'),step('second',['first']),
+  {id:'last',needs:['second'],uses:'result.emit',with:{data:'ok'}}],
+});
+
+test('Saga compiler requires declared policy, reviewed temporary Ubuntu compensation and ordered DAG',async()=>{
+ const compiled=await compilePlan(sample());
+ assert.deepEqual(compiled.plan.saga,{on:['failure','cancel']});
+ assert.deepEqual(compiled.plan.steps.slice(0,2).map(x=>x.id),['first','second']);
+ assert.equal(compiled.plan.steps[0]?.compensate?.kind,'github.session.cancel');
+ assert.equal((await compilePlan(sample())).digest,compiled.digest);
+ for(const invalid of [
+  {...sample(),saga:undefined},
+  {...sample(),saga:{on:['unexpected']}},
+  {...sample(),steps:[{...step('first'),compensate:undefined}]},
+  {...sample(),steps:[{...step('first'),with:{capability:'github.action',
+    action:{...ACTION,inputs:{...ACTION.inputs,session_mode:'fixed'}}}}]},
+  {...sample(),steps:[{...step('first'),with:{capability:'github.action',
+    action:{...ACTION,workflowPath:'.github/workflows/windows.yml'}}}]},
+  {...sample(),steps:[{...step('first'),compensate:{kind:'arbitrary.write'}}]},
+  {...sample(),steps:[step('first'),{id:'effect',uses:'http.request',with:{url:'https://example.com/',method:'POST',body:{}}}]},
+ ])await assert.rejects(()=>compilePlan(invalid),PlanError);
+ const props=WORKFLOW_DEFINITION_SCHEMA.properties;
+ assert.ok(props.saga);
+ assert.deepEqual(props.steps.items.properties.compensate.properties.kind.const,'github.session.cancel');
+ const details=await workflowCapabilities({} as Env,'flow.saga');
+ assert.equal(details.availability,'supported_with_grant');
+ assert.equal((details.design_contract as {executable:boolean}).executable,true);
+});
+
+test('Compensator persists exactly one reservation; a cancellation ACK remains only requested',async t=>{
+ const sql=new DatabaseSync(':memory:');
+ t.after(()=>sql.close());
+ sql.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY);
+  CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,updated_at INTEGER,PRIMARY KEY(run_id,step_id));
+  CREATE TABLE session_executions(run_id TEXT,step_id TEXT,state TEXT);
+  INSERT INTO runs VALUES ('run');
+  INSERT INTO run_steps VALUES ('run','first','succeeded',0);
+  INSERT INTO session_executions VALUES ('run','first','ready');`);
+ const db={
+  prepare(query:string){
+   let args:unknown[]=[];
+   return {
+    bind(...values:unknown[]){args=values;return this;},
+    async run(){return {meta:{changes:sql.prepare(query).run(...args as string[]).changes}};},
+    async first<T>(){return sql.prepare(query).get(...args as string[]) as T|null;},
+   };
+  }
+ } as unknown as Env['DB'];
+ const {plan}=await compilePlan(sample());
+ const granted={...plan,github_execution_approved:true as const,saga_compensation_approved:true as const,
+  github_action_approvals:[{repository:ACTION.repository,repositoryId:ACTION.repositoryId,
+   workflowId:ACTION.workflowId,workflowPath:ACTION.workflowPath,
+   commitSha:ACTION.commitSha,type:ACTION.type,contractDigest:ACTION.contractDigest}]};
+ const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
+ let calls=0;
+ const cancel=(async()=>{calls++;return 'cancel_requested';}) as typeof requestGitHubActionCancellation;
+ assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');
+ assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');
+ assert.equal(calls,1,'unknown/replayed rollback must not send a second cancellation');
+ assert.equal(sql.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+   .get('run',sagaReceiptId('first'))?.status,'requested');
+ assert.equal(await compensateSession(env,{...granted,saga_compensation_approved:undefined},
+   'run',plan.steps[0]!,cancel),'uncleared');
+ assert.equal(calls,1,'removed exact Publish grant must never dispatch');
+});
