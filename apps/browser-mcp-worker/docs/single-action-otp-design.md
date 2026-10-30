@@ -112,3 +112,42 @@ This is a **design acceptance matrix**, not completed testing. The existing #418
 - https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/
 - https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/
 - https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/
+
+## Read-only OTP feasibility audit — 2026-10-30
+
+**Scope:** Documentation, actual Access configuration and Chrome extension API inspection. No real OTP login was attempted; no Cloudflare policy/credential/Worker, extension, database or production operation was changed. Findings below are not an end-to-end authentication pass.
+
+### Verified facts
+
+- The account has an existing production `Browser Production Owner Approval` Access self-hosted application scoped to `browser.lirtual.dpdns.org/owner/*`, with a 15-minute Access session and **only the One-time PIN IdP enabled**. Its policy is an owner-email allow rule; it has no additional `require` rules. A separate `Browser` Access application protects the MCP Portal mapping. Do not treat either application's existing identity/session as an activation grant, and do not broaden the Owner Approval surface.
+- The account has a Cloudflare One-time PIN IdP configured. Cloudflare policies support a `require: login_method` selector restricting a policy to the OTP IdP. That controls **which IdP**, not **whether an OTP was newly entered for this activation**. A normal Access application may reuse an existing global SSO cookie to reissue an application token.
+- Cloudflare's OTP documentation states that successful PIN entry redirects to the protected app, the PIN is single-use and expires after 10 minutes; the product's authentication audit event is emitted only after PIN entry. Access authentication logs expose `action`, `allowed`, `app_uid`, `connection`, `created_at` and `ray_id`. Neither the documented Access JWT identity claims nor the Access logs API response includes a server-attested, application-controlled activation nonce that securely ties one specific OTP redemption to one initiating extension.
+- Cloudflare's 2026-09-14 `force_authn` setting applies to **SAML IdP** reauthentication, not Access native One-time PIN.
+- Chromium `chrome.identity.launchWebAuthFlow` is available for third-party interactive flows and can return an extension-specific redirect URL, but official docs do **not** establish that each invocation has a new cookie-free Access global session or supports the exact Cloudflare Access callback contract. Treat it as an API candidate requiring a real compatibility test, not a proven fresh-OTP solution.
+- Chromium `chrome.storage.session` clears on browser restart / extension disable, reload or update but survives ordinary extension Service Worker suspension. This supports the temporary-pairing local lifetime; it cannot prove immediate server-side revocation on browser crash.
+
+### Finding: Q3 + Q5 **blocked on one technical proof**
+
+The confirmed UX requirement is **every deliberate OFF→ON requires a new owner-entered Cloudflare OTP**, including a user who is already signed in to the same Cloudflare team in the normal profile. The tested account configuration and public API contracts do not yet prove a supported, automatic, cookie-isolated OTP transaction with server-visible, challenge-bound evidence. **Do not claim this feature is ready to implement or accepted.** An OTP-only Access policy, a newly issued Access app token, an audit log near the activation timestamp, or an incognito-looking window alone is insufficient evidence.
+
+The one-use internal pairing/activation challenge, exact originating Profile binding and Stop/Revoke precedence remain necessary. An Agent that can control the OTP browser or mailbox through another tool does not establish independent owner consent. Maintain the separately protected consequential-action Owner Approval.
+
+### Smallest remaining evidence-gathering test (requires explicit owner participation; NOT yet performed)
+
+1. In a deliberately isolated, owner-controlled auth context, open a candidate **Access-protected activation URL** (distinct from existing consequential-action approval), with an unguessable attempt nonce held server-side and a proof-of-possession secret held only in the initiating extension. Do **not** reuse a live owner-approval flow for activation.
+2. Check that the owner is visibly prompted to enter a new Cloudflare email PIN **twice**, including when the normal Chrome/Edge profile already has a valid global Access session; verify login under the intended allowed IdP without revoking unrelated sessions.
+3. Independently verify how the authenticated callback could be correlated to the exact one-use server attempt and originating extension. Check that a replayed URL, late callback, parallel Profile, session cookie reuse, cancelled attempt and Stop during login all fail closed.
+4. Confirm Chrome and Edge behavior in the native extension (including `identity.launchWebAuthFlow` if selected) without reading OTP content from the Agent/extension. Require owner-visible permission to access protected pages when necessary.
+5. If the platform cannot produce a trustworthy freshness + binding proof under Q5=A, **return an explicit feasibility blocker to the owner**; do not add a homemade OTP provider, global logout, OTP-email scraping, or a second Worker to make the proof appear satisfied.
+
+This test is an explicit gate before any code implementation or production migration; it must not be silently marked Pass from docs, CI, logs or mere Access login success.
+
+### Canonical sources
+
+- https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/
+- https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/
+- https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/
+- https://developers.cloudflare.com/cloudflare-one/insights/logs/dashboard-logs/access-authentication-logs/
+- https://developers.cloudflare.com/changelog/post/2026-09-14-saml-force-authentication/
+- https://developer.chrome.com/docs/extensions/reference/api/identity
+- https://developer.chrome.com/docs/extensions/reference/api/storage
