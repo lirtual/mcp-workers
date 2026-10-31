@@ -30,7 +30,30 @@ export function verifyPrepareIdentity(env) {
     /^[A-Za-z0-9_-]{1,32}$/.test(env.DATABASE_KEY_ID ?? ''), 'missing_credentials');
   return true;
 }
-export async function verifyGithubPrPreflight({ request = fetch, token, sourceSha }) {
+// Only this short-lived, main-only update restriction is accepted by the
+// protected Apply. Preparation intentionally does not opt into it.
+export function verifySpec476MainMergeWindow(summary, detail) {
+  const ref=detail?.conditions?.ref_name;
+  const bypass=detail?.bypass_actors;
+  const rules=detail?.rules;
+  return Number.isSafeInteger(summary?.id) && summary.id>0 &&
+    summary.name==='spec476-main-merge-window' &&
+    summary.enforcement==='active' && summary.target==='branch' &&
+    detail?.id===summary.id && detail.name===summary.name &&
+    detail.enforcement==='active' && detail.target==='branch' &&
+    detail.source_type==='Repository' && detail.source===REPO &&
+    Array.isArray(ref?.include) && ref.include.length===1 &&
+    ref.include[0]==='refs/heads/main' &&
+    Array.isArray(ref?.exclude) && ref.exclude.length===0 &&
+    Array.isArray(bypass) && bypass.length===1 &&
+    bypass[0].actor_type==='Integration' && bypass[0].actor_id===15368 &&
+    bypass[0].bypass_mode==='always' &&
+    Array.isArray(rules) && rules.length===1 && rules[0].type==='update' &&
+    rules[0].parameters?.update_allows_fetch_and_merge===false &&
+    Object.keys(rules[0].parameters).length===1;
+}
+export async function verifyGithubPrPreflight({ request = fetch, token, sourceSha,
+  allowSpec476MainMergeWindow = false }) {
   const headers = {
     authorization: 'Bearer ' + token, accept: 'application/vnd.github+json',
     'user-agent': 'lirtual-database-hyperdrive-476', 'x-github-api-version': '2022-11-28'
@@ -52,8 +75,24 @@ export async function verifyGithubPrPreflight({ request = fetch, token, sourceSh
     });
     requireGate(rules.ok, 'github_rulesets_unavailable');
     const parsed = await rules.json();
-    requireGate(Array.isArray(parsed) && parsed.length === 0, 'github_ruleset_review_required');
-    if (branch.protected) {
+    requireGate(Array.isArray(parsed) && (parsed.length===0 ||
+      (allowSpec476MainMergeWindow && parsed.length===1)), 'github_ruleset_review_required');
+    if(parsed.length===1) {
+      const rule=parsed[0];
+      requireGate(Number.isSafeInteger(rule?.id) && rule.id>0,'github_ruleset_review_required');
+      const detailResponse=await request('https://api.github.com/repos/'+REPO+'/rulesets/'+rule.id,{
+        headers, redirect:'manual', signal:AbortSignal.timeout(10000)
+      });
+      requireGate(detailResponse.ok, 'github_ruleset_review_required');
+      requireGate(verifySpec476MainMergeWindow(rule,await detailResponse.json()),'github_ruleset_review_required');
+      // An enforced Ruleset may itself set branch.protected=true. Do not
+      // conflate it with classic protection: prove that endpoint is 404.
+      const classic=await request('https://api.github.com/repos/'+REPO+'/branches/main/protection',{
+        headers, redirect:'manual', signal:AbortSignal.timeout(10000)
+      });
+      requireGate(classic.status===404,'github_ruleset_review_required');
+    }
+    if (branch.protected && parsed.length===0) {
       // A genuinely protected branch needs Administration-read evidence.
       // Do not infer no protection from 401/403/404.
       protection = await request('https://api.github.com/repos/' + REPO + '/branches/main/protection', {
@@ -78,7 +117,7 @@ export async function verifyGithubPrPreflight({ request = fetch, token, sourceSh
       headers, redirect: 'manual', signal: AbortSignal.timeout(10000)
     });
     requireGate(head.ok && (await head.json())?.object?.sha === sourceSha, 'main_sha_changed');
-    if (!branch.protected) {
+    if (!branch.protected || parsed.length===1) {
       // The running preparer is checked out at this exact main SHA. Require the
       // existing CI definition, including its bounded dispatch/provenance gates.
       const content = await request('https://api.github.com/repos/' + REPO +

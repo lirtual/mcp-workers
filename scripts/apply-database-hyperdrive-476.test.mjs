@@ -31,6 +31,7 @@ function fixture(fault) {
     .run(op,base,head,entry.id,entry.binding,Date.now()+600000);
   const writes=[];let main=base, didMerge=false, policyReads=0, ciReads=0, blobReads=0;
   const unprotected = fault?.startsWith('no-protection');
+  const locked = fault?.startsWith('no-protection-lock');
   const pr=()=>({number:3,state:didMerge?'closed':'open',merged:didMerge,draft:fault==='draft',commits:1,changed_files:2,
     mergeable:fault==='merge-denied'?false:true,mergeable_state:'clean',merge_commit_sha:didMerge?merged:preview,
     head:{sha:fault==='stale-head'?'f'.repeat(40):head,ref:'db476-'+op,repo},base:{sha:base,ref:'main',repo}});
@@ -103,18 +104,39 @@ function fixture(fault) {
       tree:paths.map(path=>({path,mode:fault==='symlink'?'120000':fault==='executable'?'100755':'100644',type:'blob'}))});
     if(path==='/branches/main') {
       policyReads++;
-      return Response.json({name:'main',protected:unprotected
+      return Response.json({name:'main',protected:locked ? true : unprotected
         ? fault==='no-protection-policy-changed' && policyReads>2
         : true});
     }
     if(path==='/branches/main/protection') {
+      if(locked)return fault==='no-protection-lock-classic'
+        ? Response.json({enforce_admins:{enabled:true}}) : new Response(null,{status:404});
       if(fault==='null-policy')return Response.json(null);
       if(fault==='policy-unavailable')return new Response(null,{status:403});
       return Response.json({enforce_admins:{enabled:fault!=='admin-bypass'},required_status_checks:{strict:fault!=='weak-policy',
         contexts:fault==='missing-required-check'?['Other check']:['Required checks gate'],checks:[{context:'Required checks gate',app_id:15368}]},
         required_pull_request_reviews:{required_approving_review_count:1,require_code_owner_reviews:false}});
     }
-    if(path==='/rulesets')return fault==='no-protection-rules-unavailable'?new Response(null,{status:403}):Response.json(fault==='unknown-rules'?[{id:1}]:[]);
+    if(path==='/rulesets')return fault==='no-protection-rules-unavailable'?new Response(null,{status:403}):
+      Response.json(locked?[{id:501,name:'spec476-main-merge-window',target:'branch',enforcement:'active'}]:
+        fault==='unknown-rules'?[{id:1}]:[]);
+    if(path==='/rulesets/501'){
+      assert.equal(init.headers.authorization,'Bearer synthetic-owner');
+      const rule={id:501,name:'spec476-main-merge-window',target:'branch',enforcement:'active',
+        source_type:'Repository',source:'lirtual/mcp-workers',
+        conditions:{ref_name:{include:['refs/heads/main'],exclude:[]}},
+        bypass_actors:[{actor_type:'Integration',actor_id:15368,bypass_mode:'always'}],
+        rules:[{type:'update',parameters:{update_allows_fetch_and_merge:false}}]};
+      if(fault==='no-protection-lock-bypass-actor')rule.bypass_actors[0].actor_id=3;
+      if(fault==='no-protection-lock-bypass-mode')rule.bypass_actors[0].bypass_mode='pull_request';
+      if(fault==='no-protection-lock-bypass-extra')rule.bypass_actors.push({actor_type:'User',actor_id:1,bypass_mode:'always'});
+      if(fault==='no-protection-lock-target')rule.conditions.ref_name.include=['~ALL'];
+      if(fault==='no-protection-lock-extra-rule')rule.rules.push({type:'creation'});
+      if(fault==='no-protection-lock-enforcement')rule.enforcement='disabled';
+      if(fault==='no-protection-lock-upstream')rule.rules[0].parameters.update_allows_fetch_and_merge=true;
+      if(fault==='no-protection-lock-unavailable')return new Response(null,{status:403});
+      return Response.json(rule);
+    }
     if(path==='/graphql')return Response.json({data:{repository:{pullRequest:{headRefOid:head,baseRefOid:base,
       reviewDecision:unprotected?null:fault==='review-missing'?'REVIEW_REQUIRED':'APPROVED',mergeStateStatus:'CLEAN'}}}});
     if(path==='/commits/'+head+'/check-runs')return Response.json({total_count:1,check_runs:[{name:'Required checks gate',
@@ -247,6 +269,27 @@ for(const fault of ['legacy204','dispatch-timeout','wrong-run']) {
   });
 }
 
+for(const fault of [
+  'no-protection-lock-bypass-actor','no-protection-lock-bypass-mode',
+  'no-protection-lock-bypass-extra','no-protection-lock-target',
+  'no-protection-lock-extra-rule','no-protection-lock-enforcement',
+  'no-protection-lock-upstream','no-protection-lock-unavailable',
+  'no-protection-lock-classic',
+]) {
+  test('temporary main merge window rejects unsafe ruleset before dispatch: '+fault,async()=>{
+    const {db,request,writes}=fixture(fault);
+    try {
+      await assert.rejects(applyDatabaseHyperdrive(env,request,{wait:async()=>{}}));
+      assert.deepEqual(writes,[]);
+      const row=db.prepare('SELECT phase,error_class,ci_run_id,merged_sha,release_run_id FROM hyperdrive_operations').get();
+      assert.equal(row.phase,'unknown');
+      assert.equal(row.error_class,'apply_policy_unavailable');
+      assert.equal(row.ci_run_id,null);
+      assert.equal(row.merged_sha,null);
+      assert.equal(row.release_run_id,null);
+    } finally {db.close();}
+  });
+}
 for(const fault of ['no-protection-204','no-protection-timeout','no-protection-bad-id',
   'no-protection-sha','no-protection-branch','no-protection-owner','no-protection-workflow',
   'no-protection-pending','no-protection-failed','no-protection-skipped','no-protection-ref',
@@ -266,7 +309,7 @@ for(const fault of ['no-protection-204','no-protection-timeout','no-protection-b
     } finally {db.close();}
   });
 }
-for(const fault of ['no-protection','no-protection-wait-success','no-protection-pr-disabled']) {
+for(const fault of ['no-protection','no-protection-wait-success','no-protection-pr-disabled','no-protection-lock']) {
   test('unprotected exact candidate with successful full CI may merge and dispatch pinned release: '+fault,async()=>{
     const {db,request,writes}=fixture(fault);
     try {

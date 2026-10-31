@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { verifyGithubPrPreflight, verifyPrepareIdentity, patchSource, verifyPreparedPullRequest } from './prepare-database-hyperdrive-476.mjs';
+import { verifyGithubPrPreflight, verifyPrepareIdentity, patchSource, verifyPreparedPullRequest, verifySpec476MainMergeWindow } from './prepare-database-hyperdrive-476.mjs';
 
 const sha='a'.repeat(40);
 const env={
@@ -12,6 +12,21 @@ const env={
   GITHUB_TOKEN:'secret-test-github',DATABASE_GITHUB_ACTIONS_TOKEN:'secret-owner',
   DATABASE_ENCRYPTION_KEY:'test-key',DATABASE_KEY_ID:'key1'
 };
+test('temporary main update restriction permits only the exact reviewed GitHub Actions App and main branch',()=>{
+  const summary={id:501,name:'spec476-main-merge-window',target:'branch',enforcement:'active'};
+  const detail={...summary,source_type:'Repository',source:'lirtual/mcp-workers',
+    conditions:{ref_name:{include:['refs/heads/main'],exclude:[]}},
+    bypass_actors:[{actor_type:'Integration',actor_id:15368,bypass_mode:'always'}],
+    rules:[{type:'update',parameters:{update_allows_fetch_and_merge:false}}]};
+  assert.equal(verifySpec476MainMergeWindow(summary,detail),true);
+  for(const patch of [
+    {source_type:'Organization'}, {enforcement:'disabled'},
+    {conditions:{ref_name:{include:['~ALL'],exclude:[]}}},
+    {bypass_actors:[{actor_type:'RepositoryRole',actor_id:5,bypass_mode:'always'}]},
+    {rules:[{type:'update',parameters:{update_allows_fetch_and_merge:true}}]},
+    {rules:[...detail.rules,{type:'deletion'}]},
+  ]) assert.equal(verifySpec476MainMergeWindow(summary,{...detail,...patch}),false);
+});
 test('only exact Owner/main operation with scoped credentials may prepare',()=>{
   assert.equal(verifyPrepareIdentity(env),true);
   for (const [field,bad] of [['GITHUB_ACTOR','attacker'],['GITHUB_REF','refs/heads/feat'],
