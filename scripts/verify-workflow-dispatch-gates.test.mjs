@@ -10,6 +10,12 @@ test('current production release choices, guarded allowlist and releasable Worke
   assert.doesNotThrow(() => verifyReleaseWorkers(release, RELEASE_WORKERS));
 });
 
+test('retired Email encryption secret is not referenced by production release', () => {
+  assert.doesNotThrow(() => verifyReleaseWorkers(release, RELEASE_WORKERS));
+  assert.throws(() => verifyReleaseWorkers(release + '\nMAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}\n', RELEASE_WORKERS),
+    /Retired Email Secret reference remains/);
+});
+
 test('a missing or duplicated manual Worker choice fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace('          - http-mcp-worker\n', ''), RELEASE_WORKERS), /Mismatched manual release choices/);
   assert.throws(() => verifyReleaseWorkers(release.replace('          - http-mcp-worker\n', '          - http-mcp-worker\n          - http-mcp-worker\n'), RELEASE_WORKERS), /Duplicate manual release choices/);
