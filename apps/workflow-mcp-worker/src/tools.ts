@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { workflowCapabilities } from './capabilities.ts';
 import { WorkflowService, cleanError } from './store.ts';
+import {startLitterboxUpload} from './litterbox-executor.ts';
+import {approvedAttachmentUrl} from './litterbox-file-source.ts';
 import {getSessionRuntimeData} from './session-runtime-data.ts';
 import type { Env } from './store.ts';
 
@@ -48,12 +50,23 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_action_list',{description:'Discover verified Tag-pinned GitHub Task/Session Action candidates with ref, commitSha, contractDigest, inputs, explicit unknown business output (not_declared), and publishability. Untagged default-branch revisions are explicitly unavailable; Publish still requires separate approval.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
  server.registerTool('workflow_file_transport_probe',{
    title:'Check a selected file parameter (no file access)',
-   description:'Read-only compatibility check for one ChatGPT-selected file. Validates the file-parameter object without downloading, uploading, storing, inspecting or returning its URL, ID or filename. This is NOT provenance attestation or Litterbox upload.',
+   description:'Read-only compatibility check for one ChatGPT-selected file. Validates the file-parameter object and checks its download URL against a fixed safe origin without downloading, uploading, storing or returning its URL, ID or filename. This is NOT provenance attestation or Litterbox upload.',
    inputSchema:z.object({file:fileTransportProbeFile}).strict(),
    _meta:{'openai/fileParams':['file']},
    annotations:{...read,destructiveHint:false},
- },async()=>success({file_parameter_received:true,bytes_read:0,
-   uploaded:false,persisted:false,provenance_verified:false}));
+ },async({file})=>success({file_parameter_received:true,bytes_read:0,
+   uploaded:false,persisted:false,provenance_verified:false,
+   file_source_host_allowed:approvedAttachmentUrl(file)!==null}));
+ server.registerTool('workflow_litterbox_upload',{
+   title:'Upload one selected file to Litterbox (public, irreversible)',
+   description:'EXTERNAL WRITE. Uploads a user-selected file in PLAINTEXT to public Litterbox storage, expiring after 1/12/24/72h. Requires a previously approved, immutable manual single-step litterbox.upload_file Published Workflow and a unique idempotency key. Do not call without explicit Owner instruction to publish that file. Unknown effects are NEVER replayed.',
+   inputSchema:z.object({workflow_id:id,file:fileTransportProbeFile,
+     time:z.enum(['1h','12h','24h','72h']).optional(),
+     idempotency_key:z.string().min(1).max(128)}).strict(),
+   _meta:{'openai/fileParams':['file']},
+   annotations:externalWrite,
+ },async({workflow_id,file,time,idempotency_key})=>
+   safe(()=>startLitterboxUpload(env,{workflow_id,file,time,idempotency_key})));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
