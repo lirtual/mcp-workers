@@ -15,6 +15,7 @@ import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
@@ -813,12 +814,12 @@ export class WorkflowService {
     // The platform's minute identity cannot be impersonated by manual callers.
     if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
       throw new StateError('reserved_idempotency_key');
-    const inputJson=json(inputs);
-    const request_digest=await digest(canonicalJsonString(inputs));
+    let inputJson=json(inputs);
+    let request_digest=await digest(canonicalJsonString(inputs));
     // An accepted admission keeps its pinned version across republish/pause.
     if(idempotency_key){
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-      if(original){if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+      if(original){if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -862,6 +863,17 @@ export class WorkflowService {
         throw new StateError('github_action_invalid_duration');
     }
 
+    // Secret never reaches durable D1 inputs, Action outputs or ordinary result.
+    let deliveryKey:string|undefined;
+    if(isEnvsharePlan(activePlan)){
+      if(expected_version_id||!idempotency_key||activePlan.triggers?.length||
+         activePlan.cloudflare_execution_approved!==true)
+        throw new StateError('envshare_manual_approval_required');
+      const sealed=await encryptEnvshareAdmission(inputs);
+      inputJson=json(sealed.inputs);
+      request_digest=sealed.request_digest;
+      deliveryKey=sealed.delivery_key;
+    }
     const protocolActions=activePlan.steps.filter(step=>
       step.uses==='github.run'&&step.with?.capability==='github.action');
     // Session uses the same reviewed GitHub Action admission as Task.
@@ -884,16 +896,17 @@ export class WorkflowService {
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-        if(prior){if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
+        if(prior){if(deliveryKey)throw new StateError('envshare_key_unrecoverable');if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
       const latest=await this.row(workflow_id);
       if(latest.state!=='active')throw new StateError('workflow_not_active');
       if(latest.active_version_id!==version)throw new StateError('published_version_changed');
       throw new StateError('run_capacity_exceeded');
     }
-    try{await this.env.WORKFLOW.create({id,params:{run_id:id}});await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();return {run_id:id,published_version_id:version,status:'queued',start_state:'started'};}
+    try{await this.env.WORKFLOW.create({id,params:{run_id:id}});await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();return {run_id:id,published_version_id:version,status:'queued',start_state:'started',...(deliveryKey?{delivery_key:deliveryKey}:{})};}
     catch {
       await this.db.prepare("UPDATE runs SET start_state='start_unknown',updated_at=? WHERE id=? AND start_state='reserved'").bind(now(),id).run();
-      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();return this.reconcileStart(prior!);
+      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();
+      const ack=await this.reconcileStart(prior!);return {...ack,...(deliveryKey?{delivery_key:deliveryKey}:{})};
     }
   }
   private async reconcileStart(row:RunRow){
@@ -1104,12 +1117,25 @@ export class WorkflowService {
     })():null;
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{}),...(saga?{saga}:{})};
   }
-  async result(run_id:string){
+  async result(run_id:string,delivery_key?:string){
     const meta=await this.status(run_id);
     const row=await this.db.prepare('SELECT result,error_code FROM runs WHERE id=?').bind(run_id).first<{result:string|null;error_code:string|null}>();
     const artifactReferences=await workflowGitHubArtifactReferences(
       this.db,run_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+    let share_url:string|undefined;
+    if(delivery_key!==undefined){
+      if(meta.status!=='succeeded')throw new StateError('envshare_result_unavailable');
+      const saved=await this.db.prepare(`SELECT r.inputs,v.plan FROM runs r
+        JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
+        .bind(run_id).first<{inputs:string;plan:string}>();
+      if(!saved||!isEnvsharePlan(JSON.parse(saved.plan) as Plan))
+        throw new StateError('envshare_not_available');
+      const result=row?.result?JSON.parse(row.result) as Record<string,unknown>:null;
+      if(result?.status!=='accepted')throw new StateError('envshare_result_unavailable');
+      share_url=await buildEnvshareLink(saved?JSON.parse(saved.inputs):null,result.share_id,delivery_key);
+    }
     return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,
+      ...(share_url?{share_url}:{}),
       ...(artifactReferences.length?{artifact_references:artifactReferences}:{}),
       error_code:row?.error_code??null},64*1024);
   }
