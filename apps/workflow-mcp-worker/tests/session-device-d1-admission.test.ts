@@ -7,7 +7,7 @@ import type {Env} from '../src/store.ts';
 
 const attemptId='11111111-1111-4111-8111-111111111111';
 const runId='22222222-2222-4222-8222-222222222222';
-const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+const action={repository:'lirtual/github-actions',repositoryId:1430925009,workflowId:456,
   workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
   type:'session' as const,contractDigest:'b'.repeat(64)};
 const ref='refs/tags/release-v1';

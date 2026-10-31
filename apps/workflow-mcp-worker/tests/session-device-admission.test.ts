@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {inspectSessionJobStart, resolveSessionDeadline} from '../src/session-device-admission.ts';
 
 const action = {
-  repository:'lirtual/session-actions',repositoryId:1430925009,
+  repository:'lirtual/github-actions',repositoryId:1430925009,
   workflowId:111,workflowPath:'.github/workflows/ubuntu.yml',
   commitSha:'a'.repeat(40),type:'session' as const,contractDigest:'b'.repeat(64),
 };
@@ -12,7 +12,7 @@ const job={id:7,run_id:123,head_sha:action.commitSha,name:'session',
 const reply=(jobs:unknown[],total_count=jobs.length)=>new Response(JSON.stringify({total_count,jobs}),{status:200});
 const http=(jobs:unknown[],total?:number)=>async (request:Request)=>{
   assert.equal(new URL(request.url).pathname,
-    '/repos/lirtual/session-actions/actions/runs/123/attempts/2/jobs');
+    '/repos/lirtual/github-actions/actions/runs/123/attempts/2/jobs');
   assert.equal(request.headers.get('redirect'),null);
   return reply(jobs,total);
 };
@@ -31,6 +31,18 @@ test('job identity, uniqueness, status and timestamp ambiguity deny',async()=>{
   ] as [unknown[],number][]) {
     assert.equal(await inspectSessionJobStart(action,123,2,'server-token',http(jobs,total),now),null);
   }
+});
+test('renamed repository is required; legacy name and wrong immutable repository ID fail closed',async()=>{
+  let requests=0;
+  const blockedHttp=async()=>{requests++;return reply([job]);};
+  const now=Date.parse('2026-10-30T00:30:00Z');
+  for(const invalid of [
+    {...action,repository:'lirtual/session-actions'},
+    {...action,repositoryId:123},
+  ]) {
+    assert.equal(await inspectSessionJobStart(invalid,123,2,'server-token',blockedHttp,now),null);
+  }
+  assert.equal(requests,0,'unapproved identity must not call GitHub');
 });
 test('unknown GitHub response and missing token fail closed',async()=>{
   assert.equal(await inspectSessionJobStart(action,123,2,'',http([job])),null);
@@ -95,6 +107,18 @@ test('missing Ready, committed cancellation, physical termination and missing pr
     {...goodServices,oidc:async()=>false}),{allowed:false});
   assert.deepEqual(await decideSessionAdmission(env(baseRow),{attempt_id:attemptId},
     {...goodServices,physical:async()=>({state:'completed' as const})}),{allowed:false});
+});
+test('legacy repository and altered immutable ID are never authorized for Session admission',async()=>{
+  for(const changed of [
+    {repository:'lirtual/session-actions'},
+    {repositoryId:123},
+  ]) {
+    const plan=JSON.parse(baseRow.plan);
+    Object.assign(plan.steps[0].with.action,changed);
+    const result=await decideSessionAdmission(env({...baseRow,plan:JSON.stringify(plan)}),
+      {attempt_id:attemptId,oidc_jwt:'signed'},goodServices);
+    assert.deepEqual(result,{allowed:false});
+  }
 });
 test('unknown repository runtime duration never grants rca',async()=>{
   const value=JSON.parse(baseRow.plan);

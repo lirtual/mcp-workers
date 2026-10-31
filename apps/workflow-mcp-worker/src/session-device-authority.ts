@@ -7,7 +7,7 @@ import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspe
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {publishedGitHubActionStep,type Plan} from './plan.ts';
-import {inspectSessionJobStart,resolveSessionDeadline} from './session-device-admission.ts';
+import {inspectSessionJobStart,resolveSessionDeadline,SESSION_REPOSITORY,SESSION_REPOSITORY_ID} from './session-device-admission.ts';
 import type {Env} from './store.ts';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,7 +74,7 @@ function reviewedAction(row:Row, approval:AdmissionServices['approval']):
   const step=publishedGitHubActionStep(plan,row.step_id);
   if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return null;
   const raw=step.with.action as (ReviewedGitHubAction & {inputs?:Record<string,unknown>;ref?:string})|undefined;
-  if(!raw||raw.type!=='session'||raw.repository!=='lirtual/session-actions'||
+  if(!raw||raw.type!=='session'||raw.repository!==SESSION_REPOSITORY||raw.repositoryId!==SESSION_REPOSITORY_ID||
     !['.github/workflows/windows.yml','.github/workflows/ubuntu.yml'].includes(raw.workflowPath)||
     !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))return null;
   const action:ReviewedGitHubAction={
