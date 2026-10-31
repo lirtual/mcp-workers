@@ -24,7 +24,7 @@ function fixture(){
   const socket={
     readyState:1,
     deserializeAttachment(){return {
-      authenticated:true,protocol:3,extension_version:"0.2.3",endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+      authenticated:true,protocol:3,extension_version:"0.2.4",endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
     };},
     send(message){sent.push(JSON.parse(message));},
     close(){sent.push({type:"closed"});}

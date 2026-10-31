@@ -198,9 +198,16 @@ test("ARIA labelledby gives visible combobox a bounded accessible name",async()=
     const combo=new Element('DIV',{role:'combobox','aria-labelledby':'fruit-label','aria-expanded':'false'});
     f.nodes.push(label,combo);
     const snap=await f.snapshot();
-    assert.equal(snap.elements.find(e=>e.role==='combobox'&&e.tag==='div').label,'Favorite Fruit');
+    const target=snap.elements.find(e=>e.role==='combobox'&&e.tag==='div');
+    assert.equal(target.label,'Favorite Fruit');
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),tab_id:1,document_id:snap.document_id,element_id:target.element_id};
+    assert.equal((await f.perform('click',args)).result.state,'completed',
+      'an unchanged aria-labelledby reference must be actionable');
+    const fresh=await f.snapshot();
+    const changedTarget=fresh.elements.find(e=>e.role==='combobox'&&e.tag==='div');
     label.textContent='New label';f.pageState.mutated=true;f.pageState.mutationTarget=label;
-    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),tab_id:1,document_id:snap.document_id,element_id:snap.elements.find(e=>e.role==='combobox'&&e.tag==='div').element_id};
-    assert.equal((await f.perform('click',args)).result.state,'failed');
+    const changed={endpoint_id:f.local.endpoint_id,intent_key:intent(),tab_id:1,document_id:fresh.document_id,element_id:changedTarget.element_id};
+    assert.equal((await f.perform('click',changed)).result.state,'failed',
+      'mutated accessible label must invalidate the observed target');
   }finally{await f.close();}
 });

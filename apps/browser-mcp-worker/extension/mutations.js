@@ -211,7 +211,7 @@ function browserPageInteraction(mode,command,expectedUrl,feedbackEnabled=false) 
     return denied("stale_element");
   if(sensitiveField(el))return denied("sensitive_surface");
   if(r.changed.has(command.element_id)||!safe(el))return denied("stale_element");
-  const labels=Array.from(el.labels||[]),originalLabels=r.labels.get(command.element_id)||[];
+  const labels=[...Array.from(el.labels||[]),...labelledNodes(el)],originalLabels=r.labels.get(command.element_id)||[];
   if(labels.length!==originalLabels.length||labels.some((node,i)=>node!==originalLabels[i]))
     return denied("stale_element");
   const tag=el.tagName,type=(el.getAttribute("type")||"text").toLowerCase();

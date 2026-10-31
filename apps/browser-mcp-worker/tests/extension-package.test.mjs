@@ -28,7 +28,7 @@ test("one reproducible Chrome/Edge extension ZIP is source-bound and refuses tam
       encoding:"utf8",env:{...process.env,GIT_DIR:join(repo,".git"),GIT_WORK_TREE:repo}});
     const first=invoke("--out-dir",dir);
     assert.equal(first.status,0,first.stderr);
-    const zip=join(dir,"browser-mcp-extension-v0.2.3.zip");
+    const zip=join(dir,"browser-mcp-extension-v0.2.4.zip");
     const hash=()=>createHash("sha256").update(readFileSync(zip)).digest("hex");
     const before=hash();
     assert.equal(invoke("--out-dir",dir).status,0);
@@ -49,7 +49,7 @@ test("one reproducible Chrome/Edge extension ZIP is source-bound and refuses tam
     writeFileSync(guide,Buffer.concat([guideBefore,Buffer.from("\nVersion-neutral update note.\n")]));
     assert.equal(invoke("--out-dir",dir).status,0);
     assert.notEqual(hash(),before,"packaged guide bytes must change content hash");
-    assert.equal(JSON.parse(readFileSync(zip+".json","utf8")).version,"0.2.3");
+    assert.equal(JSON.parse(readFileSync(zip+".json","utf8")).version,"0.2.4");
     writeFileSync(guide,guideBefore);
     assert.equal(invoke("--out-dir",dir).status,0);
     assert.equal(hash(),before,"restoring exact guide bytes must restore ZIP hash");
