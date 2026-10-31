@@ -1,0 +1,9 @@
+# ADR-0021 — Retire RCA-owned Browser and Computer GUI tools
+
+**Status:** Accepted **design decision** (2026-10-31); not yet implemented or released. Source: [RCA GUI Tool Retirement · Grill With Docs Q1–Q7=A](../GUI-TOOL-RETIREMENT-DESIGN.md).
+
+RCA's previously published ten Agent-owned `browser_*` and three `computer_*` tools duplicate the separate Browser MCP bounded context and broaden the remote device-control surface beyond RCA's core file, search, development Shell and managed-session responsibilities. We choose to **completely retire RCA-owned GUI functionality**, without deprecated/compatibility tool aliases, rather than maintain two browser control paths or complete the cancelled Computer Use project #505. **Independent Browser MCP #418 remains unchanged**; device identity, signed WSS, local operation receipts and their Unknown outcomes remain the shared RCA authority.
+
+This deliberately trades backward compatibility for a smaller long-term product and permission boundary. Deploy the GUI-denying Worker **before** the simplified Agent, with GUI sessions and locally enabled desktop grants safely quiesced and verified, and with stale public/internal GUI dispatch denied. An Agent rollback must not reinstate GUI dispatch; reverting the Worker to a GUI-capable historical release is an exceptional **separately authorized** action, never an automatic paired rollback. Preserve immutable historical releases and receipt lookup, and require separate destructive authorization for one-time on-device RCA-only GUI state cleanup. The design does not authorize code, merge or production changes.
+
+[ADR-0008](./0008-curated-mcp-tool-surface.md) remains the general curated-tool rule; this ADR records the deliberate retirement of capabilities that were subsequently added, not a change to the file/Shell scope.
