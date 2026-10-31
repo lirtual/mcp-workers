@@ -598,6 +598,20 @@ export async function workflowCapabilities(env:Pick<Env,
   };
   // Design-only contracts make unsupported features discoverable without
   // advertising a second compiler or presenting a publishable DSL example.
+  if(id==='action.github.run'||id==='action.run.github'){
+    detail.artifact_reference_policy={
+      surface:'workflow_result.artifact_references',provider:'github_actions',
+      eligibility:'Exactly approved, pinned GitHub Task with a physically succeeded Attempt and Step',
+      provenance:'Exact repository ID, Run ID, attempt 1, pinned commit SHA, valid non-expired artifact',
+      fields:['provider','repository','repository_id','workflow_run_id','run_attempt',
+        'artifact_id','name','size_bytes','expires_at','digest','requires_auth'],
+      result_states:['verified','none','unavailable'],
+      authorization:'The reference is metadata, not a download grant; GitHub Actions read permission is required separately',
+      limits:'At most eight artifact-bearing Tasks and eight artifacts per Task per read',
+      restrictions:['no zip bytes in D1','no credential-bearing or redirect download URLs',
+        'rerun attempts are not linked without separate artifact-attempt proof'],
+    };
+  }
   if(id==='flow.loop'){
     detail.example=await compilingExample(boundedLoop);
     detail.loop_policy={modes:['while','until'],max_iterations:PLAN_LIMITS.maxRepeat,
