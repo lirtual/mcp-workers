@@ -58,6 +58,29 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal((overview.tools as Record<string,string>).validate,'workflow_validate');
 });
 
+test('nested Flow proposal is discoverable but cannot be published as an executable plan',async()=>{
+  const overview=await workflowCapabilities(env);
+  const entry=(overview.capability_ids as Array<{id:string;availability:string}>).find(x=>x.id==='flow.nested');
+  assert.equal(entry?.availability,'unsupported');
+  const detail=await workflowCapabilities(env,'flow.nested');
+  assert.equal(detail.availability,'unsupported');
+  assert.equal('example' in detail,false,'design-only capability never advertises an executable example');
+  const design=detail.design_contract as {executable:boolean;source_schema:string;
+    proposed_schema:{properties:{flow:{const:string}}};budgets:{maxSteps:number};
+    cancellation:string;identity:string;grants:string};
+  assert.equal(design.executable,false);
+  assert.equal(design.source_schema,'not_accepted');
+  assert.equal(design.proposed_schema.properties.flow.const,'block');
+  assert.equal(design.budgets.maxSteps,PLAN_LIMITS.maxSteps);
+  assert.match(design.cancellation,/physical termination/);
+  assert.match(design.identity,/snapshot/);
+  assert.match(design.grants,/Published Plan/);
+  assert.equal(JSON.stringify(overview.definition_schema).includes('"block"'),false);
+  await assert.rejects(()=>compilePlan({version:1,name:'Never runnable nested design',
+    steps:[{id:'nested',flow:'block',steps:[{id:'child',uses:'result.emit',with:{data:1}}]}]}),
+    PlanError);
+});
+
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
     'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.child.detached','flow.wait','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
