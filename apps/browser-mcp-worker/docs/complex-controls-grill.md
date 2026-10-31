@@ -1,6 +1,6 @@
 # Browser MCP — modern web-control compatibility design (Grill With Docs consensus)
 
-Status: **Owner consensus reached: Q1=A, Q2=A, Q3=A (2026-10-31); design only**. No implementation, deploy, merge, or new Browser extension permissions authorized. This note is an incremental Browser MCP interaction investigation, separate from idle lifetime/UI Spec #626 and completed #418/#531.
+Status: **Owner consensus reached: Q1=A, Q2=A, Q3=A (2026-10-31); design only**. Incremental [Spec #629](https://github.com/lirtual/mcp-workers/issues/629). No implementation, deploy, merge, or new Browser extension permissions authorized. This note is an incremental Browser MCP interaction investigation, separate from idle lifetime/UI Spec #626 and completed #418/#531.
 
 ## User problem and observed evidence
 
