@@ -164,98 +164,25 @@ test("owner list_devices uses production coordinator and cannot be retargeted", 
   assert.equal(f.legacyCalls(), 0);
 });
 
-test("Computer Use status is scoped to one paired device and only the bounded read route", async () => {
-  const f = fixture(async (url, init) => {
-    assert.equal(new URL(url).pathname, "/read");
-    assert.deepEqual(JSON.parse(String(init?.body)), {
-      device_id: deviceId, tool: "computer_status", arguments: {},
-    });
-    return Response.json({ status: "completed", text: JSON.stringify({
-      desktop_grant: "stopped", operable: false, reason: "desktop_stopped",
-    }) });
-  });
-  const listed = await rpc(f.env, "tools/list", {});
-  const statusTool = listed.body.result?.tools?.find(t => t.name === "computer_status");
-  assert.ok(statusTool);
-  assert.deepEqual(statusTool.inputSchema.required, ["device_id"]);
-  const denied = await rpc(f.env, "tools/call", {
-    name: "computer_status", arguments: {},
-  });
-  assert.equal(denied.body.result?.isError, true);
-  assert.equal(f.calls.length, 0);
-  const accepted = await rpc(f.env, "tools/call", {
-    name: "computer_status", arguments: { device_id: deviceId },
-  });
-  assert.equal(accepted.body.result?.isError, false);
-  assert.match(accepted.body.result?.content?.[0]?.text ?? "", /desktop_stopped/);
-  assert.equal(f.calls.length, 1);
-});
-
-test("computer_stop is an explicit non-replayable paired mutation and cannot remotely enable a desktop", async () => {
-  const operation_id = "desktop-stop-remote-0001";
-  const f = fixture(async (url, init) => {
-    assert.equal(new URL(url).pathname, "/operation");
-    assert.deepEqual(JSON.parse(String(init?.body)), {
-      device_id: deviceId, tool: "computer_stop", operation_id, arguments: {},
-    });
-    return Response.json({ operation_id, status: "completed" });
-  });
-  const listing = await rpc(f.env, "tools/list", {});
-  assert.ok(listing.body.result?.tools?.some(t => t.name === "computer_stop"));
-  assert.ok(!listing.body.result?.tools?.some(t => t.name === "computer_enable"));
-  for (const invalid of [
-    { operation_id },
-    { device_id: deviceId },
-    { device_id: "incorrect", operation_id },
-    { device_id: deviceId, operation_id, extra: true },
-  ]) {
-    const response = await rpc(f.env, "tools/call", {
-      name: "computer_stop", arguments: invalid,
-    });
-    assert.equal(response.body.result?.isError, true);
+test("retired RCA GUI tools are absent and rejected before any paired DO dispatch", async () => {
+  const f = fixture(async () => { throw Error("retired GUI call reached device"); });
+  const tools = (await rpc(f.env, "tools/list", {})).body.result?.tools?.map(tool => tool.name) ?? [];
+  for (const retained of ["read_file", "run_command", "list_sessions", "list_devices"]) {
+    assert.ok(tools.includes(retained), retained);
+  }
+  const retired = [
+    "browser_start", "browser_status", "browser_navigate", "browser_snapshot",
+    "browser_close", "browser_tabs", "browser_click", "browser_fill",
+    "browser_press_key", "browser_select_option",
+    "computer_status", "computer_observe", "computer_stop",
+  ];
+  for (const name of retired) {
+    assert.ok(!tools.includes(name), name);
+    for (const args of [{}, { device_id: deviceId, operation_id: "retired-628" }]) {
+      const reply = await rpc(f.env, "tools/call", { name, arguments: args });
+      assert.equal(reply.body.result?.isError, true, name);
+    }
   }
   assert.equal(f.calls.length, 0);
-  const response = await rpc(f.env, "tools/call", {
-    name: "computer_stop", arguments: { device_id: deviceId, operation_id },
-  });
-  assert.equal(response.body.result?.isError, false);
-  assert.match(response.body.result?.content?.[0]?.text ?? "", /completed/);
-  assert.equal(f.calls.length, 1);
-});
-
-test("computer_observe exposes a bounded MCP Image Content for an explicitly selected display", async () => {
-  const jpeg = Buffer.from([255,216,255,224,0,0,0,0,0,0,0,0,0,0,255,217]).toString("base64");
-  const f = fixture(async (url, init) => {
-    assert.equal(new URL(url).pathname, "/read");
-    assert.deepEqual(JSON.parse(String(init?.body)), {
-      device_id: deviceId, tool: "computer_observe",
-      arguments: { target_kind: "display", target_id: "primary" },
-    });
-    return Response.json({
-      status:"completed",mime_type:"image/jpeg",data:jpeg,target_id:"primary",
-      width:2,height:2,native_width:4,native_height:4,origin_x:-10,origin_y:20,
-      session_id:1,observation_id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      grant_generation:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-    });
-  });
-  const tools = await rpc(f.env,"tools/list",{});
-  assert.ok(tools.body.result?.tools?.some(t=>t.name==="computer_observe"));
-  for(const invalid of [
-    {device_id:deviceId}, {device_id:deviceId,target_kind:"display",target_id:"other"},
-    {device_id:deviceId,target_kind:"display",target_id:"primary",extra:true},
-  ]){
-    const rejected=await rpc(f.env,"tools/call",{name:"computer_observe",arguments:invalid});
-    assert.equal(rejected.body.result?.isError,true);
-  }
-  assert.equal(f.calls.length,0);
-  const accepted=await rpc(f.env,"tools/call",{
-    name:"computer_observe",arguments:{device_id:deviceId,target_kind:"display",target_id:"primary"},
-  });
-  assert.equal(accepted.body.result?.isError,false);
-  const content=accepted.body.result?.content as Array<{type:string;data?:string;mimeType?:string;text?:string}>;
-  assert.equal(content[0]?.type,"image");
-  assert.equal(content[0]?.mimeType,"image/jpeg");
-  assert.equal(content[0]?.data,jpeg);
-  assert.match(content[1]?.text ?? "",/native_width/);
-  assert.equal(f.calls.length,1);
+  assert.equal(f.legacyCalls(), 0);
 });

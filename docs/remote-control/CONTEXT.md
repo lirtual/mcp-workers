@@ -11,7 +11,19 @@ Workflow MCP remains the sole authority for approved and still-running Windows/U
 
 The candidate now also routes a **Session-only**, signed proof and GitHub OIDC enrollment payload through the existing `/agent/pair/start` endpoint into the Owner DO. An exact-current Workflow OIDC admission, signed physical Attempt nonce, transactional one-Attempt device map and a second post-write live check are required; ordinary manual pairing remains unchanged. Registration alone does not establish Agent online readiness. The candidate still lacks verified noninteractive Agent startup, Windows ACL and GitHub-hosted E2E; keep it Draft until all release-order boundaries are accepted.
 
-## Browser runtime and permission boundaries
+**Spec #628 implementation branch (not deployed as of this source change):** RCA's
+ten `browser_*` and three `computer_*` tools and their executable Worker/DO
+and Agent routing are retired. The Worker exposes only file, search, Shell,
+managed sessions and device lifecycle. Existing signed WSS, immutable
+self-contained Node.js 24 releases, Windows Job Object, Linux pidfd,
+installation, historical read-only GUI receipts, and Unknown/non-replay rules
+remain. The independent Browser MCP #418 is not touched. Production
+deployments, Agent release, existing device upgrades, and local GUI-only
+Profile/Grant cleanup are separate authorization and acceptance stages.
+
+## Historical browser runtime context (archived, not active source guidance)
+
+
 
 - **Automation browser:** The existing native Windows Agent manages a visible, Agent-private Chrome/Edge `BrowserContext` and Profile, separate from the owner's everyday browser. One active automation session per device contains multiple explicitly selected tabs, including tabs opened manually. A tab has a stable ID within that session; focus, title, URL and array position must not silently select a different target.
 - **On-demand shared use:** MCP browser operations are bounded and serialized within the Agent; a person may also directly interact with the same window. There is no artificial Human/Agent handoff state, exclusive human-input lock, browser-specific session timeout, polling heartbeat, independent server or new business orchestrator. Reuse the session until explicit close, browser/Agent termination or revocation; normal Remote Control WSS lifecycle/authentication still applies.

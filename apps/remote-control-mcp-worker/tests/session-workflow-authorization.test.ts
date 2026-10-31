@@ -103,7 +103,7 @@ test('actual owner DO checks live Workflow before new read/mutation and device d
   const send=async(path:string,payload:unknown)=>owner.fetch(new Request('https://v2.internal/'+path,{
     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),
   }));
-  const read={device_id:device.device_id,tool:'computer_status',arguments:{}};
+  const read={device_id:device.device_id,tool:'read_file',arguments:{path:'/tmp/rca-session-fixture'}};
   const operation={device_id:device.device_id,tool:'start_process',
     operation_id:crypto.randomUUID(),arguments:{command:'echo only-fixture'}};
   const first=await send('read',read);
