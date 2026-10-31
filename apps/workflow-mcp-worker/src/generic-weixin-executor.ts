@@ -89,11 +89,11 @@ export async function runGenericTextNotification(
      contract_digest,deployment_id,created_at)
     SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
-    AND (?=0 OR EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open'))
+    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations
       WHERE run_id=? AND step_id=?)`)
     .bind(runId,action.id,invocationId,invocationId,inputDigest,binding.generation,
-      manifest.contract_digest,version,Date.now(),runId,isUnified?1:0,runId,action.id).run();
+      manifest.contract_digest,version,Date.now(),runId,runId,action.id).run();
    if(admitted.meta.changes!==1){const raced=await existing();
      return raced?recover(raced):fail('cloudflare_dispatch_not_admitted');}
    try{

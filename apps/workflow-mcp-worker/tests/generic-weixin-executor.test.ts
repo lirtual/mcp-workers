@@ -119,3 +119,14 @@ test('v3 unified text reserves once, verifies pinned identity and cannot cross a
  other.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
  assert.equal((await other.run()).status,'failed');assert.equal(sends,1);
 });
+
+test('migration freeze refuses new legacy v2 sends but retains read-only historical receipts',async t=>{
+ const f=await fixture(t);
+ f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
+ assert.equal((await f.run()).status,'failed');assert.equal(f.sends(),0);
+ const existing=await fixture(t);
+ assert.equal((await existing.run()).status,'succeeded');
+ existing.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
+ assert.equal((await existing.run()).status,'indeterminate');
+ assert.equal(existing.sends(),1);
+});
