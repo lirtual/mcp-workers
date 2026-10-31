@@ -130,3 +130,20 @@ or sends a notification. Stop on any failed preflight; restore old admission
 only after rechecking compatibility and without replaying Unknown sends.
 The subsequent Provider publication and consumer release retain their own
 unchanged mandatory first-cutover gates.
+
+## Close the first-cutover admission fence after verified Consumer release
+
+The original release's frozen gate is intentionally **not** an operating
+state for new Weixin/Bark Actions. After the new Consumer version is published,
+its exact active version, sole `ACTIONS` Service Binding, and Provider version
+pin must be independently verified. The existing Workflow production release
+job then verifies all Published Workflows **remain paused**, all durable Runs
+are terminal, every native Workflow instance status is empty, migration
+0018 exists, and the current gate is `frozen`. Only then does the *same*
+release job conditionally reopen the singleton gate to `open`, and independently
+verify it was reopened with no admission resumption. This step is selected
+only by the first-cutover Owner attestation input, never automatically on
+unrelated or repeat releases. Opening the gate does **not** resume a paused
+Workflow, republish old immutable Plans, restore a Weixin session, send a
+notification or imply end-to-end acceptance. Owner re-pair, one-shot E2E,
+and deliberate Workflow resume are subsequent independent checkpoints.
