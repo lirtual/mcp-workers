@@ -356,11 +356,14 @@ export async function recoverFailedHyperdriveCandidate({row, sourceText, source,
     config.name === 'db476-' + row.operation_id &&
     config.mtls?.ca_certificate_id === row.ca_certificate_id &&
     config.caching?.disabled === true, 'recovery_config_drift');
-  const entry = {binding:row.binding_name,id:row.config_id,
+  // Preserve original Prepare's field insertion order: id is appended last.
+  // The reviewed manifest Blob is verified byte-for-byte, not as parsed JSON.
+  const entry = {binding:row.binding_name,
     dialect:config.origin?.scheme === 'postgresql'?'postgres':config.origin?.scheme,
     origin_host:config.origin?.host,origin_port:config.origin?.port,
     origin_database:config.origin?.database,origin_user:config.origin?.user,
     ca_certificate_id:row.ca_certificate_id};
+  entry.id = row.config_id;
   verifyCloudflareHyperdriveConfig(entry,config);
   await verifyPreparedPullRequest({github,operationId:row.operation_id,
     baseSha:row.expected_source_sha,headSha:row.head_sha,prNumber:row.pr_number,
