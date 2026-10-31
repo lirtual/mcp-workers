@@ -136,7 +136,7 @@ export class BrowserOwner implements DurableObject {
   private live(id: string, generation: number) {
     return this.state.getWebSockets().some(s => {
       const a = s.deserializeAttachment() as SocketAuth | null;
-      return a?.authenticated === true && a.protocol===3 && a.extension_version==="0.2.4" && a.endpoint_id === id &&
+      return a?.authenticated === true && a.protocol===3 && a.extension_version==="0.2.5" && a.endpoint_id === id &&
         a.generation === generation && s.readyState === WebSocket.OPEN &&
         typeof a.last_seen === "number" && Date.now()-a.last_seen < 60000;
     });
@@ -294,7 +294,7 @@ export class BrowserOwner implements DurableObject {
         return json({error_code:"busy"},409);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated&&a.protocol===3&&a.extension_version==="0.2.4"&&a.endpoint_id===e.id&&a.generation===e.generation&&
+        return a?.authenticated&&a.protocol===3&&a.extension_version==="0.2.5"&&a.endpoint_id===e.id&&a.generation===e.generation&&
           typeof a.last_seen==="number"&&now-a.last_seen<60000&&sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -340,7 +340,7 @@ export class BrowserOwner implements DurableObject {
       if(!e || e.state!=="enabled" || !this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated && a.protocol===3 && a.extension_version==="0.2.4" && a.endpoint_id===id && a.generation===e.generation &&
+        return a?.authenticated && a.protocol===3 && a.extension_version==="0.2.5" && a.endpoint_id===id && a.generation===e.generation &&
           typeof a.last_seen==="number" && Date.now()-a.last_seen<60000 && sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -443,7 +443,7 @@ export class BrowserOwner implements DurableObject {
     try { v = JSON.parse(message) as Record<string,unknown>; if (!v || Array.isArray(v)) throw Error(); }
     catch {socket.close(1008,"invalid_frame");return;}
     if (!auth.authenticated) {
-      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.4" || !validId(v.endpoint_id) ||
+      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.5" || !validId(v.endpoint_id) ||
           typeof v.credential !== "string" || v.credential.length !== 64) {
         socket.close(1008,"authentication_required");return;
       }
@@ -462,11 +462,11 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,protocol:3,extension_version:"0.2.4",endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
+      socket.serializeAttachment({authenticated:true,protocol:3,extension_version:"0.2.5",endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
       socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:3}));
       return;
     }
-    if(auth.protocol!==3||auth.extension_version!=="0.2.4"){socket.close(1008,"obsolete_protocol");return;}
+    if(auth.protocol!==3||auth.extension_version!=="0.2.5"){socket.close(1008,"obsolete_protocol");return;}
     const e = this.endpoint(auth.endpoint_id!);
     if (!e || e.state !== "enabled" || !this.leaseValid(e) || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
     if(v.type==="prepare_result"&&validId(v.operation_id)&&v.generation===e.generation){

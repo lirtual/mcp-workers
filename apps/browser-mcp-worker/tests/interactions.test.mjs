@@ -211,3 +211,25 @@ test("ARIA labelledby gives visible combobox a bounded accessible name",async()=
       'mutated accessible label must invalidate the observed target');
   }finally{await f.close();}
 });
+
+
+test("ARIA-only sensitive labels exclude fields and forbid mutation; unresolved references fail closed",async()=>{
+  const f=await fixture();try{
+    const Element=f.nodes[4].constructor;
+    const label=new Element("SPAN",{id:"field-caption",label:"Ordinary search"});
+    f.nodes.push(label);
+    f.nodes[1].attrs["aria-labelledby"]="field-caption";
+    assert.equal((await f.snapshot()).elements.some(e=>e.tag==="input"&&e.type==="text"),true);
+    const before=await f.command("fill",e=>e.type==="text",{text:"must-not-write"});
+    label.textContent="API token";
+    const denied=(await f.perform("fill",before)).result;
+    assert.equal(denied.state,"failed");
+    assert.equal(f.effects.some(e=>e[0]==="input"),false);
+    assert.equal((await f.snapshot()).elements.some(e=>e.tag==="input"&&e.type==="text"),false);
+    const custom=new Element("DIV",{role:"combobox","aria-labelledby":"field-caption"});
+    f.nodes.push(custom);
+    assert.equal((await f.snapshot()).elements.some(e=>e.role==="combobox"&&e.tag==="div"),false);
+    f.nodes[1].attrs["aria-labelledby"]="missing-caption";
+    assert.equal((await f.snapshot()).elements.some(e=>e.tag==="input"&&e.type==="text"),false);
+  }finally{await f.close();}
+});

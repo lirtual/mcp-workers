@@ -112,3 +112,25 @@ test("screenshots reject recognized credentials in open Shadow DOM and visible s
   f.ctx.document={body:{},querySelectorAll:()=>[benignHost]};
   assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),true,"ordinary shadow input should not block capture");
 });
+
+
+test("screenshot blocks aria-labelledby-only secret inputs and custom comboboxes",()=>{
+  const f=fixture();
+  const label={textContent:"Ordinary search"};
+  const input={
+    tagName:"INPUT",id:"search",labels:[],
+    getAttribute:key=>key==="aria-labelledby"?"field-caption":null,
+    closest:()=>null,getClientRects:()=>[{}]
+  };
+  let nodes=[input];
+  f.ctx.document={body:{},querySelectorAll:()=>nodes,getElementById:id=>id==="field-caption"?label:null};
+  f.ctx.getComputedStyle=()=>({display:"block",visibility:"visible"});
+  const allowed=()=>vm.runInContext("screenshotExposureCheck().allowed",f.ctx);
+  assert.equal(allowed(),true,"ordinary linked labels remain eligible");
+  label.textContent="API token";
+  assert.equal(allowed(),false,"aria-labelledby secret label suppresses screenshot");
+  nodes=[{...input,tagName:"DIV",getAttribute:key=>key==="role"?"combobox":key==="aria-labelledby"?"field-caption":null}];
+  assert.equal(allowed(),false,"custom ARIA combobox is also protected");
+  nodes=[input];f.ctx.document.getElementById=()=>null;
+  assert.equal(allowed(),false,"unresolved aria-labelledby fails closed");
+});
