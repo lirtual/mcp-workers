@@ -8,8 +8,8 @@ function escape(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
 }
 const csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
-const css = String.raw`:root{color-scheme:light dark;--bg:#fff;--fg:#171717;--sub:#666;--line:#e5e5e5;--hover:#f5f5f5;--focus:#0070f3;--danger:#b42318}
-@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--fg:#ededed;--sub:#aaa;--line:#333;--hover:#222;--focus:#3291ff;--danger:#ff8585}}
+const css = String.raw`:root{color-scheme:light dark;--bg:#fff;--fg:#171717;--sub:#666;--line:#e5e5e5;--hover:#f5f5f5;--focus:#0070f3;--danger:#b42318;--active:#14864a}
+@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--fg:#ededed;--sub:#aaa;--line:#333;--hover:#222;--focus:#3291ff;--danger:#ff8585;--active:#4ade80}}
 *{box-sizing:border-box}html{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,sans-serif}body{margin:0}main{max-width:1040px;margin:40px auto;padding:0 24px 60px}
 h1{font-size:24px;letter-spacing:-.03em;margin:0 0 4px}h2{font-size:16px;margin:24px 0 10px}p{margin:8px 0}.muted,.meta{color:var(--sub);font-size:13px}
 button,input,select,textarea{font:inherit;color:inherit}input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:6px;min-height:38px;padding:8px 10px;max-width:100%}
@@ -34,7 +34,7 @@ details{min-width:0}summary{cursor:pointer;padding:8px 0;font-weight:500}.add-pa
 .connections-table thead th{color:var(--sub);font-size:12px;font-weight:500}
 .connection-id{display:block;overflow-wrap:anywhere}.connection-meta{color:var(--sub);font-size:13px}
 .status{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:2px 8px;font-size:12px}
-.status-active{color:#14864a}.status-disabled,.status-failed{color:var(--danger)}
+.status-active{color:var(--active)}.status-disabled,.status-failed{color:var(--danger)}
 .row-actions{display:flex;flex-wrap:wrap;align-items:start;gap:8px}.row-actions>form{display:inline-flex}.row-actions>details{width:100%;border-top:1px solid var(--line)}.row-actions details form{padding:10px 0;max-width:440px}
 .operation-list{padding-left:20px}.operation-list li{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.operation-list form{max-width:500px;border:1px solid var(--line);padding:12px;margin-top:10px}
 .attention{border:1px solid var(--line);border-left:3px solid var(--focus);padding:12px 16px;border-radius:6px;margin:18px 0}.empty{padding:24px;text-align:center;border:1px dashed var(--line);border-radius:8px;color:var(--sub)}
@@ -91,6 +91,10 @@ function addConnectionForm(csrf: string, replacing?: RegistryMetadata, origin?: 
 export function setupPage(rows: RegistryMetadata[], csrf: string,
   operations: HyperdriveOperationSummary[] = [], retiredHyperdriveIds: string[] = [], replacing?: RegistryMetadata,
   replacementOrigin?: ReplacementOrigin): Response {
+  const reservations = operations.filter(op => op.action === 'create' && ['pending','running','awaiting_confirmation','unknown'].includes(op.phase) && !rows.some(row => row.id === op.logical_id)).length;
+  const atLimit = rows.length + reservations >= 10;
+  const replacementLink = (row: RegistryMetadata, label: string): string => atLimit ? ''
+    : '<a class="button-link" href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">' + label + '</a>';
   const list = rows.map(row => `<tr class="connection-row"><th scope="row"><strong class="connection-id">${escape(row.id)}</strong></th><td class="connection-meta">${escape(row.dialect)} / ${escape(row.transport)} · <span class="status status-${escape(row.status)}">${escape(row.status)}</span></td><td class="connection-actions"><div class="row-actions">` +
     (row.transport === 'hyperdrive' && (row.in_flight_count ?? 0) > 0
       ? `<p><strong>Blocked: ${row.in_flight_count} unresolved execution(s).</strong></p><details><summary>Why cleanup is blocked</summary><p class="muted">New SQL is disabled when this connection is disabled. Do not delete or rotate its resources without independently verified completion; no automatic timeout or count reset is performed.</p></details>` : '') +
@@ -101,7 +105,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
         ? action(row, csrf, 'enable') + '<details><summary>More</summary>' + action(row, csrf, 'delete') + '</details>' : '') +
     (row.transport === 'hyperdrive'
       ? (row.status === 'disabled'
-        ? '<a class="button-link" href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Replace · new ID</a>' +
+        ? replacementLink(row, 'Replace · new ID') +
           '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
           '<input type="hidden" name="hyperdrive_action" value="enable">' +
           '<button type="submit">Enable</button></form>' +
@@ -112,7 +116,8 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<label>Type connection ID to confirm password update<input name="confirm_id" required></label>' +
           '<label class="check"><input type="checkbox" name="confirm_credentials" value="1" required>Update password only after protected isolation checks</label>' +
           '<button type="submit">Save new password</button></form>' +
-          '<p class="muted">To change the username or CA safely, <a href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Edit through a new Connection ID</a>. Existing rollback references stay unchanged until separately verified cutover.</p></details>' +
+          (atLimit ? '<p class="muted">To change the username or CA, first free a connection slot for a new ID.</p>' :
+            '<p class="muted">To change the username or CA safely, <a href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Edit through a new Connection ID</a>. Existing rollback references stay unchanged until separately verified cutover.</p>') + '</details>' +
           '<details><summary>More · resource cleanup</summary><p class="muted">Advanced resource cleanup. Logical Delete does not remove Cloudflare resources. Release or delete historical bindings and certificates only after independently verifying all active and rollback references.</p>' +
           ((row.in_flight_count ?? 0) === 0 ? action(row, csrf, 'delete') : '') +
           '<form method="post" action="/setup/hyperdrive-action">' + token(csrf) + ids(row) +
@@ -121,7 +126,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<button type="submit">Stage unbinding review</button></form>' +
           '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
           '<button type="submit">Read unbinding status</button></form></details>'
-        : '<a class="button-link" href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Edit connection · Replace</a>') +
+        : replacementLink(row, 'Edit connection · Replace')) +
         ''
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
     `<details><summary>Edit connection</summary><form class="add-connection" action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
@@ -153,15 +158,13 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
   const failed = failedOperations.map(renderOperation).join('');
   const open = operations.filter(op => op.phase !== 'completed' && op.phase !== 'failed').map(renderOperation).join('');
   const actionable = operations.filter(canApplyHyperdrive);
-  const reservations = operations.filter(op => op.action === 'create' && ['pending','running','awaiting_confirmation','unknown'].includes(op.phase) && !rows.some(row => row.id === op.logical_id)).length;
-  const atLimit = rows.length + reservations >= 10;
   return htmlResponse('<h1>Database connections</h1><p class="muted">Manage up to 10 connections · Credentials are never displayed.</p>' +
     (actionable.length ? '<div class="attention"><strong>Owner action needed</strong> · ' + actionable.length + ' Hyperdrive preparation(s) awaiting final confirmation. <a href="#hyperdrive-activity">Review operations</a></div>' : '') +
     (atLimit ? '<p class="attention">All 10 connection slots are in use or reserved (' + rows.length + ' registered, ' + reservations + ' pending). Retire an unused entry safely before adding another.</p>' : '') +
     '<h2>Connections <span class="muted">(' + rows.length + ' registered)</span></h2>' +
     (list ? `<table class="connections-table"><thead><tr><th scope="col" style="width:35%">Connection ID</th><th scope="col" style="width:26%">Database / transport / status</th><th scope="col">Actions</th></tr></thead><tbody>${list}</tbody></table>` : '<p class="empty">No database connections configured</p>') +
     (rows.some(row => row.transport === 'hyperdrive') ? '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion. <a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a>.</p>' : '') +
-    (atLimit && !replacing ? '' : addConnectionForm(csrf, replacing, replacementOrigin)) +
+    (atLimit ? '' : addConnectionForm(csrf, replacing, replacementOrigin)) +
     (open ? '<section id="hyperdrive-activity"><h2>Open Hyperdrive operations</h2><ul class="operation-list">' + open + '</ul></section>' : '') +
     (failed ? '<details><summary>Failed operation history (' + failedOperations.length + ')</summary><ul class="operation-list">' + failed + '</ul></details>' : '') +
     '<details><summary>Completed operation history</summary><ul class="operation-list">' + (history || '<li>No completed operations</li>') + '</ul></details>' +
