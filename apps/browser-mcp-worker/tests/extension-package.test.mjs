@@ -42,6 +42,17 @@ test("one reproducible Chrome/Edge extension ZIP is source-bound and refuses tam
     assert.equal(metadata.sha256,before);
     assert.deepEqual(metadata.browsers,["Chrome","Edge"]);
     assert.equal(typeof metadata.source_dirty,"boolean");
+    // Changing the packaged guide must change the immutable URL even if the
+    // Chrome manifest version stays exactly the same.
+    const guide=join(fixture,"docs/browser-extension/INSTALL.md");
+    const guideBefore=readFileSync(guide);
+    writeFileSync(guide,Buffer.concat([guideBefore,Buffer.from("\nVersion-neutral update note.\n")]));
+    assert.equal(invoke("--out-dir",dir).status,0);
+    assert.notEqual(hash(),before,"packaged guide bytes must change content hash");
+    assert.equal(JSON.parse(readFileSync(zip+".json","utf8")).version,"0.2.1");
+    writeFileSync(guide,guideBefore);
+    assert.equal(invoke("--out-dir",dir).status,0);
+    assert.equal(hash(),before,"restoring exact guide bytes must restore ZIP hash");
     const original=readFileSync(zip);
     writeFileSync(zip,Buffer.concat([original,Buffer.from("tampered")]));
     assert.notEqual(invoke("--verify",zip).status,0);
