@@ -388,6 +388,12 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "browser-mcp-worker") {
     const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
+    const assets = find("ASSETS", "assets");
+    // The existing published Worker has no Assets binding. Preserve that
+    // namespace through preflight, but require exact Assets after deployment.
+    invariant(!bindings.some(b => b.name === "ASSETS" && b.type !== "assets") &&
+      (options.mode !== "readback" || !!assets),
+      "Browser public Assets binding missing or changed");
     // Unknown owner review and Profile Activation retain distinct Access applications.
     // Validate every observed binding as a single reviewed, exact configuration.
     const approvalFields = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
@@ -414,7 +420,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
-      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length &&
+      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length + (assets ? 1 : 0) &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
       !bindings.some(b => b.type === "plain_text" && !names.includes(b.name)),
       "Browser binding inventory drift");
@@ -424,7 +430,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(coordinator.namespace_id === options.browserNamespaceId,
         "Browser namespace changed; preserve pairing and Unknown receipts");
   }
-  const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER"] : worker === "workflow-mcp-worker"
+  const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER", "ASSETS"] : worker === "workflow-mcp-worker"
     ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER", "ACTIONS"] : ["DB", "WORKFLOW", "ACTIONS"]) :
     worker === "email-mcp-worker" ? ["DB"] :
     worker === "ima-mcp-worker"
@@ -871,8 +877,11 @@ export function readConfiguration(worker, content) {
       "Production must declare a local SQLite DeviceCoordinator");
   }
   if (worker === "browser-mcp-worker") {
-    invariant(Object.keys(conf).every(k=>["$schema","name","main","compatibility_date","compatibility_flags","workers_dev","preview_urls","keep_vars","durable_objects","migrations","observability","secrets","routes"].includes(k)) &&
+    invariant(Object.keys(conf).every(k=>["$schema","name","main","compatibility_date","compatibility_flags","workers_dev","preview_urls","keep_vars","durable_objects","migrations","observability","secrets","routes","assets"].includes(k)) &&
       conf.workers_dev === false && conf.preview_urls === false &&
+      JSON.stringify(conf.assets) === JSON.stringify({
+        directory:"./.build/public",binding:"ASSETS",run_worker_first:true,
+        html_handling:"none",not_found_handling:"none"}) &&
       JSON.stringify(conf.compatibility_flags) === JSON.stringify(["nodejs_compat"]) &&
       !conf.vars && !conf.services?.length && !conf.d1_databases?.length &&
       !conf.kv_namespaces?.length && !conf.r2_buckets?.length && !conf.workflows?.length &&

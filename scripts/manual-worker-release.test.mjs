@@ -1180,11 +1180,19 @@ test('Browser release pins resources, protects namespace and stages only its ind
   const source=readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
   const conf=readConfiguration(worker,source);
   const settings={bindings:[{name:'MCP_ACCESS_TOKEN',type:'secret_text'},
-    {name:'BROWSER_OWNER',type:'durable_object_namespace',class_name:'BrowserOwner',namespace_id:'browser-original'}],
+    {name:'BROWSER_OWNER',type:'durable_object_namespace',class_name:'BrowserOwner',namespace_id:'browser-original'},
+    {name:'ASSETS',type:'assets'}],
     observability:{enabled:true,logs:{invocation_logs:false,head_sampling_rate:0}}};
   const secrets=[{name:'MCP_ACCESS_TOKEN'}];
   const options={mode:'readback',browserNamespaceId:'browser-original'};
   assert.equal(verifyBindings(worker,settings,secrets,options),true);
+  const withoutAssets={...settings,bindings:settings.bindings.filter(b=>b.name!=="ASSETS")};
+  assert.equal(verifyBindings(worker,withoutAssets,secrets,{...options,mode:"preflight"}),true,
+    "currently deployed Worker has no public Assets binding yet");
+  assert.throws(()=>verifyBindings(worker,withoutAssets,secrets,options),/Assets binding missing/,
+    "post-deploy readback must require the public binding");
+  assert.throws(()=>verifyBindings(worker,{...settings,bindings:[...withoutAssets.bindings,{name:"ASSETS",type:"service"}]},secrets,options),/Assets binding missing/);
+  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,assets:{...conf.assets,run_worker_first:false}})),/persistence drift/);
   assert.throws(()=>verifyBindings(worker,settings,[],options),/Secret missing/);
   assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,browserNamespaceId:'different'}),/namespace changed/);
   for(const binding of [{name:'DB',type:'d1'}, {name:'MCP_ACCESS_TOKEN',type:'plain_text',text:'invalid'}])
