@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { applyDatabaseHyperdrive, verifyApplyIdentity } from './apply-database-hyperdrive-476.mjs';
+import { applyDatabaseHyperdrive, verifyApplyIdentity, classifyApplyVerificationFailure } from './apply-database-hyperdrive-476.mjs';
 import { patchSource } from './prepare-database-hyperdrive-476.mjs';
 const base='a'.repeat(40), head='b'.repeat(40), tree='c'.repeat(40), preview='d'.repeat(40), merged='e'.repeat(40);
 const op='12345678-1234-1234-1234-123456789abc';
@@ -13,9 +13,11 @@ const env={GITHUB_REPOSITORY:repo.full_name,GITHUB_ACTOR:'lirtual',GITHUB_EVENT_
   CLOUDFLARE_API_TOKEN:'synthetic-cf',GITHUB_TOKEN:'synthetic-job',DATABASE_GITHUB_ACTIONS_TOKEN:'synthetic-owner'};
 const source=readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
 const manifest=JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json',import.meta.url),'utf8'));
-const entry={binding:'HYPERDRIVE_ISOLATED_12345678',id:'1'.repeat(32),dialect:'mysql',
+// Match the real preparer: Cloudflare config.id is assigned after the other
+// provenance fields. Apply must reproduce the exact manifest bytes.
+const entry={binding:'HYPERDRIVE_ISOLATED_12345678',dialect:'mysql',
   origin_host:'mysql.example.net',origin_port:3306,origin_database:'catalog',origin_user:'reader',
-  ca_certificate_id:'12345678-1234-1234-1234-123456789abc'};
+  ca_certificate_id:'12345678-1234-1234-1234-123456789abc',id:'1'.repeat(32)};
 const files=patchSource(source,manifest,entry);
 const paths=Object.keys(files);
 
@@ -145,6 +147,45 @@ function fixture(fault) {
   };
   return {db,request,writes};
 }
+test('reviewed helper failures preserve specific, nonsecret D1 diagnostics', () => {
+  for (const [reason, expected] of [
+    ['github_pr_identity_drift','apply_pr_stale'],
+    ['github_pr_parent_drift','apply_source_invalid'],
+    ['github_pr_diff_invalid','apply_source_invalid'],
+    ['github_pr_diff_not_allowlisted','apply_source_invalid'],
+    ['github_pr_content_drift','apply_source_invalid'],
+    ['source_format_unknown','apply_source_invalid'],
+    ['main_sha_changed','apply_main_advanced'],
+    ['github_protection_unavailable','apply_policy_unavailable'],
+    ['github_ci_unavailable','apply_ci_receipt_unknown'],
+    ['apply_ci_failed','apply_ci_failed'],
+  ]) assert.equal(classifyApplyVerificationFailure({reason}), expected);
+  assert.equal(classifyApplyVerificationFailure(new Error(
+    'Database Hyperdrive verification failed: SQL response caching is not disabled')),
+    'apply_config_drift');
+  for (const error of [
+    {reason:'source_format_unknown:private-token'}, {reason:'upstream_secret'},
+    new Error('upstream private response password=secret'),
+    {message:'Database Hyperdrive verification failed: private origin string'},
+  ]) assert.equal(classifyApplyVerificationFailure(error), 'apply_verification_blocked');
+});
+test('pre-CI stale PR and blob drift retain exact sanitized classification, never merge',async()=>{
+  for(const [fault, expected] of [
+    ['stale-head','apply_pr_stale'],['rename','apply_source_invalid'],
+    ['content-drift','apply_source_invalid'],
+  ]){
+    const {db,request,writes}=fixture(fault);
+    try {
+      await assert.rejects(applyDatabaseHyperdrive(env,request));
+      const row=db.prepare('SELECT phase,error_class,merged_sha,ci_run_id FROM hyperdrive_operations').get();
+      assert.equal(row.phase,'unknown');
+      assert.equal(row.error_class,expected);
+      assert.equal(row.merged_sha,null);
+      assert.equal(row.ci_run_id,null);
+      assert.deepEqual(writes,[]);
+    } finally { db.close(); }
+  }
+});
 test('apply exact Owner/main identity rejects reruns and malformed IDs before any I/O',()=>{
   verifyApplyIdentity(env);
   for(const [key,value] of [['GITHUB_ACTOR','attacker'],['GITHUB_RUN_ATTEMPT','2'],
