@@ -93,8 +93,21 @@ test('single manual run persists only ciphertext and ID; original key works once
   }} as unknown as Env;
  const service=new WorkflowService(env);
  const plaintext='secret that must never enter D1! Unicode密钥';
- const result=await service.start(WF,{text:plaintext},'envshare-once');
+ // Two simultaneous first admissions with the same idempotency identity must
+ // yield exactly one usable delivery key, one Run, and no replay-friendly ACK.
+ const competing=await Promise.allSettled([
+  service.start(WF,{text:plaintext},'envshare-once'),
+  service.start(WF,{text:plaintext},'envshare-once'),
+ ]);
+ const winners=competing.filter(x=>x.status==='fulfilled');
+ const losers=competing.filter(x=>x.status==='rejected');
+ assert.equal(winners.length,1);
+ assert.equal(losers.length,1);
+ assert.match(String(losers[0]!.reason),/envshare_key_unrecoverable/);
+ const result=winners[0]!.value;
  assert.equal(result.status,'queued');assert.equal(starts,1);
+ assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,1);
+
  const delivery_key='delivery_key' in result?result.delivery_key:undefined;
  assert(delivery_key);
  const run=(result as {run_id:string}).run_id;
