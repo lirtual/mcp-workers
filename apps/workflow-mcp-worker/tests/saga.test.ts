@@ -8,7 +8,7 @@ import type {Env} from '../src/store.ts';
 import type {requestGitHubActionCancellation} from '../src/github-action-cancel.ts';
 
 const ACTION={
- repository:'lirtual/session-actions',repositoryId:1430925009,
+ repository:'lirtual/github-actions',repositoryId:1430925009,
  workflowId:395929968,workflowPath:'.github/workflows/ubuntu.yml',
  commitSha:'a'.repeat(40),type:'session' as const,contractDigest:'b'.repeat(64),
  ref:'refs/tags/v0.1.42-rc.8',inputs:{session_mode:'temporary',duration_mode:'explicit',duration_minutes:5},

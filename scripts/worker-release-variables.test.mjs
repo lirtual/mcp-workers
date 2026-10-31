@@ -120,7 +120,7 @@ test("Workflow Portal Client ID is a required validated Variable, never staged a
 });
 
 test("Workflow Action repository grants are narrowly sourced from an explicit variable",()=>{
-  const grants=[{repository:"lirtual/session-actions",repositoryId:1430925009,
+  const grants=[{repository:"lirtual/github-actions",repositoryId:1430925009,
     commitSha:"d0774dde3a87c7722a939403dbda45507f44b8e0"}];
   const pinned=collectWorkerVars("workflow-mcp-worker",{
     MCP_PORTAL_CLIENT_ID:"test-id",

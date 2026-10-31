@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compilePlan} from '../src/plan.ts';
 import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
-const github={repository:'lirtual/session-actions',repositoryId:1,workflowId:2,
+const github={repository:'lirtual/github-actions',repositoryId:1,workflowId:2,
  workflowPath:'.github/workflows/openlist.yml',commitSha:'a'.repeat(40),
  type:'session',contractDigest:'b'.repeat(64),ref:'refs/tags/v1',inputs:{duration_minutes:5}};
 const source={version:1,name:'OpenList to Owner Weixin',steps:[

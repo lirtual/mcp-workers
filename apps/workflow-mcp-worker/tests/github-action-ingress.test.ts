@@ -9,7 +9,7 @@ const attemptId='11111111-1111-4111-8111-111111111111';
 const audience='workflow-github-action:production';
 const ref='refs/tags/test-v1';
 const sha='a'.repeat(40);
-const repo='lirtual/session-actions';
+const repo='lirtual/github-actions';
 const workflowRef=repo+'/.github/workflows/linux.yml@'+ref;
 const action={repository:repo,repositoryId:123,workflowId:45,
  workflowPath:'.github/workflows/linux.yml',commitSha:sha,

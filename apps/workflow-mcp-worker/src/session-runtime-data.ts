@@ -5,7 +5,7 @@ import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspe
 type Db=Pick<D1Database,'prepare'>;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STEP=/^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-const ACTION_REPO='lirtual/session-actions';
+const ACTION_REPO='lirtual/github-actions';
 const ACTION_PATH='.github/workflows/windows.yml';
 const KEY='uu.credentials';
 const TTL_MS=90_000;

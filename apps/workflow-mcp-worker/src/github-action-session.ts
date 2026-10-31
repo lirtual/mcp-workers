@@ -191,7 +191,7 @@ export async function recordSignedSessionReady(
    db,attemptId,jwt,audience,keys,true);
  if(!verified||verified.action.type!=='session')return 'denied';
  if(sessionUrl!==undefined &&
-    (verified.action.repository!=='lirtual/session-actions'||
+    (verified.action.repository!=='lirtual/github-actions'||
      !WEB_PATHS.has(verified.action.workflowPath)||
      sessionUrl.length>180||!TUNNEL_URL.test(sessionUrl)))return 'denied';
  const {row}=verified;

@@ -16,7 +16,7 @@ const sourceId='download_task',childId='download_task_0_submit_download';
 const source:Step={id:sourceId,uses:'flow.foreach',needs:[],with:{
  items:{ref:'inputs.download_batches'},max_items:1,
  template:{id:'submit_download',uses:'github.run',
-  with:{capability:'github.action',action:{repository:'lirtual/session-actions',
+  with:{capability:'github.action',action:{repository:'lirtual/github-actions',
    repositoryId:10,workflowId:20,workflowPath:'.github/workflows/download.yml',
    commitSha:'a'.repeat(40),type:'task',contractDigest:'b'.repeat(64),
    ref:'refs/tags/v1',inputs:{batch_json:{ref:'item.value'}}}}}}};
@@ -43,7 +43,7 @@ async function fixture(t:test.TestContext){
  sql.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,outcome,created_at,updated_at) VALUES(?,'wf','v','instance','x','{}','running',1,1)").run(runId);
  for(const id of [sourceId,childId])
   sql.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,?,'succeeded',1)").run(runId,id);
- sql.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,? ,?,'github.action','dispatch','succeeded','lirtual/session-actions','10','lirtual/session-actions/.github/workflows/download.yml@refs/tags/v1','refs/tags/v1',42,1,42,1,1,1)").run(attempt,runId,childId);
+ sql.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,? ,?,'github.action','dispatch','succeeded','lirtual/github-actions','10','lirtual/github-actions/.github/workflows/download.yml@refs/tags/v1','refs/tags/v1',42,1,42,1,1,1)").run(attempt,runId,childId);
 
  const prepare=(query:string)=>{
   // Production D1 rejects the long LIKE prefix with SQLITE_ERROR; the vetted

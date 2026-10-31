@@ -397,7 +397,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         uses:{enum:[...SUPPORTED_STEP_USES]},
         compensate:{type:'object',additionalProperties:false,required:['kind'],
           properties:{kind:{const:'github.session.cancel',
-            description:'Only an explicitly approved temporary lirtual/session-actions Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
+            description:'Only an explicitly approved temporary lirtual/github-actions Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
         flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
         max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
