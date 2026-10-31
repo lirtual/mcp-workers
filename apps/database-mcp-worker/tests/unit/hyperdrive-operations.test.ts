@@ -246,3 +246,23 @@ describe('Spec #605 unresolved-operation visibility', () => {
     } finally {sqlite.close();}
   });
 });
+
+describe('Spec #605 bounded operation presentation', () => {
+  it('bounds historical failures without hiding the oldest unresolved operation', async () => {
+    const {sqlite,db}=fixture();
+    try {
+      const insert=sqlite.prepare(`INSERT INTO hyperdrive_operations
+        (operation_id,logical_id,action,expected_revision,phase,created_at,updated_at,expires_at)
+        VALUES (?,?, 'create',0,?,?,?,?)`);
+      insert.run('00000000-0000-0000-0000-000000000001','older_pending','pending',1,1,Date.now()+60_000);
+      for (let i=0;i<120;i++) {
+        insert.run('00000000-0000-0000-0000-'+String(i+1000).padStart(12,'0'),
+          'old_failure_'+i,'failed',100+i,100+i,Date.now()+60_000);
+      }
+      const operations=await listHyperdriveOperations(db);
+      expect(operations).toHaveLength(100);
+      expect(operations.some(op=>op.logical_id==='older_pending')).toBe(true);
+      expect(operations.filter(op=>op.phase==='failed')).toHaveLength(99);
+    } finally {sqlite.close();}
+  });
+});

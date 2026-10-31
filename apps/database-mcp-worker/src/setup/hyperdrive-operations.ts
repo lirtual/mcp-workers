@@ -136,9 +136,11 @@ export async function createHyperdrivePreparation(
 export async function listHyperdriveOperations(db: D1Database): Promise<HyperdriveOperationSummary[]> {
   if (!db) unavailable();
   try {
+    // Unresolved operation slots are bounded by registry admission; prioritize
+    // them ahead of capped historical failures so an old unknown is not hidden.
     const rows = await db.prepare(`SELECT operation_id,logical_id,action,phase,config_id,pr_number,
       prepare_run_id,apply_run_id,ci_run_id,release_run_id,expires_at,head_sha,expected_source_sha,expected_revision,binding_name,error_class FROM hyperdrive_operations
-      WHERE phase <> 'completed' ORDER BY updated_at DESC`).all<HyperdriveOperationSummary>();
+      WHERE phase <> 'completed' ORDER BY CASE WHEN phase='failed' THEN 1 ELSE 0 END, updated_at DESC LIMIT 100`).all<HyperdriveOperationSummary>();
     // Terminal history is limited separately; it must not evict unresolved work.
     const recent = await db.prepare(`SELECT operation_id,logical_id,action,phase,config_id,pr_number,
       prepare_run_id,apply_run_id,ci_run_id,release_run_id,expires_at,head_sha,expected_source_sha,expected_revision,binding_name,error_class
