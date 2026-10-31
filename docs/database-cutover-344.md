@@ -1,16 +1,16 @@
-> **Spec #476 implementation (2026-10-30, unmerged Draft):** PostgreSQL Direct,
-> unified `/setup` URL/Fields Add/Direct Edit, and Hyperdrive protected Save are
-> in local code and tests only. No Worker release, D1 `0003` production migration,
-> Cloudflare CA/config mutation or live database test was performed in this phase.
-> Logical retirement now preserves immutable Cloudflare cleanup references in
-> the existing retired-ID ledger. Unknown in-flight SQL still blocks retirement,
-> while physical cleanup/rollback safety and full Hyperdrive Edit remain separate.
-> True runtime E2E remains incomplete. Do not
-> confuse CI/dry-run PASS with production availability or authorization.
+> **Current #476 checkpoint (2026-10-31 UTC):** [PR #490](https://github.com/lirtual/mcp-workers/pull/490)
+> and [PR #601](https://github.com/lirtual/mcp-workers/pull/601) are merged.
+> Protected Database Worker production release [#41166142234](https://github.com/lirtual/mcp-workers/actions/runs/41166142234)
+> and MySQL Hyperdrive activation [#41166424835](https://github.com/lirtual/mcp-workers/actions/runs/41166424835)
+> succeeded. Independent production Database MCP health and `SELECT 1` readback
+> passed for `spec476_hd_mysql_lifecycle`. PostgreSQL Direct is admitted in
+> code, but no authorized plaintext PostgreSQL Workers E2E connection is present;
+> that acceptance remains **Not performed**, not Pass. Existing #344 waivers
+> remain waivers. Historical 2026-10-30 evidence follows below.
 
 # Database MCP #344 — production release and recovery (managed D1 only)
 
-## Latest verified state and TLS acceptance boundary (2026-10-30)
+## Historical verified state and TLS acceptance boundary (2026-10-30; superseded)
 
 This section supersedes the historical snapshots below. Independently checked against
 live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
