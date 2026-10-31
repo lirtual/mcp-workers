@@ -24,6 +24,10 @@ requires a `file_...` reference, rejects user-info, ports, fragments,
 redirects, bad responses and files outside the 1 byte–10 MiB range. It streams at
 most 10 MiB into ephemeral memory, hashes SHA-256 and forwards **only the bytes
 and bounded metadata** over the existing private `ACTIONS` Service Binding.
+The pre-existing read-only `workflow_file_transport_probe` now returns only
+`file_source_host_allowed` (boolean), without returning the signed URL
+or fetching the file. This can validate the origin rule with a fresh
+ChatGPT-selected harmless fixture after an independently authorized release.
 A mismatched real ChatGPT download host must block the upload until confirmed;
 do not expand to arbitrary URLs or infer the host from the file ID.
 
