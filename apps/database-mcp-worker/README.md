@@ -1,6 +1,33 @@
 # Database MCP Worker · Spec #344
 
-## Spec #476 — Draft PR #490 (not deployed; 2026-10-30)
+## Current Spec #476 acceptance (2026-10-31 UTC)
+
+- [PR #490](https://github.com/lirtual/mcp-workers/pull/490) has merged; PostgreSQL Direct
+  admission and unified Owner `/setup` are implemented in the reviewed Worker code.
+  The protected Database Worker release [#41166142234](https://github.com/lirtual/mcp-workers/actions/runs/41166142234)
+  completed after [PR #601](https://github.com/lirtual/mcp-workers/pull/601) merged.
+- Passwordless recovery of isolated MySQL Hyperdrive `spec476_hd_mysql_lifecycle`
+  completed via protected Apply, published Binding and disabled D1 handoff;
+  protected activation [#41166424835](https://github.com/lirtual/mcp-workers/actions/runs/41166424835)
+  succeeded. Independent production Database MCP readback showed the connection
+  `active/mysql/hyperdrive`, healthy, and a real `SELECT 1` returning one row.
+  The previous failed operation's audit was preserved.
+- **PostgreSQL Direct runtime acceptance is not performed.** No PostgreSQL
+  Direct logical connection appears in the verified production registry. A
+  separately authorized, publicly reachable, isolated PostgreSQL origin that
+  permits plaintext TCP is needed for real Cloudflare Workers health/read,
+  bounded write/admin, transport and denial checks; the Aiven TLS-only fixture
+  cannot establish this result. Local PostgreSQL integration is not Workers E2E.
+- In-place Hyperdrive username/CA changes, unresolved post-dispatch SQL completion
+  and independent physical Hyperdrive/CA cleanup remain evidence- or safety-gated.
+  Do not infer they passed from a successful MySQL Hyperdrive read-only E2E.
+  Previously waived #344 tests remain waived, not retroactively passed.
+
+The sections below are retained as **historical 2026-10-30 implementation and
+release snapshots**. Their pre-merge/pre-release statements are superseded by
+this checkpoint and the [#476 acceptance record](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6538694321).
+
+## Historical Spec #476 implementation snapshot (2026-10-30, before merge)
 
 The unmerged `#490` draft now implements one `/setup` Add surface for MySQL and PostgreSQL
 with plaintext Direct or strict-TLS Hyperdrive, accepts a Connection URL or explicit
@@ -102,7 +129,7 @@ Do not mark these as Pass based on mocks/local tests. Keep current active produc
 connections and historical Cloudflare resources unchanged. Existing historical
 production status below remains authoritative until fresh release/readback evidence.
 
-## Latest verified state (2026-10-30; supersedes historical sections below)
+## Historical verified state (2026-10-30; superseded by 2026-10-31 acceptance above)
 
 - Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f`
   serves **100%**. Reviewed Hyperdrive bindings point to isolated
