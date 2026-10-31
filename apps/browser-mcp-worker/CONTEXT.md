@@ -41,3 +41,7 @@ Released v0.2.4 / WSS 3 adds bounded, sensitive-filtered native choice and ARIA 
 
 
 **Post-acceptance security follow-up (v0.2.5 source candidate, not yet released):** Recognition of sensitive fields and guarded screenshots must also inspect bounded `aria-labelledby` references, including non-visible label text. Missing, malformed or over-budget references on relevant fields fail closed. This is a targeted defense-in-depth fix, not a claim of a reproduced production data leak; the existing v0.2.4 live-browser acceptance remains historical evidence until a separately authorized coordinated release.
+
+## 2026-10-31 proposed remembered-pairing idle lifetime and UI
+
+The Owner-approved [incremental design](docs/idle-pairing-and-options-design.md) and [ADR 0003](docs/adr/0003-remembered-pairing-idle-expiry.md) propose **ON-online holds authorization without a countdown; explicit OFF or long offline starts a server-enforced idle countdown (14 days by default, configurable by reviewed GitHub Actions Variable `BROWSER_REMEMBERED_IDLE_DAYS`), and expiry revokes the old Endpoint grant**. This replaces only the indefinite remembered-pairing lifetime and improves local Profile naming, discovery metadata, and Options presentation. Temporary grants, Access same-Profile proof, Stop/Revoke priority and Unknown receipts stay intact. **Design only: this increment has not changed the current production Worker or installed extensions; there is no runtime or real-browser acceptance for the proposed idle lifecycle.**
