@@ -191,3 +191,23 @@ test('unreviewed live Provider Version ID fails before Workflow reserves a send'
  assert.equal(x.status,'failed');assert.equal(f.sends(),0);
  assert.equal(f.sql.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations').get()!.n,0);
 });
+
+test('generic send_text composes the authenticated OpenList Session URL without changing legacy sends',async t=>{
+ const f=await fixture(t);
+ const m=await cloudflareActionManifest('generic');
+ f.notify.with.contract_digest=m.contract_digest;
+ f.notify.with.input={text:'OpenList Session Ready\n',session_step_id:'openlist'};
+ f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'weixin',
+   action:'weixin.send_text',contract_digest:m.contract_digest,deployment_id:version}];
+ const provider=f.env.WEIXIN_ACTION_PROVIDER! as unknown as Record<string,unknown>;
+ provider.getGenericContract=async()=>({deployment_id:version,contract_digest:m.contract_digest});
+ let sends=0;
+ provider.sendGenericText=async(value:{text:string;contract_digest:string})=>{
+  sends++;assert.equal(value.text,'OpenList Session Ready\n'+url);
+  assert.equal(value.contract_digest,m.contract_digest);
+  return {status:'accepted',input_digest:bodyHash};
+ };
+ assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'succeeded');
+ assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'succeeded');
+ assert.equal(sends,1);
+});

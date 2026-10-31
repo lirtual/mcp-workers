@@ -263,8 +263,8 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
        input:{oneOf:[
         {type:'object',additionalProperties:false,required:['download_step_id'],
          properties:{download_step_id:{type:'string'}}},
-        {type:'object',additionalProperties:false,required:['session_step_id'],
-         properties:{session_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['text'],
+         properties:{text:{type:'string',minLength:1,maxLength:2048},session_step_id:{type:'string'}}},
         {type:'object',additionalProperties:false,required:['notification'],
          properties:{notification:{type:'object'}}}]},
      }},

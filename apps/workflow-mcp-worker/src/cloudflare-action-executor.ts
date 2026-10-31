@@ -1,4 +1,5 @@
 import {runDownloadNotification} from './download-notification-executor.ts';
+import {runGenericTextNotification} from './generic-weixin-executor.ts';
 import {runBarkAction} from './bark-action-executor.ts';
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
@@ -38,8 +39,12 @@ export async function runPublishedCloudflareAction(
  if(action.with.provider==='bark')return runBarkAction(env,plan,action,runId,ctx);
  if(action.with.action==='weixin.notify_download')
    return runDownloadNotification(env,plan,action,runId,ctx);
+ const generic=await cloudflareActionManifest('generic');
+ const isGeneric=action.with.action==='weixin.send_text'&&action.with.contract_digest===generic.contract_digest;
+ if(isGeneric&&!(action.with.input as {session_step_id?:string}|undefined)?.session_step_id)
+   return runGenericTextNotification(env,plan,action,runId,ctx);
  const provider=env.WEIXIN_ACTION_PROVIDER,version=env.WEIXIN_ACTION_DEPLOYMENT_ID;
- const manifest=await cloudflareActionManifest();
+ const manifest=await cloudflareActionManifest(isGeneric?'generic':'weixin');
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&
    g.provider===manifest.provider&&g.action===manifest.action&&
    g.contract_digest===manifest.contract_digest&&g.deployment_id===version);
@@ -73,7 +78,7 @@ export async function runPublishedCloudflareAction(
   // The Provider repeats this pin check inside sendText against its own
   // runtime Version Metadata to close the read-then-dispatch deployment race.
   let boundIdentity;
-  try{boundIdentity=await provider.getContract();}
+  try{boundIdentity=isGeneric?await provider.getGenericContract():await provider.getContract();}
   catch{return denied('cloudflare_provider_identity_unconfirmed');}
   if(boundIdentity.deployment_id!==version||boundIdentity.contract_digest!==manifest.contract_digest)
     return denied('cloudflare_provider_identity_mismatch');
@@ -107,7 +112,11 @@ export async function runPublishedCloudflareAction(
   try{binding=await provider.getBinding();}catch{return denied('weixin_binding_unconfirmed');}
   if(!binding?.ready||!Number.isSafeInteger(binding.generation)||binding.generation<1)
    return denied('weixin_binding_not_ready');
-  const inputDigest=await digest('OpenList Session Ready\n'+canonicalSessionUrl);
+  const body=isGeneric?String((action.with.input as {text:string}).text)+canonicalSessionUrl:
+    'OpenList Session Ready\n'+canonicalSessionUrl;
+  if(!body.trim()||new TextEncoder().encode(body).byteLength>4096)
+    return denied('invalid_weixin_text');
+  const inputDigest=await digest(body);
   const identity=crypto.randomUUID();
   const admitted=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
    (run_id,step_id,invocation_id,source_attempt_id,input_digest,
@@ -133,9 +142,10 @@ export async function runPublishedCloudflareAction(
     return raced?recover(env,raced):denied('cloudflare_dispatch_not_admitted');
   }
   try{
-   const value=await provider.sendText({invocation_id:identity,
-    binding_generation:binding.generation,session_url:canonicalSessionUrl,
-    deployment_id:version,contract_digest:manifest.contract_digest});
+   const identityInput={invocation_id:identity,binding_generation:binding.generation,
+    deployment_id:version,contract_digest:manifest.contract_digest};
+   const value=isGeneric?await provider.sendGenericText({...identityInput,text:body}):
+     await provider.sendText({...identityInput,session_url:canonicalSessionUrl});
    if(value.input_digest!==inputDigest)return uncertain('weixin_receipt_conflict');
    return receipt(value.status);
   }catch{return recover(env,{invocation_id:identity,source_attempt_id:current.attempt_id,
