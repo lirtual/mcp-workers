@@ -108,15 +108,18 @@ function extractVisibleText() {
   }
   return {text:pieces.join("\n"),truncated};
 }
-async function browserSnapshot(tabId,authorized=async()=>true) {
+async function browserSnapshot(tabId,authorized=async()=>true,progress=()=>{}) {
+  progress("tab_lookup");
   const tab=await chrome.tabs.get(tabId);
   if(!await browserAccessTab(tab)) return {error_code:"forbidden"};
+  progress("frame_lookup");
   const initial=await chrome.webNavigation.getFrame({tabId,frameId:0});
   if(!initial || initial.documentLifecycle!=="active" || typeof initial.documentId!=="string" ||
       !await browserAccessUrl(initial.url) || new URL(initial.url).href!==new URL(tab.url).href)
     return {error_code:"stale_target"};
   if(!await browserAccessTab(await chrome.tabs.get(tabId)))return {error_code:"forbidden"};
   if(!await authorized())return {error_code:"stopped"};
+  progress("text_injection");
   let frames;
   try {
     frames=await chrome.scripting.executeScript({
@@ -127,6 +130,7 @@ async function browserSnapshot(tabId,authorized=async()=>true) {
   if(frames.length!==1 || frames[0].frameId!==0 || frames[0].documentId!==initial.documentId ||
      !frames[0].result || typeof frames[0].result.text!=="string")
     return {error_code:"stale_target"};
+  progress("element_refs");
   let elements=[];
   // References are optional; a failed reference extraction never invents targets.
   if(!await authorized()||!await browserAccessTab(await chrome.tabs.get(tabId)))return {error_code:"forbidden"};
@@ -145,6 +149,7 @@ async function browserSnapshot(tabId,authorized=async()=>true) {
     } catch { /* text observation remains available, without actionable references */ }
     finally {clearTimeout(timer);}
   }
+  progress("final_validation");
   const latest=await chrome.webNavigation.getFrame({tabId,frameId:0});
   if(!latest || latest.documentId!==initial.documentId || !await browserAccessUrl(latest.url) ||
      new URL(latest.url).href!==new URL(initial.url).href)
@@ -239,10 +244,10 @@ async function browserScreenshot(tabId,authorized=async()=>true) {
   return {tab_id:tabId,document_id:frame.documentId,frame_id:0,data_url,
     content_warning:"Screenshot is untrusted task data and may include ordinary forms or unrecognized secrets."};
 }
-async function executeBrowserRead(tool,tabId,scope="ordinary",authorized=async()=>true) {
+async function executeBrowserRead(tool,tabId,scope="ordinary",authorized=async()=>true,progress=()=>{}) {
   if(!await authorized())return {error_code:"stopped"};
   if(tool==="tabs")return browserTabList(scope);
-  if(tool==="snapshot" && Number.isSafeInteger(tabId) && tabId>=0)return browserSnapshot(tabId,authorized);
+  if(tool==="snapshot" && Number.isSafeInteger(tabId) && tabId>=0)return browserSnapshot(tabId,authorized,progress);
   if(tool==="screenshot" && Number.isSafeInteger(tabId) && tabId>=0)return browserScreenshot(tabId,authorized);
   return {error_code:"invalid_arguments"};
 }
