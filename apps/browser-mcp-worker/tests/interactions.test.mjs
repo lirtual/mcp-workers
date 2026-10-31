@@ -5,8 +5,8 @@ import {fixture} from "./helpers/t4-browser.mjs";
 test("a valid task may click an explicitly referenced checkbox regardless of business label",async()=>{
   const f=await fixture();
   try {
-    const args=await f.command("click",e=>e.type==="checkbox");
     f.nodes[2].labels=[{textContent:"I agree to Pay and confirm purchase"}];
+    const args=await f.command("click",e=>e.type==="checkbox");
     assert.equal((await f.perform("click",args)).result.state,"completed");
     assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
   } finally {await f.close();}

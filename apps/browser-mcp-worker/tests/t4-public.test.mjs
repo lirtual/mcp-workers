@@ -129,3 +129,18 @@ test("failed operation receipts preserve safe denial codes across prepare and ex
     }finally{await f.close();}
   }
 });
+
+test("a referenced control becomes stale when its associated label changes",async()=>{
+  const f=await fixture();
+  try{
+    const label={textContent:"Search",contains:()=>false};
+    f.nodes[1].labels=[label];
+    const args=await f.command("fill",e=>e.type==="text",{text:"draft"});
+    label.textContent="Send order";
+    f.pageState.mutationTarget=label;
+    f.pageState.mutated=true;
+    const {result}=await f.perform("fill",args);
+    assert.equal(result.state,"failed");
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});

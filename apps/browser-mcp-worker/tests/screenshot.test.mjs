@@ -90,3 +90,25 @@ test("unattended capture has the canonical all_urls permission (executor still e
   assert.ok(m.host_permissions.includes("<all_urls>"));
   assert.ok(!m.permissions.includes("debugger"));
 });
+
+test("screenshots reject recognized credentials in open Shadow DOM and visible select controls",()=>{
+  const f=fixture();
+  const make=(tag,attrs={},shadowRoot=null)=>({
+    tagName:tag,id:attrs.id||"",shadowRoot,
+    getAttribute:k=>attrs[k]??null,labels:[],closest:()=>null,getClientRects:()=>[{}]
+  });
+  const password=make("INPUT",{type:"password"});
+  const root={querySelectorAll:selector=>selector==="*"?[password]:[password]};
+  const host=make("MY-WIDGET",{},root);
+  f.ctx.getComputedStyle=()=>({display:"block",visibility:"visible"});
+  f.ctx.document={body:{},querySelectorAll:selector=>selector==="*"?[host]:[]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),false,"open shadow credential must reject");
+  const select=make("SELECT",{autocomplete:"one-time-code"});
+  f.ctx.document={body:{},querySelectorAll:selector=>[select]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),false,"visible select OTP must reject");
+  const normal=make("INPUT",{type:"search"});
+  const benignRoot={querySelectorAll:()=>[normal]};
+  const benignHost=make("MY-WIDGET",{},benignRoot);
+  f.ctx.document={body:{},querySelectorAll:()=>[benignHost]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),true,"ordinary shadow input should not block capture");
+});

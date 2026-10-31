@@ -120,16 +120,17 @@ function browserPageInteraction(mode,command,expectedUrl) {
   const slot="__browserMcpElementsT4";
   if(mode==="snapshot"){
     globalThis[slot]?.observer.disconnect();
-    const registry={nodes:new Map(),url:location.href,expires:Date.now()+30000,dirty:false,changed:new Set()};
+    const registry={nodes:new Map(),labels:new Map(),url:location.href,expires:Date.now()+30000,dirty:false,changed:new Set()};
     // DOM updates unrelated to the referenced element should not invalidate it.
     // Changes on the element, within it, or to visibility-affecting ancestors do.
     const apply=records=>{
       for(const record of records)for(const [id,el] of registry.nodes){
         const target=record.target;
-        const affected=target===el ||
-          (record.type==='attributes'&&target?.contains?.(el)) ||
-          el.contains?.(target) ||
-          (record.type==='childList'&&Array.from(record.removedNodes||[]).some(n=>n===el||n.contains?.(el)));
+        const subjects=[el,...(registry.labels.get(id)||[])];
+        const affected=subjects.some(node=>target===node ||
+          (record.type==='attributes'&&target?.contains?.(node)) ||
+          node.contains?.(target) ||
+          (record.type==='childList'&&Array.from(record.removedNodes||[]).some(n=>n===node||n.contains?.(node))));
         if(affected)registry.changed.add(id);
       }
     };
@@ -145,6 +146,7 @@ function browserPageInteraction(mode,command,expectedUrl) {
       if(el.tagName==="INPUT"&&!["text","search","email","url","tel","number","submit","button","reset","checkbox","radio",""].includes(type))continue;
       const element_id="e-"+crypto.randomUUID();
       registry.nodes.set(element_id,el);
+      registry.labels.set(element_id,Array.from(el.labels||[]));
       const label=el===document.body?"":(el.getAttribute("aria-label")||
         Array.from(el.labels||[],l=>l.textContent).join(" ")||
         (["BUTTON","SUMMARY","A"].includes(el.tagName)?el.textContent:"")).slice(0,160);
@@ -158,6 +160,9 @@ function browserPageInteraction(mode,command,expectedUrl) {
     return denied("stale_element");
   if(sensitiveField(el))return denied("sensitive_surface");
   if(r.changed.has(command.element_id)||!safe(el))return denied("stale_element");
+  const labels=Array.from(el.labels||[]),originalLabels=r.labels.get(command.element_id)||[];
+  if(labels.length!==originalLabels.length||labels.some((node,i)=>node!==originalLabels[i]))
+    return denied("stale_element");
   const tag=el.tagName,type=(el.getAttribute("type")||"text").toLowerCase();
 
   // A body ref is for scrolling, never a wildcard click on arbitrary page handlers.
