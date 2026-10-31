@@ -834,7 +834,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!saga||policy.kind!=='github.session.cancel'||
          action?.type!=='session'||inputs?.session_mode!=='temporary'||
          action?.repository!=='lirtual/session-actions'||
-         action?.workflowPath!=='.github/workflows/ubuntu.yml')
+         !['.github/workflows/ubuntu.yml','.github/workflows/windows.yml'].includes(String(action?.workflowPath)))
         throw new PlanError('compensation_not_supported',stepPath+'/compensate');
       compensate={kind:'github.session.cancel'};
     }
