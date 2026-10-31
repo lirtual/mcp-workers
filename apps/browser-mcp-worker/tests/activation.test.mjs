@@ -77,7 +77,7 @@ test('temporary network loss grants a bounded offline window; stale generations 
   let attachment={authenticated:false,deadline:Date.now()+5000},authenticated=false;
   const reconnect={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:frame=>{if(JSON.parse(frame).type==='authenticated')authenticated=true;},close:()=>{},readyState:1};
   const reconnector=new BrowserOwner({storage:f.storage,getWebSockets:()=>[reconnect]});
-  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.3',endpoint_id:p.endpoint_id,credential:p.credential}));
+  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.4',endpoint_id:p.endpoint_id,credential:p.credential}));
   assert.equal(authenticated,true);
   assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
   assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'enabled');

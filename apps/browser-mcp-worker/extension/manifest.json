@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "incognito": "spanning",
   "name": "Browser MCP",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Owner-approved Access-verified control of this browser profile (Spec #531).",
   "minimum_chrome_version": "137",
   "permissions": [
