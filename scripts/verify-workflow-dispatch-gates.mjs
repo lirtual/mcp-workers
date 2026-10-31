@@ -15,6 +15,7 @@ function sameMembers(actual, expected, name) {
 // expression shape requires a security review rather than a permissive parser.
 export function verifyReleaseWorkers(source, expectedWorkers) {
   assert.ok(expectedWorkers.length > 0, 'Empty releasable Worker list');
+  assert.doesNotMatch(source, /MAIL_ENCRYPTION_KEY/, 'Retired Email Secret reference remains');
   const workerInput = source.match(/^      worker:\n([\s\S]*?)(?=^      [a-z][a-z0-9_]*:\n)/m);
   const options = workerInput?.[1].match(/^        options:\n((?:          - [^\n]+\n)+)/m);
   assert.ok(options, 'Missing manual release Worker choices');
