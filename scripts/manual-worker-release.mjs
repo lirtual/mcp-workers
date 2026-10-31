@@ -356,6 +356,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(!bindings.some(x => x.type === "vpc_service" ||
         x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
     }
+    // Existing production has no Session RPC binding. Permit that only
+    // during preflight; the post-deploy inventory must prove the exact private
+    // Workflow WorkerEntrypoint and reject wrong or duplicate destinations.
+    const sessionRpc=bindings.filter(x=>x.name==="WORKFLOW_SESSION_AUTHORIZATION");
+    invariant((options.mode==="preflight" && sessionRpc.length===0) ||
+      (sessionRpc.length===1 && sessionRpc[0].type==="service" &&
+       sessionRpc[0].service==="workflow-mcp-worker" &&
+       sessionRpc[0].entrypoint==="SessionAuthorization"),
+      "Remote Control Session Authorization Service Binding missing or drifted");
     // Readback must prove Wrangler deployed the origin derived from the
     // reviewed Custom Domain, not a stale or attacker-controlled Host value.
     if (options.mode === "readback") {
@@ -422,8 +431,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       : worker === "ssh-mcp-worker" ? (options.mode === "preflight" ? ["EDGE_SSH_BROKER", "EDGE_SSH_DB", "SSH_OPERATIONS"] : ["EDGE_SSH_DB", "SSH_OPERATIONS"])
       : worker === "remote-control-mcp-worker"
         ? (options.mode === "preflight"
-          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
-          : ["DEVICE_COORDINATOR"]) : []);
+          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE", "WORKFLOW_SESSION_AUTHORIZATION"]
+          : ["DEVICE_COORDINATOR", "WORKFLOW_SESSION_AUTHORIZATION"]) : []);
   if (worker === "workflow-mcp-worker" && options.mode === "readback") {
     invariant(bindings.filter(x=>x.name === "ACTIONS").length === 1 &&
       find("ACTIONS", "service")?.service === "cloudflare-actions" &&
@@ -860,6 +869,10 @@ export function readConfiguration(worker, content, reviewedManifest) {
       "SSH must be broker-only and read-only by default");
   }
   if (worker === "remote-control-mcp-worker") {
+    invariant(JSON.stringify(conf.services)===JSON.stringify([{
+      binding:"WORKFLOW_SESSION_AUTHORIZATION",
+      service:"workflow-mcp-worker",entrypoint:"SessionAuthorization",
+    }]),"Remote Control reviewed Session Service Binding drift");
     invariant(!conf.vars?.REMOTE_CONTROL_V2_ONLY &&
       !conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY &&
       !conf.vpc_services && conf.preview_urls === false,

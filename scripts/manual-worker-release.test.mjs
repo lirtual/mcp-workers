@@ -315,7 +315,10 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const worker = "remote-control-mcp-worker";
   const previewNs = "c086eb6384ad41df9de13765d868324a";
   const productionNs = "abcd1234abcd1234abcd1234abcd1234";
+  const sessionRpc={name:"WORKFLOW_SESSION_AUTHORIZATION",type:"service",
+    service:"workflow-mcp-worker",entrypoint:"SessionAuthorization"};
   const prod = { bindings: [
+    sessionRpc,
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
     { name: "REMOTE_CONTROL_INSTALL_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
     { name: "DEVICE_COORDINATOR", class_name: "DeviceCoordinator",
@@ -324,7 +327,30 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const secrets = [{name:"MCP_ACCESS_TOKEN"}];
   const options = { mode: "readback", previousNamespaceId: previewNs,
     sourceConfig: { routes: [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }] } };
+  const reviewed=readConfiguration(worker,
+    readFileSync(new URL('../apps/remote-control-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
+  assert.deepEqual(reviewed.services,[{
+    binding:"WORKFLOW_SESSION_AUTHORIZATION",service:"workflow-mcp-worker",
+    entrypoint:"SessionAuthorization"}]);
+  for(const sourceBindings of [[],[{...reviewed.services[0],service:"untrusted-worker"}],
+    [{...reviewed.services[0],entrypoint:"OtherEntrypoint"}],
+    [...reviewed.services,reviewed.services[0]]])
+    assert.throws(()=>readConfiguration(worker,JSON.stringify({...reviewed,
+      services:sourceBindings})),/Session Service Binding/);
   assert.equal(verifyBindings(worker, prod, secrets, options), true);
+  assert.equal(verifyBindings(worker,{...prod,bindings:prod.bindings.filter(
+    b=>b.name!==sessionRpc.name)},secrets,{mode:"preflight"}),true);
+  assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.filter(
+    b=>b.name!==sessionRpc.name)},secrets,options),/Session Authorization Service Binding/);
+  for(const wrong of [{...sessionRpc,service:"untrusted-worker"},
+    {...sessionRpc,entrypoint:"OtherEntrypoint"},
+    {...sessionRpc,type:"plain_text"}])
+    assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.map(
+      b=>b.name===sessionRpc.name?wrong:b)},secrets,options),
+      /Session Authorization Service Binding/);
+  assert.throws(()=>verifyBindings(worker,{...prod,
+    bindings:[...prod.bindings,sessionRpc]},secrets,options),
+    /Session Authorization Service Binding/);
   assert.throws(() => verifyBindings(worker, prod, [], options), /Secret missing/);
   for (const name of ["BROWSER_APPROVAL_ACCESS_ISSUER",
     "BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL",
