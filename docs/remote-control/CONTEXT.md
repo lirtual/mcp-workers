@@ -2,7 +2,17 @@
 
 **Current state (verified 2026-10-28):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Windows x64 and Ubuntu WSL2 are both online with the immutable **Agent v0.1.35**, permanently paired under their original device IDs. The ten existing Agent-owned browser MCP tools remain available; normal browser automation requires an approved device grant and no per-operation approval page. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
 
-## Browser runtime and permission boundaries
+**Spec #628 implementation branch (not deployed as of this source change):** RCA's
+ten `browser_*` and three `computer_*` tools and their executable Worker/DO
+and Agent routing are retired. The Worker exposes only file, search, Shell,
+managed sessions and device lifecycle. Existing signed WSS, immutable
+self-contained Node.js 24 releases, Windows Job Object, Linux pidfd,
+installation, historical read-only GUI receipts, and Unknown/non-replay rules
+remain. The independent Browser MCP #418 is not touched. Production
+deployments, Agent release, existing device upgrades, and local GUI-only
+Profile/Grant cleanup are separate authorization and acceptance stages.
+
+## Historical browser runtime context (archived, not active source guidance)
 
 - **Automation browser:** The existing native Windows Agent manages a visible, Agent-private Chrome/Edge `BrowserContext` and Profile, separate from the owner's everyday browser. One active automation session per device contains multiple explicitly selected tabs, including tabs opened manually. A tab has a stable ID within that session; focus, title, URL and array position must not silently select a different target.
 - **On-demand shared use:** MCP browser operations are bounded and serialized within the Agent; a person may also directly interact with the same window. There is no artificial Human/Agent handoff state, exclusive human-input lock, browser-specific session timeout, polling heartbeat, independent server or new business orchestrator. Reuse the session until explicit close, browser/Agent termination or revocation; normal Remote Control WSS lifecycle/authentication still applies.

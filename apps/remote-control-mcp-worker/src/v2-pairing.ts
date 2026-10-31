@@ -9,7 +9,6 @@ const MAX_LOOKUPS_PER_MINUTE = 30;
 const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
-import { parseBrowserDoArguments } from "./browser-tools.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -293,7 +292,6 @@ export class V2OwnerCoordinator {
     socket: WebSocket; deviceId: string; epoch: string;
     resolve: (response: Response) => void;
     kind: "read" | "operation"; operationId?: string;
-    imageChunks?: string[]; imageLength?: number;
   }>();
 
   private async readFile(request: Request, isOperation = false): Promise<Response> {
@@ -311,32 +309,14 @@ export class V2OwnerCoordinator {
       start_search: parseSearchStart, get_more_search_results: parseSearchSessionId,
       stop_search: parseSearchSessionId,
       list_sessions: parseListSessions, read_process_output: parseLocalProcessOutput,
-      computer_status: args => args && typeof args === "object" &&
-        !Array.isArray(args) && Object.keys(args).length === 0 ? args : null,
-      computer_observe: args => args && typeof args === "object" && !Array.isArray(args) &&
-        Object.keys(args).length === 2 && (args as Record<string,unknown>).target_kind === "display" &&
-        (args as Record<string,unknown>).target_id === "primary" ? args : null,
-      browser_status: args => parseBrowserDoArguments("browser_status", args),
-      browser_snapshot: args => parseBrowserDoArguments("browser_snapshot", args),
-      browser_tabs: args => parseBrowserDoArguments("browser_tabs", args) && (args as {action:string}).action === "list",
     };
-    const operationId = isOperation ? arg.operation_id : undefined;
     const mutationParsers: Record<string, (input: unknown) => unknown> = {
       write_file: parseLocalWriteFile, create_directory: parseLocalCreateDirectory,
       edit_block: parseLocalEditBlock, move_file: parseLocalMoveFile,
       delete_file: parseLocalDeleteFile, start_process: parseStartProcess,
       interact_with_process: parseLocalProcessInteraction, force_terminate: parseLocalProcessTermination,
-      computer_stop: args => args && typeof args === "object" && !Array.isArray(args) &&
-        Object.keys(args).length === 1 && Boolean(parseOperationId(args)) ? args : null,
-      browser_start: args => parseBrowserDoArguments("browser_start", args),
-      browser_navigate: args => parseBrowserDoArguments("browser_navigate", args),
-      browser_close: args => parseBrowserDoArguments("browser_close", args),
-      browser_tabs: args => parseBrowserDoArguments("browser_tabs", args) && (args as {action:string}).action !== "list",
-      browser_click: args => parseBrowserDoArguments("browser_click", args),
-      browser_fill: args => parseBrowserDoArguments("browser_fill", args),
-      browser_press_key: args => parseBrowserDoArguments("browser_press_key", args),
-      browser_select_option: args => parseBrowserDoArguments("browser_select_option", args),
     };
+    const operationId = isOperation ? arg.operation_id : undefined;
     const validOperation = typeof operationId === "string" &&
       Boolean(parseOperationId({ operation_id: operationId })) &&
       ((arg.tool === "get_operation_status" &&
@@ -379,11 +359,10 @@ export class V2OwnerCoordinator {
         resolve(Response.json(isOperation
           ? { operation_id: operationId, status: "timeout_unknown" }
           : { error: "timeout" }, { status: 503 }));
-      }, arg.tool === "computer_observe" ? 12_000 : 5_000);
+      }, 5_000);
       this.pendingReads.set(requestId, {
         socket: selected, deviceId, epoch,
         kind: isOperation ? "operation" : "read",
-        ...(arg.tool === "computer_observe" ? { imageChunks: [] as string[], imageLength: 0 } : {}),
         ...(isOperation ? { operationId: operationId as string } : {}),
         resolve: response => {
           clearTimeout(timer);
@@ -401,72 +380,6 @@ export class V2OwnerCoordinator {
         this.pendingReads.get(requestId)?.resolve(Response.json({ error: "offline" }, { status: 503 }));
       }
     });
-  }
-
-  /** Ephemeral image assembly; no image bytes are written to DO storage. */
-  private async handleImageFrame(socket: WebSocket, message: string): Promise<boolean> {
-    if (message.length > 33_000 || !message.startsWith("{")) return false;
-    let frame: Record<string,unknown>;
-    try { frame=JSON.parse(message) as Record<string,unknown>; } catch { return false; }
-    if (frame.kind !== "image_chunk" && frame.kind !== "image_result") return false;
-    if (typeof frame.request_id !== "string") return true;
-    const pending=this.pendingReads.get(frame.request_id);
-    if (!pending) return true;
-    if (pending.socket !== socket || !pending.imageChunks || pending.kind !== "read") {
-      try { socket.close(1008,"wrong image response"); } catch { /* closed */ }
-      return true;
-    }
-    const fail=() => pending.resolve(Response.json({error:"read_failed"},{status:503}));
-    if (frame.kind === "image_chunk") {
-      if (Object.keys(frame).length !== 4 || !Number.isSafeInteger(frame.seq) ||
-          frame.seq !== pending.imageChunks.length || pending.imageChunks.length >= 30 ||
-          typeof frame.chunk !== "string" || frame.chunk.length < 1 || frame.chunk.length > 24_000 ||
-          frame.chunk.length % 4 !== 0 || !/^[A-Za-z0-9+/=]+$/.test(frame.chunk) ||
-          (pending.imageLength ?? 0)+frame.chunk.length > 700_000) { fail(); return true; }
-      pending.imageChunks.push(frame.chunk);
-      pending.imageLength=(pending.imageLength ?? 0)+frame.chunk.length;
-      return true;
-    }
-    const meta=frame.metadata;
-    if (Object.keys(frame).length !== 4 || frame.status !== "completed" ||
-        !meta || typeof meta !== "object" || Array.isArray(meta) ||
-        pending.imageChunks.length === 0 || pending.imageLength! > 700_000) {
-      fail(); return true;
-    }
-    const m=meta as Record<string,unknown>;
-    const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-    const nums=["width","height","native_width","native_height","origin_x","origin_y","session_id"];
-    const valid=Object.keys(m).length===12 && nums.every(k=>Number.isSafeInteger(m[k])) &&
-      m.type==="desktop_image" && m.mime_type==="image/jpeg" && m.target_id==="primary" &&
-      typeof m.observation_id==="string" && uuid.test(m.observation_id) &&
-      typeof m.grant_generation==="string" && uuid.test(m.grant_generation) &&
-      Number(m.width)>0 && Number(m.width)<=1920 && Number(m.height)>0 && Number(m.height)<=1920 &&
-      Number(m.native_width)>0 && Number(m.native_width)<=16384 &&
-      Number(m.native_height)>0 && Number(m.native_height)<=16384 && Number(m.session_id)>=0;
-    const data=pending.imageChunks.join("");
-    if (!valid || data.length<16 || data.length>700_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
-      fail(); return true;
-    }
-    // Signed WSS is authenticated per request, but revocation/epoch may change mid-transfer.
-    try {
-      const [device,epoch]=await Promise.all([
-        this.state.storage.get<V2Device>("device:"+pending.deviceId),
-        this.state.storage.get<string>("session:epoch:"+pending.deviceId),
-      ]);
-      if (!device || device.revoked!==false || epoch!==pending.epoch) {
-        pending.resolve(Response.json({error:"unauthorized"},{status:503}));
-      } else {
-        const bytes=atob(data);
-        if (bytes.length<8 || bytes.length>524288 ||
-            bytes.charCodeAt(0)!==255 || bytes.charCodeAt(1)!==216 ||
-            bytes.charCodeAt(bytes.length-2)!==255 || bytes.charCodeAt(bytes.length-1)!==217) {
-          fail(); return true;
-        }
-        pending.resolve(Response.json({status:"completed",...m,data},
-          {headers:{"cache-control":"no-store"}}));
-      }
-    } catch { fail(); }
-    return true;
   }
 
   private async handleReadResult(socket: WebSocket, message: string): Promise<boolean> {
@@ -525,10 +438,6 @@ export class V2OwnerCoordinator {
             }));
           }
         }
-      } else if (pending.imageChunks && reply.status === "failed" &&
-          ["desktop_stopped","desktop_session_unavailable","permission_required","unsupported"]
-            .includes(String(reply.error))) {
-        pending.resolve(Response.json({error:reply.error},{status:503}));
       } else if (reply.status === "completed" && typeof reply.text === "string" &&
           reply.text.length <= 65_536) {
         pending.resolve(Response.json({ status: "completed", text: reply.text }));
@@ -695,7 +604,6 @@ export class V2OwnerCoordinator {
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message === "string" && this.handleCleanupAck(socket, message)) return;
-    if (typeof message === "string" && await this.handleImageFrame(socket, message)) return;
     if (typeof message === "string" && await this.handleReadResult(socket, message)) return;
     if (await handleDeviceInfoMessage(this.state, socket, message)) return;
     await handleIdleSocketMessage(this.state, socket, message);
