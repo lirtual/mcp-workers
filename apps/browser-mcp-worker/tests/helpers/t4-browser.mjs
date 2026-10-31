@@ -73,7 +73,7 @@ export async function fixture(config={},options={}){
     new Element("SELECT"),new Element("BUTTON",{label:"Submit payment"}),new Element("INPUT",{type:"password"})];
   nodes[2].labels=[{textContent:"Show grid"}];
   nodes[3].options=[{value:"blue",textContent:"Blue",parentElement:nodes[3],disabled:false}];
-  const document={body:nodes[0],scrollingElement:nodes[0],documentElement:{appendChild(el){pageState.marker=el;}},createElement:tag=>new Element(tag.toUpperCase()),querySelector:selector=>(pageState.sensitive||pageState.embedded&&/iframe/.test(selector))?nodes[5]:null,
+  const document={getElementById:id=>nodes.find(n=>n.id===id)??null,body:nodes[0],scrollingElement:nodes[0],documentElement:{appendChild(el){pageState.marker=el;}},createElement:tag=>new Element(tag.toUpperCase()),querySelector:selector=>(pageState.sensitive||pageState.embedded&&/iframe/.test(selector))?nodes[5]:null,
     querySelectorAll:selector=>nodes.slice(1).filter(n=>pageState.sensitive||n.attrs.type!=="password").filter(n=>selector==="input,textarea,select"?["INPUT","TEXTAREA","SELECT"].includes(n.tagName):true),
     createTreeWalker:()=>({nextNode:()=>false})};
   Object.defineProperty(nodes[0],"innerText",{get:()=>pageState.text});

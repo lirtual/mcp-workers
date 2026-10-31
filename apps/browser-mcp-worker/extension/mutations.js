@@ -126,7 +126,17 @@ function browserPageInteraction(mode,command,expectedUrl,feedbackEnabled=false) 
   const plain=value=>typeof value==='string'&&value.length<=200&&
     !secret.test(value)&&!/(?:[A-Za-z0-9_\-]{32,}|[A-Za-z0-9+/]{32,}={0,2})/.test(value);
   const compact=value=>String(value||'').replace(/\s+/g,' ').trim().slice(0,160);
+  const labelledNodes=el=>{
+    const raw=el.getAttribute('aria-labelledby')||'';
+    if(raw.length>256||!raw.trim())return [];
+    const ids=raw.trim().split(/\s+/);
+    if(ids.length>3)return [];
+    const nodes=ids.map(id=>/^[a-zA-Z0-9_-]{1,100}$/.test(id)?document.getElementById(id):null);
+    if(nodes.some(node=>!node||!visible(node)||sensitiveField(node)||secret.test(node.id||'')||!plain(compact(node.textContent))))return [];
+    return nodes;
+  };
   const name=el=>compact(el.getAttribute('aria-label')||
+    labelledNodes(el).map(node=>node.textContent).join(' ')||
     Array.from(el.labels||[],l=>l.textContent).join(' ')||
     (['BUTTON','SUMMARY','A','OPTION'].includes(el.tagName)||
       ['combobox','option','menuitem','menuitemradio','menuitemcheckbox','radio','button'].includes(el.getAttribute('role'))
@@ -180,7 +190,7 @@ function browserPageInteraction(mode,command,expectedUrl,feedbackEnabled=false) 
       const options=nativeOptions(el);
       const element_id="e-"+crypto.randomUUID();
       registry.nodes.set(element_id,el);
-      registry.labels.set(element_id,Array.from(el.labels||[]));
+      registry.labels.set(element_id,[...Array.from(el.labels||[]),...labelledNodes(el)]);
       if(options)registry.options.set(element_id,options);
       const property=(attr)=>el.getAttribute(attr);
       const expanded=property('aria-expanded'),selected=property('aria-selected'),checked=property('aria-checked');
