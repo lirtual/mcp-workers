@@ -19,7 +19,7 @@ The released Chrome/Edge MV3 extension is obtained through an expiring GitHub Ac
 | --- | --- |
 | GET / | Minimal install landing page (no login); display *published* version and verified SHA-256, not a source-tree guess. |
 | GET /download | Stable download entry, redirects with a **non-cacheable** response to the current immutable versioned ZIP path. |
-| GET /downloads/browser-mcp-extension-v<VERSION>.zip | Immutable reviewed ZIP asset, with correct ZIP type and download filename. Each changed ZIP byte sequence requires a new immutable public asset name/version. |
+| GET /downloads/browser-mcp-extension-v<VERSION>-<SHA256>.zip | Immutable reviewed ZIP; include the complete content SHA-256 in its asset name, correct ZIP type and download filename. Every different ZIP byte sequence receives a different URL even when the manifest version is unchanged. |
 
 Allow HEAD where appropriate; reject unsupported methods. The only public resources are an explicit allowlist of landing-page files and the selected reviewed ZIP. Keep the page static and self-contained where practical (no runtime JavaScript framework, external fonts or third-party analytics); render a short install sequence: download, extract to a **stable** directory, open chrome://extensions or edge://extensions, enable Developer Mode, Load unpacked, pin icon, click to start Access verification. State clearly that a ZIP download **does not install or activate** an extension. A browser-installed extension requires Chromium 137+.
 
@@ -29,16 +29,16 @@ Allow HEAD where appropriate; reject unsupported methods. The only public resour
 
 ## Provenance and compatible release
 
-Use the already-reviewed deterministic build script `scripts/build-browser-extension.py` and its ZIP, SHA-256 and source manifest checks. Enhance the *existing* release job to stage **only explicitly allowlisted files** (page resources, current ZIP, generated metadata) into the asset directory before the existing Wrangler deploy. Do not store generated packages in source control. Release checks must bind together:
+Use the already-reviewed deterministic build script `scripts/build-browser-extension.py` and its ZIP, SHA-256 and source manifest checks. Enhance the *existing* release job to stage **only explicitly allowlisted public files** (the landing page and reviewed current ZIP) into the asset directory before the existing Wrangler deploy. Derive visible version and SHA-256 from verified build metadata at publication time; keep the full provenance and metadata sidecars as private CI artifacts, **not publicly served assets**. Do not store generated packages in source control. Release checks must bind together:
 
 1. Production Worker package version, WSS protocol, extension manifest version, pinned manifest-key-derived extension ID, and production service origin.
-2. Artifact provenance: reviewed source revision, deterministic ZIP SHA-256, metadata and actual uploaded bytes. No dirty/unreviewed build.
-3. The single version/hash on the page and /download target, the staged file, and the Worker release candidate. Reject missing, wrong-version, wrong-hash, unauthorized extra files and conflicting immutable filenames **before deployment**.
+2. Artifact provenance: reviewed source revision, deterministic ZIP SHA-256, CI-only metadata and actual staged/uploaded bytes. No dirty/unreviewed build. Since the packaged ZIP includes the extension's copy of `INSTALL.md`, a documentation-only change can alter ZIP bytes **without** changing its manifest version; the content-hash URL prevents overwriting a previously published ZIP.
+3. The single version/full content hash on the page and /download target, the staged file, and the Worker release candidate. Derive the ZIP filename from build outputs rather than a hard-coded `v0.2.1` path in the current manual-release workflow. Verify versioned filename, exact bytes, pinned key/extension ID, service origin and WSS compatibility; reject missing, unexpected, wrong-hash or extra public files **before deployment**. Runtime or handshake protocol changes must carry a compatible extension/Worker version update; a documentation-only change may retain the manifest version but receives a new content-hash URL.
 4. Files within Cloudflare Static Assets limits (25 MiB each as currently documented); the current package is much smaller. Do not add a new cache/database/release registry.
 
 Retain any existing artifact/audit upload as evidence but never make that expiring attachment the public distribution source. GitHub Actions remains the **only** authorized production publisher. Worker + static assets ship as one Cloudflare Worker version; a failed preflight leaves the prior production version intact. Source changes alone do not update public downloads.
 
-A Worker rollback can restore its bundled page and ZIP but **does not uninstall, downgrade or reconnect existing browser Profiles**. A rollback to an incompatible WSS/extension revision requires its own compatibility/safety decision; fail closed, never restore deprecated pairing, resume or per-operation approval paths. Versioned URLs already cached or shared may continue to exist, but **/download** must always target the compatible current production version and explicitly exclude obsolete releases.
+A Worker rollback can restore its bundled page and ZIP but **does not uninstall, downgrade or reconnect existing browser Profiles**. A rollback to an incompatible WSS/extension revision requires its own compatibility/safety decision; fail closed, never restore deprecated pairing, resume or per-operation approval paths. Old content-hash URLs may persist in third-party caches or bookmarks; they do **not** define the active release. The uncached **/download** and freshly revalidated landing page must resolve to the exact ZIP packaged with the *currently active* Worker version, including after an authorized rollback (which may intentionally select an older compatible version). Do not automatically select the numerically highest version or redirect to an incompatible cached package.
 
 ## Local update and recovery
 
@@ -46,7 +46,7 @@ Use the supported existing unpacked installation in the same Profile/directory; 
 
 ## Required validation — risk-scoped, no duplicate suites
 
-- **Preflight (offline/CI):** deterministic ZIP and metadata check, version/protocol/key/source correspondence, public-asset allowlist, correct headers/cache behavior, blocked deployment on mismatch/missing bytes; reuse existing build/test gates.
+- **Preflight (offline/CI):** deterministic ZIP and metadata check, version/protocol/key/source correspondence, derived filename (remove current hard-coded version from release workflow), public-asset allowlist and absence of CI-only metadata, correct headers/cache behavior, blocked deployment on mismatch/missing bytes; reuse existing build/test gates.
 - **Local Worker tests:** anonymous landing and download permitted; existing protected dynamic routes cannot be shadowed or accessed anonymously; unknown paths 404; unsupported methods rejected; no SPA fallback.
 - **Native Chrome and Edge checks (matching produced ZIP):** one installation and safe same-directory update, confirm fixed extension ID and actual Endpoint continuity or explicit failure handling, permanent/temporary pairing behavior affected by reload. Do not rerun unrelated #418 tests without a newly identified risk.
 - **After separately authorized production publication:** independently read live /, /download and versioned ZIP, compare downloaded SHA-256 and version with the released worker, and check read-only authorization boundaries. Confirm the published release version and relevant native browser readback separately; CI success or a deployed page is not proof of actual update success.
@@ -55,7 +55,7 @@ Use the supported existing unpacked installation in the same Profile/directory; 
 
 No additional Worker, Pages, R2, KV, D1, npm service, extension store, installation executable, automatic updater, second CI, release registry, owner portal, new access flows, or broad full-browser regression. No changes to MCP APIs, activation, WSS, control, Unknown receipts, credentials, or current paired Profiles.
 
-**Implementation remains Not performed.** Next step after this design-only documentation PR is a separately scoped implementation/spec and, later, separately authorized production release. The current official installation method is still the [existing GitHub Actions artifact](INSTALL.md).
+**Implementation remains Not performed.** This design-only PR deliberately does **not** change the current `INSTALL.md`: it is copied into released ZIP files, so even a pre-implementation note there would change package bytes and invalidate the presently documented SHA-256. When the public page is implemented, synchronize the shipped installation instructions as part of the reviewed, content-hash-addressed ZIP publication. Next step is a separately scoped implementation/spec and, later, separately authorized production release. The current official installation method is still the [existing GitHub Actions artifact](INSTALL.md).
 
 ## Sources and rationale
 
