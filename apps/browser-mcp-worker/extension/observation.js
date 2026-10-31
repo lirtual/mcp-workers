@@ -160,15 +160,23 @@ function screenshotExposureCheck() {
   const visible=el=>!el.closest('[hidden],[aria-hidden="true"]')&&
     getComputedStyle(el).display!=="none"&&getComputedStyle(el).visibility==="visible"&&
     el.getClientRects().length>0;
-  for(const el of document.querySelectorAll(
-    'input,textarea,iframe,frame,object,embed,canvas,video')){
-    if(!visible(el))continue;
-    if(['IFRAME','FRAME','OBJECT','EMBED','CANVAS','VIDEO'].includes(el.tagName))return {allowed:false};
-    const attrs=[el.getAttribute('type'),el.getAttribute('autocomplete'),el.id,
-      el.getAttribute('name'),el.getAttribute('aria-label'),
-      ...Array.from(el.labels||[],l=>l.textContent)].join(' ');
-    if(/password|passcode|one[ -]?time[ -]?code|otp|2fa|captcha|verification[ -]?code|security[ -]?code|authenticator|recovery[ -]?code|api[ _-]?key|secret|credential|token|cvv|cc-number|cc-csc/i.test(attrs))
-      return {allowed:false};
+  // Screenshots include visible open Shadow DOM. Inspect it as well as the
+  // top document; an excessive nested-component tree fails closed.
+  const roots=[document];
+  const inspected=new Set(['INPUT','TEXTAREA','SELECT','IFRAME','FRAME','OBJECT','EMBED','CANVAS','VIDEO']);
+  const embedded=new Set(['IFRAME','FRAME','OBJECT','EMBED','CANVAS','VIDEO']);
+  for(let i=0;i<roots.length;i++){
+    if(roots.length>64)return {allowed:false};
+    for(const el of roots[i].querySelectorAll('*')){
+      if(el.shadowRoot)roots.push(el.shadowRoot);
+      if(!inspected.has(el.tagName)||!visible(el))continue;
+      if(embedded.has(el.tagName))return {allowed:false};
+      const attrs=[el.getAttribute('type'),el.getAttribute('autocomplete'),el.id,
+        el.getAttribute('name'),el.getAttribute('aria-label'),
+        ...Array.from(el.labels||[],l=>l.textContent)].join(' ');
+      if(/password|passcode|one[ -]?time[ -]?code|otp|2fa|captcha|verification[ -]?code|security[ -]?code|authenticator|recovery[ -]?code|api[ _-]?key|secret|credential|token|cvv|cc-number|cc-csc/i.test(attrs))
+        return {allowed:false};
+    }
   }
   return {allowed:true};
 }
