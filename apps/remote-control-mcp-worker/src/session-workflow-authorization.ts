@@ -3,7 +3,7 @@ import type { V2Device, SessionCheck } from './v2-session.ts';
 
 /** Only the named WorkerEntrypoint may provide this RPC; there is no public URL. */
 export interface WorkflowSessionAuthorization {
-  authorizeSessionAttempt(input: { attempt_id: string }): Promise<unknown>;
+  authorizeSessionAttempt(input: { attempt_id: string; oidc_jwt?: string }): Promise<unknown>;
 }
 
 /** No cache: each new remote operation and authenticated socket checks Workflow. */

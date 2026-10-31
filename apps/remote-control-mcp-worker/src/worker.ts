@@ -1257,7 +1257,7 @@ export default {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
       }
       try {
-        const raw = await readBounded(request, 4096);
+        const raw = await readBounded(request, url.pathname === "/agent/pair/start" ? 10_000 : 4096);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
         return await pendingOwner(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
           url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" :

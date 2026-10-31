@@ -11,6 +11,7 @@ const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, grantCurrent, type V2Device, type SessionCheck } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
 import { sessionAllowedByWorkflow, type WorkflowSessionAuthorization } from "./session-workflow-authorization.ts";
+import {registerSessionDevice} from "./session-device-registration.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -285,6 +286,7 @@ async function limitedJson(request: Request, maxBytes = MAX_BOOTSTRAP_BODY): Pro
 
 export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
+  private readonly env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization };
   private readonly sessionCheck: SessionCheck;
   // In-flight reads only: bounded by request timeout; never durable/queued.
   private readonly pendingCleanup = new Map<string, {
@@ -686,6 +688,7 @@ export class V2OwnerCoordinator {
 
   constructor(state: DurableObjectState, env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization }) {
     this.state = state;
+    this.env = env;
     this.sessionCheck = sessionAllowedByWorkflow(env?.WORKFLOW_SESSION_AUTHORIZATION);
     // Cloudflare replies to these liveness frames without waking a hibernating
     // DO. The response is NOT proof of current authorization; every future
@@ -735,13 +738,20 @@ export class V2OwnerCoordinator {
     }
     if (!["/register", "/lookup", "/approve", "/session/challenge", "/session/recover", "/re-pair/status"].includes(path)) return new Response(null, { status: 404 });
     let payload: unknown;
-    try { payload = await limitedJson(request); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
+    try { payload = await limitedJson(request, path === "/register" ? 10_000 : MAX_BOOTSTRAP_BODY); } catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
     try {
       let output: { status: number; body: object };
       if (path === "/re-pair/status") output = await checkRevokedIdentity(this.state.storage, payload);
       else if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload, this.sessionCheck);
       else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload, this.sessionCheck);
-      else if (path === "/register") output = await registerPending(this.state.storage, payload);
+      else if (path === "/register") {
+        if ((payload as {kind?:unknown})?.kind === "github_session") {
+          if (!await consumeBudget(this.state.storage,"register",MAX_REGISTRATIONS_PER_MINUTE))
+            output = {status:429,body:{error:"rate_limited"}};
+          else output = await registerSessionDevice(this.state.storage,payload,
+            this.env?.WORKFLOW_SESSION_AUTHORIZATION);
+        } else output = await registerPending(this.state.storage,payload);
+      }
       else if (path === "/lookup") output = await lookupPending(
         this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
       );
