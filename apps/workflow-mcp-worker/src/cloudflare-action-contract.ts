@@ -69,14 +69,28 @@ export const ENVSHARE_CLOUDFLARE_ACTION=Object.freeze({
  output_schema:{type:'object',additionalProperties:false,
   required:['status'],properties:{status:{enum:['accepted','rejected','unknown']},share_id:{type:'string'}}},
 });
+export const LITTERBOX_CLOUDFLARE_ACTION=Object.freeze({
+ executor:'cloudflare',provider:'litterbox',action:'litterbox.upload_file',version:1,
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'upload_plaintext_file_to_public_litterbox',
+ input_schema:{type:'object',additionalProperties:false,
+  required:['file_name','size_bytes','sha256','time'],
+  properties:{file_name:{type:'string',maxLength:160},
+   size_bytes:{type:'integer',minimum:1,maximum:10485760},
+   sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
+   time:{enum:['1h','12h','24h','72h']}}},
+ output_schema:{type:'object',additionalProperties:false,required:['status'],
+  properties:{status:{enum:['accepted','rejected','unknown']},
+   download_url:{type:'string'}}},
+});
 export function canonical(value:unknown):unknown{
  if(Array.isArray(value))return value.map(canonical);
  if(value&&typeof value==='object')return Object.fromEntries(
   Object.entries(value).sort(([a],[b])=>a.localeCompare(b,'en')).map(([k,v])=>[k,canonical(v)]));
  return value;
 }
-export async function cloudflareActionManifest(provider:'weixin'|'bark'|'download'|'generic'|'unified-generic'|'dub'|'envshare'='weixin'){
- const item=provider==='envshare'?ENVSHARE_CLOUDFLARE_ACTION:provider==='dub'?DUB_CLOUDFLARE_ACTION:provider==='bark'?BARK_CLOUDFLARE_ACTION:
+export async function cloudflareActionManifest(provider:'weixin'|'bark'|'download'|'generic'|'unified-generic'|'dub'|'envshare'|'litterbox'='weixin'){
+ const item=provider==='litterbox'?LITTERBOX_CLOUDFLARE_ACTION:provider==='envshare'?ENVSHARE_CLOUDFLARE_ACTION:provider==='dub'?DUB_CLOUDFLARE_ACTION:provider==='bark'?BARK_CLOUDFLARE_ACTION:
   provider==='download'?DOWNLOAD_CLOUDFLARE_ACTION:provider==='generic'?GENERIC_WEIXIN_CLOUDFLARE_ACTION:provider==='unified-generic'?UNIFIED_GENERIC_WEIXIN_ACTION:WEIXIN_CLOUDFLARE_ACTION;
  const bytes=new TextEncoder().encode(JSON.stringify(canonical(item)));
  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));

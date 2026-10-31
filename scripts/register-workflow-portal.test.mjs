@@ -24,6 +24,7 @@ const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),
 const publishedTools=[
   'workflow_capabilities','workflow_action_list',
   'workflow_file_transport_probe',
+  'workflow_litterbox_upload',
   'workflow_connection_status','workflow_connection_revoke','workflow_connection_enable',
   'workflow_list','workflow_get','workflow_create','workflow_update',
   'workflow_validate','workflow_publish','workflow_approval','workflow_pause',
@@ -34,7 +35,7 @@ const originalServer={id:'workflow',name:'Workflow',hostname:host,
   auth_type:'bearer',status:'ready',
   tools:EXPECTED_TOOLS.map(name=>({name}))};
 
-test('exact Portal tool contract includes all 21 published Workflow tools',()=>{
+test('exact Portal tool contract includes all 22 published Workflow tools',()=>{
   assert.deepEqual(EXPECTED_TOOLS,publishedTools);
 });
 

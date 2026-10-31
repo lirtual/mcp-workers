@@ -284,7 +284,7 @@ export class WorkflowService {
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':'unified-generic');
+          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
               this.env.ACTIONS_DEPLOYMENT_ID??null};
@@ -416,7 +416,7 @@ export class WorkflowService {
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':'unified-generic');
+      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
       try{live=await provider.getContract(contract.action,contract.contract_digest);}
@@ -809,7 +809,7 @@ export class WorkflowService {
     if(parent)throw new StateError('workflow_referenced_by_parent');
     throw new StateError('workflow_delete_conflict');
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string){
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile=false){
     assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
     if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
@@ -819,7 +819,17 @@ export class WorkflowService {
     // An accepted admission keeps its pinned version across republish/pause.
     if(idempotency_key){
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-      if(original){if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+      if(original){
+        if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+        // A normal workflow_run cannot use a prior file upload Run's key
+        // to circumvent the selected-file tool gate, even on replay.
+        const oldPlan=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(original.version_id).first<{plan:string}>();
+        if(!oldPlan)throw new StateError('published_version_missing');
+        let parsed:Plan;
+        try{parsed=JSON.parse(oldPlan.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+        if(parsed.steps?.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox'))
+          throw new StateError('litterbox_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -864,6 +874,16 @@ export class WorkflowService {
     }
 
     // Secret never reaches durable D1 inputs, Action outputs or ordinary result.
+    // Litterbox bytes and signed file locator are never durable Run inputs.
+    // Only the selected-file MCP tool may start this manual-only Plan.
+    const isLitterbox=activePlan.steps.length===1&&
+      activePlan.steps[0]?.uses==='action.run'&&
+      activePlan.steps[0].with.provider==='litterbox'&&
+      activePlan.steps[0].with.action==='litterbox.upload_file';
+    if(isLitterbox!==allowTransientFile)throw new StateError('litterbox_file_tool_required');
+    if(isLitterbox&&(!idempotency_key||expected_version_id||
+      activePlan.cloudflare_execution_approved!==true||activePlan.triggers?.length))
+      throw new StateError('litterbox_manual_approval_required');
     let deliveryKey:string|undefined;
     if(isEnvsharePlan(activePlan)){
       if(expected_version_id||!idempotency_key||activePlan.triggers?.length||
@@ -896,7 +916,7 @@ export class WorkflowService {
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-        if(prior){if(deliveryKey)throw new StateError('envshare_key_unrecoverable');if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
+        if(prior){if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');if(deliveryKey)throw new StateError('envshare_key_unrecoverable');if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
       const latest=await this.row(workflow_id);
       if(latest.state!=='active')throw new StateError('workflow_not_active');
       if(latest.active_version_id!==version)throw new StateError('published_version_changed');

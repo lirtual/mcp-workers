@@ -132,7 +132,7 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
 async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
   const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
   for(const s of steps)if(s.uses==='action.run'){
-    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':'unified-generic';
+    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic';
     manifests.set(s.id,await cloudflareActionManifest(kind));
   }
   const knownRef=(ref:string,path:string):KnownOutput=>{
@@ -768,7 +768,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':'unified-generic');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':withData.action==='litterbox.upload_file'?'litterbox':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -790,6 +790,21 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
              (target as {ref?:unknown}).ref!=='inputs.'+field)
             throw new PlanError('envshare_input_must_be_sealed_reference',stepPath+'/with/input/'+field);
         }
+      }else if(manifest.provider==='litterbox'){
+        // A literal file, URL or arbitrary input cannot enter a Published Plan.
+        // The only executable ingress is a manually selected fileParams tool.
+        keys(input,['file_name','size_bytes','sha256','time'],stepPath+'/with/input');
+        if(Object.keys(input).length!==4)
+          throw new PlanError('invalid_litterbox_input',stepPath+'/with/input');
+        for(const field of ['file_name','size_bytes','sha256','time']){
+          const v=input[field];
+          if(!v||typeof v!=='object'||Array.isArray(v)||
+             Object.keys(v).length!==1||
+             (v as {ref?:unknown}).ref!=='inputs.'+field)
+            throw new PlanError('litterbox_input_must_be_transient_reference',stepPath+'/with/input/'+field);
+        }
+        if(expanded.length!==1||o.triggers?.length||needs.length||s.if!==undefined)
+          throw new PlanError('litterbox_manual_single_step_only',stepPath);
       }else if(manifest.provider==='bark'){
         keys(input,['notification'],stepPath+'/with/input');
         const notification=object(input.notification,'invalid_bark_notification');
@@ -987,6 +1002,15 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
        steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
        steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
       throw new PlanError('envshare_manual_single_step_only','/steps');
+  }
+  // Transient Litterbox bytes must never originate from Plan literals,
+  // scheduled/event admissions, other Steps, or serializable Run inputs.
+  if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox')){
+    if(triggers?.length||steps.length!==1||saga||
+       (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
+       steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
+       steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
+      throw new PlanError('litterbox_manual_single_step_only','/steps');
   }
   // Dub is a single explicit manual Run; never Cron, Webhook, or GitHub-push fanout.
   if(triggers?.length&&steps.some(s=>s.uses==='action.run'&&s.with.action==='dub.shorten_url'))

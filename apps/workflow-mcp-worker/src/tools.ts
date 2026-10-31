@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { workflowCapabilities } from './capabilities.ts';
 import { WorkflowService, cleanError } from './store.ts';
+import {startLitterboxUpload} from './litterbox-executor.ts';
 import {getSessionRuntimeData} from './session-runtime-data.ts';
 import type { Env } from './store.ts';
 
@@ -54,6 +55,16 @@ export function buildMcpServer(env:Env){
    annotations:{...read,destructiveHint:false},
  },async()=>success({file_parameter_received:true,bytes_read:0,
    uploaded:false,persisted:false,provenance_verified:false}));
+ server.registerTool('workflow_litterbox_upload',{
+   title:'Upload one selected file to Litterbox (public, irreversible)',
+   description:'EXTERNAL WRITE. Uploads a user-selected file in PLAINTEXT to public Litterbox storage, expiring after 1/12/24/72h. Requires a previously approved, immutable manual single-step litterbox.upload_file Published Workflow and a unique idempotency key. Do not call without explicit Owner instruction to publish that file. Unknown effects are NEVER replayed.',
+   inputSchema:z.object({workflow_id:id,file:fileTransportProbeFile,
+     time:z.enum(['1h','12h','24h','72h']).optional(),
+     idempotency_key:z.string().min(1).max(128)}).strict(),
+   _meta:{'openai/fileParams':['file']},
+   annotations:externalWrite,
+ },async({workflow_id,file,time,idempotency_key})=>
+   safe(()=>startLitterboxUpload(env,{workflow_id,file,time,idempotency_key})));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));

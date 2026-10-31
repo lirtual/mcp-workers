@@ -1,4 +1,5 @@
 import {runPublishedCloudflareAction} from './cloudflare-action-executor.ts';
+import {recordedLitterboxStep} from './litterbox-executor.ts';
 import {watchPersistedSessions} from './github-action-session-watch.ts';
 import {compensateSession} from './saga.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,admitDetachedChild,startReservedDetachedChild,startReservedAwaitedChild} from './child-capacity.ts';
@@ -777,6 +778,32 @@ async function runAwaitedChild(
  return {status:'indeterminate',error_code:'child_wait_expired'};
 }
 
+/** File bytes are handled only by the owner-selected MCP call, never by
+ * the native engine. The durable fenced result is authoritative, not the wake.
+ */
+async function awaitLitterboxFileReceipt(env:Env,s:Step,runId:string,step:WorkflowStep):Promise<Outcome>{
+ try{
+  await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
+    SELECT ?,?,'waiting',? WHERE EXISTS(
+      SELECT 1 FROM runs WHERE id=? AND outcome='running')
+    ON CONFLICT(run_id,step_id) DO NOTHING`)
+   .bind(runId,s.id,now(),runId).run();
+  const recorded=await recordedLitterboxStep(env.DB,runId,s.id);
+  if(recorded)return recorded;
+  try{
+   await step.waitForEvent('workflow-'+s.id+'-litterbox',{
+    type:'litterbox-complete-'+s.id,timeout:'180 seconds'});
+  }catch{/* A lost wake is never evidence that the upload did not happen. */}
+  const final=await recordedLitterboxStep(env.DB,runId,s.id);
+  if(final)return final;
+  const fenced=await env.DB.prepare(`SELECT invocation_id
+    FROM cloudflare_action_invocations WHERE run_id=? AND step_id=?`)
+   .bind(runId,s.id).first<{invocation_id:string}>();
+  return fenced?{status:'indeterminate',error_code:'litterbox_receipt_unconfirmed'}:
+   {status:'failed',error_code:'litterbox_file_not_submitted'};
+ }catch{return {status:'indeterminate',error_code:'litterbox_wait_unknown'};}
+}
+
 export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}> {
   async run(event:WorkflowEvent<{run_id:string}>,step:WorkflowStep){
     const id=event.payload.run_id;
@@ -863,6 +890,8 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
             ? await runBoundedLoop(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
+            : s.uses==='action.run'&&s.with.provider==='litterbox'
+            ? await awaitLitterboxFileReceipt(this.env,s,id,step)
             : s.uses==='action.run'
             ? await step.do('workflow-'+s.id,
               {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},async():Promise<Outcome>=>{
