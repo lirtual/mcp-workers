@@ -16,7 +16,11 @@ test('only exact OpenAI HTTPS file host and valid file ID can be fetched',()=>{
  ]){
   assert.equal(approvedAttachmentUrl({...file,download_url:u}),null);
  }
- assert.equal(approvedAttachmentUrl({...file,file_id:'other'}),null);
+ assert.ok(approvedAttachmentUrl({...file,file_id:'other'}));
+ assert.ok(approvedAttachmentUrl({...file,file_id:'file-opaque:live-reference'}));
+ for(const bad of ['', '   ', '\n', 'a'.repeat(513)]){
+  assert.equal(approvedAttachmentUrl({...file,file_id:bad}),null);
+ }
  assert.equal(approvedAttachmentUrl({...file,extra:'thing'}),null);
 });
 test('fetches the one file with no credentials or redirect, hashes bounded bytes in memory',async()=>{

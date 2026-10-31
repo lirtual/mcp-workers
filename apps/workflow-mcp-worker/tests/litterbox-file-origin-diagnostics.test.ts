@@ -12,9 +12,20 @@ test('approved source is unchanged and produces generic safe classification',()=
   failure_code:'none',origin_family:'expected_file_origin',
  });
 });
+test('opaque IDs without a file_ prefix are accepted, not treated as authentication',()=>{
+ for(const id of ['file-opaque:live-reference','reference-without-prefix',
+  '123e4567-e89b-42d3-a456-426614174000']){
+  const f={...base,file_id:id};
+  assert.ok(approvedAttachmentUrl(f));
+  assert.deepEqual(classifyAttachmentSource(f),{
+   failure_code:'none',origin_family:'expected_file_origin'});
+ }
+});
 test('read-only diagnostic identifies the violated invariant without leaking identifiers',()=>{
  const examples=[
-  [{...base,file_id:'wrong_format'},'file_id_invalid','invalid'],
+  [{...base,file_id:''},'file_id_invalid','invalid'],
+  [{...base,file_id:'\n'},'file_id_invalid','invalid'],
+  [{...base,file_id:'x'.repeat(513)},'file_id_invalid','invalid'],
   [{...base,download_url:'not-a-url'},'download_url_invalid','invalid'],
   [{...base,download_url:'http://files.oaiusercontent.com/x'},'download_url_not_https','expected_file_origin'],
   [{...base,download_url:'https://other.oaiusercontent.com/x'},'download_host_not_allowlisted','oaiusercontent_other'],

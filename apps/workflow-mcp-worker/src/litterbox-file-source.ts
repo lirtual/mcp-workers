@@ -6,12 +6,17 @@
  */
 export const LITTERBOX_MAX_BYTES=10*1024*1024;
 export type ChatGptFile={download_url:string;file_id:string;file_name?:string;mime_type?:string};
-const FILE_ID=/^file_[A-Za-z0-9_-]{1,128}$/;
+// OpenAI fileParams declares file_id as an opaque string; there is no
+// guaranteed prefix, UUID shape or character alphabet. This is NOT proof
+// of file provenance and is never sent to the Litterbox Provider.
+const validFileId=(value:unknown):value is string=>
+ typeof value==='string'&&value.length>0&&value.length<=512&&
+ value.trim().length>0&&!/[\u0000-\u001f\u007f]/.test(value);
 export function approvedAttachmentUrl(file:unknown):URL|null {
  if(!file||typeof file!=='object'||Array.isArray(file))return null;
  const f=file as Record<string,unknown>;
  if(Object.keys(f).some(k=>!['file_id','download_url','file_name','mime_type'].includes(k))||
-  typeof f.file_id!=='string'||!FILE_ID.test(f.file_id)||
+  !validFileId(f.file_id)||
   typeof f.download_url!=='string'||f.download_url.length>4096)return null;
  try{
   const url=new URL(f.download_url);
@@ -41,7 +46,7 @@ export function classifyAttachmentSource(file:unknown):{
  const f=file as Record<string,unknown>;
  if(Object.keys(f).some(k=>!['download_url','file_id','mime_type','file_name'].includes(k)))
   return denied('file_object_invalid');
- if(typeof f.file_id!=='string'||!FILE_ID.test(f.file_id))
+ if(!validFileId(f.file_id))
   return denied('file_id_invalid');
  if(typeof f.download_url!=='string'||f.download_url.length===0||
     f.download_url.length>4096)return denied('download_url_invalid');
