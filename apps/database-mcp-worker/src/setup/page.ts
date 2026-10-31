@@ -149,7 +149,9 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
       '<p>PR must be ready for review with required reviews and checks satisfied. Acceptance does not confirm release or activation.</p>' +
       '<button type="submit">Confirm final apply</button></form>' : '') + '</li>';
   const history = operations.filter(op => op.phase === 'completed').map(renderOperation).join('');
-  const inProgress = operations.filter(op => op.phase !== 'completed').map(renderOperation).join('');
+  const failedOperations = operations.filter(op => op.phase === 'failed');
+  const failed = failedOperations.map(renderOperation).join('');
+  const open = operations.filter(op => op.phase !== 'completed' && op.phase !== 'failed').map(renderOperation).join('');
   const actionable = operations.filter(canApplyHyperdrive);
   const reservations = operations.filter(op => op.action === 'create' && ['pending','running','awaiting_confirmation','unknown'].includes(op.phase) && !rows.some(row => row.id === op.logical_id)).length;
   const atLimit = rows.length + reservations >= 10;
@@ -160,7 +162,8 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
     (list ? `<table class="connections-table"><thead><tr><th scope="col" style="width:35%">Connection ID</th><th scope="col" style="width:26%">Database / transport / status</th><th scope="col">Actions</th></tr></thead><tbody>${list}</tbody></table>` : '<p class="empty">No database connections configured</p>') +
     (rows.some(row => row.transport === 'hyperdrive') ? '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion. <a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a>.</p>' : '') +
     (atLimit && !replacing ? '' : addConnectionForm(csrf, replacing, replacementOrigin)) +
-    (inProgress ? '<section id="hyperdrive-activity"><h2>In-progress Hyperdrive operations</h2><ul class="operation-list">' + inProgress + '</ul></section>' : '') +
+    (open ? '<section id="hyperdrive-activity"><h2>Open Hyperdrive operations</h2><ul class="operation-list">' + open + '</ul></section>' : '') +
+    (failed ? '<details><summary>Failed operation history (' + failedOperations.length + ')</summary><ul class="operation-list">' + failed + '</ul></details>' : '') +
     '<details><summary>Completed operation history</summary><ul class="operation-list">' + (history || '<li>No completed operations</li>') + '</ul></details>' +
     (retiredHyperdriveIds.length ? '<details><summary>Cloudflare cleanup unverified (' + retiredHyperdriveIds.length + ')</summary>' +
       '<p class="muted">These retired connection IDs no longer admit MCP SQL. Historical Hyperdrive/CA resources are retained; physical cleanup needs separate live and rollback reference proof.</p><ul>' +
