@@ -32,7 +32,7 @@ function fixture(){
  }
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql','0009_fixed_sessions.sql','0011_awaited_child_capacity.sql']){
+ for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql','0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0019_session_rca_duration.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
  db.exec('COMMIT');
@@ -391,6 +391,25 @@ test('signed Ready must own the exact claimed physical running GitHub Session; d
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
   assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
+test('first signed physical Ready freezes Session RCA duration; duplicate cannot extend it',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  const inspect=async()=>({state:'running' as const});
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined,9),'ready');
+  assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined,9),'already_ready');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined,10),'denied');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined),'denied');
+  assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
  }finally{f.db.close();}
 });
 test('lost Ready HTTP receipt is idempotent even after parent Workflow succeeded',async()=>{

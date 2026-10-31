@@ -25,16 +25,23 @@ const validMinute=(value:unknown):value is number=>
 export function resolveSessionDeadline(
   pinned:Record<string,unknown>,defaults:Record<string,unknown>,
   supplied:Record<string,unknown>,jobStartedAt:number,
+  frozenDurationMinutes:unknown=null,
 ):number|null{
   if(!Number.isSafeInteger(jobStartedAt)||jobStartedAt<=0)return null;
-  if(pinned.duration_mode!==undefined&&pinned.duration_mode!=='explicit')return null;
-  let minutes:unknown=pinned.duration_minutes;
+  if(pinned.duration_mode!==undefined&&
+     pinned.duration_mode!=='explicit'&&pinned.duration_mode!=='repository')return null;
+  let minutes:unknown=pinned.duration_mode==='repository'
+    ? frozenDurationMinutes:pinned.duration_minutes;
   if(isSessionDurationInputRef(minutes)){
     if(defaults.duration_minutes!==300)return null;
     minutes=Object.hasOwn(supplied,'duration_minutes')
       ? supplied.duration_minutes:defaults.duration_minutes;
   }
   if(!validMinute(minutes))return null;
+  // If the signed physical Ready includes a frozen duration, an explicit
+  // reviewed Plan must agree exactly. A mutable Runner value cannot extend it.
+  if(pinned.duration_mode!=='repository'&&frozenDurationMinutes!=null&&
+     frozenDurationMinutes!==minutes)return null;
   const expiresAt=jobStartedAt+minutes*60_000;
   return Number.isSafeInteger(expiresAt)?expiresAt:null;
 }

@@ -22,6 +22,7 @@ type Row={
  ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;
  owner_run_id:number|null;owner_run_attempt:number|null;
  plan:string;run_inputs:string;run_outcome:string;
+ rca_duration_minutes:number|null;
 };
 type AdmissionServices={
  oidc:(env:Env,attemptId:string,jwt:string)=>Promise<boolean>;
@@ -51,7 +52,8 @@ const read=async(db:D1Database,attemptId:string)=>db.prepare(
   `SELECT a.attempt_id,a.run_id,a.step_id,a.state,a.capability_id,
     a.repository,a.repository_id,a.workflow_ref,a.ref,
     a.candidate_run_id,a.candidate_run_attempt,a.owner_run_id,a.owner_run_attempt,
-    s.state AS session_state,r.outcome AS run_outcome,r.inputs AS run_inputs,v.plan
+    s.state AS session_state,s.rca_duration_minutes,r.outcome AS run_outcome,
+    r.inputs AS run_inputs,v.plan
    FROM step_attempts a JOIN runs r ON r.id=a.run_id
    JOIN workflow_versions v ON v.id=r.version_id
    JOIN session_executions s ON s.run_id=a.run_id AND s.step_id=a.step_id
@@ -122,7 +124,7 @@ export async function decideSessionAdmission(
     row.candidate_run_attempt,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
   if(started===null)return DENY;
   const deadline=resolveSessionDeadline(approved.pinned,approved.defaults,
-    approved.supplied,started);
+    approved.supplied,started,row.rca_duration_minutes);
   if(deadline===null||deadline<=Date.now())return DENY;
   // Physical and admission reads are intentionally NOT cross-storage atomic;
   // this final D1 read is the logical cancellation admission fence.
@@ -133,6 +135,7 @@ export async function decideSessionAdmission(
      current.owner_run_id!==row.owner_run_id||
      current.owner_run_attempt!==row.owner_run_attempt||
      current.plan!==row.plan||current.run_inputs!==row.run_inputs||
+     current.rca_duration_minutes!==row.rca_duration_minutes||
      deadline<=Date.now())return DENY;
   return {allowed:true,attempt_id:attemptId,
     github_run_id:row.candidate_run_id,github_run_attempt:row.candidate_run_attempt,

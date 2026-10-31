@@ -56,6 +56,9 @@ test('only explicit immutable or bound duration creates a deadline',()=>{
   assert.equal(resolveSessionDeadline({duration_mode:'explicit',duration_minutes:{ref:'inputs.duration_minutes'}},
     {duration_minutes:300},{duration_minutes:9},started),started+9*60_000);
   assert.equal(resolveSessionDeadline({duration_mode:'repository',duration_minutes:1},{}, {},started),null);
+  assert.equal(resolveSessionDeadline({duration_mode:'repository',duration_minutes:300},{},{},started,4),started+4*60_000);
+  assert.equal(resolveSessionDeadline({duration_mode:'repository',duration_minutes:300},{},{},started,301),null);
+  assert.equal(resolveSessionDeadline({duration_mode:'explicit',duration_minutes:15},{},{},started,30),null);
   assert.equal(resolveSessionDeadline({duration_mode:'explicit',duration_minutes:{ref:'inputs.duration_minutes'}},
     {duration_minutes:300},{duration_minutes:301},started),null);
   assert.equal(resolveSessionDeadline({duration_minutes:0},{}, {},started),null);
@@ -75,7 +78,7 @@ const baseRow={
     uses:'github.run',with:{capability:'github.action',action:{...action,ref:'refs/tags/v1',
       inputs:{duration_mode:'explicit',duration_minutes:20}}}}],
     github_action_approvals:[]}),
-  run_inputs:JSON.stringify({}),run_outcome:'succeeded',
+  run_inputs:JSON.stringify({}),run_outcome:'succeeded',rca_duration_minutes:null,
 };
 const fakeDb=(row:unknown)=>({prepare(_sql:string){return {
   bind(..._values:unknown[]){return {first:async()=>row};},
@@ -119,6 +122,19 @@ test('legacy repository and altered immutable ID are never authorized for Sessio
       {attempt_id:attemptId,oidc_jwt:'signed'},goodServices);
     assert.deepEqual(result,{allowed:false});
   }
+});
+test('frozen signed Ready duration bounds repository-mode Session authorization',async()=>{
+ const plan=JSON.parse(baseRow.plan);
+ plan.steps[0].with.action.inputs.duration_mode='repository';
+ plan.steps[0].with.action.inputs.duration_minutes=300;
+ const current={...baseRow,plan:JSON.stringify(plan),rca_duration_minutes:3};
+ const decision=await decideSessionAdmission(env(current),{attempt_id:attemptId},goodServices);
+ assert.equal(decision.allowed,true);
+ if(decision.allowed)assert.ok(decision.expires_at<=Date.now()+3*60_000);
+ for(const frozen of [null,0,301]) {
+  assert.deepEqual(await decideSessionAdmission(env({...current,rca_duration_minutes:frozen}),
+    {attempt_id:attemptId},goodServices),{allowed:false});
+ }
 });
 test('unknown repository runtime duration never grants rca',async()=>{
   const value=JSON.parse(baseRow.plan);
