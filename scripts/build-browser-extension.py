@@ -40,6 +40,8 @@ def sources():
     coordinator = (ROOT / "apps/browser-mcp-worker/src/coordinator.ts").read_text()
     if package["version"] != version or f'v.extension_version !== "{version}"' not in coordinator:
         raise ValueError("Worker and extension release versions differ")
+    if not files["INSTALL.md"].startswith(f"# Browser MCP {version} —".encode()):
+        raise ValueError("packaged installation guide version differs from extension")
     if b'const BROWSER_MCP_SERVICE_ORIGIN = "https://browser.lirtual.dpdns.org";' not in files["config.js"]:
         raise ValueError("trusted production service origin is not configured")
     return files, manifest
