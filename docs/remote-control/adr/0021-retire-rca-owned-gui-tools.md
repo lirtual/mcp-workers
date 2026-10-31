@@ -1,6 +1,6 @@
 # ADR-0021 — Retire RCA-owned Browser and Computer GUI tools
 
-**Status:** Accepted **design decision** (2026-10-31); not yet implemented or released. Source: [RCA GUI Tool Retirement · Grill With Docs Q1–Q10=A](../GUI-TOOL-RETIREMENT-DESIGN.md).
+**Status:** Accepted (2026-10-31); implemented, formally released and device-validated under [Spec #628](https://github.com/lirtual/mcp-workers/issues/628) on 2026-10-31. Source: [RCA GUI Tool Retirement · Grill With Docs Q1–Q10=A](../GUI-TOOL-RETIREMENT-DESIGN.md). This ADR records the architecture decision, not authorization for future deployments or device-local deletion.
 
 RCA's previously published ten Agent-owned `browser_*` and three `computer_*` tools duplicate the separate Browser MCP bounded context and broaden the remote device-control surface beyond RCA's core file, search, development Shell and managed-session responsibilities. We choose to **completely retire RCA-owned GUI functionality**, without deprecated/compatibility tool aliases, rather than maintain two browser control paths or complete the cancelled Computer Use project #505. **Independent Browser MCP #418 remains unchanged**; device identity, signed WSS, local operation receipts and their Unknown outcomes remain the shared RCA authority.
 

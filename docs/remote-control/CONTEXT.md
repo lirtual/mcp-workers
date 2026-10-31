@@ -1,6 +1,6 @@
 # Remote Control MCP — Domain Context
 
-**Current state (verified 2026-10-28):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Windows x64 and Ubuntu WSL2 are both online with the immutable **Agent v0.1.35**, permanently paired under their original device IDs. The ten existing Agent-owned browser MCP tools remain available; normal browser automation requires an approved device grant and no per-operation approval page. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
+**Current state (verified 2026-10-31):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Native Windows x64 and two Ubuntu WSL2 devices are permanently paired, online and running the immutable **Agent v0.1.40**, with their original device IDs preserved. [Spec #628](https://github.com/lirtual/mcp-workers/issues/628) retired the ten RCA-owned `browser_*` and three `computer_*` tools at the public Worker, Durable Object and Agent execution boundaries; file, search, Shell, managed sessions and historical read-only operation receipts remain supported. Chrome/Edge control belongs to the independent Browser MCP #418. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
 
 ## GitHub-hosted Session scoped access (Spec #62, unpublished candidate)
 
@@ -11,15 +11,17 @@ Workflow MCP remains the sole authority for approved and still-running Windows/U
 
 The candidate now also routes a **Session-only**, signed proof and GitHub OIDC enrollment payload through the existing `/agent/pair/start` endpoint into the Owner DO. An exact-current Workflow OIDC admission, signed physical Attempt nonce, transactional one-Attempt device map and a second post-write live check are required; ordinary manual pairing remains unchanged. Registration alone does not establish Agent online readiness. The candidate still lacks verified noninteractive Agent startup, Windows ACL and GitHub-hosted E2E; keep it Draft until all release-order boundaries are accepted.
 
-**Spec #628 implementation branch (not deployed as of this source change):** RCA's
-ten `browser_*` and three `computer_*` tools and their executable Worker/DO
-and Agent routing are retired. The Worker exposes only file, search, Shell,
-managed sessions and device lifecycle. Existing signed WSS, immutable
-self-contained Node.js 24 releases, Windows Job Object, Linux pidfd,
-installation, historical read-only GUI receipts, and Unknown/non-replay rules
-remain. The independent Browser MCP #418 is not touched. Production
-deployments, Agent release, existing device upgrades, and local GUI-only
-Profile/Grant cleanup are separate authorization and acceptance stages.
+**Spec #628 delivered (2026-10-31):** The retired RCA GUI public and internal
+execution routes were removed in Worker PR #632 and Agent PR #80. The formal
+Worker deployment and immutable Agent v0.1.40 Release succeeded; all three
+permanently paired devices completed version and core-function checks. Signed
+WSS, bundled Node.js 24, Windows Job Object, Linux pidfd, installation,
+historical read-only GUI receipts and Unknown/non-replay rules remain. After
+separate destructive authorization, the RCA-owned Windows automation Profile
+and Desktop Grant/Stop files were checked and precisely cleaned, preserving
+device identity and receipts. The independent Browser MCP #418 was not changed.
+See [Issue #628's final acceptance record](https://github.com/lirtual/mcp-workers/issues/628#issuecomment-6542642703).
+The following browser design notes are historical, not active RCA capabilities.
 
 ## Historical browser runtime context (archived, not active source guidance)
 

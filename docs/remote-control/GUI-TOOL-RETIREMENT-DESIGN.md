@@ -1,6 +1,6 @@
 # RCA GUI Tool Retirement — Grill With Docs (2026-10-31)
 
-**Status:** Final design consensus accepted 2026-10-31 (**Q1–Q10=A**); **design only, not implemented or deployed**. This document does not authorize code changes, runtime implementation, PR merge, Agent release, production deployment, device upgrade, or on-device deletion. Earlier dated production facts remain historical evidence, not assertions of the latest live state.
+**Status:** Final design consensus accepted 2026-10-31 (**Q1–Q10=A**); subsequently implemented and released under [Spec #628](https://github.com/lirtual/mcp-workers/issues/628) (Worker PR #632, Agent PR #80, Agent v0.1.40 and separately authorized device cleanup). This is the original **design decision record**, not a new authorization for code changes, merges, releases or device-local deletion. Earlier dated facts and design-stage gates below are historical context, not the latest live state.
 
 **Context:** [Remote Control MCP](./CONTEXT.md), [ADR-0008 curated MCP surface](./adr/0008-curated-mcp-tool-surface.md), [Computer Use Spec #505 — not planned](https://github.com/lirtual/mcp-workers/issues/505), [independent Browser MCP #418](https://github.com/lirtual/mcp-workers/issues/418), and public Agent repository `lirtual/remote-control-agent`.
 
