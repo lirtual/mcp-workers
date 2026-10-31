@@ -90,6 +90,88 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opa
       ['data','arguments','inputs','notification'].includes(name)?path+'/'+name:path);
   }
 }
+// Only prove facts about locally literal outputs or a source-reviewed, closed
+// Provider schema. In particular an inline MCP output_schema is caller supplied
+// and is NOT evidence of the remote tool result until Publish/runtime review.
+type KnownOutput = {known:false}|{known:true;type:string};
+const unknownOutput:KnownOutput={known:false};
+const typeOf=(value:unknown)=>value===null?'null':Array.isArray(value)?'array':typeof value;
+const expressionOperators=new Set(['ref','eq','ne','gt','lt','and','or','not']);
+function literalOutputAt(value:unknown,fields:string[],path:string):KnownOutput {
+  for(const field of fields){
+    if(value&&typeof value==='object'&&!Array.isArray(value)){
+      const record=value as Record<string,unknown>;
+      if(Object.keys(record).length===1&&expressionOperators.has(Object.keys(record)[0]!))return unknownOutput;
+      if(!Object.hasOwn(record,field))throw new PlanError('unknown_output_field',path);
+      value=record[field];
+    }else throw new PlanError('unknown_output_field',path);
+  }
+  if(value&&typeof value==='object'&&!Array.isArray(value)&&
+     Object.keys(value).length===1&&expressionOperators.has(Object.keys(value)[0]!))return unknownOutput;
+  return {known:true,type:typeOf(value)};
+}
+function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutput {
+  let current:unknown=schema;
+  for(const field of fields){
+    if(!current||typeof current!=='object'||Array.isArray(current))return unknownOutput;
+    const shape=current as Record<string,unknown>;
+    if(shape.type!=='object'||!shape.properties||typeof shape.properties!=='object'||
+       Array.isArray(shape.properties)||shape.additionalProperties!==false)return unknownOutput;
+    if(!Object.hasOwn(shape.properties,field))throw new PlanError('unknown_output_field',path);
+    current=(shape.properties as Record<string,unknown>)[field];
+  }
+  if(!current||typeof current!=='object'||Array.isArray(current))return unknownOutput;
+  const shape=current as Record<string,unknown>;
+  if(typeof shape.type==='string')return {known:true,type:shape.type};
+  if(Array.isArray(shape.enum)&&shape.enum.length>0){
+    const types=new Set(shape.enum.map(typeOf));
+    if(types.size===1)return {known:true,type:[...types][0]!};
+  }
+  return unknownOutput;
+}
+async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
+  const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
+  for(const s of steps)if(s.uses==='action.run'){
+    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':'unified-generic';
+    manifests.set(s.id,await cloudflareActionManifest(kind));
+  }
+  const knownRef=(ref:string,path:string):KnownOutput=>{
+    const parts=ref.split('.');
+    if(parts[0]!=='steps'||parts[2]!=='output'||parts.length<3)return unknownOutput;
+    const producer=steps.find(s=>s.id===parts[1]);
+    if(producer?.uses==='result.emit')return literalOutputAt(producer.with.data,parts.slice(3),path);
+    if(producer?.uses==='action.run')return declaredOutputAt(manifests.get(producer.id)?.output_schema,parts.slice(3),path);
+    return unknownOutput;
+  };
+  const visit=(value:unknown,path:string,expectedNumeric=false):void=>{
+    if(!value||typeof value!=='object')return;
+    if(Array.isArray(value)){
+      value.forEach((entry,i)=>visit(entry,path+'/'+i,expectedNumeric));return;
+    }
+    const record=value as Record<string,unknown>, names=Object.keys(record);
+    if(names.length===1&&names[0]==='ref'&&typeof record.ref==='string'){
+      const known=knownRef(record.ref,path+'/ref');
+      if(expectedNumeric&&known.known&&known.type!=='number')
+        throw new PlanError('incompatible_output_type',path+'/ref');
+      return;
+    }
+    for(const [key,child] of Object.entries(record)){
+      if((key==='gt'||key==='lt')&&names.length===1&&Array.isArray(child)){
+        child.forEach((item,i)=>visit(item,path+'/'+key+'/'+i,true));
+      }else visit(child,['ref','eq','ne','gt','lt','and','or','not','data','arguments','inputs','notification'].includes(key)?path+'/'+key:path);
+    }
+  };
+  for(const [index,s] of steps.entries()){
+    const path='/steps/'+index;
+    if(s.uses==='result.emit')visit(s.with.data,path+'/with/data');
+    else if(s.uses==='mcp.call')visit(s.with.arguments,path+'/with/arguments');
+    else if(s.uses==='github.run')visit((s.with.action as Record<string,unknown>).inputs,path+'/with/action/inputs');
+    else if(s.uses==='flow.child')visit(s.with.inputs,path+'/with/inputs');
+    else if(s.uses==='http.request'&&Object.hasOwn(s.with,'body'))visit(s.with.body,path+'/with/body');
+    else if(s.uses==='action.run'&&s.with.provider==='bark')visit((s.with.input as Record<string,unknown>).notification,path+'/with/input/notification');
+    if(s.if!==undefined)visit(s.if,path+'/if');
+  }
+}
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
 // Reject these before computing an immutable Published Plan digest.
 function validateFiniteNumbers(v: unknown, depth=0): void {
@@ -876,6 +958,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }
   }
+  await validateStaticOutputReferences(steps);
   // Initial reviewed-write slice permits one static external write per Plan.
   // Do not turn a single owner grant into a multi-write fan-out.
   const writeSteps=steps.filter(s=>s.uses==='mcp.call'&&s.with.scope==='write');
