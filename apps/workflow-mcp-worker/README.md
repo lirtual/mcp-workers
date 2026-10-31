@@ -573,3 +573,32 @@ sends a fixed Owner-only success text without paths, URLs, tokens or arbitrary
 message input. Failed, skipped and indeterminate downloads cannot notify.
 Notifications remain at-most-one invocation with read-only recovery, and
 the phone's receipt must be checked separately from an upstream acceptance.
+
+### Action output discovery and static references
+
+`workflow_action_list` reports `output_schema_status: not_declared` for GitHub
+Task/Session Actions. GitHub `workflow_dispatch.inputs` describes inputs,
+not a business output contract; a GitHub Job's physical status is not an
+Action result schema. Cloudflare reviewed Actions expose their existing
+`output_schema` through `workflow_capabilities`; MCP output declarations
+remain subject to the exact live Portal contract and publish grants.
+
+`workflow_validate({definition})` checks output field existence for literal
+`result.emit` and source-reviewed closed Cloudflare outputs, as well as
+provable numeric-reference type conflicts. Dynamic inputs, untrusted/open
+schemas and undeclared GitHub/MCP outputs remain unknown rather than falsely
+validated. Existing `needs`, runtime authorization and result bounds still apply.
+
+For the source-reviewed `lirtual/session-actions` download Task,
+`batch_json` is **one GitHub string input**, not a JSON object input. This
+minimal example was syntax-checked with the provider's authoritative
+`.github/scripts/download_batch.py` `validate()` function:
+
+```json
+{"remote":"koofr","downloads":[{"url":"https://example.com/file.zip","destination_dir":"Downloads"}],"project_purpose":"workflow download example","duration_minutes":30}
+```
+
+Encode this whole JSON document as the `batch_json` string; replace the
+example URL and remote with real approved values. Successful syntax validation
+is **not** remote authorization, proof of network access or a successful download.
+Do not duplicate the provider's parser in Workflow MCP.

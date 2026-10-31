@@ -339,6 +339,8 @@ export class WorkflowService {
         'Call workflow_capabilities and choose a supported Action.':
         code==='unsupported_field'?
         'Remove the unsupported field; use workflow_capabilities for the current schema.':
+        ['unknown_output_field','incompatible_output_type'].includes(code)?
+        'Use a field and type declared by the source Step; inspect a literal result.emit output or the trusted Action output schema. Unknown dynamic outputs cannot be statically confirmed.':
         ['invalid_reference','invalid_step_reference'].includes(code)?
         'Reference inputs or a declared dependency Step output/status.':
         code==='invalid_yaml_or_json'?

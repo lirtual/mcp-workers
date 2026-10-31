@@ -99,3 +99,12 @@ test('no tag explicitly reports unavailable rather than inventing an immutable r
  assert.equal(found.actions[0].can_publish,false);
  assert.equal('ref' in found.actions[0],false);
 });
+
+
+test('GitHub discovery explicitly distinguishes unknown business output from Job completion',async()=>{
+ const found=await listAvailableGitHubActions(discoveryEnv,githubMock([]));
+ for(const action of found.actions){
+   assert.equal(action.output_schema_status,'not_declared');
+   assert.equal('output_schema' in action,false);
+ }
+});

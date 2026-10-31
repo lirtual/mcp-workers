@@ -307,6 +307,7 @@ const FOREACH_TASK_ACTION_RUN_WITH_SCHEMA=Object.freeze({
 });
 
 export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
+  static_output_validation:'Only literal result.emit values and trusted closed Cloudflare Action outputs can prove fields or numeric reference types; dynamic inputs and unverified/undeclared GitHub or MCP outputs remain unknown.',
   refs:['inputs.<name>','steps.<declared-needs-id>.status',
     'steps.<declared-needs-id>.output[.<field>]'],
   operators:['ref','eq','ne','gt','lt','and','or','not'],
