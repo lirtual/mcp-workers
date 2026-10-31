@@ -9,7 +9,7 @@ The active repository contains independently owned MCP Worker bounded contexts:
 - [Database MCP](./apps/database-mcp-worker/README.md): owns database connection configuration, SQL safety, and database tool semantics.
 - [IMA MCP](./apps/ima-mcp-worker/CONTEXT.md): owns IMA knowledge and notes operations.
 - [Raindrop MCP](./apps/raindrop-mcp-worker/CONTEXT.md): owns Raindrop.io bookmark, collection, tag, highlight, and upstream API semantics.
-- [Browser MCP](./apps/browser-mcp-worker/CONTEXT.md): owns profile-scoped extension pairing, local control, WSS connection generation, blocked consequential actions, Unknown owner review and browser receipts (Spec #418; T1 foundation is in progress).
+- [Browser MCP](./apps/browser-mcp-worker/CONTEXT.md): owns profile-scoped extension pairing, local control, WSS connection generation, task-scoped browser interaction with technical credential/Owner boundaries, Unknown owner review and browser receipts (Spec #418).
 
 - [Remote Control MCP](./docs/remote-control/CONTEXT.md) (`apps/remote-control-mcp-worker` and `apps/remote-control-agent`): owns the authenticated Portal ingress and signed per-device relay for Windows x64 and Linux x64/ARM64 Agents (including WSL2). Its curated tools cover files, Shell, managed sessions, paired devices, and ten Agent-owned browser operations with device-grant checks and operation receipts. Browser Handoff (Spec #280) and MCP-initiated Agent upgrades are retired; Agent upgrades use owner-interactive local installers.
 

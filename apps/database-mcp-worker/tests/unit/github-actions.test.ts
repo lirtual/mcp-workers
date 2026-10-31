@@ -183,64 +183,50 @@ test('workerd GitHub REST contract includes mandatory User-Agent on every action
 });
 
 
-test('missing required-check evidence blocks even when Actions PR creation is enabled',async()=>{
+test('unknown or denied branch metadata blocks PR preparation before dispatch',async()=>{
   for(const status of [403,500]) {
     const calls:string[]=[];
     const request:typeof fetch=async(url,init)=>{
       calls.push(String(url));
       assert.equal(init?.method,'GET');
       assert.equal(init?.redirect,'manual');
-      return String(url).endsWith('/actions/permissions/workflow')
-        ? Response.json({can_approve_pull_request_reviews:true})
-        : new Response(null,{status});
+      return new Response(null,{status});
     };
     await assert.rejects(verifyGithubPrCapability(env(),request),/required PR checks could not be verified/);
-    assert.equal(calls.length,2);
+    assert.equal(calls.length,1);
+    assert.ok(calls[0]!.endsWith('/branches/main'));
   }
 });
 
-test('PR approval setting false does not prevent read-only PR creation preflight', async () => {
+test('explicitly unprotected main needs no Administration-scoped settings read', async () => {
   const seen: string[] = [];
   const request: typeof fetch = async (url) => {
     seen.push(String(url));
-    if (String(url).endsWith('/actions/permissions/workflow'))
-      return Response.json({can_approve_pull_request_reviews: false});
-    if (String(url).endsWith('/branches/main/protection'))
-      return new Response(null, {status: 404});
+    if (String(url).endsWith('/branches/main')) return Response.json({name:'main',protected:false});
     if (String(url).includes('/rulesets?')) return Response.json([]);
     throw Error('Unexpected GitHub request');
   };
   await verifyGithubPrCapability(env(), request);
-  assert.equal(seen.length, 3);
+  assert.equal(seen.length, 2);
+  assert.equal(seen.some(url=>url.includes('/permissions/workflow')||url.endsWith('/protection')),false);
 });
 
-test('unprotected main requires both explicit classic-protection 404 and an empty inherited ruleset inventory', async () => {
-  const calls: string[] = [];
-  const request: typeof fetch = async (url, init) => {
-    calls.push(String(url));
-    assert.equal(init?.method, 'GET');
-    assert.equal(init?.redirect, 'manual');
-    if (String(url).endsWith('/actions/permissions/workflow'))
-      return Response.json({can_approve_pull_request_reviews: true});
-    if (String(url).endsWith('/branches/main/protection'))
-      return new Response(null, {status: 404});
-    if (String(url).includes('/rulesets?'))
-      return Response.json([]);
-    throw Error('unexpected GitHub API call');
-  };
-  await verifyGithubPrCapability(env(), request);
-  assert.equal(calls.length, 3);
+test('unprotected main requires a known branch and empty inherited rulesets', async () => {
   for (const rulesets of [[{id: 123, enforcement:'active'}], null, {error:'unauthorized'}]) {
     const guarded: typeof fetch = async (url) => {
-      if (String(url).endsWith('/actions/permissions/workflow'))
-        return Response.json({can_approve_pull_request_reviews: true});
-      if (String(url).endsWith('/branches/main/protection'))
-        return new Response(null, {status: 404});
+      if (String(url).endsWith('/branches/main')) return Response.json({name:'main',protected:false});
       return Response.json(rulesets);
     };
     await assert.rejects(verifyGithubPrCapability(env(),guarded),
       /required PR checks could not be verified/);
   }
+  const guarded:typeof fetch=async(url)=>{
+    if(String(url).endsWith('/branches/main'))return Response.json({name:'main',protected:true});
+    if(String(url).includes('/rulesets?'))return Response.json([]);
+    return new Response(null,{status:403});
+  };
+  await assert.rejects(verifyGithubPrCapability(env(),guarded),
+    /required PR checks could not be verified/);
 });
 
 test('Owner unbinding status is read-only and scoped to a single logical ID', async () => {

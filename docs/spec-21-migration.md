@@ -5,6 +5,16 @@ for fresh Weixin Session Ready, verified download notifications and Bark sends. 
 published grant, and new Action reservations check `cloudflare_action_gate`
 inside the same D1 INSERT, preventing a separate-check race.
 
+Spec #577 compatibility: old `weixin.send_text` v2, pinned to
+`weixin-mcp-worker`, is not rewritten. Newly compiled Plans use text-first v3
+with the **same Action ID** but a new digest and the single unified `ACTIONS`
+Binding. Historical v1/v2 Plans preserve their original grants; a previously
+reserved v2 Invocation can query the original Weixin D1 receipt through
+`ACTIONS.getReceipt`, even after the old Binding and active version are
+removed. No old Invocation is re-sent. New v3 literal text is admitted by a
+single atomic D1 gate and a verified upstream contract; optional Session text
+still requires signed same-Run physical readiness and dependency evidence.
+
 Migration 0018 introduces a single D1 singleton gate (default `open`). For
 production cutover, after old Workflow instances have **physically** drained,
 use the protected GitHub Actions mechanism to freeze via a conditional D1 UPDATE:

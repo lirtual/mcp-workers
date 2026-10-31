@@ -146,6 +146,12 @@ const eventWait={version:1,name:'Event wait (illustrative credential)',steps:[
   {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output'}}},
 ]};
 // Supply a 32-byte random external-event secret and publish only its digest.
+const boundedLoop={version:1,name:'Bounded dynamic until',steps:[
+  {id:'loop',flow:'until',max_iterations:4,
+    condition:{eq:[{ref:'item.value'},2]},
+    template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+  {id:'done',needs:['loop'],uses:'result.emit',with:{data:{ref:'steps.loop.output'}}},
+]};
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -257,8 +263,8 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
        input:{oneOf:[
         {type:'object',additionalProperties:false,required:['download_step_id'],
          properties:{download_step_id:{type:'string'}}},
-        {type:'object',additionalProperties:false,required:['session_step_id'],
-         properties:{session_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['text'],
+         properties:{text:{type:'string',minLength:1,maxLength:2048},session_step_id:{type:'string'}}},
         {type:'object',additionalProperties:false,required:['notification'],
          properties:{notification:{type:'object'}}}]},
      }},
@@ -281,6 +287,25 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
         }},
     }},
 });
+// Nested dynamic loops and Foreach can only expose the compiler-reviewed operations.
+// Top-level MCP writes and Cloudflare Actions keep their independent contracts.
+const REVIEWED_READ_MCP_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties,scope:{const:'read'}},
+});
+const FOREACH_TASK_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties,
+    action:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties.action,
+      properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties.action.properties,
+        type:{const:'task'}}}},
+});
+const FOREACH_TASK_ACTION_RUN_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0].properties,
+    action:FOREACH_TASK_WITH_SCHEMA.properties.action},
+});
+
 export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   refs:['inputs.<name>','steps.<declared-needs-id>.status',
     'steps.<declared-needs-id>.output[.<field>]'],
@@ -290,12 +315,14 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
+  loop_item_refs:['item.index','item.value[.<field>]'],
+  supported_loop:'flow: while checks condition before each result.emit or granted read-only mcp.call; flow: until checks after each iteration. item.index is zero-based; item.value is previous (while) or current (until) output, initially null. max_iterations 1–8; exhaustion fails closed. No nesting or unreviewed effects.',
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
   session_duration_binding:'For reviewed GitHub Session Actions only: Plan inputs.duration_minutes=300, Action inputs.duration_minutes={ref: inputs.duration_minutes}, Action inputs.duration_mode=explicit; workflow_run.inputs.duration_minutes is optional whole minutes 1–300. This does not authorize arbitrary Action input references; old literal Session Plans require one-time republish.',
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
   supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant; awaited by default or mode: detached for an independent child Run. The legacy child_workflow field is not accepted.',
-  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
+  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','nested_loop','dynamic_repeat'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -305,6 +332,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     version:{const:1},
     name:{type:'string',minLength:1,maxLength:120},
     inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
+    saga:{type:'object',additionalProperties:false,required:['on'],
+      properties:{on:{type:'array',minItems:1,maxItems:2,uniqueItems:true,
+        items:{enum:['failure','cancel']}}}},
     triggers:{type:'array',minItems:1,maxItems:1,items:{oneOf:[
       {type:'object',additionalProperties:false,required:['type','schedule'],
        properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
@@ -333,6 +363,16 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['items']},{required:['max_items']},
         ]}},
+        {required:['flow','condition','max_iterations','template'],
+          properties:{flow:{enum:['while','until']},
+            template:{type:'object',additionalProperties:false,required:['uses','with'],
+              properties:{uses:{enum:['result.emit','mcp.call']},with:{type:'object'}},
+              oneOf:[
+                {properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}},
+                {properties:{uses:{const:'mcp.call'},with:REVIEWED_READ_MCP_WITH_SCHEMA}},
+              ]}},
+          not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},
+            {required:['needs_policy']},{required:['times']},{required:['items']},{required:['max_items']}]}},
         {required:['flow','duration_seconds'],properties:{flow:{const:'wait'}},
           not:{anyOf:[
             {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
@@ -354,8 +394,13 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
+        compensate:{type:'object',additionalProperties:false,required:['kind'],
+          properties:{kind:{const:'github.session.cancel',
+            description:'Only an explicitly approved temporary lirtual/session-actions Ubuntu Session; cancellation ACK is not terminal proof'}}},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach','child','wait','wait_event']},
+        flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
+        max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
+        condition:{anyOf:[{type:'boolean'},{type:'object'}]},
         duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
         timeout_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxEventWaitSeconds},
         token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
@@ -381,11 +426,11 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                 {if:{required:['uses'],properties:{uses:{const:'result.emit'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
                 {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+                  then:{properties:{with:REVIEWED_READ_MCP_WITH_SCHEMA}}},
                 {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+                  then:{properties:{with:FOREACH_TASK_WITH_SCHEMA}}},
                 {if:{required:['uses'],properties:{uses:{const:'action.run'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
+                  then:{properties:{with:FOREACH_TASK_ACTION_RUN_WITH_SCHEMA}}},
               ]},allOf:[{if:{minItems:2},then:{anyOf:[
                 {items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}}},
                 {contains:{type:'object',required:['uses'],
@@ -461,14 +506,16 @@ const entries=[
    description:'Optional one-use owner API decision before a reviewed top-level GitHub Task/Session. Runs wait up to 600 seconds. Decision must match Run, Step, and Published Version; approval never substitutes for Publish grants.'},
   {id:'flow.wait_event',kind:'flow',availability:'supported',
     description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
-  {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
+  {id:'flow.loop',kind:'flow',availability:'supported',
+   description:'Bounded dynamic while/until, 1–8 iterations, with one pure result.emit body or separately granted read-only mcp.call. Nested loops and other external Action bodies remain unsupported.'},
+  {id:'flow.loop_mcp_read',kind:'flow',availability:'supported_with_grant',
+   description:'One owner-reviewed read-only MCP Action per bounded iteration. Native argument snapshot, D1 one-shot child fence and Portal generation-scoped approval; unknown effects stop the loop.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
    description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
   {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
    description:'Explicit mode: detached on one pinned flow: child; exact approved_children required. Child consumes its own 1-of-8 slot and starts under its own immutable Plan. Parent returns a child Run reference after confirmed native creation without waiting; parent completion does not stop it. An uncertain native start is never blindly retried.'},
-  {id:'flow.saga',kind:'flow',availability:'unsupported',
-   description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
+  {id:'flow.saga',kind:'flow',availability:'supported_with_grant',
+   description:'Native Cloudflare rollback for explicitly approved temporary Ubuntu GitHub Sessions only. Serial deterministic DAG; rollback sends one physical cancellation request and reports pending until verified terminal. Other effects cannot declare compensation; no ACID rollback.'},
 ] as const;
 type Entry=typeof entries[number];
 const byId=new Map<string,Entry>(entries.map(entry=>[entry.id,entry]));
@@ -501,14 +548,14 @@ export async function workflowCapabilities(env:Pick<Env,
   const cloudflareReady=!!env.ACTIONS&&!!env.ACTIONS_DEPLOYMENT_ID;
   const availability=(entry:Entry)=>
     entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
-    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
-    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -549,13 +596,12 @@ export async function workflowCapabilities(env:Pick<Env,
   // Design-only contracts make unsupported features discoverable without
   // advertising a second compiler or presenting a publishable DSL example.
   if(id==='flow.loop'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      constructs:['while','until','nested_foreach','dynamic_repeat'],
-      evaluation:'Conditions read only frozen inputs and preceding published Step results',
-      bounds:'Explicit finite iteration/depth/expanded-step/time limits required before any external effect',
-      replay:'Deterministic iteration identities and immutable expansion snapshots before dispatch',
-      failure:'Budget exhaustion must fail closed, never silently count as success',
-      dependencies:'Nested effects must retain the parent Published Plan grants and one-shot dispatch fences'};
+    detail.example=await compilingExample(boundedLoop);
+    detail.loop_policy={modes:['while','until'],max_iterations:PLAN_LIMITS.maxRepeat,
+      body:'single result.emit or approved read-only mcp.call',nested:false,external_actions:'reviewed mcp.call only',
+      refs:['item.index','item.value'],native_checkpoint:'step.do per condition and iteration (reserved identity)',
+      budget:'Maximum iterations reserved in the same 32-step Plan budget',
+      exhaustion:'failed:loop_budget_exceeded',replay:'fixed checkpoint identity per iteration'};
   }
   if(id==='flow.child.detached'){
     detail.example=await compilingExample({...awaitedChildExample,
@@ -570,13 +616,13 @@ export async function workflowCapabilities(env:Pick<Env,
       replay:'Stable child identity; unknown native creation is never blindly retried'};
   }
   if(id==='flow.saga'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      authorization:'Each compensation Action and its Connection require exact explicit Publish grants',
-      ordering:'Reverse dependency order across confirmed effects; parallel branches require deterministic ordering',
-      trigger:'Only declared failed/cancelled policies; no compensation of uncertain forward effects by guesswork',
-      revocation:'Recheck active grants before a compensation side effect; revoked rights never reused',
+    detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
+      authorization:'Exact pinned GitHub Session grant plus approve_saga_compensation at Publish',
+      ordering:'Saga executions are serialized in canonical DAG order; native rollback reverses step start order',
+      trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu Sessions',
+      revocation:'Check exact Published grant and current GitHub executor credential before cancellation; no independent GitHub Connection revoke exists',
       replay:'One durable attempt per compensation effect, with indeterminate outcome on unknown dispatch',
-      result:'Record partial, failed and unknown compensation; never claim ACID rollback'};
+      result:'Expose requested, indeterminate and verified terminal separately; never claim ACID rollback'};
   }
   if(id==='action.http'){
     detail.example=await compilingExample({version:1,name:'Approved public HTTPS request',
@@ -775,6 +821,29 @@ export async function workflowCapabilities(env:Pick<Env,
       replay:'D1 child dispatch fence before tools/call; lost checkpoints stay indeterminate, never re-dispatched',
       required_publish_grants:['approved_operations','accept_target_risks'],
       unsupported:['github.run','nested templates','write-scope tools']};
+  }
+  if(id==='flow.loop_mcp_read'){
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length){
+      const tool=discovered.tools[0]!;
+      detail.example=await compilingExample({version:1,name:'Bounded read-only MCP until',
+        steps:[{id:'loop',flow:'until',max_iterations:2,
+          condition:{eq:[{ref:'item.index'},0]},
+          template:{uses:'mcp.call',with:{endpoint:tool.endpoint,tool:tool.tool,
+            scope:'read',input_schema:tool.input_schema,
+            ...(tool.output_schema?{output_schema:tool.output_schema}:{}),
+            arguments:tool.arguments}}}]});
+    }
+    detail.template_policy={allowed_action:'mcp.call',scope:'read',
+      max_iterations:PLAN_LIMITS.maxRepeat,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      args_snapshot:'Native per-iteration argument checkpoint before external dispatch',
+      replay:'D1 one-shot child dispatch fence and Portal generation binding; no blind retry',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['nested loops','write-scope tools','GitHub/HTTP/Cloudflare Actions']};
   }
   if(id==='flow.foreach_mcp_read'){
     const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:

@@ -832,7 +832,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     migration_count:18,expected_migrations:18,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
-    undelivered_callbacks:0,confirmed_ready_sessions:1,
+    undelivered_callbacks:0,confirmed_ready_sessions:1,verified_terminal_saga_receipts:0,
   };
   const make=value=>[{success:true,results:[value]}];
   assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(row)),
@@ -844,17 +844,55 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
   assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
     ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
   })),{confirmed_ready_sessions:0});
+  // Code-only publish can proceed when every remaining unresolved record
+  // is an exact Saga request whose Session and GitHub Attempt both have
+  // verified physical terminal evidence. Schema migrations stay strict.
+  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
+    ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
+    unresolved_steps:1,verified_terminal_saga_receipts:1,
+  })),{confirmed_ready_sessions:0});
   for(const broken of [
     {migration_count:12},{expected_migrations:12},
     {migration_count:13},{expected_migrations:13},
     {migration_count:14},{expected_migrations:14},
     {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},{invalid_cancelled_steps:1},
+    {unresolved_steps:2,verified_terminal_saga_receipts:1},
+    {verified_terminal_saga_receipts:1},{verified_terminal_saga_receipts:-1},
+    {verified_terminal_saga_receipts:'1'},{verified_terminal_saga_receipts:undefined},
     {undelivered_callbacks:1},{nonterminal_attempts:2},
     {nonterminated_sessions:2},{confirmed_ready_sessions:0},
     {confirmed_ready_sessions:-1},{confirmed_ready_sessions:"1"},
   ]) assert.throws(()=>verifyWorkflowCodeReleaseReadiness(
     make({...row,...broken})),/blocked|unavailable/);
   assert.throws(()=>verifyWorkflowCodeReleaseReadiness([]),/readback unavailable/);
+});
+
+test('code-only gate proves terminal Saga receipts using exact physical Session and Attempt',()=>{
+  const db=new DatabaseSync(':memory:');
+  try{
+    db.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT);
+      CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT);
+      CREATE TABLE session_executions(run_id TEXT,step_id TEXT,state TEXT);
+      CREATE TABLE step_attempts(run_id TEXT,step_id TEXT,capability_id TEXT,state TEXT);
+      INSERT INTO runs VALUES('r','failed');
+      INSERT INTO run_steps VALUES('r','__saga_ubuntu','requested');
+      INSERT INTO session_executions VALUES('r','ubuntu','terminated');
+      INSERT INTO step_attempts VALUES('r','ubuntu','github.action','cancelled');`);
+    const begin=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps receipt');
+    const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS verified_terminal_saga_receipts',begin);
+    assert.ok(begin>=0&&end>begin);
+    const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(begin,end+ ' AS verified_terminal_saga_receipts'.length);
+    const count=()=>db.prepare(query).get()?.verified_terminal_saga_receipts;
+    assert.equal(count(),1);
+    db.exec("UPDATE step_attempts SET state='claimed'");
+    assert.equal(count(),0,'claimed Job is never physical terminal');
+    db.exec("UPDATE step_attempts SET state='cancelled'; UPDATE session_executions SET state='stopping'");
+    assert.equal(count(),0,'cancel ACK cannot substitute physical Session terminal');
+    db.exec("UPDATE session_executions SET state='terminated';UPDATE runs SET outcome='running'");
+    assert.equal(count(),0,'parent must have a terminal business outcome');
+    db.exec("UPDATE runs SET outcome='failed';UPDATE run_steps SET step_id='other'");
+    assert.equal(count(),0,'non-Saga Step cannot be accepted');
+  }finally{db.close();}
 });
 
 test("Workflow readback verifies one integrated runtime, GitHub Action audience and Portal",()=>{

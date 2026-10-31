@@ -33,6 +33,12 @@ export const SIXTH_PROVIDER_DEPLOYMENT_ID = "aeed581e-2769-4cde-9f6a-236d6414b4a
 export const SEVENTH_TERMINAL_RUN_ID = "0bb5f19e-627e-440d-9757-7dfd9a0af31d";
 export const SEVENTH_TASK_GITHUB_RUN_ID = 41046399301;
 
+// Two exact 2026-10-31 Saga Session attempts: native and physical jobs are terminal,
+// but historical business outcomes remain indeterminate and must not be rewritten.
+export const NINTH_TERMINAL_RUN_ID = "29e121ab-de3e-43dd-b3bb-6e6d495fa2b1";
+export const NINTH_SESSION_GITHUB_RUN_ID = 41146470419;
+export const TENTH_TERMINAL_RUN_ID = "eab7b71f-b857-4569-afde-fd269cd1b2bb";
+export const TENTH_SESSION_GITHUB_RUN_ID = 41147999088;
 const WORKFLOW = "workflow-mcp-orchestrator";
 
 // The six exact instances were all verified before Cloudflare pruned history.
@@ -382,6 +388,44 @@ export function verifySeventhTerminalEvidence(d1,native,github) {
   return SEVENTH_TERMINAL_RUN_ID;
 }
 
+/** Exact ended Saga Runs only; no generic indeterminate exemption. */
+export function verifySagaTerminalEvidence(d1,native,github,kind) {
+  const config=kind==='ninth'
+    ?{id:NINTH_TERMINAL_RUN_ID,job:NINTH_SESSION_GITHUB_RUN_ID,error:'github_session_no_ready'}
+    :kind==='tenth'
+    ?{id:TENTH_TERMINAL_RUN_ID,job:TENTH_SESSION_GITHUB_RUN_ID,error:'github_dispatch_unknown'}
+    :null;
+  requireValid(config,'unsupported Saga terminal proof kind');
+  requireValid(Array.isArray(d1)&&d1.length===5&&
+    d1.every(x=>x?.success===true&&Array.isArray(x.results)),
+    'Saga D1 evidence incomplete');
+  const [runs,steps,sessions,attempts,invocations]=d1.map(x=>x.results);
+  requireValid(runs.length===1&&runs[0].id===config.id&&
+    runs[0].outcome==='indeterminate'&&runs[0].start_state==='started'&&
+    runs[0].error_code===config.error,
+    'Saga business result changed');
+  requireValid(steps.length===2&&steps.every(x=>x.run_id===config.id)&&
+    steps[0].step_id==='hold'&&steps[0].status==='skipped'&&
+    steps[1].step_id==='ubuntu'&&steps[1].status==='indeterminate'&&
+    steps[1].error_code===config.error,'Saga Step state changed');
+  requireValid(sessions.length===1&&sessions[0].run_id===config.id&&
+    sessions[0].step_id==='ubuntu'&&sessions[0].state==='terminated',
+    'Saga Session not terminated');
+  requireValid(attempts.length===1&&attempts[0].run_id===config.id&&
+    attempts[0].step_id==='ubuntu'&&attempts[0].state==='cancelled'&&
+    attempts[0].repository==='lirtual/session-actions'&&
+    attempts[0].owner_run_id===config.job&&attempts[0].candidate_run_id===config.job&&
+    attempts[0].owner_run_attempt===1&&attempts[0].candidate_run_attempt===1,
+    'Saga physical Attempt not cancelled');
+  requireValid(invocations.length===0,'Saga Run unexpectedly sent a Cloudflare notification');
+  requireValid(native?.status==='complete'&&!!native?.end,'Saga native instance incomplete');
+  requireValid(github?.id===config.job&&github?.run_attempt===1&&
+    github?.head_branch==='v0.1.42-rc.8'&&
+    github?.status==='completed'&&github?.conclusion==='cancelled',
+    'Saga GitHub job still running or wrong identity');
+  return config.id;
+}
+
 async function main() {
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
     "only the Workflow release may request this exception");
@@ -391,7 +435,7 @@ async function main() {
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
     "required read-only verification credentials missing");
   const kind=process.env.TERMINAL_PROOF_KIND;
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh",
+  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth",
     "unknown terminal proof kind");
   const second=kind==="second";
   const third=kind==="third";
@@ -399,6 +443,8 @@ async function main() {
   const fifth=kind==="fifth";
   const sixth=kind==="sixth";
   const seventh=kind==="seventh";
+  const ninth=kind==="ninth";
+  const tenth=kind==="tenth";
   const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
   const get = async (url, token) => {
     const response = await fetch(url,{
@@ -410,7 +456,7 @@ async function main() {
   };
   const cfResponse = await fetch("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
+    (ninth?NINTH_TERMINAL_RUN_ID:tenth?TENTH_TERMINAL_RUN_ID:seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
     {headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
       Accept:"application/json"},signal:AbortSignal.timeout(15000)});
   let native;
@@ -420,7 +466,7 @@ async function main() {
       "native Cloudflare instance readback unavailable");
     native = cf.result;
   } else if (cfResponse.status === 404) {
-    requireValid(!seventh,"seventh native instance must be independently live-proven");
+    requireValid(!seventh&&!ninth&&!tenth,"recent native instance must be independently live-proven");
     // A 404 alone is never proof. Pin prior successful checks for all six
     // precise instances, and still check today's D1/GitHub terminal state.
     requireValid(process.env.GITHUB_TOKEN,
@@ -433,9 +479,10 @@ async function main() {
     requireValid(false,"independent native state unavailable (HTTP "+cfResponse.status+")");
   }
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
-    (seventh?SEVENTH_TASK_GITHUB_RUN_ID:sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
+    (ninth?NINTH_SESSION_GITHUB_RUN_ID:tenth?TENTH_SESSION_GITHUB_RUN_ID:seventh?SEVENTH_TASK_GITHUB_RUN_ID:sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-  if(seventh)verifySeventhTerminalEvidence(d1,native,github);
+  if(ninth||tenth)verifySagaTerminalEvidence(d1,native,github,kind);
+  else if(seventh)verifySeventhTerminalEvidence(d1,native,github);
   else if(sixth)verifySixthTerminalEvidence(d1,native,github);
   else if(fifth)verifyFifthTerminalEvidence(d1,native,github);
   else if(fourth)verifyFourthTerminalEvidence(d1,native,github);
@@ -444,7 +491,9 @@ async function main() {
   else verifyTerminalRunEvidence(d1,native,github);
   requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
   await appendFile(process.env.GITHUB_OUTPUT,
-    (seventh?"seventh_terminal_run_id="+SEVENTH_TERMINAL_RUN_ID:
+    (ninth?"ninth_terminal_run_id="+NINTH_TERMINAL_RUN_ID:
+      tenth?"tenth_terminal_run_id="+TENTH_TERMINAL_RUN_ID:
+      seventh?"seventh_terminal_run_id="+SEVENTH_TERMINAL_RUN_ID:
       sixth?"sixth_terminal_run_id="+SIXTH_TERMINAL_RUN_ID:
       fifth?"fifth_terminal_run_id="+FIFTH_TERMINAL_RUN_ID:
       fourth?"fourth_terminal_run_id="+FOURTH_TERMINAL_RUN_ID:

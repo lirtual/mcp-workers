@@ -29,16 +29,45 @@ source-reviewed Action, exact manifest digest, configured Service Binding
 identity, deployment ID and explicit approval. Previously cached MCP tool
 metadata may require a one-time client refresh.
 
-Cloudflare `action.run` supports the reviewed `weixin.send_text` (requiring a
-verified same-Run OpenList Session Ready), `weixin.notify_download`
-(requiring a single-item reviewed GitHub download Task with OIDC Claim and physical success proof
-and physically verified completion), and `bark.send_notification` Actions.
+Cloudflare `action.run` supports generic Owner-only `weixin.send_text` v3
+(`input: {text}` with an optional verified `session_step_id` to append the
+signed OpenList URL), the legacy `weixin.notify_download` v1 for currently
+published Plans, and `bark.send_notification`. A notification that follows
+another Step requires `needs`; the executor verifies persisted predecessor
+success before sending, so caller-supplied success cannot authorize a send.
 Publish requires separate explicit grants, the exact contract digest and
 Worker Version ID; the Service Binding must independently confirm live identity.
 D1 grants a single first-dispatch right. Weixin can recover by historical
 receipts; Bark preserves unknown outcomes without a second send. No public
 Weixin MCP write is used.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
+
+### Bounded while / until (Spec #176)
+
+A `flow: while` or `flow: until` Step has a literal `max_iterations` (1–8),
+a safe Boolean `condition`, optional `needs`, and exactly one template:
+pure `result.emit` with `data`, or reviewed `mcp.call` with `scope: read`,
+exact Portal endpoint/tool/input schema and `arguments`. The only extra
+references are `item.index` (zero-based) and `item.value` (initially null,
+then the previous result); safe input and declared dependency references
+remain available. While checks the condition *before* each iteration; until
+checks *after* the current result. Early exit returns `{iterations, value}`;
+exhaustion fails with `loop_budget_exceeded`, never silent success.
+
+For MCP bodies, Publish requires the existing exact `approved_operations`
+and `accept_target_risks`; the Portal's current generation is pinned to
+the immutable Plan. Per-iteration effective arguments are frozen in a native
+checkpoint **before** dispatch, followed by a D1 one-shot child fence and
+the existing Portal reservation. A revoked connection, failed child or
+uncertain external result halts further iterations; replay never blindly
+repeats a remote `tools/call`. These are tool-advertised *read-only* calls,
+not a claim that external systems are intrinsically side-effect-free.
+
+Every possible iteration counts toward the existing 32-step Plan budget.
+Each decision and iteration has a stable native checkpoint. No new D1 table,
+Worker, queue or scheduler is introduced. Nested loops, multiple body
+Actions, write-scope MCP, HTTP, GitHub and Cloudflare Action bodies and
+dynamic iteration limits remain unsupported.
 
 ### Optional runtime approval before GitHub dispatch (Spec #176)
 
@@ -218,7 +247,7 @@ arbitrary write tools, a generic Provider registry or cross-Provider revocation.
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP and one reviewed top-level IMA create/append note write, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
 Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.
-Dynamic while/until, nested loops, Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+Nested loops, general Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. A bounded Saga exception supports only explicitly approved temporary `lirtual/session-actions` Ubuntu Session cancellation: source `saga.on` declares `failure` and/or `cancel`, each reversible Session step declares `compensate: {kind: github.session.cancel}`, and Publish separately requires `approve_saga_compensation` plus its exact GitHub grants. Native Cloudflare Workflows rolls back registered Steps in reverse start order; Saga execution is serialized to match inverse dependency order. A GitHub cancellation ACK is only a requested operation, never physical Session termination; the existing GitHub Attempt/Session reconciliation and TTL retain terminal authority. Other side effects are disallowed in Saga definitions, and no ACID rollback is claimed. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
 
@@ -341,7 +370,7 @@ A bounded template can instead call an **explicitly approved read-only MCP tool*
 
 Multi-step GitHub support permits **one reviewed, literal-input `github.run` Task among 2–4 ordered `result.emit` and reviewed read-only `mcp.call` children** per item. The previously shipped `result.emit → github.run → result.emit` path retains its checkpoint semantics. New mixed sequences require every earlier stage to succeed before running another stage; skipped, failed or indeterminate stages never authorize another external effect. Later children can use `steps.<Task-id>.output` only after a signed OIDC receipt and independently verified physical GitHub success. MCP children still use their own frozen arguments and one-shot D1 fences. No dynamic Task inputs, second GitHub Task, Session, write-scope tool or nested flow is supported in this multi-step path.
 
-GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **multiple GitHub Tasks in one per-item template or write-scope external Actions**, nested loops, dynamic while, child workflows, general arbitrary HTTP Actions and Saga remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
+GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **multiple GitHub Tasks in one per-item template or write-scope external Actions**, nested loops, write-scope/external-effect while/until loops beyond reviewed MCP reads, child workflows, general arbitrary HTTP Actions and general-purpose Saga compensation remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
 
 `workflow_validate` accepts either `{workflow_id, revision}` for a saved Draft or `{definition}` with inline YAML/JSON. Inline validation uses the same compiler and reviewed Action checks, returns required Publish approvals or bounded structured issues, and never creates a Draft, writes D1, publishes, or dispatches external jobs. The two input modes cannot be combined. For a new workflow, validate inline before `workflow_create`.
 
@@ -469,9 +498,15 @@ is collected. No extra Worker, cleanup Cron, queue, or auth service is introduce
 
 ### Cloudflare Provider candidate (Spec #392; not deployed)
 
-The `action.run` Cloudflare source may only reference an upstream `lirtual/session-actions` OpenList Session Step in the same Run. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
+The generic `weixin.send_text` v3 accepts bounded, nonempty, publish-time
+literal text (at most 2048 characters and 4096 UTF-8 bytes). An optional
+`session_step_id` appends a verified same-Run OpenList Quick Tunnel URL; this
+reference is validated at compile and execution time, not accepted from a
+caller. An exact reviewed contract digest and immutable Worker version remain
+mandatory. For literal-only messages a successful predecessor may be any
+Workflow Step, subject to the existing DAG and persisted terminal-state checks. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
 
-The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the independent `cloudflare-actions` Provider using the unchanged physical Worker name `weixin-mcp-worker`. Production release and version pin are verified separately; no public Weixin MCP ingress remains. D1 migration 0013 is additive and retains immutable historical Plans.
+New v3 Plans use `ACTIONS` -> `cloudflare-actions#ActionsEntrypoint`. Historical v1/v2 Plans retain their old Worker identity and may read already-reserved receipts through the unified Worker after the cutover; they are never re-sent. During the authorized migration the old `WEIXIN_ACTION_PROVIDER` remains only for transitional compatibility. Production release and version pin are verified separately; no public Weixin MCP ingress is added. D1 migrations 0013 and 0018 retain immutable historical Plans.
 
 A physically running GitHub Attempt and signed Ready callback are checked immediately before the D1 first-dispatch fence. The frozen Invocation ID, input digest, source Attempt and binding generation are stored without message text/URL. Once reservation succeeds, retries and recovery call `getReceipt` only. Missing receipts remain indeterminate; handset delivery is separately observed. Cancelling after reservation cannot retract a possible send. Session termination and capacity release use the existing GitHub lifecycle, not notification success.
 
@@ -502,9 +537,29 @@ published active/paused parent references block removal. No purging or restore
 API is exposed. Migration `0014_workflow_deletion.sql` is additive and must
 be applied through the existing guarded main-only release.
 
+### Generic Owner Weixin notification (source candidate; not published)
+
+After the separately authorized Provider and Workflow production releases,
+republish the existing `download` Workflow with its `notify_weixin` Step using
+`action: weixin.send_text`, `needs: [download_task]`, and
+`input: {text: "Koofr 下载完成，云端文件回读校验已通过。"}`. The reviewed download Task
+completes only after upload and remote SHA-256 readback. The literal text has
+no path or secret. It is stored in the Published Plan, while runtime send
+receipts store its digest only; do not put credentials in message literals. For an OpenList Ready notification use
+`input: {text: "OpenList Session Ready\n", session_step_id: openlist}` and
+`needs: [openlist]`; Workflow appends the authenticated canonical Session URL.
+New notification purposes only supply a different literal `text` to the same
+Action; no new Weixin RPC or business-specific Provider code is needed.
+
+New v2 digests must match in both repositories; Publish additionally grants
+the live Worker Version ID. Retain the two legacy RPCs until the existing
+Published Plans have been migrated, in-flight Runs have drained, and rollout
+has been independently verified. Immutable history and unknown receipts stay.
+The current source change does not send, publish, pin, or migrate anything.
+
 ### Koofr download completed → Owner Weixin notification
 
-The existing `download` Workflow may append one top-level `action.run` using
+The existing **legacy v1** `download` Workflow may append one top-level `action.run` using
 `executor: cloudflare`, `provider: weixin`, `action: weixin.notify_download`,
 `input: {download_step_id: download_task}` and `needs: [download_task]`.
 The `download_task` must be a `max_items: 1` foreach containing the pinned

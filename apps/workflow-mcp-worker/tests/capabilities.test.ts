@@ -21,9 +21,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.write')?.availability,'unavailable');
-  for(const id of ['flow.loop','flow.saga']){
-    assert.equal(catalog.get(id)?.availability,'unsupported',id);
-  }
+  assert.equal(catalog.get('flow.saga')?.availability,'supported_with_grant');
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
   assert.equal(catalog.get('flow.wait')?.availability,'supported');
   const wait=(await workflowCapabilities(env,'flow.wait')) as {example:{definition:unknown;digest:string};wait_policy:{native_checkpoint:string;total_budget_seconds:number}};
@@ -115,6 +113,7 @@ test('literal repeat discovery is compiler-backed and explicitly bounded',async(
   const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items;
   assert.deepEqual(schema.oneOf.map(x=>x.required),[
     ['uses','with'],['flow','times','template'],
+    ['flow','condition','max_iterations','template'],
     ['flow','duration_seconds'],['flow','token_sha256','timeout_seconds'],
     ['flow','workflow_id','version_id','inputs'],
     ['flow','items','max_items','template'],
@@ -295,6 +294,41 @@ test('ordered mixed Task discovery enforces one literal Task and read-only MCP',
 });
 
 
+test('Foreach discovery matches compiler: read-only MCP and GitHub Tasks only',async()=>{
+ const foreachSteps=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template.oneOf[1].properties.steps;
+ assert.ok(foreachSteps);
+ const items=foreachSteps.items as unknown as {allOf:Array<{
+     if:{properties:{uses:{const:string}}};
+     then:{properties:{with:{properties:Record<string,any>}}};
+   }>};
+ const withFor=(uses:string)=>{
+   const rule=items.allOf.find(rule=>rule.if.properties.uses.const===uses);
+   assert.ok(rule,'missing Foreach schema for '+uses);
+   return rule.then.properties.with;
+ };
+ assert.deepEqual(withFor('mcp.call').properties.scope,{const:'read'});
+ assert.deepEqual(withFor('github.run').properties.action.properties.type,{const:'task'});
+ assert.deepEqual(withFor('action.run').properties.executor,{const:'github'});
+ assert.deepEqual(withFor('action.run').properties.action.properties.type,{const:'task'});
+ // These restrictions must not narrow independent top-level Action contracts.
+ assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties.scope,{enum:['read','write']});
+ const standaloneCloudflare=WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[1] as {
+   properties:{executor:{const:string}};
+ };
+ assert.equal(standaloneCloudflare.properties.executor.const,'cloudflare');
+
+ const definition=(scope:'read'|'write')=>({version:1,name:'Foreach discovery audit',steps:[
+   {id:'source',uses:'result.emit',with:{data:[1]}},
+   {id:'each',flow:'foreach',needs:['source'],items:{ref:'steps.source.output'},max_items:1,
+     template:{steps:[{id:'read',uses:'mcp.call',with:{
+       endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'ima_list_notebooks',
+       scope,arguments:{limit:1},input_schema:{type:'object'},
+     }}]}},
+ ]});
+ assert.equal((await compilePlan(definition('read'))).plan.steps[1]?.uses,'flow.foreach');
+ await assert.rejects(()=>compilePlan(definition('write')),/unsupported_operation_scope/);
+});
+
 test('external event wait has one bounded, digest-only compiler contract and matching discovery',async()=>{
   const d=(timeout_seconds=30)=>({version:1,name:'Event wait',steps:[
     {id:'signal',flow:'wait_event',timeout_seconds,token_sha256:'a'.repeat(64)},
@@ -318,22 +352,45 @@ test('external event wait has one bounded, digest-only compiler contract and mat
   assert.equal(detail.event_policy.native_checkpoint,'step.waitForEvent');
   assert.equal((await compilePlan(detail.example.definition)).digest,detail.example.digest);
   assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.flow.enum,
-    ['repeat','foreach','child','wait','wait_event']);
+    ['repeat','foreach','child','wait','wait_event','while','until']);
 });
 
-test('unreviewed writes are blocked; dynamic loops and Saga remain design-only',async()=>{
+test('bounded dynamic while/until discovery compiles and refuses nested/effect bodies',async()=>{
+ const detail=await workflowCapabilities(env,'flow.loop');
+ assert.equal(detail.availability,'supported');
+ assert.equal((detail.loop_policy as {body:string}).body,'single result.emit or approved read-only mcp.call');
+ const {definition,digest}=detail.example as {definition:unknown;digest:string};
+ assert.equal((await compilePlan(definition)).digest,digest);
+ assert.equal((await compilePlan(definition)).plan.steps[0].uses,'flow.loop');
+ // Loop bodies permit only the read grant; the ordinary top-level MCP
+ // schema still advertises both the separately reviewed read/write scopes.
+ const loopSchema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.oneOf[2] as unknown as {
+   properties:{template:{oneOf:[unknown,{properties:{with:{properties:{scope:unknown}}}}]}};
+ };
+ assert.deepEqual(loopSchema.properties.template.oneOf[1].properties.with.properties.scope,
+   {const:'read'});
+ assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties.scope,
+   {enum:['read','write']});
+ assert.match(String(((await workflowCapabilities(env)).expression_rules as {supported_loop:string}).supported_loop),/exhaustion/);
+ for(const uses of ['github.run','http.request','flow.loop']){
+   await assert.rejects(()=>compilePlan({version:1,name:'Unsafe loop',steps:[{
+     id:'loop',flow:'until',max_iterations:3,condition:true,
+     template:{uses,with:{data:1}},
+   }]}),/unsupported_loop_action/);
+ }
+});
+
+test('unreviewed writes are blocked; Saga is bounded to reviewed temporary Session cancellation',async()=>{
  const write=await workflowCapabilities(env,'action.mcp.write');
  assert.equal(write.availability,'unavailable');
  assert.deepEqual((write.grant as {required:string[]}).required,
    ['approved_operations','approve_mcp_write_execution','accept_target_risks']);
- for(const id of ['flow.loop','flow.saga']){
-  const detail=await workflowCapabilities(env,id);
-  assert.equal(detail.availability,'unsupported');
-  const design=detail.design_contract as {executable:boolean;source_schema:string};
-  assert.equal(design.executable,false);
-  assert.equal(design.source_schema,'not_accepted');
-  assert.equal('example' in detail,false);
- }
+ const saga=await workflowCapabilities(env,'flow.saga');
+ assert.equal(saga.availability,'supported_with_grant');
+ const design=saga.design_contract as {executable:boolean;source_schema:string};
+ assert.equal(design.executable,true);
+ assert.equal(design.source_schema,'saga.on and step.compensate');
+ assert.equal('example' in saga,false);
  for(const flow of ['while','until','saga','child_workflow']){
   await assert.rejects(()=>compilePlan({version:1,name:'Unsupported',
    steps:[{id:'one',flow,times:2,template:{uses:'result.emit',with:{data:1}}}]}));
@@ -349,4 +406,20 @@ test('unreviewed writes are blocked; dynamic loops and Saga remain design-only',
  await assert.rejects(()=>compilePlan({version:1,name:'Unsupported MCP write',
   steps:[{id:'one',uses:'mcp.call',with:{endpoint:PRODUCTION_PORTAL_ENDPOINT,
    tool:'ima_create_note',scope:'write',arguments:{},input_schema:{type:'object'}}}]}),/unreviewed_write_operation/);
+});
+
+
+test('reviewed read-only bounded loop is discoverable but never grants execution',async()=>{
+ const detail=await workflowCapabilities(env,'flow.loop_mcp_read');
+ assert.ok(['unavailable','revoked','configured_unverified'].includes(String(detail.availability)));
+ assert.deepEqual((detail.template_policy as {required_publish_grants:string[]}).required_publish_grants,
+   ['approved_operations','accept_target_risks']);
+ const source={version:1,name:'Schema read only',steps:[{
+   id:'loop',flow:'until',max_iterations:2,condition:true,template:{uses:'mcp.call',with:{
+     endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+     input_schema:{type:'object',properties:{value:{type:'string'}}},arguments:{value:'read'},
+   }},
+ }]};
+ assert.equal((await compilePlan(source)).plan.steps[0].uses,'flow.loop');
+ assert.ok(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items);
 });

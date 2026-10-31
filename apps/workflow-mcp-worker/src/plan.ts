@@ -20,9 +20,10 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event' | 'flow.loop'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
+  compensate?: {kind:'github.session.cancel'};
 };
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
@@ -33,7 +34,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; saga?:{on:('failure'|'cancel')[]}; saga_compensation_approved?:true; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -237,7 +238,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
   validateFiniteNumbers(raw);
-  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps']);
+  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps','saga']);
+  let saga:{on:('failure'|'cancel')[]}|undefined;
+  if(o.saga!==undefined){
+    const spec=object(o.saga,'invalid_saga');
+    keys(spec,['on'],'/saga');
+    if(!Array.isArray(spec.on)||spec.on.length<1||spec.on.length>2||
+       new Set(spec.on).size!==spec.on.length||
+       spec.on.some(x=>x!=='failure'&&x!=='cancel'))
+      throw new PlanError('invalid_saga','/saga/on');
+    saga={on:spec.on as ('failure'|'cancel')[]};
+  }
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
   if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
@@ -277,20 +288,20 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         ref:item.ref as string,workflow_path:item.workflow_path as string}];
     }else throw new PlanError('unsupported_trigger','/triggers/0/type');
   }
-  // Literal repeat is compiled to existing, ordered DAG Steps at Publish time.
-  // There is no runtime re-evaluation, dynamic item list or second scheduler.
+  // Literal repeat compiles to ordinary DAG Steps. Dynamic foreach/loop
+  // reserve the full possible expansion budget before any execution.
   const expanded:unknown[]=[];
-  let foreachReserved=0;
+  let dynamicReserved=0;
   const foreachChildren=new Set<string>();
   for(let i=0;i<o.steps.length;i++){
     const candidate=object(o.steps[i],'invalid_step');
     if(!Object.hasOwn(candidate,'flow')){
       // Source callers cannot masquerade as an internal compiled Flow Step.
-      // Only the validated flow:foreach branch below may produce this opcode.
-      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait'||candidate.uses==='flow.wait_event')
+      // Only validated source Flow branches may produce these internal opcodes.
+      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait'||candidate.uses==='flow.wait_event'||candidate.uses==='flow.loop')
         throw new PlanError('unsupported_capability','/steps/'+i+'/uses');
       expanded.push(candidate);
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -312,7 +323,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.wait',needs:deps,
         with:{duration_seconds:candidate.duration_seconds}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -333,7 +344,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.wait_event',needs:deps,
         with:{token_sha256:candidate.token_sha256,timeout_seconds:candidate.timeout_seconds}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -355,7 +366,68 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       expanded.push({id:candidate.id,uses:'flow.child',needs:deps,
         with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs,
           ...(candidate.mode==='detached'?{mode:'detached'}:{})}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
+      continue;
+    }
+    if(candidate.flow==='while'||candidate.flow==='until'){
+      // Each bounded iteration reserves an existing Plan budget unit.
+      // Only pure emit or one specifically reviewed read-only MCP Action may
+      // run per iteration; nested/other effects remain unsupported.
+      keys(candidate,['id','flow','needs','condition','max_iterations','template'],path);
+      if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
+         OBJECT_PROTOTYPE_KEYS.has(candidate.id))
+        throw new PlanError('invalid_step_id',path+'/id');
+      const deps=candidate.needs??[];
+      if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||
+         new Set(deps).size!==deps.length)
+        throw new PlanError('invalid_dependencies',path+'/needs');
+      if(!Number.isSafeInteger(candidate.max_iterations)||
+         Number(candidate.max_iterations)<1||
+         Number(candidate.max_iterations)>PLAN_LIMITS.maxRepeat)
+        throw new PlanError('invalid_loop_limit',path+'/max_iterations');
+      const template=object(candidate.template,'invalid_loop_template');
+      keys(template,['uses','with'],path+'/template');
+      if(template.uses!=='result.emit'&&template.uses!=='mcp.call')
+        throw new PlanError('unsupported_loop_action',path+'/template/uses');
+      const withData=object(template.with,'invalid_loop_template');
+      let compiledTemplate:{uses:'result.emit'|'mcp.call';with:Record<string,unknown>};
+      if(template.uses==='result.emit'){
+        keys(withData,['data'],path+'/template/with');
+        if(!Object.hasOwn(withData,'data'))
+          throw new PlanError('invalid_loop_template',path+'/template/with/data');
+        compiledTemplate={uses:'result.emit',with:{data:withData.data}};
+      }else{
+        const target=path+'/template/with';
+        keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],target);
+        if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',target+'/endpoint');
+        try{if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical');}
+        catch{throw new PlanError('invalid_endpoint',target+'/endpoint');}
+        if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))
+          throw new PlanError('invalid_tool',target+'/tool');
+        if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',target+'/scope');
+        object(withData.arguments,'invalid_step_arguments');
+        compiledTemplate={uses:'mcp.call',with:{...withData,
+          schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}};
+      }
+      const ctx={id:candidate.id,needs:deps};
+      const check=(value:unknown,field:string)=>
+        expression(value,ctx,0,false,true,path+field);
+      check(candidate.condition,'/condition');
+      const op=candidate.condition&&typeof candidate.condition==='object'&&
+        !Array.isArray(candidate.condition)?Object.keys(candidate.condition):[];
+      if(typeof candidate.condition!=='boolean'&&
+         !(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
+        throw new PlanError('invalid_loop_condition',path+'/condition');
+      if(template.uses==='mcp.call')
+        expression(withData.arguments,ctx,0,true,true,path+'/template/with/arguments');
+      else check(withData.data,'/template/with/data');
+      dynamicReserved+=Number(candidate.max_iterations);
+      expanded.push({id:candidate.id,uses:'flow.loop',needs:deps,with:{
+        mode:candidate.flow,max_iterations:candidate.max_iterations,
+        condition:candidate.condition,template:compiledTemplate,
+      }});
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -447,10 +519,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
             throw new PlanError('invalid_step_id',path+'/id');
           foreachChildren.add(generatedId);
         }
-        foreachReserved+=Number(candidate.max_items)*children.length;
+        dynamicReserved+=Number(candidate.max_items)*children.length;
         expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
           with:{items:source,max_items:candidate.max_items,templates:children}});
-        if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+        if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
           throw new PlanError('invalid_step_count','/steps');
         continue;
       }
@@ -502,10 +574,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('invalid_step_id',path+'/id');
         foreachChildren.add(generatedId);
       }
-      foreachReserved+=Number(candidate.max_items);
+      dynamicReserved+=Number(candidate.max_items);
       expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
         with:{items:source,max_items:candidate.max_items,template:compiledChild}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -535,7 +607,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       expanded.push({id:generatedId,uses:template.uses,with:template.with,
         ...(template.if===undefined?{}:{if:template.if}),
         needs:[...originalNeeds,...(n? [candidate.id+'_'+(n-1)]:[])]});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
     }
   }
@@ -581,7 +653,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       return {...sourceStep,uses:'github.run',
         with:{capability:withData.capability,action:withData.action}};
     })():sourceStep;
-    keys(s,['id','uses','needs','needs_policy','if','with','approval'],stepPath);
+    keys(s,['id','uses','needs','needs_policy','if','with','approval','compensate'],stepPath);
     if(s.approval!==undefined){
       const a=object(s.approval,'invalid_runtime_approval');
       keys(a,['required'],stepPath+'/approval');
@@ -590,7 +662,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(!['flow.foreach','flow.child','flow.wait','flow.wait_event'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
+    if(!['flow.foreach','flow.child','flow.wait','flow.wait_event','flow.loop'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     // Opt-in branch fan-in: completed/skipped dependencies may join, but a
@@ -600,7 +672,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.needs_policy==='allow_skipped'&&!needs.length)
       throw new PlanError('invalid_needs_policy',stepPath+'/needs_policy');
     const withData=object(s.with,'invalid_step_arguments');
-    if(s.uses==='flow.foreach'){
+    if(s.uses==='flow.loop'){
+      keys(withData,['mode','condition','max_iterations','template'],stepPath+'/with');
+    }else if(s.uses==='flow.foreach'){
       keys(withData,['items','max_items','template','templates'],stepPath+'/with');
     }else if(s.uses==='flow.child'){
       keys(withData,['workflow_id','version_id','inputs','mode'],stepPath+'/with');
@@ -612,7 +686,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'weixin');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -630,8 +704,12 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(typeof input.download_step_id!=='string'||!SAFE_ID.test(input.download_step_id))
           throw new PlanError('invalid_trusted_download_reference',stepPath+'/with/input/download_step_id');
       }else{
-        keys(input,['session_step_id'],stepPath+'/with/input');
-        if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
+        keys(input,['text','session_step_id'],stepPath+'/with/input');
+        if(typeof input.text!=='string'||!input.text.trim()||input.text.length>2048||
+           new TextEncoder().encode(input.text).byteLength>4096)
+          throw new PlanError('invalid_weixin_text',stepPath+'/with/input/text');
+        if(input.session_step_id!==undefined&&
+          (typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id)))
           throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
       }
     }else if(s.uses==='github.run'){
@@ -665,12 +743,29 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       // dynamic expression or network-fetched schema silently approved later.
       await toolSchemaDigest(withData.input_schema,withData.output_schema);
     }else keys(withData,['data'],stepPath+'/with');
+    let compensate:Step['compensate'];
+    if(s.compensate!==undefined){
+      const policy=object(s.compensate,'invalid_compensation');
+      keys(policy,['kind'],stepPath+'/compensate');
+      const action=s.uses==='github.run'?(withData.action as Record<string,unknown>):null;
+      const inputs=action?.inputs as Record<string,unknown>|undefined;
+      if(!saga||policy.kind!=='github.session.cancel'||
+         action?.type!=='session'||inputs?.session_mode!=='temporary'||
+         action?.repository!=='lirtual/session-actions'||
+         action?.workflowPath!=='.github/workflows/ubuntu.yml')
+        throw new PlanError('compensation_not_supported',stepPath+'/compensate');
+      compensate={kind:'github.session.cancel'};
+    }
+    if(saga && ((s.uses==='github.run'&&!compensate)||
+       ['mcp.call','http.request','action.run','flow.foreach','flow.child','flow.loop'].includes(String(s.uses))))
+      throw new PlanError('saga_uncompensated_effect',stepPath);
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     steps.push({id:s.id,uses:s.uses as Step['uses'],needs:needs as string[],
       ...(s.needs_policy==='allow_skipped'?{needs_policy:'allow_skipped' as const}:{}),
       with:compiledWith,...(s.if===undefined?{}:{if:s.if}),
-      ...(s.approval===undefined?{}:{approval:{required:true}})});
+      ...(s.approval===undefined?{}:{approval:{required:true}}),
+      ...(compensate?{compensate}:{})});
   }
   for(const s of steps){
     if(s.uses==='action.run'&&s.with.action==='weixin.notify_download'){
@@ -686,14 +781,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }
     if(s.uses==='action.run'&&s.with.action==='weixin.send_text'){
       // Provider URL and recipient never come from a Draft or ordinary Step output.
-      const source=(s.with.input as {session_step_id:string}).session_step_id;
-      const upstream=steps.find(x=>x.id===source);
-      const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
-      if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
-         action?.repository!=='lirtual/session-actions'||
-         action?.workflowPath!=='.github/workflows/openlist.yml'||
-         action?.type!=='session')
-        throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      const source=(s.with.input as {session_step_id?:string}).session_step_id;
+      if(source!==undefined){
+        const upstream=steps.find(x=>x.id===source);
+        const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+        if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
+           action?.repository!=='lirtual/session-actions'||
+           action?.workflowPath!=='.github/workflows/openlist.yml'||
+           action?.type!=='session')
+          throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      }
     }
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     if(s.uses==='flow.wait'){
@@ -706,6 +803,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Number.isSafeInteger(s.with.timeout_seconds)||Number(s.with.timeout_seconds)<1||
          Number(s.with.timeout_seconds)>PLAN_LIMITS.maxEventWaitSeconds)
         throw new PlanError('invalid_event_wait_timeout','/steps/'+steps.indexOf(s)+'/timeout_seconds');
+    }else if(s.uses==='flow.loop'){
+      // Source validation above owns item-context expressions and mode limits.
     }else if(s.uses==='flow.child'){
       try{expression(s.with.inputs,s,0,true,false,'/steps/'+steps.indexOf(s)+'/inputs');}catch(error){
         if(error instanceof PlanError)throw new PlanError(error.message,error.path==='/'?'/steps/'+steps.indexOf(s)+'/inputs':error.path);
@@ -789,7 +888,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(ready.length>PLAN_LIMITS.maxParallel)throw new PlanError('excessive_parallelism');
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
+  if(saga&&!sorted.some(s=>s.compensate))
+    throw new PlanError('saga_requires_compensation','/saga');
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(saga?{saga}:{}),...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

@@ -14,6 +14,7 @@ import { dispatchHyperdriveAction, dispatchHyperdriveRotationCheck, dispatchHype
 import { previewHyperdriveCreation, createHyperdrivePreparation, createHyperdriveCredentialRotation, listHyperdriveOperations,
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
 import { setupFailure, setupPage, setupResult, setupUnbindStatusResult, type ReplacementOrigin } from './page.js';
+import reviewedManifest from '../../hyperdrive-bindings.json';
 import { normalizeConnectionInput } from './connection-input.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
@@ -79,21 +80,39 @@ async function testCandidate(env: Env, id: string, url: string, dialect: Dialect
   await healthCheck({ config: { id, transport: 'direct', url }, transport: 'direct',
     ...parsed, ...(ca ? { ca } : {}), limits: { ...getRuntimeLimits(env), queryTimeoutMs: 5000 } });
 }
+/** The reviewed release manifest supplies immutable origin provenance only for
+ * pre-0003 legacy references with NULL target_metadata. A non-NULL D1 value
+ * is authoritative and must never be silently replaced if invalid.
+ * The protected Runner separately verifies live Cloudflare TLS/CA/Binding. */
+function sourceMetadata(
+  row: { dialect: Dialect; config_id: string; binding_name: string; target_metadata: string | null }
+): string | null {
+  if (row.target_metadata !== null) return row.target_metadata;
+  const matches = reviewedManifest.filter(candidate =>
+    candidate.id === row.config_id || candidate.binding === row.binding_name);
+  if (matches.length !== 1) return null;
+  const reviewed = matches[0]!;
+  if (reviewed.id !== row.config_id || reviewed.binding !== row.binding_name ||
+      reviewed.dialect !== row.dialect) return null;
+  return JSON.stringify(reviewed);
+}
+
 /** A CA may be reused without user input only from exact active, recorded
  * Hyperdrive target provenance. The protected Runner must independently read
  * and validate the CA before a candidate can be created or enabled. */
 async function findRecordedCa(env: Env, dialect: Dialect, host: string, port: number): Promise<string | undefined> {
   if (!env.DB) throw new PublicError('CONFIGURATION_UNAVAILABLE','Database registry is unavailable.');
   const rows = await env.DB.prepare(`SELECT dialect,status,config_id,binding_name,target_metadata
-    FROM database_connections WHERE transport='hyperdrive' AND status='active'
-    AND target_metadata IS NOT NULL LIMIT 11`).all<{
-      dialect:string; status:string; config_id:string; binding_name:string; target_metadata:string
+    FROM database_connections WHERE transport='hyperdrive' AND status='active' LIMIT 11`).all<{
+      dialect:Dialect; status:string; config_id:string; binding_name:string; target_metadata:string|null
     }>();
   const matches = new Set<string>();
   for (const row of rows.results) {
     if (row.dialect !== dialect) continue;
+    const reviewed = sourceMetadata(row);
+    if (!reviewed) continue;
     let metadata: Record<string,unknown>;
-    try { metadata = JSON.parse(row.target_metadata) as Record<string,unknown>; }
+    try { metadata = JSON.parse(reviewed) as Record<string,unknown>; }
     catch { continue; }
     const expected = ['binding','id','dialect','origin_host','origin_port',
       'origin_database','origin_user','ca_certificate_id'];
@@ -130,9 +149,9 @@ async function replacementCaFromSource(
    !['active','disabled'].includes(old.status) ||
    old.dialect !== candidate.dialect ||
    !/^[a-f0-9]{32}$/i.test(old.config_id) || !/^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(old.binding_name) ||
-   !old.target_metadata) invalid();
+   !sourceMetadata(old)) invalid();
  let metadata:Record<string,unknown>;
- try { metadata=JSON.parse(old.target_metadata) as Record<string,unknown>; }
+ try { metadata=JSON.parse(sourceMetadata(old)!) as Record<string,unknown>; }
  catch { return invalid(); }
  const keys=['binding','id','dialect','origin_host','origin_port','origin_database','origin_user','ca_certificate_id'];
  if (!metadata || typeof metadata!=='object' || Array.isArray(metadata) ||
@@ -189,9 +208,11 @@ async function requireCaReplacementIdentity(
 async function verifiedReplacementOrigin(db: D1Database, id: string, dialect: Dialect): Promise<ReplacementOrigin | undefined> {
   const row = await db.prepare('SELECT config_id,binding_name,target_metadata FROM database_connections WHERE id=? AND dialect=? AND transport=\'hyperdrive\'')
     .bind(id,dialect).first<{config_id:string;binding_name:string;target_metadata:string|null}>();
-  if (!row?.target_metadata) return undefined;
+  if (!row) return undefined;
+  const source = sourceMetadata({...row,dialect});
+  if (!source) return undefined;
   let data: Record<string,unknown>;
-  try { data = JSON.parse(row.target_metadata) as Record<string,unknown>; }
+  try { data = JSON.parse(source) as Record<string,unknown>; }
   catch { return undefined; }
   const keys = ['binding','id','dialect','origin_host','origin_port','origin_database','origin_user','ca_certificate_id'];
   if (!data || typeof data !== 'object' || Array.isArray(data) ||

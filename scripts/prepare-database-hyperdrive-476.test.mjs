@@ -22,12 +22,12 @@ test('only exact Owner/main operation with scoped credentials may prepare',()=>{
     assert.throws(()=>verifyPrepareIdentity({...env,[field]:bad}), /preparation blocked/i);
   }
 });
-test('permission unavailable blocks before any Cloudflare resource write',async()=>{
+test('unknown branch policy blocks before any Cloudflare resource write',async()=>{
   let requests=0;
   await assert.rejects(verifyGithubPrPreflight({sourceSha:sha,token:'dummy',
     request:async(url)=>{
       requests++;
-      assert.match(String(url),/actions\/permissions\/workflow$/);
+      assert.match(String(url),/branches\/main$/);
       return new Response(null, {status: 403});
     }}),/preparation blocked/i);
   assert.equal(requests,1);
@@ -37,7 +37,7 @@ test('even with PR setting, branch protection is not silently bypassed',async()=
   await assert.rejects(verifyGithubPrPreflight({sourceSha:sha,token:'dummy',
     request:async(url)=>{
       calls.push(String(url));
-      if(String(url).endsWith('actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:true});
+      if(String(url).endsWith('/branches/main'))return Response.json({name:'main',protected:true});
       if(String(url).endsWith('branches/main/protection'))return Response.json({required_status_checks:{}});
       if(String(url).includes('/rulesets'))return Response.json([]);
       throw Error('Unexpected upstream');
@@ -67,8 +67,8 @@ test('only explicit unprotected main with eligible existing CI and exact SHA may
   const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
   for(const fault of [null,'403','rules','sha','ci-inactive','ci-content','ci-unknown']) {
     const request=async(url)=>{
-      if(String(url).endsWith('/actions/permissions/workflow')) return Response.json({can_approve_pull_request_reviews:true});
-      if(String(url).endsWith('/branches/main/protection')) return new Response(null,{status:fault==='403'?403:404});
+      if(String(url).endsWith('/branches/main'))return fault==='403'
+        ? new Response(null,{status:403}) : Response.json({name:'main',protected:false});
       if(String(url).includes('/rulesets')) return Response.json(fault==='rules'?[{id:1}]:[]);
       if(String(url).endsWith('/git/ref/heads/main')) return Response.json({object:{sha:fault==='sha'?'f'.repeat(40):sha}});
       if(String(url).endsWith('/actions/workflows/ci.yml')) return Response.json({id:1,path:'.github/workflows/ci.yml',state:fault==='ci-inactive'?'disabled_manually':'active'});
@@ -89,7 +89,7 @@ test('a protected policy must identify the existing CI workflow before preparati
   const calls=[];
   assert.deepEqual(await verifyGithubPrPreflight({token:'dummy',sourceSha:sha,request:async(url)=>{
     calls.push(String(url));
-    if(String(url).endsWith('/actions/permissions/workflow'))return Response.json({can_approve_pull_request_reviews:true});
+    if(String(url).endsWith('/branches/main'))return Response.json({name:'main',protected:true});
     if(String(url).endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
     if(String(url).includes('/rulesets'))return Response.json([]);
     if(String(url).endsWith('/actions/workflows/ci.yml'))return Response.json({id:1,path:'.github/workflows/ci.yml',state:'active'});
@@ -134,7 +134,7 @@ test('preparation entrypoint performs zero Cloudflare calls when preflight is un
     calls++;
     assert.match(String(url),/^https:\/\/api.github.com\//);
     return new Response(null,{status:403});
-  }),error=>error.reason==='github_pr_permission_unavailable');
+  }),error=>error.reason==='github_protection_unavailable');
   assert.equal(calls,1);
 });
 
@@ -187,11 +187,8 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
   let createdConfig;
   const request=async(url,init={})=>{
     const path=new URL(url).pathname;
-    if(path.endsWith('/actions/permissions/workflow')){
-      assert.equal(init.headers.authorization,'Bearer secret-owner');
-      return Response.json({can_approve_pull_request_reviews:true});
-    }
-    if(path.endsWith('/branches/main/protection'))return unprotected?new Response(null,{status:404}):Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
+    if(path.endsWith('/branches/main'))return Response.json({name:'main',protected:!unprotected});
+    if(path.endsWith('/branches/main/protection'))return Response.json({required_status_checks:{strict:true,contexts:['Required checks gate']}});
     if(path.endsWith('/rulesets'))return Response.json([]);
     if(path.endsWith('/actions/workflows/ci.yml'))return Response.json({id:1,path:'.github/workflows/ci.yml',state:'active'});
     if(path.endsWith('/git/ref/heads/main'))return Response.json({object:{sha}});

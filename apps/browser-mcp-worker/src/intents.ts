@@ -50,7 +50,7 @@ function validCommand(value: Command) {
   if(typeof value.url!=="string" || value.url.length>2048)return false;
   try{
     const u=new URL(value.url);
-    return ["http:","https:"].includes(u.protocol) && !u.username && !u.password && !u.hash;
+    return ["http:","https:"].includes(u.protocol) && !u.username && !u.password;
   }catch{return false;}
 }
 const bytes=(text:string)=>new TextEncoder().encode(text);
