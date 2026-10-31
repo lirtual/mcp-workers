@@ -138,7 +138,13 @@ export async function listHyperdriveOperations(db: D1Database): Promise<Hyperdri
   try {
     const rows = await db.prepare(`SELECT operation_id,logical_id,action,phase,config_id,pr_number,
       prepare_run_id,apply_run_id,ci_run_id,release_run_id,expires_at,head_sha,expected_source_sha,expected_revision,binding_name,error_class FROM hyperdrive_operations
+      WHERE phase <> 'completed' ORDER BY updated_at DESC`).all<HyperdriveOperationSummary>();
+    // Terminal history is limited separately; it must not evict unresolved work.
+    const recent = await db.prepare(`SELECT operation_id,logical_id,action,phase,config_id,pr_number,
+      prepare_run_id,apply_run_id,ci_run_id,release_run_id,expires_at,head_sha,expected_source_sha,expected_revision,binding_name,error_class
+      FROM hyperdrive_operations WHERE phase='completed'
       ORDER BY updated_at DESC LIMIT 20`).all<HyperdriveOperationSummary>();
+    rows.results.push(...recent.results);
     for (const row of rows.results) {
       if (!/^[0-9a-f-]{36}$/.test(row.operation_id) || !idPattern.test(row.logical_id) ||
         !['create','rotate_credentials','rotate_ca','retire'].includes(row.action) ||

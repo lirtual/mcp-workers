@@ -223,3 +223,26 @@ it('expired credential operation preserves ambiguity only after the upstream wri
   await expect(createHyperdriveCredentialRotation(db,keys,'expiring',4,'synthetic-secret-three')).rejects.toMatchObject({code:'REVISION_CONFLICT'});
  }finally{sqlite.close();}
 });
+
+describe('Spec #605 unresolved-operation visibility', () => {
+  it('keeps old pending, unknown and failed work visible after more than 20 completed runs', async () => {
+    const {sqlite, db}=fixture();
+    try {
+      const insert=sqlite.prepare(`INSERT INTO hyperdrive_operations
+        (operation_id,logical_id,action,expected_revision,phase,created_at,updated_at,expires_at)
+        VALUES (?,?, 'create',0,?,?,?,?)`);
+      for (const [i,phase] of ['pending','unknown','failed'].entries()) {
+        insert.run('00000000-0000-0000-0000-'+String(i+1).padStart(12,'0'),
+          'attention_'+i,phase,1,1,Date.now()+60_000);
+      }
+      for (let i=0;i<30;i++) {
+        insert.run('00000000-0000-0000-0000-'+String(i+100).padStart(12,'0'),
+          'completed_'+i,'completed',100+i,100+i,Date.now()+60_000);
+      }
+      const operations=await listHyperdriveOperations(db);
+      expect(operations.filter(op=>op.phase==='completed')).toHaveLength(20);
+      expect(operations.map(op=>op.logical_id)).toEqual(expect.arrayContaining(
+        ['attention_0','attention_1','attention_2']));
+    } finally {sqlite.close();}
+  });
+});

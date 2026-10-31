@@ -342,7 +342,7 @@ export async function handleSetup(
     if (action === 'github-actions-check') {
       const receipt = await verifyGithubActionsDispatch(env, requestFetch);
       return setupResult('GitHub accepted a verification-only, no-deploy workflow request. No database or Worker changes were requested.' +
-        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Check the Actions run result separately.'));
+        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Check the Actions run result separately.'), receipt.runId ? 'accepted' : 'unknown');
     }
     if (action === 'hyperdrive-apply') {
       const operationId = required(form, 'operation_id');
@@ -358,7 +358,7 @@ export async function handleSetup(
       await recordHyperdriveApplyDispatch(env.DB, operationId, runId);
       return setupResult('Final apply request accepted. Operation ID: ' + operationId +
         (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
-        '. Merge, release and activation remain subject to protected verification.');
+        '. Merge, release and activation remain subject to protected verification.', runId ? 'accepted' : 'unknown');
     }
     const id = required(form, 'id');
     if (action === 'hyperdrive-credentials') {
@@ -376,7 +376,7 @@ export async function handleSetup(
       await recordHyperdriveDispatch(env.DB, prepared.operationId, runId);
       return setupResult('Password update request accepted. Connection remains disabled. Operation ID: ' +
         prepared.operationId + (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
-        '. Write-only credentials require independent validation; API acceptance is not success.');
+        '. Write-only credentials require independent validation; API acceptance is not success.', runId ? 'accepted' : 'unknown');
     }
     if (action === 'add') {
       const dialect = required(form, 'dialect');
@@ -419,7 +419,7 @@ export async function handleSetup(
         await recordHyperdriveDispatch(env.DB, prepared.operationId, runId);
         return setupResult('Hyperdrive preparation accepted. Operation ID: ' + prepared.operationId +
           (runId ? '. GitHub Run ID: ' + runId : '. Run receipt unknown; reconcile before retry.') +
-          '. No connection is active until reviewed release and independent validation.');
+          '. No connection is active until reviewed release and independent validation.', runId ? 'accepted' : 'unknown');
       }
       if (transport === 'hyperdrive') invalid(); // Manual Config ID/Binding registration is retired.
       if (transport !== 'direct' || formCa(form)) invalid();
@@ -454,7 +454,7 @@ export async function handleSetup(
       if (mode !== 'credentials' && mode !== 'ca') invalid();
       const receipt = await dispatchHyperdriveRotationCheck(env, mode, id, version, requestFetch);
       return setupResult('Read-only Hyperdrive rotation isolation check accepted. Review the protected GitHub Run. No password, CA, Worker, or D1 changes requested.' +
-        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Dispatch is not an eligibility receipt.'));
+        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ' Dispatch is not an eligibility receipt.'), receipt.runId ? 'accepted' : 'unknown');
     }
     if (action === 'hyperdrive-action') {
       if (row.transport !== 'hyperdrive' || row.status !== 'disabled' || row.revision !== version) invalid();
@@ -463,7 +463,7 @@ export async function handleSetup(
       if (operation === 'retire' && required(form, 'confirm_id') !== id) invalid();
       const receipt = await dispatchHyperdriveAction(env, operation, id, version, requestFetch);
       return setupResult('Protected GitHub Actions request accepted. For retirement, a Draft unbinding PR may be staged instead of deleting D1. Review the Run and do not treat dispatch as completion.' +
-        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ''));
+        (receipt.runId ? ' Workflow Run ID: ' + receipt.runId + '.' : ''), receipt.runId ? 'accepted' : 'unknown');
     }
     if (action === 'disable') {
       await setRegistryConnectionStatus(env.DB, id, version, 'disabled');
