@@ -8,6 +8,15 @@ import type { Env } from './store.ts';
 
 const id=z.string().uuid();
 const revision=z.number().int().positive();
+// ChatGPT fileParams requires a top-level file object, not a nested Workflow
+// Run input. This gate only validates the descriptor and NEVER dereferences
+// the URL, creates a Run, or stores or reflects any file metadata.
+const fileTransportProbeFile=z.object({
+ download_url:z.string().min(1).max(4096),
+ file_id:z.string().min(1).max(512),
+ mime_type:z.string().max(255).optional(),
+ file_name:z.string().max(255).optional(),
+}).strict();
 const readonlyOperation=z.object({endpoint:z.string().url(),tool:z.string().min(1).max(128),scope:z.enum(['read','write']),schema_digest:z.string().regex(/^[0-9a-f]{64}$/)}).strict();
 const approvedHttpOperation=z.object({url:z.string().url(),method:z.enum(['GET','HEAD','POST'])}).strict();
 const approvedCloudflareAction=z.object({executor:z.literal('cloudflare'),
@@ -37,6 +46,14 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_connection_revoke',{description:'Revoke portal (default) or http Connection. New calls are fenced atomically; existing physical effects may finish. Repeated revoke is idempotent.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionRevoke():service.portalConnectionRevoke()));
  server.registerTool('workflow_connection_enable',{description:'Re-enable portal (default) or http Connection for newly republished Plans. Previous generation stays fenced; no unknown effect replay.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionEnable():service.portalConnectionEnable()));
  server.registerTool('workflow_action_list',{description:'Discover verified Tag-pinned GitHub Task/Session Action candidates with ref, commitSha, contractDigest, inputs, explicit unknown business output (not_declared), and publishability. Untagged default-branch revisions are explicitly unavailable; Publish still requires separate approval.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
+ server.registerTool('workflow_file_transport_probe',{
+   title:'Check a selected file parameter (no file access)',
+   description:'Read-only compatibility check for one ChatGPT-selected file. Validates the file-parameter object without downloading, uploading, storing, inspecting or returning its URL, ID or filename. This is NOT provenance attestation or Litterbox upload.',
+   inputSchema:z.object({file:fileTransportProbeFile}).strict(),
+   _meta:{'openai/fileParams':['file']},
+   annotations:read,
+ },async()=>success({file_parameter_received:true,bytes_read:0,
+   uploaded:false,persisted:false,provenance_verified:false}));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
