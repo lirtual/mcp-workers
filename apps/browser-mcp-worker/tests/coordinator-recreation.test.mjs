@@ -24,7 +24,7 @@ function fixture(){
   const socket={
     readyState:1,
     deserializeAttachment(){return {
-      authenticated:true,protocol:3,endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+      authenticated:true,protocol:3,extension_version:"0.2.3",endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
     };},
     send(message){sent.push(JSON.parse(message));},
     close(){sent.push({type:"closed"});}
@@ -146,5 +146,25 @@ test("snapshot socket close retains only a bounded in-flight stage and close cod
     assert.ok(outcome.stage_elapsed_ms>=0&&outcome.stage_elapsed_ms<=5000);
     assert.deepEqual(Object.keys(outcome).sort(),["close_code","error_code","stage","stage_elapsed_ms"]);
     assert.doesNotMatch(JSON.stringify(outcome),/DO_NOT_ECHO|PRIVATE_REASON|example.com/);
+  }finally{f.db.close();}
+});
+
+
+test("old live socket without the new extension version cannot accept reads or writes",async()=>{
+  const f=fixture();
+  try {
+    const oldSocket={...f.socket,deserializeAttachment:()=>({
+      authenticated:true,protocol:3,endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+    })};
+    const owner=new BrowserOwner({storage:f.state.storage,getWebSockets:()=>[oldSocket]});
+    const post=async(path,body)=>await owner.fetch(new Request('https://owner.internal/'+path,{
+      method:'POST',body:JSON.stringify(body)}));
+    const read=await post('read',{endpoint_id:id,tool:'tabs'});
+    assert.equal((await read.json()).error_code,'offline');
+    const mutation=await post('mutate',{endpoint_id:id,intent_key:uuid7(),action:'tab_open',url:'https://example.com'});
+    assert.equal((await mutation.json()).error_code,'offline');
+    assert.equal(f.sent.length,0);
+    await owner.webSocketMessage(oldSocket,JSON.stringify({type:'ping'}));
+    assert.deepEqual(f.sent,[{type:'closed'}]);
   }finally{f.db.close();}
 });

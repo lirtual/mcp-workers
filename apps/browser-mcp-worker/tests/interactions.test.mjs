@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {fixture} from "./helpers/t4-browser.mjs";
+import {fixture,intent} from "./helpers/t4-browser.mjs";
 
 test("a valid task may click an explicitly referenced checkbox regardless of business label",async()=>{
   const f=await fixture();
@@ -187,5 +187,20 @@ test("target feedback expires without moving focus",async()=>{
     await new Promise(resolve=>setTimeout(resolve,1050));
     assert.equal(f.pageState.marker.removed,true);
     assert.equal(f.effects.some(e=>e[0]==="focus"),false);
+  }finally{await f.close();}
+});
+
+
+test("ARIA labelledby gives visible combobox a bounded accessible name",async()=>{
+  const f=await fixture();try{
+    const Element=f.nodes[4].constructor;
+    const label=new Element('DIV',{id:'fruit-label',label:'Favorite Fruit'});
+    const combo=new Element('DIV',{role:'combobox','aria-labelledby':'fruit-label','aria-expanded':'false'});
+    f.nodes.push(label,combo);
+    const snap=await f.snapshot();
+    assert.equal(snap.elements.find(e=>e.role==='combobox'&&e.tag==='div').label,'Favorite Fruit');
+    label.textContent='New label';f.pageState.mutated=true;f.pageState.mutationTarget=label;
+    const args={endpoint_id:f.local.endpoint_id,intent_key:intent(),tab_id:1,document_id:snap.document_id,element_id:snap.elements.find(e=>e.role==='combobox'&&e.tag==='div').element_id};
+    assert.equal((await f.perform('click',args)).result.state,'failed');
   }finally{await f.close();}
 });

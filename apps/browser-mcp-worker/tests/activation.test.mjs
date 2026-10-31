@@ -77,7 +77,7 @@ test('temporary network loss grants a bounded offline window; stale generations 
   let attachment={authenticated:false,deadline:Date.now()+5000},authenticated=false;
   const reconnect={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:frame=>{if(JSON.parse(frame).type==='authenticated')authenticated=true;},close:()=>{},readyState:1};
   const reconnector=new BrowserOwner({storage:f.storage,getWebSockets:()=>[reconnect]});
-  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.2',endpoint_id:p.endpoint_id,credential:p.credential}));
+  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.3',endpoint_id:p.endpoint_id,credential:p.credential}));
   assert.equal(authenticated,true);
   assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
   assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'enabled');
@@ -222,7 +222,7 @@ test('new browser protocol rejects old extension handshakes and persisted old ex
   const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
   const paired=await f.post('activate-complete',{attempt_id:attempt,proof});
   const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[]});
-  for(const [protocol,extension_version] of [[2,'0.2.0'],[3,'0.2.0'],[3,'0.2.1']]){
+  for(const [protocol,extension_version] of [[2,'0.2.0'],[3,'0.2.0'],[3,'0.2.1'],[3,'0.2.2']]){
     let reason=null,attachment={authenticated:false,deadline:Date.now()+5000};
     const socket={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:()=>{throw Error('obsolete authentication accepted');},close:(_code,why)=>{reason=why;},readyState:1};
     await owner.webSocketMessage(socket,JSON.stringify({type:'authenticate',protocol,extension_version,endpoint_id:paired.endpoint_id,credential:paired.credential}));
