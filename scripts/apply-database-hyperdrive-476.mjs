@@ -1,7 +1,7 @@
 // Spec #476: final Owner confirmation. Never retry external writes or activate D1 here.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchSource, verifyPreparedPullRequest, verifyGithubPrPreflight } from './prepare-database-hyperdrive-476.mjs';
+import { patchSource, verifyPreparedPullRequest, verifyGithubPrPreflight, verifySpec476MainMergeWindow } from './prepare-database-hyperdrive-476.mjs';
 import { readConfiguration } from './manual-worker-release.mjs';
 import { verifyCloudflareHyperdriveConfig } from './verify-database-hyperdrive.mjs';
 
@@ -32,7 +32,19 @@ async function readApplyPolicy(github) {
     rules = await github('/rulesets?includes_parents=true&per_page=100');
   } catch { gate(false, 'apply_policy_unavailable'); }
   gate(branch?.name === 'main' && typeof branch.protected === 'boolean' &&
-    Array.isArray(rules) && rules.length === 0, 'apply_policy_unavailable');
+    Array.isArray(rules) && rules.length<=1, 'apply_policy_unavailable');
+  if(rules.length===1){
+    gate(Number.isSafeInteger(rules[0]?.id) && rules[0].id>0,'apply_policy_unavailable');
+    let detail;
+    try { detail=await github('/rulesets/'+rules[0].id); }
+    catch { gate(false,'apply_policy_unavailable'); }
+    gate(verifySpec476MainMergeWindow(rules[0],detail),'apply_policy_unavailable');
+    // REST branch.protected may count the Ruleset itself. Require an actual
+    // 404 from the classic-protection endpoint, not a Boolean inference.
+    try { await github('/branches/main/protection'); gate(false,'apply_policy_unavailable'); }
+    catch(error){ gate(error?.status===404,'apply_policy_unavailable'); }
+    return null;
+  }
   if (!branch.protected) return null;
   let policy;
   try { policy = await github('/branches/main/protection'); }
@@ -242,7 +254,8 @@ export async function applyDatabaseHyperdrive(env = process.env, request = fetch
       'apply_source_invalid');
     let ciRunId;
     if (await readApplyPolicy(policyGithub) === null) {
-      await verifyGithubPrPreflight({request,token:env.DATABASE_GITHUB_ACTIONS_TOKEN,sourceSha:row.expected_source_sha});
+      await verifyGithubPrPreflight({request,token:env.DATABASE_GITHUB_ACTIONS_TOKEN,
+        sourceSha:row.expected_source_sha,allowSpec476MainMergeWindow:true});
       gate((await github('/git/ref/heads/db476-' + operationId))?.object?.sha === row.head_sha,
         'apply_pr_stale');
       // The source verifier above proves candidate workflow/scripts equal main.
