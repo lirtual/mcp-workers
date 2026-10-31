@@ -15,6 +15,8 @@ import { previewHyperdriveCreation, createHyperdrivePreparation, createHyperdriv
   recordHyperdriveDispatch, claimHyperdriveDispatch, claimHyperdriveApply, recordHyperdriveApplyDispatch, expireHyperdrivePreparations, type HyperdriveCandidate } from './hyperdrive-operations.js';
 import { setupFailure, setupPage, setupResult, setupUnbindStatusResult, type ReplacementOrigin } from './page.js';
 import reviewedManifest from '../../hyperdrive-bindings.json';
+// Explicit shape keeps an intentionally empty release manifest type-safe.
+const reviewedEntries: Array<{ id: string; binding: string; dialect: Dialect }> = reviewedManifest;
 import { normalizeConnectionInput } from './connection-input.js';
 
 function invalid(): never { throw new PublicError('INVALID_INPUT', 'The connection form is invalid.'); }
@@ -88,7 +90,7 @@ function sourceMetadata(
   row: { dialect: Dialect; config_id: string; binding_name: string; target_metadata: string | null }
 ): string | null {
   if (row.target_metadata !== null) return row.target_metadata;
-  const matches = reviewedManifest.filter(candidate =>
+  const matches = reviewedEntries.filter(candidate =>
     candidate.id === row.config_id || candidate.binding === row.binding_name);
   if (matches.length !== 1) return null;
   const reviewed = matches[0]!;
