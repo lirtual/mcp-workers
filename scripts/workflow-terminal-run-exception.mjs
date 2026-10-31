@@ -49,6 +49,16 @@ export const ELEVENTH_PROVIDER_VERSION = "95e42878-91e9-49db-aae8-4703725a027f";
 export const ELEVENTH_INPUT_DIGEST = "a291503723b808ef09cfecb7277a91bcecd4e943771a065a987462f79113d315";
 export const ELEVENTH_CONTRACT_DIGEST = "aa9f078a8a7f8ea2f816286b9c023aeadee3e1cd038b197df08567bcebc04e1b";
 const ELEVENTH_WEIXIN_DB = "051c3b6d-e3bc-4d69-907f-37e8ab00618f";
+// #179: exact GitHub Artifact E2E with confirmed Claim and one signed result.
+export const TWELFTH_TERMINAL_RUN_ID = "f99bb918-2909-46df-b196-d07faa64df27";
+export const TWELFTH_WORKFLOW_ID = "685026cf-abaa-4618-a363-5944fac729d2";
+export const TWELFTH_VERSION_ID = "88158dd2-25c9-4e66-b98a-51ac34f829e0";
+export const TWELFTH_ATTEMPT_ID = "c7893834-10ff-41d5-b784-a33d00cc20f5";
+export const TWELFTH_GITHUB_RUN_ID = 41182432750;
+const TWELFTH_REPOSITORY_ID = 1430925009;
+const TWELFTH_WORKFLOW_GITHUB_ID = 394689660;
+const TWELFTH_TAG = "refs/tags/v0.1.42-rc.10";
+const TWELFTH_SHA = "f5d44ff5a5dbd5b1b444c907e3654266a465da85";
 const WORKFLOW = "workflow-mcp-orchestrator";
 
 // The six exact instances were all verified before Cloudflare pruned history.
@@ -473,6 +483,79 @@ export function verifyEleventhTerminalEvidence(d1,native,providerReceipts){
   return ELEVENTH_TERMINAL_RUN_ID;
 }
 
+/** Physical completion permits only this historical release exclusion.
+ * A claimed (nonterminal) D1 Attempt and indeterminate business Run are
+ * deliberately retained, without manufacturing a Workflow success.
+ */
+export function verifyTwelfthTerminalEvidence(d1,native,github){
+  requireValid(Array.isArray(d1)&&d1.length===7&&
+    d1.every(x=>x?.success===true&&Array.isArray(x.results)),
+    "twelfth Run production readback incomplete");
+  const [runs,steps,sessions,attempts,receipts,invocations,cancellations]=
+    d1.map(x=>x.results);
+  requireValid(runs.length===1&&runs[0].id===TWELFTH_TERMINAL_RUN_ID&&
+    runs[0].workflow_id===TWELFTH_WORKFLOW_ID&&
+    runs[0].version_id===TWELFTH_VERSION_ID&&
+    runs[0].start_state==="started"&&
+    runs[0].outcome==="indeterminate"&&
+    runs[0].error_code==="github_dispatch_unknown",
+    "twelfth immutable business Run changed");
+  requireValid(steps.length===1&&steps[0].run_id===TWELFTH_TERMINAL_RUN_ID&&
+    steps[0].step_id==="verify"&&steps[0].status==="indeterminate"&&
+    steps[0].error_code==="github_dispatch_unknown",
+    "twelfth Step receipt changed");
+  requireValid(sessions.length===0&&invocations.length===0&&
+    cancellations.length===0,"twelfth Run has other live effects");
+  requireValid(attempts.length===1&&
+    attempts[0].run_id===TWELFTH_TERMINAL_RUN_ID&&
+    attempts[0].step_id==="verify"&&
+    attempts[0].attempt_id===TWELFTH_ATTEMPT_ID&&
+    attempts[0].capability_id==="github.action"&&
+    attempts[0].state==="claimed"&&
+    attempts[0].repository==="lirtual/github-actions"&&
+    String(attempts[0].repository_id)===String(TWELFTH_REPOSITORY_ID)&&
+    attempts[0].workflow_ref==="lirtual/github-actions/.github/workflows/verify-action.yml@"+TWELFTH_TAG&&
+    attempts[0].ref===TWELFTH_TAG&&
+    attempts[0].candidate_run_id===TWELFTH_GITHUB_RUN_ID&&
+    attempts[0].candidate_run_attempt===1&&
+    attempts[0].owner_run_id===TWELFTH_GITHUB_RUN_ID&&
+    attempts[0].owner_run_attempt===1,
+    "twelfth approved Attempt identity changed");
+  requireValid(receipts.length===1&&
+    receipts[0].run_id===TWELFTH_TERMINAL_RUN_ID&&
+    receipts[0].step_id==="verify"&&
+    receipts[0].outcome==="succeeded"&&
+    receipts[0].notification_delivered===1,
+    "twelfth signed result receipt missing or changed");
+  requireValid(native?.id===TWELFTH_TERMINAL_RUN_ID&&
+    native?.status==="complete"&&native?.success===true&&
+    native?.error===null&&!!native?.end&&
+    native?.step_count===3&&native?.steps?.length===3&&
+    native.steps[0].name==="github-action-dispatch-verify-1"&&
+    native.steps[0].success===true&&
+    native.steps[1].name==="github-action-check-verify-0-1"&&
+    native.steps[1].success===true&&native.steps[1].output==="held"&&
+    native.steps[2].name==="github-action-sleep-verify-0-1"&&
+    native.steps[2].finished===true,
+    "twelfth native instance/checkpoint history changed");
+  let dispatch;
+  try{dispatch=JSON.parse(native.steps[0].output);}catch{}
+  requireValid(dispatch?.attemptId===TWELFTH_ATTEMPT_ID&&
+    dispatch?.status==="confirmed"&&
+    dispatch?.runId===TWELFTH_GITHUB_RUN_ID&&
+    dispatch?.runAttempt===1,
+    "twelfth native dispatch ACK identity changed");
+  requireValid(github?.id===TWELFTH_GITHUB_RUN_ID&&
+    github?.repository?.id===TWELFTH_REPOSITORY_ID&&
+    github?.workflow_id===TWELFTH_WORKFLOW_GITHUB_ID&&
+    github?.event==="workflow_dispatch"&&github?.run_attempt===1&&
+    github?.head_branch==="v0.1.42-rc.10"&&
+    github?.head_sha===TWELFTH_SHA&&
+    github?.status==="completed"&&github?.conclusion==="success",
+    "twelfth GitHub physical Task or source not proven terminal");
+  return TWELFTH_TERMINAL_RUN_ID;
+}
+
 async function main() {
   const kind=process.env.TERMINAL_PROOF_KIND;
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
@@ -482,7 +565,7 @@ async function main() {
     process.env.CLOUDFLARE_API_TOKEN &&
     (kind==="eleventh"||process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN),
     "required read-only verification credentials missing");
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth"||kind==="eleventh",
+  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth"||kind==="eleventh"||kind==="twelfth",
     "unknown terminal proof kind");
   const second=kind==="second";
   const third=kind==="third";
@@ -493,6 +576,7 @@ async function main() {
   const ninth=kind==="ninth";
   const tenth=kind==="tenth";
   const eleventh=kind==="eleventh";
+  const twelfth=kind==="twelfth";
   const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
   const get = async (url, token) => {
     const response = await fetch(url,{
@@ -504,7 +588,7 @@ async function main() {
   };
   const cfResponse = await fetch("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (eleventh?ELEVENTH_TERMINAL_RUN_ID:ninth?NINTH_TERMINAL_RUN_ID:tenth?TENTH_TERMINAL_RUN_ID:seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
+    (twelfth?TWELFTH_TERMINAL_RUN_ID:eleventh?ELEVENTH_TERMINAL_RUN_ID:ninth?NINTH_TERMINAL_RUN_ID:tenth?TENTH_TERMINAL_RUN_ID:seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
     {headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
       Accept:"application/json"},signal:AbortSignal.timeout(15000)});
   let native;
@@ -514,7 +598,7 @@ async function main() {
       "native Cloudflare instance readback unavailable");
     native = cf.result;
   } else if (cfResponse.status === 404) {
-    requireValid(!seventh&&!ninth&&!tenth&&!eleventh,"recent native instance must be independently live-proven");
+    requireValid(!seventh&&!ninth&&!tenth&&!eleventh&&!twelfth,"recent native instance must be independently live-proven");
     // A 404 alone is never proof. Pin prior successful checks for all six
     // precise instances, and still check today's D1/GitHub terminal state.
     requireValid(process.env.GITHUB_TOKEN,
@@ -550,6 +634,16 @@ async function main() {
     await appendFile(process.env.GITHUB_OUTPUT,
       "eleventh_terminal_run_id="+ELEVENTH_TERMINAL_RUN_ID+"\n");
     console.log("Verified exact terminal generic notification Run; unknown preserved");
+    return;
+  }
+  if(twelfth){
+    const github=await get("https://api.github.com/repos/lirtual/github-actions/actions/runs/"+
+      TWELFTH_GITHUB_RUN_ID,process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+    verifyTwelfthTerminalEvidence(d1,native,github);
+    requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
+    await appendFile(process.env.GITHUB_OUTPUT,
+      "twelfth_terminal_run_id="+TWELFTH_TERMINAL_RUN_ID+"\n");
+    console.log("Verified exact historical GitHub Artifact Task physical terminal; business unknown preserved");
     return;
   }
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
