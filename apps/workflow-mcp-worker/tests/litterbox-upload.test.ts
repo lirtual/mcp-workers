@@ -170,3 +170,18 @@ test('concurrent identical admissions reserve at most one provider POST',async t
   /litterbox_file_tool_required/);
  assert.equal(f.audit.posts,1);
 });
+
+test('tampered persisted Plan cannot use a different runtime file reference',async t=>{
+ const f=fixture(t);await f.publish();
+ const row=f.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+  .get(VERSION) as {plan:string};
+ const altered=JSON.parse(row.plan);
+ altered.steps[0].with.input.file_name={ref:'inputs.download_url'};
+ f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+  .run(JSON.stringify(altered),VERSION);
+ await assert.rejects(()=>startLitterboxUpload(f.env,{
+   workflow_id:WF,file,idempotency_key:'tampered01'}),/litterbox_published_plan_required/);
+ assert.equal(f.audit.reads,0);
+ assert.equal(f.audit.posts,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,0);
+});

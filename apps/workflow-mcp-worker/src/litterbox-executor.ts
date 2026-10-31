@@ -23,10 +23,23 @@ const safeLink=(v:unknown):v is string=>{
 };
 export const isLitterboxPlan=(p:Plan):boolean=>{
  const s=p.steps?.[0];
- return p.steps.length===1&&!p.triggers?.length&&p.cloudflare_execution_approved===true&&
-   s?.uses==='action.run'&&s.needs.length===0&&s.if===undefined&&
-   s.with.executor==='cloudflare'&&s.with.provider==='litterbox'&&
-   s.with.action==='litterbox.upload_file';
+ if(p.steps.length!==1||p.triggers?.length||p.saga||
+    (p.inputs&&Object.keys(p.inputs).length!==0)||
+    p.cloudflare_execution_approved!==true||
+    s?.uses!=='action.run'||s.needs.length!==0||s.if!==undefined||
+    s.approval!==undefined||s.needs_policy!==undefined||
+    s.with.executor!=='cloudflare'||s.with.provider!=='litterbox'||
+    s.with.action!=='litterbox.upload_file')return false;
+ const refs=s.with.input;
+ if(!refs||typeof refs!=='object'||Array.isArray(refs))return false;
+ const data=refs as Record<string,unknown>;
+ const fields=['file_name','size_bytes','sha256','time'];
+ if(Object.keys(data).sort().join(',')!==fields.sort().join(','))return false;
+ return fields.every(k=>{
+   const v=data[k];
+   return v!==null&&typeof v==='object'&&!Array.isArray(v)&&
+    Object.keys(v).length===1&&(v as {ref?:unknown}).ref==='inputs.'+k;
+ });
 };
 export async function recordedLitterboxStep(db:D1Database,runId:string,stepId:string):
  Promise<Receipt|null>{
