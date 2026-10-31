@@ -25,8 +25,19 @@ describe('single Owner connection form', () => {
     for(const sslmode of ['disable','prefer','allow'])
       expect(() => normalizeConnectionInput(submit({input_mode:'url',url:`mysql://u:p@db.example.net/app?sslmode=${sslmode}`}),'mysql','hyperdrive')).toThrow();
   });
-  it('keeps URL and field input mutually exclusive and refuses dialect switches', () => {
-    expect(() => normalizeConnectionInput(submit({input_mode:'url',url:'mysql://u:p@db.example.net/app'}),'postgres','direct')).toThrow();
-    expect(() => normalizeConnectionInput(submit({input_mode:'fields',host:'db.example.net',database:'app',username:'u',password:'p',url:'mysql://u:p@db.example.net/app'}),'mysql','direct')).toThrow();
+  it('uses only the selected mode after switching back and forth without clearing hidden fields', () => {
+    const url = 'mysql://u:p@db.example.net/app';
+    const staleFields = {host:'old.example.net',port:'9999',database:'old',username:'old',password:'stale'};
+    const fromUrl = normalizeConnectionInput(submit({input_mode:'url',url,...staleFields}),'mysql','direct');
+    expect(fromUrl.host).toBe('db.example.net');
+    expect(fromUrl.password).toBe('p');
+    const fields = normalizeConnectionInput(submit({input_mode:'fields',url:'mysql://bad:stale@old.example.net/old',
+      host:'db.example.net',database:'app',username:'u',password:'p'}),'mysql','direct');
+    expect(fields).toEqual(fromUrl);
+    expect(() => normalizeConnectionInput(submit({input_mode:'url',url}),'postgres','direct')).toThrow();
+    expect(() => normalizeConnectionInput(submit({input_mode:'url',url:'mysql://u:p@db.example.net/app?sslmode=prefer'}),
+      'mysql','hyperdrive')).toThrow();
+    expect(() => normalizeConnectionInput(submit({input_mode:'fields',url,host:'db.example.net',database:'app',username:'u',password:'p',port:'bad'}),
+      'mysql','direct')).toThrow();
   });
 });
