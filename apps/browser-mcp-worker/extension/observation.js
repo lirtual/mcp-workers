@@ -177,13 +177,28 @@ function screenshotExposureCheck() {
     if(roots.length>64)return {allowed:false};
     for(const el of roots[i].querySelectorAll('*')){
       if(el.shadowRoot)roots.push(el.shadowRoot);
-      if(!inspected.has(el.tagName)||!visible(el))continue;
+      const role=el.getAttribute('role')||'';
+      if(!inspected.has(el.tagName)&&!['combobox','listbox','option'].includes(role))continue;
+      if(!visible(el))continue;
       if(embedded.has(el.tagName))return {allowed:false};
+      const secret=/password|passcode|one[ -]?time[ -]?code|otp|2fa|captcha|verification[ -]?code|security[ -]?code|authenticator|recovery[ -]?code|api[ _-]?key|secret|credential|token|cvv|cc-number|cc-csc/i;
       const attrs=[el.getAttribute('type'),el.getAttribute('autocomplete'),el.id,
         el.getAttribute('name'),el.getAttribute('aria-label'),
         ...Array.from(el.labels||[],l=>l.textContent)].join(' ');
-      if(/password|passcode|one[ -]?time[ -]?code|otp|2fa|captcha|verification[ -]?code|security[ -]?code|authenticator|recovery[ -]?code|api[ _-]?key|secret|credential|token|cvv|cc-number|cc-csc/i.test(attrs))
-        return {allowed:false};
+      if(secret.test(attrs))return {allowed:false};
+      // Match mutation preflight: an aria-labelledby reference may be the only
+      // visible or hidden secret label. An unresolved reference fails closed.
+      const labelledBy=el.getAttribute('aria-labelledby');
+      if(labelledBy!==null){
+        const ids=labelledBy.trim().split(/\s+/);
+        if(labelledBy.length>256||!labelledBy.trim()||ids.length>3||
+          ids.some(id=>{
+            if(!/^[a-zA-Z0-9_-]{1,100}$/.test(id))return true;
+            const node=document.getElementById(id);
+            return !node||typeof node.textContent!=='string'||node.textContent.length>512||
+              secret.test(id)||secret.test(node.textContent);
+          }))return {allowed:false};
+      }
     }
   }
   return {allowed:true};

@@ -115,7 +115,21 @@ function browserPageInteraction(mode,command,expectedUrl,feedbackEnabled=false) 
     if(['password','file','hidden'].includes(type))return true;
     const fields=[type,el.id,el.getAttribute('name'),el.getAttribute('autocomplete'),
       el.getAttribute('aria-label'),...Array.from(el.labels||[],l=>l.textContent)].join(' ');
-    return secret.test(fields);
+    if(secret.test(fields))return true;
+    // ARIA labels can be the only indication that an ordinary-looking text field
+    // is a credential input. Resolve them even if the referenced label is hidden.
+    const labelledBy=el.getAttribute('aria-labelledby');
+    if(labelledBy!==null){
+      const ids=labelledBy.trim().split(/\s+/);
+      if(labelledBy.length>256||!labelledBy.trim()||ids.length>3||
+        ids.some(id=>{
+          if(!/^[a-zA-Z0-9_-]{1,100}$/.test(id))return true;
+          const node=document.getElementById(id);
+          return !node||typeof node.textContent!=='string'||node.textContent.length>512||
+            secret.test(id)||secret.test(node.textContent);
+        }))return true;
+    }
+    return false;
   };
   const visible=el=>el.isConnected && !el.closest('[hidden],[inert],[aria-hidden="true"]') &&
     getComputedStyle(el).display!=="none"&&getComputedStyle(el).visibility==="visible"&&el.getClientRects().length>0;
