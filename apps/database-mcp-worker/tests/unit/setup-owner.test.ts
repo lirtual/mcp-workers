@@ -293,6 +293,40 @@ describe('Spec #605 page feedback and limits', () => {
     expect(unbind).toContain('release, active version and D1 retirement are NOT verified');
     expect(unbind).not.toContain('Operation completed');
   });
+  it('keeps the Active label readable against both system theme backgrounds', async () => {
+    const body = await setupPage([], csrf).text();
+    const colors = ['--active:#14864a', '--active:#4ade80'];
+    for (const color of colors) expect(body).toContain(color);
+    expect(body).toContain('.status-active{color:var(--active)}');
+    const luminance = (hex: string) => {
+      const components = hex.match(/[0-9a-f]{2}/gi)!;
+      const [r, g, b] = components.map(value => {
+        const linear = parseInt(value, 16) / 255;
+        return linear <= 0.04045 ? linear / 12.92 : ((linear + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const contrast = (a: string, b: string) => {
+      const [lighter, darker] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (lighter! + 0.05) / (darker! + 0.05);
+    };
+    expect(contrast('14864a', 'ffffff')).toBeGreaterThanOrEqual(4.5);
+    expect(contrast('4ade80', '0a0a0a')).toBeGreaterThanOrEqual(4.5);
+  });
+  it('does not offer Hyperdrive Replace when all connection slots are occupied', async () => {
+    const rows = Array.from({length: 10}, (_, i) => ({
+      id: 'full_'+i, dialect: 'postgres' as const, transport: 'hyperdrive' as const,
+      status: (i === 0 ? 'active' : 'disabled') as 'active'|'disabled',
+      revision: 1, created_at: 1, updated_at: 1
+    }));
+    const body = await setupPage(rows, csrf, [], [], rows[0]).text();
+    expect(body).toContain('All 10 connection slots are in use or reserved');
+    expect(body).toContain('All 10 connection slots are in use or reserved');
+    expect(body).toContain('first free a connection slot for a new ID');
+    expect(body).not.toContain('href="/setup?edit=full_0#add-connection"');
+    expect(body).not.toContain('href="/setup?edit=full_1#add-connection"');
+    expect(body).not.toContain('<details id="add-panel"');
+  });
   it('respects ten slots including unfinished Hyperdrive reservations', async () => {
     const rows=Array.from({length:9},(_,i)=>({
       id:'connection_'+i,dialect:'mysql' as const,transport:'direct' as const,
@@ -309,5 +343,10 @@ describe('Spec #605 page feedback and limits', () => {
     expect(body).toContain('name="confirm_id"');
     expect(body).toContain('pending_tenth');
     expect(body).not.toContain('Active database connection');
+    const hyperdrive = {...rows[0]!, transport:'hyperdrive' as const, status:'active' as const};
+    const reserved = await setupPage([hyperdrive, ...rows.slice(1)], csrf, [op], [], hyperdrive).text();
+    expect(reserved).toContain('All 10 connection slots are in use or reserved');
+    expect(reserved).not.toContain('href="/setup?edit=connection_0#add-connection"');
+    expect(reserved).not.toContain('<details id="add-panel"');
   });
 });
