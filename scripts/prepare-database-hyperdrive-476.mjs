@@ -305,6 +305,132 @@ export async function verifyPreparedPullRequest({github,operationId,baseSha,head
   return true;
 }
 
+/** One-time passwordless restaging. The old failed operation is read-only. */
+export async function recoverFailedHyperdriveCandidate({row, sourceText, source, manifest,
+    baseSha, runId, github, cloud, sql, preflight}) {
+  requireGate(row?.action === 'create' && row.expected_revision === 0 &&
+    row.phase === 'failed' && row.error_class === 'apply_merge_denied' &&
+    operationPattern.test(row.operation_id ?? '') &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(row.logical_id ?? '') &&
+    shaPattern.test(row.expected_source_sha ?? '') &&
+    shaPattern.test(row.head_sha ?? '') && shaPattern.test(baseSha) &&
+    /^[a-f0-9]{32}$/.test(row.config_id ?? '') &&
+    row.binding_name === fixedBinding({id:row.logical_id},row.operation_id) &&
+    caPattern.test(row.ca_certificate_id ?? '') &&
+    Number.isSafeInteger(row.pr_number) && row.pr_number > 0 &&
+    Number.isSafeInteger(row.prepare_run_id) && row.prepare_run_id > 0 &&
+    Number.isSafeInteger(row.apply_run_id) && row.apply_run_id > 0 &&
+    Number.isSafeInteger(row.ci_run_id) && row.ci_run_id > 0 &&
+    row.resource_write_started_at != null && row.ca_write_started_at == null &&
+    row.ciphertext == null && row.key_id == null &&
+    row.merged_sha == null && row.release_run_id == null &&
+    row.published_version_id == null && row.expected_source_sha !== baseSha,
+    'recovery_operation_invalid');
+
+  const comparison = await github('/compare/' + row.expected_source_sha + '...' + baseSha);
+  const paths = ['apps/database-mcp-worker/wrangler.jsonc',
+    'apps/database-mcp-worker/hyperdrive-bindings.json'];
+  requireGate(comparison.status === 'ahead' && comparison.behind_by === 0 &&
+    Number.isSafeInteger(comparison.ahead_by) && comparison.ahead_by >= 1 &&
+    comparison.ahead_by <= 100 && Array.isArray(comparison.files) &&
+    !comparison.files.some(f => paths.includes(f.filename) ||
+      paths.includes(f.previous_filename)), 'recovery_base_drift');
+  const oldTexts = await Promise.all(paths.map(async path => {
+    const file = await github('/contents/' + path + '?ref=' + row.expected_source_sha);
+    requireGate(file?.path === path && file.type === 'file' && file.encoding === 'base64' &&
+      typeof file.content === 'string', 'recovery_source_unavailable');
+    return Buffer.from(file.content,'base64').toString('utf8');
+  }));
+  const oldSource = readConfiguration('database-mcp-worker',oldTexts[0]);
+  const oldManifest = JSON.parse(oldTexts[1]);
+  verifyDatabaseHyperdriveSource(oldSource,oldManifest);
+  verifyDatabaseHyperdriveSource(source,manifest);
+  requireGate(oldTexts[0] === sourceText &&
+    oldTexts[1] === JSON.stringify(manifest,null,2)+'\n' &&
+    oldSource.name === 'database-mcp-worker' &&
+    oldSource.d1_databases?.length === 1 &&
+    oldSource.d1_databases[0]?.database_id === D1, 'recovery_base_drift');
+
+  const config = await cloud('/hyperdrive/configs/' + row.config_id);
+  requireGate(config?.id === row.config_id &&
+    config.name === 'db476-' + row.operation_id &&
+    config.mtls?.ca_certificate_id === row.ca_certificate_id &&
+    config.caching?.disabled === true, 'recovery_config_drift');
+  const entry = {binding:row.binding_name,id:row.config_id,
+    dialect:config.origin?.scheme === 'postgresql'?'postgres':config.origin?.scheme,
+    origin_host:config.origin?.host,origin_port:config.origin?.port,
+    origin_database:config.origin?.database,origin_user:config.origin?.user,
+    ca_certificate_id:row.ca_certificate_id};
+  verifyCloudflareHyperdriveConfig(entry,config);
+  await verifyPreparedPullRequest({github,operationId:row.operation_id,
+    baseSha:row.expected_source_sha,headSha:row.head_sha,prNumber:row.pr_number,
+    files:patchSource(oldTexts[0],oldManifest,entry)});
+  const unused=await sql('SELECT COUNT(*) AS n FROM database_connections WHERE id=? UNION ALL SELECT COUNT(*) AS n FROM retired_connection_ids WHERE id=?',
+    [row.logical_id,row.logical_id]);
+  requireGate(unused.results?.length === 2 &&
+    unused.results.every(r=>r.n===0), 'recovery_logical_id_unavailable');
+  const newId=crypto.randomUUID();
+  const binding=checkedManifestSource(source,manifest,{id:row.logical_id},newId);
+  const newFiles=patchSource(sourceText,manifest,{...entry,binding});
+  await preflight();
+  const now=Date.now();
+  const reserved=await sql(`INSERT INTO hyperdrive_operations
+    (operation_id,logical_id,action,expected_revision,phase,expected_source_sha,
+      config_id,binding_name,ca_certificate_id,prepare_run_id,created_at,updated_at,expires_at)
+    SELECT ?,prev.logical_id,'create',0,'running',?,?,?,?,?,?,?,?
+    FROM hyperdrive_operations prev WHERE prev.operation_id=?
+      AND prev.phase='failed' AND prev.error_class='apply_merge_denied'
+      AND prev.config_id=? AND prev.apply_run_id=? AND prev.ci_run_id=?
+      AND prev.head_sha=? AND prev.expected_source_sha=?
+      AND NOT EXISTS (SELECT 1 FROM hyperdrive_operations other
+        WHERE other.config_id=prev.config_id AND other.operation_id<>prev.operation_id)
+      AND NOT EXISTS (SELECT 1 FROM database_connections WHERE id=prev.logical_id)
+      AND NOT EXISTS (SELECT 1 FROM retired_connection_ids WHERE id=prev.logical_id)`,
+    [newId,baseSha,row.config_id,binding,row.ca_certificate_id,Number(runId),
+      now,now,now+7*24*60*60_000,row.operation_id,row.config_id,
+      row.apply_run_id,row.ci_run_id,row.head_sha,row.expected_source_sha]);
+  requireGate(reserved.meta?.changes === 1,'recovery_reservation_conflict');
+  try {
+    const parent=await github('/git/commits/' + baseSha);
+    requireGate(parent?.sha === baseSha && shaPattern.test(parent.tree?.sha ?? ''),
+      'recovery_main_tree_invalid');
+    const tree=await github('/git/trees','POST',{base_tree:parent.tree.sha,
+      tree:await Promise.all(Object.entries(newFiles).map(async ([path,content])=>({
+        path,mode:'100644',type:'blob',sha:(await github('/git/blobs','POST',{
+          content:Buffer.from(content).toString('base64'),encoding:'base64'})).sha
+      })))});
+    const commit=await github('/git/commits','POST',{
+      message:'feat(database): recover reviewed Hyperdrive binding for #476 '+newId,
+      tree:tree.sha,parents:[baseSha]});
+    requireGate(shaPattern.test(commit?.sha ?? ''),'recovery_commit_invalid');
+    await github('/git/refs','POST',{ref:'refs/heads/db476-'+newId,sha:commit.sha});
+    const policy=await preflight();
+    const pr=await github('/pulls','POST',{
+      title:'feat(database): recover Hyperdrive binding '+row.logical_id,
+      head:'db476-'+newId,base:'main',draft:!policy.unprotected,
+      body:'Spec #476 · Recovery operation '+newId+'\n\nPreserves failed operation '+
+        row.operation_id+' and reuses verified Config '+row.config_id+
+        '. No origin credentials, CA upload or additional Hyperdrive Config.'});
+    requireGate(Number.isSafeInteger(pr?.number) && pr.number>0,'recovery_pr_invalid');
+    await verifyPreparedPullRequest({github,operationId:newId,baseSha,
+      headSha:commit.sha,prNumber:pr.number,files:newFiles});
+    const stored=await sql(`UPDATE hyperdrive_operations SET phase='awaiting_confirmation',
+      pr_number=?,head_sha=?,updated_at=?,error_class='github_pr_ci_pending'
+      WHERE operation_id=? AND phase='running' AND prepare_run_id=?
+      AND expected_source_sha=? AND config_id=? AND binding_name=?
+      AND pr_number IS NULL AND head_sha IS NULL AND apply_run_id IS NULL`,
+    [pr.number,commit.sha,Date.now(),newId,Number(runId),baseSha,row.config_id,binding]);
+    requireGate(stored.meta?.changes===1,'recovery_receipt_unknown');
+    return {operationId:newId,phase:'awaiting_confirmation',prNumber:pr.number};
+  } catch(error) {
+    await sql(`UPDATE hyperdrive_operations SET phase='unknown',
+      error_class='preparation_requires_reconciliation',updated_at=?
+      WHERE operation_id=? AND phase='running' AND prepare_run_id=?`,
+    [Date.now(),newId,Number(runId)]).catch(()=>undefined);
+    throw error;
+  }
+}
+
 export async function prepareDatabaseHyperdrive(env = process.env, request = fetch) {
   verifyPrepareIdentity(env);
   const cloudBase = 'https://api.cloudflare.com/client/v4/accounts/' + env.CLOUDFLARE_ACCOUNT_ID;
@@ -359,9 +485,15 @@ export async function prepareDatabaseHyperdrive(env = process.env, request = fet
     new URL('../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
   const operationId = env.DATABASE_HYPERDRIVE_OPERATION_ID;
   try {
-  const rows = await sql('SELECT operation_id,logical_id,action,expected_revision,phase,ciphertext,key_id,expires_at,prepare_run_id,resource_write_started_at,ca_write_started_at,ca_certificate_id FROM hyperdrive_operations WHERE operation_id=?', [operationId]);
+  const rows = await sql('SELECT * FROM hyperdrive_operations WHERE operation_id=?', [operationId]);
   requireGate(rows.results?.length === 1, 'operation_not_found');
   const row = rows.results[0];
+  if (row.phase === 'failed') {
+    return recoverFailedHyperdriveCandidate({row,sourceText:text,source,manifest,
+      baseSha:env.GITHUB_SHA,runId:env.GITHUB_RUN_ID,github,cloud,sql,
+      preflight:()=>verifyGithubPrPreflight({
+        request,token:env.DATABASE_GITHUB_ACTIONS_TOKEN,sourceSha:env.GITHUB_SHA})});
+  }
   requireGate(['pending','running','unknown'].includes(row.phase) &&
     Number(row.expires_at) > Date.now() &&
     row.key_id === env.DATABASE_KEY_ID &&

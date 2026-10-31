@@ -381,3 +381,120 @@ test('retired Aiven test provisioning entrypoints cannot return through CI',asyn
   assert.doesNotMatch(ci+release,/database-aiven-hyperdrive-prepare-344/);
   assert.match(ci,/retire-database-hyperdrive.test.mjs/);
 });
+
+test('failed unbound Apply can restage once without credentials or rewriting its audit',async()=>{
+  const {DatabaseSync}=await import('node:sqlite');
+  const {readConfiguration}=await import('./manual-worker-release.mjs');
+  const {recoverFailedHyperdriveCandidate}=await import('./prepare-database-hyperdrive-476.mjs');
+  for(const fault of ['success','drift','config','pr','post-reserve']){
+    const db=new DatabaseSync(':memory:');
+    try{
+      for(const file of ['0001_connections.sql','0002_transport_and_retired_ids.sql','0003_hyperdrive_operations.sql'])
+        db.exec(readFileSync(new URL('../apps/database-mcp-worker/migrations/'+file,import.meta.url),'utf8'));
+      const oldId=env.DATABASE_HYPERDRIVE_OPERATION_ID, oldBase=sha, nowSha='9'.repeat(40), oldHead='b'.repeat(40);
+      const configId='1'.repeat(32), caId='12345678-1234-1234-1234-123456789abc';
+      const oldBinding='HYPERDRIVE_ISOLATED_12345678';
+      db.prepare("INSERT INTO hyperdrive_operations (operation_id,logical_id,action,expected_revision,phase,error_class,expected_source_sha,head_sha,config_id,binding_name,ca_certificate_id,pr_number,prepare_run_id,ci_run_id,apply_run_id,resource_write_started_at,created_at,updated_at,expires_at) VALUES (?,'isolated','create',0,'failed','apply_merge_denied',?,?,?,?,?,3,42,98,71,100,1,1,?)")
+        .run(oldId,oldBase,oldHead,configId,oldBinding,caId,Date.now()+600000);
+      const row={...db.prepare('SELECT * FROM hyperdrive_operations WHERE operation_id=?').get(oldId)};
+      const before=JSON.stringify(row);
+      const sourceText=readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
+      const manifest=JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json',import.meta.url),'utf8'));
+      const source=readConfiguration('database-mcp-worker',sourceText);
+      const entry={binding:oldBinding,id:configId,dialect:'mysql',origin_host:'mysql.example.net',origin_port:3306,
+        origin_database:'catalog',origin_user:'reader',ca_certificate_id:caId};
+      const oldFiles=patchSource(sourceText,manifest,entry);
+      const oldBlobs=new Map(Object.entries(oldFiles).map(([path,text],i)=>[String(i+2).repeat(40),{path,text}]));
+      const newBlobs=new Map();
+      let stagedBranch='',prWrites=0,otherWrites=0,cloudReads=0;
+      const github=async(path,method='GET',body)=>{
+        if(path.startsWith('/compare/'))return {status:'ahead',behind_by:0,ahead_by:1,
+          files:[{filename:fault==='drift'?'apps/database-mcp-worker/wrangler.jsonc':'scripts/actions-cutover-prepare.mjs'}]};
+        if(path.startsWith('/contents/')){
+          const name=path.slice('/contents/'.length).split('?')[0];
+          return {path:name,type:'file',encoding:'base64',
+            content:Buffer.from(name.endsWith('wrangler.jsonc')?sourceText:JSON.stringify(manifest,null,2)+'\n').toString('base64')};
+        }
+        if(path==='/pulls/3')return {number:3,state:'open',changed_files:2,commits:1,
+          head:{sha:oldHead,ref:'db476-'+oldId,repo:{full_name:'lirtual/mcp-workers'}},
+          base:{sha:oldBase,ref:'main',repo:{full_name:'lirtual/mcp-workers'}}};
+        if(path==='/git/commits/'+oldHead)return {sha:oldHead,parents:[{sha:oldBase}]};
+        if(path==='/pulls/3/files?per_page=3')
+          return [...oldBlobs.entries()].map(([sha,b])=>({filename:b.path,status:'modified',sha}));
+        if(path.startsWith('/git/blobs/')){
+          const id=path.slice('/git/blobs/'.length);
+          const blob=oldBlobs.get(id)??newBlobs.get(id);
+          assert.ok(blob);
+          return {sha:id,encoding:'base64',content:Buffer.from(fault==='pr'&&id===String(2).repeat(40)?
+            'tampered':blob.text).toString('base64')};
+        }
+        if(path==='/git/commits/'+nowSha)return {sha:nowSha,tree:{sha:'c'.repeat(40)}};
+        if(path==='/git/blobs'&&method==='POST'){
+          otherWrites++;const id=String(5+newBlobs.size).repeat(40);
+          newBlobs.set(id,{text:Buffer.from(body.content,'base64').toString('utf8')});return {sha:id};
+        }
+        if(path==='/git/trees'&&method==='POST'){otherWrites++;return {sha:'d'.repeat(40)};}
+        if(path==='/git/commits'&&method==='POST'){
+          otherWrites++;assert.deepEqual(body.parents,[nowSha]);return {sha:'e'.repeat(40)};
+        }
+        if(path==='/git/refs'&&method==='POST'){
+          otherWrites++;stagedBranch=body.ref.replace('refs/heads/','');return {};
+        }
+        if(path==='/pulls'&&method==='POST'){
+          otherWrites++;prWrites++;if(fault==='post-reserve')throw Error('synthetic rejected PR');
+          assert.equal(body.head,stagedBranch);return {number:4};
+        }
+        if(path==='/pulls/4')return {number:4,state:'open',changed_files:2,commits:1,
+          head:{sha:'e'.repeat(40),ref:stagedBranch,repo:{full_name:'lirtual/mcp-workers'}},
+          base:{sha:nowSha,ref:'main',repo:{full_name:'lirtual/mcp-workers'}}};
+        if(path==='/git/commits/'+'e'.repeat(40))return {sha:'e'.repeat(40),parents:[{sha:nowSha}]};
+        if(path==='/pulls/4/files?per_page=3')
+          return [...newBlobs].map(([sha,blob],i)=>({filename:Object.keys(oldFiles)[i],status:'modified',sha}));
+        throw Error('unexpected mocked GitHub request: '+path);
+      };
+      const cloud=async(path,method='GET')=>{
+        assert.equal(method,'GET');cloudReads++;
+        assert.equal(path,'/hyperdrive/configs/'+configId);
+        return {id:configId,name:'db476-'+oldId,origin:{scheme:'mysql',host:'mysql.example.net',
+          port:3306,database:'catalog',user:'reader'},
+          mtls:{sslmode:fault==='config'?'REQUIRE':'VERIFY_IDENTITY',ca_certificate_id:caId},
+          caching:{disabled:true}};
+      };
+      const sql=async(query,params=[])=>{
+        const statement=db.prepare(query);
+        return query.startsWith('SELECT')?{results:statement.all(...params)}:
+          {meta:{changes:Number(statement.run(...params).changes)}};
+      };
+      const act=()=>recoverFailedHyperdriveCandidate({row,sourceText,source,manifest,
+        baseSha:nowSha,runId:82,github,cloud,sql,preflight:async()=>({unprotected:true})});
+      if(fault==='success'){
+        const result=await act();
+        assert.equal(result.phase,'awaiting_confirmation');
+        assert.equal(result.prNumber,4);
+        assert.equal(prWrites,1);
+        const next=db.prepare('SELECT * FROM hyperdrive_operations WHERE operation_id=?').get(result.operationId);
+        assert.equal(next.config_id,configId);
+        assert.equal(next.ca_certificate_id,caId);
+        assert.equal(next.expected_source_sha,nowSha);
+        assert.equal(next.phase,'awaiting_confirmation');
+        assert.equal(next.ciphertext,null);
+        assert.equal(next.apply_run_id,null);
+        assert.ok(next.binding_name.endsWith(result.operationId.slice(0,8).toUpperCase()));
+        await assert.rejects(act(),error=>error.reason==='recovery_reservation_conflict');
+        assert.equal(prWrites,1);
+      }else{
+        await assert.rejects(act());
+        const next=db.prepare('SELECT phase,error_class FROM hyperdrive_operations WHERE operation_id<>?').all(oldId);
+        if(fault==='post-reserve'){
+          assert.deepEqual(next.map(x=>({...x})),[{phase:'unknown',error_class:'preparation_requires_reconciliation'}]);
+          assert.equal(prWrites,1);
+        }else {
+          assert.equal(next.length,0);
+          assert.equal(otherWrites,0);
+        }
+      }
+      assert.equal(JSON.stringify(db.prepare('SELECT * FROM hyperdrive_operations WHERE operation_id=?').get(oldId)),before);
+      assert.ok(cloudReads<=2);
+    }finally{db.close();}
+  }
+});

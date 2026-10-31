@@ -80,6 +80,28 @@ async function verifyCandidateCi(github, row, runId, pending = false) {
 }
 
 /** Dispatch evidence is accepted ONLY under a freshly proven unprotected policy. */
+/** A reused write-only Config is valid only with one immutable failed predecessor. */
+export async function verifyRecoveredConfigName(row, config, sql) {
+  if (config.name === 'db476-' + row.operation_id) return true;
+  gate(row.resource_write_started_at == null && row.ca_write_started_at == null &&
+    row.config_id === config.id && row.ca_certificate_id === config.mtls?.ca_certificate_id &&
+    row.ciphertext == null && row.key_id == null, 'apply_config_drift');
+  const prior=await sql('SELECT operation_id,logical_id,phase,error_class,config_id,binding_name,ca_certificate_id,resource_write_started_at,ca_write_started_at,prepare_run_id,ci_run_id,apply_run_id,merged_sha,release_run_id,published_version_id FROM hyperdrive_operations WHERE config_id=? AND operation_id<>?',
+    [row.config_id,row.operation_id]);
+  const old=prior.results?.[0];
+  const expected='HYPERDRIVE_' + row.logical_id.replace(/-/g,'_').toUpperCase().slice(0,38) +
+    '_' + old?.operation_id?.slice(0,8).toUpperCase();
+  gate(prior.results?.length === 1 && old.phase === 'failed' &&
+    old.error_class === 'apply_merge_denied' && old.logical_id === row.logical_id &&
+    old.config_id === row.config_id && old.ca_certificate_id === row.ca_certificate_id &&
+    old.binding_name === expected && old.resource_write_started_at != null &&
+    old.ca_write_started_at == null && old.prepare_run_id > 0 && old.ci_run_id > 0 &&
+    old.apply_run_id > 0 && old.merged_sha == null && old.release_run_id == null &&
+    old.published_version_id == null && config.name === 'db476-' + old.operation_id,
+    'apply_config_drift');
+  return true;
+}
+
 export async function verifyApplyEligibility(github, row, ciRunId, policyGithub = github) {
   const policy = await readApplyPolicy(policyGithub);
   const checks = policy?.required_status_checks;
@@ -235,7 +257,8 @@ export async function applyDatabaseHyperdrive(env = process.env, request = fetch
     const source = readConfiguration('database-mcp-worker', originals[0]);
     gate(source.d1_databases?.length === 1 && source.d1_databases[0].database_id === D1,'apply_source_invalid');
     const config = await cloud('/hyperdrive/configs/' + row.config_id);
-    gate(config.id === row.config_id && config.name === 'db476-' + operationId,'apply_config_drift');
+    gate(config.id === row.config_id,'apply_config_drift');
+    await verifyRecoveredConfigName(row,config,sql);
     // Prepare appends id only after Cloudflare creates the Config. Keep the
     // same property order: the reviewed manifest is compared byte-for-byte.
     const entry = {binding:row.binding_name,dialect:config.origin?.scheme,
