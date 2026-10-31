@@ -479,6 +479,20 @@ export function verifyWorkflowReleaseConfig(conf) {
 }
 
 function reviewedTerminalRunSql(sql) {
+  // This extra count is emitted only after the preceding exact historical
+  // D1/native/GitHub proof supplied the audited Run ID as its step output.
+  // A fake/unset approval leaves no ID in the generated query.
+  if(process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID===TWELFTH_TERMINAL_RUN_ID){
+    sql=sql.replace("0 AS reviewed_terminal_artifact_attempts",
+      "(SELECT count(*) FROM step_attempts WHERE "+
+      "run_id='f99bb918-2909-46df-b196-d07faa64df27' "+
+      "AND attempt_id='c7893834-10ff-41d5-b784-a33d00cc20f5' "+
+      "AND step_id='verify' AND capability_id='github.action' "+
+      "AND state='claimed' AND repository='lirtual/github-actions' "+
+      "AND owner_run_id=41182432750 AND candidate_run_id=41182432750 "+
+      "AND owner_run_attempt=1 AND candidate_run_attempt=1) "+
+      "AS reviewed_terminal_artifact_attempts");
+  }
   const exclusions=[
     [process.env.WORKFLOW_TERMINAL_RUN_ID,TERMINAL_RUN_ID],
     [process.env.WORKFLOW_SECOND_TERMINAL_RUN_ID,SECOND_TERMINAL_RUN_ID],
@@ -667,6 +681,7 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
        'event_wait_cancel_requested'))) AS invalid_cancelled_steps,
  (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
    state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
+ 0 AS reviewed_terminal_artifact_attempts,
  (SELECT count(*) FROM session_executions WHERE state IS NULL OR
    state != 'terminated') AS nonterminated_sessions,
  (SELECT count(*) FROM callback_receipts WHERE notification_delivered IS NULL OR
@@ -716,7 +731,7 @@ export function verifyWorkflowMigrationReadiness(response) {
  * permit only claimed Ready sessions with a succeeded parent business Run.
  * All incomplete Tasks, unresolved Runs and callbacks remain blocked.
  */
-export function verifyWorkflowCodeReleaseReadiness(response) {
+export function verifyWorkflowCodeReleaseReadiness(response, approvedTerminalArtifact = false) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow code-only release D1 readback unavailable");
@@ -725,7 +740,7 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
     "migration_count","expected_migrations","nonterminal_runs",
     "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
-    "verified_terminal_saga_receipts",
+    "verified_terminal_saga_receipts","reviewed_terminal_artifact_attempts",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
   invariant(row.migration_count===18 && row.expected_migrations===18,
@@ -735,7 +750,13 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
   ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
   invariant(row.unresolved_steps===row.verified_terminal_saga_receipts,
     "Workflow code-only release blocked by unresolved_steps");
-  invariant(row.nonterminal_attempts===row.confirmed_ready_sessions &&
+  // Never equate a physically finished historical Task with business success.
+  // A preceding exact-ID proof must grant this one code-only exception.
+  invariant(row.reviewed_terminal_artifact_attempts<=1 &&
+    (!approvedTerminalArtifact || row.reviewed_terminal_artifact_attempts===1),
+    "Workflow code-only release missing exact historical Artifact Attempt");
+  const reviewed=approvedTerminalArtifact?row.reviewed_terminal_artifact_attempts:0;
+  invariant(row.nonterminal_attempts===row.confirmed_ready_sessions+reviewed &&
     row.nonterminated_sessions===row.confirmed_ready_sessions,
     "Workflow code-only release blocked by unconfirmed Session or Attempt");
   return {confirmed_ready_sessions:row.confirmed_ready_sessions};
@@ -994,7 +1015,8 @@ async function main() {
   if (mode === "code-release-check") {
     invariant(worker === "workflow-mcp-worker", "Release gate restricted to Workflow");
     const result = verifyWorkflowCodeReleaseReadiness(
-      JSON.parse(await readFile("/dev/stdin", "utf8")));
+      JSON.parse(await readFile("/dev/stdin", "utf8")),
+      process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID===TWELFTH_TERMINAL_RUN_ID);
     console.log("Workflow code-only release D1 gate: PASS " +
       JSON.stringify(result) + "; no migration, no unconfirmed execution");
     return;

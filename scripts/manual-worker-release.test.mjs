@@ -782,6 +782,9 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.equal((release.match(/AS migration_v17/g)??[]).length,2);
   assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/reviewed_terminal_artifact_attempts/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0 AS reviewed_terminal_artifact_attempts/);
+
 });
 
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
@@ -832,7 +835,7 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     migration_count:18,expected_migrations:18,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
-    undelivered_callbacks:0,confirmed_ready_sessions:1,verified_terminal_saga_receipts:0,
+    undelivered_callbacks:0,confirmed_ready_sessions:1,reviewed_terminal_artifact_attempts:0,verified_terminal_saga_receipts:0,
   };
   const make=value=>[{success:true,results:[value]}];
   assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(row)),
@@ -844,6 +847,19 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
   assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
     ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
   })),{confirmed_ready_sessions:0});
+  const historical={...row,nonterminal_attempts:2,reviewed_terminal_artifact_attempts:1};
+  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(historical),true),
+    {confirmed_ready_sessions:1});
+  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make(historical)),/unconfirmed/);
+  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
+    ...historical,nonterminal_attempts:3,
+  }),true),/unconfirmed/);
+  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
+    ...historical,reviewed_terminal_artifact_attempts:0,
+  }),true),/historical Artifact/);
+  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
+    ...historical,reviewed_terminal_artifact_attempts:2,
+  }),true),/historical Artifact/);
   // Code-only publish can proceed when every remaining unresolved record
   // is an exact Saga request whose Session and GitHub Attempt both have
   // verified physical terminal evidence. Schema migrations stay strict.

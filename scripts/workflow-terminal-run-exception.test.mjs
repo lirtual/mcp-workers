@@ -536,7 +536,8 @@ test("twelfth exact GitHub Artifact Task: native/D1/GitHub proof, fail-closed re
  const args=["scripts/manual-worker-release.mjs","migration-sql","workflow-mcp-worker"];
  const proof=execFileSync(process.execPath,args,{encoding:"utf8",
   env:{...process.env,WORKFLOW_TWELFTH_TERMINAL_RUN_ID:id}});
- assert.equal((proof.match(new RegExp(id,"g"))||[]).length,2);
+ assert.equal((proof.match(new RegExp(id,"g"))||[]).length,3);
+ assert.match(proof,/attempt_id='c7893834-10ff-41d5-b784-a33d00cc20f5'/);
  const unverified=execFileSync(process.execPath,args,{encoding:"utf8",
   env:{...process.env,WORKFLOW_TWELFTH_TERMINAL_RUN_ID:"not-reviewed"}});
  assert.ok(!unverified.includes(id));
