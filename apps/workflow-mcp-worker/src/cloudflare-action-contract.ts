@@ -49,14 +49,23 @@ export const BARK_CLOUDFLARE_ACTION=Object.freeze({
  output_schema:{type:'object',additionalProperties:false,required:['status'],
   properties:{status:{enum:['accepted','rejected','unknown']}}},
 });
+export const DUB_CLOUDFLARE_ACTION=Object.freeze({
+ executor:'cloudflare',provider:'dub',action:'dub.shorten_url',version:1,
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'create_public_short_link_at_dub',
+ input_schema:{type:'object',additionalProperties:false,required:['url'],
+  properties:{url:{type:'string',maxLength:2048},public_stats:{type:'boolean'}}},
+ output_schema:{type:'object',additionalProperties:false,required:['status'],
+  properties:{status:{enum:['accepted','rejected','unknown']},short_link:{type:'string'}}},
+});
 export function canonical(value:unknown):unknown{
  if(Array.isArray(value))return value.map(canonical);
  if(value&&typeof value==='object')return Object.fromEntries(
   Object.entries(value).sort(([a],[b])=>a.localeCompare(b,'en')).map(([k,v])=>[k,canonical(v)]));
  return value;
 }
-export async function cloudflareActionManifest(provider:'weixin'|'bark'|'download'|'generic'|'unified-generic'='weixin'){
- const item=provider==='bark'?BARK_CLOUDFLARE_ACTION:
+export async function cloudflareActionManifest(provider:'weixin'|'bark'|'download'|'generic'|'unified-generic'|'dub'='weixin'){
+ const item=provider==='dub'?DUB_CLOUDFLARE_ACTION:provider==='bark'?BARK_CLOUDFLARE_ACTION:
   provider==='download'?DOWNLOAD_CLOUDFLARE_ACTION:provider==='generic'?GENERIC_WEIXIN_CLOUDFLARE_ACTION:provider==='unified-generic'?UNIFIED_GENERIC_WEIXIN_ACTION:WEIXIN_CLOUDFLARE_ACTION;
  const bytes=new TextEncoder().encode(JSON.stringify(canonical(item)));
  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));

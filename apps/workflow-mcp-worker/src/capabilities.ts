@@ -258,13 +258,15 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
      properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
     {type:'object',additionalProperties:false,
      required:['executor','provider','action','contract_digest','input'],properties:{
-       executor:{const:'cloudflare'},provider:{enum:['weixin','bark']},action:{enum:['weixin.send_text','weixin.notify_download','bark.send_notification']},
+       executor:{const:'cloudflare'},provider:{enum:['weixin','bark','dub']},action:{enum:['weixin.send_text','weixin.notify_download','bark.send_notification','dub.shorten_url']},
        contract_digest:{type:'string',pattern:'^[a-f0-9]{64}$'},
        input:{oneOf:[
         {type:'object',additionalProperties:false,required:['download_step_id'],
          properties:{download_step_id:{type:'string'}}},
         {type:'object',additionalProperties:false,required:['text'],
          properties:{text:{type:'string',minLength:1,maxLength:2048},session_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['url'],
+         properties:{url:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.url'}}},public_stats:{type:'boolean'}}},
         {type:'object',additionalProperties:false,required:['notification'],
          properties:{notification:{type:'object'}}}]},
      }},
@@ -593,7 +595,7 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
       reviewed_manifest:await cloudflareActionManifest(),
-      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('download'),await cloudflareActionManifest('bark')],
+      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('download'),await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub')],
       deployment_id:env.ACTIONS_DEPLOYMENT_ID??null}:{}),
   };
   // Design-only contracts make unsupported features discoverable without
