@@ -412,6 +412,30 @@ test('first signed physical Ready freezes Session RCA duration; duplicate cannot
   assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
  }finally{f.db.close();}
 });
+test('signed Ready HTTP freezes bounded duration and denies a changed replay',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+   WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as Env;
+  const inspect=async()=>({state:'running' as const});
+  const request=(minutes:unknown)=>new Request('https://worker.example/github/action/ready',{
+    method:'POST',headers:{authorization:'Bearer '+jwt},
+    body:JSON.stringify({attemptId:run(11),durationMinutes:minutes}),
+  });
+  assert.equal((await handleGithubActionClaimRequest(request(0),env,publicKey,inspect)).status,400);
+  assert.equal((await handleGithubActionClaimRequest(request(301),env,publicKey,inspect)).status,400);
+  const first=await handleGithubActionClaimRequest(request(9),env,publicKey,inspect);
+  assert.equal(first.status,200);
+  assert.deepEqual(await first.json(),{result:'ready'});
+  const repeat=await handleGithubActionClaimRequest(request(9),env,publicKey,inspect);
+  assert.deepEqual(await repeat.json(),{result:'already_ready'});
+  assert.equal((await handleGithubActionClaimRequest(request(10),env,publicKey,inspect)).status,403);
+  assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
+ }finally{f.db.close();}
+});
 test('lost Ready HTTP receipt is idempotent even after parent Workflow succeeded',async()=>{
  const f=fixture();
  try{
