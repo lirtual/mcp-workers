@@ -460,3 +460,83 @@ test('eleventh exact terminal generic notification is safe only with native comp
   encoding:'utf8',env:{...process.env,WORKFLOW_ELEVENTH_TERMINAL_RUN_ID:'not-reviewed'}});
  assert.ok(!forged.includes(run));
 });
+
+test("twelfth exact GitHub Artifact Task: native/D1/GitHub proof, fail-closed release scope",async()=>{
+ const {verifyTwelfthTerminalEvidence,TWELFTH_TERMINAL_RUN_ID:id,
+  TWELFTH_WORKFLOW_ID:workflow,TWELFTH_VERSION_ID:version,
+  TWELFTH_ATTEMPT_ID:attempt,TWELFTH_GITHUB_RUN_ID:run}
+  =await import("./workflow-terminal-run-exception.mjs");
+ const evidence={
+  d1:[
+   {success:true,results:[{id,workflow_id:workflow,version_id:version,
+    outcome:"indeterminate",start_state:"started",error_code:"github_dispatch_unknown"}]},
+   {success:true,results:[{run_id:id,step_id:"verify",status:"indeterminate",
+    error_code:"github_dispatch_unknown"}]},
+   {success:true,results:[]},
+   {success:true,results:[{run_id:id,step_id:"verify",attempt_id:attempt,
+    state:"claimed",capability_id:"github.action",repository:"lirtual/github-actions",
+    repository_id:"1430925009",workflow_ref:
+      "lirtual/github-actions/.github/workflows/verify-action.yml@refs/tags/v0.1.42-rc.10",
+    ref:"refs/tags/v0.1.42-rc.10",owner_run_id:run,owner_run_attempt:1,
+    candidate_run_id:run,candidate_run_attempt:1}]},
+   {success:true,results:[{run_id:id,step_id:"verify",
+    outcome:"succeeded",notification_delivered:1}]},
+   {success:true,results:[]},
+   {success:true,results:[]},
+  ],
+  native:{id,status:"complete",success:true,error:null,
+   end:"2026-10-31T07:55:27Z",step_count:3,steps:[
+    {name:"github-action-dispatch-verify-1",success:true,
+     output:JSON.stringify({attemptId:attempt,status:"confirmed",runId:run,runAttempt:1})},
+    {name:"github-action-check-verify-0-1",success:true,output:"held"},
+    {name:"github-action-sleep-verify-0-1",finished:true},
+   ]},
+  github:{id:run,repository:{id:1430925009},workflow_id:394689660,
+   event:"workflow_dispatch",run_attempt:1,head_branch:"v0.1.42-rc.10",
+   head_sha:"f5d44ff5a5dbd5b1b444c907e3654266a465da85",
+   status:"completed",conclusion:"success"},
+ };
+ assert.equal(verifyTwelfthTerminalEvidence(
+  evidence.d1,evidence.native,evidence.github),id);
+ for(const [group,field,bad] of [
+  [0,"outcome","succeeded"],[0,"workflow_id","wrong"],
+  [1,"status","succeeded"],[3,"attempt_id","wrong"],
+  [3,"state","succeeded"],[3,"owner_run_id",run+1],
+  [3,"repository_id","wrong"],[3,"ref","refs/heads/main"],
+  [4,"outcome","failed"],[4,"notification_delivered",0],
+ ]){
+  const x=structuredClone(evidence);x.d1[group].results[0][field]=bad;
+  assert.throws(()=>verifyTwelfthTerminalEvidence(x.d1,x.native,x.github),/blocked/);
+ }
+ for(const i of [0,1,3,4]) {
+  const x=structuredClone(evidence);x.d1[i].results.push({...x.d1[i].results[0]});
+  assert.throws(()=>verifyTwelfthTerminalEvidence(x.d1,x.native,x.github),/blocked/);
+ }
+ for(const i of [2,5,6]){
+  const x=structuredClone(evidence);x.d1[i].results.push({run_id:id,step_id:"verify"});
+  assert.throws(()=>verifyTwelfthTerminalEvidence(x.d1,x.native,x.github),/blocked/);
+ }
+ for(const patch of [{status:"running"},{success:false},{step_count:2},{end:null}]){
+  assert.throws(()=>verifyTwelfthTerminalEvidence(evidence.d1,{...evidence.native,...patch},evidence.github),/blocked/);
+ }
+ for(const patch of [{id:run+1},{run_attempt:2},{conclusion:"failure"},
+  {status:"in_progress"},{head_branch:"main"},
+  {head_sha:"0".repeat(40)},{repository:{id:1}},{workflow_id:1}]){
+  assert.throws(()=>verifyTwelfthTerminalEvidence(evidence.d1,evidence.native,{...evidence.github,...patch}),/blocked/);
+ }
+ const changed=structuredClone(evidence);
+ changed.native.steps[0].output=JSON.stringify({attemptId:attempt,status:"unknown",runId:run,runAttempt:1});
+ assert.throws(()=>verifyTwelfthTerminalEvidence(changed.d1,changed.native,changed.github),/blocked/);
+ const release=readFileSync(".github/workflows/release.yml","utf8");
+ assert.equal((release.match(/steps\.terminal_twelfth\.outputs\.twelfth_terminal_run_id/g)||[]).length,3);
+ assert.equal((release.match(/id <> '\$WORKFLOW_TWELFTH_TERMINAL_RUN_ID'/g)||[]).length,2);
+ assert.ok(release.indexOf("Verify twelfth terminal Artifact Task proof")<
+  release.indexOf("Verify Workflow release configuration"));
+ const args=["scripts/manual-worker-release.mjs","migration-sql","workflow-mcp-worker"];
+ const proof=execFileSync(process.execPath,args,{encoding:"utf8",
+  env:{...process.env,WORKFLOW_TWELFTH_TERMINAL_RUN_ID:id}});
+ assert.equal((proof.match(new RegExp(id,"g"))||[]).length,2);
+ const unverified=execFileSync(process.execPath,args,{encoding:"utf8",
+  env:{...process.env,WORKFLOW_TWELFTH_TERMINAL_RUN_ID:"not-reviewed"}});
+ assert.ok(!unverified.includes(id));
+});
