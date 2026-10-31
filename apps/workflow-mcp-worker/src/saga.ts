@@ -21,7 +21,7 @@ export async function compensateSession(
    g.commitSha===action.commitSha&&g.type===action.type&&
    g.contractDigest===action.contractDigest);
  const inputs=action?.inputs as Record<string,unknown>|undefined;
- if(!plan.saga_compensation_approved||!step.compensate||
+ if(plan.github_execution_approved!==true||!plan.saga_compensation_approved||!step.compensate||
     step.compensate.kind!=='github.session.cancel'||!grant||
     action?.type!=='session'||inputs?.session_mode!=='temporary'||
     action.repository!=='lirtual/session-actions'||
