@@ -484,7 +484,8 @@ test("twelfth exact GitHub Artifact Task: native/D1/GitHub proof, fail-closed re
    {success:true,results:[]},
    {success:true,results:[]},
   ],
-  native:{id,status:"complete",success:true,error:null,
+  // Match actual Cloudflare REST result: Wrangler CLI, not the API, adds `id`.
+  native:{status:"complete",success:true,error:null,
    end:"2026-10-31T07:55:27Z",step_count:3,steps:[
     {name:"github-action-dispatch-verify-1",success:true,
      output:JSON.stringify({attemptId:attempt,status:"confirmed",runId:run,runAttempt:1})},
@@ -516,7 +517,7 @@ test("twelfth exact GitHub Artifact Task: native/D1/GitHub proof, fail-closed re
   const x=structuredClone(evidence);x.d1[i].results.push({run_id:id,step_id:"verify"});
   assert.throws(()=>verifyTwelfthTerminalEvidence(x.d1,x.native,x.github),/blocked/);
  }
- for(const patch of [{status:"running"},{success:false},{step_count:2},{end:null}]){
+ for(const patch of [{id:"wrong-instance"},{status:"running"},{success:false},{step_count:2},{end:null}]){
   assert.throws(()=>verifyTwelfthTerminalEvidence(evidence.d1,{...evidence.native,...patch},evidence.github),/blocked/);
  }
  for(const patch of [{id:run+1},{run_attempt:2},{conclusion:"failure"},
