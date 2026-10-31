@@ -162,7 +162,7 @@ test('PR confirmation renews a nonsecret seven-day review window but never the e
   assert.match(source,/updated_at=\?,expires_at=\?,error_class='github_pr_ci_pending'/);
   assert.match(source,/AND phase='running' AND expected_source_sha=\? AND expires_at>\?/);
 });
-for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected','ca-replacement-unprotected','ca-replacement-drift-unprotected','ca-replacement-upstream-drift-unprotected','ca-replacement-upstream-ca-drift-unprotected','ca-replacement-upstream-tls-drift-unprotected','ca-replacement-upstream-unreadable-unprotected'])
+for (const mode of ['lost-protected','lost-unprotected','success-protected','success-unprotected','ca-success-unprotected','ca-lost-unprotected','ca-existing-match-unprotected','ca-existing-different-unprotected','ca-existing-ambiguous-unprotected','ca-existing-unreadable-unprotected','ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected','ca-replacement-unprotected','ca-replacement-drift-unprotected','ca-replacement-upstream-drift-unprotected','ca-replacement-upstream-ca-drift-unprotected','ca-replacement-upstream-tls-drift-unprotected','ca-replacement-upstream-unreadable-unprotected'])
 test('preparation preserves policy and resource receipt safety: '+mode,async()=>{
   const {DatabaseSync}=await import('node:sqlite');
   const {createCipheriv}=await import('node:crypto');
@@ -197,7 +197,8 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
     .run(operationId,candidate.id,iv.toString('base64')+'.'+encrypted.toString('base64'),Date.now()+600000);
   let creates=0, caUploads=0, caWritten=false;
   const isCa=mode.startsWith('ca-');
-  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-') || mode.startsWith('ca-success') || mode==='ca-replacement-unprotected';
+  const unprotected=mode.endsWith('-unprotected'), success=mode.startsWith('success-') || mode.startsWith('ca-success') || mode==='ca-replacement-unprotected' ||
+    ['ca-existing-match-unprotected','ca-existing-different-unprotected'].includes(mode);
   const configId='1'.repeat(32), head='b'.repeat(40), blobs=new Map();
   let createdConfig;
   const request=async(url,init={})=>{
@@ -242,11 +243,24 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
       return Response.json({success:true,result:[{success:true,...result}]});
     }
     if(path.endsWith('/mtls_certificates') && init.method==='GET' && mode==='ca-permission-unprotected')return new Response(null,{status:403});
-    if(path.endsWith('/mtls_certificates') && init.method==='GET')return Response.json({success:true,
-      result:mode==='ca-duplicate-unprotected'?[{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true},
-      {id:'7'.repeat(36),name:'db476-'+operationId+'-ca',ca:true}]:
-      caWritten?[{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true,certificates:candidate.caPem}]:[],
-      result_info:{total_pages:1,total_count:mode==='ca-duplicate-unprotected'?2:(caWritten?1:0)}});
+    if(path.endsWith('/mtls_certificates') && init.method==='GET'){
+      const existing=mode.startsWith('ca-existing-')?
+        [{id:'8'.repeat(36),name:'preexisting-account-ca',ca:true,type:'custom'},
+          ...(mode==='ca-existing-ambiguous-unprotected'?
+            [{id:'9'.repeat(36),name:'another-installed-ca',ca:true,type:'custom'}]:[])]:[];
+      const current=mode==='ca-duplicate-unprotected'?[{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true},
+        {id:'7'.repeat(36),name:'db476-'+operationId+'-ca',ca:true}]:
+        caWritten?[{id:'6'.repeat(36),name:'db476-'+operationId+'-ca',ca:true,certificates:candidate.caPem}]:[];
+      return Response.json({success:true,result:[...existing,...current],
+        result_info:{total_pages:1,total_count:existing.length+current.length}});
+    }
+    if(path.endsWith('/mtls_certificates/'+'8'.repeat(36)) ||
+       path.endsWith('/mtls_certificates/'+'9'.repeat(36))){
+      if(mode==='ca-existing-unreadable-unprotected')return new Response(null,{status:403});
+      return Response.json({success:true,result:{id:path.split('/').at(-1),ca:true,
+        type:'custom',certificates:mode==='ca-existing-different-unprotected'?
+          '-----BEGIN CERTIFICATE-----\nRGlmZmVyZW50\n-----END CERTIFICATE-----':candidate.caPem}});
+    }
     if(path.endsWith('/mtls_certificates') && init.method==='POST') {
       caUploads++;
       const body=JSON.parse(init.body);
@@ -301,10 +315,13 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
         {status:'active',revision:3});
       return;
     }
-    if(['ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected'].includes(mode)) {
+    if(['ca-duplicate-unprotected','ca-wrong-pem-unprotected','ca-permission-unprotected',
+      'ca-existing-ambiguous-unprotected','ca-existing-unreadable-unprotected'].includes(mode)) {
       await assert.rejects(prepareDatabaseHyperdrive(runnerEnv,request),error=>
-        error.reason===(mode==='ca-duplicate-unprotected'?'ca_inventory_ambiguous':
-          mode==='ca-permission-unprotected'?'ca_permission_denied':'ca_content_mismatch'));
+        error.reason===(['ca-duplicate-unprotected','ca-existing-ambiguous-unprotected'].includes(mode)?
+          'ca_inventory_ambiguous':
+          ['ca-permission-unprotected','ca-existing-unreadable-unprotected'].includes(mode)?
+            'ca_permission_denied':'ca_content_mismatch'));
       assert.equal(creates,0);
       assert.equal(caUploads,mode==='ca-wrong-pem-unprotected'?1:0);
       if(mode==='ca-permission-unprotected') {
@@ -321,7 +338,15 @@ test('preparation preserves policy and resource receipt safety: '+mode,async()=>
         assert.deepEqual({...db.prepare('SELECT status,revision FROM database_connections WHERE id=?').get('old_ref')},
           {status:'active',revision:3});
       }
-      if(isCa){assert.equal(caUploads,1);assert.equal(createdConfig.mtls.ca_certificate_id,'6'.repeat(36));}
+      if(isCa){
+        const reused=mode==='ca-existing-match-unprotected';
+        assert.equal(caUploads,reused?0:1);
+        assert.equal(createdConfig.mtls.ca_certificate_id,reused?'8'.repeat(36):'6'.repeat(36));
+        if(reused){
+          assert.deepEqual({...db.prepare('SELECT ca_certificate_id,ca_write_started_at FROM hyperdrive_operations').get()},
+            {ca_certificate_id:'8'.repeat(36),ca_write_started_at:null});
+        }
+      }
       assert.deepEqual({...db.prepare('SELECT phase,pr_number,head_sha,ciphertext,key_id FROM hyperdrive_operations').get()},
         {phase:'awaiting_confirmation',pr_number:3,head_sha:head,ciphertext:null,key_id:null});
       return;

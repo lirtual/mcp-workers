@@ -203,27 +203,49 @@ async function certificateForCandidate({candidate,row,operationId,sourceSha,runI
     return id;
   };
   let id;
+  let reused = false;
   if (row.ca_write_started_at != null) {
     requireGate(matches.length === 1 &&
       (row.ca_certificate_id == null || matches[0].id === row.ca_certificate_id),
       'ca_outcome_requires_reconciliation');
     id = await verify(matches[0].id);
   } else {
-    // Do not repurpose another operation's asset even if its name collides.
+    // An Owner-supplied CA may already be installed. Compare complete PEMs
+    // via read-only Cloudflare detail, not a name/issuer guess or a second POST.
     requireGate(matches.length === 0, 'ca_name_collision');
-    const claim = await sql(`UPDATE hyperdrive_operations SET ca_write_started_at=?,updated_at=?
-      WHERE operation_id=? AND phase='running' AND expected_source_sha=?
-      AND ca_write_started_at IS NULL AND resource_write_started_at IS NULL
-      AND prepare_run_id=? AND expires_at>?`,
-    [Date.now(),Date.now(),operationId,sourceSha,Number(runId),Date.now()]);
-    requireGate(claim.meta?.changes === 1, 'ca_write_claim_failed');
-    const cert = await cloud(base,'POST',{name,ca:true,certificates:candidate.caPem});
-    id = await verify(cert?.id);
+    const existing = [];
+    for (const item of all) {
+      if (item?.ca !== true || item.type !== 'custom') continue;
+      requireGate(caPattern.test(item.id ?? ''), 'ca_inventory_incomplete');
+      const cert = await cloud(base + '/' + item.id);
+      requireGate(cert?.id === item.id && cert.ca === true &&
+        cert.type === 'custom' && typeof cert.certificates === 'string',
+        'ca_inventory_incomplete');
+      if (cert.certificates.replaceAll('\r\n','\n').trim() ===
+          candidate.caPem.replaceAll('\r\n','\n').trim()) existing.push(item.id);
+    }
+    requireGate(existing.length <= 1,'ca_inventory_ambiguous');
+    if (existing.length === 1) {
+      // No certificate write occurred. The exact CA identifier is durable
+      // provenance; never claim ca_write_started_at for a read-only reuse.
+      id = existing[0];
+      reused = true;
+    } else {
+      const claim = await sql(`UPDATE hyperdrive_operations SET ca_write_started_at=?,updated_at=?
+        WHERE operation_id=? AND phase='running' AND expected_source_sha=?
+        AND ca_write_started_at IS NULL AND resource_write_started_at IS NULL
+        AND prepare_run_id=? AND expires_at>?`,
+      [Date.now(),Date.now(),operationId,sourceSha,Number(runId),Date.now()]);
+      requireGate(claim.meta?.changes === 1, 'ca_write_claim_failed');
+      const cert = await cloud(base,'POST',{name,ca:true,certificates:candidate.caPem});
+      id = await verify(cert?.id);
+    }
   }
   if (row.ca_certificate_id == null) {
     const stored = await sql(`UPDATE hyperdrive_operations SET ca_certificate_id=?,updated_at=?
       WHERE operation_id=? AND phase='running' AND expected_source_sha=?
-      AND ca_certificate_id IS NULL AND ca_write_started_at IS NOT NULL`,
+      AND ca_certificate_id IS NULL AND
+      ca_write_started_at IS ${reused ? 'NULL' : 'NOT NULL'}`,
     [id,Date.now(),operationId,sourceSha]);
     requireGate(stored.meta?.changes === 1, 'ca_receipt_unknown');
   }
