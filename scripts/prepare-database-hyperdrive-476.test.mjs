@@ -401,8 +401,9 @@ test('failed unbound Apply can restage once without credentials or rewriting its
       const sourceText=readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
       const manifest=JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json',import.meta.url),'utf8'));
       const source=readConfiguration('database-mcp-worker',sourceText);
-      const entry={binding:oldBinding,id:configId,dialect:'mysql',origin_host:'mysql.example.net',origin_port:3306,
+      const entry={binding:oldBinding,dialect:'mysql',origin_host:'mysql.example.net',origin_port:3306,
         origin_database:'catalog',origin_user:'reader',ca_certificate_id:caId};
+      entry.id=configId;
       const oldFiles=patchSource(sourceText,manifest,entry);
       const oldBlobs=new Map(Object.entries(oldFiles).map(([path,text],i)=>[String(i+2).repeat(40),{path,text}]));
       const newBlobs=new Map();
