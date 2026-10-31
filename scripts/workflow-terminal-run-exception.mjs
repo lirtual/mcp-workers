@@ -39,6 +39,16 @@ export const NINTH_TERMINAL_RUN_ID = "29e121ab-de3e-43dd-b3bb-6e6d495fa2b1";
 export const NINTH_SESSION_GITHUB_RUN_ID = 41146470419;
 export const TENTH_TERMINAL_RUN_ID = "eab7b71f-b857-4569-afde-fd269cd1b2bb";
 export const TENTH_SESSION_GITHUB_RUN_ID = 41147999088;
+// Exact 2026-10-31 generic text E2E: the Provider has NO durable receipt.
+// Preserve the unknown business outcome; do not replay its invocation.
+export const ELEVENTH_TERMINAL_RUN_ID = "5813140e-6559-469c-8e0a-d6800ff33331";
+export const ELEVENTH_WORKFLOW_ID = "8ab02be9-f010-4359-bc25-938e47b896eb";
+export const ELEVENTH_VERSION_ID = "ff87097f-e2f1-4454-b845-7715d86d06b8";
+export const ELEVENTH_INVOCATION_ID = "87d62d6e-32aa-4bdc-91d8-c70260f37f55";
+export const ELEVENTH_PROVIDER_VERSION = "95e42878-91e9-49db-aae8-4703725a027f";
+export const ELEVENTH_INPUT_DIGEST = "a291503723b808ef09cfecb7277a91bcecd4e943771a065a987462f79113d315";
+export const ELEVENTH_CONTRACT_DIGEST = "aa9f078a8a7f8ea2f816286b9c023aeadee3e1cd038b197df08567bcebc04e1b";
+const ELEVENTH_WEIXIN_DB = "051c3b6d-e3bc-4d69-907f-37e8ab00618f";
 const WORKFLOW = "workflow-mcp-orchestrator";
 
 // The six exact instances were all verified before Cloudflare pruned history.
@@ -426,6 +436,43 @@ export function verifySagaTerminalEvidence(d1,native,github,kind) {
   return config.id;
 }
 
+/** One exact terminal Workflow with a reserved but Provider-unrecorded Action. */
+export function verifyEleventhTerminalEvidence(d1,native,providerReceipts){
+  requireValid(Array.isArray(d1)&&d1.length===5&&
+    d1.every(x=>x?.success===true&&Array.isArray(x.results)),
+    'eleventh Run D1 readback incomplete');
+  const [runs,steps,sessions,attempts,invocations]=d1.map(x=>x.results);
+  requireValid(runs.length===1&&runs[0].id===ELEVENTH_TERMINAL_RUN_ID&&
+    runs[0].workflow_id===ELEVENTH_WORKFLOW_ID&&
+    runs[0].version_id===ELEVENTH_VERSION_ID&&
+    runs[0].start_state==='started'&&
+    runs[0].outcome==='indeterminate'&&
+    runs[0].error_code==='cloudflare_outcome_unknown',
+    'eleventh Run identity or business result changed');
+  requireValid(steps.length===1&&
+    steps[0].run_id===ELEVENTH_TERMINAL_RUN_ID&&
+    steps[0].step_id==='notify'&&steps[0].status==='indeterminate'&&
+    steps[0].error_code==='cloudflare_outcome_unknown',
+    'eleventh Run Step identity changed');
+  requireValid(sessions.length===0&&attempts.length===0,
+    'eleventh Run unexpectedly owns physical dispatch');
+  requireValid(invocations.length===1&&
+    invocations[0].run_id===ELEVENTH_TERMINAL_RUN_ID&&
+    invocations[0].step_id==='notify'&&
+    invocations[0].invocation_id===ELEVENTH_INVOCATION_ID&&
+    invocations[0].source_attempt_id===ELEVENTH_INVOCATION_ID&&
+    invocations[0].input_digest===ELEVENTH_INPUT_DIGEST&&
+    invocations[0].contract_digest===ELEVENTH_CONTRACT_DIGEST&&
+    invocations[0].binding_generation===1&&
+    invocations[0].deployment_id===ELEVENTH_PROVIDER_VERSION,
+    'eleventh Workflow Action reservation identity changed');
+  requireValid(native?.status==='complete'&&!!native.end,
+    'eleventh native instance did not finish');
+  requireValid(Array.isArray(providerReceipts)&&providerReceipts.length===0,
+    'eleventh Provider receipt missing proof failed');
+  return ELEVENTH_TERMINAL_RUN_ID;
+}
+
 async function main() {
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
     "only the Workflow release may request this exception");
@@ -435,7 +482,7 @@ async function main() {
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
     "required read-only verification credentials missing");
   const kind=process.env.TERMINAL_PROOF_KIND;
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth",
+  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth"||kind==="eleventh",
     "unknown terminal proof kind");
   const second=kind==="second";
   const third=kind==="third";
@@ -445,6 +492,7 @@ async function main() {
   const seventh=kind==="seventh";
   const ninth=kind==="ninth";
   const tenth=kind==="tenth";
+  const eleventh=kind==="eleventh";
   const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
   const get = async (url, token) => {
     const response = await fetch(url,{
@@ -456,7 +504,7 @@ async function main() {
   };
   const cfResponse = await fetch("https://api.cloudflare.com/client/v4/accounts/"+
     process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (ninth?NINTH_TERMINAL_RUN_ID:tenth?TENTH_TERMINAL_RUN_ID:seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
+    (eleventh?ELEVENTH_TERMINAL_RUN_ID:ninth?NINTH_TERMINAL_RUN_ID:tenth?TENTH_TERMINAL_RUN_ID:seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
     {headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
       Accept:"application/json"},signal:AbortSignal.timeout(15000)});
   let native;
@@ -466,7 +514,7 @@ async function main() {
       "native Cloudflare instance readback unavailable");
     native = cf.result;
   } else if (cfResponse.status === 404) {
-    requireValid(!seventh&&!ninth&&!tenth,"recent native instance must be independently live-proven");
+    requireValid(!seventh&&!ninth&&!tenth&&!eleventh,"recent native instance must be independently live-proven");
     // A 404 alone is never proof. Pin prior successful checks for all six
     // precise instances, and still check today's D1/GitHub terminal state.
     requireValid(process.env.GITHUB_TOKEN,
@@ -477,6 +525,32 @@ async function main() {
     console.log("Historical native instance expired; exact prior release proof verified");
   } else {
     requireValid(false,"independent native state unavailable (HTTP "+cfResponse.status+")");
+  }
+  if(eleventh){
+    // A Provider receipt would mean a send may have been attempted.
+    // Never exempt that case or replay an unknown outcome.
+    const response=await fetch("https://api.cloudflare.com/client/v4/accounts/"+
+      process.env.CLOUDFLARE_ACCOUNT_ID+"/d1/database/"+ELEVENTH_WEIXIN_DB+"/query",{
+        method:"POST",
+        headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
+          Accept:"application/json","Content-Type":"application/json"},
+        body:JSON.stringify({sql:"SELECT generation,request_id,status FROM weixin_send_receipts WHERE request_id='"+
+          ELEVENTH_INVOCATION_ID+"'"}),
+        signal:AbortSignal.timeout(15000)
+      });
+    requireValid(response.ok,"eleventh Provider D1 query unavailable");
+    const proof=await response.json();
+    requireValid(proof?.success===true&&Array.isArray(proof.result)&&
+      proof.result.length===1&&proof.result[0]?.success===true&&
+      Array.isArray(proof.result[0]?.results),
+      "eleventh Provider D1 readback incomplete");
+    // Independent native Cloudflare completion plus both D1s required.
+    verifyEleventhTerminalEvidence(d1,native,proof.result[0].results);
+    requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
+    await appendFile(process.env.GITHUB_OUTPUT,
+      "eleventh_terminal_run_id="+ELEVENTH_TERMINAL_RUN_ID+"\n");
+    console.log("Verified exact terminal generic notification Run; unknown preserved");
+    return;
   }
   const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
     (ninth?NINTH_SESSION_GITHUB_RUN_ID:tenth?TENTH_SESSION_GITHUB_RUN_ID:seventh?SEVENTH_TASK_GITHUB_RUN_ID:sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
