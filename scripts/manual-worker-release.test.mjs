@@ -273,7 +273,7 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   broken(x => { x.d1_databases = undefined; }, /dedicated production D1/);
   broken(x => { x.d1_databases[0].database_id = "FILL_ME_IN"; }, /dedicated production D1/);
   broken(x => { x.secrets.required.push("DATABASE_CONFIG"); }, /never legacy DATABASE_CONFIG/);
-  broken(x => { x.hyperdrive[0].id = '00000000000000000000000000000000'; }, /Hyperdrive binding/);
+  broken(x => { x.hyperdrive = [{ binding: 'HYPERDRIVE_UNREVIEWED', id: '00000000000000000000000000000000' }]; }, /Hyperdrive manifest\/source mismatch/);
   broken(x => { x.routes = []; }, /dedicated HTTPS hostname/);
   broken(x => { x.routes[0].pattern = "other.example.com"; }, /dedicated HTTPS hostname/);
   broken(x => { x.ratelimits[1].simple.limit = 100; }, /rate-limit policies/);
@@ -300,7 +300,9 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   check("DB", /D1 binding mismatch/);
   check("SETUP_RATE_LIMITER", /SETUP_RATE_LIMITER/);
   check("ACCESS_AUD", /Access variable missing/);
-  check(source.hyperdrive[0].binding, /Hyperdrive binding IDs/);
+  assert.throws(() => verifyBindings("database-mcp-worker", { ...settings,
+    bindings: [...settings.bindings, { name: "HYPERDRIVE_UNREVIEWED", type: "hyperdrive", id: "11111111-1111-4111-8111-111111111111" }] },
+    list, { mode: "readback", sourceConfig: source }), /Hyperdrive binding IDs/);
   assert.throws(() => verifyBindings("database-mcp-worker", settings,
     list.filter(x => x.name !== "DATABASE_ENCRYPTION_KEY"),
     { mode: "readback", sourceConfig: source }), /DATABASE_ENCRYPTION_KEY/);

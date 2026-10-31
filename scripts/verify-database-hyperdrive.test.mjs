@@ -139,31 +139,15 @@ test('denied Hyperdrive read identifies second manifest slot without querying up
 });
 
 
-test('reviewed production manifest preserves isolated baseline bindings as new candidates are added',async()=>{
+test('retired production manifest is empty while future reviewed candidates remain valid',async()=>{
  const {readFileSync}=await import('node:fs');
- const {readConfiguration}=await import('./manual-worker-release.mjs');
+ const {readConfiguration,verifyDatabaseHyperdriveSource}=await import('./manual-worker-release.mjs');
  const root=new URL('../apps/database-mcp-worker/',import.meta.url);
  const source=readConfiguration('database-mcp-worker',readFileSync(new URL('wrangler.jsonc',root),'utf8'));
  const reviewed=JSON.parse(readFileSync(new URL('hyperdrive-bindings.json',root),'utf8'));
- const byBinding=new Map(reviewed.map(x=>[x.binding,x]));
- // Existing reviewed origins must remain exact, but new-ID lifecycle candidates
- // legitimately extend the manifest. Strict per-config readback is tested
- // separately and required by the production release gate.
- assert.equal(byBinding.size,reviewed.length);
- assert.ok(byBinding.has('HYPERDRIVE_DB344_MYSQL_E2E'));
- assert.ok(byBinding.has('HYPERDRIVE_DB344_PG_E2E'));
- const mysql=byBinding.get('HYPERDRIVE_DB344_MYSQL_E2E');
- assert.deepEqual(mysql,{
-  binding:'HYPERDRIVE_DB344_MYSQL_E2E',id:'38bf39b569484dbb8a9fe1b24f0df854',
-  dialect:'mysql',origin_host:'mysql-zeroverse.d.aivencloud.com',
-  origin_port:18691,origin_database:'aiven_mysql_test',origin_user:'db344_e2e',
-  ca_certificate_id:'c9a71de0-06b0-4ea2-b2e8-2dfc27fb0d7a'
- });
- assert.deepEqual(source.hyperdrive,reviewed.map(x=>({binding:x.binding,id:x.id})));
- assert.ok(!JSON.stringify(source.hyperdrive).includes('HYPERDRIVE_AIVEN_OPENLIST'));
- assert.ok(!JSON.stringify(reviewed).includes('135ef2e15db049c68e99b0849f9a3da0'));
- assert.equal(verifyCloudflareHyperdriveConfig(mysql,{
-  id:mysql.id,caching:{disabled:true},mtls:{sslmode:'VERIFY_IDENTITY',ca_certificate_id:mysql.ca_certificate_id},
-  origin:{scheme:'mysql',host:mysql.origin_host,port:mysql.origin_port,database:mysql.origin_database,user:mysql.origin_user}
- }),true);
+ assert.deepEqual(reviewed,[]);
+ assert.deepEqual(source.hyperdrive,[]);
+ const candidate={binding:'HYPERDRIVE_TEST_CANDIDATE',id:'22222222-2222-4222-8222-222222222222'};
+ assert.equal(verifyDatabaseHyperdriveSource({...source,hyperdrive:[candidate]},[candidate]),true);
+ assert.throws(()=>verifyDatabaseHyperdriveSource({...source,hyperdrive:[candidate]},[]),/manifest\/source mismatch/);
 });

@@ -10,7 +10,7 @@ const fail=reason=>{throw Object.assign(new Error('Hyperdrive unbinding blocked'
 const gate=(ok,reason)=>{if(!ok)fail(reason);};
 const sha=/^[a-f0-9]{40}$/;
 export function removeHyperdriveBindingSource(text,manifest,binding,id){
-  const source=readConfiguration('database-mcp-worker',text);
+  const source=readConfiguration('database-mcp-worker',text,manifest);
   verifyDatabaseHyperdriveSource(source,manifest);
   gate(source?.name==='database-mcp-worker'&&source.d1_databases?.length===1&&
     source.d1_databases[0].database_id===D1,'source_drift');

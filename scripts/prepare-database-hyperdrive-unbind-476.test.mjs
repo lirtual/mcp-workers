@@ -4,9 +4,14 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { removeHyperdriveBindingSource } from './prepare-database-hyperdrive-unbind-476.mjs';
 
-const source = readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc', import.meta.url),'utf8');
-const manifest = JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json',import.meta.url),'utf8'));
-const target = manifest[0];
+// Keep a fully synthetic unbinding fixture after all live Hyperdrives are retired.
+const deployedSource = readFileSync(new URL('../apps/database-mcp-worker/wrangler.jsonc', import.meta.url),'utf8');
+const target = { binding:'HYPERDRIVE_TEST_FIXTURE', id:'11111111-1111-4111-8111-111111111111', dialect:'mysql' };
+const manifest = [target];
+const source = deployedSource.replace('  "hyperdrive": [],',
+  '  "hyperdrive": [\n    { "binding": "'+target.binding+'", "id": "'+target.id+'" }\n  ],');
+assert.equal(JSON.parse(source).hyperdrive.length,1);
+
 test('unbinding stages precisely the reviewed Wrangler binding and manifest, leaving unrelated settings intact',()=>{
   const files = removeHyperdriveBindingSource(source,manifest,target.binding,target.id);
   assert.deepEqual(Object.keys(files).sort(),['apps/database-mcp-worker/hyperdrive-bindings.json','apps/database-mcp-worker/wrangler.jsonc']);
