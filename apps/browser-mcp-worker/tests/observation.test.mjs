@@ -118,3 +118,24 @@ test("top-document visible text survives ordinary embedded frames and forms with
   assert.equal(result.text,"Published token docs and search form");
   assert.equal(result.truncated,false);
 });
+
+test("slow visible-text scanning returns bounded partial text rather than exhausting the read deadline",()=>{
+  let visited=0,elapsed=0;
+  const parent={closest:()=>null,getClientRects:()=>[{}]};
+  const walker={currentNode:null,nextNode(){
+    if(visited>=1000)return false;
+    this.currentNode={parentElement:parent,textContent:"Public line "+visited++};
+    return true;
+  }};
+  const ctx=vm.createContext({
+    document:{body:{},createTreeWalker:()=>walker},NodeFilter:{SHOW_TEXT:4},
+    Date:{now:()=>elapsed},
+    getComputedStyle:()=>{elapsed+=10;return {display:"block",visibility:"visible"};}
+  });
+  vm.runInContext(source,ctx);
+  const result=vm.runInContext("extractVisibleText()",ctx);
+  assert.equal(result.truncated,true,"must identify partial output on slow pages");
+  assert.ok(result.text.includes("Public line 0"),"safe partial output should remain usable");
+  assert.ok(visited<500,"stop iterating before the five-second read budget");
+  assert.ok(elapsed<=2000,"the scanning phase must leave time for transport and element references");
+});

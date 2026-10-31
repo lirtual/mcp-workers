@@ -90,10 +90,13 @@ function extractVisibleText() {
   // to its contents and must not suppress ordinary parent text.
   if (!document.body) return {text:"",truncated:false};
   const body=document.body;
+  // Style/layout checks can be expensive on complex pages. Keep this synchronous
+  // scan within a small share of the coordinator's five-second read deadline.
+  const scanStarted=Date.now();
   const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT);
   const pieces=[];let length=0,visited=0,truncated=false;
   while(walker.nextNode()) {
-    if(++visited>5000){truncated=true;break;}
+    if(++visited>5000||Date.now()-scanStarted>=1500){truncated=true;break;}
     const node=walker.currentNode, parent=node.parentElement;
     if(!parent || parent.closest("script,style,noscript,textarea,input,select,option,[contenteditable], [hidden], [aria-hidden='true']"))continue;
     const style=getComputedStyle(parent);
