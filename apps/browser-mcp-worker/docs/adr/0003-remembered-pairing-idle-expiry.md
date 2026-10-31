@@ -1,6 +1,6 @@
 # ADR 0003 — Remembered Profile pairing expires after a configurable idle interval
 
-Status: Accepted as design consensus, 2026-10-31. **Not implemented or released.**
+Status: Accepted as design consensus, 2026-10-31. **Implemented as v0.2.6 source candidate; production not released.**
 
 ## Decision
 

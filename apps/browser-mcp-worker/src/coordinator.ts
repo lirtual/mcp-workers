@@ -2,9 +2,17 @@ import { approvalConfig, type ApprovalEnv } from "./approval-auth.ts";
 import { isInteraction, validInteraction, interactionExtra } from "./interactions.ts";
 import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
 const TEMP_RECONNECT_GRACE_MS = 90000;
+const DAY_MS = 86400000;
+const LIVE_STALE_MS = 60000;
+const LIVE_AUDIT_MS = 60000;
+export function rememberedIdleDays(value?:string):number {
+  if (value===undefined || value==="")return 14;
+  if (!/^(?:[1-9]|[1-8][0-9]|90)$/.test(value))throw Error("Invalid BROWSER_REMEMBERED_IDLE_DAYS");
+  return Number(value);
+}
 type Endpoint = {
   id: string; alias: string; state: "stopped" | "enabled" | "revoked";
-  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number; offline_deadline?:number|null;
+  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number; offline_deadline?:number|null; idle_deadline?:number|null; last_seen_at?:number|null; browser_family?:string|null; browser_platform?:string|null; client_version?:string|null;
 };
 type SocketAuth = { protocol?:number; extension_version?:string; endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; };
 type PendingMutation = {
@@ -21,7 +29,7 @@ const secret = () => {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 };
-const safeAlias = (v: unknown) => typeof v === "string" && v.trim().length > 0 && v.length <= 64;
+const safeAlias = (v: unknown) => typeof v === "string" && v.trim().length > 0 && v.trim().length <= 64 && v.length <= 64 && !/[\x00-\x1f\x7f]/.test(v);
 const publicEndpoint = (e: Endpoint, online = false) => ({
   endpoint_id: e.id, alias: e.alias, authorization: e.state,
   online: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
@@ -30,6 +38,9 @@ const publicEndpoint = (e: Endpoint, online = false) => ({
   observation_ready: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
   generation: e.generation, updated_at: e.updated_at,
   pairing_mode:e.pairing_mode??"permanent",lease_expires_at:e.lease_expires_at??null,
+  idle_expires_at:e.state==="stopped"?e.idle_deadline??null:e.state==="enabled"&&!online?e.offline_deadline??null:null,
+  last_seen_at:e.last_seen_at??null,browser_family:e.browser_family??null,
+  browser_platform:e.browser_platform??null,client_version:e.client_version??null,
 });
 export class BrowserOwner implements DurableObject {
   private readonly sql: SqlStorage;
@@ -57,8 +68,10 @@ export class BrowserOwner implements DurableObject {
   private readonly readStages = new Set(["extension_received","tab_lookup",
     "frame_lookup","text_injection","element_refs","final_validation","result_transport"]);
   private readonly env:ApprovalEnv;
-  constructor(state: DurableObjectState, env:ApprovalEnv = {}) {
+  private readonly idleMs:number;
+  constructor(state: DurableObjectState, env:ApprovalEnv & {BROWSER_REMEMBERED_IDLE_DAYS?:string} = {}) {
     this.env=env;
+    this.idleMs=rememberedIdleDays(env.BROWSER_REMEMBERED_IDLE_DAYS)*DAY_MS;
     this.state = state;
     this.sql = state.storage.sql;
     this.sql.exec("CREATE TABLE IF NOT EXISTS pairs (code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)");
@@ -67,6 +80,14 @@ export class BrowserOwner implements DurableObject {
     if(!columns.includes("pairing_mode"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN pairing_mode TEXT NOT NULL DEFAULT 'permanent'");
     if(!columns.includes("lease_expires_at"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN lease_expires_at INTEGER");
     if(!columns.includes("offline_deadline"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN offline_deadline INTEGER");
+    if(!columns.includes("idle_deadline"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN idle_deadline INTEGER");
+    if(!columns.includes("last_seen_at"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN last_seen_at INTEGER");
+    if(!columns.includes("browser_family"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN browser_family TEXT");
+    if(!columns.includes("browser_platform"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN browser_platform TEXT");
+    if(!columns.includes("client_version"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN client_version TEXT");
+    // First compatible release migration: old OFF gets exactly one new deadline.
+    // Existing absolute deadlines are never rewritten by future configuration changes.
+    this.sql.exec("UPDATE endpoints SET idle_deadline=? WHERE pairing_mode='permanent' AND state='stopped' AND idle_deadline IS NULL",Date.now()+this.idleMs);
     this.sql.exec("CREATE TABLE IF NOT EXISTS activation_attempts (id TEXT PRIMARY KEY, proof_hash TEXT NOT NULL, alias TEXT NOT NULL, mode TEXT NOT NULL, endpoint_id TEXT, stop_epoch INTEGER, owner_verified INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)");
     this.intents = new IntentLedger(this.sql);
@@ -76,6 +97,10 @@ export class BrowserOwner implements DurableObject {
     // Existing approval requests had no execute token. Retire them permanently
     // without granting, dispatching, or deleting any historical receipt.
     this.intents.retirePendingApprovals();
+    // Migration creates new OFF deadlines. Register their first expiry Alarm
+    // during DO construction, even when no subsequent request arrives.
+    if(typeof state.blockConcurrencyWhile==="function")
+      void state.blockConcurrencyWhile(async()=>{await this.reconcileRemembered();});
   }
   private withOwnerReview<T extends {operation_id?:string;state?:string}>(answer:T) {
     if(answer.state!=="unknown"||!answer.operation_id)return answer;
@@ -131,12 +156,54 @@ export class BrowserOwner implements DurableObject {
   }
   private async scheduleEarlierAlarm(deadline:number) {
     const existing=await this.state.storage.getAlarm();
-    if(existing===null||existing>deadline)await this.state.storage.setAlarm(deadline);
+    if(existing===null||existing<=Date.now()||existing>deadline)await this.state.storage.setAlarm(deadline);
+  }
+  private async reconcileRemembered(now=Date.now()):Promise<void> {
+    let next=Infinity,hasOnline=false;
+    const entries=this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE pairing_mode='permanent' AND state!='revoked'").toArray();
+    for(const e of entries){
+      // Expiry wins before examining liveness: a late old socket cannot
+      // clear a persisted expired OFF/offline deadline.
+      const persisted=e.state==="stopped"?e.idle_deadline:e.offline_deadline;
+      if(persisted!=null&&persisted<=now){
+        const changed=this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=? AND state=?",
+          now,e.id,e.state);
+        if(changed.rowsWritten===1)this.close(e.id,"revoked");
+        continue;
+      }
+      const online=e.state==="enabled"&&this.live(e.id,e.generation);
+      if(online){
+        hasOnline=true;
+        if(e.offline_deadline!=null)
+          this.sql.exec("UPDATE endpoints SET offline_deadline=NULL WHERE id=? AND state='enabled' AND generation=?",e.id,e.generation);
+        continue;
+      }
+      const column=e.state==="stopped"?"idle_deadline":"offline_deadline";
+      let deadline=column==="idle_deadline"?e.idle_deadline:e.offline_deadline;
+      if(deadline==null){
+        deadline=(e.state==="enabled"&&e.last_seen_at!=null?e.last_seen_at:now)+this.idleMs;
+        this.sql.exec(`UPDATE endpoints SET ${column}=? WHERE id=? AND state=? AND ${column} IS NULL`,deadline,e.id,e.state);
+      }
+      if(deadline<=now){
+        const changed=this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=? AND state=? AND "+column+"<=?",now,e.id,e.state,now);
+        if(changed.rowsWritten===1)this.close(e.id,"revoked");
+      }else next=Math.min(next,deadline);
+    }
+    if(hasOnline)next=Math.min(next,now+LIVE_AUDIT_MS);
+    if(Number.isFinite(next)) {
+      try {await this.scheduleEarlierAlarm(next);}
+      catch {
+        // Alarm failure must not leave unmonitored future grants active.
+        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE pairing_mode='permanent' AND state!='revoked'",now);
+        for(const e of entries)this.close(e.id,"revoked");
+        throw Error("idle_alarm_unavailable");
+      }
+    }
   }
   private live(id: string, generation: number) {
     return this.state.getWebSockets().some(s => {
       const a = s.deserializeAttachment() as SocketAuth | null;
-      return a?.authenticated === true && a.protocol===3 && a.extension_version==="0.2.5" && a.endpoint_id === id &&
+      return a?.authenticated === true && a.protocol===3 && a.extension_version==="0.2.6" && a.endpoint_id === id &&
         a.generation === generation && s.readyState === WebSocket.OPEN &&
         typeof a.last_seen === "number" && Date.now()-a.last_seen < 60000;
     });
@@ -174,6 +241,7 @@ export class BrowserOwner implements DurableObject {
     } catch { return json({error:"bad_request"},400); }
     const now = Date.now();
     this.expireTemporary(now);
+    try{await this.reconcileRemembered(now);}catch{return json({error_code:"idle_unavailable"},503);}
     if(url.pathname==="/owner-unknown-view"||url.pathname==="/owner-unknown-report")
       return this.ownerUnknown(arg,url.pathname==="/owner-unknown-report");
     if (url.pathname === "/operation-status") {
@@ -244,23 +312,30 @@ export class BrowserOwner implements DurableObject {
         if(!latest||latest.state==="revoked"||!this.leaseValid(latest)||latest.stop_epoch!==row.stop_epoch||
            latest.revision!==existing.revision||latest.credential_hash!==existing.credential_hash)
           return json({error:"activation_superseded"},409);
+        const resumeDeadline=row.mode==="permanent"?Date.now()+this.idleMs:null;
+        if(resumeDeadline!==null)try{await this.scheduleEarlierAlarm(resumeDeadline);}
+        catch{return json({error:"lease_unavailable"},503);}
         if(this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0 AND owner_verified=1 AND expires_at>?",
             arg.attempt_id,Date.now()).rowsWritten!==1)return json({error:"activation_superseded"},409);
-        const committed=this.sql.exec("UPDATE endpoints SET state='enabled',revision=revision+1,updated_at=? WHERE id=? AND state!='revoked' AND stop_epoch=? AND revision=?",
-          Date.now(),latest.id,row.stop_epoch,latest.revision);
+        const fresh=this.endpoint(latest.id);
+        if(!fresh || fresh.state==="revoked" || !this.leaseValid(fresh) || fresh.revision!==latest.revision ||
+           fresh.stop_epoch!==row.stop_epoch)return json({error:"activation_superseded"},409);
+        const committed=this.sql.exec("UPDATE endpoints SET state='enabled',revision=revision+1,updated_at=?,idle_deadline=NULL,offline_deadline=? WHERE id=? AND state!='revoked' AND stop_epoch=? AND revision=?",
+          Date.now(),resumeDeadline,latest.id,row.stop_epoch,latest.revision);
         if(committed.rowsWritten!==1)return json({error:"activation_superseded"},409);
         return json({authorization:"enabled",endpoint_id:latest.id,pairing_mode:row.mode});
       }
-      const active=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM endpoints WHERE state!='revoked' AND (lease_expires_at IS NULL OR lease_expires_at>?)",now).toArray()[0]?.n??0;
+      const active=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM endpoints WHERE state!='revoked'").toArray()[0]?.n??0;
       if(active>=100)return json({error:"capacity_exceeded"},429);
       const endpoint_id=crypto.randomUUID(),credential=secret();
       const credentialHash=await hash(credential);
       if(this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0 AND owner_verified=1 AND expires_at>?",
         arg.attempt_id,Date.now()).rowsWritten!==1)return json({error:"activation_superseded"},409);
       const lease=row.mode==="temporary"?Date.now()+86400000:null;
-      this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at,pairing_mode,lease_expires_at) VALUES(?,?,?,'enabled',0,1,?,?,?)",
-        endpoint_id,row.alias,credentialHash,Date.now(),row.mode,lease);
-      if(lease)try{await this.scheduleEarlierAlarm(lease);}
+      const offline=row.mode==="permanent"?Date.now()+this.idleMs:null;
+      this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at,pairing_mode,lease_expires_at,offline_deadline) VALUES(?,?,?,'enabled',0,1,?,?,?,?)",
+        endpoint_id,row.alias,credentialHash,Date.now(),row.mode,lease,offline);
+      if(lease||offline)try{await this.scheduleEarlierAlarm((lease??offline)!);}
       catch{
         this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1 WHERE id=?",endpoint_id);
         return json({error:"lease_unavailable"},503);
@@ -294,7 +369,7 @@ export class BrowserOwner implements DurableObject {
         return json({error_code:"busy"},409);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated&&a.protocol===3&&a.extension_version==="0.2.5"&&a.endpoint_id===e.id&&a.generation===e.generation&&
+        return a?.authenticated&&a.protocol===3&&a.extension_version==="0.2.6"&&a.endpoint_id===e.id&&a.generation===e.generation&&
           typeof a.last_seen==="number"&&now-a.last_seen<60000&&sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -340,7 +415,7 @@ export class BrowserOwner implements DurableObject {
       if(!e || e.state!=="enabled" || !this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated && a.protocol===3 && a.extension_version==="0.2.5" && a.endpoint_id===id && a.generation===e.generation &&
+        return a?.authenticated && a.protocol===3 && a.extension_version==="0.2.6" && a.endpoint_id===id && a.generation===e.generation &&
           typeof a.last_seen==="number" && Date.now()-a.last_seen<60000 && sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -368,29 +443,44 @@ export class BrowserOwner implements DurableObject {
       return json(outcome);
     }
     if (url.pathname === "/list") {
-      const endpoints = this.sql.exec<Endpoint>("SELECT * FROM endpoints ORDER BY updated_at DESC LIMIT 100").toArray();
-      return json({endpoints:endpoints.map(e=>publicEndpoint(e,this.live(e.id,e.generation)))});
+      if(Object.keys(arg).some(key=>key!=="history") || (arg.history!==undefined && arg.history!==true))return json({error_code:"invalid_arguments"},400);
+      const current=this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE state!='revoked' ORDER BY updated_at DESC").toArray();
+      const history=arg.history===true?this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE state='revoked' ORDER BY updated_at DESC LIMIT 100").toArray():[];
+      return json({endpoints:[...current,...history].map(e=>publicEndpoint(e,this.live(e.id,e.generation)))});
     }
     const id = arg.endpoint_id;
     if (!validId(id)) return json({error:"invalid_endpoint"},400);
     const e = this.endpoint(id);
     if (!e) return json({error:"not_found"},404);
     if (url.pathname === "/state" || url.pathname === "/local-stop" ||
-        url.pathname === "/local-revoke") {
+        url.pathname === "/local-revoke" || url.pathname === "/rename") {
       if (typeof arg.credential !== "string" || arg.credential.length !== 64 ||
           (await hash(arg.credential)) !== e.credential_hash) return json({error:"unauthorized"},401);
     }
     // The stop epoch is exposed ONLY to the locally authenticated Profile.
     // It invalidates a cloud Enable that was prepared before a later Stop.
     if (url.pathname === "/state") return json({...publicEndpoint(e,this.live(e.id,e.generation)),stop_epoch:e.stop_epoch});
+    if(e.state!=="revoked" && url.pathname==="/rename"){
+      if(!safeAlias(arg.alias) || Object.keys(arg).some(k=>!["endpoint_id","credential","alias"].includes(k)))return json({error_code:"invalid_alias"},400);
+      this.sql.exec("UPDATE endpoints SET alias=? WHERE id=? AND state!='revoked'",(arg.alias as string).trim(),id);
+      return json({endpoint_id:id,alias:(arg.alias as string).trim()});
+    }
     if (e.state === "revoked") return (url.pathname === "/revoke" || url.pathname === "/local-revoke")
       ? json({endpoint_id:id,authorization:"revoked"}) : json({error:"revoked"},403);
     if (url.pathname === "/stop" || url.pathname === "/local-stop") {
       // Every Stop invalidates an earlier in-flight Enable, even when already
       // stopped; repeated Stop still preserves grant revision and timestamp.
-      if (e.state !== "stopped")
-        this.sql.exec("UPDATE endpoints SET state='stopped',revision=revision+1,stop_epoch=stop_epoch+1,updated_at=? WHERE id=?",now,id);
-      else this.sql.exec("UPDATE endpoints SET stop_epoch=stop_epoch+1 WHERE id=?",id);
+      if(e.state!=="stopped"){
+        const deadline=e.pairing_mode==="permanent"?
+          Math.min(e.idle_deadline??Infinity,e.offline_deadline??Infinity,now+this.idleMs):null;
+        if(deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
+        catch{
+          this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,stop_epoch=stop_epoch+1,updated_at=? WHERE id=?",now,id);
+          this.close(id,"revoked");return json({error_code:"idle_alarm_unavailable"},503);
+        }
+        this.sql.exec("UPDATE endpoints SET state='stopped',revision=revision+1,stop_epoch=stop_epoch+1,updated_at=?,idle_deadline=?,offline_deadline=NULL WHERE id=?",
+          now,deadline,id);
+      }else this.sql.exec("UPDATE endpoints SET stop_epoch=stop_epoch+1 WHERE id=?",id);
       this.close(id,"stopped");
       return json({endpoint_id:id,authorization:"stopped"});
     }
@@ -429,13 +519,15 @@ export class BrowserOwner implements DurableObject {
       }
     }
     this.expireTemporary(now);
+    await this.reconcileRemembered(now);
     const pending=this.sql.exec<{next_deadline:number|null}>("SELECT MIN(CASE WHEN offline_deadline IS NULL THEN lease_expires_at WHEN lease_expires_at IS NULL THEN offline_deadline ELSE MIN(offline_deadline,lease_expires_at) END) AS next_deadline FROM endpoints WHERE state='enabled' AND pairing_mode='temporary'").toArray()[0]?.next_deadline;
     if(pending!==null&&pending!==undefined)next=Math.min(next,pending);
-    if(Number.isFinite(next))await this.state.storage.setAlarm(next);
+    if(Number.isFinite(next))await this.scheduleEarlierAlarm(next);
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const auth = socket.deserializeAttachment() as SocketAuth | null;
     this.expireTemporary();
+    try{await this.reconcileRemembered();}catch{socket.close(1011,"idle_unavailable");return;}
     if (!auth || typeof message !== "string" || message.length > (auth.authenticated?2200000:4096) || Date.now() > auth.deadline && !auth.authenticated) {
       socket.close(1008,"invalid_frame");return;
     }
@@ -443,7 +535,7 @@ export class BrowserOwner implements DurableObject {
     try { v = JSON.parse(message) as Record<string,unknown>; if (!v || Array.isArray(v)) throw Error(); }
     catch {socket.close(1008,"invalid_frame");return;}
     if (!auth.authenticated) {
-      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.5" || !validId(v.endpoint_id) ||
+      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.6" || !validId(v.endpoint_id) ||
           typeof v.credential !== "string" || v.credential.length !== 64) {
         socket.close(1008,"authentication_required");return;
       }
@@ -454,7 +546,10 @@ export class BrowserOwner implements DurableObject {
       const current=this.endpoint(e.id);
       if(!current||current.state!=="enabled"||current.revision!==e.revision||current.generation!==e.generation){socket.close(1008,"stale_auth");return;}
       const generation = current.generation + 1;
-      const update=this.sql.exec("UPDATE endpoints SET generation=?,offline_deadline=NULL,updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",generation,Date.now(),e.id,current.generation,current.revision);
+      const family=["chrome","edge"].includes(v.browser_family as string)?v.browser_family:null;
+      const platform=["windows","linux","mac","other"].includes(v.browser_platform as string)?v.browser_platform:null;
+      const update=this.sql.exec("UPDATE endpoints SET generation=?,offline_deadline=NULL,idle_deadline=NULL,last_seen_at=?,client_version=?,browser_family=COALESCE(?,browser_family),browser_platform=COALESCE(?,browser_platform),updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",
+        generation,Date.now(),"0.2.6",family,platform,Date.now(),e.id,current.generation,current.revision);
       if(update.rowsWritten!==1){socket.close(1008,"stale_auth");return;}
       for (const other of this.state.getWebSockets()) {
         if (other !== socket && (other.deserializeAttachment() as SocketAuth|null)?.endpoint_id === e.id) {
@@ -462,11 +557,13 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,protocol:3,extension_version:"0.2.5",endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
+      socket.serializeAttachment({authenticated:true,protocol:3,extension_version:"0.2.6",endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
       socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:3}));
+      try{await this.scheduleEarlierAlarm(Date.now()+LIVE_AUDIT_MS);}
+      catch{this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1 WHERE id=?",e.id);this.close(e.id,"revoked");}
       return;
     }
-    if(auth.protocol!==3||auth.extension_version!=="0.2.5"){socket.close(1008,"obsolete_protocol");return;}
+    if(auth.protocol!==3||auth.extension_version!=="0.2.6"){socket.close(1008,"obsolete_protocol");return;}
     const e = this.endpoint(auth.endpoint_id!);
     if (!e || e.state !== "enabled" || !this.leaseValid(e) || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
     if(v.type==="prepare_result"&&validId(v.operation_id)&&v.generation===e.generation){
@@ -554,10 +651,19 @@ export class BrowserOwner implements DurableObject {
       pending.resolve(data && typeof data==="object" && !Array.isArray(data) &&
         serialized.length<=(pending.tool==="screenshot"?2100000:250000) ? data : {error_code:"invalid_result"});
     } else if (v.type === "ping" && v.generation === e.generation) {
-      socket.serializeAttachment({...auth,last_seen:Date.now()} satisfies SocketAuth);
+      const observed=Date.now();
+      socket.serializeAttachment({...auth,last_seen:observed} satisfies SocketAuth);
+      // Persist only a bounded server-observed checkpoint, not every heartbeat.
+      if(e.pairing_mode==="permanent" && observed-(e.last_seen_at??0)>=300000)
+        this.sql.exec("UPDATE endpoints SET last_seen_at=? WHERE id=? AND state='enabled' AND generation=?",observed,e.id,e.generation);
       socket.send(JSON.stringify({type:"pong",generation:e.generation}));
     } else if (v.type === "stop") {
-      this.sql.exec("UPDATE endpoints SET state='stopped',revision=revision+1,updated_at=? WHERE id=?",Date.now(),e.id);
+      const observed=Date.now();
+      const deadline=e.pairing_mode==="permanent"?
+        Math.min(e.idle_deadline??Infinity,e.offline_deadline??Infinity,observed+this.idleMs):null;
+      if(deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
+      catch{this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1 WHERE id=?",e.id);this.close(e.id,"revoked");return;}
+      this.sql.exec("UPDATE endpoints SET state='stopped',revision=revision+1,stop_epoch=stop_epoch+1,updated_at=?,idle_deadline=?,offline_deadline=NULL WHERE id=?",observed,deadline,e.id);
       this.close(e.id,"stopped");
     } else {socket.close(1008,"unsupported_frame");}
   }
@@ -567,14 +673,17 @@ export class BrowserOwner implements DurableObject {
     // alarms eventually revoke browser-exit grants without relying on clients.
     // Superseded WSS generations and explicit Stop/Revoke cannot regain access.
     const auth=socket.deserializeAttachment() as SocketAuth|null;
-    let deadline:number|null=null, temporaryId:string|null=null;
+    let deadline:number|null=null, offlineId:string|null=null;
     if(auth?.authenticated && auth.endpoint_id && typeof auth.generation==="number"){
       const e=this.endpoint(auth.endpoint_id);
-      if(e?.state==="enabled"&&e.pairing_mode==="temporary"&&e.generation===auth.generation){
-        deadline=Math.min(Date.now()+TEMP_RECONNECT_GRACE_MS,e.lease_expires_at??Infinity);
-        const changed=this.sql.exec("UPDATE endpoints SET offline_deadline=? WHERE id=? AND state='enabled' AND generation=? AND offline_deadline IS NULL",
-          deadline,e.id,auth.generation);
-        if(changed.rowsWritten===1)temporaryId=e.id;
+      if(e?.state==="enabled"&&e.generation===auth.generation){
+        const observed=Date.now();
+        deadline=e.pairing_mode==="temporary"?
+          Math.min(observed+TEMP_RECONNECT_GRACE_MS,e.lease_expires_at??Infinity):
+          Math.min(observed,Math.max(auth.last_seen??0,e.last_seen_at??0)||observed)+this.idleMs;
+        const changed=this.sql.exec("UPDATE endpoints SET offline_deadline=?,last_seen_at=CASE WHEN pairing_mode='permanent' THEN ? ELSE last_seen_at END WHERE id=? AND state='enabled' AND generation=? AND offline_deadline IS NULL",
+          deadline,e.pairing_mode==="permanent"?Math.max(auth.last_seen??0,e.last_seen_at??0,observed):null,e.id,auth.generation);
+        if(changed.rowsWritten===1)offlineId=e.id;
       }
     }
     for(const [op,p] of this.pendingMutations)if(p.socket===socket)this.terminateMutation(op);
@@ -588,13 +697,13 @@ export class BrowserOwner implements DurableObject {
         close_code:Number.isInteger(_code)&&_code>=1000&&_code<=4999?_code:null
       } : {error_code:"offline"});
     }
-    if(temporaryId&&deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
+    if(offlineId&&deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
     catch{
-      // A lost alarm must not leave a temporary offline grant indefinitely.
-      const e=this.endpoint(temporaryId);
+      // Alarm failure cannot silently leave either pairing mode indefinitely authorized.
+      const e=this.endpoint(offlineId);
       if(e?.state==="enabled"&&e.generation===auth?.generation&&e.offline_deadline===deadline){
-        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=?",Date.now(),temporaryId);
-        this.close(temporaryId,"revoked");
+        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=?",Date.now(),offlineId);
+        this.close(offlineId,"revoked");
       }
     }
   }

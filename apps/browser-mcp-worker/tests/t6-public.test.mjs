@@ -138,7 +138,7 @@ test('actual Popup buttons require local confirmation and independently change s
       chrome:{storage:{local:f.chrome.storage.local},runtime:{sendMessage:(message,done)=>f.popup(message.type,message).then(result=>done({ok:true,result}),error=>done({ok:false,error:error.message}))}}});
     vm.runInContext(fs.readFileSync(new URL('../extension/options.js',import.meta.url),'utf8'),popup);
     await vm.runInContext("refresh()",popup);
-    assert.match(element('status').textContent,/native permission: DENIED/);
+    assert.match(element('status').textContent,/native: denied/);
     await element('lan').onclick();assert.equal((await f.popup('status')).sensitive_permissions.lan,false);
     confirmed=true;await element('lan').onclick();
     assert.equal((await f.popup('status')).sensitive_permissions.lan,true);assert.equal((await f.popup('status')).sensitive_permissions.private,false);

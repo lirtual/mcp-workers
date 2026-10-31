@@ -188,3 +188,16 @@ test("activation identity does not require an unverified high-impact approval is
   assert.equal(collectWorkerVars("browser-mcp-worker",env).length,4);
   assert.throws(()=>collectWorkerVars("browser-mcp-worker",{...env,BROWSER_APPROVAL_ORIGIN:"https://browser.lirtual.dpdns.org"}),/approval/);
 });
+
+
+test("Browser remembered idle setting is optional, scoped and validated",()=>{
+  assert.deepEqual(collectWorkerVars("browser-mcp-worker",{}),[]);
+  assert.deepEqual(collectWorkerVars("browser-mcp-worker",{BROWSER_REMEMBERED_IDLE_DAYS:""}),[]);
+  for(const days of ["1","7","14","30","90"]){
+    assert.deepEqual(collectWorkerVars("browser-mcp-worker",{BROWSER_REMEMBERED_IDLE_DAYS:days}),["BROWSER_REMEMBERED_IDLE_DAYS:"+days]);
+  }
+  for(const days of ["0","91","-1","1.0"," 14","14 ","bad","001"]){
+    assert.throws(()=>collectWorkerVars("browser-mcp-worker",{BROWSER_REMEMBERED_IDLE_DAYS:days}),/BROWSER_REMEMBERED_IDLE_DAYS/);
+  }
+  assert.deepEqual(collectWorkerVars("ssh-mcp-worker",{BROWSER_REMEMBERED_IDLE_DAYS:"30"}),[]);
+});

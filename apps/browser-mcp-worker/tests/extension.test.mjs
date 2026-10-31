@@ -327,9 +327,10 @@ test("provenance persistence failing after tab creation never confirms an uncert
 
 test("options preserve original-key Unknown semantics and explicit tab close",()=>{
   const popup=fs.readFileSync(path.join(dirname,"../extension/options.js"),"utf8");
-  assert.match(popup,/UNCONFIRMED — do not assume zero/);
-  assert.match(popup,/ORIGINAL intent_key/);
-  assert.match(popup,/Stop\/disconnect\/turn end never auto-close tabs/);
+  assert.match(popup,/Unknown operations:/);
+  assert.match(popup,/Unconfirmed/);
+  assert.match(popup,/original intent_key/);
+  assert.match(popup,/Tabs are retained until explicit close/);
 });
 
 
@@ -483,4 +484,26 @@ test('protected Access page can acknowledge only the original Profile activation
   assert.equal((await first.external(message,{origin:'https://evil.example',url:sender.url})).ok,false);
   assert.equal((await first.external(message,{origin:service,url:service+'/activate/verify/'+attempt+'?extension=other'})).ok,false);
   await first.send('stop');assert.equal((await first.external(message,sender)).ok,false);
+});
+
+test("trusted Options rename keeps local Profile identity, denies invalid and failed cloud rename",async()=>{
+  const local=await setup({authorization:"stopped",activation_protocol:2});
+  const a=await local.send("rename",{alias:"  Personal Chrome  "});
+  assert.equal(a.alias,"Personal Chrome");
+  assert.equal(local.local.alias,"Personal Chrome");
+  await assert.rejects(local.send("rename",{alias:"x".repeat(65)}),/invalid_alias/);
+  const paired=await setup({service,endpoint_id:id,credential,authorization:"stopped"},
+    async (url,options)=>{
+      if(url.endsWith("/rename"))return Response.json({alias:JSON.parse(options.body).alias});
+      if(url.endsWith("/summary"))return Response.json({pending:0,unknown:0});
+      throw Error("unexpected_endpoint");
+    });
+  await paired.send("rename",{alias:"Work PC · Edge"});
+  assert.equal(paired.local.alias,"Work PC · Edge");
+  assert.equal(paired.local.endpoint_id,id,"rename must not create a new grant");
+  assert.ok(paired.events.some(e=>e.type==="fetch"&&e.url.endsWith("/rename")));
+  const denied=await setup({service,endpoint_id:id,credential,authorization:"stopped",alias:"Old"},
+    async()=>Response.json({error:"unauthorized"},{status:401}));
+  await assert.rejects(denied.send("rename",{alias:"New"}),/unauthorized/);
+  assert.equal(denied.local.alias,"Old","failed server rename must not diverge local label");
 });

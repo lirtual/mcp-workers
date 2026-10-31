@@ -6,7 +6,7 @@ const root=new URL('../extension/',import.meta.url);
 const html=fs.readFileSync(new URL('options.html',root),'utf8');
 const source=fs.readFileSync(new URL('options.js',root),'utf8');
 function options(){
-  const ids=['status','summary','action-feedback','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
+  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
   const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:'',value:'',disabled:false,onclick:null,onchange:null}]));
   const messages=[],state={alias:'chrome',authorization:'enabled',connection:'online',last_update:Date.now(),
     pairing_mode:'permanent',sensitive_permissions:{lan:false,private:false,native_private:false},
@@ -33,13 +33,14 @@ test('single toolbar action has no popup; Options shows status, duration, and pe
   assert.ok(!html.includes('pairing code')&&!html.includes('id="resume"'));
   const p=options();await tick();
   assert.equal(p.nodes.lifetime.value,'permanent');assert.equal(p.nodes.lifetime.disabled,true);
-  assert.match(p.nodes.status.textContent,/native permission: DENIED/);
+  assert.match(p.nodes.status.textContent,/native: denied/);
+  assert.equal(p.nodes.prepair.hidden,true,'pairing lifetime should be hidden for an existing Profile');
 });
 test('Options Stop visibly reports local progress and cloud-confirmed status',async()=>{
   const p=options();await tick();const pending=p.nodes.stop.onclick();
   assert.match(p.nodes['action-feedback'].textContent,/Stopping locally/);
   p.state.authorization='stopped';p.finishStop({ok:true,result:{authorization:'stopped',cloud_confirmed:true}});
-  await pending;assert.match(p.nodes.summary.textContent,/stopped/);
+  await pending;assert.match(p.nodes.summary.textContent,/OFF/);
 });
 test('Options Revoke requires confirmation; lifetime becomes editable only when unpaired',async()=>{
   const p=options();await tick();

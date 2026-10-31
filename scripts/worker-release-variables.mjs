@@ -19,7 +19,7 @@ export const BROWSER_APPROVAL_VARIABLES = Object.freeze([
 ]);
 
 export const WORKER_VARIABLES = Object.freeze({
-  "browser-mcp-worker": [...BROWSER_APPROVAL_VARIABLES, "BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"],
+  "browser-mcp-worker": [...BROWSER_APPROVAL_VARIABLES, "BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE", "BROWSER_REMEMBERED_IDLE_DAYS"],
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
@@ -77,6 +77,10 @@ export function collectWorkerVars(worker, env, options = {}) {
       !/^[a-f0-9]{64}$/.test(env.BROWSER_ACTIVATION_AUDIENCE)||
       env.BROWSER_ACTIVATION_AUDIENCE===env.BROWSER_ACCESS_AUDIENCE))
       throw Error("Browser activation Access origin or audience invalid");
+  }
+  if (worker === "browser-mcp-worker" && env.BROWSER_REMEMBERED_IDLE_DAYS !== undefined && env.BROWSER_REMEMBERED_IDLE_DAYS !== "") {
+    const days=env.BROWSER_REMEMBERED_IDLE_DAYS;
+    if (typeof days !== "string" || !/^(?:[1-9]|[1-8][0-9]|90)$/.test(days)) throw Error("Invalid BROWSER_REMEMBERED_IDLE_DAYS: expected integer 1..90");
   }
   if (worker === "workflow-mcp-worker") {
     variables.push(

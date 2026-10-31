@@ -323,7 +323,15 @@ function connect() {
     // may delay registering handlers and lose a fast WSS open/authentication.
     ws.onopen=()=>{
       if(socket!==ws)return;
-      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.2.5",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
+      const agent=typeof navigator!=="undefined"?navigator.userAgent||"":"";
+      const brands=typeof navigator!=="undefined"?navigator.userAgentData?.brands||[]:[];
+      const family=brands.some(b=>/Edge/i.test(b.brand))||/Edg\//.test(agent)?"edge":
+        brands.some(b=>/Google Chrome/i.test(b.brand))||/Chrome\//.test(agent)?"chrome":"unknown";
+      const os=/Windows/i.test(agent)?"windows":/Macintosh|Mac OS/i.test(agent)?"mac":
+        /Linux/i.test(agent)?"linux":"other";
+      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.2.6",
+        endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service,
+        browser_family:family,browser_platform:os}));
     };
     ws.onmessage=async event=>{
       if(socket!==ws)return;
@@ -538,10 +546,32 @@ chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
       }
       await browserPrivateAllowed();
       const permissions=await browserSensitivePermissions();
-      return {...publicState,sensitive_permissions:{...permissions,native_private:await browserNativePrivateAllowed()},last_observed_tab_id:tab_id,last_observed_scope:tab_id===null?null:(await chrome.tabs.get(tab_id)).incognito===true?"private":"ordinary",last_observed_tab_source:tab_source,activity};
+      let cloud_state=null;
+      if(local.endpoint_id && local.credential && validService(local.service)){
+        try {
+          const v=await endpointPost("state",local);
+          cloud_state={authorization:v.authorization,alias:v.alias,online:v.online,
+            idle_expires_at:v.idle_expires_at??null,lease_expires_at:v.lease_expires_at??null,
+            last_seen_at:v.last_seen_at??null,browser_family:v.browser_family??null,
+            browser_platform:v.browser_platform??null,client_version:v.client_version??null};
+        }catch{/* Local authorization remains authoritative when offline. */}
+      }
+      return {...publicState,cloud_state,sensitive_permissions:{...permissions,native_private:await browserNativePrivateAllowed()},last_observed_tab_id:tab_id,last_observed_scope:tab_id===null?null:(await chrome.tabs.get(tab_id)).incognito===true?"private":"ordinary",last_observed_tab_source:tab_source,activity};
     }
     if(message.type==="sensitive-permission"){await changeSensitivePermission(message.surface,message.enabled);return {changed:true};}
     if(message.type==="locate")return locateObservedTab();
+    if(message.type==="rename"){
+      const alias=message.alias;
+      if(typeof alias!=="string"||!alias.trim()||alias.length>64||/[\x00-\x1f\x7f]/.test(alias))throw Error("invalid_alias");
+      const local=await state();
+      if(local.authorization==="revoked")throw Error("revoked");
+      if(local.endpoint_id){
+        if(!local.credential)throw Error("not_paired");
+        const changed=await endpointPost("rename",local,{alias:alias.trim()});
+        if(changed.alias!==alias.trim())throw Error("rename_unconfirmed");
+      }
+      await persist({alias:alias.trim()});return {alias:alias.trim()};
+    }
     if(message.type==="pairing-preference"){
       if(!["permanent","temporary"].includes(message.mode)||(await state()).endpoint_id)throw Error("revoke_before_mode_change");
       await persist({pairing_preference:message.mode});return {mode:message.mode};
