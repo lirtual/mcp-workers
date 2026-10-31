@@ -359,7 +359,8 @@ export class BrowserOwner implements DurableObject {
           resolve(pending?.tool==="snapshot"?{error_code:"timeout",stage,stage_elapsed_ms}:{error_code:"timeout"});
         },5000);
         const startedAt=Date.now();
-        this.pendingReads.set(request_id,{endpoint_id:id,generation:e.generation,socket,resolve,timer,tool:arg.tool as string});
+        this.pendingReads.set(request_id,{endpoint_id:id,generation:e.generation,socket,resolve,timer,
+          tool:arg.tool as string,stageEnteredAt:startedAt});
         try {socket.send(JSON.stringify({type:"read_request",request_id,
           generation:e.generation,tool:arg.tool,...(arg.tool!=="tabs"?{tab_id:arg.tab_id}:{scope:arg.scope??"ordinary"})}));}
         catch {clearTimeout(timer);this.pendingReads.delete(request_id);resolve({error_code:"offline"});}
@@ -577,7 +578,16 @@ export class BrowserOwner implements DurableObject {
       }
     }
     for(const [op,p] of this.pendingMutations)if(p.socket===socket)this.terminateMutation(op);
-    for(const [id,p] of this.pendingReads){if(p.socket===socket){clearTimeout(p.timer);this.pendingReads.delete(id);p.resolve({error_code:"offline"});}}
+    for(const [id,p] of this.pendingReads)if(p.socket===socket) {
+      clearTimeout(p.timer);this.pendingReads.delete(id);
+      // Preserve only in-memory, fixed-stage diagnostics already authenticated
+      // for this socket. The close reason may contain browser/private data.
+      p.resolve(p.tool==="snapshot" ? {
+        error_code:"offline",stage:p.stage??"awaiting_extension",
+        stage_elapsed_ms:Math.min(5000,Math.max(0,Date.now()-(p.stageEnteredAt??Date.now()))),
+        close_code:Number.isInteger(_code)&&_code>=1000&&_code<=4999?_code:null
+      } : {error_code:"offline"});
+    }
     if(temporaryId&&deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
     catch{
       // A lost alarm must not leave a temporary offline grant indefinitely.
