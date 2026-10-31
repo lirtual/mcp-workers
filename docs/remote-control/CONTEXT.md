@@ -2,6 +2,8 @@
 
 **Current state (verified 2026-10-28):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Windows x64 and Ubuntu WSL2 are both online with the immutable **Agent v0.1.35**, permanently paired under their original device IDs. The ten existing Agent-owned browser MCP tools remain available; normal browser automation requires an approved device grant and no per-operation approval page. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
 
+> **Accepted future design, not yet deployed (2026-10-31):** [RCA GUI Tool Retirement](./GUI-TOOL-RETIREMENT-DESIGN.md) Q1–Q7=A and [ADR-0021](./adr/0021-retire-rca-owned-gui-tools.md) retire RCA's own Browser/Computer tools while retaining independent Browser MCP #418, ordinary Remote Control tools, device identities and historical operation receipts. The browser behavior recorded below is dated historical/current-state context as of its original verification, **not** the desired final tool catalog; there is no authorization here to implement, merge, deploy or delete device data.
+
 ## Browser runtime and permission boundaries
 
 - **Automation browser:** The existing native Windows Agent manages a visible, Agent-private Chrome/Edge `BrowserContext` and Profile, separate from the owner's everyday browser. One active automation session per device contains multiple explicitly selected tabs, including tabs opened manually. A tab has a stable ID within that session; focus, title, URL and array position must not silently select a different target.
@@ -12,6 +14,11 @@
 - **Acceptance evidence:** The 2026-10-23 production Windows test completed browser navigation, fill, keypress, click and close directly through the signed paired-device session without a webpage approval; all operation receipts were verified. Full system-restart recovery and measurable idle Cloudflare resource use remain distinct operational observations; neither is implied by this Spec acceptance.
 
 ## Language
+
+**RCA-Owned GUI Tool Surface (planned retirement)**:
+The Browser and Computer tools exposed through Remote Control MCP's paired-device Agent path, distinct from independent Browser MCP's extension-scoped browser control. Retirement of this surface does not retire signed device transport or historical operation receipts.
+_Avoid_: Calling Browser MCP's extension tools RCA Browser tools, or treating removal from the public tool list alone as full capability retirement.
+
 
 **Remote Control MCP**:
 A single-user, self-hosted MCP product that allows an authorized AI client to request controlled operations on a Linux host.
