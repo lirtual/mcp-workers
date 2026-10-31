@@ -56,8 +56,8 @@ test('Compensator persists exactly one reservation; a cancellation ACK remains o
   CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,updated_at INTEGER,PRIMARY KEY(run_id,step_id));
   CREATE TABLE session_executions(run_id TEXT,step_id TEXT,state TEXT);
   INSERT INTO runs VALUES ('run');
-  INSERT INTO run_steps VALUES ('run','first','succeeded',0);
-  INSERT INTO session_executions VALUES ('run','first','ready');`);
+  INSERT INTO run_steps VALUES ('run','first','succeeded',0),('run','second','succeeded',0);
+  INSERT INTO session_executions VALUES ('run','first','ready'),('run','second','ready');`);
  const db={
   prepare(query:string){
    let args:unknown[]=[];
@@ -77,9 +77,15 @@ test('Compensator persists exactly one reservation; a cancellation ACK remains o
  let calls=0;
  const cancel=(async()=>{calls++;return 'cancel_requested';}) as typeof requestGitHubActionCancellation;
  assert.equal(await compensateSession(env,{...granted,github_execution_approved:undefined},
-   'run',plan.steps[0]!,cancel),'uncleared',
+   'run',plan.steps[1]!,cancel),'uncleared',
    'compensation requires both the exact Action grant and GitHub execution approval');
  assert.equal(calls,0,'an unapproved compensation must not dispatch a cancel POST');
+ assert.equal(sql.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+   .get('run',sagaReceiptId('second'))?.status,'uncleared',
+   'denied compensation must persist a truthful uncleared receipt');
+ assert.equal(await compensateSession(env,granted,'run',plan.steps[1]!,cancel),'uncleared',
+   'later approval must not silently replay an already-denied compensation');
+ assert.equal(calls,0);
  assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');
  assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');
  assert.equal(calls,1,'unknown/replayed rollback must not send a second cancellation');
