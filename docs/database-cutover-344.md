@@ -4,9 +4,15 @@
 > and MySQL Hyperdrive activation [#41166424835](https://github.com/lirtual/mcp-workers/actions/runs/41166424835)
 > succeeded. Independent production Database MCP health and `SELECT 1` readback
 > passed for `spec476_hd_mysql_lifecycle`. PostgreSQL Direct is admitted in
-> code, but no authorized plaintext PostgreSQL Workers E2E connection is present;
-> that acceptance remains **Not performed**, not Pass. Existing #344 waivers
-> remain waivers. Historical 2026-10-30 evidence follows below.
+> code. The [2026-10-30 historical production E2E record](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6527177812)
+> reports successful isolated plaintext Health/read/denial checks; the exact
+> retirement tombstone and release receipt remain independently observable.
+> The later [Owner waiver](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6539258657)
+> concerns an **unperformed independent repeat/full runtime coverage** on
+> 2026-10-31, not a retroactive denial of that historical record. There is no
+> active PostgreSQL Direct fixture now. Original SQL outcomes were not
+> independently replayed during closeout. Existing #344 waivers remain waivers.
+> Historical 2026-10-30 evidence follows below.
 
 # Database MCP #344 — production release and recovery (managed D1 only)
 

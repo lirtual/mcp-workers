@@ -12,12 +12,20 @@
   succeeded. Independent production Database MCP readback showed the connection
   `active/mysql/hyperdrive`, healthy, and a real `SELECT 1` returning one row.
   The previous failed operation's audit was preserved.
-- **PostgreSQL Direct runtime acceptance is not performed.** No PostgreSQL
-  Direct logical connection appears in the verified production registry. A
-  separately authorized, publicly reachable, isolated PostgreSQL origin that
-  permits plaintext TCP is needed for real Cloudflare Workers health/read,
-  bounded write/admin, transport and denial checks; the Aiven TLS-only fixture
-  cannot establish this result. Local PostgreSQL integration is not Workers E2E.
+- **PostgreSQL Direct historical evidence and later waiver must be distinguished.**
+  [2026-10-30 acceptance](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6527177812)
+  records an isolated live Workers plaintext Health/read/denial test (including
+  `pg_stat_ssl=false`), followed by fixture teardown. The matching immutable
+  retired-ID tombstone is still present in production D1, and the associated
+  [release](https://github.com/lirtual/mcp-workers/actions/runs/41080404793)
+  succeeded. These independent readbacks corroborate deployment/retirement,
+  not the historical SQL result itself; that SQL result is an acceptance-record
+  claim, not a freshly repeated observation. The later
+  [Owner waiver](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6539258657)
+  applies to the unperformed independent 2026-10-31 repeat/full coverage:
+  no `postgres/direct` connection is presently active and no replacement fixture
+  is authorized. Do not erase the earlier recorded result or mislabel the
+  later unperformed repeat as Pass. Existing #344 waivers remain unchanged.
 - In-place Hyperdrive username/CA changes, unresolved post-dispatch SQL completion
   and independent physical Hyperdrive/CA cleanup remain evidence- or safety-gated.
   Do not infer they passed from a successful MySQL Hyperdrive read-only E2E.

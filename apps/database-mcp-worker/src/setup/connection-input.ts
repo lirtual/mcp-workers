@@ -37,11 +37,12 @@ export function normalizeConnectionInput(
   const passwordField = field(form, 'password');
   let source: URL;
   if (mode === 'url') {
-    if (!providedUrl || providedUrl.length > 8192 ||
-      [hostField,portField,databaseField,usernameField,passwordField].some(Boolean)) invalid();
+    // Inactive fields may retain values after the Owner changes the CSS-only
+    // URL/Fields selector. Only the explicitly selected source is authoritative.
+    if (!providedUrl || providedUrl.length > 8192) invalid();
     try { source = new URL(providedUrl); } catch { return invalid(); }
   } else {
-    if (providedUrl || !hostField || !databaseField || !usernameField || !passwordField ||
+    if (!hostField || !databaseField || !usernameField || !passwordField ||
       /[^a-zA-Z0-9.:[\]-]/.test(hostField)) invalid();
     const port = portField || (dialect === 'mysql' ? '3306' : '5432');
     if (!/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) invalid();
