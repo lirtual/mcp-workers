@@ -1,3 +1,4 @@
+import {runDubAction} from './dub-action-executor.ts';
 import {runDownloadNotification} from './download-notification-executor.ts';
 import {runGenericTextNotification} from './generic-weixin-executor.ts';
 import {runBarkAction} from './bark-action-executor.ts';
@@ -39,6 +40,7 @@ export async function runPublishedCloudflareAction(
  inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
 ):Promise<Result>{
+ if(action.with.provider==='dub')return runDubAction(env,plan,action,runId,ctx);
  if(action.with.provider==='bark')return runBarkAction(env,plan,action,runId,ctx);
  if(action.with.action==='weixin.notify_download')
    return runDownloadNotification(env,plan,action,runId,ctx);

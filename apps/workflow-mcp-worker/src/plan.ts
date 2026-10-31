@@ -132,7 +132,7 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
 async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
   const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
   for(const s of steps)if(s.uses==='action.run'){
-    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':'unified-generic';
+    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':'unified-generic';
     manifests.set(s.id,await cloudflareActionManifest(kind));
   }
   const knownRef=(ref:string,path:string):KnownOutput=>{
@@ -768,12 +768,20 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'unified-generic');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
       const input=object(withData.input,'invalid_cloudflare_input');
-      if(manifest.provider==='bark'){
+      if(manifest.provider==='dub'){
+        keys(input,['url','public_stats'],stepPath+'/with/input');
+        const target=input.url;
+        if(!target||typeof target!=='object'||Array.isArray(target)||
+           Object.keys(target).length!==1||(target as {ref?:unknown}).ref!=='inputs.url')
+          throw new PlanError('dub_url_must_be_run_input',stepPath+'/with/input/url');
+        if(input.public_stats!==undefined&&typeof input.public_stats!=='boolean')
+          throw new PlanError('invalid_dub_public_stats',stepPath+'/with/input/public_stats');
+      }else if(manifest.provider==='bark'){
         keys(input,['notification'],stepPath+'/with/input');
         const notification=object(input.notification,'invalid_bark_notification');
         const allowed=Object.keys(manifest.input_schema.properties);
@@ -949,6 +957,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(key==='inputs') expression(value,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/inputs');
         else if(typeof value==='string'&&value.includes('\${{'))throw new PlanError('dynamic_github_identity');
       }
+    } else if(s.uses==='action.run'&&s.with.provider==='dub') {
+      expression((s.with.input as Record<string,unknown>).url,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with/input/url');
     } else if(s.uses==='action.run'&&s.with.provider==='bark') {
       expression((s.with.input as {notification:unknown}).notification,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/input/notification');
     } else expression(s.with,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with');
@@ -958,6 +968,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }
   }
+  // Dub is a single explicit manual Run; never Cron, Webhook, or GitHub-push fanout.
+  if(triggers?.length&&steps.some(s=>s.uses==='action.run'&&s.with.action==='dub.shorten_url'))
+    throw new PlanError('dub_manual_run_only','/triggers');
   await validateStaticOutputReferences(steps);
   // Initial reviewed-write slice permits one static external write per Plan.
   // Do not turn a single owner grant into a multi-write fan-out.
