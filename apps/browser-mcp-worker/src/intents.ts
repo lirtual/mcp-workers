@@ -27,6 +27,7 @@ const failureActions:Record<string,string>={
   stale_target:"reobserve_target_before_new_intent",
   stale_element:"reobserve_target_before_new_intent",
   sensitive_surface:"blocked_sensitive_surface",
+  unsupported_input:"manual_owner_input_or_separately_review_trusted_input; do_not_claim_success",
   stopped:"owner_must_resume_locally",
   preparation_unavailable:"extension_prepare_failed; confirm installed extension version before a new intent",
   prepare_validation_unavailable:"extension_target_validation_failed; check local extension readiness",

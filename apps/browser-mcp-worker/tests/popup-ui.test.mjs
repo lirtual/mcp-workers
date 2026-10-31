@@ -6,13 +6,13 @@ const root=new URL('../extension/',import.meta.url);
 const html=fs.readFileSync(new URL('options.html',root),'utf8');
 const source=fs.readFileSync(new URL('options.js',root),'utf8');
 function options(){
-  const ids=['status','summary','action-feedback','lifetime','locate','stop','revoke','ack','lan','private'];
+  const ids=['status','summary','action-feedback','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
   const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:'',value:'',disabled:false,onclick:null,onchange:null}]));
   const messages=[],state={alias:'chrome',authorization:'enabled',connection:'online',last_update:Date.now(),
     pairing_mode:'permanent',sensitive_permissions:{lan:false,private:false,native_private:false},
     pending_cloud_stop:false,endpoint_id:'11111111-1111-4111-8111-111111111111',activity:{available:true,pending:0,unknown:0,approvals:[]}};
   let confirmRevocation=false,respondStop;
-  const chrome={runtime:{lastError:null,sendMessage(message,reply){messages.push(message);
+  const chrome={storage:{local:{get:async()=>({browser_visual_feedback:true}),set:async()=>{}}},runtime:{lastError:null,sendMessage(message,reply){messages.push(message);
     if(message.type==='status')queueMicrotask(()=>reply({ok:true,result:{...state}}));
     else if(message.type==='stop')respondStop=reply;
     else if(message.type==='revoke')queueMicrotask(()=>reply({ok:true,result:{cloud_confirmed:true}}));

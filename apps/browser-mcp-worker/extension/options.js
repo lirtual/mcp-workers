@@ -32,6 +32,7 @@ async function refresh() {
     ].join("\n");
     for(const surface of ["lan","private"])$(surface).textContent=(s.sensitive_permissions?.[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
     $("locate").disabled=!Number.isSafeInteger(s.last_observed_tab_id);
+    $("visual-feedback").checked=(await chrome.storage.local.get("browser_visual_feedback")).browser_visual_feedback!==false;
   } catch(e){
     $("summary").textContent="Local status unavailable";
     $("status").textContent="Unable to read local status: "+e.message;
@@ -77,3 +78,8 @@ for(const surface of ["lan","private"])$(surface).onclick=()=>action("Changing l
   if(enabled&&!confirm(surface==="lan"?"Allow direct localhost/LAN HTTP(S) control for this browser session? This is not full DNS rebinding or page network isolation. Consequential actions remain blocked, with no remote approval.":"Allow private/incognito observation and control for this browser session? Chrome/Edge native permission is also required. Consequential actions remain blocked, with no remote approval."))return;
   return call("sensitive-permission",{surface,enabled});
 });
+
+$("visual-feedback").onchange=async()=>{
+  try {await chrome.storage.local.set({browser_visual_feedback:$("visual-feedback").checked});}
+  catch {await refresh();}
+};

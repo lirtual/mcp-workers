@@ -443,7 +443,7 @@ export class BrowserOwner implements DurableObject {
     try { v = JSON.parse(message) as Record<string,unknown>; if (!v || Array.isArray(v)) throw Error(); }
     catch {socket.close(1008,"invalid_frame");return;}
     if (!auth.authenticated) {
-      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.1" || !validId(v.endpoint_id) ||
+      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.2" || !validId(v.endpoint_id) ||
           typeof v.credential !== "string" || v.credential.length !== 64) {
         socket.close(1008,"authentication_required");return;
       }

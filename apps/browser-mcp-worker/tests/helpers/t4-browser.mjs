@@ -53,24 +53,28 @@ export async function fixture(config={},options={}){
   const event=()=>{const listeners=[];return {addListener(fn){listeners.push(fn);},removeListener(){},emit:async data=>{for(const fn of listeners)await fn(data);}};};
   const pageState={url:"https://example.com/clean",document_id:"doc-1",incognito:false,text:"Public fixture",sensitive:false};
   class Element {
-    constructor(tag,attrs={}){this.tagName=tag;this.attrs=attrs;this.id=attrs.id||"";this.isConnected=true;this.textContent=attrs.label||"";
-      this.labels=[];this.parentElement=null;this.scrollHeight=500;this.clientHeight=100;this.options=[];this._value="";}
+    constructor(tag,attrs={}){this.tagName=tag;this.attrs=attrs;this.id=attrs.id||"";this.isConnected=true;this.textContent=attrs.label||"";this.children=[];
+      this.labels=[];this.parentElement=null;this.scrollHeight=500;this.clientHeight=100;this.options=[];this._value="";this.style={};this.removed=false;}
+    get innerText(){return this.textContent;}
     getAttribute(k){return this.attrs[k]??null;}
+    setAttribute(k,v){this.attrs[k]=v;}
     closest(selector){return this.form&&String(selector).split(",").some(s=>s.trim()==="form")?{}:null;}
     getClientRects(){return [{}];}
     click(){effects.push(["click",this.tagName]);if(this.throwAfterEffect)throw Error("lost");}
-    focus(){effects.push(["focus",this.tagName]);}
+    focus(){effects.push(["focus",this.tagName]);document.activeElement=this;}
     dispatchEvent(e){effects.push([e.type,e.key??this._value]);return true;}
     scrollBy(v){effects.push(["scroll",v.top]);}
+    getBoundingClientRect(){return {left:10,top:20,width:70,height:30};}
+    remove(){this.removed=true;}
     get value(){return this._value;}
-    set value(v){this._value=v;}
+    set value(v){this._value=v;if(this.tagName==="SELECT")for(const o of this.options)o.selected=o.value===v;}
   }
   const nodes=[new Element("BODY"),new Element("INPUT",{type:"text"}),new Element("INPUT",{type:"checkbox"}),
     new Element("SELECT"),new Element("BUTTON",{label:"Submit payment"}),new Element("INPUT",{type:"password"})];
   nodes[2].labels=[{textContent:"Show grid"}];
   nodes[3].options=[{value:"blue",textContent:"Blue",parentElement:nodes[3],disabled:false}];
-  const document={body:nodes[0],scrollingElement:nodes[0],querySelector:selector=>(pageState.sensitive||pageState.embedded&&/iframe/.test(selector))?nodes[5]:null,
-    querySelectorAll:selector=>nodes.slice(1,pageState.sensitive?undefined:5).filter(n=>selector==="input,textarea,select"?["INPUT","TEXTAREA","SELECT"].includes(n.tagName):true),
+  const document={body:nodes[0],scrollingElement:nodes[0],documentElement:{appendChild(el){pageState.marker=el;}},createElement:tag=>new Element(tag.toUpperCase()),querySelector:selector=>(pageState.sensitive||pageState.embedded&&/iframe/.test(selector))?nodes[5]:null,
+    querySelectorAll:selector=>nodes.slice(1).filter(n=>pageState.sensitive||n.attrs.type!=="password").filter(n=>selector==="input,textarea,select"?["INPUT","TEXTAREA","SELECT"].includes(n.tagName):true),
     createTreeWalker:()=>({nextNode:()=>false})};
   Object.defineProperty(nodes[0],"innerText",{get:()=>pageState.text});
   const page=vm.createContext({URL,document,location:{get href(){return pageState.url;}},crypto,Date:class extends Date{static now(){return pageState.now??Date.now();}},Map,
@@ -78,7 +82,7 @@ export async function fixture(config={},options={}){
     MutationObserver:class{observe(){}disconnect(){}takeRecords(){if(pageState.mutated){pageState.mutated=false;return [{type:"attributes",target:pageState.mutationTarget??nodes[1]}];}return [];}},
     HTMLInputElement:Element,HTMLTextAreaElement:Element,HTMLSelectElement:Element,
     Event:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},
-    KeyboardEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}}});
+    KeyboardEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},setTimeout,clearTimeout});
   const actionClicked=event(),activationAlarm=event();
   const chrome={extension:{isAllowedIncognitoAccess:async()=>{if(pageState.nativeFailure)throw Error("native failure");return pageState.nativePrivate===true;}},storage:{local:storage(local),session:storage(session)},action:{setBadgeText:async()=>{},setTitle:async()=>{},onClicked:actionClicked},alarms:{create:async()=>{},onAlarm:activationAlarm},
     runtime:{id:"jhifaghneomgcfollcdbncjkcloedfem",getURL:p=>extensionOrigin+"/"+p,onMessage:{addListener(fn){receiver=fn;}},onMessageExternal:event(),onStartup:event(),onInstalled:event()},
