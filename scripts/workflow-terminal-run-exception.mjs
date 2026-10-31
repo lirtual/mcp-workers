@@ -474,14 +474,14 @@ export function verifyEleventhTerminalEvidence(d1,native,providerReceipts){
 }
 
 async function main() {
+  const kind=process.env.TERMINAL_PROOF_KIND;
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
     "only the Workflow release may request this exception");
   requireValid(process.env.CLOUDFLARE_ACCOUNT_ID &&
     /^[a-f\d]{32}$/i.test(process.env.CLOUDFLARE_ACCOUNT_ID) &&
     process.env.CLOUDFLARE_API_TOKEN &&
-    process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
+    (kind==="eleventh"||process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN),
     "required read-only verification credentials missing");
-  const kind=process.env.TERMINAL_PROOF_KIND;
   requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth"||kind==="eleventh",
     "unknown terminal proof kind");
   const second=kind==="second";
