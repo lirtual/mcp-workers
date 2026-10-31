@@ -321,3 +321,29 @@ for(const fault of ['no-protection','no-protection-wait-success','no-protection-
     } finally {db.close();}
   });
 }
+
+test('reused Hyperdrive Config name requires unique failed, unmerged, credential-free predecessor', async()=>{
+  const {verifyRecoveredConfigName}=await import('./apply-database-hyperdrive-476.mjs');
+  const oldId='12345678-1234-1234-1234-123456789abc';
+  const newId='87654321-1234-1234-1234-123456789abc';
+  const ca='aiven-ca-12345678', configId='1'.repeat(32);
+  const row={operation_id:newId,logical_id:'isolated',resource_write_started_at:null,
+    ca_write_started_at:null,config_id:configId,ca_certificate_id:ca,ciphertext:null,key_id:null};
+  const config={id:configId,name:'db476-'+oldId,mtls:{ca_certificate_id:ca}};
+  const old={operation_id:oldId,logical_id:'isolated',phase:'failed',error_class:'apply_merge_denied',
+    config_id:configId,binding_name:'HYPERDRIVE_ISOLATED_12345678',ca_certificate_id:ca,
+    resource_write_started_at:111,ca_write_started_at:null,prepare_run_id:2,ci_run_id:3,
+    apply_run_id:4,merged_sha:null,release_run_id:null,published_version_id:null};
+  let reads=0;
+  const sql=async()=>{reads++;return {results:[old]};};
+  assert.equal(await verifyRecoveredConfigName(row,config,sql),true);
+  assert.equal(reads,1);
+  for(const patch of [{error_class:'other'},{phase:'unknown'},{merged_sha:'f'.repeat(40)},
+    {binding_name:'HYPERDRIVE_WRONG_12345678'},{ca_certificate_id:'other'}]){
+    await assert.rejects(verifyRecoveredConfigName(row,config,async()=>({results:[{...old,...patch}]})));
+  }
+  await assert.rejects(verifyRecoveredConfigName(row,config,async()=>({results:[old,old]})));
+  await assert.rejects(verifyRecoveredConfigName({...row,resource_write_started_at:123},config,sql));
+  await assert.rejects(verifyRecoveredConfigName(row,{...config,name:'db476-other'},sql));
+  assert.equal(await verifyRecoveredConfigName(row,{...config,name:'db476-'+newId},()=>{throw Error('unexpected');}),true);
+});
