@@ -224,9 +224,12 @@ export async function applyDatabaseHyperdrive(env = process.env, request = fetch
     gate(source.d1_databases?.length === 1 && source.d1_databases[0].database_id === D1,'apply_source_invalid');
     const config = await cloud('/hyperdrive/configs/' + row.config_id);
     gate(config.id === row.config_id && config.name === 'db476-' + operationId,'apply_config_drift');
-    const entry = {binding:row.binding_name,id:row.config_id,dialect:config.origin?.scheme,
+    // Prepare appends id only after Cloudflare creates the Config. Keep the
+    // same property order: the reviewed manifest is compared byte-for-byte.
+    const entry = {binding:row.binding_name,dialect:config.origin?.scheme,
       origin_host:config.origin?.host,origin_port:config.origin?.port,origin_database:config.origin?.database,
-      origin_user:config.origin?.user,ca_certificate_id:config.mtls?.ca_certificate_id};
+      origin_user:config.origin?.user,ca_certificate_id:config.mtls?.ca_certificate_id,
+      id:row.config_id};
     verifyCloudflareHyperdriveConfig(entry,config);
     const files = patchSource(originals[0],JSON.parse(originals[1]),entry);
     await verifyPreparedPullRequest({github,operationId,baseSha:row.expected_source_sha,
@@ -327,7 +330,7 @@ export async function applyDatabaseHyperdrive(env = process.env, request = fetch
   } catch (error) {
     if (claimed) await sql(`UPDATE hyperdrive_operations SET phase='unknown',error_class=?,updated_at=?
       WHERE operation_id=? AND phase='running' AND apply_run_id=?`,
-      [ERRORS.has(error?.reason) ? error.reason : 'apply_verification_blocked',Date.now(),operationId,
+      [classifyApplyVerificationFailure(error),Date.now(),operationId,
         Number(env.GITHUB_RUN_ID)]).catch(()=>undefined);
     throw error;
   }
@@ -336,6 +339,34 @@ const ERRORS = new Set(['apply_policy_unavailable','apply_pr_stale','apply_pr_dr
   'apply_ci_receipt_unknown','apply_ci_failed','apply_ci_pending','apply_review_missing','apply_checks_unknown','apply_main_advanced','apply_merge_sha_unknown',
   'apply_read_unavailable','apply_write_rejected','apply_outcome_unknown','apply_cas_failed',
   'apply_logical_id_unavailable','apply_source_invalid','apply_config_drift','apply_release_receipt_unknown','apply_release_failed']);
+// Preserve useful fail-closed diagnostics without storing upstream text or secrets.
+// External helper errors are classified only by explicitly reviewed, static codes.
+const HELPER_FAILURES = new Map([
+  ['github_pr_identity_drift', 'apply_pr_stale'],
+  ['github_pr_parent_drift', 'apply_source_invalid'],
+  ['github_pr_diff_invalid', 'apply_source_invalid'],
+  ['github_pr_diff_not_allowlisted', 'apply_source_invalid'],
+  ['github_pr_content_drift', 'apply_source_invalid'],
+  ['source_format_unknown', 'apply_source_invalid'],
+  ['main_sha_changed', 'apply_main_advanced'],
+  ['github_protection_unavailable', 'apply_policy_unavailable'],
+  ['github_ruleset_review_required', 'apply_policy_unavailable'],
+  ['github_required_checks_unconfirmed', 'apply_policy_unavailable'],
+  ['github_ci_unavailable', 'apply_ci_receipt_unknown'],
+]);
+const VERIFIED_CONFIG_MESSAGES = new Set([
+  'invalid approved source metadata',
+  'config ID differs from reviewed source',
+  'SQL response caching is not disabled',
+  'CA/hostname verification is not strict or does not match reviewed CA',
+  'origin identity differs from reviewed source',
+].map(message => 'Database Hyperdrive verification failed: ' + message));
+export function classifyApplyVerificationFailure(error) {
+  if (ERRORS.has(error?.reason)) return error.reason;
+  if (HELPER_FAILURES.has(error?.reason)) return HELPER_FAILURES.get(error.reason);
+  if (VERIFIED_CONFIG_MESSAGES.has(error?.message)) return 'apply_config_drift';
+  return 'apply_verification_blocked';
+}
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   applyDatabaseHyperdrive().then(() => {
     process.stdout.write('Hyperdrive apply: release receipt recorded; publication and activation NOT confirmed.\n');
