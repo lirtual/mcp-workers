@@ -21,7 +21,7 @@ function pendingOwner(env: Env): DurableObjectStub | null {
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
-function pairedReadErrorMessage(code: unknown): string {
+function pairedReadErrorMessage(tool: string, code: unknown): string {
   if (code === "offline") {
     return "The requested v2 device is unavailable: it is offline or has no current authenticated session.";
   }
@@ -79,7 +79,7 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
     });
     if (!response.ok) {
       if (response.status === 400) {
-        return toolError(id, pairedReadErrorMessage("bad_request"));
+        return toolError(id, pairedReadErrorMessage(name, "bad_request"));
       }
       if (response.status === 503) {
         let code: unknown;
@@ -87,7 +87,7 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
           const failure = await response.json() as { error?: unknown };
           code = failure.error;
         } catch { /* Unknown response bodies never cross the public boundary. */ }
-        return toolError(id, pairedReadErrorMessage(code));
+        return toolError(id, pairedReadErrorMessage(name, code));
       }
       return toolError(id, "The requested v2 device is unavailable.");
     }
@@ -1118,7 +1118,7 @@ export default {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
       }
       try {
-        const raw = await readBounded(request, 4096);
+        const raw = await readBounded(request, url.pathname === "/agent/pair/start" ? 10_000 : 4096);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
         return await pendingOwner(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
           url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" :

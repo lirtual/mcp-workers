@@ -2,6 +2,15 @@
 
 **Current state (verified 2026-10-28):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Windows x64 and Ubuntu WSL2 are both online with the immutable **Agent v0.1.35**, permanently paired under their original device IDs. The ten existing Agent-owned browser MCP tools remain available; normal browser automation requires an approved device grant and no per-operation approval page. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
 
+## GitHub-hosted Session scoped access (Spec #62, unpublished candidate)
+
+The pending Workflow Session change adds D1 migration `0019_session_rca_duration.sql` to the **existing** `session_executions` record. The first signed physical Ready from reviewed `ubuntu`/`windows` Runner code freezes `durationMinutes` (1–300) via the same Ready CAS. A different replay cannot change it. Repository-managed RCA duration requires this signed job-environment snapshot plus the exact GitHub Job start, active physical status, cancellation fence, and approved immutable Plan; absent, invalid or untrusted evidence denies RCA but not SSH/RDP. Explicit Plans must agree with any supplied signed duration snapshot. Apply the existing migration before deploying the matching Workflow code; no independent database, device state store or authorization service. This is an unpublished candidate, not production acceptance.
+
+
+Workflow MCP remains the sole authority for approved and still-running Windows/Ubuntu physical Session Attempts; this Worker owns device identity, signed WSS and operation receipts. The candidate implementation binds to the Workflow `SessionAuthorization` named WorkerEntrypoint through a one-way **private Service Binding**, never a public authorization URL. Before a signed WSS challenge/activation, device list eligibility or each new read/mutation, the existing Owner DO checks the exact Attempt, physical Run/Attempt, OS workflow and immutable deadline with a fresh Workflow decision. Missing Binding, RPC errors or mismatches deny **Session grants only**, without hiding permanently paired personal devices or changing SSH/RDP availability. Already admitted operation receipts remain independently factual after cancellation. Do not reuse this Session-specific permission for manual permanent or 24-hour pairing.
+
+The candidate now also routes a **Session-only**, signed proof and GitHub OIDC enrollment payload through the existing `/agent/pair/start` endpoint into the Owner DO. An exact-current Workflow OIDC admission, signed physical Attempt nonce, transactional one-Attempt device map and a second post-write live check are required; ordinary manual pairing remains unchanged. Registration alone does not establish Agent online readiness. The candidate still lacks verified noninteractive Agent startup, Windows ACL and GitHub-hosted E2E; keep it Draft until all release-order boundaries are accepted.
+
 **Spec #628 implementation branch (not deployed as of this source change):** RCA's
 ten `browser_*` and three `computer_*` tools and their executable Worker/DO
 and Agent routing are retired. The Worker exposes only file, search, Shell,
@@ -13,6 +22,8 @@ deployments, Agent release, existing device upgrades, and local GUI-only
 Profile/Grant cleanup are separate authorization and acceptance stages.
 
 ## Historical browser runtime context (archived, not active source guidance)
+
+
 
 - **Automation browser:** The existing native Windows Agent manages a visible, Agent-private Chrome/Edge `BrowserContext` and Profile, separate from the owner's everyday browser. One active automation session per device contains multiple explicitly selected tabs, including tabs opened manually. A tab has a stable ID within that session; focus, title, URL and array position must not silently select a different target.
 - **On-demand shared use:** MCP browser operations are bounded and serialized within the Agent; a person may also directly interact with the same window. There is no artificial Human/Agent handoff state, exclusive human-input lock, browser-specific session timeout, polling heartbeat, independent server or new business orchestrator. Reuse the session until explicit close, browser/Agent termination or revocation; normal Remote Control WSS lifecycle/authentication still applies.

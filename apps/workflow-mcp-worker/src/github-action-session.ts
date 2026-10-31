@@ -185,11 +185,15 @@ export async function recordSignedSessionReady(
  db:Db,attemptId:string,jwt:string,audience:string,token:string,
  keys?:GithubActionKeys,
  inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt,
- sessionUrl?:string,
+ sessionUrl?:string,sessionDurationMinutes?:number,
 ):Promise<SessionReadyResult>{
  const verified=await verifyPinnedGitHubActionIdentity(
    db,attemptId,jwt,audience,keys,true);
  if(!verified||verified.action.type!=='session')return 'denied';
+ if(sessionDurationMinutes!==undefined &&
+    (!Number.isSafeInteger(sessionDurationMinutes)||sessionDurationMinutes<1||
+     sessionDurationMinutes>300||verified.action.repository!=='lirtual/github-actions'||
+     !['.github/workflows/windows.yml','.github/workflows/ubuntu.yml'].includes(verified.action.workflowPath)))return 'denied';
  if(sessionUrl!==undefined &&
     (verified.action.repository!=='lirtual/github-actions'||
      !WEB_PATHS.has(verified.action.workflowPath)||
@@ -202,7 +206,7 @@ export async function recordSignedSessionReady(
   return physical.state==='unknown'||physical.state==='queued'
    ?'physical_unconfirmed':'denied';
  const updated=await db.prepare(`UPDATE session_executions
-   SET state='ready',session_url=?,updated_at=?
+   SET state='ready',session_url=?,rca_duration_minutes=?,updated_at=?
    WHERE run_id=? AND step_id=? AND state IN ('queued','starting')
    AND EXISTS (
      SELECT 1 FROM step_attempts a
@@ -218,13 +222,14 @@ export async function recordSignedSessionReady(
    ) AND EXISTS (
      SELECT 1 FROM runs r WHERE r.id=session_executions.run_id
        AND r.outcome IN ('queued','running')
-   )`).bind(sessionUrl??null,Date.now(),row.run_id,row.step_id,attemptId,
+   )`).bind(sessionUrl??null,sessionDurationMinutes??null,Date.now(),row.run_id,row.step_id,attemptId,
    row.candidate_run_id,row.candidate_run_attempt,attemptId).run();
  if(updated.meta.changes===1)return 'ready';
- const state=await db.prepare(`SELECT state,session_url FROM session_executions
+ const state=await db.prepare(`SELECT state,session_url,rca_duration_minutes FROM session_executions
   WHERE run_id=? AND step_id=?`).bind(row.run_id,row.step_id)
-  .first<{state:string;session_url:string|null}>();
- if(state?.state!=='ready'||state.session_url!==(sessionUrl??null))return 'denied';
+  .first<{state:string;session_url:string|null;rca_duration_minutes:number|null}>();
+ if(state?.state!=='ready'||state.session_url!==(sessionUrl??null)||
+    state.rca_duration_minutes!==(sessionDurationMinutes??null))return 'denied';
  // HTTP 200 replay is only valid for the original healthy Ready, not after
  // a cancellation intent has been durably recorded but before 'stopping'.
  const cancelling=await db.prepare(`SELECT 1 AS present
