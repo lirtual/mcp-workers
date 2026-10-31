@@ -102,7 +102,14 @@ test('delayed local grant cannot beat Stop; failed session revocation stops cont
     await grant(f,'lan',true);
     f.chrome.storage.session.set=async values=>{if(values.browser_sensitive_grants)throw Error('storage unavailable');return original(values);};
     await assert.rejects(grant(f,'lan',false),/storage unavailable/);assert.equal(f.local.authorization,'stopped');
-    await f.restartExtension();assert.equal((await f.snapshot()).error_code,'stopped');
+    await f.restartExtension();
+    // The local Stop always survives reconstruction. Cloud Stop reconciliation
+    // may still be in flight, so the coordinator can correctly report offline
+    // rather than stopped; neither state may return page content.
+    const afterRestart=await f.snapshot();
+    assert.equal(f.local.authorization,'stopped');
+    assert.ok(['stopped','offline'].includes(afterRestart.error_code),JSON.stringify(afterRestart));
+    assert.equal(afterRestart.text,undefined);
     await assert.rejects(f.popup('resume'),/toolbar activation must pair|storage unavailable/);f.chrome.storage.session.set=original;
   }finally{await f.close();}
 });
