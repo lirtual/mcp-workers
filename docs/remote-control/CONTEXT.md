@@ -33,8 +33,8 @@ An Agent installation initiated with **one terminal command** on a supported **L
 _Avoid_: Calling a source checkout or a prerequisite-heavy build script a one-command install; assuming native Windows or macOS support.
 
 **Agent Distribution**:
-A versioned, ready-to-run package available to the owner for installing the Linux Agent independently of the source repository, containing what the Agent needs to operate on its supported platform.
-_Avoid_: Treating the public availability of installation bytes as an authorization to pair or remotely control a host.
+A versioned, ready-to-run package for a supported Linux or Windows host, independent of a source checkout. The currently verified delivery is a compiled JavaScript Agent plus a bundled, version-pinned Node.js executable and necessary OS-specific process helpers. "Native Windows" means Windows-host operation; it does not mean the entire Agent is compiled into a single EXE.
+_Avoid_: Treating a bundled Node.js application as a monolithic native binary, confusing OS-specific Shell/background helpers with Browser/Computer tools, or treating public installation bytes as authorization to pair or control a host.
 
 **Verified Agent Release**:
 An owner-selected and integrity-checked immutable version of the Agent's distribution, distinct from both the local device identity and the authority to pair that identity.
