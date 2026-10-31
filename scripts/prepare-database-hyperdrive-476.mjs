@@ -266,13 +266,13 @@ function checkedManifestSource(source, manifest, candidate, opId) {
   return binding;
 }
 export function patchSource(wranglerText, manifest, entry) {
-  const match = /("hyperdrive": \[)([\s\S]*?)(\n  \],)/.exec(wranglerText);
+  const match = /("hyperdrive": \[)([\s\S]*?)(\n  \],|\],)/.exec(wranglerText);
   requireGate(!!match, 'source_format_unknown');
   const original = match[2].trimEnd();
   const addon = '    { "binding": ' + JSON.stringify(entry.binding) +
     ', "id": ' + JSON.stringify(entry.id) + ' }';
   const rows = original.trim().length > 0 ? original.replace(/(\}\s*)$/, '},') + '\n' + addon : '\n' + addon;
-  const patched = wranglerText.replace(match[0], match[1] + rows + match[3]);
+  const patched = wranglerText.replace(match[0], match[1] + rows + (match[3] === '],' ? '\n  ],' : match[3]));
   const parsed = JSON.parse(patched);
   const nextManifest = [...manifest, entry];
   verifyDatabaseHyperdriveSource(parsed, nextManifest);

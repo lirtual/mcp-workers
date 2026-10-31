@@ -1,5 +1,9 @@
 # Database MCP Worker · Spec #344
 
+## 2026-10-31 retired Hyperdrive resource cleanup
+
+The three historical Aiven test Hyperdrive logical connection IDs are permanently retired in the production D1 registry. Production uses only `b2b` and `scrape_relay` MySQL Direct connections. The source `hyperdrive` binding list and protected manifest are now empty; future Hyperdrive connections must be introduced through the existing protected Owner workflow, not restored from the old test IDs. Preserve the retired-ID tombstones and historical operation audit entries. Production Worker unbinding must be released using the existing GitHub Actions release gate and verified **before** deleting the three upstream Cloudflare Hyperdrive configurations or the dedicated test CA certificate. Do not delete the Cloudflare-managed Gateway CA.
+
 ## Current Spec #476 acceptance (2026-10-31 UTC)
 
 - [PR #490](https://github.com/lirtual/mcp-workers/pull/490) has merged; PostgreSQL Direct

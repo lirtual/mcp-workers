@@ -8,6 +8,12 @@ import {ConfirmedReadFailure} from '../../src/db/completion.js';
 import {queryRead,healthCheck,insertRows} from '../../src/db/index.js';
 import type {Env} from '../../src/types.js';
 
+// Synthetic reviewed binding for runtime coverage; production manifest is empty.
+vi.mock('../../hyperdrive-bindings.json',()=>({default:[{
+  binding:'HYPERDRIVE_DB344_MYSQL_E2E',id:'38bf39b569484dbb8a9fe1b24f0df854',
+  dialect:'mysql',origin_database:'synthetic_schema'
+}]}));
+
 vi.mock('../../src/db/index.js',async importOriginal=>({
   ...await importOriginal<Record<string,unknown>>(),
   queryRead:vi.fn(),healthCheck:vi.fn(),insertRows:vi.fn()

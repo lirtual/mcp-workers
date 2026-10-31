@@ -142,7 +142,7 @@ export function verifyDatabaseHyperdriveSource(conf, manifest) {
 
 /** #344: checked from reviewed source *before* any production publish step.
  * An unbound D1 Worker would return 503 and drop every existing connection. */
-export function verifyDatabaseCutoverSource(conf) {
+export function verifyDatabaseCutoverSource(conf, reviewedManifest) {
   invariant(conf?.name === "database-mcp-worker" &&
     conf.main === "src/index.ts", "Database source identity drift");
   const secrets = conf.secrets?.required;
@@ -158,7 +158,7 @@ export function verifyDatabaseCutoverSource(conf) {
     databases[0]?.migrations_dir === "migrations" &&
     /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(databases[0]?.database_id ?? ""),
     "Database dedicated production D1 not bound or not approved");
-  const manifest = JSON.parse(readFileSync(new URL("../apps/database-mcp-worker/hyperdrive-bindings.json", import.meta.url), "utf8"));
+  const manifest = reviewedManifest ?? JSON.parse(readFileSync(new URL("../apps/database-mcp-worker/hyperdrive-bindings.json", import.meta.url), "utf8"));
   verifyDatabaseHyperdriveSource(conf, manifest);
   const ownerHost = conf.vars?.DATABASE_SETUP_HOST;
   invariant(typeof ownerHost === "string" &&
@@ -790,10 +790,10 @@ export function verifyPublishedVersion(previous, observed, expected) {
   return true;
 }
 
-export function readConfiguration(worker, content) {
+export function readConfiguration(worker, content, reviewedManifest) {
   const conf = JSON.parse(content.replace(/^\s*\/\/.*$/gm, ""));
   if (worker === "workflow-mcp-worker") verifyWorkflowReleaseConfig(conf);
-  if (worker === "database-mcp-worker") verifyDatabaseCutoverSource(conf);
+  if (worker === "database-mcp-worker") verifyDatabaseCutoverSource(conf, reviewedManifest);
   invariant(conf.name === worker && conf.main === WORKER_ENTRIES[worker],
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === false,
