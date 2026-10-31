@@ -8,8 +8,9 @@ const MAX_REGISTRATIONS_PER_MINUTE = 12;
 const MAX_LOOKUPS_PER_MINUTE = 30;
 const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, type V2Device } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, grantCurrent, type V2Device, type SessionCheck } from "./v2-session.ts";
 import { parseBrowserDoArguments } from "./browser-tools.ts";
+import { sessionAllowedByWorkflow, type WorkflowSessionAuthorization } from "./session-workflow-authorization.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
 export interface PendingDevice {
@@ -284,6 +285,7 @@ async function limitedJson(request: Request, maxBytes = MAX_BOOTSTRAP_BODY): Pro
 
 export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
+  private readonly sessionCheck: SessionCheck;
   // In-flight reads only: bounded by request timeout; never durable/queued.
   private readonly pendingCleanup = new Map<string, {
     socket: WebSocket;
@@ -355,7 +357,7 @@ export class V2OwnerCoordinator {
       this.state.storage.get<V2Device>("device:" + deviceId),
       this.state.storage.get<string>("session:epoch:" + deviceId),
     ]);
-    if (device?.grant_type === "session" || !deviceIsAuthorized(device) || !epoch) {
+    if (!await grantCurrent(device, this.sessionCheck) || !epoch) {
       return Response.json({ error: "offline" }, { status: 503 });
     }
     let active: WebSocket | undefined;
@@ -682,8 +684,9 @@ export class V2OwnerCoordinator {
     try { socket.close(1011, "connection unavailable"); } catch { /* Already disconnected. */ }
   }
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization }) {
     this.state = state;
+    this.sessionCheck = sessionAllowedByWorkflow(env?.WORKFLOW_SESSION_AUTHORIZATION);
     // Cloudflare replies to these liveness frames without waking a hibernating
     // DO. The response is NOT proof of current authorization; every future
     // application command must independently check the durable device/epoch.
@@ -697,12 +700,12 @@ export class V2OwnerCoordinator {
     if (typeof message === "string" && this.handleCleanupAck(socket, message)) return;
     if (typeof message === "string" && await this.handleImageFrame(socket, message)) return;
     if (typeof message === "string" && await this.handleReadResult(socket, message)) return;
-    if (await handleDeviceInfoMessage(this.state, socket, message)) return;
-    await handleIdleSocketMessage(this.state, socket, message);
+    if (await handleDeviceInfoMessage(this.state, socket, message, this.sessionCheck)) return;
+    await handleIdleSocketMessage(this.state, socket, message, this.sessionCheck);
   }
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname.startsWith("/ws/")) {
-      return acceptAuthenticatedSocket(this.state.storage, this.state, request);
+      return acceptAuthenticatedSocket(this.state.storage, this.state, request, this.sessionCheck);
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
@@ -726,7 +729,7 @@ export class V2OwnerCoordinator {
       try {
         if (request.headers.get("content-type") !== "application/json" ||
             await request.text() !== "{}") return new Response(null, { status: 400 });
-        const output = await listApprovedDevices(this.state);
+        const output = await listApprovedDevices(this.state, this.sessionCheck);
         return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
       } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
@@ -736,8 +739,8 @@ export class V2OwnerCoordinator {
     try {
       let output: { status: number; body: object };
       if (path === "/re-pair/status") output = await checkRevokedIdentity(this.state.storage, payload);
-      else if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload);
-      else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload);
+      else if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload, this.sessionCheck);
+      else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload, this.sessionCheck);
       else if (path === "/register") output = await registerPending(this.state.storage, payload);
       else if (path === "/lookup") output = await lookupPending(
         this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
