@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {compilePlan} from "../src/plan.ts";
-const action={repository:"lirtual/session-actions",repositoryId:101,workflowId:202,
+const action={repository:"lirtual/github-actions",repositoryId:101,workflowId:202,
   workflowPath:".github/workflows/linux.yml",commitSha:"a".repeat(40),
   type:"session",contractDigest:"b".repeat(64),ref:"refs/tags/v1",inputs:{duration_minutes:5}};
 const draft=(uses:string,withData:unknown)=>({version:1,name:"Unified Action",steps:[{id:"session",uses,with:withData}]});

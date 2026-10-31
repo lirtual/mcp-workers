@@ -1030,7 +1030,7 @@ export class WorkflowService {
     const tailnetSteps=new Map<string,string>(publishedPlan.steps.flatMap(step=>{
       if(step.uses!=='github.run'||step.with.capability!=='github.action')return [];
       const action=step.with.action as {repository?:unknown;workflowPath?:unknown}|undefined;
-      if(action?.repository!=='lirtual/session-actions')return [];
+      if(action?.repository!=='lirtual/github-actions')return [];
       const name=action.workflowPath==='.github/workflows/windows.yml'?'session-windows':
         action.workflowPath==='.github/workflows/ubuntu.yml'?'session-ubuntu':null;
       return name?[[step.id,name] as [string,string]]:[];

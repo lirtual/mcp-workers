@@ -340,7 +340,7 @@ async function runActionTaskSmoke() {
   await client.connect(transport);
   const catalog=await tool('workflow_action_list',{});
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
-  const candidates=catalog.actions.filter(a=>a.repository==='lirtual/session-actions' &&
+  const candidates=catalog.actions.filter(a=>a.repository==='lirtual/github-actions' &&
     a.repositoryId===1430925009 && a.workflowPath==='.github/workflows/verify-action.yml' &&
     a.name==='Verify Workflow Action' && a.type==='task' && a.can_publish===true);
   assert.equal(candidates.length,1,'Expected one verified released Task, not an untagged HEAD');
@@ -456,7 +456,7 @@ async function runActionTaskSmoke() {
     assert.equal(attempt.owner_run_id,attempt.candidate_run_id);
     assert.equal(attempt.owner_run_attempt,1);
     assert.equal(attempt.state,'succeeded');
-    const url='https://api.github.com/repos/lirtual/session-actions/actions/runs/'+attempt.candidate_run_id;
+    const url='https://api.github.com/repos/lirtual/github-actions/actions/runs/'+attempt.candidate_run_id;
     let terminalPhysical=false;
     for(let i=0;i<60;i++){
       const response=await fetch(url,{headers:{

@@ -13,7 +13,7 @@ const attemptId='22222222-2222-4222-8222-222222222222';
 const version='33333333-3333-4333-8333-333333333333';
 const url='https://safe.trycloudflare.com/';
 const bodyHash=createHash('sha256').update('OpenList Session Ready\n'+url).digest('hex');
-const github={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+const github={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/openlist.yml',commitSha:'a'.repeat(40),
  type:'session' as const,contractDigest:'b'.repeat(64),ref:'refs/tags/v1',
  inputs:{duration_minutes:5}};
@@ -38,7 +38,7 @@ async function fixture(t:test.TestContext){
  sql.prepare("INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at) VALUES('wf','test','{}',1,'active',1,1)").run();
  sql.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','x',?,1)").run(JSON.stringify(plan));
  sql.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,outcome,created_at,updated_at) VALUES(?,'wf','v','instance','x','{}','running',1,1)").run(runId);
- sql.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,?,'openlist','github.action','dispatch','claimed','lirtual/session-actions','123','lirtual/session-actions/.github/workflows/openlist.yml@refs/tags/v1','refs/tags/v1',42,1,42,1,1,1)").run(attemptId,runId);
+ sql.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,?,'openlist','github.action','dispatch','claimed','lirtual/github-actions','123','lirtual/github-actions/.github/workflows/openlist.yml@refs/tags/v1','refs/tags/v1',42,1,42,1,1,1)").run(attemptId,runId);
  sql.prepare("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at,session_url) VALUES(?,'openlist',1,'ready',1,1,?)").run(runId,url);
  const prepare=(query:string)=>{
   const statements=(args:unknown[])=>({

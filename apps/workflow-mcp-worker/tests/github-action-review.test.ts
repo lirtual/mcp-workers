@@ -4,7 +4,7 @@ import { reviewedGitHubAction, assertReviewedGitHubAction, isPublishedGitHubActi
 import type { GitHubActionSource } from '../src/github-action-discovery.ts';
 
 const source: GitHubActionSource = {
-  repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+  repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),
   contract:{name:'Linux',type:'session',inputs:{
     duration_minutes:{type:'number',required:false,default:10},

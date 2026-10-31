@@ -833,7 +833,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       const inputs=action?.inputs as Record<string,unknown>|undefined;
       if(!saga||policy.kind!=='github.session.cancel'||
          action?.type!=='session'||inputs?.session_mode!=='temporary'||
-         action?.repository!=='lirtual/session-actions'||
+         action?.repository!=='lirtual/github-actions'||
          action?.workflowPath!=='.github/workflows/ubuntu.yml')
         throw new PlanError('compensation_not_supported',stepPath+'/compensate');
       compensate={kind:'github.session.cancel'};
@@ -857,7 +857,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       const action=(template?.with?.action??template?.action) as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
       if(!s.needs.includes(source)||upstream?.uses!=='flow.foreach'||
          upstream.with.max_items!==1||template?.uses!=='github.run'||
-         action?.repository!=='lirtual/session-actions'||
+         action?.repository!=='lirtual/github-actions'||
          action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
         throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
     }
@@ -868,7 +868,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         const upstream=steps.find(x=>x.id===source);
         const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
         if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
-           action?.repository!=='lirtual/session-actions'||
+           action?.repository!=='lirtual/github-actions'||
            action?.workflowPath!=='.github/workflows/openlist.yml'||
            action?.type!=='session')
           throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');

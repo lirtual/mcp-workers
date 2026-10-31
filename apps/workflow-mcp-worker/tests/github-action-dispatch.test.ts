@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {dispatchReviewedGitHubAction} from '../src/github-action-dispatch.ts';
 import type {ReviewedGitHubAction} from '../src/github-action-review.ts';
-const action:ReviewedGitHubAction={repository:'lirtual/session-actions',repositoryId:12,workflowId:34,workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
+const action:ReviewedGitHubAction={repository:'lirtual/github-actions',repositoryId:12,workflowId:34,workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const attempt={attemptId:'11111111-1111-4111-8111-111111111111',dispatchId:'22222222-2222-4222-8222-222222222222'};
 const valid=()=>Response.json({ref:'refs/heads/main',object:{type:'commit',sha:action.commitSha}});
 test('ref verification precedes one single dispatch with server identity',async()=>{

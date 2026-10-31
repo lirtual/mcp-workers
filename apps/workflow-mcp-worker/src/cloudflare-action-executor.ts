@@ -87,7 +87,7 @@ export async function runPublishedCloudflareAction(
  const source=plan.steps.find(x=>x.id===sourceId);
  const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
  if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
-   source?.uses!=='github.run'||pinned?.repository!=='lirtual/session-actions'||
+   source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
    pinned.workflowPath!=='.github/workflows/openlist.yml'||pinned.type!=='session')
   return denied('untrusted_session_reference');
   // Independently identify the live bound Worker before first dispatch.
@@ -110,8 +110,8 @@ export async function runPublishedCloudflareAction(
    .bind(runId,sourceId).first<Source>();
   if(!current||typeof current.session_url!=='string'||
     !URL_PATTERN.test(current.session_url)||current.session_url.length>180||
-    current.repository!=='lirtual/session-actions'||
-    !current.workflow_ref.startsWith('lirtual/session-actions/.github/workflows/openlist.yml@'))
+    current.repository!=='lirtual/github-actions'||
+    !current.workflow_ref.startsWith('lirtual/github-actions/.github/workflows/openlist.yml@'))
    return denied('session_ready_not_trusted');
   // Cloudflare Quick Tunnel's signed Ready callback uses a bare root origin
   // without a slash. Normalize only that equivalent form for Provider digest
@@ -146,8 +146,8 @@ export async function runPublishedCloudflareAction(
       WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
        AND s.session_url=? AND a.attempt_id=? AND a.state='claimed'
        AND a.capability_id='github.action'
-       AND a.repository='lirtual/session-actions'
-       AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/openlist.yml@')=1
+       AND a.repository='lirtual/github-actions'
+       AND instr(a.workflow_ref,'lirtual/github-actions/.github/workflows/openlist.yml@')=1
        AND a.owner_run_id=a.candidate_run_id AND a.owner_run_attempt=a.candidate_run_attempt
        AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id))
    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')

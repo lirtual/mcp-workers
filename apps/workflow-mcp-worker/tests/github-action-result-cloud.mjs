@@ -160,7 +160,7 @@ async function run(){
 async function verifyApprovalFenceOnIsolatedD1(){
   const {registerAndDispatchGitHubAction}=await import('../src/github-action-orchestration.ts');
   const reviewed={
-    repository:'lirtual/session-actions',repositoryId:1430925009,
+    repository:'lirtual/github-actions',repositoryId:1430925009,
     workflowId:394689660,workflowPath:'.github/workflows/verify-action.yml',
     commitSha:'5ae1862afd94c01493dae0ec5ecf5568f664b849',
     type:'task',contractDigest:'592d41734af48fb4e37b44708eba0b68593cbed011915829edd8ed7c9b890845',

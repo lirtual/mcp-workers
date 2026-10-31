@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { matchPinnedActionRunIdentity } from '../src/github-dispatch.ts';
 
 const expected = {
-  repository:'lirtual/session-actions',repositoryId:'123456',
-  workflowRef:'lirtual/session-actions/.github/workflows/linux.yml@refs/tags/reviewed',
+  repository:'lirtual/github-actions',repositoryId:'123456',
+  workflowRef:'lirtual/github-actions/.github/workflows/linux.yml@refs/tags/reviewed',
   ref:'refs/tags/reviewed',commitSha:'a'.repeat(40),runId:12345,runAttempt:1,
 };
 const verified = {
@@ -22,7 +22,7 @@ test('rejects a changed SHA, repository identity, run attempt or event',()=>{
     {...verified,run_attempt:'2'},
     {...verified,run_id:'99999'},
     {...verified,event_name:'workflow_run'},
-    {...verified,workflow_ref:'lirtual/session-actions/.github/workflows/other.yml@refs/tags/reviewed'},
+    {...verified,workflow_ref:'lirtual/github-actions/.github/workflows/other.yml@refs/tags/reviewed'},
   ]) assert.equal(matchPinnedActionRunIdentity(claims,expected),false);
 });
 test('rejects invalid expected pinned SHA and repository ID',()=>{

@@ -17,7 +17,7 @@ import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-
 import type {Env} from '../src/store.ts';
 
 const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0');
-const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
  type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[action],
@@ -754,8 +754,8 @@ test('normal cancel is one-shot and 202 never releases Session capacity; force i
   assert.equal(await invoke(true),'force_requested');
   assert.equal(await invoke(true),'already_force_requested');
   assert.deepEqual(requests,[
-   '/repos/lirtual/session-actions/actions/runs/42/cancel',
-   '/repos/lirtual/session-actions/actions/runs/42/force-cancel',
+   '/repos/lirtual/github-actions/actions/runs/42/cancel',
+   '/repos/lirtual/github-actions/actions/runs/42/force-cancel',
   ]);
   const record=f.db.prepare('SELECT cancel_ack,force_ack FROM github_action_cancellations').get();
   assert.equal(record?.cancel_ack,'accepted');

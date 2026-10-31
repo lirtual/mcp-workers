@@ -4,7 +4,7 @@ import { reconcileGitHubPhysicalRun } from '../src/github-action-run-state.ts';
 import type { ReviewedGitHubAction } from '../src/github-action-review.ts';
 
 const action: ReviewedGitHubAction = {
-  repository:'lirtual/session-actions',repositoryId:123,workflowId:14,
+  repository:'lirtual/github-actions',repositoryId:123,workflowId:14,
   workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),
   type:'session',contractDigest:'b'.repeat(64),
 };

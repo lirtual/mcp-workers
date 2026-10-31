@@ -247,7 +247,7 @@ arbitrary write tools, a generic Provider registry or cross-Provider revocation.
 
 `workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP and one reviewed top-level IMA create/append note write, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
 Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.
-Nested loops, general Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. A bounded Saga exception supports only explicitly approved temporary `lirtual/session-actions` Ubuntu Session cancellation: source `saga.on` declares `failure` and/or `cancel`, each reversible Session step declares `compensate: {kind: github.session.cancel}`, and Publish separately requires `approve_saga_compensation` plus its exact GitHub grants. Native Cloudflare Workflows rolls back registered Steps in reverse start order; Saga execution is serialized to match inverse dependency order. A GitHub cancellation ACK is only a requested operation, never physical Session termination; the existing GitHub Attempt/Session reconciliation and TTL retain terminal authority. Other side effects are disallowed in Saga definitions, and no ACID rollback is claimed. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+Nested loops, general Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. A bounded Saga exception supports only explicitly approved temporary `lirtual/github-actions` Ubuntu Session cancellation: source `saga.on` declares `failure` and/or `cancel`, each reversible Session step declares `compensate: {kind: github.session.cancel}`, and Publish separately requires `approve_saga_compensation` plus its exact GitHub grants. Native Cloudflare Workflows rolls back registered Steps in reverse start order; Saga execution is serialized to match inverse dependency order. A GitHub cancellation ACK is only a requested operation, never physical Session termination; the existing GitHub Attempt/Session reconciliation and TTL retain terminal authority. Other side effects are disallowed in Saga definitions, and no ACID rollback is claimed. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
 
@@ -451,6 +451,14 @@ jobs:
 
 An authorized delivery normalizes `inputs.github` from **signed JWT claims only**: repository name and ID, `event: push`, ref, SHA and stable Actions `run_id`. Duplicate deliveries and manual GitHub Actions reruns use the same D1 admission key and return the existing Run; different Actions runs produce separate admissions. The usual active Published Version, pause, Run capacity and immutable Action grants still apply. A successful HTTP 202 means accepted, **not** business completion; inspect Workflow MCP Status/Result. A newly published Version with different source pins immediately rejects older signed senders. GitHub Actions Event Bridge jobs are not automatic GitHub webhook subscriptions; the owner controls their creation/removal in each source repository, and no missed-event backfill is promised.
 
+## Repository identity cutover (Spec #607)
+
+The `session-actions` → `github-actions` change is a **production identity cutover**, not a new executor or a text-only rename. The prepared source checks the new exact `lirtual/github-actions` name alongside the unchanged GitHub Repository ID `1430925009`; production must keep the previous Worker and approved-repositories configuration until the separately authorized migration. Never merge or deploy this source alone into the old-name production configuration.
+
+For the approved cutover, use [Spec #607](https://github.com/lirtual/mcp-workers/issues/607) as the execution record: refresh all seven Action identities and effective Workflow versions; independently settle physical Task/Session and uncertain Runs; block new admissions; verify the exact GitHub OIDC `sub` and audience plus Tailscale workload trust; rename the **existing** repository without changing its ID; update the existing `WORKFLOW_ACTION_APPROVED_REPOSITORIES` production variable, trust and dependent consumers; perform the normal protected Worker release; and Validate/Publish the currently effective definitions **in place** under the new name, restoring five active definitions while leaving Chrome paused. Preserve every historical Version, Run and receipt without rewriting.
+
+Unfreeze only after one reviewed Verify Task produces a signed Claim and native terminal result, one short temporary Ubuntu Session reaches signed Ready and physically terminates with its slot released, and stale/mismatched identity is refused. Remove stale external OIDC trust only after the new trust succeeds. On any unknown physical or release result, keep admissions frozen and reconcile existing receipts; do not replay side effects or assume an inverse rename restores old identity. GitHub PR CI is **not** production approval or proof of this cutover.
+
 ## Release and verification
 
 Use `.github/workflows/release.yml` (GitHub Actions → Release Worker) on `main`, selecting `worker=workflow-mcp-worker` and `deploy_to_production=true`. There are no per-capability enable inputs. The release verifies the selected GitHub Environment secrets, fixed Portal/executor identity, D1 schema, active Runs and the exact deployed Worker version.
@@ -464,7 +472,7 @@ Old schema migration filenames are retained because they have already been recor
 ### Short-lived Session Runtime Data (Spec #288)
 
 Windows UU Lite is the first and only admitted producer. The reviewed
-`lirtual/session-actions/.github/workflows/windows.yml` GitHub-hosted physical
+`lirtual/github-actions/.github/workflows/windows.yml` GitHub-hosted physical
 Session posts a bounded JSON observation to `POST /github/action/session-data`
 with a fresh GitHub OIDC token, its claimed `attemptId`, the explicitly
 allowlisted `uu.credentials` key and a strictly increasing per-Attempt sequence.
@@ -563,7 +571,7 @@ The existing **legacy v1** `download` Workflow may append one top-level `action.
 `executor: cloudflare`, `provider: weixin`, `action: weixin.notify_download`,
 `input: {download_step_id: download_task}` and `needs: [download_task]`.
 The `download_task` must be a `max_items: 1` foreach containing the pinned
-`lirtual/session-actions/.github/workflows/download.yml` GitHub Task; no
+`lirtual/github-actions/.github/workflows/download.yml` GitHub Task; no
 arbitrary Result or user-supplied success may authorize the notification.
 The existing OIDC Claim and verified GitHub physical Task success prove completion;
 the reviewed download Task only exits successfully after remote readback.
@@ -589,7 +597,7 @@ provable numeric-reference type conflicts. Dynamic inputs, untrusted/open
 schemas and undeclared GitHub/MCP outputs remain unknown rather than falsely
 validated. Existing `needs`, runtime authorization and result bounds still apply.
 
-For the source-reviewed `lirtual/session-actions` download Task,
+For the source-reviewed `lirtual/github-actions` download Task,
 `batch_json` is **one GitHub string input**, not a JSON object input. This
 minimal example was syntax-checked with the provider's authoritative
 `.github/scripts/download_batch.py` `validate()` function:

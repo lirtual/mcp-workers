@@ -23,7 +23,7 @@ function dbFixture(){
  db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,
  repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,
  owner_run_id,owner_run_attempt,created_at,updated_at)
- VALUES(?,'r','step','github.action','dispatch','claimed','lirtual/session-actions','1',
+ VALUES(?,'r','step','github.action','dispatch','claimed','lirtual/github-actions','1',
  '.github/workflows/a.yml','refs/heads/main',42,1,42,1,1,1)`).run(aid);
  return db;
 }

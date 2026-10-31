@@ -726,7 +726,7 @@ test('MCP pinned Portal refuses a different approved endpoint at Publish',async 
 
 test('pinned Action review stays publishable after default branch advances',async t=>{
   const {service,env,sqlite}=setup(t);
-  const repository='lirtual/session-actions',repositoryId=123,workflowId=456;
+  const repository='lirtual/github-actions',repositoryId=123,workflowId=456;
   const workflowPath='.github/workflows/verify-action.yml';
   const approvedSha='a'.repeat(40),newestSha='b'.repeat(40);
   const yaml=`name: Verified task
@@ -1214,7 +1214,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
   template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}}],
  {items:['A','B']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,
   workflowId:456,workflowPath:'.github/workflows/task.yml',
   commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
  const tag='refs/tags/task-v1';
@@ -1340,7 +1340,7 @@ test('late invalid dynamic Task choice is rejected before any per-item GitHub di
  const contract={name:'Pinned Task',type:'task' as const,inputs:{
   outcome:{type:'choice' as const,required:true,options:['success','failure'],default:'success'},
  }};
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40)};
  const approved=await reviewedGitHubAction({...identity,contract});
  const {plan}=await compilePlan({version:1,name:'dynamic typed Task',steps:[
@@ -1377,7 +1377,7 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
    description:'Verify the real GitHub task success or failure path',
    options:['success','failure'],default:'success'},
  }};
- const base={repository:'lirtual/session-actions',repositoryId:1430925009,
+ const base={repository:'lirtual/github-actions',repositoryId:1430925009,
   workflowId:394689660,workflowPath:'.github/workflows/verify-action.yml',
   commitSha:'3b8114a3e478b8acb28ab2f3c404284c33096bcf'};
  const approved=await reviewedGitHubAction({...base,contract});
@@ -1520,7 +1520,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
   {items:['one','two']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
    workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
    contractDigest:'b'.repeat(64),type:'task' as const};
  const {plan}=await compilePlan({version:1,name:'Three-stage failure guard',steps:[
@@ -1567,7 +1567,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
 test('emit → conditional Task → emit skips all external work and follow-up on false condition',async t=>{
  const {service,admit,env,sqlite,run}=setup(t);
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],{items:['skip']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
   contractDigest:'b'.repeat(64),type:'task' as const};
  const {plan}=await compilePlan({version:1,name:'Skipped physical Task',steps:[
@@ -1603,7 +1603,7 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
    {items:['first','second']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,
   workflowId:456,workflowPath:'.github/workflows/task.yml',
   commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
  const tag='refs/tags/task-v1',audience='workflow-github-action:production';
@@ -1710,7 +1710,7 @@ test('mixed skipped MCP prerequisite never dispatches a reviewed GitHub Task',as
  const {admit,service,run,sqlite}=setup(t);
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
   {items:['one']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
   contractDigest:'b'.repeat(64),type:'task' as const};
  const {plan}=await compilePlan({version:1,name:'Blocked mixed external stages',steps:[

@@ -40,7 +40,7 @@ export async function runDownloadNotification(
   ctx?.steps[sourceId]?.status!=='succeeded'||
   source?.uses!=='flow.foreach'||source.with.max_items!==1||
   template?.uses!=='github.run'||typeof template.id!=='string'||
-  pinned?.repository!=='lirtual/session-actions'||
+  pinned?.repository!=='lirtual/github-actions'||
   pinned.workflowPath!=='.github/workflows/download.yml'||pinned.type!=='task')
   return failed('untrusted_download_reference');
  const childId=sourceId+'_0_'+template.id;
@@ -85,8 +85,8 @@ export async function runDownloadNotification(
    WHERE a.run_id=? AND a.step_id=? AND a.capability_id='github.action'
     AND a.state='succeeded' AND child.status='succeeded'
     AND parent.status='succeeded'
-    AND a.repository='lirtual/session-actions'
-    AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/download.yml@')=1
+    AND a.repository='lirtual/github-actions'
+    AND instr(a.workflow_ref,'lirtual/github-actions/.github/workflows/download.yml@')=1
     AND a.owner_run_id=a.candidate_run_id
     AND a.owner_run_attempt=a.candidate_run_attempt`)
    .bind(sourceId,runId,childId).first<{attempt_id:string}>();
@@ -109,8 +109,8 @@ export async function runDownloadNotification(
       WHERE a.run_id=? AND a.step_id=? AND a.attempt_id=?
       AND a.capability_id='github.action' AND a.state='succeeded'
       AND child.status='succeeded' AND parent.status='succeeded'
-      AND a.repository='lirtual/session-actions'
-      AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/download.yml@')=1
+      AND a.repository='lirtual/github-actions'
+      AND instr(a.workflow_ref,'lirtual/github-actions/.github/workflows/download.yml@')=1
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt)
    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')

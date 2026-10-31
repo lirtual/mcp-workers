@@ -24,7 +24,7 @@ export async function compensateSession(
  const authorized=plan.github_execution_approved===true&&plan.saga_compensation_approved===true&&
     step.compensate?.kind==='github.session.cancel'&&grant===true&&
     action?.type==='session'&&inputs?.session_mode==='temporary'&&
-    action.repository==='lirtual/session-actions'&&
+    action.repository==='lirtual/github-actions'&&
     action.workflowPath==='.github/workflows/ubuntu.yml'&&
     !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const db=env.DB;
