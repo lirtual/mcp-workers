@@ -248,7 +248,7 @@ else chrome.runtime.sendMessage(target,{type:"activation-presence",attempt_id:at
     });
   }catch{status.textContent="Activation could not be confirmed.";}
 });`;
-return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser MCP activation</title><h1>Browser MCP</h1><p id="status">Checking this Profile's pending activation…</p><script nonce="${nonce}">${script}</script></html>`,
+      return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser MCP activation</title><h1>Browser MCP</h1><p id="status">Checking this Profile's pending activation…</p><script nonce="${nonce}">${script}</script></html>`,
         {headers:{...ownerHeaders,"content-type":"text/html; charset=utf-8",
          "content-security-policy":`default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`}});
     }

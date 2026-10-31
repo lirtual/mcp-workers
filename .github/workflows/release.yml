@@ -248,7 +248,7 @@ jobs:
         with:
           node-version: 24
       - uses: pnpm/action-setup@v4
-with:
+        with:
           version: 10.17.1
       - name: Install existing read-only MySQL/PostgreSQL probe drivers
         run: pnpm install --frozen-lockfile --filter database-mcp-worker...
@@ -498,7 +498,7 @@ with:
         run: bash scripts/stage-public-remote-control-agent.sh
 
       - name: Install pinned dependencies
-run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build and verify shared Browser extension artifact
         if: inputs.worker == 'browser-mcp-worker'
@@ -748,7 +748,7 @@ run: pnpm install --frozen-lockfile --ignore-scripts
           GITHUB_TOKEN: ${{ github.token }}
           TERMINAL_PROOF_KIND: sixth
         run: |
-set -euo pipefail
+          set -euo pipefail
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
             SELECT id,outcome,start_state,error_code FROM runs
               WHERE id='3e312105-b40e-49ea-a037-c3359074be2b';
@@ -998,7 +998,7 @@ set -euo pipefail
           WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
           WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
           WORKFLOW_EIGHTH_TERMINAL_RUN_ID: ${{ steps.terminal_eighth.outputs.eighth_terminal_run_id }}
-WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_run_id }}
+          WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_run_id }}
           WORKFLOW_TENTH_TERMINAL_RUN_ID: ${{ steps.terminal_tenth.outputs.tenth_terminal_run_id }}
           WORKFLOW_ELEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_eleventh.outputs.eleventh_terminal_run_id }}
         run: |
@@ -1248,7 +1248,7 @@ WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_
 
       # First transition only. Do not reopen admission until the active
       # Consumer version, single Actions Service Binding and Provider pin
-# have already been independently read back; all plans remain paused.
+      # have already been independently read back; all plans remain paused.
       - name: Verify frozen Action gate and paused unified runtime before activation (read-only)
         if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
         env:
