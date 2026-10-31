@@ -228,7 +228,15 @@ async function pollActivation(){
     if(activationWakePending){activationWakePending=false;void pollActivation();}
   }
 }
+async function clearObservedTargetFeedback(target=lastObserved) {
+  if(!target)return;
+  try {await chrome.scripting.executeScript({
+    target:{tabId:target.tab_id,documentIds:[target.document_id]},
+    world:"ISOLATED",func:browserClearTargetFeedback
+  });}catch { /* expired tab/document; navigation also destroys the overlay */ }
+}
 async function stopLocal() {
+  const feedbackTarget=lastObserved;
   localBlocked=true;
   localDenialEpoch++;
   const active=await activationAttempt();
@@ -241,6 +249,7 @@ async function stopLocal() {
   // Persist the local denial *before* any cloud/network action.
   await persist({authorization:"stopped",connection:"offline",pending_cloud_stop:hadEndpoint});
   clearNetwork();
+  await clearObservedTargetFeedback(feedbackTarget);
   const s=await state();
   if(s.endpoint_id) {
     try {
@@ -273,6 +282,7 @@ async function acknowledgeCloudRevocation() {
   return {acknowledged_locally:true};
 }
 async function revokeLocal() {
+  const feedbackTarget=lastObserved;
   localBlocked=true;
   localDenialEpoch++;
   const active=await activationAttempt();
@@ -286,6 +296,7 @@ async function revokeLocal() {
   await chrome.storage.session.remove("browser_temporary_grant");
   await persist({authorization:"revoked",connection:"offline",pending_cloud_stop:false,pending_revocation_id:s.endpoint_id||s.pending_revocation_id||null});
   clearNetwork();
+  await clearObservedTargetFeedback(feedbackTarget);
   if(!s.endpoint_id)return {cloud_confirmed:false};
   try {await endpointPost("revoke",s);await persist({pending_revocation_id:null});return {cloud_confirmed:true};}
   catch{return {cloud_confirmed:false,action:"Use authenticated browser_revoke with the old endpoint_id to finish cloud revocation."};}
@@ -312,7 +323,7 @@ function connect() {
     // may delay registering handlers and lose a fast WSS open/authentication.
     ws.onopen=()=>{
       if(socket!==ws)return;
-      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.2.1",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
+      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.2.2",endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service}));
     };
     ws.onmessage=async event=>{
       if(socket!==ws)return;
@@ -434,11 +445,12 @@ function connect() {
         progress("result_transport");
         ws.send(serialized);
       } else if(message.type==="stopped"||message.type==="revoked"){
+        const feedbackTarget=lastObserved;
         localBlocked=true;localDenialEpoch++;
         void clearSensitivePermissions().catch(()=>{});
         await chrome.storage.local.set({authorization:message.type,connection:"offline",last_update:Date.now()});
         if(message.type==="revoked"){await chrome.storage.local.remove(["credential","endpoint_id"]);await chrome.storage.session.remove("browser_temporary_grant");}
-        clearNetwork();await render();
+        clearNetwork();await clearObservedTargetFeedback(feedbackTarget);await render();
       }
     };
     ws.onclose=async()=>{
