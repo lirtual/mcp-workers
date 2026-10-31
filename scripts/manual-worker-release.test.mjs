@@ -24,7 +24,7 @@ test("Raindrop required Secret names and bindings are preserved", () => {
   assert.throws(() => verifyBindings("not-a-worker", goodSettings, secretList), /target/);
 });
 
-test("Workflow deployment readback retries only missing Secret inventory", async () => {
+test("Workflow deployment readback retries only bounded propagation or read-only Cloudflare 5xx", async () => {
   let count = 0;
   const intervals = [];
   const result = await retryReleaseReadback(async () => {
@@ -63,6 +63,36 @@ test("Workflow deployment readback retries only missing Secret inventory", async
     throw Error("Required runtime Secret missing: MCP_PORTAL_CLIENT_SECRET");
   }, async () => {}), /runtime Secret missing/);
   assert.equal(max,6);
+
+  // Post-deploy Cloudflare returned HTTP 500 for /secrets in protected run
+  // #41206153826. No permission exception or production-binding bypass.
+  let transient500 = 0;
+  const recovered = await retryReleaseReadback(async () => {
+    transient500++;
+    if (transient500 < 3) throw Error("Cloudflare read-only /secrets HTTP 500");
+    return {verified:true};
+  }, async () => {});
+  assert.deepEqual(recovered,{verified:true});
+  assert.equal(transient500,3);
+
+  for (const msg of ["Cloudflare read-only /secrets HTTP 401",
+    "Cloudflare read-only /settings HTTP 403",
+    "Cloudflare read-only /secrets HTTP 404",
+    "Cloudflare read-only /unknown HTTP 503",
+    "Workflow Portal Client ID must be exactly one plaintext Variable"]){
+    let calls=0;
+    await assert.rejects(retryReleaseReadback(async () => {
+      calls++;throw Error(msg);
+    }, async () => {throw Error("must not pause");}), err=>err.message===msg);
+    assert.equal(calls,1,msg);
+  }
+
+  let exhausted=0;
+  await assert.rejects(retryReleaseReadback(async () => {
+    exhausted++;
+    throw Error("Cloudflare read-only /script-settings HTTP 503");
+  }, async () => {}), /HTTP 503/);
+  assert.equal(exhausted,6);
 });
 
 test("Active-version readback requires exactly one 100 percent version", () => {
