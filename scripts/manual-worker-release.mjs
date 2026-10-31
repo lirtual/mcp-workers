@@ -356,6 +356,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(!bindings.some(x => x.type === "vpc_service" ||
         x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
     }
+    // Existing production has no Session RPC binding. Permit that only
+    // during preflight; the post-deploy inventory must prove the exact private
+    // Workflow WorkerEntrypoint and reject wrong or duplicate destinations.
+    const sessionRpc=bindings.filter(x=>x.name==="WORKFLOW_SESSION_AUTHORIZATION");
+    invariant((options.mode==="preflight" && sessionRpc.length===0) ||
+      (sessionRpc.length===1 && sessionRpc[0].type==="service" &&
+       sessionRpc[0].service==="workflow-mcp-worker" &&
+       sessionRpc[0].entrypoint==="SessionAuthorization"),
+      "Remote Control Session Authorization Service Binding missing or drifted");
     // Readback must prove Wrangler deployed the origin derived from the
     // reviewed Custom Domain, not a stale or attacker-controlled Host value.
     if (options.mode === "readback") {
@@ -422,8 +431,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       : worker === "ssh-mcp-worker" ? (options.mode === "preflight" ? ["EDGE_SSH_BROKER", "EDGE_SSH_DB", "SSH_OPERATIONS"] : ["EDGE_SSH_DB", "SSH_OPERATIONS"])
       : worker === "remote-control-mcp-worker"
         ? (options.mode === "preflight"
-          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
-          : ["DEVICE_COORDINATOR"]) : []);
+          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE", "WORKFLOW_SESSION_AUTHORIZATION"]
+          : ["DEVICE_COORDINATOR", "WORKFLOW_SESSION_AUTHORIZATION"]) : []);
   if (worker === "workflow-mcp-worker" && options.mode === "readback") {
     invariant(bindings.filter(x=>x.name === "ACTIONS").length === 1 &&
       find("ACTIONS", "service")?.service === "cloudflare-actions" &&
@@ -608,20 +617,31 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
     row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
-  const complete = row?.migration_count === 18 && row?.migration_v18 === 1 &&
+  const completeV18 = row?.migration_count === 18 && row?.migration_v18 === 1 &&
+    row?.migration_v19 === 0 && row?.rca_duration_column === 0 &&
     row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
     row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
     row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
     row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || complete)),
+  // #62: migration 0019 adds a signed, nonrenewable Session duration snapshot.
+  // Release may start on a fully reviewed v18 baseline, but code publication
+  // must follow exact v19 migration/column confirmation; no v18 fallback.
+  const completeV19 = row?.migration_count === 19 && row?.migration_v19 === 1 &&
+    row?.rca_duration_column === 1 && row?.migration_v18 === 1 &&
+    row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? completeV19 : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || completeV18 || completeV19)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
   // D1 migration may change Session reservations even after the parent Run
   // succeeded at Ready. Require a physically quiescent Tailnet before schema
   // changes; completed-schema code-only releases use their separate gate.
-  if(!complete) invariant(Number.isSafeInteger(row?.active_sessions) &&
+  if(!completeV19) invariant(Number.isSafeInteger(row?.active_sessions) &&
     row.active_sessions===0, "Workflow D1 migration blocked by active physical Sessions");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
     "Workflow first deployment requires empty production Run and Workflow state");
@@ -644,7 +664,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
     '0014_workflow_deletion.sql','0015_runtime_approval.sql',
     '0016_portal_connection_revocation.sql',
-    '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql')) AS expected_migrations,
+    '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql',
+    '0019_session_rca_duration.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -707,7 +728,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15,16,17,18].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17,18,19].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
@@ -743,7 +764,7 @@ export function verifyWorkflowCodeReleaseReadiness(response, approvedTerminalArt
     "verified_terminal_saga_receipts","reviewed_terminal_artifact_attempts",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===18 && row.expected_migrations===18,
+  invariant(row.migration_count===19 && row.expected_migrations===19,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
     "nonterminal_runs","unresolved_starts","invalid_cancelled_steps","undelivered_callbacks",
@@ -848,6 +869,10 @@ export function readConfiguration(worker, content, reviewedManifest) {
       "SSH must be broker-only and read-only by default");
   }
   if (worker === "remote-control-mcp-worker") {
+    invariant(JSON.stringify(conf.services)===JSON.stringify([{
+      binding:"WORKFLOW_SESSION_AUTHORIZATION",
+      service:"workflow-mcp-worker",entrypoint:"SessionAuthorization",
+    }]),"Remote Control reviewed Session Service Binding drift");
     invariant(!conf.vars?.REMOTE_CONTROL_V2_ONLY &&
       !conf.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY &&
       !conf.vpc_services && conf.preview_urls === false,
