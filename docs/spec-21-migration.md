@@ -109,3 +109,24 @@ momentary zero-instance snapshot prevents newly admitted old-version instances.
 No runtime is quiesced by merely changing this input; unknown sends are never
 replayed. Repeat compatible unified Worker releases do not require the old
 ingress attestation.
+
+## Protected 0018 preparation, before the first Provider release
+
+An existing-manual-release **preparation-only** mode in
+`.github/workflows/release.yml` removes the circular dependency between
+first-provider publishing and the consumer's already-protected D1 migrations.
+It is the same `workflow-mcp-worker` production release Environment and
+concurrency lock, not a separate deployment channel. After each affected
+Published Workflow is paused and all old native instances have physically
+drained, Owner manually dispatches `worker=workflow-mcp-worker`,
+`actions_migration_prepare=true`, `actions_old_ingress_quiesced=true`,
+`deploy_to_production=false`. Source/current-main, exact original Service
+Bindings, **all** published admission rows paused, durable Runs terminal, and
+all six native statuses are checked before applying existing migrations.
+Migration `0018` is then conditionally set to `frozen` and independently
+read back with the unchanged admission and physical-instance checks.
+The preparation mode never deploys a Worker, unbinds Weixin, pairs a device,
+or sends a notification. Stop on any failed preflight; restore old admission
+only after rechecking compatibility and without replaying Unknown sends.
+The subsequent Provider publication and consumer release retain their own
+unchanged mandatory first-cutover gates.
