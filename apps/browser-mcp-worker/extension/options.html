@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Browser MCP · Options</title><style>
+body{font:14px system-ui;max-width:620px;margin:32px auto;padding:0 16px;line-height:1.6}
+h1{font-size:22px}button,select{padding:8px;margin:6px 8px 6px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+#summary{font-weight:600}#action-feedback{min-height:1.5em}label{display:block;margin:16px 0}
+</style></head><body><h1>Browser MCP</h1>
+<p>Click the extension toolbar icon to turn control ON or OFF. When Access requests a one-time PIN, enter it yourself in the protected authentication page. An existing Access SSO session may be reused.</p>
+<div id="summary" aria-live="polite">Reading state…</div><div id="action-feedback" role="status" aria-live="polite"></div>
+<label>Pairing lifetime (choose before first activation)
+<select id="lifetime"><option value="permanent">Permanent (default)</option><option value="temporary">Temporary · browser session only</option></select></label>
+<p>To change the pairing lifetime, Revoke and pair again. Closing one window or pausing the service worker is not a session end.</p>
+<button id="stop">Stop locally</button><button id="revoke">Revoke pairing</button><button id="ack">Acknowledge verified cloud revocation</button>
+<h2>Session permissions</h2><button id="lan">Enable direct localhost/LAN</button><button id="private">Enable private/incognito</button>
+<p>These permissions are independent of pairing and must be approved locally for each session.</p>
+<h2>Diagnostics</h2><button id="locate">Locate observed tab</button><pre id="status"></pre>
+<script src="config.js"></script><script src="options.js"></script></body></html>

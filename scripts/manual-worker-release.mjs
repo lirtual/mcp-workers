@@ -4,15 +4,15 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars, BROWSER_APPROVAL_VARIABLES } from "./worker-release-variables.mjs";
-import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
-const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker", "email-mcp-worker"]);
+const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"],
-  "email-mcp-worker": ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -24,7 +24,6 @@ const WORKER_ENTRIES = {
   "raindrop-mcp-worker": "src/worker.ts",
   "ima-mcp-worker": "src/index.ts",
   "database-mcp-worker": "src/index.ts",
-  "email-mcp-worker": "src/index.ts",
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
@@ -66,8 +65,18 @@ export function databaseD1ReadinessSql(expectedIds) {
   // Only aggregate counts: no ciphertext, passwords, URLs or driver errors.
   return [
     "SELECT",
-    "  (SELECT COUNT(*) FROM d1_migrations WHERE name IN ('0001_connections.sql','0002_transport_and_retired_ids.sql')) AS migration_count,",
+    "  (SELECT COUNT(*) FROM d1_migrations WHERE name IN ('0001_connections.sql','0002_transport_and_retired_ids.sql','0003_hyperdrive_operations.sql')) AS migration_count,",
     "  (SELECT COUNT(*) FROM database_connections) AS record_count,",
+    "  (SELECT COUNT(*) FROM hyperdrive_operations WHERE action='create' AND phase IN ('pending','running','awaiting_confirmation','unknown')) AS reserved_count,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('hyperdrive_operations') WHERE name='resource_write_started_at') AS resource_claim_column,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('hyperdrive_operations') WHERE name='apply_run_id') AS apply_receipt_column,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('database_connections') WHERE name='in_flight_count' AND type='INTEGER' AND \"notnull\"=1) AS inflight_column,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_inflight_delete') AS inflight_delete_trigger,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_inflight_rebind') AS inflight_rebind_trigger,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connection_blocks_unreviewed_rebind') AS reviewed_rebind_trigger,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('retired_connection_ids') WHERE name='upstream_config_id') AS retired_config_column,",
+    "  (SELECT COUNT(*) FROM pragma_table_info('retired_connection_ids') WHERE name='upstream_binding_name') AS retired_binding_column,",
+    "  (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='database_connections_retire_id' AND sql LIKE '%upstream_config_id%' AND sql LIKE '%upstream_binding_name%') AS retired_resource_trigger,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ")) AS preserved_count,",
     "  (SELECT COUNT(*) FROM database_connections WHERE id IN (" + idList + ") AND status='active') AS active_count,",
     "  (SELECT COUNT(*) FROM retired_connection_ids) AS retired_count,",
@@ -88,10 +97,13 @@ export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cuto
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Database D1 read-only schema check unavailable");
   const row = response[0].results[0];
-  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count"])
+  for (const name of ["migration_count", "record_count", "preserved_count", "active_count", "retired_count", "reused_count", "malformed_count", "reserved_count", "resource_claim_column", "apply_receipt_column", "inflight_column", "inflight_delete_trigger", "inflight_rebind_trigger", "reviewed_rebind_trigger", "retired_config_column", "retired_binding_column", "retired_resource_trigger"])
     invariant(Number.isSafeInteger(row?.[name]) && row[name] >= 0,
       "Database D1 readiness count invalid: " + name);
-  invariant(row.migration_count === 2, "Database D1 additive transport migration not applied");
+  invariant(row.migration_count === 3 && row.resource_claim_column === 1 && row.apply_receipt_column === 1 &&
+    row.inflight_column === 1 && row.inflight_delete_trigger === 1 && row.inflight_rebind_trigger === 1 && row.reviewed_rebind_trigger === 1 &&
+    row.retired_config_column === 1 && row.retired_binding_column === 1 && row.retired_resource_trigger === 1,
+    "Database D1 additive lifecycle migration not applied (including in-flight fence)");
   // The separate, always-on encrypted Direct prepublication gate enforces
   // exact active revision-2 legacy records while the old Worker is deployed.
   // Once the D1-backed Worker is already live, requiring those IDs to remain
@@ -102,7 +114,7 @@ export function verifyDatabaseD1Readiness(response, expectedCount, phase = 'cuto
     invariant(row.active_count === expectedCount,
       "Database production release blocked: reviewed legacy connections are disabled");
   }
-  invariant(row.record_count <= 10 && row.reused_count === 0 && row.malformed_count === 0 &&
+  invariant(row.record_count + row.reserved_count <= 10 && row.reused_count === 0 && row.malformed_count === 0 &&
     row.preserved_count <= Math.min(row.record_count, expectedCount) &&
     row.active_count <= row.preserved_count,
     "Database D1 record inventory invalid");
@@ -215,7 +227,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "SSH legacy broker binding or token remains");
     }
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true;
     invariant(settings.observability?.enabled === true &&
       settings.observability?.logs?.invocation_logs === logs,
       "Unexpected Invocation Logs configuration");
@@ -249,18 +261,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
         !secretNames.has("MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
-      const providerVersion=find("WEIXIN_ACTION_DEPLOYMENT_ID","plain_text");
-      invariant(bindings.filter(x=>x.name==="WEIXIN_ACTION_DEPLOYMENT_ID").length===1 &&
+      const providerVersion=find("ACTIONS_DEPLOYMENT_ID","plain_text");
+      invariant(bindings.filter(x=>x.name==="ACTIONS_DEPLOYMENT_ID").length===1 &&
         typeof providerVersion?.text==="string" &&
         /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(providerVersion.text) &&
-        !secretNames.has("WEIXIN_ACTION_DEPLOYMENT_ID"),
-        "Workflow reviewed Weixin Provider Version ID drift");
-      const barkVersion=find("BARK_ACTION_DEPLOYMENT_ID","plain_text");
-      invariant(bindings.filter(x=>x.name==="BARK_ACTION_DEPLOYMENT_ID").length===1 &&
-        typeof barkVersion?.text==="string" &&
-        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(barkVersion.text) &&
-        !secretNames.has("BARK_ACTION_DEPLOYMENT_ID"),
-        "Workflow reviewed Bark Provider Version ID drift");
+        !secretNames.has("ACTIONS_DEPLOYMENT_ID") &&
+        !bindings.some(x=>["WEIXIN_ACTION_DEPLOYMENT_ID","BARK_ACTION_DEPLOYMENT_ID"].includes(x.name)),
+        "Workflow reviewed Actions Provider Version ID drift");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -293,21 +300,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(durable?.class_name === "ImaImageRefreshShard", "IMA Durable Object missing or class drift");
     invariant(settings.observability?.traces?.enabled === true, "IMA tracing drift");
     invariant(!bindings.some((x) => x.name === "R2_BUCKET"), "Legacy IMA R2 Worker binding remains");
-  }
-  if (worker === "email-mcp-worker") {
-    const d1 = find("DB", "d1");
-    invariant((d1?.id || d1?.database_id) === "1fa50616-effb-458e-b798-b1ca1a0da24f",
-      "Email production D1 binding drift");
-    const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
-      ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
-      OWNER_EMAIL: "lirtual@outlook.com" };
-    for (const [name, value] of Object.entries(expected)) {
-      invariant(bindings.filter(b => b.name === name).length === 1 &&
-        find(name, "plain_text")?.text === value && !secretNames.has(name),
-        "Email production Access Variable drift: " + name);
-    }
-    invariant(!bindings.some(b => b.type === "plain_text" && !(b.name in expected)),
-      "Email has unexpected plaintext bindings");
   }
   if (worker === "database-mcp-worker") {
     if (options.mode !== "preflight") {
@@ -379,25 +371,41 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "browser-mcp-worker") {
     const coordinator = find("BROWSER_OWNER", "durable_object_namespace");
-    // The default release has only its DO and Bearer. An approved activation
-    // must supply every owner binding with an exact production identity; never
-    // accept a partially applied approval configuration or stale extra bindings.
-    const approval = BROWSER_APPROVAL_VARIABLES.map(name => find(name, "plain_text"));
-    const count = approval.filter(Boolean).length;
-    invariant(count === 0 || count === BROWSER_APPROVAL_VARIABLES.length,
+    const assets = find("ASSETS", "assets");
+    // The existing published Worker has no Assets binding. Preserve that
+    // namespace through preflight, but require exact Assets after deployment.
+    invariant(!bindings.some(b => b.name === "ASSETS" && b.type !== "assets") &&
+      (options.mode !== "readback" || !!assets),
+      "Browser public Assets binding missing or changed");
+    // Unknown owner review and Profile Activation retain distinct Access applications.
+    // Validate every observed binding as a single reviewed, exact configuration.
+    const approvalFields = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
+      "BROWSER_APPROVAL_ISOLATION"];
+    const activationFields = ["BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"];
+    const names = [...new Set([...BROWSER_APPROVAL_VARIABLES, ...activationFields])];
+    const fields = names.map(name => [name, find(name, "plain_text")]);
+    const env = Object.fromEntries(fields.filter(([, value]) => !!value)
+      .map(([name, value]) => [name, value.text]));
+    const approvalCount = approvalFields.filter(name => Object.hasOwn(env, name)).length;
+    const activationCount = activationFields.filter(name => Object.hasOwn(env, name)).length;
+    invariant(approvalCount === 0 || approvalCount === approvalFields.length,
       "Browser approval binding inventory incomplete");
-    if (count) {
-      const env = Object.fromEntries(BROWSER_APPROVAL_VARIABLES.map((name, i) => [name, approval[i].text]));
-      collectWorkerVars("browser-mcp-worker", env);
-    }
-    if (options.mode === "readback")
-      invariant(count === (options.expectedBrowserApproval ? BROWSER_APPROVAL_VARIABLES.length : 0),
+    invariant(activationCount === 0 || activationCount === activationFields.length,
+      "Browser activation binding inventory incomplete");
+    if (Object.keys(env).length) collectWorkerVars("browser-mcp-worker", env);
+    if (options.mode === "readback") {
+      invariant((approvalCount === approvalFields.length) === !!options.expectedBrowserApproval,
         "Browser approval binding inventory differs from reviewed GitHub Environment");
+      invariant(activationCount === (options.expectedBrowserActivationAudience ? activationFields.length : 0) &&
+        (!options.expectedBrowserActivationAudience ||
+          env.BROWSER_ACTIVATION_AUDIENCE === options.expectedBrowserActivationAudience),
+        "Browser activation binding inventory differs from reviewed GitHub Environment");
+    }
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
-      !coordinator.script_name && bindings.length === 2 + count &&
+      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length + (assets ? 1 : 0) &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
-      !bindings.some(b => b.type === "plain_text" && !BROWSER_APPROVAL_VARIABLES.includes(b.name)),
+      !bindings.some(b => b.type === "plain_text" && !names.includes(b.name)),
       "Browser binding inventory drift");
     invariant(settings.observability?.logs?.head_sampling_rate === 0,
       "Browser logs sampling must remain zero");
@@ -405,9 +413,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(coordinator.namespace_id === options.browserNamespaceId,
         "Browser namespace changed; preserve pairing and Unknown receipts");
   }
-  const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER"] : worker === "workflow-mcp-worker"
-    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER"] : ["DB", "WORKFLOW", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER"]) :
-    worker === "email-mcp-worker" ? ["DB"] :
+  const allowed = new Set(worker === "browser-mcp-worker" ? ["BROWSER_OWNER", "ASSETS"] : worker === "workflow-mcp-worker"
+    ? (options.mode === "preflight" ? ["DB", "WORKFLOW", "WORKFLOW_LEGACY", "WEIXIN_ACTION_PROVIDER", "BARK_ACTION_PROVIDER", "ACTIONS"] : ["DB", "WORKFLOW", "ACTIONS"]) :
     worker === "ima-mcp-worker"
     ? ["IMA_IMAGE_REFRESH_SHARD"]
     : worker === "database-mcp-worker"
@@ -418,12 +425,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
           ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE"]
           : ["DEVICE_COORDINATOR"]) : []);
   if (worker === "workflow-mcp-worker" && options.mode === "readback") {
-    invariant(bindings.filter(x=>x.name === "WEIXIN_ACTION_PROVIDER").length === 1 &&
-      !!find("WEIXIN_ACTION_PROVIDER", "service"),
-      "Workflow reviewed Weixin Service Binding missing after release");
-    invariant(bindings.filter(x=>x.name === "BARK_ACTION_PROVIDER").length === 1 &&
-      !!find("BARK_ACTION_PROVIDER", "service"),
-      "Workflow reviewed Bark Service Binding missing after release");
+    invariant(bindings.filter(x=>x.name === "ACTIONS").length === 1 &&
+      find("ACTIONS", "service")?.service === "cloudflare-actions" &&
+      find("ACTIONS", "service")?.entrypoint === "ActionsEntrypoint",
+      "Workflow unified Actions Service Binding missing or drifted after release");
   }
   for (const item of bindings) {
     if (!["plain_text", "secret_text"].includes(item.type)) {
@@ -458,14 +463,11 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.workflows[0]?.name === "workflow-mcp-orchestrator" &&
     conf.workflows[0]?.class_name === "WorkflowOrchestrator",
     "Workflow binding drift");
-  invariant(conf.services?.length === 2 &&
-    conf.services[0]?.binding === "WEIXIN_ACTION_PROVIDER" &&
-    conf.services[0]?.service === "weixin-mcp-worker" &&
-    conf.services[0]?.entrypoint === "WeixinActionProvider" &&
-    conf.services[1]?.binding === "BARK_ACTION_PROVIDER" &&
-    conf.services[1]?.service === "bark-provider" &&
-    conf.services[1]?.entrypoint === "BarkActionProvider" &&
-    conf.services.every(x=>Object.keys(x).sort().join(",")==="binding,entrypoint,service"),
+  invariant(conf.services?.length === 1 &&
+    conf.services[0]?.binding === "ACTIONS" &&
+    conf.services[0]?.service === "cloudflare-actions" &&
+    conf.services[0]?.entrypoint === "ActionsEntrypoint" &&
+    Object.keys(conf.services[0]).sort().join(",")==="binding,entrypoint,service",
     "Workflow reviewed Cloudflare Service Bindings drift");
   invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"]),
     "Workflow Portal Secret declaration drift");
@@ -484,6 +486,11 @@ function reviewedTerminalRunSql(sql) {
     [process.env.WORKFLOW_FOURTH_TERMINAL_RUN_ID,FOURTH_TERMINAL_RUN_ID],
     [process.env.WORKFLOW_FIFTH_TERMINAL_RUN_ID,FIFTH_TERMINAL_RUN_ID],
     [process.env.WORKFLOW_SIXTH_TERMINAL_RUN_ID,SIXTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_SEVENTH_TERMINAL_RUN_ID,SEVENTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_EIGHTH_TERMINAL_RUN_ID,EIGHTH_MCP_RUN_ID],
+    [process.env.WORKFLOW_NINTH_TERMINAL_RUN_ID,NINTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_TENTH_TERMINAL_RUN_ID,TENTH_TERMINAL_RUN_ID],
+    [process.env.WORKFLOW_ELEVENTH_TERMINAL_RUN_ID,ELEVENTH_TERMINAL_RUN_ID],
   ].filter(([supplied,exact])=>supplied===exact).map(([,exact])=>exact);
   if(exclusions.length===0)return sql;
   const sqlIds=exclusions.map(id=>"'"+id+"'").join(",");
@@ -491,8 +498,8 @@ function reviewedTerminalRunSql(sql) {
     "outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs",
     "outcome NOT IN ('succeeded','failed','cancelled') AND id NOT IN ("+sqlIds+")) AS nonterminal_runs"
   ).replace(
-    "status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps",
-    "status NOT IN ('succeeded','failed','skipped') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
+    "status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps",
+    "status NOT IN ('succeeded','failed','skipped','cancelled') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
   );
 }
 
@@ -568,14 +575,31 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v14 === 1 && row?.deleted_column === 1 &&
     row?.migration_v15 !== 1 && row?.approval_gates_table !== 1 &&
     row?.approvals_table !== 1 && fullV11Schema;
-  const complete = row?.migration_count === 15 &&
+  const completeV15 = row?.migration_count === 15 &&
     row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
     row?.migration_v13 === 1 && row?.invocations_table === 1 &&
     row?.cloudflare_cancel_table === 1 &&
     row?.migration_v14 === 1 && row?.deleted_column === 1 &&
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && fullV11Schema;
-  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || complete)),
+    row?.approvals_table === 1 && row?.migration_v16 !== 1 &&
+    row?.portal_auth_table !== 1 && row?.mcp_fence_table !== 1 && fullV11Schema;
+  const completeV16 = row?.migration_count === 16 &&
+    row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
+    row?.mcp_fence_table === 1 && row?.migration_v15 === 1 &&
+    row?.approval_gates_table === 1 && row?.approvals_table === 1 &&
+    row?.deleted_column === 1 && fullV11Schema;
+  const completeV17 = row?.migration_count === 17 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  const complete = row?.migration_count === 18 && row?.migration_v18 === 1 &&
+    row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
+    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
+    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
+    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
+    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+  invariant(base && (requireCompleteSchema ? complete : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || complete)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
@@ -603,7 +627,9 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    '0008_session_locator.sql','0009_fixed_sessions.sql',
    '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
    '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
-    '0014_workflow_deletion.sql','0015_runtime_approval.sql')) AS expected_migrations,
+    '0014_workflow_deletion.sql','0015_runtime_approval.sql',
+    '0016_portal_connection_revocation.sql',
+    '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql')) AS expected_migrations,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
  (SELECT count(*) FROM session_executions) AS session_count,
@@ -615,7 +641,29 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
  (SELECT count(*) FROM runs WHERE start_state IS NULL OR
    start_state IN ('reserved','start_unknown')) AS unresolved_starts,
  (SELECT count(*) FROM run_steps WHERE status IS NULL OR
-   status NOT IN ('succeeded','failed','skipped')) AS unresolved_steps,
+   status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
+ -- A durable Saga cancellation ACK is not completion. For code-only
+ -- releases only, recognize the request as quiescent when the exact Session
+ -- and GitHub Attempt have separately reached verified physical terminal.
+ -- Schema migrations still require unresolved_steps=0.
+ (SELECT count(*) FROM run_steps receipt
+   JOIN runs owner ON owner.id=receipt.run_id
+   JOIN session_executions session ON session.run_id=receipt.run_id
+     AND receipt.step_id='__saga_'||session.step_id
+   JOIN step_attempts attempt ON attempt.run_id=session.run_id
+     AND attempt.step_id=session.step_id
+     AND attempt.capability_id='github.action'
+   WHERE receipt.status='requested' AND
+     owner.outcome IN ('failed','cancelled') AND
+     session.state='terminated' AND
+     attempt.state IN ('succeeded','failed','cancelled'))
+   AS verified_terminal_saga_receipts,
+ (SELECT count(*) FROM run_steps s JOIN runs r ON r.id=s.run_id
+   WHERE s.status='cancelled' AND (r.outcome IS NOT 'cancelled'
+     OR r.error_code IS NOT s.error_code
+     OR r.error_code IS NULL
+     OR r.error_code NOT IN ('approval_cancel_requested',
+       'event_wait_cancel_requested'))) AS invalid_cancelled_steps,
  (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
    state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
  (SELECT count(*) FROM session_executions WHERE state IS NULL OR
@@ -636,18 +684,18 @@ export function verifyWorkflowMigrationReadiness(response) {
   const nonnegative = [
     "migration_count","expected_migrations","workflow_count","run_count",
     "session_count","attempt_count","callback_count","cancellation_count",
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ];
   for (const key of nonnegative) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17,18].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps",
+    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ]) {
     invariant(row[key] === 0, "Workflow migration blocked by " + key);
@@ -674,15 +722,18 @@ export function verifyWorkflowCodeReleaseReadiness(response) {
   const row=response[0].results[0];
   for (const key of [
     "migration_count","expected_migrations","nonterminal_runs",
-    "unresolved_starts","unresolved_steps","nonterminal_attempts",
+    "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
+    "verified_terminal_saga_receipts",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===15 && row.expected_migrations===15,
+  invariant(row.migration_count===18 && row.expected_migrations===18,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","undelivered_callbacks",
+    "nonterminal_runs","unresolved_starts","invalid_cancelled_steps","undelivered_callbacks",
   ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
+  invariant(row.unresolved_steps===row.verified_terminal_saga_receipts,
+    "Workflow code-only release blocked by unresolved_steps");
   invariant(row.nonterminal_attempts===row.confirmed_ready_sessions &&
     row.nonterminated_sessions===row.confirmed_ready_sessions,
     "Workflow code-only release blocked by unconfirmed Session or Attempt");
@@ -730,7 +781,7 @@ export function readConfiguration(worker, content) {
       conf.observability?.logs?.invocation_logs === true,
       "SSH observability and invocation logs must stay enabled");
   } else {
-    const logs = ["remote-control-mcp-worker", "email-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true;
+    const logs = ["remote-control-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true;
     invariant(conf.observability?.logs?.invocation_logs === logs,
       "Source Invocation Logs setting differs from production");
   }
@@ -744,26 +795,6 @@ export function readConfiguration(worker, content) {
       !conf.durable_objects?.bindings?.length && !conf.r2_buckets?.length &&
       !conf.ratelimits?.length && !conf.vars,
       "HTTP strict-public Worker source or binding drift");
-  }
-  if (worker === "email-mcp-worker") {
-    invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"]),
-      "Email source Secret declaration drift");
-    const routes = conf.routes ?? [];
-    invariant(conf.workers_dev === false && conf.preview_urls === false &&
-      routes.length === 2 && routes.every(x => x.custom_domain === true) &&
-      routes[0].pattern === "email.lirtual.dpdns.org" &&
-      routes[1].pattern === "email-mcp.lirtual.dpdns.org",
-      "Email production custom domains must keep Setup and MCP separate");
-    invariant(conf.observability?.logs?.invocation_logs === false,
-      "Email may not log mailbox operations");
-    invariant(conf.d1_databases?.length === 1 &&
-      conf.d1_databases[0].binding === "DB" &&
-      conf.d1_databases[0].database_name === "email-mcp-db" &&
-      conf.d1_databases[0].database_id === "1fa50616-effb-458e-b798-b1ca1a0da24f" &&
-      conf.d1_databases[0].migrations_dir === "migrations",
-      "Email production D1 source drift");
-    invariant(!conf.vars || Object.keys(conf.vars).length === 0,
-      "Email secrets must not be staged as plain-text vars");
   }
   if (worker === "ima-mcp-worker") {
     invariant(!conf.secrets?.required?.includes("IMA_CLIENT_ID"),
@@ -808,8 +839,11 @@ export function readConfiguration(worker, content) {
       "Production must declare a local SQLite DeviceCoordinator");
   }
   if (worker === "browser-mcp-worker") {
-    invariant(Object.keys(conf).every(k=>["$schema","name","main","compatibility_date","compatibility_flags","workers_dev","preview_urls","keep_vars","durable_objects","migrations","observability","secrets","routes"].includes(k)) &&
+    invariant(Object.keys(conf).every(k=>["$schema","name","main","compatibility_date","compatibility_flags","workers_dev","preview_urls","keep_vars","durable_objects","migrations","observability","secrets","routes","assets"].includes(k)) &&
       conf.workers_dev === false && conf.preview_urls === false &&
+      JSON.stringify(conf.assets) === JSON.stringify({
+        directory:"./.build/public",binding:"ASSETS",run_worker_first:true,
+        html_handling:"none",not_found_handling:"none"}) &&
       JSON.stringify(conf.compatibility_flags) === JSON.stringify(["nodejs_compat"]) &&
       !conf.vars && !conf.services?.length && !conf.d1_databases?.length &&
       !conf.kv_namespaces?.length && !conf.r2_buckets?.length && !conf.workflows?.length &&
@@ -901,7 +935,7 @@ async function current(account, worker, token, options) {
   }
   if (worker !== "ssh-mcp-worker") {
     invariant(scriptSettings?.observability?.logs?.invocation_logs ===
-      (["remote-control-mcp-worker", "email-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true),
+      (["remote-control-mcp-worker", "browser-mcp-worker"].includes(worker) ? false : true),
       "Script-level Invocation Logs drift");
   }
   if (worker === "ima-mcp-worker") {
@@ -1024,6 +1058,8 @@ async function main() {
       expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
       expectedBrowserApproval: worker === "browser-mcp-worker" &&
         process.env.BROWSER_APPROVAL_EXPECTED === "isolated-owner-profile-and-mailbox-v1",
+      expectedBrowserActivationAudience: worker === "browser-mcp-worker"
+        ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Keep identity and binding drift failures fatal.

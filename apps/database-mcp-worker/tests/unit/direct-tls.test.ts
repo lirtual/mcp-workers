@@ -31,6 +31,25 @@ describe('transport security semantics', () => {
     expect(mysqlConnect).toHaveBeenCalledWith(expect.objectContaining({ host: 'db.example.com' }));
     expect(mysqlConnect.mock.lastCall?.[0]).not.toHaveProperty('ssl');
   });
+  it('dials the prevalidated Direct IP, never re-resolves the logical hostname', async () => {
+    mysqlConnect.mockResolvedValueOnce({ query: async () => [[], []], end: async () => undefined });
+    await mysqlHealthCheck({ ...direct('mysql'), dialHost: '93.184.216.34' });
+    expect(mysqlConnect).toHaveBeenCalledWith(expect.objectContaining({ host: '93.184.216.34' }));
+    expect(mysqlConnect.mock.lastCall?.[0]).not.toHaveProperty('ssl');
+    await postgresHealthCheck({ ...direct('postgres'), dialHost: '2606:4700::1111' });
+    expect(postgresConstruct).toHaveBeenCalledWith(expect.objectContaining({ host: '2606:4700::1111' }));
+  });
+  it('never replaces the Hyperdrive proxy hostname with a Direct pinned address', async () => {
+    mysqlConnect.mockResolvedValueOnce({
+      beginTransaction: async () => undefined,
+      query: async (sql: string) => sql.startsWith('SHOW SESSION VARIABLES')
+        ? [[['sql_mode', 'STRICT_TRANS_TABLES']], []] : [[['1']], []],
+      rollback: async () => undefined,
+      end: async () => undefined
+    });
+    await mysqlHealthCheck({ ...direct('mysql'), transport: 'hyperdrive', dialHost: '93.184.216.34' });
+    expect(mysqlConnect).toHaveBeenCalledWith(expect.objectContaining({ host: 'db.example.com' }));
+  });
   it('Direct PostgreSQL suppresses URL TLS overrides and makes plaintext explicit', async () => {
     await postgresHealthCheck(direct('postgres'));
     expect(postgresConstruct).toHaveBeenCalledWith(expect.objectContaining({ host: 'db.example.com', ssl: false }));

@@ -22,7 +22,7 @@ const runNumber=Number(required('GITHUB_RUN_ID'));
 const runAttempt=Number(required('GITHUB_RUN_ATTEMPT'));
 assert.equal(repository,'lirtual/mcp-workers');
 assert.equal(ref,'refs/heads/main');
-assert.equal(workflowRef,repository+'/.github/workflows/ci.yml@'+ref);
+assert.equal(workflowRef,repository+'/.github/workflows/acceptance.yml@'+ref);
 assert.equal(runAttempt,1,'reruns require a fresh signed identity');
 assert.match(sha,/^[0-9a-f]{40}$/i);
 assert.ok(Number.isSafeInteger(runNumber)&&runNumber>0&&Number.isSafeInteger(repositoryId));
@@ -98,7 +98,7 @@ async function run(){
   });
   if(migrated.status!==0)throw Error('Disposable D1 migrations failed '+migrated.status);
   const reviewed={repository,repositoryId,workflowId:1,
-    workflowPath:'.github/workflows/ci.yml',commitSha:sha,
+    workflowPath:'.github/workflows/acceptance.yml',commitSha:sha,
     type:'task',contractDigest:'b'.repeat(64)};
   const plan={version:1,name:'Isolated Task callback',github_execution_approved:true,
     github_action_approvals:[reviewed],steps:[{id:'verify',uses:'github.run',
@@ -146,9 +146,140 @@ async function run(){
   assert.equal(attempt.owner_run_attempt,runAttempt);
   const parent=(await query('SELECT outcome FROM runs WHERE id=?',[runId])).results[0];
   assert.equal(parent.outcome,'running');
+  await verifyApprovalFenceOnIsolatedD1();
   console.log('GITHUB_ACTION_REAL_OIDC_CLOUD_D1_TASK_RESULT_PASS');
   console.log('GITHUB_ACTION_RECORDED_REPLAY_CONFLICT_AND_PHYSICAL_FENCE_PASS');
 }
+
+/**
+ * Spec #176: exercise the exact durable Run/Attempt predicates against remote,
+ * disposable Cloudflare D1. The GitHub HTTP callback is ALWAYS mocked: this
+ * never sends a physical Task, touches production D1, or retries an unknown
+ * external effect. This is NOT a full native production approval/cancel E2E.
+ */
+async function verifyApprovalFenceOnIsolatedD1(){
+  const {registerAndDispatchGitHubAction}=await import('../src/github-action-orchestration.ts');
+  const reviewed={
+    repository:'lirtual/github-actions',repositoryId:1430925009,
+    workflowId:394689660,workflowPath:'.github/workflows/verify-action.yml',
+    commitSha:'5ae1862afd94c01493dae0ec5ecf5568f664b849',
+    type:'task',contractDigest:'592d41734af48fb4e37b44708eba0b68593cbed011915829edd8ed7c9b890845',
+  };
+  const tag='refs/tags/v0.1.42-rc.1';
+  const inputs={outcome:'success'};
+  const reviewedStep={id:'verify',uses:'github.run',needs:[],
+    approval:{required:true},
+    with:{capability:'github.action',action:{...reviewed,ref:tag,inputs}}};
+  const plan={version:1,name:'Isolated D1 cancellation fence',
+    github_execution_approved:true,github_action_approvals:[reviewed],steps:[reviewedStep]};
+  const workflowId=randomUUID(),versionId=randomUUID(),created=Date.now();
+  await query('INSERT INTO workflows (id,name,draft,draft_revision,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+    [workflowId,'isolated approval fence','{}',1,'active',created,created]);
+  await query('INSERT INTO workflow_versions (id,workflow_id,digest,plan,created_at) VALUES (?,?,?,?,?)',
+    [versionId,workflowId,'isolated-approval-fence',JSON.stringify(plan),created]);
+
+  async function createApprovedRun(){
+    const id=randomUUID(),at=Date.now();
+    await query("INSERT INTO runs (id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES (?,?,?,?,?,?,'started','running',?,?)",
+      [id,workflowId,versionId,id,'isolated-fence','{}',at,at]);
+    await query("INSERT INTO run_steps (run_id,step_id,status,updated_at) VALUES (?,'verify','running',?)",[id,at]);
+    await query("INSERT INTO runtime_approval_gates (run_id,step_id,version_id,deadline_at) VALUES (?,'verify',?,?)",
+      [id,versionId,at+600000]);
+    await query("INSERT INTO runtime_approvals (run_id,step_id,version_id,decision,created_at,consumed_at) VALUES (?,'verify',?,'approved',?,?)",
+      [id,versionId,at,at]);
+    return id;
+  }
+  // Match the production store.ts approval-cancellation durable Run CAS.
+  // This isolated proof tests the Run and Attempt fence; native wake/physical
+  // GitHub cancellation are covered separately and are not claimed here.
+  async function cancelBeforeAttempt(id){
+    const updated=await query(`
+      UPDATE runs SET outcome='cancelled',error_code='approval_cancel_requested',updated_at=?
+      WHERE id=? AND outcome='running'
+      AND EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+        AND s.step_id='verify' AND s.status IN ('waiting_approval','running'))
+      AND NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=runs.id
+        AND a.step_id='verify')
+      AND NOT EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+        AND s.step_id<>'verify' AND s.status IN ('running','waiting','waiting_approval'))`,
+      [Date.now(),id]);
+    const changed=updated.meta?.changes??0;
+    assert.ok(changed===0||changed===1,'Unexpected approval-cancel CAS count');
+    if(changed===1){
+      const step=await query("UPDATE run_steps SET status='cancelled',error_code='approval_cancel_requested',updated_at=? WHERE run_id=? AND step_id='verify' AND status IN ('waiting_approval','running') AND EXISTS(SELECT 1 FROM runs WHERE id=? AND outcome='cancelled' AND error_code='approval_cancel_requested')",
+        [Date.now(),id,id]);
+      assert.equal(step.meta?.changes,1,'Cancelled Step must be durably recorded');
+    }
+    return changed;
+  }
+  async function dispatchMock(id){
+    const outbound=[];
+    const attemptId=randomUUID(),dispatchId=randomUUID();
+    try{
+      const result=await registerAndDispatchGitHubAction(adapter(),{
+        runId:id,stepId:'verify',attemptId,dispatchId,
+        action:reviewed,ref:tag,token:'isolated-mock-only',inputs,
+      },async request=>{
+        assert.equal(new URL(request.url).hostname,'api.github.com',
+          'No outbound request may reach another origin');
+        outbound.push(request.method);
+        if(request.method==='GET')return new Response(JSON.stringify({
+          ref:tag,object:{type:'commit',sha:reviewed.commitSha},
+        }),{status:200});
+        assert.equal(request.method,'POST','Only a single GitHub POST is allowed');
+        return new Response(JSON.stringify({workflow_run_id:9876}),{status:200});
+      });
+      return {result,outbound};
+    }catch(error){return {error:String(error),outbound};}
+  }
+  async function readFence(id){
+    const state=(await query('SELECT outcome FROM runs WHERE id=?',[id])).results?.[0];
+    const attempts=(await query('SELECT state FROM step_attempts WHERE run_id=?',[id])).results;
+    return {outcome:state?.outcome,attempts};
+  }
+  async function assertSingleWinner(id,changed,dispatch){
+    const state=await readFence(id);
+    if(changed===1){
+      assert.equal(state.outcome,'cancelled','Cancel-won Run must be terminal');
+      assert.equal(state.attempts.length,0,'No Attempt may follow cancellation');
+      assert.equal(dispatch.result,undefined,'Cancel-won case cannot dispatch');
+      assert.match(dispatch.error,/github_action_publication_missing|github_action_attempt_not_registered/);
+      assert.deepEqual(dispatch.outbound,[],'Cancel-won case must not call GitHub even through a mock');
+    }else{
+      assert.equal(state.outcome,'running','Registered Attempt cannot be pre-dispatch cancelled');
+      assert.equal(state.attempts.length,1,'Exactly one durable Attempt required');
+      assert.equal(state.attempts[0].state,'confirmed');
+      assert.equal(dispatch.result?.status,'confirmed','Mocked dispatch should confirm');
+      assert.deepEqual(dispatch.outbound,['GET','POST'],'Exactly one mocked dispatch expected');
+    }
+  }
+  const cancelFirst=await createApprovedRun();
+  const cancelled=await cancelBeforeAttempt(cancelFirst);
+  assert.equal(cancelled,1,'Cancellation must win when no Attempt exists');
+  await assertSingleWinner(cancelFirst,cancelled,await dispatchMock(cancelFirst));
+
+  const attemptFirst=await createApprovedRun();
+  const dispatched=await dispatchMock(attemptFirst);
+  const unchanged=await cancelBeforeAttempt(attemptFirst);
+  assert.equal(unchanged,0,'Cancellation cannot overwrite an existing Attempt');
+  await assertSingleWinner(attemptFirst,unchanged,dispatched);
+
+  const races=6;
+  let cancellations=0,attempts=0;
+  for(let i=0;i<races;i++){
+    const id=await createApprovedRun();
+    // Independent live D1 API requests race for one Run row.
+    const [changed,dispatch]=await Promise.all([
+      cancelBeforeAttempt(id),dispatchMock(id),
+    ]);
+    await assertSingleWinner(id,changed,dispatch);
+    if(changed===1)cancellations++;else attempts++;
+  }
+  assert.equal(cancellations+attempts,races);
+  console.log('APPROVAL_CANCEL_DISPOSABLE_D1_FENCE_PASS: cancel-first, attempt-first, '+races+
+    ' concurrent CAS attempts; all GitHub GET/POST mocked; no production writes');
+}
+
 async function cleanup(){
   if(databaseId){
     await api('DELETE',root+'/d1/database/'+databaseId);

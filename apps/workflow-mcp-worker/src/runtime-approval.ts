@@ -30,12 +30,22 @@ export async function recordRuntimeApproval(
   db: Env['DB'], runId: string, stepId: string, versionId: string,
   decision: 'approved' | 'denied', at: number,
 ): Promise<{decision: 'approved' | 'denied'; consumed: boolean; conflict: boolean; repeated: boolean}> {
+  // Recheck the currently open gate at the INSERT serialization point. This
+  // arbitrates the owner decision against cancel's atomic Run CAS; stale
+  // pre-read approval cannot grant authority after a cancelled Run.
   const inserted=await db.prepare(
     `INSERT INTO runtime_approvals(run_id,step_id,version_id,decision,created_at)
-     VALUES(?,?,?,?,?) ON CONFLICT(run_id,step_id,version_id) DO NOTHING`,
-  ).bind(runId, stepId, versionId, decision, at).run();
+     SELECT ?,?,?,?,? FROM runs r WHERE r.id=? AND r.version_id=?
+       AND r.outcome='running'
+       AND EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=r.id
+         AND s.step_id=? AND s.status='waiting_approval')
+       AND EXISTS(SELECT 1 FROM runtime_approval_gates g WHERE g.run_id=r.id
+         AND g.step_id=? AND g.version_id=? AND g.deadline_at>?)
+     ON CONFLICT(run_id,step_id,version_id) DO NOTHING`,
+  ).bind(runId,stepId,versionId,decision,at,
+    runId,versionId,stepId,stepId,versionId,at).run();
   const row = await readRuntimeApproval(db, runId, stepId, versionId);
-  if (!row || (row.decision !== 'approved' && row.decision !== 'denied')) throw Error('approval_binding_mismatch');
+  if (!row || (row.decision !== 'approved' && row.decision !== 'denied')) throw Error('approval_not_open');
   return {decision: row.decision, consumed: row.consumed_at !== null, conflict: row.decision !== decision, repeated: !inserted.meta.changes};
 }
 

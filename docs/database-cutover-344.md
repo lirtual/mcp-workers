@@ -1,4 +1,89 @@
+> **Current #476 checkpoint (2026-10-31 UTC):** [PR #490](https://github.com/lirtual/mcp-workers/pull/490)
+> and [PR #601](https://github.com/lirtual/mcp-workers/pull/601) are merged.
+> Protected Database Worker production release [#41166142234](https://github.com/lirtual/mcp-workers/actions/runs/41166142234)
+> and MySQL Hyperdrive activation [#41166424835](https://github.com/lirtual/mcp-workers/actions/runs/41166424835)
+> succeeded. Independent production Database MCP health and `SELECT 1` readback
+> passed for `spec476_hd_mysql_lifecycle`. PostgreSQL Direct is admitted in
+> code. The [2026-10-30 historical production E2E record](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6527177812)
+> reports successful isolated plaintext Health/read/denial checks; the exact
+> retirement tombstone and release receipt remain independently observable.
+> The later [Owner waiver](https://github.com/lirtual/mcp-workers/issues/476#issuecomment-6539258657)
+> concerns an **unperformed independent repeat/full runtime coverage** on
+> 2026-10-31, not a retroactive denial of that historical record. There is no
+> active PostgreSQL Direct fixture now. Original SQL outcomes were not
+> independently replayed during closeout. Existing #344 waivers remain waivers.
+> Historical 2026-10-30 evidence follows below.
+
 # Database MCP #344 — production release and recovery (managed D1 only)
+
+## Historical verified state and TLS acceptance boundary (2026-10-30; superseded)
+
+This section supersedes the historical snapshots below. Independently checked against
+live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
+
+- Production Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f` serves **100%**.
+  The two reviewed Hyperdrive configs are PostgreSQL
+  `eb4ccbd231ea44beabc72b3f2b483d69` (`verify-full`) and isolated
+  MySQL `38bf39b569484dbb8a9fe1b24f0df854` (`VERIFY_IDENTITY`).
+  Both have an approved CA and query caching **disabled**.
+- D1 logical connection inventory: `db344_pg_e2e`, `b2b` and
+  `scrape_relay` are **active**; `aiven_mysql_e2e` remains **disabled**.
+  The legacy `aiven_mysql_openlist` ID was permanently retired through
+  [protected no-deploy Action #41007072427](https://github.com/lirtual/mcp-workers/actions/runs/41007072427):
+  D1 row absent, `retired_connection_ids` marker present, and the three
+  still-active connections passed fresh health + constant SELECT (6/6).
+  Do **not** reactivate test references solely to recreate historical acceptance.
+- Real isolated PostgreSQL Hyperdrive SQL/read, structured DDL/DML,
+  RLS policy enforcement (including denied tenant access), 21-row
+  UPDATE/DELETE transaction rollback and full test-table cleanup
+  **PASS**. See [RLS](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514431922)
+  and [rollback](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514478063).
+  All synthetic test tables and RLS policies were cleaned up.
+- Independent OpenSSL **origin** TLS handshake matrix on real Aiven
+  PostgreSQL/MySQL was **6/6 PASS** (valid CA+hostname, bad CA rejection,
+  bad hostname rejection): [evidence](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514521721).
+  This is **not** a deliberately misconfigured **Cloudflare Hyperdrive**
+  handshake. The actual Hyperdrive-client bad-CA/bad-hostname negative
+  test remains **NOT PERFORMED / BLOCKED**.
+- The Cloudflare Hyperdrive API inventory has no separate read-only
+  handshake-test endpoint. The supported create/update path tests an
+  upstream connection but changes resources and requires an origin
+  password. An attempted **isolated create** was blocked by platform
+  safety controls; no alternate execution route or retry may be used
+  to bypass this. Existing live configurations **must not** be modified
+  to induce failure. See [blocker](https://github.com/lirtual/mcp-workers/issues/344#issuecomment-6514561715).
+- Existing [PR #523](https://github.com/lirtual/mcp-workers/pull/523)
+  adds the existing strict TLS/config drift regression suite to the
+  existing mandatory CI. Both [PR CI](https://github.com/lirtual/mcp-workers/actions/runs/41000198731)
+  and [merged main CI](https://github.com/lirtual/mcp-workers/actions/runs/41000595512)
+  **PASS**. Offline tests are not Hyperdrive-client negative E2E.
+  No production Worker redeployment is needed for this CI-only change.
+
+**Owner disposition:** #344 was subsequently **closed with explicit waivers**
+for Hyperdrive-client negative TLS injection and independent historical-key
+loss/recovery drill; neither is PASS. The Owner-approved current-copy D1
+export/import/temporary restore check is separate from a historical-key-loss
+recovery drill. Do not reopen #344 merely because older sections say Open.
+Do not create a new Worker, deploy system or Acceptance environment to
+recreate blocked security tests. Refer to the Issue's newest closeout record.
+
+## Aiven MySQL test replacement — historical live read-only E2E (2026-10-30)
+
+The separate isolated MySQL Hyperdrive config and its initial protected
+activation were successfully tested in [PR #518](https://github.com/lirtual/mcp-workers/pull/518),
+[release #40995674654](https://github.com/lirtual/mcp-workers/actions/runs/40995674654)
+and [activation #40996046557](https://github.com/lirtual/mcp-workers/actions/runs/40996046557).
+These are historical PASS records. The MySQL test logical reference is
+**currently disabled**, as independently read back above; do not infer
+its current Active state from the earlier activation receipt.
+
+## Original deleted-MySQL incident snapshot (2026-10-30; historical)
+
+- Before the separate MySQL test config was created, independent Cloudflare account inventory contained only PostgreSQL Hyperdrive `eb4ccbd231ea44beabc72b3f2b483d69`; TLS is `verify-full` and caching is disabled. The former MySQL OpenList Hyperdrive `135ef2e15db049c68e99b0849f9a3da0` was deleted. Both the GitHub release readback and independent Cloudflare GET return HTTP 404 for this first manifest entry. This is a missing resource, **not evidence of a missing Hyperdrive Token permission**.
+- Remove only the deleted OpenList source/manifest Binding; preserve the Aiven PostgreSQL E2E configuration, its CA, and both working MySQL Direct connections (`b2b`, `scrape_relay`). The OpenList D1 row was nonfunctional while Active; Owner subsequently disabled it via /setup (revision 3). It remains disabled pending separately authorized retirement.
+- Existing protected `release.yml` must pass strict remaining-config readback and deploy/readback before any PostgreSQL D1 reference activation. Real PostgreSQL E2E and negative TLS validation remain NOT PERFORMED.
+
+## Historical records (not current inventory)
 
 ## Current authoritative state (2026-10-29, three-mode scope approved)
 
@@ -47,8 +132,9 @@ requirements. Do not add a compatibility flag or a new test environment.
 ## Routine release and recovery
 
 1. Use only the existing GitHub Actions **Release Worker** workflow on reviewed
-   current `main`, selecting `database-mcp-worker` and explicitly approving
-   `deploy_to_production`. Do not introduce another deployment system.
+   current `main`, selecting `database-mcp-worker`, explicitly approving
+   `deploy_to_production`, and setting `database_expected_release_sha` to that exact
+   reviewed SHA. A later main advance blocks publication. Do not introduce another deployment system.
 2. The normal release enforces application/database integration CI, approved
    exact source and Owner Access, the required Secrets and D1 binding, a
    read-only registry/migrations/retired-ID check, authenticated decryptability
@@ -86,8 +172,8 @@ Historical managed-D1 snapshot recovery was **not performed**, not PASS.
 For Hyperdrive logical-ID retirement, disable first; remove the reviewed Binding
 and source manifest, publish the normal production release and independently
 confirm unbinding and rollback-eligible version restrictions. Dispatch the same
-Release Worker with `database_hyperdrive_retire_approved` and the exact disabled
-ID/revision only after that release. The protected action verifies current active
+Release Worker with `database_hyperdrive_retire_approved=true`,
+`database_hyperdrive_id` and `database_hyperdrive_revision` for the exact disabled ID only after that release. The protected action verifies current active
 production bindings, D1 identity/revision and sharing, CAS-deletes the disabled
 row and confirms the retired-ID ledger. It does **not** delete the upstream
 Hyperdrive config or CA; independently establish other-service/old-version/CA
@@ -103,7 +189,7 @@ resource recreation is needed solely to eliminate it from the supported modes.
 This section records prior Aiven test-origin evidence only; those test services were subsequently deleted and must not be re-provisioned for this runbook.
 The original plan was to provision two named test Hyperdrive configurations through the existing
 protected Release Worker workflow and existing GitHub Secrets; do not log passwords.
-The Owner page may save an unverified Hyperdrive reference only as **disabled**.
+The Owner page may save an unverified Hyperdrive reference only as **disabled**. This is historical behavior; the new Spec #476 path blocks manual Hyperdrive `/setup/add` and permits only the verified post-release disabled-reference handoff.
 A protected activation must verify the dedicated Cloudflare binding, exact origin,
 strict CA/hostname mode, disabled caching and real deployed Worker health **while
 D1 remains disabled**, through the private signed `/internal/hyperdrive-health`
@@ -125,3 +211,83 @@ project CA/hostname combination succeeded, while wrong-CA and wrong-hostname
 cases failed certificate verification. These are **origin-side negative tests**,
 not the pending Cloudflare Workers→Hyperdrive full negative matrix. No
 production configuration was modified for these tests.
+
+
+## Spec #476 local implementation boundary (not production acceptance)
+
+See the [Database README](../apps/database-mcp-worker/README.md#spec-476-implementation-boundary)
+for the current capability and blocking conditions. The single additive operation ledger migration
+`0003_hyperdrive_operations.sql` (including apply run receipts) has not been applied by this phase. The existing release performs read-only
+schema validation and will block until a separately authorized migration applies it;
+it does not auto-migrate this production registry. Existing Worker connections and CA
+were not modified or freshly tested here.
+
+Preparation stops at a verified allowlisted PR (draft under protected policies). Owner final apply now claims a D1 operation
+before dispatch and verifies exact source/main and GitHub merge eligibility before a
+job-token merge. Protected main requires real PR checks/reviews. Only explicit classic
+protection 404 plus independently empty rulesets permits Owner dispatch of existing
+`ci.yml` on the deterministic `db476-<UUID>` branch with exact candidate SHA. Its
+Application checks, Database integration and Required checks gate must all succeed;
+actor, workflow, branch, SHA and real Run/job receipts are checked. No production
+secrets enter that CI. Read-only polling is bounded; 204/no Run ID, unknown dispatch,
+queued timeout or failed/skipped/ambiguous jobs never merge or request deployment.
+The recorded CI Run remains inspectable; no automatic redispatch follows ambiguity. It proves the actual merged SHA from GitHub before requesting the
+existing protected production release with that exact pin. Unknown outcomes cannot
+be retried automatically. `apply_policy_unavailable` includes unreadable protection;
+no credential or repository setting changes are authorized to bypass this gate.
+
+A verified release Run ID is only `running/apply_release_pending`, not publication or
+activation. The dependent protected reconciliation job in `release.yml` consumes
+`needs.deploy.outputs.version_id` only after deploy success. It verifies the exact
+Run/SHA, 100% version, current and version-specific bindings and strict Cloudflare
+configuration, then hands off the reservation to a disabled revision-1 D1 reference.
+The operation's `completed/postrelease_disabled` status confirms only this handoff.
+Activation still requires the existing protected `/setup` health gate. Lost D1 write
+acknowledgements are reconciled by exact readback; ambiguous evidence stops without
+retry, deployment rollback or automatic SQL enablement. 0003 includes the constrained
+handoff trigger and immutable nonsecret target metadata; it remains unapplied here.
+The reported disabled
+Actions PR setting still blocks before any Cloudflare call, even when main is
+explicitly unprotected. Enabling it is a separate Owner setting action, not performed
+by these scripts. A 403 or unknown protection policy still blocks; an empty ruleset
+list alone is insufficient. Do not dispatch a lifecycle release based on draft PR creation or the
+historical no-deploy dispatch smoke. Do not add credentials or weaken protections to
+work around these blocks.
+
+For an unknown operation, inspect exact Run/PR/config receipts read-only. The
+`resource_write_started_at` marker prohibits automatic retry of a possibly accepted
+Cloudflare POST. Expired ciphertext is erased but unknown identity reservations stay
+locked; no manual row deletion/recreation is authorized by this runbook. The old Aiven
+test provisioning script is retired and must not return; deleted test databases stay
+deleted. Retirement retains Cloudflare resources and shared CA, and now refuses D1
+retirement while any enumerated rollback version still references its config or binding.
+
+## Spec #476 local recovery amendment (2026-10-30; not deployed)
+
+- PostgreSQL/MySQL pinned read failures may decrement the existing Hyperdrive
+  `in_flight_count` only after a successful same-session `ROLLBACK` receipt.
+  Unknown rollback, connection loss and timeout must retain an unresolved claim.
+  A successful SQL result also requires confirmed transaction rollback before
+  the resource fence reports completion. No timer or Owner zero-count button.
+- Direct plaintext transport acceptance happens on Add, not repeatedly on
+  Edit/Enable. CA PEM is collapsed under the optional Hyperdrive input section;
+  provider usernames may contain `+` and `@` while control bytes remain invalid.
+- The Owner page retains a collapsed, read-only list of recently retired
+  Hyperdrive IDs with unverified physical resource cleanup; internal config and
+  binding references are retained in D1, never rendered to the browser.
+- Cloudflare D1 read-only verification returned `0001`, `0002` only; the local
+  editable `0003` remains un-applied and requires an authorized, guarded
+  production migration. Synthetic tests are not production release evidence.
+
+## Spec #476 replacement candidate update (2026-10-30; local Draft)
+
+- Hyperdrive username or CA changes are submitted from the existing unified
+  Add form using a new logical ID and an optional existing active or disabled source ID. The
+  source target must have complete, exact D1 provenance and zero unresolved
+  executions; the new candidate must preserve dialect, host, port and
+  database. The old config, Binding and CA are never patched or disabled by this flow; ongoing source SQL is unaffected.
+- A suitable recorded CA can be provisionally reused, but still requires the
+  protected Runner's independent strict certificate readback. An explicit
+  replacement CA PEM creates a separate candidate asset. Normal final PR,
+  release, Worker Binding and health gates still apply. No production
+  connection has been changed in this local draft.

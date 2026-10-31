@@ -5,16 +5,16 @@ import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.
 
 const attemptId='11111111-1111-4111-8111-111111111111';
 const sha='a'.repeat(40);
-const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:12,
+const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:12,
  workflowPath:'.github/workflows/linux.yml',commitSha:sha,type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[action],
  steps:[{id:'linux',uses:'github.run',with:{capability:'github.action',action:{...action,ref:'refs/tags/test-v1',inputs:{duration_minutes:5}}}}]};
 const audience='workflow-github-action-claim';
-const base={repository:'lirtual/session-actions',repository_id:'123',
- workflow_ref:'lirtual/session-actions/.github/workflows/linux.yml@refs/tags/test-v1',
+const base={repository:'lirtual/github-actions',repository_id:'123',
+ workflow_ref:'lirtual/github-actions/.github/workflows/linux.yml@refs/tags/test-v1',
  ref:'refs/tags/test-v1',sha,event_name:'workflow_dispatch',run_id:'42',run_attempt:'1'};
 const row={run_id:'run',step_id:'linux',state:'confirmed',capability_id:'github.action',
- repository:'lirtual/session-actions',repository_id:'123',
+ repository:'lirtual/github-actions',repository_id:'123',
  workflow_ref:base.workflow_ref,ref:base.ref,
  candidate_run_id:42,candidate_run_attempt:1,
  owner_run_id:null,owner_run_attempt:null,run_outcome:'running',plan:JSON.stringify(plan)};
@@ -40,6 +40,14 @@ test('valid signed exact physical GitHub candidate acquires D1 owner once',async
   assert.equal(await verifyAndClaimPinnedGitHubAction(wrong.db,attemptId,changed,audience,publicKey),false);
   assert.equal(wrong.writes(),0);
  }
+ // A signed pre-rename name cannot claim a post-rename Published Plan,
+ // even with the unchanged immutable GitHub repository ID.
+ const oldIdentity=db(row);
+ const signedOld=await make({...base,
+  repository:'lirtual/session-actions',
+  workflow_ref:'lirtual/session-actions/.github/workflows/linux.yml@refs/tags/test-v1'});
+ assert.equal(await verifyAndClaimPinnedGitHubAction(oldIdentity.db,attemptId,signedOld,audience,publicKey),false);
+ assert.equal(oldIdentity.writes(),0);
  const unapproved=db({...row,plan:JSON.stringify({...plan,github_action_approvals:[]})});
  assert.equal(await verifyAndClaimPinnedGitHubAction(unapproved.db,attemptId,signed,audience,publicKey),false);
 });

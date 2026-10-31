@@ -66,6 +66,21 @@ describeReadIntegration('real database read-only integration', () => {
     expect(mySchema.columns?.some(column => column.name === 'email')).toBe(true);
   });
 
+  it('enforces a native PostgreSQL READ ONLY transaction even for a writer principal', async () => {
+    if (!pgWriteUrl) return;
+    const writer = directConnection('pg_reader_guard_writer_identity', pgWriteUrl);
+    const result = await queryRead(writer, "SELECT current_setting('transaction_read_only') AS read_only", [], 1);
+    expect(result.rows).toEqual([['on']]);
+  });
+
+  it('rejects a SECURITY DEFINER function that would mutate data inside query_read', async () => {
+    if (!pgWriteUrl) return;
+    const writer = directConnection('pg_read_only_writer_with_execute', pgWriteUrl);
+    await expect(queryRead(writer, 'SELECT public.test_mcp_side_effect()', [], 1)).rejects.toBeTruthy();
+    const unchanged = await queryRead(pg, 'SELECT value FROM public.counter', [], 1);
+    expect(unchanged.rows).toEqual([[0]]);
+  });
+
   it('returns non-ANALYZE plans', async () => {
     expect(await explainRead(pg, 'SELECT * FROM public.users WHERE id = $1', [1])).toBeTruthy();
     expect(await explainRead(mysql, 'SELECT * FROM users WHERE id = ?', [1])).toBeTruthy();

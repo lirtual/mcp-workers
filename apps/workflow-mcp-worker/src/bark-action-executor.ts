@@ -16,15 +16,14 @@ function normalize(value:unknown){
 }
 export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
- const provider=env.BARK_ACTION_PROVIDER,version=env.BARK_ACTION_DEPLOYMENT_ID;
+ const provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
  const manifest=await cloudflareActionManifest('bark');
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&
   g.provider==='bark'&&g.action===manifest.action&&
   g.contract_digest===manifest.contract_digest);
  if(plan.cloudflare_execution_approved!==true||action.uses!=='action.run'||
   action.with.executor!=='cloudflare'||action.with.provider!=='bark'||
-  action.with.action!==manifest.action||action.with.contract_digest!==manifest.contract_digest||
-  !grant)return deny('cloudflare_action_approval_required');
+  action.with.action!==manifest.action)return deny('cloudflare_action_approval_required');
  const db=env.DB;
  const existing=()=>db.prepare(`SELECT invocation_id,source_attempt_id,input_digest,
     binding_generation,contract_digest,deployment_id
@@ -34,10 +33,14 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
  try{
   const prior=await existing();
   if(prior){
-   // A consumed, version-incompatible or ambiguous slot is never re-sent.
-   return unknown(prior.binding_generation===0&&prior.contract_digest===manifest.contract_digest&&
-      prior.deployment_id===grant.deployment_id?'bark_receipt_unavailable':'cloudflare_invocation_conflict');
+   // Historical identity comes from immutable original grant, never current deployment.
+   const approved=plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&
+     g.provider==='bark'&&g.action==='bark.send_notification'&&
+     g.contract_digest===prior.contract_digest&&g.deployment_id===prior.deployment_id);
+   return unknown(approved&&prior.binding_generation===0?'bark_receipt_unavailable':'cloudflare_invocation_conflict');
   }
+  if(!grant||action.with.contract_digest!==manifest.contract_digest)
+   return deny('cloudflare_action_approval_required');
   if(!provider||!version)return deny('cloudflare_provider_not_configured');
   if(grant.deployment_id!==version)return deny('cloudflare_provider_version_changed');
   let notification:Record<string,unknown>;
@@ -57,7 +60,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    notification=values;
   }catch{return deny('invalid_bark_notification');}
   let bound;
-  try{bound=await provider.getContract();}catch{return deny('cloudflare_provider_identity_unconfirmed');}
+  try{bound=await provider.getContract(manifest.action);}catch{return deny('cloudflare_provider_identity_unconfirmed');}
   if(bound.deployment_id!==version||bound.contract_digest!==manifest.contract_digest)
    return deny('cloudflare_provider_identity_mismatch');
   const payload=JSON.stringify(canonical(notification));
@@ -71,6 +74,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
      binding_generation,contract_digest,deployment_id,created_at)
     SELECT ?,?,?,?,?,0,?,?,? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
+    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
       WHERE c.run_id=? AND c.step_id=?)`)
     .bind(runId,action.id,id,id,inputDigest,manifest.contract_digest,version,
@@ -79,7 +83,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    return await existing()?unknown('bark_receipt_unavailable'):deny('cloudflare_dispatch_not_admitted');
   }
   try{
-   const result=await provider.sendNotification({invocation_id:id,
+   const result=await provider.execute(manifest.action,{invocation_id:id,
     deployment_id:version,contract_digest:manifest.contract_digest,
     input_digest:inputDigest,notification});
    if(result.input_digest!==inputDigest)return unknown('bark_digest_conflict');

@@ -10,6 +10,13 @@ export async function rotateRegistryKeys(db: D1Database, keys: EncryptionKeys, b
   if (!db || !Number.isInteger(batchSize) || batchSize < 1 || batchSize > 10 ||
     !keys.DATABASE_KEY_ID || !/^[A-Za-z0-9_-]{1,32}$/.test(keys.DATABASE_KEY_ID)) fail();
   try {
+    // A pending Hyperdrive operation is encrypted under the current key.
+    // Rotating that key could make a pending Runner undecryptable.
+    const operations = await db.prepare(`SELECT COUNT(*) AS n FROM hyperdrive_operations
+      WHERE phase IN ('pending','running','awaiting_confirmation','unknown')`).first<{n:number}>();
+    if (!operations || operations.n !== 0) {
+      throw new PublicError('REVISION_CONFLICT', 'Finish pending Hyperdrive operations before rotating keys.');
+    }
     // Preflight every historic key identifier, not just the next batch.
     const distinct = await db.prepare("SELECT DISTINCT key_id FROM database_connections WHERE transport='direct' AND key_id<>?")
       .bind(keys.DATABASE_KEY_ID).all<{ key_id: string }>();

@@ -41,7 +41,7 @@ const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
+  for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0017_http_connection_auth.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -238,11 +238,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const bark=await cloudflareActionManifest('bark');
     const deployment='44444444-4444-4444-8444-444444444444';
     let barkSends=0;
-    env.BARK_ACTION_DEPLOYMENT_ID=deployment;
-    env.BARK_ACTION_PROVIDER={
-      getContract:async()=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
-      sendNotification:async()=>{barkSends++;throw Error('must_not_send');},
-    };
+    env.ACTIONS_DEPLOYMENT_ID=deployment;
+    env.ACTIONS={
+      getContract:async(_action_id:string)=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
+      execute:async()=>{barkSends++;throw Error('must_not_send');},
+    } as any;
     const barkDefinition={version:1,name:'Reviewed Bark publish boundary',steps:[
       {id:'source',uses:'result.emit',with:{data:{id:42}}},
       {id:'notify',uses:'action.run',needs:['source'],with:{

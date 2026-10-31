@@ -343,9 +343,9 @@ test('bounded foreach rejects unbounded, unsafe, colliding or unauthorized expan
 test('foreach invalid references point at source or template instead of leaking payloads',async()=>{
   const root={version:1,name:'Precise foreach issue',inputs:{values:['x']}};
   for(const [items,data,expected] of [
-    [{ref:'steps.undeclared.output'},{ref:'item.value'},'/steps/0/items'],
-    [{ref:'inputs.values'},{ref:'steps.undeclared.output'},'/steps/0/template/steps/0/with/data'],
-    [{ref:'inputs.values'},{ref:'item.secret'},'/steps/0/template/steps/0/with/data'],
+    [{ref:'steps.undeclared.output'},{ref:'item.value'},'/steps/0/items/ref'],
+    [{ref:'inputs.values'},{ref:'steps.undeclared.output'},'/steps/0/template/steps/0/with/data/ref'],
+    [{ref:'inputs.values'},{ref:'item.secret'},'/steps/0/template/steps/0/with/data/ref'],
   ] as const){
     await assert.rejects(()=>compilePlan({...root,steps:[
       {id:'each',flow:'foreach',items,max_items:2,
@@ -424,7 +424,7 @@ test('bounded pure multi-step foreach reserves child IDs and checks local output
   const forward=structuredClone(source);
   forward.steps[0]!.template!.steps[0]!.with.data={ref:'steps.finish.output'};
   await assert.rejects(()=>compilePlan(forward),
-    e=>e instanceof PlanError&&e.path==='/steps/0/template/steps/0/with/data');
+    e=>e instanceof PlanError&&e.path==='/steps/0/template/steps/0/with/data/ref');
   const crossItem=structuredClone(source);
   crossItem.steps[0]!.template!.steps[1]!.with.data={ref:'steps.each_0_prepare.output'};
   await assert.rejects(()=>compilePlan(crossItem),PlanError);
@@ -514,7 +514,7 @@ test('child source rejects unpinned, recursive syntax, extra effects and direct 
     [{...one,version_id:'moving'}],
     [{...one,inputs:null}],
     [{...one,inputs:{value:{ref:'steps.missing.output'}}}],
-    [{...one,mode:'detached'}],
+    [{...one,mode:'arbitrary'}],
     [one,{...one,id:'second'}],
     [{id:'forge',uses:'flow.child',with:{workflow_id:child,version_id:version,inputs:{}}}],
   ])await assert.rejects(()=>compilePlan(root(steps)),PlanError);
@@ -551,4 +551,78 @@ test('bounded durable waits compile to deterministic native steps with a total t
   await assert.rejects(()=>compilePlan(root([
     {id:'forged',uses:'flow.wait',with:{duration_seconds:1}},
   ])),PlanError);
+});
+
+
+test('pure dynamic while/until compiles with strict iteration and graph budget',async()=>{
+ const def=(flow:'while'|'until',max_iterations=4)=>({version:1,name:'Dynamic loop',
+   inputs:{limit:2},steps:[
+     {id:'before',uses:'result.emit',with:{data:'ok'}},
+     {id:'loop',flow,needs:['before'],max_iterations,
+       condition:{lt:[{ref:'item.index'},{ref:'inputs.limit'}]},
+       template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+     {id:'done',uses:'result.emit',needs:['loop'],with:{data:{ref:'steps.loop.output.value'}}},
+   ],
+ });
+ for(const flow of ['while','until'] as const){
+   const {plan}=await compilePlan(def(flow));
+   assert.equal(plan.steps.find(s=>s.id==='loop')?.uses,'flow.loop');
+   assert.equal(plan.steps.length,3);
+ }
+ for(const max_iterations of [0,9,1.2,-1]){
+   await assert.rejects(()=>compilePlan(def('while',max_iterations)),
+     (e:unknown)=>e instanceof PlanError&&e.message==='invalid_loop_limit');
+ }
+ const over=Array.from({length:5},(_,i)=>({
+   id:'loop'+i,flow:'until',max_iterations:8,condition:false,
+   template:{uses:'result.emit',with:{data:0}},
+ }));
+ await assert.rejects(()=>compilePlan({version:1,name:'Budget',steps:over}),/invalid_step_count/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Invalid loop',steps:[{
+   id:'loop',flow:'while',max_iterations:2,condition:{ref:'steps.other.output'},
+   template:{uses:'result.emit',with:{data:0}},
+ }]}),/invalid_step_reference/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Invalid loop',steps:[{
+   id:'loop',flow:'while',max_iterations:2,condition:true,
+   template:{uses:'result.emit',with:{data:0},approval:{required:true}},
+ }]}),/unsupported_field/);
+ await assert.rejects(()=>compilePlan({version:1,name:'Spoof loop',steps:[{
+   id:'loop',uses:'flow.loop',with:{mode:'until',max_iterations:2,condition:true,template:{uses:'result.emit',with:{data:0}}},
+ }]}),/unsupported_capability/);
+});
+
+test('bounded while/until compile reviewed read-only MCP templates, without nested or write bodies',async()=>{
+ const read={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+   input_schema:{type:'object',properties:{value:{type:'string'}}},
+   arguments:{value:'safe literal'}};
+ const source={version:1,name:'Reviewed loop',steps:[
+   {id:'loop',flow:'until',max_iterations:3,
+    condition:{eq:[{ref:'item.index'},1]},
+    template:{uses:'mcp.call',with:read}},
+   {id:'done',needs:['loop'],uses:'result.emit',with:{data:{ref:'steps.loop.output.value'}}},
+ ]};
+ const {plan,digest}=await compilePlan(source);
+ const child=(plan.steps[0]!.with.template as {uses:string;with:{schema_digest:string}});
+ assert.equal(child.uses,'mcp.call');
+ assert.equal(child.with.schema_digest,await toolSchemaDigest(read.input_schema));
+ assert.equal(digest,(await compilePlan(JSON.stringify(source))).digest);
+ for(const edit of [{scope:'write'},{tool:'unsafe tool'},
+   {endpoint:'http://127.0.0.1/mcp'},{arguments:{value:{ref:'steps.other.output'}}},
+   {arguments:{value:{ref:'item.not_allowed'}}},{input_schema:null}]){
+   const bad=structuredClone(source);
+   Object.assign(bad.steps[0]!.template!.with,edit);
+   await assert.rejects(()=>compilePlan(bad),PlanError);
+ }
+ for(const action of ['github.run','http.request','flow.loop','action.run']){
+   const bad=structuredClone(source);
+   (bad.steps[0]!.template as {uses:string}).uses=action;
+   await assert.rejects(()=>compilePlan(bad),
+     (error:unknown)=>error instanceof PlanError&&error.message==='unsupported_loop_action');
+ }
+ const overflow=structuredClone(source);
+ overflow.steps.push(...Array.from({length:29},(_,i)=>({
+   id:'emit'+i,uses:'result.emit',with:{data:'x'},
+ })) as never[]);
+ await assert.rejects(()=>compilePlan(overflow),
+   (error:unknown)=>error instanceof PlanError&&error.message==='invalid_step_count');
 });

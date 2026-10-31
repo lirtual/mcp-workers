@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateCsrf, csrfCookie, verifyAccess } from '../../src/setup/access.js';
-import { setupPage } from '../../src/setup/page.js';
+import { setupPage, setupResult, setupFailure, setupUnbindStatusResult } from '../../src/setup/page.js';
 import { handleSetup } from '../../src/setup/handler.js';
 import type { Env } from '../../src/types.js';
 
@@ -35,6 +35,33 @@ describe('Database Owner setup authorization', () => {
       expect(body).not.toContain('<svg');
       expect(body).toContain('&lt;svg');
     });
+  });
+  it('offers a safe new-ID replacement for an active Hyperdrive connection without requiring downtime', async () => {
+    const response = setupPage([{ id: 'primary_pg', dialect: 'postgres', transport: 'hyperdrive', status: 'active',
+      revision: 3, created_at: 1, updated_at: 2 }], 'a'.repeat(43));
+    const body = await response.text();
+    expect(body).toContain('Edit connection');
+    expect(body).toContain('href="/setup?edit=primary_pg#add-connection"');
+    expect(body).toContain('Existing Hyperdrive Connection ID (active or disabled)');
+    expect(body).not.toContain('Existing disabled Connection ID');
+    expect(body).not.toContain('Disable this connection before editing credentials or retiring its logical ID.');
+  });
+  it('preselects the safe new-ID Hyperdrive edit without exposing config IDs or prior credentials', async () => {
+    const source = { id: 'primary_pg', dialect: 'postgres' as const, transport: 'hyperdrive' as const,
+      status: 'active' as const, revision: 3, created_at: 1, updated_at: 2 };
+    const response = setupPage([source], 'a'.repeat(43), [], [], source);
+    const body = await response.text();
+    expect(body).toContain('<legend>Edit Hyperdrive (new Connection ID)</legend>');
+    expect(body).toContain('name="replacement_for" value="primary_pg"');
+    expect(body).toContain('Database: PostgreSQL');
+    expect(body).toContain('name="dialect" value="postgres"');
+    expect(body).toContain('name="transport" value="hyperdrive"');
+    expect(body).not.toContain('name="transport" value="direct"');
+    expect(body).toContain('class="add-connection replacement"');
+    expect(body).toContain('name="id" maxlength="64"');
+    expect(body).not.toContain('name="config_id"');
+    expect(body).not.toContain('name="binding_name"');
+    expect(body).toContain('same database target');
   });
 });
 
@@ -159,5 +186,128 @@ describe('Cloudflare Access signed JWT enforcement', () => {
       await token('owner@example.org', 'test-aud', now - 120),
       valid.slice(0, -6) + 'broken'
     ]) await expect(verifyAccess(req(invalid), base, mock)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+  });
+});
+
+describe('Spec #605 Owner /setup presentation', () => {
+  const csrf = 'a'.repeat(43);
+  it('prioritizes a responsive inventory and collapses the add form with strict TLS selected', async () => {
+    const body = await setupPage([{id:'example_mysql',dialect:'mysql',transport:'direct',status:'disabled',
+      revision:1,created_at:1,updated_at:2}], csrf).text();
+    const empty = await setupPage([], csrf).text();
+    expect(body).toContain('class="connections-table"');
+    expect(body).toContain('class="connection-row"');
+    expect(body).toContain('<details id="add-panel"');
+    expect(body).not.toContain('<details id="add-panel" open');
+    expect(body).toContain('name="transport" value="hyperdrive" checked');
+    expect(body).not.toContain('name="transport" value="direct" checked');
+    expect(empty).toContain('No database connections configured');
+    expect(body).toContain('name="plaintext_ack"');
+    expect(body).toContain('@media (max-width:');
+  });
+  it('opens a safe replacement and keeps a pending operation separate from actual connections', async () => {
+    const original = {id:'primary_pg',dialect:'postgres' as const,transport:'hyperdrive' as const,
+      status:'active' as const,revision:3,created_at:1,updated_at:2};
+    const op = {operation_id:'12345678-1234-1234-1234-123456789abc',logical_id:'candidate_pg',
+      action:'create',phase:'pending',expected_revision:0,config_id:null,binding_name:null,
+      pr_number:null,prepare_run_id:44,apply_run_id:null,ci_run_id:null,release_run_id:null,
+      head_sha:null,expected_source_sha:null,error_class:null,expires_at:Date.now()+60_000};
+    const body=await setupPage([original],csrf,[op],[],original).text();
+    expect(body).toContain('<details id="add-panel" class="add-panel" open');
+    expect(body).toContain('name="replacement_for" value="primary_pg"');
+    expect(body).toContain('Replace');
+    expect(body).toContain('Open Hyperdrive operations');
+    expect(body).toContain('candidate_pg');
+    expect(body).toContain('Run 44');
+    expect(body).not.toContain('name="transport" value="direct" checked');
+  });
+  it('shows Owner attention and correct status without presenting awaiting approval as active', async () => {
+    const op = {operation_id:'12345678-1234-1234-1234-123456789abc',logical_id:'candidate',
+      action:'create',phase:'awaiting_confirmation',expected_revision:0,
+      config_id:'a'.repeat(32),binding_name:'HYPERDRIVE_CANDIDATE',
+      pr_number:605,prepare_run_id:44,apply_run_id:null,ci_run_id:45,release_run_id:null,
+      head_sha:'b'.repeat(40),expected_source_sha:'c'.repeat(40),error_class:null,
+      expires_at:Date.now()+60_000};
+    const body=await setupPage([],csrf,[op]).text();
+    expect(body).toContain('Owner action needed');
+    expect(body).toContain('Confirm final apply');
+    expect(body).toContain('Awaiting confirmation');
+    expect(body).not.toContain('candidate</strong> <span class="meta">');
+    expect(body).not.toContain('Active database connection');
+  });
+});
+
+describe('Spec #605 operation history labels', () => {
+  const csrf = 'a'.repeat(43);
+  const operation = (phase: string, index: number) => ({
+    operation_id: '12345678-1234-1234-1234-' + String(index).padStart(12, '0'),
+    logical_id: 'op_' + phase, action: 'create', phase, expected_revision: 0,
+    config_id: null, binding_name: null, pr_number: null,
+    prepare_run_id: 100 + index, apply_run_id: null, ci_run_id: null, release_run_id: null,
+    head_sha: null, expected_source_sha: null, error_class: phase === 'failed' ? 'apply_denied' : null,
+    expires_at: Date.now() + 60_000
+  });
+  it('keeps open operations visible, terminal failures collapsed, and completions in history', async () => {
+    const body = await setupPage([], csrf, [
+      operation('pending', 1), operation('unknown', 2),
+      operation('failed', 3), operation('completed', 4)
+    ]).text();
+    const openAt = body.indexOf('<h2>Open Hyperdrive operations</h2>');
+    const failedAt = body.indexOf('<details><summary>Failed operation history (1)</summary>');
+    const completedAt = body.indexOf('<details><summary>Completed operation history</summary>');
+    expect(openAt).toBeGreaterThan(-1);
+    expect(failedAt).toBeGreaterThan(openAt);
+    expect(completedAt).toBeGreaterThan(failedAt);
+    expect(body.slice(openAt, failedAt)).toContain('op_pending');
+    expect(body.slice(openAt, failedAt)).toContain('op_unknown');
+    expect(body.slice(openAt, failedAt)).not.toContain('op_failed');
+    expect(body.slice(failedAt, completedAt)).toContain('op_failed');
+    expect(body.slice(failedAt, completedAt)).toContain('Run 103');
+    expect(body.slice(completedAt)).toContain('op_completed');
+  });
+  it('does not mislabel historical failures as running work when no operation is open', async () => {
+    const body = await setupPage([], csrf,
+      Array.from({length:9},(_,i) => operation('failed', i))).text();
+    expect(body).not.toContain('Open Hyperdrive operations');
+    expect(body).toContain('<details><summary>Failed operation history (9)</summary>');
+    expect(body).not.toContain('<details open><summary>Failed operation history');
+    expect(body).toContain('Run 108');
+  });
+});
+
+describe('Spec #605 page feedback and limits', () => {
+  const csrf = 'a'.repeat(43);
+  it('clearly distinguishes accepted GitHub dispatch, confirmed local action, unknown outcome and blocked request', async () => {
+    const accepted = await setupResult('GitHub Actions request accepted. Release not verified.', 'accepted').text();
+    expect(accepted).toContain('Request accepted');
+    expect(accepted).not.toContain('Operation completed');
+    const confirmed = await setupResult('Connection disabled.').text();
+    expect(confirmed).toContain('Operation completed');
+    const uncertain = await setupResult('Run receipt unknown; reconcile before retry.', 'unknown').text();
+    expect(uncertain).toContain('Outcome unknown');
+    const blocked = await setupFailure('revision_conflict', 409, 'apply_cas_failed').text();
+    expect(blocked).toContain('Request blocked');
+    expect(blocked).toContain('Diagnostic: apply_cas_failed');
+    expect(blocked).toContain('Back to connections');
+    const unbind=await setupUnbindStatusResult({phase:'merged_unpublished',prNumber:77}).text();
+    expect(unbind).toContain('release, active version and D1 retirement are NOT verified');
+    expect(unbind).not.toContain('Operation completed');
+  });
+  it('respects ten slots including unfinished Hyperdrive reservations', async () => {
+    const rows=Array.from({length:9},(_,i)=>({
+      id:'connection_'+i,dialect:'mysql' as const,transport:'direct' as const,
+      status:'disabled' as const,revision:1,created_at:1,updated_at:1
+    }));
+    const op={operation_id:'12345678-1234-1234-1234-123456789abc',logical_id:'pending_tenth',
+      action:'create',phase:'running',expected_revision:0,config_id:null,binding_name:null,
+      pr_number:null,prepare_run_id:123,apply_run_id:null,ci_run_id:null,release_run_id:null,
+      head_sha:null,expected_source_sha:null,error_class:null,expires_at:Date.now()+60_000};
+    const body=await setupPage(rows,csrf,[op]).text();
+    expect(body).toContain('All 10 connection slots are in use or reserved');
+    expect(body).not.toContain('<details id="add-panel"');
+    expect(body).toContain('<summary>More</summary>');
+    expect(body).toContain('name="confirm_id"');
+    expect(body).toContain('pending_tenth');
+    expect(body).not.toContain('Active database connection');
   });
 });

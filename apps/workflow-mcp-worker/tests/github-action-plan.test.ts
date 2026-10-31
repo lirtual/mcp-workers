@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { compilePlan,publishedGitHubActionStep } from '../src/plan.ts';
 
 const action={
-  repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+  repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),
   type:'session',contractDigest:'b'.repeat(64),ref:'refs/tags/test-v1',inputs:{duration_minutes:5},
 };
@@ -115,7 +115,7 @@ test('Published Task input contract must hash exactly to reviewed grant',async()
  const contract={name:'Pinned task',type:'task' as const,inputs:{
   outcome:{type:'choice' as const,required:true,options:['success','failure'],default:'success'},
  }};
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40)};
  const reviewed=await reviewedGitHubAction({...identity,contract});
  const definition={version:1,name:'reviewed dynamic',steps:[

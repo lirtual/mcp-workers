@@ -1,14 +1,15 @@
 import { approvalConfig, type ApprovalEnv } from "./approval-auth.ts";
 import { isInteraction, validInteraction, interactionExtra } from "./interactions.ts";
 import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
+const TEMP_RECONNECT_GRACE_MS = 90000;
 type Endpoint = {
   id: string; alias: string; state: "stopped" | "enabled" | "revoked";
-  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number;
+  generation: number; revision: number; stop_epoch: number; credential_hash: string; updated_at: number; pairing_mode?:string; lease_expires_at?:number; offline_deadline?:number|null;
 };
-type SocketAuth = { endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; approval_origin?:string };
+type SocketAuth = { protocol?:number; endpoint_id?: string; generation?: number; deadline: number; authenticated: boolean; last_seen?: number; };
 type PendingMutation = {
   endpoint_id:string;intent_key:string;generation:number;revision:number;socket:WebSocket;
-  phase:"preparing"|"dispatched";prepared?:()=>void;timer:ReturnType<typeof setTimeout>;
+  phase:"preparing"|"dispatched";timer:ReturnType<typeof setTimeout>;
 };
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store" } });
 const validId = (s: unknown): s is string => typeof s === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(s);
@@ -23,11 +24,12 @@ const secret = () => {
 const safeAlias = (v: unknown) => typeof v === "string" && v.trim().length > 0 && v.length <= 64;
 const publicEndpoint = (e: Endpoint, online = false) => ({
   endpoint_id: e.id, alias: e.alias, authorization: e.state,
-  online: e.state === "enabled" && online,
+  online: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
   // Readiness means connected and locally enabled, never website business success.
-  control_ready: e.state === "enabled" && online,
-  observation_ready: e.state === "enabled" && online,
+  control_ready: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
+  observation_ready: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
   generation: e.generation, updated_at: e.updated_at,
+  pairing_mode:e.pairing_mode??"permanent",lease_expires_at:e.lease_expires_at??null,
 });
 export class BrowserOwner implements DurableObject {
   private readonly sql: SqlStorage;
@@ -41,15 +43,19 @@ export class BrowserOwner implements DurableObject {
     const p=this.pendingMutations.get(operation_id);
     if(!p)return;
     clearTimeout(p.timer);
-    p.prepared?.();
     this.pendingMutations.delete(operation_id);
     if(p.phase==="dispatched")this.intents.markUnknown(p.endpoint_id,p.intent_key);
     else this.intents.abort(p.endpoint_id,p.intent_key);
   }
   private readonly pendingReads = new Map<string,{
     endpoint_id:string;generation:number;socket:WebSocket;tool:string;
+    stage?:string;stageEnteredAt?:number;
     resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>;
   }>();
+  // Only these fixed diagnostic stages can reach a timeout reply. No DOM data,
+  // URL, extension-provided duration, or arbitrary text is stored or relayed.
+  private readonly readStages = new Set(["extension_received","tab_lookup",
+    "frame_lookup","text_injection","element_refs","final_validation","result_transport"]);
   private readonly env:ApprovalEnv;
   constructor(state: DurableObjectState, env:ApprovalEnv = {}) {
     this.env=env;
@@ -57,120 +63,27 @@ export class BrowserOwner implements DurableObject {
     this.sql = state.storage.sql;
     this.sql.exec("CREATE TABLE IF NOT EXISTS pairs (code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS endpoints (id TEXT PRIMARY KEY, alias TEXT NOT NULL, credential_hash TEXT NOT NULL, state TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, stop_epoch INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)");
+    const columns=this.sql.exec<{name:string}>("PRAGMA table_info(endpoints)").toArray().map(c=>c.name);
+    if(!columns.includes("pairing_mode"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN pairing_mode TEXT NOT NULL DEFAULT 'permanent'");
+    if(!columns.includes("lease_expires_at"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN lease_expires_at INTEGER");
+    if(!columns.includes("offline_deadline"))this.sql.exec("ALTER TABLE endpoints ADD COLUMN offline_deadline INTEGER");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS activation_attempts (id TEXT PRIMARY KEY, proof_hash TEXT NOT NULL, alias TEXT NOT NULL, mode TEXT NOT NULL, endpoint_id TEXT, stop_epoch INTEGER, owner_verified INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)");
     this.intents = new IntentLedger(this.sql);
     this.sql.exec("CREATE TABLE IF NOT EXISTS browser_approvals (operation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, binding TEXT NOT NULL, expires_at INTEGER NOT NULL, nonce_hash TEXT)");
     // Dispatch effects may have occurred before a DO recreation. Never replay them.
     this.intents.recoverUnknown(Date.now());
+    // Existing approval requests had no execute token. Retire them permanently
+    // without granting, dispatching, or deleting any historical receipt.
+    this.intents.retirePendingApprovals();
   }
-  private readonly approvalReads=new Map<string,{socket:WebSocket;resolve:(value:Record<string,unknown>|null)=>void;timer:ReturnType<typeof setTimeout>}>();
-  private expireApprovals(now=Date.now()) {
-    const rows=this.sql.exec<{operation_id:string;expires_at:number}>("SELECT a.operation_id,a.expires_at FROM browser_approvals a JOIN browser_intents i ON i.operation_id=a.operation_id WHERE i.state='pending_approval'").toArray();
-    for(const a of rows){
-      const row=this.intents.byOperation(a.operation_id);if(!row)continue;
-      const e=this.endpoint(row.endpoint_id);
-      if(row.state==="pending_approval"&&(a.expires_at<=now||!e||e.state!=="enabled"||e.generation!==row.generation||e.revision!==row.prepared_revision||!approvalConfig(this.env)))
-        this.intents.approvalState(row.endpoint_id,row.intent_key,"expired",
-          a.expires_at<=now?"approval_deadline_expired":"approval_endpoint_changed");
-    }
-    this.sql.exec("DELETE FROM browser_approvals WHERE expires_at<?",now-7*86400000);
-  }
-  private withApproval<T extends {operation_id?:string;state?:string}>(answer:T) {
-    if(answer.state==="unknown"&&answer.operation_id){
-      const config=approvalConfig(this.env);
-      return {...answer,...(config?{
-        owner_review_url:config.origin+"/owner/unknown/"+answer.operation_id,
-        safe_next_action:"independently_review_unknown; never retry the original effect"
-      }:{safe_next_action:"blocked: independent owner review unavailable; never retry"})};
-    }
-    if(answer.state!=="pending_approval"||!answer.operation_id)return answer;
-    const a=this.sql.exec<{expires_at:number}>("SELECT expires_at FROM browser_approvals WHERE operation_id=?",answer.operation_id).toArray()[0];
-    return {...answer,expires_at:a?.expires_at,approval_url:approvalConfig(this.env)?.origin+"/owner/operations/"+answer.operation_id,safe_next_action:"wait_for_owner_approval"};
-  }
-  private approvalBinding(command:Command,run_id:string,generation:number,revision:number,expires_at:number,context:unknown) {
-    // Includes every actual parameter, exact document/element, top frame, browser
-    // run, grant, connection and deadline. No low-entropy public hash.
-    return this.intents.seal([command.endpoint_id,command.intent_key,command.action,command.tab_id??null,0,
-      command.document_id??null,command.element_id??null,command.url??null,command.text??null,
-      command.key??null,command.delta_y??null,command.value??null,run_id,generation,revision,expires_at,context]);
-  }
-  private async ownerApproval(arg:Record<string,unknown>,decide:boolean):Promise<Response> {
-    if(!approvalConfig(this.env)||!validId(arg.operation_id))return json({error_code:"forbidden"},403);
-    this.expireApprovals();
-    const row=this.intents.byOperation(arg.operation_id);
-    if(!row)return json({error_code:"not_found"},404);
-    if(row.state!=="pending_approval")return json(this.intents.status(row.endpoint_id,row.intent_key));
-    const a=this.sql.exec<{run_id:string;binding:string;expires_at:number;nonce_hash:string|null}>("SELECT * FROM browser_approvals WHERE operation_id=?",row.operation_id).toArray()[0];
-    if(!a)return json({error_code:"expired"},409);
-    if(decide){
-      if(!["approve","deny"].includes(arg.decision as string)||typeof arg.nonce!=="string"||arg.nonce.length!==64||!a.nonce_hash||await hash(arg.nonce)!==a.nonce_hash)return json({error_code:"invalid_nonce"},403);
-      // Consume before any async extension round trip. Concurrent/replayed POSTs
-      // cannot both redeem a nonce, even when the extension or SQLite fails.
-      const consumed=this.sql.exec<{operation_id:string}>("UPDATE browser_approvals SET nonce_hash=NULL WHERE operation_id=? AND nonce_hash=? RETURNING operation_id",row.operation_id,a.nonce_hash).toArray();
-      if(consumed.length!==1)return json({error_code:"invalid_nonce"},403);
-      if(arg.decision==="deny"){
-        this.intents.approvalState(row.endpoint_id,row.intent_key,"denied");
-        return json(this.intents.status(row.endpoint_id,row.intent_key));
-      }
-    }
-    if(this.approvalReads.size>=40)return json({error_code:"busy"},409);
-    const e=this.endpoint(row.endpoint_id)!;
-    const socket=this.state.getWebSockets().find(sock=>{
-      const auth=sock.deserializeAttachment() as SocketAuth|null;
-      return auth?.authenticated&&auth.endpoint_id===e.id&&auth.generation===e.generation&&
-        typeof auth.last_seen==="number"&&Date.now()-auth.last_seen<60000&&sock.readyState===WebSocket.OPEN;
-    });
-    const expire=(reason:"approval_deadline_expired"|"approval_endpoint_changed"|"approval_extension_context_invalid"="approval_extension_context_invalid")=>{
-      this.intents.approvalState(row.endpoint_id,row.intent_key,"expired",reason);
-      return json(this.intents.status(row.endpoint_id,row.intent_key));
-    };
-    // A temporary transport failure must not consume a still-valid owner proposal.
-    // Never return a review nonce or execute a command without a fresh extension check.
-    const retryView=()=>a.expires_at<=Date.now()?expire("approval_deadline_expired"):json({operation_id:row.operation_id,
-      state:"pending_approval",expires_at:a.expires_at,error_code:"owner_transport_unavailable",
-      safe_next_action:"retry_same_owner_link_before_expiry"},503);
-    if(!socket)return decide?expire():retryView();
-    if(decide){
-      if(this.admittingEndpoints.has(e.id)||this.intents.hasDispatching(e.id)||[...this.pendingReads.values()].some(p=>p.endpoint_id===e.id)||[...this.pendingMutations.values()].some(p=>p.endpoint_id===e.id))return expire();
-      this.admittingEndpoints.add(e.id);
-    }
-    try {
-      const request_id=crypto.randomUUID();
-      const proposal=await new Promise<Record<string,unknown>|null>(resolve=>{
-        const timer=setTimeout(()=>{this.approvalReads.delete(request_id);resolve(null);},5000);
-        this.approvalReads.set(request_id,{socket,resolve,timer});
-        try{socket.send(JSON.stringify({type:"approval_request",request_id,operation_id:row.operation_id,generation:e.generation}));}
-        catch{clearTimeout(timer);this.approvalReads.delete(request_id);resolve(null);}
-      });
-      // A lost response is not proof the bound command or consent changed.
-      // A concrete mismatching response still expires the unsafe proposal.
-      if(!proposal&&!decide)return retryView();
-      const command=proposal?.command as Command|undefined;
-      if(!command||proposal?.run_id!==a.run_id||proposal.expires_at!==a.expires_at||
-         proposal.ready!==true||JSON.stringify(command).length>65536||!await this.intents.matchesCommand(command,row.operation_id)||
-         await this.approvalBinding(command,a.run_id,e.generation,e.revision,a.expires_at,proposal.context)!==a.binding)return expire();
-      this.expireApprovals();
-      const current=this.endpoint(e.id);
-      if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||!current||current.state!=="enabled"||current.generation!==e.generation||current.revision!==e.revision)return expire("approval_endpoint_changed");
-      if(!decide){
-        const nonce=secret();
-        const nonceHash=await hash(nonce);
-        if(this.intents.byOperation(row.operation_id)?.state!=="pending_approval"||a.expires_at<=Date.now())return expire("approval_deadline_expired");
-        this.sql.exec("UPDATE browser_approvals SET nonce_hash=? WHERE operation_id=?",nonceHash,row.operation_id);
-        return json({operation_id:row.operation_id,state:"pending_approval",expires_at:a.expires_at,
-          endpoint_id:e.id,run_id:a.run_id,frame_id:0,command,context:proposal.context,nonce});
-      }
-      this.intents.approvalState(e.id,row.intent_key,"admitted");
-      const dispatch=await this.intents.dispatch(e.id,row.intent_key,e.generation);
-      if(!dispatch.execute_token)return expire();
-      const latest=this.endpoint(e.id);
-      if(!latest||latest.state!=="enabled"||latest.generation!==e.generation||latest.revision!==e.revision||Date.now()>=a.expires_at){this.intents.markUnknown(e.id,row.intent_key);return json(this.intents.status(e.id,row.intent_key));}
-      const timer=setTimeout(()=>this.terminateMutation(row.operation_id),8000);
-      this.pendingMutations.set(row.operation_id,{endpoint_id:e.id,intent_key:row.intent_key,generation:e.generation,revision:e.revision,socket,phase:"dispatched",timer});
-      try{socket.send(JSON.stringify({type:"execute_request",operation_id:row.operation_id,intent_key:row.intent_key,generation:e.generation,execute_token:dispatch.execute_token,owner_approved:true,run_id:a.run_id,expires_at:a.expires_at}));}
-      catch{this.terminateMutation(row.operation_id);}
-      return json(this.intents.status(e.id,row.intent_key));
-    } finally {if(decide)this.admittingEndpoints.delete(e.id);}
+  private withOwnerReview<T extends {operation_id?:string;state?:string}>(answer:T) {
+    if(answer.state!=="unknown"||!answer.operation_id)return answer;
+    const config=approvalConfig(this.env);
+    return {...answer,...(config?{
+      owner_review_url:config.origin+"/owner/unknown/"+answer.operation_id,
+      safe_next_action:"independently_review_unknown; never retry the original effect"
+    }:{safe_next_action:"blocked: independent owner review unavailable; never retry"})};
   }
   private async ownerUnknown(arg:Record<string,unknown>,report:boolean):Promise<Response> {
     if(!approvalConfig(this.env)||!validId(arg.operation_id))return json({error_code:"forbidden"},403);
@@ -205,10 +118,25 @@ export class BrowserOwner implements DurableObject {
   private endpoint(id: string): Endpoint | undefined {
     return this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE id = ?", id).toArray()[0];
   }
+  private leaseValid(e:Endpoint) {
+    const now=Date.now();
+    return (!e.lease_expires_at||e.lease_expires_at>now)&&(!e.offline_deadline||e.offline_deadline>now);
+  }
+  private expireTemporary(now=Date.now()) {
+    const expired=this.sql.exec<{id:string}>("SELECT id FROM endpoints WHERE state='enabled' AND pairing_mode='temporary' AND ((lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (offline_deadline IS NOT NULL AND offline_deadline<=?))",now,now).toArray();
+    for(const {id} of expired){
+      const changed=this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=? AND state='enabled'",now,id);
+      if(changed.rowsWritten===1)this.close(id,"revoked");
+    }
+  }
+  private async scheduleEarlierAlarm(deadline:number) {
+    const existing=await this.state.storage.getAlarm();
+    if(existing===null||existing>deadline)await this.state.storage.setAlarm(deadline);
+  }
   private live(id: string, generation: number) {
     return this.state.getWebSockets().some(s => {
       const a = s.deserializeAttachment() as SocketAuth | null;
-      return a?.authenticated === true && a.endpoint_id === id &&
+      return a?.authenticated === true && a.protocol===3 && a.endpoint_id === id &&
         a.generation === generation && s.readyState === WebSocket.OPEN &&
         typeof a.last_seen === "number" && Date.now()-a.last_seen < 60000;
     });
@@ -245,8 +173,7 @@ export class BrowserOwner implements DurableObject {
       if (!arg || typeof arg !== "object" || Array.isArray(arg)) throw Error();
     } catch { return json({error:"bad_request"},400); }
     const now = Date.now();
-    this.expireApprovals(now);
-    if(url.pathname==="/owner-view"||url.pathname==="/owner-decide")return this.ownerApproval(arg,url.pathname==="/owner-decide");
+    this.expireTemporary(now);
     if(url.pathname==="/owner-unknown-view"||url.pathname==="/owner-unknown-report")
       return this.ownerUnknown(arg,url.pathname==="/owner-unknown-report");
     if (url.pathname === "/operation-status") {
@@ -257,7 +184,7 @@ export class BrowserOwner implements DurableObject {
       const result=Object.hasOwn(arg,"operation_id")?
         original&&original.endpoint_id===arg.endpoint_id?this.intents.status(original.endpoint_id,original.intent_key):{error_code:"not_found"}:
         this.intents.status(arg.endpoint_id as string,arg.intent_key as string);
-      return json(this.withApproval(result),result.error_code?result.error_code==="not_found"?404:400:200);
+      return json(this.withOwnerReview(result),result.error_code?result.error_code==="not_found"?404:400:200);
     }
     if (url.pathname === "/activity-summary") {
       if(Object.keys(arg).length!==2 || !validId(arg.endpoint_id) || typeof arg.credential!=="string" || arg.credential.length!==64)
@@ -265,36 +192,82 @@ export class BrowserOwner implements DurableObject {
       const e=this.endpoint(arg.endpoint_id);
       if(!e || e.state==='revoked' || (await hash(arg.credential))!==e.credential_hash)return json({error_code:"unauthorized"},401);
       this.intents.reconcile(now);
-      const approvals=this.sql.exec<{operation_id:string;expires_at:number}>("SELECT a.operation_id,a.expires_at FROM browser_approvals a JOIN browser_intents i ON i.operation_id=a.operation_id WHERE i.endpoint_id=? AND i.state='pending_approval'",e.id).toArray();
-      return json({...this.intents.activitySummary(e.id),...(approvals.length?{approvals:approvals.map(a=>({...a,state:"pending_approval"}))}: {})});
+      return json(this.intents.activitySummary(e.id));
     }
-    if (url.pathname === "/create-pair") {
-      if (!this.budget("create", 12, now)) return json({error:"rate_limited"},429);
-      const code = secret().slice(0, 24);
-      this.sql.exec("DELETE FROM pairs WHERE expires_at < ? OR used=1",now);
-      this.sql.exec("INSERT INTO pairs(code_hash,expires_at) VALUES(?,?)",await hash(code),now+600000);
-      return json({ pairing_code: code, expires_at: now+600000 });
+    if(url.pathname==="/activate-begin"){
+      if(!validId(arg.attempt_id)||typeof arg.proof_hash!=="string"||!/^[a-f0-9]{64}$/.test(arg.proof_hash)||
+         !["permanent","temporary"].includes(arg.mode as string)||!safeAlias(arg.alias)||
+         !this.budget("activation:begin",60,now))return json({error:"invalid_activation"},400);
+      const id=arg.endpoint_id;
+      let stopEpoch:number|null=null;
+      if(id!==undefined){
+        if(!validId(id)||typeof arg.credential!=="string"||arg.credential.length!==64)return json({error:"invalid_endpoint"},400);
+        const e=this.endpoint(id);
+        if(!e||e.state==="revoked"||!this.leaseValid(e)||e.pairing_mode!==arg.mode||
+           await hash(arg.credential)!==e.credential_hash)return json({error:"re_pair_required"},403);
+        stopEpoch=e.stop_epoch;
+      }
+      this.sql.exec("DELETE FROM activation_attempts WHERE expires_at<? OR consumed=1",now);
+      if((this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM activation_attempts").toArray()[0]?.n??0)>=40)return json({error:"busy"},429);
+      this.sql.exec("INSERT INTO activation_attempts(id,proof_hash,alias,mode,endpoint_id,stop_epoch,expires_at) VALUES(?,?,?,?,?,?,?)",
+        arg.attempt_id,arg.proof_hash,arg.alias,arg.mode,id??null,stopEpoch,now+300000);
+      return json({state:"pending",expires_at:now+300000});
     }
-    if (url.pathname === "/claim") {
-      const ip = typeof arg.client_ip === "string" && arg.client_ip.length <= 64 ? arg.client_ip : "unknown";
-      this.sql.exec("DELETE FROM limits WHERE window_start < ?",now - 60000);
-      if (!this.budget("claim:global", 80, now) || !this.budget("claim:"+ip, 8, now)) return json({error:"rate_limited"},429);
-      if (typeof arg.code !== "string" || !/^[0-9a-f]{24}$/.test(arg.code) || !safeAlias(arg.alias)) return json({error:"invalid_pairing"},400);
-      this.sql.exec("DELETE FROM endpoints WHERE state='revoked' AND updated_at < ?",now-7*86400000);
-      const active=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM endpoints WHERE state!='revoked'").toArray()[0]?.n??0;
+    if(url.pathname==="/activate-authorize"){
+      if(!validId(arg.attempt_id))return json({error:"invalid_activation"},400);
+      const count=this.sql.exec("UPDATE activation_attempts SET owner_verified=1 WHERE id=? AND owner_verified=0 AND consumed=0 AND expires_at>?",
+        arg.attempt_id,now).rowsWritten;
+      return count===1?json({state:"verified"}):json({error:"not_found"},404);
+    }
+    if(url.pathname==="/activate-cancel"||url.pathname==="/activate-complete"){
+      if(!validId(arg.attempt_id)||typeof arg.proof!=="string"||!/^[a-f0-9]{64}$/.test(arg.proof))return json({error:"invalid_activation"},400);
+      const row=this.sql.exec<{proof_hash:string;alias:string;mode:string;endpoint_id:string|null;stop_epoch:number|null;owner_verified:number;expires_at:number;consumed:number}>(
+        "SELECT * FROM activation_attempts WHERE id=?",arg.attempt_id).toArray()[0];
+      if(!row||row.consumed||row.expires_at<=now||await hash(arg.proof)!==row.proof_hash)return json({error:"expired_or_invalid"},403);
+      if(url.pathname==="/activate-cancel"){
+        this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0",arg.attempt_id);
+        return json({state:"cancelled"});
+      }
+      if(row.owner_verified!==1)return json({state:"awaiting_owner"},409);
+      let existing:Endpoint|undefined;
+      if(row.endpoint_id){
+        existing=this.endpoint(row.endpoint_id);
+        if(!existing||existing.state==="revoked"||!this.leaseValid(existing)||existing.stop_epoch!==row.stop_epoch||
+           existing.pairing_mode!==row.mode||arg.endpoint_id!==row.endpoint_id||
+           typeof arg.credential!=="string"||await hash(arg.credential)!==existing.credential_hash)
+          return json({error:"activation_superseded"},409);
+      }
+      // All awaits are above this point. Revalidate at the last synchronous
+      // SQLite commit so Stop or Revoke during proof hashing wins.
+      if(existing){
+        const latest=this.endpoint(existing.id);
+        if(!latest||latest.state==="revoked"||!this.leaseValid(latest)||latest.stop_epoch!==row.stop_epoch||
+           latest.revision!==existing.revision||latest.credential_hash!==existing.credential_hash)
+          return json({error:"activation_superseded"},409);
+        if(this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0 AND owner_verified=1 AND expires_at>?",
+            arg.attempt_id,Date.now()).rowsWritten!==1)return json({error:"activation_superseded"},409);
+        const committed=this.sql.exec("UPDATE endpoints SET state='enabled',revision=revision+1,updated_at=? WHERE id=? AND state!='revoked' AND stop_epoch=? AND revision=?",
+          Date.now(),latest.id,row.stop_epoch,latest.revision);
+        if(committed.rowsWritten!==1)return json({error:"activation_superseded"},409);
+        return json({authorization:"enabled",endpoint_id:latest.id,pairing_mode:row.mode});
+      }
+      const active=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM endpoints WHERE state!='revoked' AND (lease_expires_at IS NULL OR lease_expires_at>?)",now).toArray()[0]?.n??0;
       if(active>=100)return json({error:"capacity_exceeded"},429);
-      const codeHash = await hash(arg.code);
-      const id = crypto.randomUUID();
-      const credential = secret();
-      const credentialHash = await hash(credential);
-      const found = this.sql.exec<{used:number;expires_at:number}>("SELECT used,expires_at FROM pairs WHERE code_hash=?",codeHash).toArray()[0];
-      if (!found || found.used || found.expires_at < now) return json({error:"invalid_pairing"},403);
-      // No await between the one-use update and insertion.
-      const updated=this.sql.exec("UPDATE pairs SET used=1 WHERE code_hash=? AND used=0 AND expires_at>=?",codeHash,now);
-      if(updated.rowsWritten!==1)return json({error:"invalid_pairing"},403);
-      this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at) VALUES(?,?,?,'stopped',0,0,?)",id,arg.alias,credentialHash,now);
-      return json({endpoint_id:id,credential,authorization:"stopped"});
+      const endpoint_id=crypto.randomUUID(),credential=secret();
+      const credentialHash=await hash(credential);
+      if(this.sql.exec("UPDATE activation_attempts SET consumed=1 WHERE id=? AND consumed=0 AND owner_verified=1 AND expires_at>?",
+        arg.attempt_id,Date.now()).rowsWritten!==1)return json({error:"activation_superseded"},409);
+      const lease=row.mode==="temporary"?Date.now()+86400000:null;
+      this.sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at,pairing_mode,lease_expires_at) VALUES(?,?,?,'enabled',0,1,?,?,?)",
+        endpoint_id,row.alias,credentialHash,Date.now(),row.mode,lease);
+      if(lease)try{await this.scheduleEarlierAlarm(lease);}
+      catch{
+        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1 WHERE id=?",endpoint_id);
+        return json({error:"lease_unavailable"},503);
+      }
+      return json({authorization:"enabled",endpoint_id,credential,pairing_mode:row.mode,lease_expires_at:lease});
     }
+    if (url.pathname === "/create-pair" || url.pathname === "/claim" || url.pathname === "/local-resume") return json({error:"protocol_retired"},410);
     if (url.pathname === "/mutate") {
       const command = arg as Command;
       const expected=command.action==="tab_open"?["endpoint_id","intent_key","action","url"]:
@@ -310,10 +283,10 @@ export class BrowserOwner implements DurableObject {
       const prior=this.intents.status(command.endpoint_id,command.intent_key);
       if(prior.operation_id){
         const recovered=await this.intents.admit(command,now);
-        return json(this.withApproval(recovered),recovered.error_code?409:200);
+        return json(this.withOwnerReview(recovered),recovered.error_code?409:200);
       }
       const e=this.endpoint(command.endpoint_id);
-      if(!e||e.state!=="enabled")return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
+      if(!e||e.state!=="enabled"||!this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const pending=this.admittingEndpoints.has(e.id) ||
         [...this.pendingMutations.values()].some(p=>p.endpoint_id===e.id) ||
         [...this.pendingReads.values()].some(p=>p.endpoint_id===e.id);
@@ -321,7 +294,7 @@ export class BrowserOwner implements DurableObject {
         return json({error_code:"busy"},409);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated&&a.endpoint_id===e.id&&a.generation===e.generation&&
+        return a?.authenticated&&a.protocol===3&&a.endpoint_id===e.id&&a.generation===e.generation&&
           typeof a.last_seen==="number"&&now-a.last_seen<60000&&sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -346,21 +319,15 @@ export class BrowserOwner implements DurableObject {
         this.intents.abort(e.id,command.intent_key);
         return json({operation_id,state:"failed",error_code:"preparation_unavailable"},503);
       }
-      let prepared:(()=>void)|undefined;
-      const ready=approvalConfig(this.env)?new Promise<void>(resolve=>{prepared=resolve;}):null;
       const timer=setTimeout(()=>this.terminateMutation(operation_id),8000);
       this.pendingMutations.set(operation_id,{
         endpoint_id:e.id,intent_key:command.intent_key,generation:e.generation,revision:e.revision,
-        socket,phase:"preparing",timer,prepared
+        socket,phase:"preparing",timer
       });
       try {socket.send(JSON.stringify({type:"prepare_request",operation_id,
-        intent_key:command.intent_key,generation:e.generation,command,
-        // Leave 30s headroom for bounded clock skew between Worker and local Chrome.
-        // Both sides still reject expired grants and the Worker enforces the deadline.
-        approval_available:!!approvalConfig(this.env)&& (socket.deserializeAttachment() as SocketAuth)?.approval_origin===approvalConfig(this.env)?.origin,expires_at:now+270000}));}
+        intent_key:command.intent_key,generation:e.generation,command}));}
       catch {this.terminateMutation(operation_id);}
-      if(ready)await ready;
-      return json(this.withApproval(this.intents.status(e.id,command.intent_key)));
+      return json(this.withOwnerReview(this.intents.status(e.id,command.intent_key)));
     }
     if (url.pathname === "/read") {
       const id=arg.endpoint_id;
@@ -370,10 +337,10 @@ export class BrowserOwner implements DurableObject {
           Object.keys(arg).some(k=>!["endpoint_id","tool","tab_id","scope"].includes(k)))
         return json({error_code:"invalid_arguments"},400);
       const e=this.endpoint(id);
-      if(!e || e.state!=="enabled")return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
+      if(!e || e.state!=="enabled" || !this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated && a.endpoint_id===id && a.generation===e.generation &&
+        return a?.authenticated && a.protocol===3 && a.endpoint_id===id && a.generation===e.generation &&
           typeof a.last_seen==="number" && Date.now()-a.last_seen<60000 && sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
@@ -383,8 +350,17 @@ export class BrowserOwner implements DurableObject {
          this.intents.hasDispatching(id))return json({error_code:"busy"},409);
       const request_id=crypto.randomUUID();
       const outcome=await new Promise<unknown>(resolve=>{
-        const timer=setTimeout(()=>{this.pendingReads.delete(request_id);resolve({error_code:"timeout"});},5000);
-        this.pendingReads.set(request_id,{endpoint_id:id,generation:e.generation,socket,resolve,timer,tool:arg.tool as string});
+        const timer=setTimeout(()=>{
+          const pending=this.pendingReads.get(request_id);
+          this.pendingReads.delete(request_id);
+          const stage=pending?.stage??"awaiting_extension";
+          const stage_elapsed_ms=Math.min(5000,Math.max(0,
+            Date.now()-(pending?.stageEnteredAt??startedAt)));
+          resolve(pending?.tool==="snapshot"?{error_code:"timeout",stage,stage_elapsed_ms}:{error_code:"timeout"});
+        },5000);
+        const startedAt=Date.now();
+        this.pendingReads.set(request_id,{endpoint_id:id,generation:e.generation,socket,resolve,timer,
+          tool:arg.tool as string,stageEnteredAt:startedAt});
         try {socket.send(JSON.stringify({type:"read_request",request_id,
           generation:e.generation,tool:arg.tool,...(arg.tool!=="tabs"?{tab_id:arg.tab_id}:{scope:arg.scope??"ordinary"})}));}
         catch {clearTimeout(timer);this.pendingReads.delete(request_id);resolve({error_code:"offline"});}
@@ -400,7 +376,7 @@ export class BrowserOwner implements DurableObject {
     const e = this.endpoint(id);
     if (!e) return json({error:"not_found"},404);
     if (url.pathname === "/state" || url.pathname === "/local-stop" ||
-        url.pathname === "/local-resume" || url.pathname === "/local-revoke") {
+        url.pathname === "/local-revoke") {
       if (typeof arg.credential !== "string" || arg.credential.length !== 64 ||
           (await hash(arg.credential)) !== e.credential_hash) return json({error:"unauthorized"},401);
     }
@@ -417,10 +393,6 @@ export class BrowserOwner implements DurableObject {
       else this.sql.exec("UPDATE endpoints SET stop_epoch=stop_epoch+1 WHERE id=?",id);
       this.close(id,"stopped");
       return json({endpoint_id:id,authorization:"stopped"});
-    }
-    if (url.pathname === "/local-resume") {
-      this.sql.exec("UPDATE endpoints SET state='enabled',revision=revision+1,updated_at=? WHERE id=?",now,id);
-      return json({endpoint_id:id,authorization:"enabled"});
     }
     if (url.pathname === "/revoke" || url.pathname === "/local-revoke") {
       this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=?",now,id);
@@ -456,10 +428,14 @@ export class BrowserOwner implements DurableObject {
         else next=Math.min(next,attachment.deadline);
       }
     }
+    this.expireTemporary(now);
+    const pending=this.sql.exec<{next_deadline:number|null}>("SELECT MIN(CASE WHEN offline_deadline IS NULL THEN lease_expires_at WHEN lease_expires_at IS NULL THEN offline_deadline ELSE MIN(offline_deadline,lease_expires_at) END) AS next_deadline FROM endpoints WHERE state='enabled' AND pairing_mode='temporary'").toArray()[0]?.next_deadline;
+    if(pending!==null&&pending!==undefined)next=Math.min(next,pending);
     if(Number.isFinite(next))await this.state.storage.setAlarm(next);
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const auth = socket.deserializeAttachment() as SocketAuth | null;
+    this.expireTemporary();
     if (!auth || typeof message !== "string" || message.length > (auth.authenticated?2200000:4096) || Date.now() > auth.deadline && !auth.authenticated) {
       socket.close(1008,"invalid_frame");return;
     }
@@ -467,18 +443,18 @@ export class BrowserOwner implements DurableObject {
     try { v = JSON.parse(message) as Record<string,unknown>; if (!v || Array.isArray(v)) throw Error(); }
     catch {socket.close(1008,"invalid_frame");return;}
     if (!auth.authenticated) {
-      if (v.type !== "authenticate" || v.protocol !== 1 || v.extension_version !== "0.1.0" || !validId(v.endpoint_id) ||
+      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.1" || !validId(v.endpoint_id) ||
           typeof v.credential !== "string" || v.credential.length !== 64) {
         socket.close(1008,"authentication_required");return;
       }
       const e = this.endpoint(v.endpoint_id);
-      if (!e || e.state !== "enabled" || (await hash(v.credential)) !== e.credential_hash) {
+      if (!e || e.state !== "enabled" || !this.leaseValid(e) || (await hash(v.credential)) !== e.credential_hash) {
         socket.close(1008,"unauthorized");return;
       }
       const current=this.endpoint(e.id);
       if(!current||current.state!=="enabled"||current.revision!==e.revision||current.generation!==e.generation){socket.close(1008,"stale_auth");return;}
       const generation = current.generation + 1;
-      const update=this.sql.exec("UPDATE endpoints SET generation=?,updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",generation,Date.now(),e.id,current.generation,current.revision);
+      const update=this.sql.exec("UPDATE endpoints SET generation=?,offline_deadline=NULL,updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",generation,Date.now(),e.id,current.generation,current.revision);
       if(update.rowsWritten!==1){socket.close(1008,"stale_auth");return;}
       for (const other of this.state.getWebSockets()) {
         if (other !== socket && (other.deserializeAttachment() as SocketAuth|null)?.endpoint_id === e.id) {
@@ -486,17 +462,13 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now(),approval_origin:v.owner_approval_protocol===1&&v.service_origin===approvalConfig(this.env)?.origin?v.service_origin as string:undefined} satisfies SocketAuth);
-      socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:1}));
+      socket.serializeAttachment({authenticated:true,protocol:3,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
+      socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:3}));
       return;
     }
+    if(auth.protocol!==3){socket.close(1008,"obsolete_protocol");return;}
     const e = this.endpoint(auth.endpoint_id!);
-    if (!e || e.state !== "enabled" || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
-    if(v.type==="approval_result"&&validId(v.request_id)&&v.generation===e.generation){
-      const p=this.approvalReads.get(v.request_id);
-      if(!p||p.socket!==socket)return;
-      clearTimeout(p.timer);this.approvalReads.delete(v.request_id);p.resolve(v);return;
-    }
+    if (!e || e.state !== "enabled" || !this.leaseValid(e) || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
     if(v.type==="prepare_result"&&validId(v.operation_id)&&v.generation===e.generation){
       const pending=this.pendingMutations.get(v.operation_id);
       // A hibernated/reconstructed DO has durable prepare metadata but NO
@@ -513,35 +485,18 @@ export class BrowserOwner implements DurableObject {
         if(pending)this.terminateMutation(v.operation_id);
         return;
       }
-      if(v.accepted===true && v.approval_required===true) {
-        if(!approvalConfig(this.env)||auth.approval_origin!==approvalConfig(this.env)?.origin||!validId(v.run_id)||!Number.isSafeInteger(v.expires_at)||
-           (v.expires_at as number)>Date.now()+300000||(v.expires_at as number)<=Date.now()||
-           !v.command||!v.context||JSON.stringify(v.context).length>8192||JSON.stringify(v.command).length>65536||
-           !await this.intents.matchesCommand(v.command as Command,v.operation_id)){
-          this.terminateMutation(v.operation_id);
-          this.sql.exec("UPDATE browser_intents SET result_code='approval_prepare_invalid' WHERE operation_id=? AND state='failed'",v.operation_id);
-          return;
-        }
-        const current=this.endpoint(e.id);
-        const count=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM browser_intents WHERE endpoint_id=? AND state='pending_approval'",e.id).toArray()[0]?.n??0;
-        if(!current||current.state!=="enabled"||current.generation!==e.generation||current.revision!==latest.revision||count>=10){
-          this.terminateMutation(v.operation_id);
-          if(count>=10)this.sql.exec("UPDATE browser_intents SET result_code='capacity_exceeded' WHERE operation_id=? AND state='failed'",v.operation_id);
-          return;
-        }
-        const binding=await this.approvalBinding(v.command as Command,v.run_id as string,e.generation,latest.revision,v.expires_at as number,v.context);
-        const after=this.endpoint(e.id);
-        if(!after||after.state!=="enabled"||after.generation!==e.generation||after.revision!==latest.revision||!this.pendingMutations.has(v.operation_id)){this.terminateMutation(v.operation_id);return;}
-        this.sql.exec("INSERT OR IGNORE INTO browser_approvals(operation_id,run_id,binding,expires_at) VALUES(?,?,?,?)",v.operation_id,v.run_id,binding,v.expires_at);
-        this.intents.approvalState(e.id,v.intent_key,"pending_approval");
-        clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);
-        return; // prepare never grants execute, and waiting holds no lock
+      // Old approval proposals cannot turn into ordinary execution.
+      if(["approval_required","command","context","run_id","expires_at","owner_approved"]
+          .some(field=>Object.hasOwn(v,field))){
+        this.terminateMutation(v.operation_id);
+        this.sql.exec("UPDATE browser_intents SET result_code='forbidden' WHERE operation_id=? AND state='failed'",v.operation_id);
+        return;
       }
       if(v.accepted!==true){
         this.intents.abort(e.id,v.intent_key);
-        const denial=v.error_code==="approval_required"?"approval_blocked":safeFailureCode(v.error_code);
+        const denial=v.error_code==="approval_required"?"forbidden":safeFailureCode(v.error_code);
         this.sql.exec("UPDATE browser_intents SET result_code=? WHERE operation_id=? AND state='failed'",denial??"preparation_unavailable",v.operation_id);
-        if(pending){clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);}
+        if(pending){clearTimeout(pending.timer);this.pendingMutations.delete(v.operation_id);}
         return;
       }
       const dispatch=await this.intents.dispatch(e.id,v.intent_key,e.generation);
@@ -549,7 +504,7 @@ export class BrowserOwner implements DurableObject {
         if(pending)this.terminateMutation(v.operation_id);
         return;
       }
-      if(pending){pending.phase="dispatched";pending.prepared?.();}
+      if(pending){pending.phase="dispatched";}
       // Execute is authorized only by the original current grant and generation.
       const after=this.endpoint(e.id);
       if(!after||after.state!=="enabled"||after.generation!==e.generation||
@@ -579,7 +534,15 @@ export class BrowserOwner implements DurableObject {
       if(result.error_code)return;
       const pending=this.pendingMutations.get(v.operation_id);
       if(pending && pending.socket===socket){
-        clearTimeout(pending.timer);pending.prepared?.();this.pendingMutations.delete(v.operation_id);
+        clearTimeout(pending.timer);this.pendingMutations.delete(v.operation_id);
+      }
+    } else if (v.type === "read_progress" && validId(v.request_id) &&
+       v.generation===e.generation && typeof v.stage==="string" && this.readStages.has(v.stage)) {
+      const pending=this.pendingReads.get(v.request_id);
+      if(pending?.tool==="snapshot" && pending.socket===socket &&
+         pending.endpoint_id===e.id && pending.generation===e.generation) {
+        pending.stage=v.stage;
+        pending.stageEnteredAt=Date.now();
       }
     } else if (v.type === "read_result" && validId(v.request_id) && v.generation===e.generation) {
       const pending=this.pendingReads.get(v.request_id);
@@ -598,10 +561,42 @@ export class BrowserOwner implements DurableObject {
       this.close(e.id,"stopped");
     } else {socket.close(1008,"unsupported_frame");}
   }
-  webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):void {
-    for(const [id,p] of this.approvalReads)if(p.socket===socket){clearTimeout(p.timer);this.approvalReads.delete(id);p.resolve(null);}
+  async webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean):Promise<void> {
+    // A network flap and browser exit are indistinguishable at WSS close.
+    // Keep a bounded reconnect grant, never a live execution socket. Server
+    // alarms eventually revoke browser-exit grants without relying on clients.
+    // Superseded WSS generations and explicit Stop/Revoke cannot regain access.
+    const auth=socket.deserializeAttachment() as SocketAuth|null;
+    let deadline:number|null=null, temporaryId:string|null=null;
+    if(auth?.authenticated && auth.endpoint_id && typeof auth.generation==="number"){
+      const e=this.endpoint(auth.endpoint_id);
+      if(e?.state==="enabled"&&e.pairing_mode==="temporary"&&e.generation===auth.generation){
+        deadline=Math.min(Date.now()+TEMP_RECONNECT_GRACE_MS,e.lease_expires_at??Infinity);
+        const changed=this.sql.exec("UPDATE endpoints SET offline_deadline=? WHERE id=? AND state='enabled' AND generation=? AND offline_deadline IS NULL",
+          deadline,e.id,auth.generation);
+        if(changed.rowsWritten===1)temporaryId=e.id;
+      }
+    }
     for(const [op,p] of this.pendingMutations)if(p.socket===socket)this.terminateMutation(op);
-    for(const [id,p] of this.pendingReads){if(p.socket===socket){clearTimeout(p.timer);this.pendingReads.delete(id);p.resolve({error_code:"offline"});}}
+    for(const [id,p] of this.pendingReads)if(p.socket===socket) {
+      clearTimeout(p.timer);this.pendingReads.delete(id);
+      // Preserve only in-memory, fixed-stage diagnostics already authenticated
+      // for this socket. The close reason may contain browser/private data.
+      p.resolve(p.tool==="snapshot" ? {
+        error_code:"offline",stage:p.stage??"awaiting_extension",
+        stage_elapsed_ms:Math.min(5000,Math.max(0,Date.now()-(p.stageEnteredAt??Date.now()))),
+        close_code:Number.isInteger(_code)&&_code>=1000&&_code<=4999?_code:null
+      } : {error_code:"offline"});
+    }
+    if(temporaryId&&deadline!==null)try{await this.scheduleEarlierAlarm(deadline);}
+    catch{
+      // A lost alarm must not leave a temporary offline grant indefinitely.
+      const e=this.endpoint(temporaryId);
+      if(e?.state==="enabled"&&e.generation===auth?.generation&&e.offline_deadline===deadline){
+        this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1,updated_at=? WHERE id=?",Date.now(),temporaryId);
+        this.close(temporaryId,"revoked");
+      }
+    }
   }
   webSocketError(_socket:WebSocket,_error:unknown):void {}
 }

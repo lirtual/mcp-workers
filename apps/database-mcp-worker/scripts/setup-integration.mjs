@@ -24,6 +24,7 @@ try {
   await pg.query(`ALTER ROLE mcp_writer NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
   await pg.query(`ALTER ROLE mcp_admin NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
   await pg.query(`DROP FUNCTION IF EXISTS public.dangerous_bump()`);
+  await pg.query(`DROP FUNCTION IF EXISTS public.test_mcp_side_effect()`);
   await pg.query(`DROP TABLE IF EXISTS public.counter CASCADE`);
   await pg.query(`DROP TABLE IF EXISTS public.write_items CASCADE`);
   await pg.query(`DROP TABLE IF EXISTS public.users CASCADE`);
@@ -59,6 +60,16 @@ try {
       RETURN (SELECT value FROM public.counter);
     END $$`);
   await pg.query(`REVOKE EXECUTE ON FUNCTION public.dangerous_bump() FROM PUBLIC, mcp_reader, mcp_writer, mcp_admin`);
+  // An independent SECURITY DEFINER fixture: write-capable caller may execute it,
+  // but query_read must still reject its UPDATE within a READ ONLY transaction.
+  await pg.query(`CREATE FUNCTION public.test_mcp_side_effect() RETURNS integer
+    LANGUAGE plpgsql SECURITY DEFINER AS $$
+    BEGIN
+      UPDATE public.counter SET value = value + 1;
+      RETURN (SELECT value FROM public.counter);
+    END $$`);
+  await pg.query(`REVOKE EXECUTE ON FUNCTION public.test_mcp_side_effect() FROM PUBLIC, mcp_reader, mcp_admin`);
+  await pg.query(`GRANT EXECUTE ON FUNCTION public.test_mcp_side_effect() TO mcp_writer`);
   await pg.query(`CREATE SCHEMA mcp_admin_test AUTHORIZATION mcp_admin`);
   await pg.query(`GRANT CONNECT ON DATABASE testdb TO mcp_admin`);
   await pg.query(`GRANT USAGE, CREATE ON SCHEMA mcp_admin_test TO mcp_admin`);

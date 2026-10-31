@@ -1,18 +1,45 @@
 /** Static, source-reviewed Cloudflare Provider catalog. Discovery is not authority. */
 export const WEIXIN_CLOUDFLARE_ACTION=Object.freeze({
  executor:'cloudflare',provider:'weixin',action:'weixin.send_text',version:1,
- source_repository:'lirtual/cloudflare-actions',service:'weixin-mcp-worker',
- entrypoint:'WeixinActionProvider',side_effect:'send_to_verified_owner_only',
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'send_to_verified_owner_only',
  input_schema:{type:'object',additionalProperties:false,
   required:['session_step_id'],properties:{session_step_id:{type:'string',
    description:'A dependency on a signed, physically verified OpenList Session in this Run'}}},
  output_schema:{type:'object',additionalProperties:false,
   required:['status'],properties:{status:{enum:['accepted','rejected','unknown']}}},
 });
+// Version 2 is text-first. Version 1 remains for immutable published Plans.
+export const GENERIC_WEIXIN_CLOUDFLARE_ACTION=Object.freeze({
+ executor:'cloudflare',provider:'weixin',action:'weixin.send_text',version:2,
+ source_repository:'lirtual/cloudflare-actions',service:'weixin-mcp-worker',
+ entrypoint:'WeixinActionProvider',side_effect:'send_to_verified_owner_only',
+ input_schema:{type:'object',additionalProperties:false,required:['text'],
+  properties:{text:{type:'string',minLength:1,maxLength:2048},
+   session_step_id:{type:'string'}}},
+ output_schema:{type:'object',additionalProperties:false,required:['status'],
+  properties:{status:{enum:['accepted','rejected','unknown']}}},
+});
+// v2 remains the immutable legacy Worker contract for already-published Plans.
+// v3 is the same Action ID, now published exclusively on the unified Worker.
+export const UNIFIED_GENERIC_WEIXIN_ACTION=Object.freeze({
+ ...GENERIC_WEIXIN_CLOUDFLARE_ACTION,version:3,
+ service:'cloudflare-actions',entrypoint:'ActionsEntrypoint',
+});
+export const DOWNLOAD_CLOUDFLARE_ACTION=Object.freeze({
+ executor:'cloudflare',provider:'weixin',action:'weixin.notify_download',version:1,
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'send_to_verified_owner_only',
+ input_schema:{type:'object',additionalProperties:false,
+  required:['download_step_id'],properties:{download_step_id:{type:'string',
+   description:'A verified single-item GitHub download Task foreach in this Run'}}},
+ output_schema:{type:'object',additionalProperties:false,
+  required:['status'],properties:{status:{enum:['accepted','rejected','unknown']}}},
+});
 export const BARK_CLOUDFLARE_ACTION=Object.freeze({
  executor:'cloudflare',provider:'bark',action:'bark.send_notification',version:1,
- source_repository:'lirtual/cloudflare-actions',service:'bark-provider',
- entrypoint:'BarkActionProvider',side_effect:'send_to_configured_owner_only',
+ source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+ entrypoint:'ActionsEntrypoint',side_effect:'send_to_configured_owner_only',
  input_schema:{type:'object',additionalProperties:false,required:['body'],
   properties:{body:{type:'string'},title:{type:'string'},subtitle:{type:'string'},
   markdown:{type:'string'},group:{type:'string'},level:{type:'string'},sound:{type:'string'},
@@ -28,8 +55,9 @@ export function canonical(value:unknown):unknown{
   Object.entries(value).sort(([a],[b])=>a.localeCompare(b,'en')).map(([k,v])=>[k,canonical(v)]));
  return value;
 }
-export async function cloudflareActionManifest(provider:'weixin'|'bark'='weixin'){
- const item=provider==='bark'?BARK_CLOUDFLARE_ACTION:WEIXIN_CLOUDFLARE_ACTION;
+export async function cloudflareActionManifest(provider:'weixin'|'bark'|'download'|'generic'|'unified-generic'='weixin'){
+ const item=provider==='bark'?BARK_CLOUDFLARE_ACTION:
+  provider==='download'?DOWNLOAD_CLOUDFLARE_ACTION:provider==='generic'?GENERIC_WEIXIN_CLOUDFLARE_ACTION:provider==='unified-generic'?UNIFIED_GENERIC_WEIXIN_ACTION:WEIXIN_CLOUDFLARE_ACTION;
  const bytes=new TextEncoder().encode(JSON.stringify(canonical(item)));
  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
  return {...item,contract_digest:Array.from(hash,b=>b.toString(16).padStart(2,'0')).join('')};

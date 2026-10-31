@@ -28,9 +28,8 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 });
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
-  assert.deepEqual(WORKER_VARIABLES["email-mcp-worker"], ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"]);
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
-  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "WEIXIN_ACTION_DEPLOYMENT_ID", "BARK_ACTION_DEPLOYMENT_ID"]);
+  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
@@ -121,7 +120,7 @@ test("Workflow Portal Client ID is a required validated Variable, never staged a
 });
 
 test("Workflow Action repository grants are narrowly sourced from an explicit variable",()=>{
-  const grants=[{repository:"lirtual/session-actions",repositoryId:1430925009,
+  const grants=[{repository:"lirtual/github-actions",repositoryId:1430925009,
     commitSha:"d0774dde3a87c7722a939403dbda45507f44b8e0"}];
   const pinned=collectWorkerVars("workflow-mcp-worker",{
     MCP_PORTAL_CLIENT_ID:"test-id",
@@ -156,29 +155,36 @@ test("No other Worker inherits the Workflow GitHub executor's variables",()=>{
 });
 
 
-test("Email Access Variables must match exact approved values", () => {
-  const approved = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
-    ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
-    OWNER_EMAIL: "lirtual@outlook.com" };
-  assert.deepEqual(collectWorkerVars("email-mcp-worker", { ...approved, MCP_ACCESS_TOKEN: "ignored" }),
-    Object.entries(approved).map(([name,value]) => name + ":" + value));
-  for (const name of Object.keys(approved)) {
-    const missing = { ...approved }; delete missing[name];
-    assert.throws(() => collectWorkerVars("email-mcp-worker", missing), /Email production Access Variable mismatch/);
-    assert.throws(() => collectWorkerVars("email-mcp-worker",
-      { ...approved, [name]: "bad-value" }), /Email production Access Variable mismatch/);
-  }
-});
 
 test("Workflow Provider version variable accepts one reviewed immutable Worker Version ID only",()=>{
  const good="33333333-3333-4333-8333-333333333333";
  const values=collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",
-  WEIXIN_ACTION_DEPLOYMENT_ID:good});
- assert.ok(values.includes("WEIXIN_ACTION_DEPLOYMENT_ID:"+good));
+  ACTIONS_DEPLOYMENT_ID:good});
+ assert.ok(values.includes("ACTIONS_DEPLOYMENT_ID:"+good));
  for(const value of ["main","latest","", "00000000-0000-0000-0000-000000000000",
    "abc\nSECRET","33333333-3333-4333-8333-333333333333 extra"]) {
   if(!value)continue; // Absence rejected by the production CLI release entrypoint.
   assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",
-   WEIXIN_ACTION_DEPLOYMENT_ID:value}),/WEIXIN_ACTION_DEPLOYMENT_ID/);
+   ACTIONS_DEPLOYMENT_ID:value}),/ACTIONS_DEPLOYMENT_ID/);
  }
+});
+
+
+test("Browser activation requires two independent validated Access Variables",()=>{
+  const good={BROWSER_ACCESS_ISSUER:"https://lirtualzero.cloudflareaccess.com",BROWSER_OWNER_EMAIL:"lirtual@outlook.com",BROWSER_ACTIVATION_ORIGIN:"https://browser.lirtual.dpdns.org",BROWSER_ACTIVATION_AUDIENCE:"b".repeat(64)};
+  assert.deepEqual(collectWorkerVars("browser-mcp-worker",good),Object.entries(good).map(([k,v])=>k+":"+v));
+  for(const bad of [
+    {...good,BROWSER_ACTIVATION_AUDIENCE:undefined},
+    {...good,BROWSER_ACTIVATION_ORIGIN:undefined},
+    {...good,BROWSER_ACTIVATION_ORIGIN:"https://evil.example"},
+    {...good,BROWSER_ACTIVATION_AUDIENCE:"invalid"},
+    {...good,BROWSER_ACCESS_AUDIENCE:good.BROWSER_ACTIVATION_AUDIENCE}
+  ])assert.throws(()=>collectWorkerVars("browser-mcp-worker",bad),/activation|approval/);
+});
+
+
+test("activation identity does not require an unverified high-impact approval isolation assertion",()=>{
+  const env={BROWSER_ACCESS_ISSUER:"https://lirtualzero.cloudflareaccess.com",BROWSER_OWNER_EMAIL:"lirtual@outlook.com",BROWSER_ACTIVATION_ORIGIN:"https://browser.lirtual.dpdns.org",BROWSER_ACTIVATION_AUDIENCE:"c".repeat(64)};
+  assert.equal(collectWorkerVars("browser-mcp-worker",env).length,4);
+  assert.throws(()=>collectWorkerVars("browser-mcp-worker",{...env,BROWSER_APPROVAL_ORIGIN:"https://browser.lirtual.dpdns.org"}),/approval/);
 });

@@ -12,9 +12,11 @@ const ORIGIN='https://workflow.lirtual.dpdns.org/mcp';
 const PORTAL_HOST='mcp.lirtual.dpdns.org';
 export const EXPECTED_TOOLS=[
   'workflow_capabilities','workflow_action_list',
+  'workflow_connection_status','workflow_connection_revoke','workflow_connection_enable',
   'workflow_list','workflow_get','workflow_create','workflow_update',
-  'workflow_validate','workflow_publish','workflow_pause','workflow_resume',
-  'workflow_run','workflow_cancel','workflow_status','workflow_result',
+  'workflow_validate','workflow_publish','workflow_approval','workflow_pause',
+  'workflow_delete','workflow_resume','workflow_run','workflow_cancel',
+  'workflow_status','workflow_result','workflow_session_data_get',
 ].sort();
 
 export function portalServerMapping(entry){

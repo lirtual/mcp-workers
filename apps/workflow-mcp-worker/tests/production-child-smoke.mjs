@@ -1,4 +1,4 @@
-// Production-only, bounded awaited-child acceptance. Reuses existing MCP and D1.
+// Production-only, bounded awaited/detached-child acceptance. Reuses existing MCP and D1.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
@@ -60,8 +60,11 @@ async function settle(runId){
   throw Error('Native parent Workflow did not settle within acceptance bound');
 }
 async function accept(){
-  const preflight=(await databaseQuery("SELECT (SELECT COUNT(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS active,(SELECT COUNT(*) FROM session_executions WHERE state IS NULL OR state!='terminated') AS sessions"))[0];
-  assert.equal(preflight?.active,0,'Nonterminal production Run blocks acceptance');
+  // Native result-only parent/child acceptance has no external effects.
+  // Preserve historical indeterminate receipts while refusing concurrent
+  // queued/running Runs and every live or uncertain physical Session.
+  const preflight=(await databaseQuery("SELECT (SELECT COUNT(*) FROM runs WHERE outcome IN ('queued','running')) AS active,(SELECT COUNT(*) FROM session_executions WHERE state IS NULL OR state!='terminated') AS sessions"))[0];
+  assert.equal(preflight?.active,0,'Active production Run blocks acceptance');
   assert.equal(preflight?.sessions,0,'Nonterminal production Session blocks acceptance');
   await client.connect(transport);
   const advertised=await client.listTools();
@@ -141,6 +144,77 @@ async function accept(){
     'SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?',[denied.run_id]);
   assert.equal(admitted[0]?.n,0,'Paused child must not reserve a Run');
   console.log('CHILD_PRODUCTION_PAUSED_TARGET_DENIED_OK');
+
+  // One additional result-only proof on the SAME production MCP seam:
+  // detached child has its own native Run and finishes after its parent.
+  // The delayed child has no GitHub, Portal, or notification side effects.
+  const detachedReceipt={receipt:'detached-child-verified',acceptance:label};
+  const detachedChild=await tool('workflow_create',{definition:JSON.stringify({
+    version:1,name:names+'-detached-child',
+    steps:[
+      {id:'hold',flow:'wait',duration_seconds:20},
+      {id:'emit',uses:'result.emit',needs:['hold'],with:{data:detachedReceipt}},
+    ],
+  })});
+  ids.push(detachedChild.workflow_id);
+  const detachedChildVersion=await tool('workflow_publish',{
+    workflow_id:detachedChild.workflow_id,expected_revision:1,
+  });
+  const detachedParent=await tool('workflow_create',{definition:JSON.stringify({
+    version:1,name:names+'-detached-parent',
+    steps:[
+      {id:'launch',flow:'child',mode:'detached',
+        workflow_id:detachedChild.workflow_id,
+        version_id:detachedChildVersion.published_version_id,inputs:{}},
+      {id:'reference',uses:'result.emit',needs:['launch'],
+        with:{data:{ref:'steps.launch.output'}}},
+    ],
+  })});
+  ids.push(detachedParent.workflow_id);
+  const detachedValidation=await tool('workflow_validate',{
+    workflow_id:detachedParent.workflow_id,revision:1,
+  });
+  assert.equal(detachedValidation.valid,true);
+  assert.equal(detachedValidation.required_children?.length,1);
+  const noDetachedGrant=await client.callTool({name:'workflow_publish',
+    arguments:{workflow_id:detachedParent.workflow_id,expected_revision:1}});
+  assert.equal(noDetachedGrant.isError,true,'Detached child must not bypass exact owner grant');
+  await tool('workflow_publish',{
+    workflow_id:detachedParent.workflow_id,expected_revision:1,
+    approved_children:detachedValidation.required_children,
+  });
+  const detachedStart=await tool('workflow_run',{
+    workflow_id:detachedParent.workflow_id,idempotency_key:'detached-'+label,
+  });
+  const detachedParentResult=await settle(detachedStart.run_id);
+  assert.equal(detachedParentResult.status,'succeeded');
+  const detachedRef=detachedParentResult.result;
+  assert.match(detachedRef?.run_id||'',/^[0-9a-f-]{36}$/i);
+  assert.equal(detachedRef.published_version_id,
+    detachedChildVersion.published_version_id);
+  const detachedLineage=await databaseQuery(
+    'SELECT id,version_id,parent_run_id,parent_step_id FROM runs WHERE parent_run_id=?',
+    [detachedStart.run_id]);
+  assert.equal(detachedLineage.length,1);
+  assert.equal(detachedLineage[0].id,detachedRef.run_id);
+  assert.equal(detachedLineage[0].version_id,detachedChildVersion.published_version_id);
+  assert.equal(detachedLineage[0].parent_step_id,'launch');
+  // Public awaited-child cancellation cannot stop a detached child.
+  const cancelDetached=await client.callTool({name:'workflow_cancel',
+    arguments:{run_id:detachedStart.run_id,step_id:'launch'}});
+  assert.equal(cancelDetached.isError,true,
+    'Detached child must not be cancellable through its parent Step');
+  const detachedChildResult=await settle(detachedRef.run_id);
+  assert.equal(detachedChildResult.status,'succeeded');
+  assert.deepEqual(detachedChildResult.result,detachedReceipt);
+  const detachedTerminals=(await databaseQuery(
+    'SELECT p.outcome AS parent_outcome,p.updated_at AS parent_done_at,c.outcome AS child_outcome,c.updated_at AS child_done_at FROM runs p JOIN runs c ON c.parent_run_id=p.id WHERE p.id=?',
+    [detachedStart.run_id]))[0];
+  assert.equal(detachedTerminals.parent_outcome,'succeeded');
+  assert.equal(detachedTerminals.child_outcome,'succeeded');
+  assert.ok(detachedTerminals.parent_done_at<detachedTerminals.child_done_at,
+    'Detached child must finish after its parent, not be awaited');
+  console.log('CHILD_PRODUCTION_DETACHED_INDEPENDENCE_OK');
 }
 async function cleanup(){
   if(ids.length===0)return;

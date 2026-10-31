@@ -4,7 +4,7 @@ import { inspectPersistedGitHubActionAttempt } from '../src/github-action-attemp
 import type { ReviewedGitHubAction } from '../src/github-action-review.ts';
 
 const attempt='11111111-1111-4111-8111-111111111111';
-const grant:ReviewedGitHubAction={repository:'lirtual/session-actions',repositoryId:12,workflowId:34,
+const grant:ReviewedGitHubAction={repository:'lirtual/github-actions',repositoryId:12,workflowId:34,
  workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[grant],
  steps:[{id:'start',uses:'github.run',with:{capability:'github.action',action:{...grant,ref:'refs/tags/test-v1',inputs:{duration_minutes:5}}}}]};
@@ -37,9 +37,12 @@ test('rejects missing candidate, missing publication approval and terminal Run b
   {...row,capability_id:'github.workflow.check'},
   {...row,state:'claimed',owner_run_id:100,owner_run_attempt:1},
   {...row,state:'claimed',owner_run_id:99,owner_run_attempt:2},
+  {...row,state:'succeeded',owner_run_id:null,owner_run_attempt:null},
+  {...row,state:'succeeded',owner_run_id:100,owner_run_attempt:1},
+  {...row,state:'succeeded',owner_run_id:99,owner_run_attempt:2},
   {...row,repository:'attacker/other'},
   {...row,repository_id:'999'},
-  {...row,workflow_ref:'lirtual/session-actions/.github/workflows/other.yml@refs/heads/main'},
+  {...row,workflow_ref:'lirtual/github-actions/.github/workflows/other.yml@refs/heads/main'},
   {...row,candidate_run_id:null},
   {...row,run_outcome:'cancelled'},
   {...row,plan:JSON.stringify({...plan,github_action_approvals:[]})},
@@ -51,6 +54,12 @@ test('rejects missing candidate, missing publication approval and terminal Run b
  }
 });
 
+test('already-settled Task remains inspectable after external physical reconciliation',async()=>{
+ const data={...row,state:'succeeded',owner_run_id:99,owner_run_attempt:1};
+ const observed=await inspectPersistedGitHubActionAttempt(db(data),attempt,'token',
+   async()=>({state:'completed',conclusion:'success'}));
+ assert.deepEqual(observed,{state:'completed',conclusion:'success'});
+});
 test('claimed owner with exact candidate may be inspected',async()=>{
  const data={...row,state:'claimed',owner_run_id:99,owner_run_attempt:1};
  assert.deepEqual(await inspectPersistedGitHubActionAttempt(db(data),attempt,'token',async()=>({state:'running'})),{state:'running'});

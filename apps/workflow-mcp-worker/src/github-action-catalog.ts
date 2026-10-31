@@ -80,6 +80,7 @@ async function latestConfirmedTag(repository:string,token:string,http:Http):
 async function describeSource(source:GitHubActionSource,ref?:string) {
   const reviewed=await reviewedGitHubAction(source);
   return {...reviewed,name:source.contract.name,inputs:source.contract.inputs,
+    output_schema_status:'not_declared' as const,
     ...(ref?{ref,can_publish:true as const,availability:'publishable_after_owner_approval' as const}:
       {can_publish:false as const,availability:'unavailable' as const,
        reason:'no_verified_published_tag_for_revision'})};

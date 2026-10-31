@@ -23,24 +23,23 @@ function browserFixture({tabs=[],frame=null,scriptResult=null,afterFrame=null,sc
   vm.runInContext(source,ctx);
   return {ctx,calls,grants,read:(tool,tabId,scopes)=>vm.runInContext(`executeBrowserRead(${JSON.stringify(tool)},${JSON.stringify(tabId)},${JSON.stringify(scopes)})`,ctx)};
 }
-test("explicit browser policy denies protected auth surfaces, internal addresses, and browser schemes",async()=>{
+test("browser policy protects own Owner channel and network boundaries, not ordinary signed-in business URLs",async()=>{
   const f=browserFixture();
   for(const address of [
     "chrome://settings/","file:///etc/passwd","http://127.0.0.1/",
     "http://192.168.1.1/","http://169.254.169.254/latest/meta-data/",
-    "https://mail.google.com/mail/u/0/","https://accounts.google.com/signin",
     "https://browser-mcp-worker.invalid/approve",
-    "https://example.cloudflareaccess.com/cdn-cgi/access/login",
-    "https://github.com/login", "https://gitlab.com/users/sign_in",
-    "https://auth.openai.com/authorize", "https://example.com/%6cogin",
-    "https://example.com/account/oauth/authorize"
+    "https://browser-mcp-worker.invalid/activate/verify/attempt"
   ])assert.equal(vm.runInContext(`browserEligibleUrl(${JSON.stringify(address)})`,f.ctx),false,address);
-  assert.equal(vm.runInContext('browserEligibleUrl("https://www.example.com/page")',f.ctx),true);
+  for(const url of ["https://mail.google.com/mail/u/0/","https://accounts.google.com/signin",
+    "https://github.com/login","https://example.com/%6cogin","https://example.com/#/post/save",
+    "https://example.com/account/oauth/authorize","https://example.cloudflareaccess.com/cdn-cgi/access/login","https://www.example.com/page"])
+    assert.equal(vm.runInContext(`browserEligibleUrl(${JSON.stringify(url)})`,f.ctx),true,url);
 });
 test("browser tab discovery never returns forbidden URL, private tab or page title",async()=>{
   const f=browserFixture({tabs:[
     {id:11,url:"https://example.com/private?token=TOP_SECRET#fragment",title:"SECRET TITLE",windowId:1,active:false,incognito:false},
-    {id:12,url:"https://accounts.google.com/",title:"login",windowId:1,incognito:false},
+    {id:12,url:"https://browser-mcp-worker.invalid/",title:"owner",windowId:1,incognito:false},
     {id:13,url:"https://example.com/private",incognito:true,windowId:2}
   ]});
   const result=await f.read("tabs");
@@ -91,10 +90,12 @@ test("local/private policy gates both scopes independently and never permits met
   const allowed=(url,grant=false)=>vm.runInContext("browserEligibleUrl("+JSON.stringify(url)+","+JSON.stringify(grant)+")",f.ctx);
   const tab=(url,incognito,lan=false,privateGrant=false)=>vm.runInContext(
     "browserAllowedTab("+JSON.stringify({id:71,url,incognito})+","+JSON.stringify({lan,private:privateGrant})+")",f.ctx);
-  for(const url of ["http://169.254.169.254/","http://metadata.google.internal/","http://100.100.100.200/","http://127.0.0.1/login"]){
+  for(const url of ["http://169.254.169.254/","http://metadata.google.internal/","http://100.100.100.200/"]){
     assert.equal(allowed(url,false),false,url);
     assert.equal(allowed(url,true),false,url);
   }
+  assert.equal(allowed("http://127.0.0.1/login",false),false);
+  assert.equal(allowed("http://127.0.0.1/login",true),true);
   for(const url of ["http://localhost:3000/","http://192.168.0.8/app","https://printer.lan/","http://[::1]:8000/"]){
     assert.equal(allowed(url,false),false,url);
     assert.equal(allowed(url,true),true,url);
@@ -104,4 +105,37 @@ test("local/private policy gates both scopes independently and never permits met
   assert.equal(tab("http://localhost:3000/",true,true,false),false);
   assert.equal(tab("http://localhost:3000/",true,false,true),false);
   assert.equal(tab("http://localhost:3000/",true,true,true),true);
+});
+
+
+test("top-document visible text survives ordinary embedded frames and forms without reading child or input values",()=>{
+  const textNode={textContent:"Published token docs and search form",parentElement:{closest:()=>null,getClientRects:()=>[{}]}};
+  const walker={currentNode:null,nextNode(){if(this.currentNode)return false;this.currentNode=textNode;return true;}};
+  const document={body:{},querySelector(){throw Error("unexpected iframe traversal");},createTreeWalker:()=>walker};
+  const ctx=vm.createContext({document,NodeFilter:{SHOW_TEXT:4},getComputedStyle:()=>({display:"block",visibility:"visible"})});
+  vm.runInContext(source,ctx);
+  const result=vm.runInContext("extractVisibleText()",ctx);
+  assert.equal(result.text,"Published token docs and search form");
+  assert.equal(result.truncated,false);
+});
+
+test("slow visible-text scanning returns bounded partial text rather than exhausting the read deadline",()=>{
+  let visited=0,elapsed=0;
+  const parent={closest:()=>null,getClientRects:()=>[{}]};
+  const walker={currentNode:null,nextNode(){
+    if(visited>=1000)return false;
+    this.currentNode={parentElement:parent,textContent:"Public line "+visited++};
+    return true;
+  }};
+  const ctx=vm.createContext({
+    document:{body:{},createTreeWalker:()=>walker},NodeFilter:{SHOW_TEXT:4},
+    Date:{now:()=>elapsed},
+    getComputedStyle:()=>{elapsed+=10;return {display:"block",visibility:"visible"};}
+  });
+  vm.runInContext(source,ctx);
+  const result=vm.runInContext("extractVisibleText()",ctx);
+  assert.equal(result.truncated,true,"must identify partial output on slow pages");
+  assert.ok(result.text.includes("Public line 0"),"safe partial output should remain usable");
+  assert.ok(visited<500,"stop iterating before the five-second read budget");
+  assert.ok(elapsed<=2000,"the scanning phase must leave time for transport and element references");
 });

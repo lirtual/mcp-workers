@@ -1,6 +1,7 @@
 import { getRegistryConnection } from "./registry/store.js";
 import { resolveHyperdriveConnection } from "./db/hyperdrive.js";
 import { healthCheck } from "./db/index.js";
+import {withDisabledHyperdriveProbeFence} from "./registry/inflight.js";
 import type { Env } from "./types.js";
 
 // Read-only, short-lived Owner Actions probe. D1 stays disabled until this has
@@ -66,7 +67,7 @@ export async function handleHyperdrivePreflight(request: Request, env: Env): Pro
     if (!row || row.transport !== "hyperdrive" || row.status !== "disabled" ||
         row.revision !== record.revision) return denied();
     const connection = resolveHyperdriveConnection(env, row);
-    const result = await healthCheck(connection);
+    const result = await withDisabledHyperdriveProbeFence(env,row.id,row.revision,()=>healthCheck(connection));
     if (result.ok !== true) return denied();
     return Response.json({ ok: true, connection: row.id, dialect: row.dialect, transport: row.transport,
       revision: row.revision }, { headers: { "Cache-Control": "no-store" } });

@@ -27,7 +27,6 @@
 | Environment 名称 | Environment Secrets（不含继承的 `MCP_ACCESS_TOKEN`） | Environment Variables |
 | --- | --- | --- |
 | `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）**，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
-| `email-mcp-worker` | `MAIL_ENCRYPTION_KEY` | `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL` |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {createHash} from "node:crypto";
+import {readFileSync} from "node:fs";
 import worker from "../src/worker.ts";
 
 function fixture(){
@@ -24,10 +26,10 @@ test("Browser MCP rejects missing, wrong and cross-origin Portal credentials bef
   for(const header of [
     {authorization:""}, {authorization:"Bearer wrong"},
     {origin:"https://unexpected.website"}]){
-    const response=await rpc(env,"tools/call",{name:"browser_pair",arguments:{}},header);
+    const response=await rpc(env,"tools/call",{name:"browser_endpoints",arguments:{}},header);
     assert.ok(response.status===401||response.status===403);
   }
-  const missing=await rpc({...env,MCP_ACCESS_TOKEN:undefined},"tools/call",{name:"browser_pair",arguments:{}});
+  const missing=await rpc({...env,MCP_ACCESS_TOKEN:undefined},"tools/call",{name:"browser_endpoints",arguments:{}});
   assert.equal(missing.status,503);
   assert.equal(calls.length,0);
 });
@@ -36,7 +38,7 @@ test("tool discovery publishes only implemented lifecycle tools and strict expli
   const response=await rpc(env,"tools/list",{});
   assert.equal(response.status,200);
   const body=await response.json();
-  assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_pair","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
+  assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
   for(const entry of body.result.tools)assert.equal(entry.inputSchema.additionalProperties,false);
   for(const args of [{endpoint_id:"invalid"},{endpoint_id:"11111111-1111-4111-8111-111111111111",unexpected:true},{}]){
     const rejected=await rpc(env,"tools/call",{name:"browser_revoke",arguments:args});
@@ -47,7 +49,6 @@ test("tool discovery publishes only implemented lifecycle tools and strict expli
 test("pair and revoke route only through single owner Durable Object",async()=>{
   const {env,calls}=fixture();
   for(const [tool,args,path] of [
-    ["browser_pair",{},"/create-pair"],
     ["browser_endpoints",{},"/list"],
     ["browser_tabs",{endpoint_id:"11111111-1111-4111-8111-111111111111"},"/read"],
     ["browser_snapshot",{endpoint_id:"11111111-1111-4111-8111-111111111111",tab_id:23},"/read"],
@@ -80,13 +81,36 @@ test("ordinary website cannot claim or resume extensions; extension credential n
     body:JSON.stringify({code:"a".repeat(24),alias:"profile"})}),env);
   assert.equal(site.status,403);
   assert.equal(calls.length,0);
-  const extension="chrome-extension://"+"a".repeat(32);
+  const extension="chrome-extension://jhifaghneomgcfollcdbncjkcloedfem";
   const resp=await worker.fetch(new Request("https://browser.example/extension/claim",{method:"POST",
     headers:{"content-type":"application/json",origin:extension},
     body:JSON.stringify({code:"a".repeat(24),alias:"profile"})}),env);
-  assert.equal(resp.status,200);
-  assert.equal(calls.at(-1).path,"/claim");
+  assert.equal(resp.status,404);
+  assert.equal(calls.length,0);
   assert.ok(!JSON.stringify(calls).includes("private-browser-token"));
+});
+
+test("only the reviewed Chrome/Edge extension identity reaches the extension ingress",async()=>{
+  const manifest=JSON.parse(readFileSync(new URL("../extension/manifest.json",import.meta.url),"utf8"));
+  const digest=createHash("sha256").update(Buffer.from(manifest.key,"base64")).digest("hex").slice(0,32);
+  const id=Array.from(digest,n=>String.fromCharCode(97+parseInt(n,16))).join("");
+  assert.equal(id,"jhifaghneomgcfollcdbncjkcloedfem","public manifest key and Worker allowlist must match");
+  const {env,calls}=fixture();
+  const url="https://browser.example/extension/activate-begin";
+  const payload=JSON.stringify({attempt_id:"11111111-1111-4111-8111-111111111111",proof_hash:"b".repeat(64),alias:"Profile",mode:"permanent"});
+  const request=(origin,method="POST")=>new Request(url,{method,headers:{origin,...(method==="POST"?{"content-type":"application/json"}:{})},...(method==="POST"?{body:payload}:{})});
+  for(const origin of ["chrome-extension://"+"a".repeat(32),"chrome-extension://"+"p".repeat(32),"https://evil.example"]){
+    assert.equal((await worker.fetch(request(origin),env)).status,403);
+    assert.equal((await worker.fetch(request(origin,"OPTIONS"),env)).status,403);
+  }
+  assert.equal(calls.length,0,"no invalid extension Origin may reach the coordinator");
+  const official="chrome-extension://"+id;
+  const preflight=await worker.fetch(request(official,"OPTIONS"),env);
+  assert.equal(preflight.status,204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"),official);
+  assert.equal((await worker.fetch(request(official),env)).status,200);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].path,"/activate-begin");
 });
 
 test("read operations require explicit Endpoint and safe numeric tab target",async()=>{

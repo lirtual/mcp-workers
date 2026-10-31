@@ -14,7 +14,8 @@ export function createPostgresClient(connection: EffectiveConnection): PgClient 
   };
   // NEVER pass connectionString: pg-connection-string can override ssl options via URL params.
   return new PgClient({
-    host: connection.host, port: connection.port, user: connection.user,
+    host: connection.transport === 'direct' ? (connection.dialHost ?? connection.host) : connection.host,
+    port: connection.port, user: connection.user,
     password: connection.password, database: connection.database,
     ssl: false, ...common
   });
@@ -27,7 +28,7 @@ export async function createMysqlClient(connection: EffectiveConnection, rowsAsA
   const driverDatabase = connection.transport === 'hyperdrive'
     ? (connection.proxyDatabase ?? connection.database) : connection.database;
   const pending = createConnection({
-    host: connection.host,
+    host: connection.transport === 'direct' ? (connection.dialHost ?? connection.host) : connection.host,
     user: connection.user,
     password: connection.password,
     ...(driverDatabase.length === 0 ? {} : { database: driverDatabase }),

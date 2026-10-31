@@ -1,0 +1,137 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {verifyPausedInventory,verifyLegacyActionsBindings,verifyFrozenGate,
+ readOnlyPrepare,verifyUnifiedActionsBindings,verifyActivationGate} from './actions-cutover-prepare.mjs';
+const old=[
+ {type:'service',name:'WEIXIN_ACTION_PROVIDER',service:'weixin-mcp-worker',entrypoint:'WeixinActionProvider'},
+ {type:'service',name:'BARK_ACTION_PROVIDER',service:'bark-provider',entrypoint:'BarkActionProvider'}
+];
+const good={active_workflows:0,paused_workflows:6,unsettled_runs:0};
+test('cutover preparation requires fully paused published admissions and terminal Runs',()=>{
+ assert.equal(verifyPausedInventory([good]),true);
+ for(const bad of [{...good,active_workflows:1},{...good,paused_workflows:0},
+  {...good,unsettled_runs:1},{...good,active_workflows:null},{}])
+  assert.throws(()=>verifyPausedInventory([bad]),/blocked/);
+ assert.throws(()=>verifyPausedInventory([]),/blocked/);
+});
+test('migration-only mode refuses changed legacy service targets or unified binding',()=>{
+ assert.equal(verifyLegacyActionsBindings(old),true);
+ assert.throws(()=>verifyLegacyActionsBindings([]),/blocked/);
+ assert.throws(()=>verifyLegacyActionsBindings([...old,{type:'service',name:'ACTIONS'}]),/blocked/);
+ assert.throws(()=>verifyLegacyActionsBindings([{...old[0],service:'changed'},old[1]]),/blocked/);
+});
+test('fence must read exact new migration and frozen state',()=>{
+ assert.equal(verifyFrozenGate([{gate_state:'frozen',migration_count:1}]),true);
+ for(const bad of [[{gate_state:'open',migration_count:1}],
+  [{gate_state:'frozen',migration_count:0}],[],null])
+  assert.throws(()=>verifyFrozenGate(bad),/blocked/);
+});
+test('read-only preflight checks legacy bindings, D1 paused inventory and six native statuses',async()=>{
+ const calls=[];
+ const fake=async(url,options)=>{
+  const u=new URL(url);calls.push({path:u.pathname,method:options.method,body:options.body});
+  const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:old}}:
+   u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[good]}]}:
+   {success:true,result:[],result_info:{count:0,total_count:0}};
+  return {ok:true,json:async()=>data};
+ };
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ assert.equal(await readOnlyPrepare(env,fake),true);
+ assert.equal(calls.length,8);
+ assert.deepEqual(calls.map(c=>c.method),['GET','POST',...Array(6).fill(undefined)]);
+ assert.match(JSON.parse(calls[1].body).sql,/SELECT .*COUNT\(\*\)/);
+ assert.ok(calls.every(c=>!c.body||/^SELECT\s/i.test(JSON.parse(c.body).sql.trim())));
+ await assert.rejects(()=>readOnlyPrepare({...env,ACTIONS_OLD_INGRESS_QUIESCED:'false'},fake),/quiescence/);
+ assert.equal(calls.length,8);
+});
+test('prepare mode uses the current main, existing Workflow release environment and cannot deploy',()=>{
+ const s=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const idx=s.indexOf('  workflow-actions-migration-prepare:');
+ const end=s.indexOf('  checks:',idx);
+ assert.ok(idx>0&&end>idx);
+ const job=s.slice(idx,end);
+ for(const required of ["github.actor == 'lirtual'", "inputs.deploy_to_production == false",
+  "inputs.actions_migration_prepare == true", "inputs.actions_old_ingress_quiesced == true",
+  'name: workflow-mcp-worker','group: worker-release-workflow-mcp-worker',
+  'actions-cutover-prepare.mjs preflight','wrangler d1 migrations apply workflow-mcp-db --remote',
+  "state='frozen'",'actions-cutover-prepare.mjs postflight'])
+  assert.ok(job.includes(required),required);
+ assert.ok(job.indexOf('mjs preflight')<job.indexOf('d1 migrations apply'));
+ assert.ok(job.indexOf('d1 migrations apply')<job.indexOf('mjs postflight'));
+ assert.ok(!job.includes('wrangler deploy')&&!job.includes('deploy_to_production == true'));
+ assert.ok(s.includes("needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true"));
+});
+
+const unified=[{type:'service',name:'ACTIONS',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'}];
+test('reopening is permitted only after exact unified bindings and full migration readback',()=>{
+ assert.equal(verifyUnifiedActionsBindings(unified),true);
+ for(const bad of [[],old,[...old,...unified], [...unified,unified[0]],
+  [{...unified[0],entrypoint:'wrong'}]])
+  assert.throws(()=>verifyUnifiedActionsBindings(bad),/blocked/);
+ for(const [state,expect] of [['frozen','frozen'],['open','open']])
+  assert.equal(verifyActivationGate([{gate_state:state,migration_count:1}],expect),true);
+ for(const bad of [[],[{gate_state:'open',migration_count:0}],
+  [{gate_state:'open',migration_count:2}], [{gate_state:'frozen',migration_count:1}]])
+  assert.throws(()=>verifyActivationGate(bad,'open'),/blocked/);
+});
+test('protected preparation may refreeze only a paused, drained, exact unified Consumer with 0018',async()=>{
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ for(const [bindings,row,shouldPass] of [
+  [unified,{...good,gate_state:'open',migration_count:1},true],
+  [unified,{...good,gate_state:'frozen',migration_count:1},true],
+  [unified,{...good,gate_state:'open',migration_count:0},false],
+  [unified,{...good,active_workflows:1,gate_state:'open',migration_count:1},false],
+  [[...old,...unified],{...good,gate_state:'open',migration_count:1},false],
+  [[{...unified[0],service:'unreviewed'}],{...good,gate_state:'open',migration_count:1},false]
+ ]){
+  const requests=[];
+  const fake=async(url,opt)=>{
+   const u=new URL(url);requests.push({path:u.pathname,body:opt.body});
+   const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings}}:
+    u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[row]}]}:
+    {success:true,result:[],result_info:{count:0,total_count:0}};
+   return {ok:true,json:async()=>data};
+  };
+  if(shouldPass)assert.equal(await readOnlyPrepare(env,fake),true);
+  else await assert.rejects(()=>readOnlyPrepare(env,fake),/blocked/);
+  assert.ok(requests.every(r=>!r.body||/^SELECT\s/i.test(JSON.parse(r.body).sql.trim())));
+ }
+});
+test('activation remains read-only before and after the UPDATE and refuses unpaused plans',async()=>{
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ for(const [phase,state] of [['frozen','frozen'],['open','open']]){
+  let calls=[];
+  const fake=async(url,options)=>{
+   const u=new URL(url);calls.push({path:u.pathname,method:options.method,sql:options.body&&JSON.parse(options.body).sql});
+   const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:unified}}:
+    u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[{...good,gate_state:state,migration_count:1}]}]}:
+     {success:true,result:[],result_info:{count:0,total_count:0}};
+   return {ok:true,json:async()=>data};
+  };
+  assert.equal(await readOnlyPrepare(env,fake,phase),true);
+  assert.equal(calls.length,8);
+  assert.ok(calls.every(c=>!c.sql||/^SELECT\s/i.test(c.sql.trim())));
+  const fails=async(url,opt)=>{
+   const u=new URL(url);
+   const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:unified}}:
+    u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[{...good,active_workflows:1,gate_state:state,migration_count:1}]}]}:
+     {success:true,result:[],result_info:{count:0,total_count:0}};
+   return {ok:true,json:async()=>data};
+  };
+  await assert.rejects(()=>readOnlyPrepare(env,fails,phase),/blocked/);
+ }
+});
+test('consumer release reopens only after exact version and Provider pin verification',()=>{
+ const source=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const first=source.indexOf('Verify Workflow pin matches deployed Actions Worker (read-only)');
+ const pre=source.indexOf('actions-cutover-prepare.mjs activate-preflight');
+ const update=source.indexOf("UPDATE cloudflare_action_gate SET state='open'");
+ const post=source.indexOf('actions-cutover-prepare.mjs activate-postflight');
+ assert.ok(first>=0&&first<pre&&pre<update&&update<post);
+ assert.equal(source.split("UPDATE cloudflare_action_gate SET state='open'").length,2);
+ const activation=source.slice(first,post+65);
+ assert.match(activation,/inputs.actions_old_ingress_quiesced == true/g);
+ assert.match(activation,/inputs.worker == 'workflow-mcp-worker'/);
+ assert.match(activation,/GITHUB_SHA.*git ls-remote origin refs\/heads\/main/);
+});

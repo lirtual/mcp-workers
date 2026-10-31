@@ -61,9 +61,23 @@ export async function runPublishedGitHubActionTask(
   // and never triggers another GitHub dispatch or GitHub job retry.
   const state=await step.do('github-action-check-'+stepPlan.id+'-'+i,{
    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
-  },()=>reconcilePersistedGitHubActionAttempt(db,attemptId,token,
-   (database,id,credential)=>inspectPersistedGitHubActionAttempt(database,id,credential,
-    (action,run,attempt,bearer,ref)=>inspectGitHubActionRun(action,run,attempt,bearer,ref,http))));
+  },async()=>{
+   // The parent may already be cancelled while the old native instance lives.
+   // End the poll ONLY if the physical Attempt is also durably terminal.
+   // Never assume a parent cancellation itself proves an external job ended.
+   const snapshot=await db.prepare(`SELECT r.outcome AS parent_outcome,
+     a.state AS attempt_state FROM runs r JOIN step_attempts a ON a.run_id=r.id
+     WHERE r.id=? AND a.attempt_id=? AND a.capability_id='github.action'`)
+    .bind(runId,attemptId).first<{parent_outcome:string;attempt_state:string}>();
+   if(!snapshot)return 'conflict' as const;
+   if(!['queued','running'].includes(snapshot.parent_outcome) &&
+      ['succeeded','failed','cancelled'].includes(snapshot.attempt_state))
+    return 'parent_terminal' as const;
+   return reconcilePersistedGitHubActionAttempt(db,attemptId,token,
+    (database,id,credential)=>inspectPersistedGitHubActionAttempt(database,id,credential,
+     (action,run,attempt,bearer,ref)=>inspectGitHubActionRun(action,run,attempt,bearer,ref,http)));
+  });
+  if(state==='parent_terminal')return {status:'indeterminate',error_code:'github_action_parent_not_active'};
   if(state==='conflict')return {status:'indeterminate',error_code:'github_action_identity_conflict'};
   if(state==='updated'||state==='already_settled'){
    const settled=await db.prepare(`SELECT a.state,r.outcome AS parent_outcome

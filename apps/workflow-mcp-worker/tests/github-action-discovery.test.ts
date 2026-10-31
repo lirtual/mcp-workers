@@ -28,7 +28,7 @@ jobs:
     steps:
       - run: echo test
 `;
-const grant = { repository: 'lirtual/session-actions', repositoryId: 123, commitSha: sha, token: 'test-token' };
+const grant = { repository: 'lirtual/github-actions', repositoryId: 123, commitSha: sha, token: 'test-token' };
 function server(paths: string[], wrongIdentity = false) {
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
