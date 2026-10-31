@@ -617,7 +617,7 @@ export async function workflowCapabilities(env:Pick<Env,
   }
   if(id==='flow.saga'){
     detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
-      authorization:'Exact pinned GitHub Session grant plus approve_saga_compensation at Publish',
+      authorization:'Exact pinned GitHub Session grant, approve_heavy_execution and approve_saga_compensation at Publish',
       ordering:'Saga executions are serialized in canonical DAG order; native rollback reverses step start order',
       trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu Sessions',
       revocation:'Check exact Published grant and current GitHub executor credential before cancellation; no independent GitHub Connection revoke exists',

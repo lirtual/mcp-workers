@@ -46,6 +46,7 @@ test('Saga compiler requires declared policy, reviewed temporary Ubuntu compensa
  const details=await workflowCapabilities({} as Env,'flow.saga');
  assert.equal(details.availability,'supported_with_grant');
  assert.equal((details.design_contract as {executable:boolean}).executable,true);
+ assert.match((details.design_contract as {authorization:string}).authorization,/approve_heavy_execution/);
 });
 
 test('Compensator persists exactly one reservation; a cancellation ACK remains only requested',async t=>{
@@ -75,6 +76,10 @@ test('Compensator persists exactly one reservation; a cancellation ACK remains o
  const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
  let calls=0;
  const cancel=(async()=>{calls++;return 'cancel_requested';}) as typeof requestGitHubActionCancellation;
+ assert.equal(await compensateSession(env,{...granted,github_execution_approved:undefined},
+   'run',plan.steps[0]!,cancel),'uncleared',
+   'compensation requires both the exact Action grant and GitHub execution approval');
+ assert.equal(calls,0,'an unapproved compensation must not dispatch a cancel POST');
  assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');
  assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');
  assert.equal(calls,1,'unknown/replayed rollback must not send a second cancellation');
@@ -103,4 +108,44 @@ test('explicit cancellation fallback handles RollbackMissing in reverse order wi
  await compensateCancelledSessions({} as Env,{...approved,saga_compensation_approved:undefined},
    'test-run',callback);
  assert.deepEqual(called,[],'no undeclared cancellation trigger or missing grant');
+});
+
+test('partial Session compensation continues in reverse order without replaying an unknown cancellation',async t=>{
+ const sql=new DatabaseSync(':memory:');
+ t.after(()=>sql.close());
+ sql.exec(`CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,updated_at INTEGER,
+   PRIMARY KEY(run_id,step_id));
+  CREATE TABLE session_executions(run_id TEXT,step_id TEXT,state TEXT);
+  INSERT INTO run_steps VALUES ('run','first','succeeded',0),('run','second','succeeded',0);
+  INSERT INTO session_executions VALUES ('run','first','ready'),('run','second','ready');`);
+ const db={prepare(query:string){
+  let args:unknown[]=[];
+  return {
+   bind(...values:unknown[]){args=values;return this;},
+   async run(){return {meta:{changes:sql.prepare(query).run(...args as string[]).changes}};},
+   async first<T>(){return sql.prepare(query).get(...args as string[]) as T|null;},
+  };
+ }} as unknown as Env['DB'];
+ const {plan}=await compilePlan(sample());
+ const granted={...plan,github_execution_approved:true as const,saga_compensation_approved:true as const,
+  github_action_approvals:[{repository:ACTION.repository,repositoryId:ACTION.repositoryId,
+   workflowId:ACTION.workflowId,workflowPath:ACTION.workflowPath,
+   commitSha:ACTION.commitSha,type:ACTION.type,contractDigest:ACTION.contractDigest}]};
+ const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
+ const calls:string[]=[];
+ const cancel=(async (_db:Parameters<typeof requestGitHubActionCancellation>[0],_runId:string,stepId:string)=>{
+  calls.push(stepId);
+  if(stepId==='second')throw Error('lost_cancel_ack');
+  return 'cancel_requested';
+ }) as typeof requestGitHubActionCancellation;
+ const compensate=(async (target:Env,p:typeof plan,run:string,current:typeof plan.steps[number])=>
+  compensateSession(target,p,run,current,cancel)) as typeof compensateSession;
+ await compensateCancelledSessions(env,granted,'run',compensate);
+ assert.deepEqual(calls,['second','first'],'one unknown compensation must not block an earlier step');
+ const receipt=(id:string)=>sql.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
+   .get('run',sagaReceiptId(id))?.status;
+ assert.equal(receipt('second'),'indeterminate');
+ assert.equal(receipt('first'),'requested');
+ await compensateCancelledSessions(env,granted,'run',compensate);
+ assert.deepEqual(calls,['second','first'],'replay must not issue a second external cancellation');
 });
