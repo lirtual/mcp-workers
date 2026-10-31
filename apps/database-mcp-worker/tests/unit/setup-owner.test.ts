@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateCsrf, csrfCookie, verifyAccess } from '../../src/setup/access.js';
-import { setupPage } from '../../src/setup/page.js';
+import { setupPage, setupResult, setupFailure, setupUnbindStatusResult } from '../../src/setup/page.js';
 import { handleSetup } from '../../src/setup/handler.js';
 import type { Env } from '../../src/types.js';
 
@@ -186,5 +186,90 @@ describe('Cloudflare Access signed JWT enforcement', () => {
       await token('owner@example.org', 'test-aud', now - 120),
       valid.slice(0, -6) + 'broken'
     ]) await expect(verifyAccess(req(invalid), base, mock)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+  });
+});
+
+describe('Spec #605 Owner /setup presentation', () => {
+  const csrf = 'a'.repeat(43);
+  it('prioritizes a responsive inventory and collapses the add form with strict TLS selected', async () => {
+    const body = await setupPage([{id:'example_mysql',dialect:'mysql',transport:'direct',status:'disabled',
+      revision:1,created_at:1,updated_at:2}], csrf).text();
+    const empty = await setupPage([], csrf).text();
+    expect(body).toContain('class="connections-table"');
+    expect(body).toContain('class="connection-row"');
+    expect(body).toContain('<details id="add-panel"');
+    expect(body).not.toContain('<details id="add-panel" open');
+    expect(body).toContain('name="transport" value="hyperdrive" checked');
+    expect(body).not.toContain('name="transport" value="direct" checked');
+    expect(empty).toContain('No database connections configured');
+    expect(body).toContain('name="plaintext_ack"');
+    expect(body).toContain('@media (max-width:');
+  });
+  it('opens a safe replacement and keeps a pending operation separate from actual connections', async () => {
+    const original = {id:'primary_pg',dialect:'postgres' as const,transport:'hyperdrive' as const,
+      status:'active' as const,revision:3,created_at:1,updated_at:2};
+    const op = {operation_id:'12345678-1234-1234-1234-123456789abc',logical_id:'candidate_pg',
+      action:'create',phase:'pending',expected_revision:0,config_id:null,binding_name:null,
+      pr_number:null,prepare_run_id:44,apply_run_id:null,ci_run_id:null,release_run_id:null,
+      head_sha:null,expected_source_sha:null,error_class:null,expires_at:Date.now()+60_000};
+    const body=await setupPage([original],csrf,[op],[],original).text();
+    expect(body).toContain('<details id="add-panel" class="add-panel" open');
+    expect(body).toContain('name="replacement_for" value="primary_pg"');
+    expect(body).toContain('Replace');
+    expect(body).toContain('In-progress Hyperdrive operations');
+    expect(body).toContain('candidate_pg');
+    expect(body).toContain('Run 44');
+    expect(body).not.toContain('name="transport" value="direct" checked');
+  });
+  it('shows Owner attention and correct status without presenting awaiting approval as active', async () => {
+    const op = {operation_id:'12345678-1234-1234-1234-123456789abc',logical_id:'candidate',
+      action:'create',phase:'awaiting_confirmation',expected_revision:0,
+      config_id:'a'.repeat(32),binding_name:'HYPERDRIVE_CANDIDATE',
+      pr_number:605,prepare_run_id:44,apply_run_id:null,ci_run_id:45,release_run_id:null,
+      head_sha:'b'.repeat(40),expected_source_sha:'c'.repeat(40),error_class:null,
+      expires_at:Date.now()+60_000};
+    const body=await setupPage([],csrf,[op]).text();
+    expect(body).toContain('Owner action needed');
+    expect(body).toContain('Confirm final apply');
+    expect(body).toContain('Awaiting confirmation');
+    expect(body).not.toContain('candidate</strong> <span class="meta">');
+    expect(body).not.toContain('Active database connection');
+  });
+});
+
+describe('Spec #605 page feedback and limits', () => {
+  const csrf = 'a'.repeat(43);
+  it('clearly distinguishes accepted GitHub dispatch, confirmed local action, unknown outcome and blocked request', async () => {
+    const accepted = await setupResult('GitHub Actions request accepted. Release not verified.', 'accepted').text();
+    expect(accepted).toContain('Request accepted');
+    expect(accepted).not.toContain('Operation completed');
+    const confirmed = await setupResult('Connection disabled.').text();
+    expect(confirmed).toContain('Operation completed');
+    const uncertain = await setupResult('Run receipt unknown; reconcile before retry.', 'unknown').text();
+    expect(uncertain).toContain('Outcome unknown');
+    const blocked = await setupFailure('revision_conflict', 409, 'apply_cas_failed').text();
+    expect(blocked).toContain('Request blocked');
+    expect(blocked).toContain('Diagnostic: apply_cas_failed');
+    expect(blocked).toContain('Back to connections');
+    const unbind=await setupUnbindStatusResult({phase:'merged_unpublished',prNumber:77}).text();
+    expect(unbind).toContain('release, active version and D1 retirement are NOT verified');
+    expect(unbind).not.toContain('Operation completed');
+  });
+  it('respects ten slots including unfinished Hyperdrive reservations', async () => {
+    const rows=Array.from({length:9},(_,i)=>({
+      id:'connection_'+i,dialect:'mysql' as const,transport:'direct' as const,
+      status:'disabled' as const,revision:1,created_at:1,updated_at:1
+    }));
+    const op={operation_id:'12345678-1234-1234-1234-123456789abc',logical_id:'pending_tenth',
+      action:'create',phase:'running',expected_revision:0,config_id:null,binding_name:null,
+      pr_number:null,prepare_run_id:123,apply_run_id:null,ci_run_id:null,release_run_id:null,
+      head_sha:null,expected_source_sha:null,error_class:null,expires_at:Date.now()+60_000};
+    const body=await setupPage(rows,csrf,[op]).text();
+    expect(body).toContain('All 10 connection slots are in use or reserved');
+    expect(body).not.toContain('<details id="add-panel"');
+    expect(body).toContain('<summary>More</summary>');
+    expect(body).toContain('name="confirm_id"');
+    expect(body).toContain('pending_tenth');
+    expect(body).not.toContain('Active database connection');
   });
 });
