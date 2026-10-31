@@ -63,6 +63,8 @@ export type Env = {
     getBinding():Promise<{generation:number;ready:boolean}>;
     getContract():Promise<{deployment_id:string;contract_digest:string}>;
     getDownloadContract():Promise<{deployment_id:string;contract_digest:string}>;
+    getGenericContract():Promise<{deployment_id:string;contract_digest:string}>;
+    sendGenericText(input:{invocation_id:string;binding_generation:number;text:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     sendDownloadComplete(input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
@@ -271,7 +273,7 @@ export class WorkflowService {
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':'weixin');
+          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':'generic');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
               (bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID)??null};
@@ -401,11 +403,11 @@ export class WorkflowService {
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':'weixin');
+      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':'generic');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
       try{live=step.with.action==='weixin.notify_download'
-        ?await this.env.WEIXIN_ACTION_PROVIDER!.getDownloadContract():await provider.getContract();}
+        ?await this.env.WEIXIN_ACTION_PROVIDER!.getDownloadContract():bark?await provider.getContract():await this.env.WEIXIN_ACTION_PROVIDER!.getGenericContract();}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
       if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
         throw new StateError('cloudflare_provider_identity_mismatch');

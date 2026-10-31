@@ -686,7 +686,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'weixin');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -704,8 +704,12 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(typeof input.download_step_id!=='string'||!SAFE_ID.test(input.download_step_id))
           throw new PlanError('invalid_trusted_download_reference',stepPath+'/with/input/download_step_id');
       }else{
-        keys(input,['session_step_id'],stepPath+'/with/input');
-        if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
+        keys(input,['text','session_step_id'],stepPath+'/with/input');
+        if(typeof input.text!=='string'||!input.text.trim()||input.text.length>2048||
+           new TextEncoder().encode(input.text).byteLength>4096)
+          throw new PlanError('invalid_weixin_text',stepPath+'/with/input/text');
+        if(input.session_step_id!==undefined&&
+          (typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id)))
           throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
       }
     }else if(s.uses==='github.run'){
@@ -777,14 +781,16 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }
     if(s.uses==='action.run'&&s.with.action==='weixin.send_text'){
       // Provider URL and recipient never come from a Draft or ordinary Step output.
-      const source=(s.with.input as {session_step_id:string}).session_step_id;
-      const upstream=steps.find(x=>x.id===source);
-      const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
-      if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
-         action?.repository!=='lirtual/session-actions'||
-         action?.workflowPath!=='.github/workflows/openlist.yml'||
-         action?.type!=='session')
-        throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      const source=(s.with.input as {session_step_id?:string}).session_step_id;
+      if(source!==undefined){
+        const upstream=steps.find(x=>x.id===source);
+        const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+        if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
+           action?.repository!=='lirtual/session-actions'||
+           action?.workflowPath!=='.github/workflows/openlist.yml'||
+           action?.type!=='session')
+          throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      }
     }
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     if(s.uses==='flow.wait'){

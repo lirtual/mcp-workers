@@ -29,10 +29,12 @@ source-reviewed Action, exact manifest digest, configured Service Binding
 identity, deployment ID and explicit approval. Previously cached MCP tool
 metadata may require a one-time client refresh.
 
-Cloudflare `action.run` supports the reviewed `weixin.send_text` (requiring a
-verified same-Run OpenList Session Ready), `weixin.notify_download`
-(requiring a single-item reviewed GitHub download Task with OIDC Claim and physical success proof
-and physically verified completion), and `bark.send_notification` Actions.
+Cloudflare `action.run` supports generic Owner-only `weixin.send_text` v2
+(`input: {text}` with an optional verified `session_step_id` to append the
+signed OpenList URL), the legacy `weixin.notify_download` v1 for currently
+published Plans, and `bark.send_notification`. A notification that follows
+another Step requires `needs`; the executor verifies persisted predecessor
+success before sending, so caller-supplied success cannot authorize a send.
 Publish requires separate explicit grants, the exact contract digest and
 Worker Version ID; the Service Binding must independently confirm live identity.
 D1 grants a single first-dispatch right. Weixin can recover by historical
@@ -496,7 +498,13 @@ is collected. No extra Worker, cleanup Cron, queue, or auth service is introduce
 
 ### Cloudflare Provider candidate (Spec #392; not deployed)
 
-The `action.run` Cloudflare source may only reference an upstream `lirtual/session-actions` OpenList Session Step in the same Run. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
+The generic `weixin.send_text` v2 accepts bounded, nonempty, publish-time
+literal text (at most 2048 characters and 4096 UTF-8 bytes). An optional
+`session_step_id` appends a verified same-Run OpenList Quick Tunnel URL; this
+reference is validated at compile and execution time, not accepted from a
+caller. An exact reviewed contract digest and immutable Worker version remain
+mandatory. For literal-only messages a successful predecessor may be any
+Workflow Step, subject to the existing DAG and persisted terminal-state checks. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
 
 The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the independent `cloudflare-actions` Provider using the unchanged physical Worker name `weixin-mcp-worker`. Production release and version pin are verified separately; no public Weixin MCP ingress remains. D1 migration 0013 is additive and retains immutable historical Plans.
 
@@ -529,9 +537,29 @@ published active/paused parent references block removal. No purging or restore
 API is exposed. Migration `0014_workflow_deletion.sql` is additive and must
 be applied through the existing guarded main-only release.
 
+### Generic Owner Weixin notification (source candidate; not published)
+
+After the separately authorized Provider and Workflow production releases,
+republish the existing `download` Workflow with its `notify_weixin` Step using
+`action: weixin.send_text`, `needs: [download_task]`, and
+`input: {text: "Koofr 下载完成，云端文件回读校验已通过。"}`. The reviewed download Task
+completes only after upload and remote SHA-256 readback. The literal text has
+no path or secret. It is stored in the Published Plan, while runtime send
+receipts store its digest only; do not put credentials in message literals. For an OpenList Ready notification use
+`input: {text: "OpenList Session Ready\n", session_step_id: openlist}` and
+`needs: [openlist]`; Workflow appends the authenticated canonical Session URL.
+New notification purposes only supply a different literal `text` to the same
+Action; no new Weixin RPC or business-specific Provider code is needed.
+
+New v2 digests must match in both repositories; Publish additionally grants
+the live Worker Version ID. Retain the two legacy RPCs until the existing
+Published Plans have been migrated, in-flight Runs have drained, and rollout
+has been independently verified. Immutable history and unknown receipts stay.
+The current source change does not send, publish, pin, or migrate anything.
+
 ### Koofr download completed → Owner Weixin notification
 
-The existing `download` Workflow may append one top-level `action.run` using
+The existing **legacy v1** `download` Workflow may append one top-level `action.run` using
 `executor: cloudflare`, `provider: weixin`, `action: weixin.notify_download`,
 `input: {download_step_id: download_task}` and `needs: [download_task]`.
 The `download_task` must be a `max_items: 1` foreach containing the pinned
