@@ -527,7 +527,9 @@ export function verifyTwelfthTerminalEvidence(d1,native,github){
     receipts[0].outcome==="succeeded"&&
     receipts[0].notification_delivered===1,
     "twelfth signed result receipt missing or changed");
-  requireValid(native?.id===TWELFTH_TERMINAL_RUN_ID&&
+  // Cloudflare REST GET is already scoped to the exact instance ID; unlike
+  // Wrangler CLI, its result omits `id`. Reject a mismatched ID if present.
+  requireValid((native?.id===undefined||native?.id===TWELFTH_TERMINAL_RUN_ID)&&
     native?.status==="complete"&&native?.success===true&&
     native?.error===null&&!!native?.end&&
     native?.step_count===3&&native?.steps?.length===3&&
