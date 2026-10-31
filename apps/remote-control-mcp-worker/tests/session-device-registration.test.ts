@@ -48,7 +48,7 @@ test('one reviewed physical Attempt gets exactly one durable Session device and 
  assert.equal(new Set(ids).size,1);
  assert.equal(replies.filter(r=>r.status===201).length,1);
  assert.equal(replies.filter(r=>r.status===200).length,11);
- assert.equal(rows.has('session:attempt:'+attemptId),true);
+ assert.equal(rows.size,1,'no separate Attempt ledger or growing index');
  assert.equal([...rows.keys()].filter(x=>x.startsWith('device:')).length,1);
  const device=rows.get('device:'+ids[0]) as V2Device;
  assert.equal(device.grant_type,'session');
@@ -90,7 +90,7 @@ test('cancellation after durable registration cannot falsely claim ready or gran
  const auth={authorizeSessionAttempt:async()=>++reads===1?meta:{allowed:false}};
  const first=await registerSessionDevice(store,body,auth);
  assert.equal(first.status,403);
- assert.equal(rows.has('session:attempt:'+attemptId),true,'orphan may exist after cross-store race');
+ assert.equal(rows.size,1,'the residual device is fail-closed after cross-store race');
  const repeat=await registerSessionDevice(store,body,{authorizeSessionAttempt:async()=>({allowed:false})});
  assert.equal(repeat.status,403);
 });

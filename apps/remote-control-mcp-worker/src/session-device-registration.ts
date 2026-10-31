@@ -10,7 +10,6 @@ const PREFIX='remote-control:github-session-enrollment:v1:';
 type Store=Pick<DurableObjectStorage,'get'|'list'|'delete'|'transaction'>;
 type Input={kind:'github_session';attempt_id:string;oidc_jwt:string;public_key:string;nonce:string;proof:string};
 type Admission={allowed:true;attempt_id:string;github_run_id:number;github_run_attempt:number;workflow_name:'ubuntu'|'windows';expires_at:number};
-type AttemptRecord={device_id:string;public_key:string;expires_at:number};
 const denied=(status=403,reason='denied')=>({status,body:{error:reason}});
 const exactInput=(raw:unknown):Input|null=>{
  if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
@@ -57,22 +56,22 @@ export async function registerSessionDevice(store:Store,raw:unknown,binding?:Wor
   const result=await binding.authorizeSessionAttempt({attempt_id:input.attempt_id,oidc_jwt:input.oidc_jwt});
   if(!approved(result,input.attempt_id))return denied();
   if(!await possession(input,result))return denied();
-  const index='session:attempt:'+input.attempt_id;
   const outcome=await store.transaction(async tx=>{
-    const prev=await tx.get<AttemptRecord>(index);
-    if(prev){
-      if(prev.public_key!==input.public_key||prev.expires_at!==result.expires_at)return denied(409,'attempt_conflict');
-      const device=await tx.get<V2Device>('device:'+prev.device_id);
-      if(!device||!deviceIsAuthorized(device)||device.public_key!==input.public_key||
-        device.session_attempt_id!==input.attempt_id||
-        device.session_run_id!==result.github_run_id||
-        device.session_run_attempt!==result.github_run_attempt||
-        device.session_workflow_name!==result.workflow_name||
-        device.expires_at!==result.expires_at)return denied(409,'attempt_conflict');
-      return {status:200,body:{device_id:prev.device_id,expires_at:prev.expires_at,status:'already_registered'}};
-    }
+    // All Session grants live in this sole Owner DO; scanning the bounded
+    // active device set inside one transaction replaces a separate index.
+    // An expired Attempt cannot be re-enrolled: Workflow deadline already denies.
     const live=await listLiveGrants(tx);
-    if(!live.complete||live.active.size>=64)return denied(503,'capacity');
+    if(!live.complete)return denied(503,'capacity');
+    const previous=[...live.active.values()].find(device=>
+      device.grant_type==='session'&&device.session_attempt_id===input.attempt_id);
+    if(previous){
+      if(previous.public_key!==input.public_key||previous.expires_at!==result.expires_at||
+        previous.session_run_id!==result.github_run_id||
+        previous.session_run_attempt!==result.github_run_attempt||
+        previous.session_workflow_name!==result.workflow_name)return denied(409,'attempt_conflict');
+      return {status:200,body:{device_id:previous.device_id,expires_at:previous.expires_at,status:'already_registered'}};
+    }
+    if(live.active.size>=64)return denied(503,'capacity');
     if([...live.active.values()].some(device=>device.public_key===input.public_key))return denied(409,'identity_already_used');
     const deviceId=crypto.randomUUID(),time=Date.now();
     if(time>=result.expires_at)return denied();
@@ -85,7 +84,6 @@ export async function registerSessionDevice(store:Store,raw:unknown,binding?:Wor
       session_run_attempt:result.github_run_attempt,session_workflow_name:result.workflow_name,
       expires_at:result.expires_at};
     await tx.put('device:'+deviceId,row);
-    await tx.put(index,{device_id:deviceId,public_key:input.public_key,expires_at:result.expires_at});
     return {status:201,body:{device_id:deviceId,expires_at:result.expires_at,status:'registered'}};
   });
   // Cancellation after DO commit does not revoke a prior operation atomically.
