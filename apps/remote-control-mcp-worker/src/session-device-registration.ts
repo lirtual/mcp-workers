@@ -1,5 +1,5 @@
 /** Session-only enrollment using existing Owner DO and Workflow's private authority. */
-import { deviceIsAuthorized, listLiveGrants, type V2Device } from './v2-session.ts';
+import { deviceIsAuthorized, listLiveGrants, revokedSessionAttemptKey, type V2Device } from './v2-session.ts';
 import type { WorkflowSessionAuthorization } from './session-workflow-authorization.ts';
 
 const UUID=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
@@ -62,6 +62,9 @@ export async function registerSessionDevice(store:Store,raw:unknown,binding?:Wor
     // An expired Attempt cannot be re-enrolled: Workflow deadline already denies.
     const live=await listLiveGrants(tx);
     if(!live.complete)return denied(503,'capacity');
+    // An explicit revocation is for the physical Attempt, not merely the
+    // deleted device ID. A replacement key must not bypass owner revocation.
+    if(await tx.get(revokedSessionAttemptKey(input.attempt_id)))return denied();
     const previous=[...live.active.values()].find(device=>
       device.grant_type==='session'&&device.session_attempt_id===input.attempt_id);
     if(previous){
@@ -91,7 +94,8 @@ export async function registerSessionDevice(store:Store,raw:unknown,binding?:Wor
   const latest=await binding.authorizeSessionAttempt({attempt_id:input.attempt_id});
   if(!approved(latest,input.attempt_id)||latest.expires_at!==result.expires_at||
       latest.github_run_id!==result.github_run_id||
-      latest.github_run_attempt!==result.github_run_attempt)return denied();
+      latest.github_run_attempt!==result.github_run_attempt||
+      await store.get(revokedSessionAttemptKey(input.attempt_id)))return denied();
   return outcome;
  }catch{return denied(503,'unavailable');}
 }

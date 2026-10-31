@@ -21,6 +21,11 @@ export interface V2Device {
   expires_at?: number;
 }
 export const TEMPORARY_GRANT_MS = 86_400_000;
+// A revoked physical Attempt can never get a replacement key while its
+// original, immutable Workflow deadline is still live.
+export const revokedSessionAttemptKey = (attemptId: string): string =>
+  "session:revoked-attempt:" + attemptId;
+
 
 /** Old v2 Preview grants had no grant_type; they remain permanent. */
 export function deviceIsAuthorized(device: V2Device | undefined, now = Date.now()): device is V2Device & { revoked: false } {
@@ -46,6 +51,16 @@ export async function listLiveGrants(
 ): Promise<{ active: Map<string, V2Device>; complete: boolean }> {
   // A full page may hide more active grants after expired rows. Fail closed
   // for this request while lazily cleaning the page, then allow a safe retry.
+  // Bound cleanup to one page; no alarm or second grant ledger. Even when a
+  // revoked device row is removed, its Attempt fence survives until expiry.
+  const fences = await store.list<{ expires_at: number }>({
+    prefix: "session:revoked-attempt:", limit: 64,
+  });
+  for (const [key, fence] of fences) {
+    if (Number.isSafeInteger(fence?.expires_at) && fence.expires_at <= now) {
+      await store.delete(key);
+    }
+  }
   const rows = await store.list<V2Device>({ prefix: "device:", limit: 65 });
   const complete = rows.size < 65;
   const active = new Map<string, V2Device>();
