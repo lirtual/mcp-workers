@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {verifyPausedInventory,verifyLegacyActionsBindings,verifyFrozenGate,
- readOnlyPrepare} from './actions-cutover-prepare.mjs';
+ readOnlyPrepare,verifyUnifiedActionsBindings,verifyActivationGate} from './actions-cutover-prepare.mjs';
 const old=[
  {type:'service',name:'WEIXIN_ACTION_PROVIDER',service:'weixin-mcp-worker',entrypoint:'WeixinActionProvider'},
  {type:'service',name:'BARK_ACTION_PROVIDER',service:'bark-provider',entrypoint:'BarkActionProvider'}
@@ -61,4 +61,54 @@ test('prepare mode uses the current main, existing Workflow release environment 
  assert.ok(job.indexOf('d1 migrations apply')<job.indexOf('mjs postflight'));
  assert.ok(!job.includes('wrangler deploy')&&!job.includes('deploy_to_production == true'));
  assert.ok(s.includes("needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true"));
+});
+
+const unified=[{type:'service',name:'ACTIONS',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'}];
+test('reopening is permitted only after exact unified bindings and full migration readback',()=>{
+ assert.equal(verifyUnifiedActionsBindings(unified),true);
+ for(const bad of [[],old,[...old,...unified], [...unified,unified[0]],
+  [{...unified[0],entrypoint:'wrong'}]])
+  assert.throws(()=>verifyUnifiedActionsBindings(bad),/blocked/);
+ for(const [state,expect] of [['frozen','frozen'],['open','open']])
+  assert.equal(verifyActivationGate([{gate_state:state,migration_count:1}],expect),true);
+ for(const bad of [[],[{gate_state:'open',migration_count:0}],
+  [{gate_state:'open',migration_count:2}], [{gate_state:'frozen',migration_count:1}]])
+  assert.throws(()=>verifyActivationGate(bad,'open'),/blocked/);
+});
+test('activation remains read-only before and after the UPDATE and refuses unpaused plans',async()=>{
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ for(const [phase,state] of [['frozen','frozen'],['open','open']]){
+  let calls=[];
+  const fake=async(url,options)=>{
+   const u=new URL(url);calls.push({path:u.pathname,method:options.method,sql:options.body&&JSON.parse(options.body).sql});
+   const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:unified}}:
+    u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[{...good,gate_state:state,migration_count:1}]}]}:
+     {success:true,result:[],result_info:{count:0,total_count:0}};
+   return {ok:true,json:async()=>data};
+  };
+  assert.equal(await readOnlyPrepare(env,fake,phase),true);
+  assert.equal(calls.length,8);
+  assert.ok(calls.every(c=>!c.sql||/^SELECT\s/i.test(c.sql.trim())));
+  const fails=async(url,opt)=>{
+   const u=new URL(url);
+   const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:unified}}:
+    u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[{...good,active_workflows:1,gate_state:state,migration_count:1}]}]}:
+     {success:true,result:[],result_info:{count:0,total_count:0}};
+   return {ok:true,json:async()=>data};
+  };
+  await assert.rejects(()=>readOnlyPrepare(env,fails,phase),/blocked/);
+ }
+});
+test('consumer release reopens only after exact version and Provider pin verification',()=>{
+ const source=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const first=source.indexOf('Verify Workflow pin matches deployed Actions Worker (read-only)');
+ const pre=source.indexOf('actions-cutover-prepare.mjs activate-preflight');
+ const update=source.indexOf("UPDATE cloudflare_action_gate SET state='open'");
+ const post=source.indexOf('actions-cutover-prepare.mjs activate-postflight');
+ assert.ok(first>=0&&first<pre&&pre<update&&update<post);
+ assert.equal(source.split("UPDATE cloudflare_action_gate SET state='open'").length,2);
+ const activation=source.slice(first,post+65);
+ assert.match(activation,/inputs.actions_old_ingress_quiesced == true/g);
+ assert.match(activation,/inputs.worker == 'workflow-mcp-worker'/);
+ assert.match(activation,/GITHUB_SHA.*git ls-remote origin refs\/heads\/main/);
 });

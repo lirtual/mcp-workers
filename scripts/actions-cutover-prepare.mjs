@@ -27,7 +27,24 @@ export function verifyLegacyActionsBindings(bindings){
  if(actual.some(b=>b.name==='ACTIONS'))fail('unified binding already active');
  return true;
 }
-export async function readOnlyPrepare(env=process.env,request=fetch){
+export function verifyUnifiedActionsBindings(bindings){
+ if(!Array.isArray(bindings))fail('runtime bindings unavailable');
+ const services=bindings.filter(b=>b?.type==='service');
+ if(services.some(b=>['WEIXIN_ACTION_PROVIDER','BARK_ACTION_PROVIDER'].includes(b.name))||
+    services.filter(b=>b.name==='ACTIONS'&&b.service==='cloudflare-actions'&&
+      b.entrypoint==='ActionsEntrypoint').length!==1||
+    services.filter(b=>b.name==='ACTIONS').length!==1)
+   fail('unified Service Binding topology not ready');
+ return true;
+}
+export function verifyActivationGate(rows,expectedState){
+ if(!['open','frozen'].includes(expectedState)||!Array.isArray(rows)||rows.length!==1||
+    rows[0]?.gate_state!==expectedState||rows[0]?.migration_count!==1)
+   fail('unified gate is not '+expectedState);
+ return true;
+}
+export async function readOnlyPrepare(env=process.env,request=fetch,phase='legacy'){
+ if(!['legacy','frozen','open'].includes(phase))fail('unsupported read-only verification phase');
  requireOldIngressQuiescence(env.ACTIONS_OLD_INGRESS_QUIESCED);
  const account=env.CLOUDFLARE_ACCOUNT_ID,token=env.CLOUDFLARE_API_TOKEN;
  if(!uuid.test(account||'')||!token)fail('production credential unavailable');
@@ -41,14 +58,18 @@ export async function readOnlyPrepare(env=process.env,request=fetch){
   return json.result;
  };
  const settings=await get('/workers/scripts/workflow-mcp-worker/settings');
- verifyLegacyActionsBindings(settings?.bindings);
+ if(phase==='legacy')verifyLegacyActionsBindings(settings?.bindings);
+ else verifyUnifiedActionsBindings(settings?.bindings);
  const sql=`SELECT (SELECT COUNT(*) FROM workflows WHERE state='active' AND deleted_at IS NULL) AS active_workflows,
  (SELECT COUNT(*) FROM workflows WHERE state='paused' AND deleted_at IS NULL) AS paused_workflows,
- (SELECT COUNT(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled','indeterminate')) AS unsettled_runs`;
+ (SELECT COUNT(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled','indeterminate')) AS unsettled_runs${phase==='legacy'?'':`,
+ (SELECT state FROM cloudflare_action_gate WHERE id=1) AS gate_state,
+ (SELECT COUNT(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_count`}`;
  const snapshot=await get('/d1/database/'+db+'/query',{sql});
  if(!Array.isArray(snapshot)||snapshot.length!==1||snapshot[0]?.success!==true)
    fail('D1 inventory unavailable');
  verifyPausedInventory(snapshot[0]?.results);
+ if(phase!=='legacy')verifyActivationGate(snapshot[0]?.results,phase);
  await checkNativeWorkflowDrain(account,headers,request);
  return true;
 }
@@ -59,8 +80,10 @@ export function verifyFrozenGate(rows){
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
  const mode=process.argv[2];
- if(mode!=='preflight'&&mode!=='postflight')fail('unknown preparation mode');
- readOnlyPrepare().then(async()=>{
+ if(!['preflight','postflight','activate-preflight','activate-postflight'].includes(mode))
+  fail('unknown preparation mode');
+ const phase=mode==='activate-preflight'?'frozen':mode==='activate-postflight'?'open':'legacy';
+ readOnlyPrepare(process.env,fetch,phase).then(async()=>{
   if(mode==='postflight'){
    const account=process.env.CLOUDFLARE_ACCOUNT_ID,token=process.env.CLOUDFLARE_API_TOKEN;
    const sql="SELECT (SELECT state FROM cloudflare_action_gate WHERE id=1) AS gate_state, (SELECT COUNT(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_count";
@@ -72,6 +95,6 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).hr
     fail('fence readback rejected');
    verifyFrozenGate(data.result[0].results);
   }
-  console.log('Workflow Actions preparation '+mode+' verified; no Worker deployed');
+  console.log('Workflow Actions cutover '+mode+' verified; no Worker deployment attempted by this verifier');
  }).catch(e=>{console.error(e.message);process.exitCode=1;});
 }
