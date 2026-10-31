@@ -6,7 +6,6 @@ import { pathToFileURL } from 'node:url';
 export const APPLICATIONS = [
   'browser-mcp-worker',
   'database-mcp-worker',
-  'email-mcp-worker',
   'github-actions-mcp-worker',
   'http-mcp-worker',
   'ima-mcp-worker',

@@ -7,7 +7,6 @@ const fixtures = {
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1", DATABASE_GITHUB_ACTIONS_TOKEN: "github_pat_synthetic_database_owner_token" },
-  "email-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MAIL_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
@@ -127,14 +126,6 @@ test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
 });
 
-test("Email production Secrets enforce canonical encryption and owner-only Access", () => {
-  const good = fixtures["email-mcp-worker"];
-  assert.deepEqual(collectBootstrapSecrets("email-mcp-worker", good), good);
-  assert.throws(() => collectBootstrapSecrets("email-mcp-worker",
-    { ...good, MAIL_ENCRYPTION_KEY: "not-base64" }), /MAIL_ENCRYPTION_KEY/);
-  assert.deepEqual(collectBootstrapSecrets("email-mcp-worker",
-    { ...good, ACCESS_AUD: "ignored", OWNER_EMAIL: "ignored" }), good);
-});
 
 test("HTTP optional managed credentials are staged only when configured",()=>{
   const required={MCP_ACCESS_TOKEN:"synthetic-token"};

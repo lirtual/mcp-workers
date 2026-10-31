@@ -12,7 +12,7 @@ test('current production release choices, guarded allowlist and releasable Worke
 
 test('a missing or duplicated manual Worker choice fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace('          - http-mcp-worker\n', ''), RELEASE_WORKERS), /Mismatched manual release choices/);
-  assert.throws(() => verifyReleaseWorkers(release.replace('          - email-mcp-worker\n', '          - email-mcp-worker\n          - email-mcp-worker\n'), RELEASE_WORKERS), /Duplicate manual release choices/);
+  assert.throws(() => verifyReleaseWorkers(release.replace('          - http-mcp-worker\n', '          - http-mcp-worker\n          - http-mcp-worker\n'), RELEASE_WORKERS), /Duplicate manual release choices/);
 });
 
 test('a missing allowed Worker or an unsafe gate bypass fails', () => {
@@ -198,7 +198,7 @@ test('candidate guards preserve reusable CI under manual release and acceptance 
   assert.equal(evaluate(reusable,candidate,{worker:'database-mcp-worker'}),'');
   assert.equal(evaluate(job,{...candidate,actor:'attacker'},{worker:'database-mcp-worker'}),false);
   assert.equal(evaluate(job,{...candidate,repository:'lirtual/fork'},{worker:'database-mcp-worker'}),false);
-  assert.equal(evaluate(job,candidate,{worker:'email-mcp-worker'}),false);
+  assert.equal(evaluate(job,candidate,{worker:'unsupported-worker'}),false);
   for(const event_name of ['push','pull_request'])
     assert.equal(evaluate(job,{...direct,event_name},{}),true);
 });

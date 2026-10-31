@@ -83,9 +83,6 @@ jobs:
       - name: Verify Workflow Portal registration contract (offline)
         run: node --test scripts/register-workflow-portal.test.mjs
 
-      - name: Verify Email Portal registration contract (offline)
-        run: node --test scripts/register-email-portal.test.mjs
-
       - name: Verify HTTP Portal registration contract (offline)
         run: node --test scripts/register-http-portal.test.mjs
       - name: Verify Browser Portal registration contract (offline)
