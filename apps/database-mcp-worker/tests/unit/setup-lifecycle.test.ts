@@ -850,3 +850,39 @@ it('unified Save reuses strict CA replacement provenance without altering its ac
  expect(sqlite.prepare("SELECT phase,key_id FROM hyperdrive_operations WHERE logical_id='replacement'").get())
   .toMatchObject({phase:'running',key_id:'key-one'});
 });
+
+it('normalizes trailing CA PEM newlines before guarded Hyperdrive preparation', async () => {
+  const {sqlite, env} = fixture();
+  instances.push(sqlite);
+  const {jwt, certificates} = await auth();
+  const page = await handleSetup(new Request(pageUrl, {
+    headers: {'cf-access-jwt-assertion': jwt}
+  }), env, certificates);
+  const markup = await page.text();
+  const csrf = markup.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1] ?? '';
+  const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
+  const submit = (ca_pem: string) => handleSetup(new Request(pageUrl + '/add', {
+    method: 'POST',
+    headers: {
+      'cf-access-jwt-assertion': jwt,
+      origin: 'https://db-owner.example.net',
+      cookie,
+      'content-type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      csrf, id:'new_mysql_ca_check', dialect:'mysql', transport:'hyperdrive',
+      input_mode:'fields', url:'', host:'mysql.example.net', port:'18691',
+      database:'catalog', username:'reader', password:'synthetic-fixture-only',
+      ca_pem
+    })
+  }), env, certificates);
+  const malformed = await submit('not-a-certificate');
+  expect(malformed.status).toBe(422);
+  expect(await malformed.text()).toContain('Diagnostic: form_invalid');
+
+  const withNewline = await submit('-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n');
+  expect(withNewline.status).toBe(503);
+  expect(await withNewline.text()).toContain('Diagnostic: github_token_missing');
+  expect(sqlite.prepare('SELECT COUNT(*) AS n FROM hyperdrive_operations').get()).toEqual({n:0});
+  expect(sqlite.prepare('SELECT COUNT(*) AS n FROM database_connections').get()).toEqual({n:0});
+});

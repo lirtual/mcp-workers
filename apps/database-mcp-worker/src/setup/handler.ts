@@ -391,7 +391,7 @@ export async function handleSetup(
         const candidate: HyperdriveCandidate = {
           id, dialect, host: entry.host, port: String(entry.port), database: entry.database,
           user: entry.user, password: entry.password,
-          caPem: form.get('ca_pem') || undefined,
+          caPem: form.get('ca_pem')?.trim() || undefined,
           caCertificateId: form.get('ca_certificate_id') || undefined,
           caReplaces: form.get('ca_replaces') || undefined
         };
