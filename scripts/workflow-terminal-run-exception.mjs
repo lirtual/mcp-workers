@@ -60,6 +60,8 @@ const TWELFTH_WORKFLOW_GITHUB_ID = 394689660;
 const TWELFTH_TAG = "refs/tags/v0.1.42-rc.10";
 const TWELFTH_SHA = "f5d44ff5a5dbd5b1b444c907e3654266a465da85";
 const WORKFLOW = "workflow-mcp-orchestrator";
+// GitHub repository renamed; read current API path without rewriting historic D1 evidence.
+export const HISTORICAL_GITHUB_RUNS_API = "https://api.github.com/repos/lirtual/github-actions/actions/runs/";
 
 // The six exact instances were all verified before Cloudflare pruned history.
 // Success at this pinned, owner-only release is independent D1/native/GitHub proof.
@@ -648,7 +650,7 @@ async function main() {
     console.log("Verified exact historical GitHub Artifact Task physical terminal; business unknown preserved");
     return;
   }
-  const github = await get("https://api.github.com/repos/lirtual/session-actions/actions/runs/"+
+  const github = await get(HISTORICAL_GITHUB_RUNS_API+
     (ninth?NINTH_SESSION_GITHUB_RUN_ID:tenth?TENTH_SESSION_GITHUB_RUN_ID:seventh?SEVENTH_TASK_GITHUB_RUN_ID:sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
     process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
   if(ninth||tenth)verifySagaTerminalEvidence(d1,native,github,kind);
