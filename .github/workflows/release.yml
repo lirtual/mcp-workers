@@ -58,6 +58,11 @@ on:
         required: false
         type: string
         default: ''
+      actions_migration_prepare:
+        description: 'Spec #21: prepare only the frozen Workflow D1 0018 gate, without Worker deployment'
+        type: boolean
+        required: false
+        default: false
       actions_old_ingress_quiesced:
         description: Workflow first cutover only - Owner verified legacy admissions are stopped independently (not a technical substitute)
         type: boolean
@@ -351,9 +356,67 @@ jobs:
           DATABASE_RETIRE_REVISION: ${{ inputs.database_hyperdrive_revision }}
         run: node scripts/retire-database-hyperdrive.mjs
 
+  workflow-actions-migration-prepare:
+    name: First Actions D1 cutover preparation (no Worker deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'workflow-mcp-worker' &&
+          inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
+          inputs.actions_old_ingress_quiesced == true }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: worker-release-workflow-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate exact current main without release credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify all Published Workflows paused, all old Runs terminal and all native instances drained (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+        run: node scripts/actions-cutover-prepare.mjs preflight
+      - name: Apply existing Workflow D1 migrations and freeze only 0018 admission gate (no release)
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
+          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "UPDATE cloudflare_action_gate SET state='frozen',changed_at=unixepoch()*1000 WHERE id=1 AND state='open'") > /dev/null
+      - name: Independently verify migration, frozen gate and continued quiescence (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+        run: node scripts/actions-cutover-prepare.mjs postflight
+
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_rotation_mode == '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.actions_migration_prepare != true && inputs.database_hyperdrive_rotation_mode == '' }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -369,7 +432,7 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' && inputs.database_hyperdrive_rotation_mode == '' &&
+          needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.database_hyperdrive_rotation_mode == '' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||

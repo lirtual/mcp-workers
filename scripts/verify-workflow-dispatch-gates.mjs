@@ -22,7 +22,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.database_hyperdrive_rotation_mode == '' && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.database_hyperdrive_rotation_mode == '' && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -90,7 +90,7 @@ export function verifyDatabaseApplyGate(source) {
   assert.ok(job(source,'checks').gate.includes("inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == ''"));
   verifyDatabaseFinalizeGate(source);
   const inputs=source.slice(source.indexOf('    inputs:'),source.indexOf('\npermissions:'));
-  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,11,'Expected exactly eleven inputs');
+  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,12,'Expected exactly twelve inputs');
 }
 
 /** Only the successful existing deploy can supply a published version receipt. */
@@ -260,8 +260,15 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 11,
-  'Release workflow_dispatch must have exactly eleven reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 12,
+  'Release workflow_dispatch must have exactly twelve reviewed inputs');
+const prepare = job(release, 'workflow-actions-migration-prepare');
+assert.ok(prepare.gate.includes("inputs.actions_migration_prepare == true")&&
+  prepare.gate.includes("inputs.deploy_to_production == false")&&
+  prepare.gate.includes("github.actor == 'lirtual'"),'Migration-only release gate missing');
+assert.ok(!prepare.content.includes('wrangler deploy'),'Migration preparation must never deploy');
+assert.ok(deploy.gate.includes('inputs.actions_migration_prepare != true'),
+  'Production release must not overlap migration-only mode');
 assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');
 assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]'),
   'Database release expected SHA gate missing');
