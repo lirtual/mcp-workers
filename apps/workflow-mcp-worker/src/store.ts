@@ -454,6 +454,7 @@ export class WorkflowService {
         .bind(row.active_version_id).first<{plan:string}>();
       const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
       if(current?.digest===plan_digest &&
+        JSON.stringify(oldPlan?.cloudflare_action_approvals??[])===JSON.stringify(cloudflareGrants) &&
         JSON.stringify(oldPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
         (!httpConnection || oldPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
         (oldPlan?.mcp_connection_generation??0)===portalConnection.generation))
@@ -473,6 +474,7 @@ export class WorkflowService {
           .bind(latest.active_version_id).first<{plan:string}>();
         const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
         if(current?.digest===plan_digest &&
+          JSON.stringify(priorPlan?.cloudflare_action_approvals??[])===JSON.stringify(cloudflareGrants) &&
           JSON.stringify(priorPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
           (!httpConnection || priorPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
             (priorPlan?.mcp_connection_generation??0)===portalConnection.generation))
