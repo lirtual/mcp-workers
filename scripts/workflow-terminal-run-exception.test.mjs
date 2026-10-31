@@ -2,7 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {readFileSync} from "node:fs";
-import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifySeventhTerminalEvidence, verifyPriorNativeProof, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, SEVENTH_TASK_GITHUB_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifySeventhTerminalEvidence, verifyPriorNativeProof, HISTORICAL_GITHUB_RUNS_API, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, SEVENTH_TASK_GITHUB_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+
+test('read renamed GitHub repository but retain immutable pre-rename D1 evidence',()=>{
+  assert.equal(HISTORICAL_GITHUB_RUNS_API,
+    'https://api.github.com/repos/lirtual/github-actions/actions/runs/');
+  assert.equal(HISTORICAL_GITHUB_RUNS_API+'40806497790',
+    'https://api.github.com/repos/lirtual/github-actions/actions/runs/40806497790');
+  const source=readFileSync('scripts/workflow-terminal-run-exception.mjs','utf8');
+  assert.match(source,/const github = await get\(HISTORICAL_GITHUB_RUNS_API\+/);
+  assert.match(source,/repository===\"lirtual\/session-actions\"/);
+});
 
 const ok = () => ({
   d1:[
