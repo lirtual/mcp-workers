@@ -368,3 +368,48 @@ test("seventh exact download E2E: no Weixin invocation and independently complet
   assert.ok(release.indexOf("Verify seventh terminal download Run proof")<
     release.indexOf("Verify Workflow release configuration"));
 });
+
+test('two exact Saga terminal exceptions require D1, live native, and physical GitHub cancellation',async()=>{
+ const {verifySagaTerminalEvidence,NINTH_TERMINAL_RUN_ID,TENTH_TERMINAL_RUN_ID,
+  NINTH_SESSION_GITHUB_RUN_ID,TENTH_SESSION_GITHUB_RUN_ID}=await import('./workflow-terminal-run-exception.mjs');
+ for(const [kind,id,job,error] of [
+  ['ninth',NINTH_TERMINAL_RUN_ID,NINTH_SESSION_GITHUB_RUN_ID,'github_session_no_ready'],
+  ['tenth',TENTH_TERMINAL_RUN_ID,TENTH_SESSION_GITHUB_RUN_ID,'github_dispatch_unknown']]){
+  const data={
+   d1:[
+    {success:true,results:[{id,outcome:'indeterminate',start_state:'started',error_code:error}]},
+    {success:true,results:[
+     {run_id:id,step_id:'hold',status:'skipped',error_code:null},
+     {run_id:id,step_id:'ubuntu',status:'indeterminate',error_code:error}]},
+    {success:true,results:[{run_id:id,step_id:'ubuntu',state:'terminated'}]},
+    {success:true,results:[{run_id:id,step_id:'ubuntu',state:'cancelled',repository:'lirtual/session-actions',
+      owner_run_id:job,candidate_run_id:job,owner_run_attempt:1,candidate_run_attempt:1}]},
+    {success:true,results:[]}
+   ],
+   native:{status:'complete',end:'2026-10-31T00:05:12Z'},
+   github:{id:job,status:'completed',conclusion:'cancelled',run_attempt:1,head_branch:'v0.1.42-rc.8'}
+  };
+  assert.equal(verifySagaTerminalEvidence(data.d1,data.native,data.github,kind),id);
+  for(const [g,k,bad] of [[0,'outcome','succeeded'],[1,'status','succeeded'],
+    [2,'state','ready'],[3,'owner_run_id',7], [3,'state','claimed']]){
+    const altered=structuredClone(data);
+    altered.d1[g].results[g===1?1:0][k]=bad;
+    assert.throws(()=>verifySagaTerminalEvidence(altered.d1,altered.native,altered.github,kind),/blocked/);
+  }
+  for(const patch of [{status:'running'},{end:null}]){
+    assert.throws(()=>verifySagaTerminalEvidence(data.d1,{...data.native,...patch},data.github,kind),/blocked/);
+  }
+  for(const patch of [{conclusion:'success'},{id:9},{head_branch:'main'}]){
+    assert.throws(()=>verifySagaTerminalEvidence(data.d1,data.native,{...data.github,...patch},kind),/blocked/);
+  }
+  const extra=structuredClone(data);extra.d1[4].results.push({run_id:id,invocation_id:'unexpected'});
+  assert.throws(()=>verifySagaTerminalEvidence(extra.d1,extra.native,extra.github,kind),/blocked/);
+ }
+ const yml=readFileSync('.github/workflows/release.yml','utf8');
+ for(const [name,env] of [['ninth','NINTH'],['tenth','TENTH']]){
+  assert.ok(yml.indexOf('Verify '+name+' terminal Saga Run proof')<
+    yml.indexOf('Verify Workflow release configuration'));
+  assert.equal((yml.match(new RegExp('steps\\.terminal_'+name+'\\.outputs\\.'+name+'_terminal_run_id','g'))||[]).length,3);
+  assert.equal((yml.match(new RegExp('id <> \'\\$WORKFLOW_'+env+'_TERMINAL_RUN_ID\'','g'))||[]).length,2);
+ }
+});
