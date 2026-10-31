@@ -1,4 +1,5 @@
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import {workflowGitHubArtifactReferences} from './github-action-artifacts.ts';
 import {compensateCancelledSessions} from './saga.ts';
 import {cancelAwaitedChild} from './child-cancel.ts';
 import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
@@ -1106,6 +1107,10 @@ export class WorkflowService {
   async result(run_id:string){
     const meta=await this.status(run_id);
     const row=await this.db.prepare('SELECT result,error_code FROM runs WHERE id=?').bind(run_id).first<{result:string|null;error_code:string|null}>();
-    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,error_code:row?.error_code??null},64*1024);
+    const artifactReferences=await workflowGitHubArtifactReferences(
+      this.db,run_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,
+      ...(artifactReferences.length?{artifact_references:artifactReferences}:{}),
+      error_code:row?.error_code??null},64*1024);
   }
 }

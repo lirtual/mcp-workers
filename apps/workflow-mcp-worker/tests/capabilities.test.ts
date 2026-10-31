@@ -81,6 +81,18 @@ test('nested Flow proposal is discoverable but cannot be published as an executa
     PlanError);
 });
 
+test('GitHub Task artifact references are discovered without claiming download authority',async()=>{
+  for(const id of ['action.github.run','action.run.github']){
+    const detail=await workflowCapabilities(env,id);
+    const policy=detail.artifact_reference_policy as {surface:string;result_states:string[];
+      authorization:string;restrictions:string[]};
+    assert.equal(policy.surface,'workflow_result.artifact_references');
+    assert.deepEqual(policy.result_states,['verified','none','unavailable']);
+    assert.match(policy.authorization,/read permission/);
+    assert.match(policy.restrictions.join(' '),/no credential-bearing/);
+  }
+});
+
 test('every advertised compiler example really compiles and has a matching digest',async()=>{
   for(const id of ['trigger.manual','trigger.cron','trigger.webhook','trigger.github_event','action.result.emit','action.mcp.call',
     'flow.static_dag','flow.condition','flow.branch_join','flow.repeat','flow.child','flow.child.detached','flow.wait','flow.foreach_emit','flow.foreach_multi_emit','flow.foreach_mcp_read','flow.foreach_multi_mcp_read']){
