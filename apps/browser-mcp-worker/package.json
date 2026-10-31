@@ -8,7 +8,7 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:workerd": "node tests/workerd-smoke.mjs",
     "test:workerd:restart": "node tests/workerd-restart-smoke.mjs",
-    "check": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.mjs && wrangler deploy --dry-run --outdir .build/dry-run"
+    "check": "python3 ../../scripts/build-browser-extension.py --out-dir .build/extension && rm -rf .build/public && python3 ../../scripts/stage-browser-distribution.py --artifact-dir .build/extension --out-dir .build/public && tsc --noEmit && node --experimental-strip-types --test tests/*.test.mjs && node tests/workerd-smoke.mjs && wrangler deploy --dry-run --outdir .build/dry-run"
   },
   "dependencies": {
     "@mcp-workers/portal-auth": "workspace:*"

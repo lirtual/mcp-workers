@@ -17,7 +17,7 @@ async function start(){
   let stderr='';child.stderr.on('data',v=>{stderr=(stderr+String(v)).slice(-1000);});
   for(let i=0;i<100;i++){
     if(child.exitCode!==null)throw Error('workerd failed: '+stderr);
-    try{if((await fetch(service+'/')).status===404)return;}catch{}
+    try{if((await fetch(service+'/')).status===200)return;}catch{}
     await sleep(200);
   }
   throw Error('workerd did not start: '+stderr);

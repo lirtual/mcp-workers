@@ -7,6 +7,7 @@ interface Env extends ApprovalEnv {
   MCP_ACCESS_TOKEN?: string;
   MCP_ALLOWED_ORIGINS?: string;
   BROWSER_OWNER: DurableObjectNamespace;
+  ASSETS: Fetcher;
 }
 const interactionTools = interactionActions.map(action=>({
   name:"browser_"+action,
@@ -170,9 +171,40 @@ async function handleExtension(request:Request,env:Env,path:string) {
 const ownerRejection = (status:number,message:string):Response => new Response(message,{
   status,headers:{...ownerHeaders,"content-type":"text/plain; charset=utf-8"}
 });
+// The published page and reviewed ZIP are the only anonymously readable assets.
+// The page's path is generated from the same verified build as the ZIP.
+async function publicDistribution(request:Request,env:Env,path:string):Promise<Response> {
+  if(request.method!=="GET"&&request.method!=="HEAD")
+    return new Response("Method not allowed",{status:405,headers:{allow:"GET, HEAD", "cache-control":"no-store"}});
+  const asset = await env.ASSETS.fetch(new URL("/index.html",request.url));
+  if(!asset.ok)return new Response("Download unavailable",{status:503,headers:{"cache-control":"no-store"}});
+  const html=await asset.clone().text();
+  const matched=/<meta name="browser-mcp-asset" content="(\/downloads\/browser-mcp-extension-v[0-9.]+-[a-f0-9]{64}\.zip)">/.exec(html);
+  if(!matched)return new Response("Download unavailable",{status:503,headers:{"cache-control":"no-store"}});
+  const zipPath=matched[1]!;
+  if(path==="/download")return new Response(null,{status:302,headers:{location:zipPath,"cache-control":"no-store"}});
+  if(path!=="/"&&path!==zipPath)return new Response("Not found",{status:404});
+  const target=path==="/"?"/index.html":zipPath;
+  const response=path==="/"?asset:await env.ASSETS.fetch(new URL(target,request.url));
+  if(!response.ok)return new Response("Download unavailable",{status:503,headers:{"cache-control":"no-store"}});
+  const headers=new Headers(response.headers);
+  headers.set("cache-control",path==="/"?"no-cache, must-revalidate":"public, max-age=31536000, immutable");
+  headers.set("x-content-type-options","nosniff");
+  if(path==="/") {
+    headers.set("content-type","text/html; charset=utf-8");
+    headers.set("content-security-policy","default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+    headers.set("referrer-policy","no-referrer");
+  } else {
+    headers.set("content-type","application/zip");
+    headers.set("content-disposition",`attachment; filename="${zipPath.slice("/downloads/".length)}"`);
+  }
+  return new Response(request.method==="HEAD"?null:response.body,{status:response.status,headers});
+}
 export default {
   async fetch(request:Request,env:Env):Promise<Response> {
     const url=new URL(request.url);
+    if(url.pathname==="/"||url.pathname==="/download"||url.pathname.startsWith("/downloads/"))
+      return publicDistribution(request,env,url.pathname);
     const activationMatch=/^\/activate\/verify\/([a-f0-9-]{36})$/.exec(url.pathname);
     if(url.pathname.startsWith("/activate/")){
       const config=activationConfig(env);

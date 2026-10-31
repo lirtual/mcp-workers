@@ -504,7 +504,7 @@ jobs:
         if: inputs.worker == 'browser-mcp-worker'
         run: |
           python3 scripts/build-browser-extension.py --out-dir "$RUNNER_TEMP/browser-extension"
-          python3 scripts/build-browser-extension.py --verify "$RUNNER_TEMP/browser-extension/browser-mcp-extension-v0.2.1.zip"
+          python3 scripts/stage-browser-distribution.py --artifact-dir "$RUNNER_TEMP/browser-extension" --out-dir apps/browser-mcp-worker/.build/public --require-clean
 
       - name: Retain Browser ZIP and provenance for separately authorized GitHub Release publication
         if: inputs.worker == 'browser-mcp-worker'
