@@ -12,6 +12,9 @@
     { "pattern": "rca.lirtual.dpdns.org", "custom_domain": true }
   ],
   "keep_vars": false,
+  "services": [
+    { "binding": "WORKFLOW_SESSION_AUTHORIZATION", "service": "workflow-mcp-worker", "entrypoint": "SessionAuthorization" }
+  ],
   "durable_objects": {
     "bindings": [
       {
