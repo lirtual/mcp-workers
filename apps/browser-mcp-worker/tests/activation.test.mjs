@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {BrowserOwner} from '../src/coordinator.ts';
+import {BrowserOwner,rememberedIdleDays} from '../src/coordinator.ts';
 import worker from '../src/worker.ts';
 const OFFICIAL_EXTENSION_ID='jhifaghneomgcfollcdbncjkcloedfem';
 const hash=async x=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(x))),b=>b.toString(16).padStart(2,'0')).join('');
 const proof='b'.repeat(64);
-function fixture(){
+function fixture(env={}){
   const db=new DatabaseSync(':memory:');
   const sql={exec(query,...args){const stmt=db.prepare(query);if(stmt.columns().length)return {toArray:()=>stmt.all(...args),rowsWritten:0};return {toArray:()=>[],rowsWritten:Number(stmt.run(...args).changes)};}};
   let nextAlarm=null;
   const storage={sql,getAlarm:async()=>nextAlarm,setAlarm:async deadline=>{nextAlarm=deadline;}};
-  const owner=new BrowserOwner({storage,getWebSockets:()=>[]});
+  const owner=new BrowserOwner({storage,getWebSockets:()=>[]},env);
   const post=async(route,payload)=>{const r=await owner.fetch(new Request('https://owner.internal/'+route,{method:'POST',body:JSON.stringify(payload)}));return {status:r.status,...await r.json()};};
   return {db,sql,storage,post,alarm:()=>owner.alarm(),getAlarm:()=>nextAlarm};
 }
@@ -77,7 +77,7 @@ test('temporary network loss grants a bounded offline window; stale generations 
   let attachment={authenticated:false,deadline:Date.now()+5000},authenticated=false;
   const reconnect={deserializeAttachment:()=>attachment,serializeAttachment:v=>{attachment=v;},send:frame=>{if(JSON.parse(frame).type==='authenticated')authenticated=true;},close:()=>{},readyState:1};
   const reconnector=new BrowserOwner({storage:f.storage,getWebSockets:()=>[reconnect]});
-  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.5',endpoint_id:p.endpoint_id,credential:p.credential}));
+  await reconnector.webSocketMessage(reconnect,JSON.stringify({type:'authenticate',protocol:3,extension_version:'0.2.6',endpoint_id:p.endpoint_id,credential:p.credential}));
   assert.equal(authenticated,true);
   assert.equal(f.sql.exec('SELECT offline_deadline FROM endpoints WHERE id=?',p.endpoint_id).toArray()[0].offline_deadline,null);
   assert.equal((await f.post('state',{endpoint_id:p.endpoint_id,credential:p.credential})).authorization,'enabled');
@@ -233,5 +233,96 @@ test('new browser protocol rejects old extension handshakes and persisted old ex
   const obsolete={deserializeAttachment:()=>({authenticated:true,protocol:2,endpoint_id:paired.endpoint_id,generation:0,deadline:0}),send:()=>{throw Error('obsolete frame accepted');},close:(_code,why)=>{reason=why;},readyState:1};
   await owner.webSocketMessage(obsolete,JSON.stringify({type:'ping'}));
   assert.equal(reason,'obsolete_protocol');
+ }finally{f.db.close();}
+});
+
+test('remembered idle default, exact initial Stop deadline, retry idempotence, owner reactivation and expiration',async()=>{
+ const f=fixture();try{
+  const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
+  const grant=await f.post('activate-complete',{attempt_id:attempt,proof});
+  const prior={endpoint_id:grant.endpoint_id,credential:grant.credential};
+  const first=await f.post('local-stop',prior);assert.equal(first.authorization,'stopped');
+  const row=()=>f.sql.exec('SELECT * FROM endpoints WHERE id=?',grant.endpoint_id).toArray()[0];
+  const cutoff=row().idle_deadline;
+  assert.ok(cutoff>=Date.now()+14*86400000-2000&&cutoff<=Date.now()+14*86400000+2000);
+  await f.post('local-stop',prior);
+  assert.equal(row().idle_deadline,cutoff,'repeated Stop never renews idle deadline');
+  assert.equal((await f.post('list',{})).endpoints.some(e=>e.endpoint_id===grant.endpoint_id),true);
+  const restart=await begin(f,'permanent',prior);await f.post('activate-authorize',{attempt_id:restart});
+  const renewed=await f.post('activate-complete',{attempt_id:restart,proof,...prior});
+  assert.equal(renewed.endpoint_id,grant.endpoint_id,'owner-verified reactivation reuses Endpoint');
+  assert.equal(row().idle_deadline,null);
+  assert.ok(row().offline_deadline>=Date.now()+14*86400000-2000);
+  f.sql.exec('UPDATE endpoints SET offline_deadline=? WHERE id=?',Date.now()-1,grant.endpoint_id);
+  assert.equal((await f.post('activate-begin',{attempt_id:crypto.randomUUID(),proof_hash:await hash(proof),mode:'permanent',alias:'old',...prior})).status,403);
+  assert.equal((await f.post('state',prior)).authorization,'revoked');
+  assert.equal((await f.post('list',{})).endpoints.some(e=>e.endpoint_id===grant.endpoint_id),false);
+  assert.equal((await f.post('list',{history:true})).endpoints.some(e=>e.endpoint_id===grant.endpoint_id),true);
+ }finally{f.db.close();}
+});
+test('remembered day setting validates release fallback and invalid runtime fail-closed',async()=>{
+ for(const [input,days] of [[undefined,14],['',14],['1',1],['7',7],['14',14],['30',30],['90',90]])
+  assert.equal(rememberedIdleDays(input),days);
+ for(const input of ['0','91','-1','1.0',' 14','14 ','NaN','Infinity','001'])
+  assert.throws(()=>rememberedIdleDays(input),/BROWSER_REMEMBERED_IDLE_DAYS/);
+ const f=fixture({BROWSER_REMEMBERED_IDLE_DAYS:'7'});try{
+  const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
+  const grant=await f.post('activate-complete',{attempt_id:attempt,proof});
+  await f.post('local-stop',{endpoint_id:grant.endpoint_id,credential:grant.credential});
+  const row=f.sql.exec('SELECT idle_deadline FROM endpoints WHERE id=?',grant.endpoint_id).toArray()[0];
+  assert.ok(row.idle_deadline>=Date.now()+7*86400000-2000&&row.idle_deadline<=Date.now()+7*86400000+2000);
+ }finally{f.db.close();}
+});
+test('Profile Rename requires exact credential, does not change Stop epoch or extension grant',async()=>{
+ const f=fixture();try{
+  const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
+  const grant=await f.post('activate-complete',{attempt_id:attempt,proof});
+  const prior={endpoint_id:grant.endpoint_id,credential:grant.credential};
+  assert.equal((await f.post('rename',{...prior,credential:'a'.repeat(64),alias:'Edge · Windows'})).status,401);
+  assert.equal((await f.post('rename',{...prior,alias:'x'.repeat(65)})).status,400);
+  assert.equal((await f.post('rename',{...prior,alias:'Work PC · Edge'})).alias,'Work PC · Edge');
+  assert.equal((await f.post('state',prior)).alias,'Work PC · Edge');
+  assert.equal((await f.post('list',{})).endpoints.find(e=>e.endpoint_id===grant.endpoint_id).alias,'Work PC · Edge');
+  assert.equal((await f.post('state',prior)).stop_epoch,0);
+ }finally{f.db.close();}
+});
+
+test('remembered stale WSS cannot revive an elapsed persisted deadline or dispatch a read',async()=>{
+ const f=fixture();try{
+  const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
+  const grant=await f.post('activate-complete',{attempt_id:attempt,proof});
+  f.sql.exec("UPDATE endpoints SET generation=2,offline_deadline=?,last_seen_at=? WHERE id=?",
+    Date.now()-1,Date.now(),grant.endpoint_id);
+  const frames=[];
+  const sock={readyState:1,deserializeAttachment:()=>({authenticated:true,protocol:3,extension_version:'0.2.6',
+    endpoint_id:grant.endpoint_id,generation:2,last_seen:Date.now()}),
+    send:x=>frames.push(JSON.parse(x)),close:()=>{}};
+  const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[sock]});
+  const response=await owner.fetch(new Request("https://owner.internal/read",{method:"POST",
+    body:JSON.stringify({endpoint_id:grant.endpoint_id,tool:"tabs"})}));
+  assert.equal(response.status,403);
+  assert.equal((await response.json()).error_code,'revoked');
+  assert.equal(frames.filter(x=>x.type==='read_request').length,0);
+  assert.equal((await f.post('state',{endpoint_id:grant.endpoint_id,credential:grant.credential})).authorization,'revoked');
+ }finally{f.db.close();}
+});
+test('disconnected permanent WSS uses trusted server observations, offline Stop never extends earlier expiry',async()=>{
+ const f=fixture();try{
+  const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
+  const grant=await f.post('activate-complete',{attempt_id:attempt,proof});
+  const prior={endpoint_id:grant.endpoint_id,credential:grant.credential};
+  f.sql.exec('UPDATE endpoints SET generation=3,offline_deadline=NULL,last_seen_at=? WHERE id=?',Date.now()-1000,grant.endpoint_id);
+  const attachment={authenticated:true,protocol:3,extension_version:'0.2.6',endpoint_id:grant.endpoint_id,generation:3,last_seen:Date.now()-1000};
+  const sock={deserializeAttachment:()=>attachment,send:()=>{},close:()=>{},readyState:1};
+  const owner=new BrowserOwner({storage:f.storage,getWebSockets:()=>[sock]});
+  await owner.webSocketClose(sock,1006,'network',false);
+  const row=()=>f.sql.exec('SELECT offline_deadline,idle_deadline FROM endpoints WHERE id=?',grant.endpoint_id).toArray()[0];
+  const offline=row().offline_deadline;
+  assert.ok(offline>=Date.now()+14*86400000-2000);
+  await f.post('local-stop',prior);
+  assert.ok(row().idle_deadline<=offline,'Stop cannot extend the older offline deadline');
+  assert.equal(row().offline_deadline,null);
+  const remembered=row().idle_deadline;await f.post('local-stop',prior);
+  assert.equal(row().idle_deadline,remembered,'Stop retry leaves persisted expiry unchanged');
  }finally{f.db.close();}
 });

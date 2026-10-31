@@ -16,7 +16,8 @@ export async function fixture(config={},options={}){
     if(stmt.columns().length){const rows=stmt.all(...args);return {toArray:()=>rows,rowsWritten:0};}
     return {toArray:()=>[],rowsWritten:Number(stmt.run(...args).changes)};
   }};
-  const state={storage:{sql},getWebSockets:()=>sockets};
+  let nextAlarm=null;
+  const state={storage:{sql,getAlarm:async()=>nextAlarm,setAlarm:async deadline=>{nextAlarm=deadline;}},getWebSockets:()=>sockets};
   let owner=new BrowserOwner(state,config),receiver,ws,dropReceipt=false,dropApprovalReply=false,holdExecute=false,held;
   const env={...config,MCP_ACCESS_TOKEN:"test-token",BROWSER_OWNER:{idFromName:()=>"owner",get:()=>({fetch:(url,init)=>owner.fetch(new Request(url,init))})}};
   async function rpc(name,args={},method="tools/call"){

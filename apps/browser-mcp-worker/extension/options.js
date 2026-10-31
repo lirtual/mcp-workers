@@ -7,35 +7,68 @@ async function call(type,extra={}) {
 async function refresh() {
   try {
     const s=await call("status");
-    $("summary").textContent="Profile: "+(s.alias||"Not paired")+"\nAuthorization: "+s.authorization+
-      " · Connection: "+s.connection+
-      (s.pending_cloud_stop?"\nCloud Stop: NOT CONFIRMED":"");
+    const remote=s.cloud_state;
+    const name=remote?.alias||s.alias||"Not paired";
+    const local=s.authorization||"unpaired",connection=s.connection||"offline";
+    const ready=local==="enabled"&&connection==="online"&&remote?.authorization==="enabled"&&remote?.online===true;
+    $("summary").textContent=ready?"ON · Ready":local==="enabled"?"ON · "+connection:
+      local==="stopped"?"OFF · Paired":local==="revoked"?"Revoked":"Not paired";
+    $("identity").textContent=[
+      name,
+      remote?.browser_family&&remote.browser_family!=="unknown"?remote.browser_family:"Browser",
+      remote?.browser_platform&&remote.browser_platform!=="other"?remote.browser_platform:null,
+      s.endpoint_id?"#"+s.endpoint_id.slice(0,8):null
+    ].filter(Boolean).join(" · ");
+    if(document.activeElement!==$("alias"))$("alias").value=s.alias||remote?.alias||"";
+    $("save-alias").disabled=local==="revoked";
+    $("prepair").hidden=Boolean(s.endpoint_id);
     $("lifetime").value=s.pairing_mode||s.pairing_preference||"permanent";
     $("lifetime").disabled=Boolean(s.endpoint_id);
-    $("status").textContent=[
-      "Direct localhost/LAN: "+(s.sensitive_permissions?.lan?"ON":"OFF"),
-      "Private/incognito: "+(s.sensitive_permissions?.private&&s.sensitive_permissions?.native_private?"ON":"OFF")+"; native permission: "+(s.sensitive_permissions?.native_private?"allowed":"DENIED / unavailable — enable Allow in Incognito/InPrivate in browser extension settings"),
-      "Profile: "+(s.alias||"Not paired"),
-      "Authorization: "+s.authorization,
-      "Connection: "+s.connection,
-      "Last update: "+(s.last_update?new Date(s.last_update).toLocaleString():"Never"),
-      "Cloud Stop: "+(s.pending_cloud_stop?"NOT CONFIRMED — sync required":"No pending stop"),
-      "Endpoint: "+(s.endpoint_id||"—"),
-      "Pairing: "+(s.pairing_mode||"not paired")+(s.lease_expires_at?"; expires "+new Date(s.lease_expires_at).toLocaleString():""),
-      "Last observed target: "+(Number.isSafeInteger(s.last_observed_tab_id)?`[${s.last_observed_scope||"ordinary"}] Tab ${s.last_observed_tab_id} (${s.last_observed_tab_source==="agent_created"?"Agent-created":"Existing / source unknown"})`:"None / not bound"),
-      "Operations Pending: "+(s.activity?.available?s.activity.pending:"UNCONFIRMED — cloud status unavailable"),
-      "Operations Unknown: "+(s.activity?.available?s.activity.unknown:"UNCONFIRMED — do not assume zero"),
-      "Unknown: query browser_operation_status with the ORIGINAL intent_key; never create a new key to retry.",
-      "Tab retention: explicit close only; Stop/disconnect/turn end never auto-close tabs.",
-      "Unconfirmed cloud revocation ID: "+(s.pending_revocation_id||"None"),
-      "High-impact and unidentified controls are blocked, not remotely approved. Authentication and sensitive surfaces stay denied; Unknown receipts may be reviewed independently."
-    ].join("\n");
-    for(const surface of ["lan","private"])$(surface).textContent=(s.sensitive_permissions?.[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
+    $("revoke").disabled=!s.endpoint_id||local==="revoked";
+    const expiration=remote?.idle_expires_at??null;
+    const isTemporary=(s.pairing_mode||s.pairing_preference)==="temporary";
+    $("expiry").textContent=isTemporary?
+      (remote?.lease_expires_at?"Temporary grant until "+new Date(remote.lease_expires_at).toLocaleString():"Temporary · browser session"):
+      (ready?"Remembered · no idle countdown while online":
+       expiration?"Remembered idle expires "+new Date(expiration).toLocaleString():
+       s.endpoint_id?"Idle deadline not available (cloud status unconfirmed)":"Remembered · idle default 14 days");
+    const warnings=[];
+    if(s.pending_cloud_stop)warnings.push("Cloud Stop NOT CONFIRMED");
+    if(s.pending_revocation_id)warnings.push("Cloud revocation not confirmed");
+    if(s.endpoint_id&&!remote)warnings.push("Remote status unavailable");
+    if(remote?.authorization==="revoked" && local!=="revoked")warnings.push("Server grant revoked; local Profile must be re-paired");
+    if(s.activity?.available&&s.activity.unknown>0)warnings.push(s.activity.unknown+" unknown operation(s) — review original receipts");
+    if(s.activity?.available===false&&s.endpoint_id)warnings.push("Operation counts unconfirmed");
+    $("warning").hidden=warnings.length===0;
+    $("warning").textContent=warnings.join(" · ");
+    const sensitive=s.sensitive_permissions||{};
+    for(const surface of ["lan","private"])$(""+surface).textContent=
+      (sensitive[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
     $("locate").disabled=!Number.isSafeInteger(s.last_observed_tab_id);
+    $("stop").hidden=!s.endpoint_id||(!s.pending_cloud_stop&&local!=="enabled");
+    $("ack").hidden=!s.pending_revocation_id;
     $("visual-feedback").checked=(await chrome.storage.local.get("browser_visual_feedback")).browser_visual_feedback!==false;
+    $("status").textContent=[
+      "Local control: "+local+" / "+connection,
+      "Server authorization: "+(remote?.authorization??"unconfirmed"),
+      "Last authenticated online: "+(remote?.last_seen_at?new Date(remote.last_seen_at).toLocaleString():"Unknown"),
+      "Server idle deadline: "+(remote?.idle_expires_at?new Date(remote.idle_expires_at).toLocaleString():"None confirmed"),
+      "Server extension: "+(remote?.client_version??"Unknown"),
+      "Endpoint: "+(s.endpoint_id||"None"),
+      "Local update: "+(s.last_update?new Date(s.last_update).toLocaleString():"Never"),
+      "Direct LAN: "+(sensitive.lan?"ON":"OFF"),
+      "Private: "+(sensitive.private&&sensitive.native_private?"ON":"OFF")+"; native: "+(sensitive.native_private?"allowed":"denied / unavailable"),
+      "Last observed target: "+(Number.isSafeInteger(s.last_observed_tab_id)?"Tab "+s.last_observed_tab_id:"None"),
+      "Pending operations: "+(s.activity?.available?s.activity.pending:"Unconfirmed"),
+      "Unknown operations: "+(s.activity?.available?s.activity.unknown:"Unconfirmed"),
+      "Cloud Stop pending: "+(s.pending_cloud_stop?"YES":"No"),
+      "Unconfirmed revoke: "+(s.pending_revocation_id||"None"),
+      "Use original intent_key to inspect Unknown, never replay.",
+      "Tabs are retained until explicit close; Stop/disconnect never closes them."
+    ].join("\n");
   } catch(e){
     $("summary").textContent="Local status unavailable";
-    $("status").textContent="Unable to read local status: "+e.message;
+    $("status").textContent="Unable to read state: "+(e?.message||"unavailable");
   }
 }
 let actionSequence=0;
@@ -59,6 +92,7 @@ async function action(label,fn){
   await refresh();
 }
 $("lifetime").onchange=()=>action("Pairing lifetime",()=>call("pairing-preference",{mode:$("lifetime").value}));
+$("save-alias").onclick=()=>action("Saving Profile name",()=>call("rename",{alias:$("alias").value}));
 $("locate").onclick=()=>action("Locating observed tab",()=>call("locate"));
 $("stop").onclick=()=>action("Stopping locally",()=>call("stop"));
 $("revoke").onclick=()=>action("Revoking locally",async()=>{

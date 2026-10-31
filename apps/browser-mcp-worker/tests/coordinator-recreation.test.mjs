@@ -24,12 +24,13 @@ function fixture(){
   const socket={
     readyState:1,
     deserializeAttachment(){return {
-      authenticated:true,protocol:3,extension_version:"0.2.5",endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+      authenticated:true,protocol:3,extension_version:"0.2.6",endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
     };},
     send(message){sent.push(JSON.parse(message));},
     close(){sent.push({type:"closed"});}
   };
-  const state={storage:{sql},getWebSockets:()=>[socket]};
+  let nextAlarm=null;
+  const state={storage:{sql,getAlarm:async()=>nextAlarm,setAlarm:async deadline=>{nextAlarm=deadline;}},getWebSockets:()=>[socket]};
   const first=new BrowserOwner(state);
   sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at) VALUES(?,?,?,'enabled',7,2,?)",
     id,"test-profile","a".repeat(64),Date.now());

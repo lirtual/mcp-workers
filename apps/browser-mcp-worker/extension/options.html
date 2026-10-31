@@ -1,18 +1,57 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Browser MCP · Options</title><style>
-body{font:14px system-ui;max-width:620px;margin:32px auto;padding:0 16px;line-height:1.6}
-h1{font-size:22px}button,select{padding:8px;margin:6px 8px 6px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere}
-#summary{font-weight:600}#action-feedback{min-height:1.5em}label{display:block;margin:16px 0}
-</style></head><body><h1>Browser MCP</h1>
-<p>Click the extension toolbar icon to turn control ON or OFF. When Access requests a one-time PIN, enter it yourself in the protected authentication page. An existing Access SSO session may be reused.</p>
-<div id="summary" aria-live="polite">Reading state…</div><div id="action-feedback" role="status" aria-live="polite"></div>
-<label>Pairing lifetime (choose before first activation)
-<select id="lifetime"><option value="permanent">Permanent (default)</option><option value="temporary">Temporary · browser session only</option></select></label>
-<p>To change the pairing lifetime, Revoke and pair again. Closing one window or pausing the service worker is not a session end.</p>
-<button id="stop">Stop locally</button><button id="revoke">Revoke pairing</button><button id="ack">Acknowledge verified cloud revocation</button>
-<h2>Session permissions</h2><button id="lan">Enable direct localhost/LAN</button><button id="private">Enable private/incognito</button>
-<p>These permissions are independent of pairing and must be approved locally for each session.</p>
-<label><input type="checkbox" id="visual-feedback"> Show brief action-target marker (illustrative only; not a real mouse pointer)</label>
-<h2>Diagnostics</h2><button id="locate">Locate observed tab</button><pre id="status"></pre>
-<script src="config.js"></script><script src="options.js"></script></body></html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Browser MCP · Profile</title>
+<style>
+:root{color-scheme:light dark;font:14px system-ui}
+body{max-width:560px;margin:26px auto;padding:0 18px;line-height:1.5}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:22px 0 8px}
+p{margin:6px 0 12px}button,select,input{font:inherit}button,select{padding:7px 10px}
+button{margin:3px 6px 3px 0;cursor:pointer}button:disabled{cursor:default}
+input[type=text]{width:min(100%,280px);box-sizing:border-box;padding:7px}
+label{display:block;margin:10px 0 4px}
+details{margin:22px 0;padding:12px;border:1px solid currentColor;border-radius:8px}
+summary{cursor:pointer;font-weight:600}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px ui-monospace,monospace}
+.small{opacity:.78}#summary{font-weight:600}#identity,#expiry{font-size:13px}
+#action-feedback{min-height:1.5em}#warning:not([hidden]){margin:10px 0;font-weight:600}
+section{border-top:1px solid color-mix(in srgb,currentColor 25%,transparent);padding-top:10px}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+</style></head>
+<body><main>
+<h1>Browser MCP</h1>
+<p class="small">Use the toolbar icon for ON / OFF. Access may ask for your email OTP when enabling.</p>
+<div id="summary" aria-live="polite">Reading Profile…</div>
+<p id="identity" class="small"></p>
+<p id="expiry" aria-live="polite"></p>
+<p id="warning" role="status" aria-live="polite" hidden></p>
+<div id="action-feedback" role="status" aria-live="polite"></div>
+<section>
+<h2>Profile</h2>
+<label for="alias">Display name</label>
+<input id="alias" type="text" maxlength="64" autocomplete="off">
+<button id="save-alias" type="button">Save name</button>
+<div id="prepair">
+<label for="lifetime">Pairing lifetime</label>
+<select id="lifetime"><option value="permanent">Remembered (14-day idle default)</option><option value="temporary">Temporary (browser session)</option></select>
+<p class="small">After pairing, change the lifetime only by explicitly revoking the old identity.</p>
+</div>
+</section>
+<section>
+<h2>Permissions</h2>
+<button id="lan" type="button">Enable direct localhost/LAN</button>
+<button id="private" type="button">Enable private/incognito</button>
+<label><input type="checkbox" id="visual-feedback"> Show brief target marker</label>
+<p class="small">LAN and private access remain independent and session-scoped.</p>
+</section>
+<section>
+<h2>Pairing control</h2>
+<button id="revoke" type="button">Revoke pairing</button>
+<p class="small">Revoke permanently invalidates this Profile's grant. Ordinary OFF uses the toolbar.</p>
+</section>
+<details>
+<summary>Diagnostics and recovery</summary>
+<pre id="status"></pre>
+<button id="locate" type="button">Locate observed tab</button>
+<button id="stop" type="button" hidden>Recover: Stop locally</button>
+<button id="ack" type="button" hidden>Acknowledge verified cloud revocation</button>
+</details>
+</main><script src="config.js"></script><script src="options.js"></script></body></html>
