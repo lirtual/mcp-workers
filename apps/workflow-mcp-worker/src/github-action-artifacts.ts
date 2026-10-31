@@ -1,5 +1,6 @@
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {publishedGitHubActionStep,type Plan} from './plan.ts';
+import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 type Http=(request:Request)=>Promise<Response>;
@@ -54,6 +55,11 @@ export async function workflowGitHubArtifactReferences(
      row.owner_run_attempt!==1||row.candidate_run_attempt!==1)continue;
    const entry:GitHubArtifactObservation={step_id:row.step_id,status:'unavailable',references:[]};
    results.push(entry);
+   // The Artifact API does not expose an attempt number. Recheck the live
+   // physical run identity so a later rerun cannot be mistaken for Attempt 1.
+   // A vanished/changed run is an unknown observation, not an artifact grant.
+   const physical=await inspectGitHubActionRun(identity,row.owner_run_id!,1,token,row.ref,http);
+   if(physical.state!=='completed'||physical.conclusion!=='success')continue;
    try{
      const response=await http(new Request('https://api.github.com/repos/'+action.repository+
        '/actions/runs/'+row.owner_run_id+'/artifacts?per_page=9',{redirect:'manual',headers:{

@@ -45,6 +45,12 @@ function artifact(overrides:Record<string,unknown>={}){
  repository_id:1430925009,head_repository_id:1430925009,head_sha:sha},...overrides};
 }
 const response=(artifacts:unknown[])=>Response.json({total_count:artifacts.length,artifacts});
+const physical=(runAttempt=1)=>Response.json({id:42,workflow_id:action.workflowId,
+ run_attempt:runAttempt,repository:{id:action.repositoryId,full_name:repo},
+ path:action.workflowPath,head_sha:sha,head_branch:'v0.1.42-rc.9',
+ event:'workflow_dispatch',status:'completed',conclusion:'success'});
+const serve=(artifacts:unknown[],runAttempt=1)=>async(req:Request)=>
+ req.url.includes('/artifacts?')?response(artifacts):physical(runAttempt);
 
 test('verified artifact metadata is bound to the exact pinned successful Task, without download URLs',async t=>{
  const {sqlite,db}=fixture();t.after(()=>sqlite.close());
@@ -53,12 +59,13 @@ test('verified artifact metadata is bound to the exact pinned successful Task, w
   requests++;
   assert.equal(request.redirect,'manual');
   assert.equal(request.method,'GET');
-  assert.equal(request.url,'https://api.github.com/repos/lirtual/session-actions/actions/runs/42/artifacts?per_page=9');
+  assert.ok(request.url.startsWith('https://api.github.com/repos/lirtual/session-actions/actions/runs/42'));
   assert.equal(request.headers.get('authorization'),'Bearer test-token');
-  return Response.json({total_count:1,artifacts:[{...artifact(),archive_download_url:'https://secret.example/download?token=private'}]});
+  return request.url.includes('/artifacts?')?
+    response([{...artifact(),archive_download_url:'https://secret.example/download?token=private'}]):physical();
  };
  const out=await workflowGitHubArtifactReferences(db,run,'test-token',http);
- assert.equal(requests,1);
+ assert.equal(requests,2);
  assert.equal(out.length,1);
  assert.equal(out[0]?.status,'verified');
  assert.deepEqual(out[0]?.references.map(x=>({step:x.repository,run:x.workflow_run_id,id:x.artifact_id,auth:x.requires_auth})),
@@ -77,13 +84,26 @@ test('unknown or mismatched artifact provenance never becomes a verified referen
   artifact({expires_at:'2020-01-01T00:00:00Z'}),
   artifact({digest:'invalid'}),
  ]){
-  const out=await workflowGitHubArtifactReferences(db,run,'test-token',async()=>response([invalid]));
+  const out=await workflowGitHubArtifactReferences(db,run,'test-token',serve([invalid]));
   assert.deepEqual(out,[{step_id:'build',status:'unavailable',references:[]}]);
  }
- assert.deepEqual(await workflowGitHubArtifactReferences(db,run,'test-token',async()=>new Response(null,{status:302})),
+ assert.deepEqual(await workflowGitHubArtifactReferences(db,run,'test-token',async(req)=>req.url.includes('/artifacts?')?new Response(null,{status:302}):physical()),
   [{step_id:'build',status:'unavailable',references:[]}]);
- assert.deepEqual(await workflowGitHubArtifactReferences(db,run,'test-token',async()=>response([])),
+ assert.deepEqual(await workflowGitHubArtifactReferences(db,run,'test-token',serve([])),
   [{step_id:'build',status:'none',references:[]}]);
+});
+
+test('a later GitHub rerun prevents trusting artifacts from the same Run ID',async t=>{
+ const {sqlite,db}=fixture();t.after(()=>sqlite.close());
+ let calls=0;
+ const out=await workflowGitHubArtifactReferences(db,run,'test-token',async req=>{
+  calls++;
+  assert.equal(req.url.includes('/artifacts?'),false,
+   'mismatched physical run must not query artifacts');
+  return physical(2);
+ });
+ assert.deepEqual(out,[{step_id:'build',status:'unavailable',references:[]}]);
+ assert.equal(calls,1);
 });
 
 test('missing exact grants or physical success, other repositories and reruns cannot leak artifacts',async()=>{
