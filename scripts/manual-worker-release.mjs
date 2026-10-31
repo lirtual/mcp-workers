@@ -996,9 +996,9 @@ async function current(account, worker, token, options) {
   };
 }
 
-/** Cloudflare deployment version and Secret inventories may propagate
- * independently. Retry only these two exact post-deploy readback states;
- * identity, configuration, schema and other version failures remain fatal. */
+/** Cloudflare deployment and Secret inventory may propagate independently.
+ * Only bounded read-only 5xx responses and known propagation races retry;
+ * permission, source identity, configuration and schema drift remain fatal. */
 export async function retryReleaseReadback(read, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   for (let attempt = 0; attempt < 6; attempt++) {
     try { return await read(); }
@@ -1006,7 +1006,8 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
       const message = error instanceof Error ? error.message : "";
       const transient = /^Required (Secret binding|runtime Secret) missing: /.test(message) ||
         message === "Optional HTTP_CREDENTIALS_JSON binding inventory drift" ||
-        message === "Active Worker version does not match the Wrangler-published version";
+        message === "Active Worker version does not match the Wrangler-published version" ||
+        /^Cloudflare read-only \/(?:settings|secrets|script-settings|deployments\?per_page=1) HTTP 5\d\d$/.test(message);
       if (attempt === 5 || !transient) throw error;
       await pause(2000);
     }
