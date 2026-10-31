@@ -51,7 +51,7 @@ export function buildMcpServer(env:Env){
    description:'Read-only compatibility check for one ChatGPT-selected file. Validates the file-parameter object without downloading, uploading, storing, inspecting or returning its URL, ID or filename. This is NOT provenance attestation or Litterbox upload.',
    inputSchema:z.object({file:fileTransportProbeFile}).strict(),
    _meta:{'openai/fileParams':['file']},
-   annotations:read,
+   annotations:{...read,destructiveHint:false},
  },async()=>success({file_parameter_received:true,bytes_read:0,
    uploaded:false,persisted:false,provenance_verified:false}));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
