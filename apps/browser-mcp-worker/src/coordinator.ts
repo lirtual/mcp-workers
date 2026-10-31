@@ -49,8 +49,13 @@ export class BrowserOwner implements DurableObject {
   }
   private readonly pendingReads = new Map<string,{
     endpoint_id:string;generation:number;socket:WebSocket;tool:string;
+    stage?:string;stageEnteredAt?:number;
     resolve:(value:unknown)=>void;timer:ReturnType<typeof setTimeout>;
   }>();
+  // Only these fixed diagnostic stages can reach a timeout reply. No DOM data,
+  // URL, extension-provided duration, or arbitrary text is stored or relayed.
+  private readonly readStages = new Set(["extension_received","tab_lookup",
+    "frame_lookup","text_injection","element_refs","final_validation","result_transport"]);
   private readonly env:ApprovalEnv;
   constructor(state: DurableObjectState, env:ApprovalEnv = {}) {
     this.env=env;
@@ -345,7 +350,15 @@ export class BrowserOwner implements DurableObject {
          this.intents.hasDispatching(id))return json({error_code:"busy"},409);
       const request_id=crypto.randomUUID();
       const outcome=await new Promise<unknown>(resolve=>{
-        const timer=setTimeout(()=>{this.pendingReads.delete(request_id);resolve({error_code:"timeout"});},5000);
+        const timer=setTimeout(()=>{
+          const pending=this.pendingReads.get(request_id);
+          this.pendingReads.delete(request_id);
+          const stage=pending?.stage??"awaiting_extension";
+          const stage_elapsed_ms=Math.min(5000,Math.max(0,
+            Date.now()-(pending?.stageEnteredAt??startedAt)));
+          resolve(pending?.tool==="snapshot"?{error_code:"timeout",stage,stage_elapsed_ms}:{error_code:"timeout"});
+        },5000);
+        const startedAt=Date.now();
         this.pendingReads.set(request_id,{endpoint_id:id,generation:e.generation,socket,resolve,timer,tool:arg.tool as string});
         try {socket.send(JSON.stringify({type:"read_request",request_id,
           generation:e.generation,tool:arg.tool,...(arg.tool!=="tabs"?{tab_id:arg.tab_id}:{scope:arg.scope??"ordinary"})}));}
@@ -521,6 +534,14 @@ export class BrowserOwner implements DurableObject {
       const pending=this.pendingMutations.get(v.operation_id);
       if(pending && pending.socket===socket){
         clearTimeout(pending.timer);this.pendingMutations.delete(v.operation_id);
+      }
+    } else if (v.type === "read_progress" && validId(v.request_id) &&
+       v.generation===e.generation && typeof v.stage==="string" && this.readStages.has(v.stage)) {
+      const pending=this.pendingReads.get(v.request_id);
+      if(pending?.tool==="snapshot" && pending.socket===socket &&
+         pending.endpoint_id===e.id && pending.generation===e.generation) {
+        pending.stage=v.stage;
+        pending.stageEnteredAt=Date.now();
       }
     } else if (v.type === "read_result" && validId(v.request_id) && v.generation===e.generation) {
       const pending=this.pendingReads.get(v.request_id);

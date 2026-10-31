@@ -403,10 +403,19 @@ function connect() {
       } else if(message.type==="read_request") {
         if(!/^[a-f0-9-]{36}$/.test(message.request_id||"") || !["tabs","snapshot","screenshot"].includes(message.tool) ||
            message.generation!==currentGeneration)return;
+        // Fixed, non-content-bearing progress markers; transient and only for
+        // the authenticated in-flight read on this WebSocket generation.
+        const progress=stage=>{
+          if(message.tool==="snapshot"&&socket===ws&&ws.readyState===WebSocket.OPEN&&
+             currentGeneration===message.generation)
+            ws.send(JSON.stringify({type:"read_progress",request_id:message.request_id,
+              generation:currentGeneration,stage}));
+        };
+        progress("extension_received");
         const permissionToken=await sensitiveToken();
         let response;
         try { response=await executeBrowserRead(message.tool,message.tab_id,message.scope,async()=>
-          socket===ws&&currentGeneration===message.generation&&(await state()).authorization==="enabled"&&permissionToken===await sensitiveToken()); }
+          socket===ws&&currentGeneration===message.generation&&(await state()).authorization==="enabled"&&permissionToken===await sensitiveToken(),progress); }
         catch { response={error_code:"unavailable"}; }
         const latest=await state();
         if(socket!==ws||ws.readyState!==WebSocket.OPEN||latest.authorization!=="enabled"||
@@ -422,6 +431,7 @@ function connect() {
             (message.tool==="screenshot"?2200000:262144))
           serialized=JSON.stringify({type:"read_result",request_id:message.request_id,
             generation:currentGeneration,data:{error_code:"capacity_exceeded"}});
+        progress("result_transport");
         ws.send(serialized);
       } else if(message.type==="stopped"||message.type==="revoked"){
         localBlocked=true;localDenialEpoch++;
