@@ -60,16 +60,6 @@ test('Workflow MCP Workflow is CI-checked and may only be manually released from
   assert.equal(workflow.includes('\n          - workflow-mcp-worker\n'), true);
 });
 
-test('Email MCP is CI-checked and only manually releasable from main', async () => {
-  assert.deepEqual(selectAffectedApps(['apps/email-mcp-worker/src/index.ts']), ['email-mcp-worker']);
-  assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('email-mcp-worker'));
-  const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.equal(release.includes('\n          - email-mcp-worker\n'), true);
-  const run = ref => selectionForEvent({EVENT_NAME:'workflow_dispatch',
-    MANUAL_WORKER:'email-mcp-worker',MANUAL_REF:ref}).selected.join(' ');
-  assert.match(run('refs/heads/main'), /email-mcp-worker/);
-  assert.throws(() => run('refs/heads/other'), /Unsupported manual Worker selection/);
-});
 
 test('HTTP MCP is CI-selected',()=>{
   assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
@@ -83,6 +73,18 @@ test('Browser MCP Worker and packaging changes select CI and the existing manual
   assert.ok(RELEASE_WORKERS.includes('browser-mcp-worker'));
   for (const file of ['scripts/build-browser-extension.py','scripts/browser-extension-manifest.json','docs/browser-extension/INSTALL.md','docs/browser-extension/NOTICES.md'])
     assert.deepEqual(selectAffectedApps([file]), ['browser-mcp-worker']);
+});
+
+test('retired Email Worker is neither test-selected nor deployable', async () => {
+ assert.ok(!APPLICATIONS.includes('email-mcp-worker'));
+ assert.ok(!RELEASE_WORKERS.includes('email-mcp-worker'));
+ assert.deepEqual(selectAffectedApps(['apps/email-mcp-worker/src/index.ts']),[]);
+ const run=event=>selectionForEvent({EVENT_NAME:event,MANUAL_WORKER:'email-mcp-worker',
+   REUSABLE_WORKER:event==='workflow_call'?'email-mcp-worker':'',MANUAL_REF:'refs/heads/main'});
+ assert.throws(()=>run('workflow_dispatch'),/Unsupported manual Worker selection/);
+ assert.throws(()=>run('workflow_call'),/Unsupported reusable Worker selection/);
+ const release=await readFile(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ assert.ok(!release.includes('\n          - email-mcp-worker\n'));
 });
 
 test('retired Weixin Worker is neither test-selected nor deployable',async()=>{
@@ -106,6 +108,6 @@ test('candidate CI selects full Database checks only for Owner/repo and exact db
   assert.deepEqual(result.selected,['database-mcp-worker']);
   assert.equal(selectionDetails(['apps/database-mcp-worker/wrangler.jsonc']).databaseChanged,true);
   for(const [key,value] of [['GITHUB_ACTOR','attacker'],['GITHUB_REPOSITORY','lirtual/fork'],
-    ['MANUAL_REF','refs/heads/db476-invalid'],['MANUAL_WORKER','email-mcp-worker']])
+    ['MANUAL_REF','refs/heads/db476-invalid'],['MANUAL_WORKER','retired-worker']])
     assert.throws(()=>selectionForEvent({...env,[key]:value}),/Unsupported manual Worker selection/);
 });

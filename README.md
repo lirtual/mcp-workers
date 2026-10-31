@@ -6,7 +6,6 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 
 - [GitHub Actions MCP](apps/github-actions-mcp-worker/README.md)
 - [Database MCP](apps/database-mcp-worker/README.md)
-- [Email MCP](apps/email-mcp-worker/README.md)
 - [HTTP MCP](apps/http-mcp-worker/README.md)
 - [IMA MCP](apps/ima-mcp-worker/README.md)
 - [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
@@ -19,7 +18,7 @@ Each app owns its upstream domain, credentials, runtime, tests, and deployment. 
 
 ## Ingress policy
 
-The maintained Workers do **not** share a universal hostname: Email and Workflow use custom domains with `workers_dev: false`; the independently maintained Weixin Provider has only an Access-protected Owner domain; Remote Control uses both `workers.dev` and a custom domain; other maintained Workers use `workers.dev`. All disable preview URLs. Obtain the actual Portal target from the Worker's configuration, not from its name.
+The maintained Workers do **not** share a universal hostname: Workflow uses a custom domain with `workers_dev: false`; the independently maintained Weixin Provider has only an Access-protected Owner domain; Remote Control uses both `workers.dev` and a custom domain; other maintained Workers use `workers.dev`. All disable preview URLs. Obtain the actual Portal target from the Worker's configuration, not from its name.
 
 Each Worker requires runtime Secret `MCP_ACCESS_TOKEN`. The GitHub Repository Secret supplies a release-time default; a same-name Worker Environment Secret may override it. Matching Secret names never prove matching deployed values. See [ingress policy](docs/ingress-policy.md), [runtime configuration](docs/runtime-configuration.md), [manual bootstrap](docs/MANUAL-WORKER-BOOTSTRAP.md) and [token runbook](docs/mcp-shared-token-runbook.md).
 

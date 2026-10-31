@@ -351,35 +351,6 @@ assert.ok(registration.content.includes('run: node scripts/register-workflow-por
 assert.ok(ci.includes('run: node --test scripts/register-workflow-portal.test.mjs'));
 for (const src of [ci, release, acceptance])
   assert.doesNotMatch(src, /wip\/workflow-mcp-public-readonly|wip\/workflow-github-executor/);
-// Email acceptance is a manual production READ gate. Only the existing MCP
-// bearer is available, never Cloudflare deploy credentials or write tools.
-const emailAcceptance = read('email-acceptance');
-const emailSmoke = readFileSync(new URL('./email-production-read-smoke.mjs', import.meta.url), 'utf8');
-assert.match(emailAcceptance, /  workflow_dispatch:/);
-assert.doesNotMatch(emailAcceptance, /\n  (?:push|pull_request|schedule):/);
-assert.match(emailAcceptance, /github\.event_name == 'workflow_dispatch'/);
-assert.match(emailAcceptance, /github\.ref == 'refs\/heads\/main'/);
-assert.match(emailAcceptance, /persist-credentials: false/);
-assert.match(emailAcceptance, /GITHUB_SHA/);
-assert.match(emailAcceptance, /git ls-remote/);
-assert.match(emailAcceptance, /group: email-production-readonly-acceptance/);
-assert.match(emailAcceptance, /EMAIL_READONLY_ACCEPTANCE: "true"/);
-assert.match(emailAcceptance, /EMAIL_REQUIRE_ATTACHMENT: "true"/);
-assert.match(emailAcceptance, /EMAIL_TEST_SUBJECT: "test"/);
-assert.match(emailSmoke, /email_smoke_target_subject_not_found/);
-assert.match(emailSmoke, /email_smoke_attachment_not_verified/);
-
-assert.match(emailAcceptance, /node scripts\/email-production-read-smoke\.mjs/);
-assert.match(emailAcceptance, /secrets\.MCP_ACCESS_TOKEN/);
-const emailSecrets = [...emailAcceptance.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(m => m[1]);
-assert.deepEqual(emailSecrets, ['MCP_ACCESS_TOKEN'], 'Only shared read-side MCP bearer allowed');
-assert.doesNotMatch(emailAcceptance, /CLOUDFLARE_API_TOKEN|wrangler|pnpm dlx|release\.yml|environment:/);
-assert.match(emailSmoke, /process\.env\.EMAIL_READONLY_ACCEPTANCE==='true'/);
-assert.match(emailSmoke, /call\('mail_search'/);
-assert.match(emailSmoke, /call\('mail_get'/);
-assert.match(emailSmoke, /call\('attachment_get'/);
-assert.doesNotMatch(emailSmoke, /call\(['"](?:mail_send|mail_reply|mail_forward|mail_mark|mail_move|mail_trash|draft_create)['"]/);
-
 // Narrow operator-documentation contracts: prevent unsafe release examples and
 // credential-type regressions without introducing a general Markdown linter.
 export function verifyDocumentationContracts({ imaContext, raindropReadme, githubActionsReadme }) {

@@ -28,7 +28,6 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 });
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
-  assert.deepEqual(WORKER_VARIABLES["email-mcp-worker"], ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"]);
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
   assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
@@ -156,19 +155,6 @@ test("No other Worker inherits the Workflow GitHub executor's variables",()=>{
 });
 
 
-test("Email Access Variables must match exact approved values", () => {
-  const approved = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
-    ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
-    OWNER_EMAIL: "lirtual@outlook.com" };
-  assert.deepEqual(collectWorkerVars("email-mcp-worker", { ...approved, MCP_ACCESS_TOKEN: "ignored" }),
-    Object.entries(approved).map(([name,value]) => name + ":" + value));
-  for (const name of Object.keys(approved)) {
-    const missing = { ...approved }; delete missing[name];
-    assert.throws(() => collectWorkerVars("email-mcp-worker", missing), /Email production Access Variable mismatch/);
-    assert.throws(() => collectWorkerVars("email-mcp-worker",
-      { ...approved, [name]: "bad-value" }), /Email production Access Variable mismatch/);
-  }
-});
 
 test("Workflow Provider version variable accepts one reviewed immutable Worker Version ID only",()=>{
  const good="33333333-3333-4333-8333-333333333333";

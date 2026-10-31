@@ -1041,36 +1041,6 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow native Workflow binding drift/);
 });
 
-test("Email production readback pins D1, two Secrets and Access Variables", () => {
-  const worker = "email-mcp-worker";
-  const secretNames = ["MCP_ACCESS_TOKEN", "MAIL_ENCRYPTION_KEY"];
-  const secrets = secretNames.map(name => ({ name }));
-  const vars = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
-    ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
-    OWNER_EMAIL: "lirtual@outlook.com" };
-  const base = { bindings: [
-    ...secretNames.map(name => ({ name, type: "secret_text" })),
-    ...Object.entries(vars).map(([name, text]) => ({ name, type: "plain_text", text })),
-    { name: "DB", type: "d1", id: "1fa50616-effb-458e-b798-b1ca1a0da24f" }],
-    observability: { enabled: true, logs: { invocation_logs: false } },
-  };
-  assert.equal(verifyBindings(worker, base, secrets, { mode: "readback" }), true);
-  assert.throws(() => verifyBindings(worker, base, secrets.slice(0, -1), { mode: "readback" }),
-    /MAIL_ENCRYPTION_KEY/);
-  assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.map(x =>
-    x.name === "DB" ? { ...x, id: "wrong-db" } : x) }, secrets, { mode: "readback" }),
-    /Email production D1/);
-  for (const name of Object.keys(vars)) {
-    assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.filter(x => x.name !== name) },
-      secrets, { mode: "readback" }), new RegExp(name));
-    assert.throws(() => verifyBindings(worker, { ...base, bindings: base.bindings.map(x =>
-      x.name === name ? { ...x, text: "wrong" } : x) }, secrets, { mode: "readback" }), new RegExp(name));
-    assert.throws(() => verifyBindings(worker, base, [...secrets, {name}], { mode: "readback" }), new RegExp(name));
-  }
-  assert.throws(() => verifyBindings(worker, { ...base, bindings: [
-    ...base.bindings, { name: "UNEXPECTED", type: "plain_text", text: "unsafe" },
-  ] }, secrets, { mode: "readback" }), /unexpected plaintext/);
-});
 
 test("HTTP release only allows strict-public source and exact optional credential Secret inventory", () => {
   const base = {bindings:[{name:"MCP_ACCESS_TOKEN",type:"secret_text"}],
@@ -1146,7 +1116,7 @@ test("worker release documentation stays aligned with the selected-Worker contra
     assert.doesNotMatch(doc, /Worker Secrets:.*IMA_CLIENT_ID/);
   }
   const ingress = readFileSync(new URL("../docs/ingress-policy.md", import.meta.url), "utf8");
-  for (const worker of ["email-mcp-worker", "workflow-mcp-worker"])
+  for (const worker of ["workflow-mcp-worker"])
     assert.match(ingress, new RegExp(worker));
   assert.match(ingress, /workers_dev: false/);
 });

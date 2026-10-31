@@ -95,40 +95,6 @@ importers:
         specifier: ^4.36.0
         version: 4.130.0(@cloudflare/workers-types@5.20260911.1)
 
-  apps/email-mcp-worker:
-    dependencies:
-      '@mcp-workers/portal-auth':
-        specifier: workspace:*
-        version: link:../../packages/portal-auth
-      '@modelcontextprotocol/server':
-        specifier: 2.0.0
-        version: 2.0.0
-      imapflow:
-        specifier: 2.5.4
-        version: 2.5.4
-      nodemailer:
-        specifier: 10.2.1
-        version: 10.2.1
-      postal-mime:
-        specifier: 4.1.4
-        version: 4.1.4
-      zod:
-        specifier: 4.6.2
-        version: 4.6.2
-    devDependencies:
-      '@cloudflare/workers-types':
-        specifier: 5.20260911.1
-        version: 5.20260911.1
-      '@types/node':
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      wrangler:
-        specifier: 4.130.0
-        version: 4.130.0(@cloudflare/workers-types@5.20260911.1)
-
   apps/github-actions-mcp-worker:
     dependencies:
       '@mcp-workers/portal-auth':
