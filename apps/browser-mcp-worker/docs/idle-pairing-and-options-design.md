@@ -6,22 +6,31 @@ Scope: An increment to [#418](https://github.com/lirtual/mcp-workers/issues/418)
 
 ## Goal and terminology
 
-An Endpoint is a browser **Profile** installation, not a physical device. `Extension Grant` is pairing authorization; `Browser Control Session` is owner-selected ON/OFF; `Connection` is separately observed transport readiness. A valid Cloudflare Access SSO session may satisfy owner identity without a new email OTP; the OTP itself never lasts 30 days.
+An Endpoint is a browser **Profile** installation, not a physical device. `Extension Grant` is pairing authorization; `Browser Control Session` is owner-selected ON/OFF; `Connection` is separately observed transport readiness. A valid Cloudflare Access SSO session may satisfy owner identity without a new email OTP; the OTP and Cloudflare Access SSO are separate from the remembered-grant idle window.
 
-Replace the user-facing "Permanent" pairing label with **Remembered (30-day idle expiry)**. Keep the existing internal `permanent` mode value for compatible migration, and retain **Temporary (browser session)** as a separate option. Do not add adjustable TTLs, renewal buttons, periodic forced OTP, or another management service.
+Replace the user-facing "Permanent" pairing label with **Remembered (14-day idle expiry by default)**. Keep the existing internal `permanent` mode value for compatible migration, and retain **Temporary (browser session)** as a separate option. Do not add an Options TTL slider, renewal buttons, periodic forced OTP, or another management service. The **single server deployment setting** described below is the only duration override.
+
+## Deployment configuration (single reviewed GitHub Actions Variable)
+
+- **Variable:** `BROWSER_REMEMBERED_IDLE_DAYS` in the existing `browser-mcp-worker` GitHub **Environment Variables** (not a Secret and not an ordinary `workflow_dispatch` input).
+- **Default:** `14` days when the variable is unset or empty. The Worker also uses `14` as its explicit fallback when no binding is present. One day is 24 hours of trusted server time; the default is `1,209,600,000` ms.
+- **Validation:** accept decimal integers `1` through `90`, with no signs, whitespace, fractions, nonnumeric values, or negative/zero durations. Invalid nonempty values **fail the existing release preflight** and Worker initialization/requests fail closed rather than silently widening the deadline. This is a deployment constant, not a local/user-controlled duration.
+- **Pipeline:** wire the existing `release.yml` selected Worker release step's `vars.BROWSER_REMEMBERED_IDLE_DAYS` into the existing **explicit allowlist** in `scripts/worker-release-variables.mjs`, then the existing Wrangler `--var BROWSER_REMEMBERED_IDLE_DAYS:<days>` path. No second release workflow, dynamic GitHub API read, new service or ongoing GitHub polling. Absence must not require creating a GitHub variable. Changing the value requires a new **Owner-authorized production release**; editing a GitHub Variable alone does not change deployed behavior.
+- **Existing deadlines:** a changed setting applies to **newly started** OFF/offline deadlines and first-release migration, not retroactively to already persisted absolute deadlines. Do not reset or extend them merely because configuration changes. Successful, independently owner-verified OFF→ON still clears an unexpired deadline as already specified.
+- **Separation:** the setting does not change existing Access SSO/OTP, session-only temporary pairing/its 24-hour lease, heartbeat intervals or ON-and-online no-countdown behavior. The UI shows the actual server-returned expiry rather than assuming the default when customized.
 
 ## Confirmed state machine (remembered pairing only)
 
-One day is exactly 24 hours of server time; 30 days = 2,592,000,000 ms. All timestamps and deadline comparisons are server authoritative; Options renders dates in the browser's local timezone.
+All timestamps and deadline comparisons are server authoritative; Options renders dates in the browser's local timezone.
 
 | Event | Effective grant / deadline | Control outcome |
 | --- | --- | --- |
 | First owner-verified pairing and successful ON | No countdown while ONLINE/ready | Existing Access + same-Profile one-use proof and version checks apply |
-| Explicit ON -> OFF (local toolbar or authorized remote Stop) | Begin a single OFF deadline at server-confirmed transition + 30 days | Immediately deny local work, close WSS, cloud Stop; retries/repeated Stop do **not** extend the deadline |
-| OFF -> ON before deadline, by local toolbar | On successful owner-verified activation, clear OFF deadline; restore the full 30-day idle allowance | New one-use activation challenge; reuse valid Access SSO only if accepted by Access |
+| Explicit ON -> OFF (local toolbar or authorized remote Stop) | Begin a single OFF deadline at server-confirmed transition + configured idle days | Immediately deny local work, close WSS, cloud Stop; retries/repeated Stop do **not** extend the deadline |
+| OFF -> ON before deadline, by local toolbar | On successful owner-verified activation, clear OFF deadline; restore the full configured idle allowance | New one-use activation challenge; reuse valid Access SSO only if accepted by Access |
 | ON + healthy authenticated WSS | No countdown, even if no browser tasks | Does not require user clicks, traffic or daily reauthorization |
-| ON + disconnected / stale heartbeat | Countdown 30 days since last credible server-observed online activity | No tool execution while offline; a legitimate automatic reconnect *before* expiry clears offline countdown without changing owner-selected ON |
-| OFF / disconnected countdown reaches 30 days | Expire and revoke the **old** Endpoint grant; reject its credential and all later admissions | Re-pair through Access and local proof to create a new grant; do not silently resume |
+| ON + disconnected / stale heartbeat | Countdown the configured idle duration since last credible server-observed online activity | No tool execution while offline; a legitimate automatic reconnect *before* expiry clears offline countdown without changing owner-selected ON |
+| OFF / disconnected countdown reaches its configured deadline | Expire and revoke the **old** Endpoint grant; reject its credential and all later admissions | Re-pair through Access and local proof to create a new grant; do not silently resume |
 | Temporary mode | Existing browser-session storage plus bounded DO lease/reconnect grace | **Unchanged**, not subject to remembered-mode idle rule |
 | Explicit Revoke | Immediate final revocation | No old grant resurrection or automatic replay |
 
@@ -40,7 +49,7 @@ Reuse the owner-scoped SQLite Durable Object, current `endpoints` record, existi
 
 Enforce expiry consistently on Endpoint list/state, activation-begin/complete, WSS authentication/frames, read admission, mutation prepare and execute. For the expected deadline, a DO Alarm may change durable state promptly; authorization admission must also check the deadline even if the alarm was delayed. Failure to set a needed expiry alarm must fail closed rather than leave a grant indefinitely valid. Historical Operation Receipt and Unknown anti-replay facts outlive grant revocation subject to their existing retention policy.
 
-Migration at the first compatible release: existing revoked identities stay revoked; valid remembered OFF identities receive a one-time `migration_time + 30 days` deadline; valid ON-online identities keep their present ON intent without an immediate idle deadline; ON-offline identities begin a bounded offline deadline from observed evidence or migration time (never invent an earlier last-seen event). Preserve Endpoint ID, local credential, owner name, previous Stop, receipts and protected-surface denial. Old incompatible extension versions fail closed; publication of Worker does not auto-update the installed extension. Rollout and real browser upgrade need separate owner authorization.
+Migration at the first compatible release: existing revoked identities stay revoked; valid remembered OFF identities receive a one-time `migration_time + configured idle days` deadline; valid ON-online identities keep their present ON intent without an immediate idle deadline; ON-offline identities begin a bounded offline deadline from observed evidence or migration time (never invent an earlier last-seen event). Preserve Endpoint ID, local credential, owner name, previous Stop, receipts and protected-surface denial. Old incompatible extension versions fail closed; publication of Worker does not auto-update the installed extension. Rollout and real browser upgrade need separate owner authorization.
 
 ## Endpoint naming, discovery and management
 
@@ -64,11 +73,12 @@ Use small consistent line SVG icons, not another icon package. Badge/tooltips in
 Prefer existing extension VM and Worker/DO fixtures, then one scoped native Chrome and one Edge version-matched flow. Test **changed** behavior and prior directly affected invariants; do not replay all of #418.
 
 1. Fresh remembered pairing, owner SSO reused vs OTP requested by Access, meaningful alias and name update across list/local UI.
-2. OFF starts exactly one 30d deadline; repeated/local/remote/offline-reconciled Stop cannot extend it; before deadline owner ON succeeds and restores 30d allowance.
-3. ON+live stays valid across 30d without browser tasks; a heartbeat-stale/disconnected ON expires after 30d, while brief disconnect and MV3 sleep do not misclassify permanently.
+2. OFF starts exactly one configured deadline; repeated/local/remote/offline-reconciled Stop cannot extend it; before deadline owner ON succeeds and restores configured allowance.
+3. ON+live stays valid beyond 14 days without browser tasks; a heartbeat-stale/disconnected ON expires after the configured idle duration, while brief disconnect and MV3 sleep do not misclassify permanently.
 4. Deadlines enforced without timely Alarm, including stale WSS, late activation callback, Stop-vs-reconnect, DO restart and previous generation; expiry requires new grant.
 5. Migrated revoked/OFF/ON-online/ON-offline records retain correct identity and receipts; no stale old-client bypass; default listing excludes history without hiding valid old entries.
 6. Temporary mode's 24h lease, browser-session invalidation, reconnect grace and explicit sensitive grants remain unchanged.
 7. Options normal/error states, name collisions, icon state and accessible controls on installed Chrome and Edge.
+8. Release-time duration contract: variable absent/empty = 14, configured 7/30/90 accepted, 0/91/negative/noninteger/whitespace rejected by the existing release gate and runtime; the Worker and extension present the actual persisted deadline; changing the GitHub Variable alone does not change the running release or rewrite existing deadlines.
 
 No new production release, Access policy edit or credential rotation is authorized by this document. Evidence must separate code/CI, extension ZIP, Worker release, installed Chrome/Edge version and live owner actions. Known prior Waivers remain Waivers, not retroactively Pass.
