@@ -413,3 +413,50 @@ test('two exact Saga terminal exceptions require D1, live native, and physical G
   assert.equal((yml.match(new RegExp('id <> \'\\$WORKFLOW_'+env+'_TERMINAL_RUN_ID\'','g'))||[]).length,2);
  }
 });
+
+test('eleventh exact terminal generic notification is safe only with native completion and zero Provider receipt',async()=>{
+ const {verifyEleventhTerminalEvidence,ELEVENTH_TERMINAL_RUN_ID:run,
+  ELEVENTH_WORKFLOW_ID:workflow,ELEVENTH_VERSION_ID:version,
+  ELEVENTH_INVOCATION_ID:invocation,ELEVENTH_PROVIDER_VERSION:provider,
+  ELEVENTH_INPUT_DIGEST:inputDigest,ELEVENTH_CONTRACT_DIGEST:contractDigest}
+  =await import('./workflow-terminal-run-exception.mjs');
+ const data=[
+  {success:true,results:[{id:run,workflow_id:workflow,version_id:version,
+    outcome:'indeterminate',start_state:'started',error_code:'cloudflare_outcome_unknown'}]},
+  {success:true,results:[{run_id:run,step_id:'notify',status:'indeterminate',
+    error_code:'cloudflare_outcome_unknown'}]},
+  {success:true,results:[]},
+  {success:true,results:[]},
+  {success:true,results:[{run_id:run,step_id:'notify',invocation_id:invocation,
+    source_attempt_id:invocation,input_digest:inputDigest,contract_digest:contractDigest,
+    binding_generation:1,deployment_id:provider}]}
+ ];
+ const native={status:'complete',end:'2026-10-31T00:45:19.275Z'};
+ assert.equal(verifyEleventhTerminalEvidence(data,native,[]),run);
+ for(const [index,field,value] of [
+  [0,'outcome','succeeded'],[0,'version_id','wrong'],[1,'status','succeeded'],
+  [4,'invocation_id','wrong'],[4,'deployment_id','wrong'],[4,'binding_generation',2]
+ ]){
+  const bad=structuredClone(data);
+  bad[index].results[0][field]=value;
+  assert.throws(()=>verifyEleventhTerminalEvidence(bad,native,[]),/blocked/);
+ }
+ for(const i of [2,3]){
+  const bad=structuredClone(data);bad[i].results.push({run_id:run});
+  assert.throws(()=>verifyEleventhTerminalEvidence(bad,native,[]),/blocked/);
+ }
+ assert.throws(()=>verifyEleventhTerminalEvidence(data,{status:'running'},[]),/blocked/);
+ assert.throws(()=>verifyEleventhTerminalEvidence(data,native,[{status:'unknown'}]),/blocked/);
+ assert.throws(()=>verifyEleventhTerminalEvidence(data,native,null),/blocked/);
+ const release=readFileSync('.github/workflows/release.yml','utf8');
+ assert.equal((release.match(/steps\.terminal_eleventh\.outputs\.eleventh_terminal_run_id/g)||[]).length,3);
+ assert.equal((release.match(/id <> '\$WORKFLOW_ELEVENTH_TERMINAL_RUN_ID'/g)||[]).length,2);
+ assert.ok(release.indexOf('Verify eleventh terminal generic Action proof')<
+   release.indexOf('Verify Workflow release configuration'));
+ const sql=execFileSync(process.execPath,['scripts/manual-worker-release.mjs','migration-sql','workflow-mcp-worker'],{
+  encoding:'utf8',env:{...process.env,WORKFLOW_ELEVENTH_TERMINAL_RUN_ID:run}});
+ assert.equal((sql.match(new RegExp(run,'g'))||[]).length,2);
+ const forged=execFileSync(process.execPath,['scripts/manual-worker-release.mjs','migration-sql','workflow-mcp-worker'],{
+  encoding:'utf8',env:{...process.env,WORKFLOW_ELEVENTH_TERMINAL_RUN_ID:'not-reviewed'}});
+ assert.ok(!forged.includes(run));
+});
