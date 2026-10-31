@@ -42,6 +42,26 @@ receipts; Bark preserves unknown outcomes without a second send. No public
 Weixin MCP write is used.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
+### Non-executable nested Flow composition design (Spec #176 / #186)
+
+`workflow_capabilities(id="flow.nested")` exposes a **design-only**
+`design_contract`, with a proposed `flow: block` structural shape, child
+reference scopes, ordering, outcome propagation, cancellation, immutable
+grant inheritance boundaries, replay-stable step identity, expansion
+snapshots, and worst-case budget rules. Its `availability` is `unsupported`,
+`executable` is `false` and `source_schema` is `not_accepted`. The proposed
+shape is **not** in `WORKFLOW_DEFINITION_SCHEMA`, has no executable example,
+and both inline Validate and Publish still reject it. In particular, nested
+foreach/while/repeat, multi-Action loop bodies, recursive child invocation
+and arbitrary compensating writes are **not** delivered by this design.
+
+The proposed contract requires per-level bounded scope, deterministic
+snapshotting before external effects, explicit child grants, failure-closed
+admission and physical-state reconciliation on cancellation. A future
+implementation requires separate review of the executable schema and cost
+budgets; this metadata change does **not** add a nested interpreter, scheduler,
+second DSL, persistence service or runtime approval bypass.
+
 ### Bounded while / until (Spec #176)
 
 A `flow: while` or `flow: until` Step has a literal `max_iterations` (1–8),

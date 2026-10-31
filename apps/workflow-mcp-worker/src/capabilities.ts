@@ -515,6 +515,8 @@ const entries=[
    description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
   {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
    description:'Explicit mode: detached on one pinned flow: child; exact approved_children required. Child consumes its own 1-of-8 slot and starts under its own immutable Plan. Parent returns a child Run reference after confirmed native creation without waiting; parent completion does not stop it. An uncertain native start is never blindly retried.'},
+  {id:'flow.nested',kind:'flow',availability:'unsupported',
+   description:'Design-only nested and composed Flow semantics. No executable source form, no Publish grant and no runnable example; current compiler rejects nested templates.'},
   {id:'flow.saga',kind:'flow',availability:'supported_with_grant',
    description:'Native Cloudflare rollback for explicitly approved temporary Ubuntu/Windows GitHub Sessions only. Dependent Steps roll back in reverse dependency order; independent branches have no required order. A cancellation request remains pending until verified terminal. Other effects cannot declare compensation; no ACID rollback.'},
 ] as const;
@@ -615,6 +617,38 @@ export async function workflowCapabilities(env:Pick<Env,
       completion:'Parent returns pinned child Run reference after confirmed native creation',
       cancellation:'Parent completion or cancellation does not cancel the detached child',
       replay:'Stable child identity; unknown native creation is never blindly retried'};
+  }
+  if(id==='flow.nested'){
+    // A proposed design schema is NOT part of the executable Definition Schema.
+    // This document is intentionally separate from compilePlan to prevent an
+    // unimplemented nested interpreter from silently becoming publishable.
+    detail.design_contract={
+      executable:false,source_schema:'not_accepted',validation:'reject_before_publish',
+      proposed_schema:{type:'object',additionalProperties:false,
+        required:['flow','steps'],properties:{
+          flow:{const:'block'},
+          steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,
+            description:'Conceptual ordered child Steps, potentially recursively composed; not accepted by compilePlan.'},
+          needs:{type:'array',uniqueItems:true,items:{type:'string'}},
+        }},
+      composition:'A nested block is one parent DAG Step. Children may refer to prior siblings or declared enclosing scope inputs; never arbitrary descendants, future siblings or unrelated branches.',
+      identity:'At Publish, each possible child needs a stable path of block and iteration IDs; persist a finite expansion snapshot before any external effect, and reuse it after replay.',
+      ordering:'Outer needs precede block entry; child DAG respects needs, ordered loops serialize their iterations; an enclosing dependent cannot run until the block is complete.',
+      output:'Block results must be bounded and explicitly mapped; no implicit inherited output or external credential/Connection grants.',
+      failure:'An error, indeterminate external effect or exceeded budget stops new dependent effects; already-started external operations keep their independently observed states.',
+      cancellation:'Propagate requests only to owned awaited children; detached children remain independent. A request/ACK does not prove physical termination.',
+      grants:'Every nested external Action must be declared and precisely approved in the immutable Published Plan; child workflows retain their own grants.',
+      budgets:{maxDepth:'Not accepted; a finite nesting-depth budget must be compiler-checked before enabling.',
+        maxSteps:PLAN_LIMITS.maxSteps,maxRepeat:PLAN_LIMITS.maxRepeat,
+        maxForeachItems:PLAN_LIMITS.maxForeachItems,maxParallel:PLAN_LIMITS.maxParallel,
+        rule:'Multiply worst-case nested iteration budgets and reserve all possible child identities before Publish; reject overflow.'},
+      combinations:['conditional DAG blocks','bounded foreach inside bounded loops',
+        'bounded loops inside bounded foreach','awaited child invocation inside a bounded block',
+        'explicit Saga compensation over source-reviewed reversible steps'],
+      unsupported:['nested_loop','nested_foreach','nested_repeat','nested_child',
+        'multi-action looping body','arbitrary compensated writes'],
+      note:'Proposal describes semantic consistency only; no stable executable wire format, runtime support, grant or availability is promised.',
+    };
   }
   if(id==='flow.saga'){
     detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
