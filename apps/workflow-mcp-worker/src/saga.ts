@@ -21,22 +21,26 @@ export async function compensateSession(
    g.commitSha===action.commitSha&&g.type===action.type&&
    g.contractDigest===action.contractDigest);
  const inputs=action?.inputs as Record<string,unknown>|undefined;
- if(plan.github_execution_approved!==true||!plan.saga_compensation_approved||!step.compensate||
-    step.compensate.kind!=='github.session.cancel'||!grant||
-    action?.type!=='session'||inputs?.session_mode!=='temporary'||
-    action.repository!=='lirtual/session-actions'||
-    action.workflowPath!=='.github/workflows/ubuntu.yml'||
-    !env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return 'uncleared';
+ const authorized=plan.github_execution_approved===true&&plan.saga_compensation_approved===true&&
+    step.compensate?.kind==='github.session.cancel'&&grant===true&&
+    action?.type==='session'&&inputs?.session_mode==='temporary'&&
+    action.repository==='lirtual/session-actions'&&
+    action.workflowPath==='.github/workflows/ubuntu.yml'&&
+    !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const db=env.DB;
  // One D1 admission before the one allowed external cancel POST. A lost
  // callback or timeout cannot issue a second request on replay.
+ // Denied compensation is also durable evidence: report a partial Saga
+ // rather than leaving a completed, still-live Session as merely unconfirmed.
+ // The same one-shot key prevents granting access later from replaying it.
  const reserved=await db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
-   SELECT ?,?,'running',? FROM run_steps f
+   SELECT ?,?,?,? FROM run_steps f
    WHERE f.run_id=? AND f.step_id=? AND f.status='succeeded'
      AND EXISTS(SELECT 1 FROM session_executions s WHERE
        s.run_id=? AND s.step_id=? AND s.state!='terminated')
    ON CONFLICT(run_id,step_id) DO NOTHING`)
-   .bind(runId,receiptId,time,runId,step.id,runId,step.id).run();
+   .bind(runId,receiptId,authorized?'running':'uncleared',time,runId,step.id,runId,step.id).run();
+ if(!authorized || !env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return 'uncleared';
  if(reserved.meta.changes!==1){
    const prior=await db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
      .bind(runId,receiptId).first<{status:SagaReceipt|'running'}>();
