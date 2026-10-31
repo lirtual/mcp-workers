@@ -5,6 +5,7 @@ import type {Plan,Step} from './plan.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {registerAndDispatchGitHubAction} from './github-action-orchestration.ts';
 import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-reconcile.ts';
+import type {TerminalCasResult} from './github-action-terminal-cas.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 
@@ -59,9 +60,12 @@ export async function runPublishedGitHubActionTask(
  for(let i=0;i<MAX_TASK_POLLS;i++){
   // Every poll has a distinct durable name, is read-only outside D1 CAS,
   // and never triggers another GitHub dispatch or GitHub job retry.
-  const state=await step.do('github-action-check-'+stepPlan.id+'-'+i,{
-   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
-  },async()=>{
+  // Preserve the confirmed Attempt and distinguish native poll failures from a lost dispatch.
+  let state:TerminalCasResult|'parent_terminal';
+  try{
+   state=await step.do('github-action-check-'+stepPlan.id+'-'+i,{
+    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
+   },async()=>{
    // The parent may already be cancelled while the old native instance lives.
    // End the poll ONLY if the physical Attempt is also durably terminal.
    // Never assume a parent cancellation itself proves an external job ended.
@@ -76,7 +80,10 @@ export async function runPublishedGitHubActionTask(
    return reconcilePersistedGitHubActionAttempt(db,attemptId,token,
     (database,id,credential)=>inspectPersistedGitHubActionAttempt(database,id,credential,
      (action,run,attempt,bearer,ref)=>inspectGitHubActionRun(action,run,attempt,bearer,ref,http)));
-  });
+   });
+  }catch{
+   return {status:'indeterminate',error_code:'github_action_native_check_unconfirmed'};
+  }
   if(state==='parent_terminal')return {status:'indeterminate',error_code:'github_action_parent_not_active'};
   if(state==='conflict')return {status:'indeterminate',error_code:'github_action_identity_conflict'};
   if(state==='updated'||state==='already_settled'){
@@ -102,8 +109,10 @@ export async function runPublishedGitHubActionTask(
      'github_action_cancelled':'github_action_failed'};
    return {status:'indeterminate',error_code:'github_action_terminal_unconfirmed'};
   }
-  if(i<MAX_TASK_POLLS-1)
-   await step.sleep('github-action-sleep-'+stepPlan.id+'-'+i,'1 minute');
+  if(i<MAX_TASK_POLLS-1){
+   try{await step.sleep('github-action-sleep-'+stepPlan.id+'-'+i,'1 minute');}
+   catch{return {status:'indeterminate',error_code:'github_action_native_sleep_unconfirmed'};}
+  }
  }
  return {status:'indeterminate',error_code:'github_action_terminal_unconfirmed'};
 }

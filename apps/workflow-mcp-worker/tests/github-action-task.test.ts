@@ -99,6 +99,41 @@ test('Task source-to-result: D1 reservation, dispatch ACK, signed OIDC claim and
   assert.equal(fixture.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
  }finally{fixture.db.close();}
 });
+test('native Task sleep and resumed-check errors preserve one external dispatch',async t=>{
+ for(const stage of ['sleep','check'] as const){
+  await t.test(stage,async()=>{
+   const f=setup();
+   let checks=0,sleeps=0;
+   const http=async(req:Request):Promise<Response>=>{
+    if(req.url.includes('/git/ref/'))return Response.json({ref,object:{type:'commit',sha}});
+    if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+    checks++;
+    return Response.json({id:42,workflow_id:456,run_attempt:1,
+     repository:{id:123,full_name:repo},path:action.workflowPath,head_branch:'task-v1',
+     head_sha:sha,event:'workflow_dispatch',status:'in_progress',conclusion:null});
+   };
+   const step={do:async(name:string,_opts:unknown,fn:()=>Promise<unknown>)=>{
+     if(stage==='check'&&name==='github-action-check-build-1')
+      throw Error('opaque native check failure');
+     return fn();
+    },sleep:async()=>{
+     sleeps++;
+     if(stage==='sleep')throw Error('opaque native sleep failure');
+    }} as unknown as WorkflowStep;
+   try{
+    const outcome=await runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http);
+    assert.deepEqual(outcome,{status:'indeterminate',error_code:stage==='sleep'
+     ?'github_action_native_sleep_unconfirmed':'github_action_native_check_unconfirmed'});
+    assert.equal(f.post(),1,'unknown native state must not redispatch');
+    assert.equal(checks,1);
+    assert.equal(sleeps,1);
+    assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+    assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+   }finally{f.db.close();}
+  });
+ }
+});
+
 test('signed Task result direct CAS distinguishes insert, identical replay and conflicting replay',async()=>{
  const fixture=setup();
  const {privateKey,publicKey}=await generateKeyPair('RS256');
@@ -197,7 +232,7 @@ test('cancelled parent stops a dispatched Task without polling GitHub or rewriti
   assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'failed');
  }finally{f.db.close();}
 });
-test('parent cancellation alone cannot stop checking an unconfirmed physical Task',async()=>{
+test('cancelled parent without physical proof remains unknown after an interrupted native sleep',async()=>{
  const f=setup();
  let reads=0,sleeps=0;
  const stop=new Error('continue_bounded_poll');
@@ -215,7 +250,8 @@ test('parent cancellation alone cannot stop checking an unconfirmed physical Tas
   return Response.json({status:'completed',conclusion:'failure'});
  };
  try{
-  await assert.rejects(()=>runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http),e=>e===stop);
+  const result=await runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http);
+  assert.deepEqual(result,{status:'indeterminate',error_code:'github_action_native_sleep_unconfirmed'});
   assert.equal(f.post(),1);
   assert.equal(sleeps,1,'bounded wait continues while physical Attempt lacks a terminal receipt');
   assert.equal(reads,0,'no untrusted GitHub terminal inference from a cancelled parent');
