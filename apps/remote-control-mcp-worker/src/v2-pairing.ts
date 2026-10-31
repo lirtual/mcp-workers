@@ -8,7 +8,7 @@ const MAX_REGISTRATIONS_PER_MINUTE = 12;
 const MAX_LOOKUPS_PER_MINUTE = 30;
 const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, grantCurrent, type V2Device, type SessionCheck } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, grantCurrent, revokedSessionAttemptKey, type V2Device, type SessionCheck } from "./v2-session.ts";
 import { sessionAllowedByWorkflow, type WorkflowSessionAuthorization } from "./session-workflow-authorization.ts";
 import {registerSessionDevice} from "./session-device-registration.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
@@ -516,6 +516,14 @@ export class V2OwnerCoordinator {
         return { status: "not_found" as const };
       }
       const previousEpoch = await txn.get<string>("session:epoch:" + id);
+      // Commit the Attempt-level deny fence together with grant deletion.
+      // This forbids a new Ed25519 key for the same still-running Session.
+      if (record.grant_type === "session" && record.session_attempt_id &&
+          Number.isSafeInteger(record.expires_at) && record.expires_at! > Date.now()) {
+        await txn.put(revokedSessionAttemptKey(record.session_attempt_id), {
+          expires_at: record.expires_at,
+        });
+      }
       await txn.delete("device:" + id);
       await txn.delete("session:nonce:" + id);
       await txn.delete("session:epoch:" + id);

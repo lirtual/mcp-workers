@@ -95,6 +95,31 @@ test('cancellation after durable registration cannot falsely claim ready or gran
  assert.equal(repeat.status,403);
 });
 
+test('explicit owner revocation fences the physical Attempt against every replacement key',async()=>{
+  const {store,rows}=fixture(),meta=decision(),body=request(meta);
+  const auth={authorizeSessionAttempt:async()=>meta};
+  const first=await registerSessionDevice(store,body,auth);
+  assert.equal(first.status,201);
+  const deviceId=(first.body as {device_id:string}).device_id;
+  const {V2OwnerCoordinator}=await import('../src/v2-pairing.ts');
+  const owner=new V2OwnerCoordinator({storage:store,getWebSockets:()=>[]} as unknown as DurableObjectState);
+  const revoked=await owner.fetch(new Request('https://v2.internal/revoke',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({device_id:deviceId}),
+  }));
+  assert.equal(revoked.status,200);
+  assert.equal(rows.has('device:'+deviceId),false);
+  const fence=rows.get('session:revoked-attempt:'+attemptId) as {expires_at:number};
+  assert.equal(fence.expires_at,meta.expires_at);
+  assert.equal((await registerSessionDevice(store,body,auth)).status,403);
+  assert.equal((await registerSessionDevice(store,request(meta),auth)).status,403);
+  assert.equal([...rows.keys()].filter(k=>k.startsWith('device:')).length,0);
+  // No periodic cleanup service: bounded ordinary grant-list reads reclaim it.
+  const {listLiveGrants}=await import('../src/v2-session.ts');
+  await listLiveGrants(store,meta.expires_at+1);
+  assert.equal(rows.has('session:revoked-attempt:'+attemptId),false);
+});
+
 test('unavailable Workflow and expired physical window fail closed',async()=>{
  const {rows,store}=fixture(),body=request();
  assert.equal((await registerSessionDevice(store,body,{authorizeSessionAttempt:async()=>{throw Error('unavailable');}})).status,503);
