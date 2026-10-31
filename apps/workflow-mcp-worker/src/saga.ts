@@ -25,7 +25,7 @@ export async function compensateSession(
     step.compensate?.kind==='github.session.cancel'&&grant===true&&
     action?.type==='session'&&inputs?.session_mode==='temporary'&&
     action.repository==='lirtual/github-actions'&&
-    action.workflowPath==='.github/workflows/ubuntu.yml'&&
+    ['.github/workflows/ubuntu.yml','.github/workflows/windows.yml'].includes(String(action.workflowPath))&&
     !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const db=env.DB;
  // One D1 admission before the one allowed external cancel POST. A lost

@@ -397,7 +397,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         uses:{enum:[...SUPPORTED_STEP_USES]},
         compensate:{type:'object',additionalProperties:false,required:['kind'],
           properties:{kind:{const:'github.session.cancel',
-            description:'Only an explicitly approved temporary lirtual/github-actions Ubuntu Session; cancellation ACK is not terminal proof'}}},
+            description:'Only an explicitly approved temporary lirtual/github-actions Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
         flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
         max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
@@ -516,7 +516,7 @@ const entries=[
   {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
    description:'Explicit mode: detached on one pinned flow: child; exact approved_children required. Child consumes its own 1-of-8 slot and starts under its own immutable Plan. Parent returns a child Run reference after confirmed native creation without waiting; parent completion does not stop it. An uncertain native start is never blindly retried.'},
   {id:'flow.saga',kind:'flow',availability:'supported_with_grant',
-   description:'Native Cloudflare rollback for explicitly approved temporary Ubuntu GitHub Sessions only. Serial deterministic DAG; rollback sends one physical cancellation request and reports pending until verified terminal. Other effects cannot declare compensation; no ACID rollback.'},
+   description:'Native Cloudflare rollback for explicitly approved temporary Ubuntu/Windows GitHub Sessions only. Dependent Steps roll back in reverse dependency order; independent branches have no required order. A cancellation request remains pending until verified terminal. Other effects cannot declare compensation; no ACID rollback.'},
 ] as const;
 type Entry=typeof entries[number];
 const byId=new Map<string,Entry>(entries.map(entry=>[entry.id,entry]));
@@ -619,8 +619,8 @@ export async function workflowCapabilities(env:Pick<Env,
   if(id==='flow.saga'){
     detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
       authorization:'Exact pinned GitHub Session grant, approve_heavy_execution and approve_saga_compensation at Publish',
-      ordering:'Saga executions are serialized in canonical DAG order; native rollback reverses step start order',
-      trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu Sessions',
+      ordering:'Dependent Steps roll back in reverse dependency order; independent branches have no required order',
+      trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu/Windows Sessions',
       revocation:'Check exact Published grant and current GitHub executor credential before cancellation; no independent GitHub Connection revoke exists',
       replay:'One durable attempt per compensation effect, with indeterminate outcome on unknown dispatch',
       result:'Expose requested, indeterminate and verified terminal separately; never claim ACID rollback'};
