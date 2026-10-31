@@ -58,11 +58,15 @@ export async function readOnlyPrepare(env=process.env,request=fetch,phase='legac
   return json.result;
  };
  const settings=await get('/workers/scripts/workflow-mcp-worker/settings');
- if(phase==='legacy')verifyLegacyActionsBindings(settings?.bindings);
+ // The same protected D1-only preparation can safely refreeze after the
+ // reviewed unified Consumer is deployed. Never permit mixed/partial bindings.
+ const unifiedRefreeze=phase==='legacy' && settings?.bindings?.some(b=>
+   b?.type==='service'&&b.name==='ACTIONS');
+ if(phase==='legacy'&&!unifiedRefreeze)verifyLegacyActionsBindings(settings?.bindings);
  else verifyUnifiedActionsBindings(settings?.bindings);
  const sql=`SELECT (SELECT COUNT(*) FROM workflows WHERE state='active' AND deleted_at IS NULL) AS active_workflows,
  (SELECT COUNT(*) FROM workflows WHERE state='paused' AND deleted_at IS NULL) AS paused_workflows,
- (SELECT COUNT(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled','indeterminate')) AS unsettled_runs${phase==='legacy'?'':`,
+ (SELECT COUNT(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled','indeterminate')) AS unsettled_runs${phase==='legacy'&&!unifiedRefreeze?'':`,
  (SELECT state FROM cloudflare_action_gate WHERE id=1) AS gate_state,
  (SELECT COUNT(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_count`}`;
  const snapshot=await get('/d1/database/'+db+'/query',{sql});
@@ -70,6 +74,11 @@ export async function readOnlyPrepare(env=process.env,request=fetch,phase='legac
    fail('D1 inventory unavailable');
  verifyPausedInventory(snapshot[0]?.results);
  if(phase!=='legacy')verifyActivationGate(snapshot[0]?.results,phase);
+ if(unifiedRefreeze){
+  const row=snapshot[0]?.results?.[0];
+  if(row?.migration_count!==1||!['open','frozen'].includes(row?.gate_state))
+   fail('unified refreeze requires exact existing 0018 gate');
+ }
  await checkNativeWorkflowDrain(account,headers,request);
  return true;
 }

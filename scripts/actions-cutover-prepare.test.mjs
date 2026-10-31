@@ -75,6 +75,29 @@ test('reopening is permitted only after exact unified bindings and full migratio
   [{gate_state:'open',migration_count:2}], [{gate_state:'frozen',migration_count:1}]])
   assert.throws(()=>verifyActivationGate(bad,'open'),/blocked/);
 });
+test('protected preparation may refreeze only a paused, drained, exact unified Consumer with 0018',async()=>{
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ for(const [bindings,row,shouldPass] of [
+  [unified,{...good,gate_state:'open',migration_count:1},true],
+  [unified,{...good,gate_state:'frozen',migration_count:1},true],
+  [unified,{...good,gate_state:'open',migration_count:0},false],
+  [unified,{...good,active_workflows:1,gate_state:'open',migration_count:1},false],
+  [[...old,...unified],{...good,gate_state:'open',migration_count:1},false],
+  [[{...unified[0],service:'unreviewed'}],{...good,gate_state:'open',migration_count:1},false]
+ ]){
+  const requests=[];
+  const fake=async(url,opt)=>{
+   const u=new URL(url);requests.push({path:u.pathname,body:opt.body});
+   const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings}}:
+    u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[row]}]}:
+    {success:true,result:[],result_info:{count:0,total_count:0}};
+   return {ok:true,json:async()=>data};
+  };
+  if(shouldPass)assert.equal(await readOnlyPrepare(env,fake),true);
+  else await assert.rejects(()=>readOnlyPrepare(env,fake),/blocked/);
+  assert.ok(requests.every(r=>!r.body||/^SELECT\s/i.test(JSON.parse(r.body).sql.trim())));
+ }
+});
 test('activation remains read-only before and after the UPDATE and refuses unpaused plans',async()=>{
  const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
  for(const [phase,state] of [['frozen','frozen'],['open','open']]){
