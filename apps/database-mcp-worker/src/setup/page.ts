@@ -40,9 +40,9 @@ details{min-width:0}summary{cursor:pointer;padding:8px 0;font-weight:500}.add-pa
 .attention{border:1px solid var(--line);border-left:3px solid var(--focus);padding:12px 16px;border-radius:6px;margin:18px 0}.empty{padding:24px;text-align:center;border:1px dashed var(--line);border-radius:8px;color:var(--sub)}
 .maintenance{margin:20px 0}.maintenance form{margin:12px 0;max-width:620px}.result{max-width:640px;border:1px solid var(--line);border-radius:8px;padding:24px;margin:40px auto}
 @media (max-width:680px){main{padding:0 16px 48px;margin:24px auto}.connections-table,.connections-table tbody{display:block;width:100%}.connections-table thead{display:none}
-.connections-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:12px 0;border-bottom:1px solid var(--line)}
-.connections-table th,.connections-table td{display:block;border:0;padding:0;min-width:0}.connections-table td.connection-meta{grid-column:2;grid-row:1}
-.connections-table td.connection-actions{grid-column:1/-1}.row-actions button,.row-actions .button-link,.row-actions summary,.add-panel>summary{min-height:44px}.row-actions summary{display:flex;align-items:center}input,select,textarea{font-size:16px}
+.connections-table tr{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;padding:12px 0;border-bottom:1px solid var(--line)}
+.connections-table th,.connections-table td{display:block;border:0;padding:0;min-width:0;overflow-wrap:anywhere}.connections-table th{grid-column:1;grid-row:1}.connections-table td.connection-meta{grid-column:1;grid-row:2}
+.connections-table td.connection-actions{grid-column:1;grid-row:3}.row-actions{min-width:0}.row-actions>p{width:100%;overflow-wrap:anywhere}.row-actions button,.row-actions .button-link,.row-actions summary,.add-panel>summary{min-height:44px}.row-actions summary{display:flex;align-items:center}input,select,textarea{font-size:16px}
 }`;
 export function htmlResponse(body: string, csrf?: string, status = 200): Response {
   const headers = new Headers({
@@ -93,7 +93,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
   replacementOrigin?: ReplacementOrigin): Response {
   const list = rows.map(row => `<tr class="connection-row"><th scope="row"><strong class="connection-id">${escape(row.id)}</strong></th><td class="connection-meta">${escape(row.dialect)} / ${escape(row.transport)} · <span class="status status-${escape(row.status)}">${escape(row.status)}</span></td><td class="connection-actions"><div class="row-actions">` +
     (row.transport === 'hyperdrive' && (row.in_flight_count ?? 0) > 0
-      ? `<p><strong>Blocked: ${row.in_flight_count} unresolved execution(s).</strong> New SQL is disabled when this connection is disabled. Do not delete or rotate its resources without independently verified completion; no automatic timeout or count reset is performed.</p>` : '') +
+      ? `<p><strong>Blocked: ${row.in_flight_count} unresolved execution(s).</strong></p><details><summary>Why cleanup is blocked</summary><p class="muted">New SQL is disabled when this connection is disabled. Do not delete or rotate its resources without independently verified completion; no automatic timeout or count reset is performed.</p></details>` : '') +
     (row.status === 'active' ? action(row, csrf, 'disable') :
       row.transport === 'direct' && isAvailableMode(row.transport, row.dialect)
         ? action(row, csrf, 'enable') + '<details><summary>More</summary>' + action(row, csrf, 'delete') + '</details>' :
@@ -122,8 +122,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
           '<form method="post" action="/setup/hyperdrive-unbind-status">' + token(csrf) + ids(row) +
           '<button type="submit">Read unbinding status</button></form></details>'
         : '<a class="button-link" href="/setup?edit=' + encodeURIComponent(row.id) + '#add-connection">Edit connection · Replace</a>') +
-        '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion.</p>' +
-        '<p class="muted"><a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a></p>'
+        ''
       : !isAvailableMode(row.transport, row.dialect) ? '<p class="muted">This connection mode is not yet enabled.</p>' :
     `<details><summary>Edit connection</summary><form class="add-connection" action="/setup/edit" method="post">${token(csrf)}${ids(row)}` +
     '<label>Credentials<select name="credential_mode"><option value="keep">Keep URL</option><option value="replace">Replace URL</option></select></label>' +
@@ -159,6 +158,7 @@ export function setupPage(rows: RegistryMetadata[], csrf: string,
     (atLimit ? '<p class="attention">All 10 connection slots are in use or reserved (' + rows.length + ' registered, ' + reservations + ' pending). Retire an unused entry safely before adding another.</p>' : '') +
     '<h2>Connections <span class="muted">(' + rows.length + ' registered)</span></h2>' +
     (list ? `<table class="connections-table"><thead><tr><th scope="col" style="width:35%">Connection ID</th><th scope="col" style="width:26%">Database / transport / status</th><th scope="col">Actions</th></tr></thead><tbody>${list}</tbody></table>` : '<p class="empty">No database connections configured</p>') +
+    (rows.some(row => row.transport === 'hyperdrive') ? '<p class="muted">Hyperdrive operations require protected Binding/TLS/CA verification. A request being accepted never proves completion. <a href="https://github.com/lirtual/mcp-workers/actions/workflows/release.yml" rel="noreferrer">View operation runs</a>.</p>' : '') +
     (atLimit && !replacing ? '' : addConnectionForm(csrf, replacing, replacementOrigin)) +
     (inProgress ? '<section id="hyperdrive-activity"><h2>In-progress Hyperdrive operations</h2><ul class="operation-list">' + inProgress + '</ul></section>' : '') +
     '<details><summary>Completed operation history</summary><ul class="operation-list">' + (history || '<li>No completed operations</li>') + '</ul></details>' +
