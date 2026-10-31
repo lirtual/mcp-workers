@@ -15,6 +15,7 @@ import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {sealEnvshare,composeEnvshareUrl,checkedSharePayload} from './envshare-secret.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
@@ -283,7 +284,7 @@ export class WorkflowService {
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':'unified-generic');
+          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':'unified-generic');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
               this.env.ACTIONS_DEPLOYMENT_ID??null};
@@ -415,7 +416,7 @@ export class WorkflowService {
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':'unified-generic');
+      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':'unified-generic');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
       try{live=await provider.getContract(contract.action,contract.contract_digest);}
@@ -813,12 +814,39 @@ export class WorkflowService {
     // The platform's minute identity cannot be impersonated by manual callers.
     if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
       throw new StateError('reserved_idempotency_key');
-    const inputJson=json(inputs);
-    const request_digest=await digest(canonicalJsonString(inputs));
+    // EnvShare's raw text exists only on this admission stack. Encrypt before
+    // any D1 INSERT; the native Runner reads only the safe ciphertext payload.
+    const candidate=await this.db.prepare(`SELECT w.active_version_id AS version, v.plan
+      FROM workflows w JOIN workflow_versions v ON v.id=w.active_version_id
+      WHERE w.id=?`).bind(workflow_id).first<{version:string;plan:string}>();
+    let isEnvshare=false,transientKey:string|undefined;
+    let inputJson:string,request_digest:string;
+    try{
+      const plan=candidate?JSON.parse(candidate.plan) as Plan:null;
+      const step=plan?.steps?.length===1?plan.steps[0]:null;
+      if(step?.uses==='action.run'&&step.with.action==='envshare.share_text'){
+        isEnvshare=true;
+        if(expected_version_id!==undefined||!idempotency_key||plan?.triggers?.length||plan?.steps?.length!==1||
+           step.with.provider!=='envshare'||!step.with.input||
+           Object.keys(inputs).length!==1||!Object.hasOwn(inputs,'text'))
+          throw new StateError('envshare_manual_one_shot_only');
+        const policy=step.with.input as {ttl?:unknown;reads?:unknown};
+        const sealed=await sealEnvshare(inputs.text,Number(policy.ttl),Number(policy.reads));
+        transientKey=sealed.key_base58;
+        inputJson=json(sealed.input);
+        request_digest=await digest(canonicalJsonString(sealed.input));
+      }else{
+        inputJson=json(inputs);
+        request_digest=await digest(canonicalJsonString(inputs));
+      }
+    }catch(e){
+      if(e instanceof StateError)throw e;
+      throw new StateError('envshare_invalid_input');
+    }
     // An accepted admission keeps its pinned version across republish/pause.
     if(idempotency_key){
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-      if(original){if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+      if(original){if(isEnvshare)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -839,6 +867,7 @@ export class WorkflowService {
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=wf.active_version_id;
     if(expected_version_id&&expected_version_id!==version)throw new StateError('published_version_changed');
+    if(isEnvshare&&candidate?.version!==version)throw new StateError('published_version_changed');
     // Reject unsupported Action execution before reserving any durable Run
     // slot. Publication permits owner review, not dispatch authorization.
     const published=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
@@ -848,6 +877,10 @@ export class WorkflowService {
     try{activePlan=JSON.parse(published.plan) as Plan;}
     catch{throw new StateError('published_plan_invalid');}
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
+    if(isEnvshare&&(activePlan.triggers?.length||activePlan.steps.length!==1||
+       activePlan.steps[0].with.action!=='envshare.share_text'||
+       activePlan.cloudflare_execution_approved!==true))
+      throw new StateError('envshare_manual_approval_required');
     // Reject invalid/unapproved runtime overrides before reserving a Run.
     // A legacy literal Session Plan remains immutable and must not pretend
     // that a supplied duration was honored.
@@ -884,16 +917,19 @@ export class WorkflowService {
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-        if(prior){if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
+        if(prior){if(isEnvshare)throw new StateError('envshare_key_unrecoverable');if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
       const latest=await this.row(workflow_id);
       if(latest.state!=='active')throw new StateError('workflow_not_active');
       if(latest.active_version_id!==version)throw new StateError('published_version_changed');
       throw new StateError('run_capacity_exceeded');
     }
-    try{await this.env.WORKFLOW.create({id,params:{run_id:id}});await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();return {run_id:id,published_version_id:version,status:'queued',start_state:'started'};}
+    try{await this.env.WORKFLOW.create({id,params:{run_id:id}});await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();return {run_id:id,published_version_id:version,status:'queued',start_state:'started',
+      ...(transientKey?{envshare_key_base58:transientKey}: {})};}
     catch {
       await this.db.prepare("UPDATE runs SET start_state='start_unknown',updated_at=? WHERE id=? AND start_state='reserved'").bind(now(),id).run();
-      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();return this.reconcileStart(prior!);
+      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();
+      const reconciled=await this.reconcileStart(prior!);
+      return {...reconciled,...(transientKey?{envshare_key_base58:transientKey}:{})};
     }
   }
   private async reconcileStart(row:RunRow){
@@ -1103,6 +1139,41 @@ export class WorkflowService {
         compensations};
     })():null;
     return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{}),...(saga?{saga}:{})};
+  }
+  /** One-time secret assembly, never persisted or included in Workflow results.
+   * The client supplies the admission-only key; authenticated GCM decrypt
+   * verifies it against the persisted ciphertext without revealing plaintext.
+   */
+  async envshareLink(run_id:string,key_base58:string){
+    assertId(run_id);
+    const row=await this.db.prepare(`SELECT r.outcome,r.inputs,r.result,v.plan
+      FROM runs r JOIN workflow_versions v ON v.id=r.version_id
+      WHERE r.id=?`).bind(run_id).first<{
+       outcome:string;inputs:string;result:string|null;plan:string
+      }>();
+    if(!row)throw new StateError('run_not_found');
+    const plan=JSON.parse(row.plan) as Plan;
+    if(row.outcome!=='succeeded'||plan.steps.length!==1||
+       plan.triggers?.length||plan.steps[0].uses!=='action.run'||
+       plan.steps[0].with.action!=='envshare.share_text')
+      throw new StateError('envshare_result_not_ready');
+    const payload=JSON.parse(row.inputs) as unknown;
+    if(!checkedSharePayload(payload))throw new StateError('envshare_persisted_input_invalid');
+    const step=await this.db.prepare(`SELECT status,output FROM run_steps
+      WHERE run_id=? AND step_id=?`).bind(run_id,plan.steps[0].id).first<{
+       status:string;output:string|null
+      }>();
+    if(step?.status!=='succeeded'||!step.output||!row.result)
+      throw new StateError('envshare_result_not_ready');
+    const saved=JSON.parse(step.output) as {status?:unknown;share_id?:unknown};
+    const emitted=JSON.parse(row.result) as {status?:unknown;share_id?:unknown};
+    if(saved.status!=='accepted'||emitted.status!=='accepted'||
+       typeof saved.share_id!=='string'||saved.share_id!==emitted.share_id)
+      throw new StateError('envshare_result_not_ready');
+    try{
+      const share_url=await composeEnvshareUrl(key_base58,saved.share_id,payload);
+      return {share_url,ttl_seconds:payload.ttl,max_reads:payload.reads};
+    }catch{throw new StateError('envshare_invalid_key_or_result');}
   }
   async result(run_id:string){
     const meta=await this.status(run_id);

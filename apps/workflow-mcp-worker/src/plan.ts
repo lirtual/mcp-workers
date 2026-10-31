@@ -132,7 +132,7 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
 async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
   const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
   for(const s of steps)if(s.uses==='action.run'){
-    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':'unified-generic';
+    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':'unified-generic';
     manifests.set(s.id,await cloudflareActionManifest(kind));
   }
   const knownRef=(ref:string,path:string):KnownOutput=>{
@@ -768,7 +768,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':'unified-generic');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -781,6 +781,18 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('dub_url_must_be_run_input',stepPath+'/with/input/url');
         if(input.public_stats!==undefined&&typeof input.public_stats!=='boolean')
           throw new PlanError('invalid_dub_public_stats',stepPath+'/with/input/public_stats');
+      }else if(manifest.provider==='envshare'){
+        keys(input,['encrypted','iv','ttl','reads'],stepPath+'/with/input');
+        for(const key of ['encrypted','iv']){
+          const field=input[key];
+          if(!field||typeof field!=='object'||Array.isArray(field)||
+             Object.keys(field).length!==1||
+             (field as {ref?:unknown}).ref!=='inputs.'+key)
+            throw new PlanError('envshare_must_use_presealed_input',stepPath+'/with/input/'+key);
+        }
+        if(!Number.isSafeInteger(input.ttl)||Number(input.ttl)<60||Number(input.ttl)>604800||
+           !Number.isSafeInteger(input.reads)||Number(input.reads)<1||Number(input.reads)>10)
+          throw new PlanError('invalid_envshare_policy',stepPath+'/with/input');
       }else if(manifest.provider==='bark'){
         keys(input,['notification'],stepPath+'/with/input');
         const notification=object(input.notification,'invalid_bark_notification');
@@ -959,6 +971,11 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       }
     } else if(s.uses==='action.run'&&s.with.provider==='dub') {
       expression((s.with.input as Record<string,unknown>).url,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with/input/url');
+    } else if(s.uses==='action.run'&&s.with.provider==='envshare') {
+      expression((s.with.input as Record<string,unknown>).encrypted,s,0,false,false,
+        '/steps/'+steps.indexOf(s)+'/with/input/encrypted');
+      expression((s.with.input as Record<string,unknown>).iv,s,0,false,false,
+        '/steps/'+steps.indexOf(s)+'/with/input/iv');
     } else if(s.uses==='action.run'&&s.with.provider==='bark') {
       expression((s.with.input as {notification:unknown}).notification,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/input/notification');
     } else expression(s.with,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with');
@@ -971,6 +988,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   // Dub is a single explicit manual Run; never Cron, Webhook, or GitHub-push fanout.
   if(triggers?.length&&steps.some(s=>s.uses==='action.run'&&s.with.action==='dub.shorten_url'))
     throw new PlanError('dub_manual_run_only','/triggers');
+  const envshareSteps=steps.filter(s=>s.uses==='action.run'&&s.with.action==='envshare.share_text');
+  if(envshareSteps.length && (triggers?.length||steps.length!==1||
+      !!steps[0].needs.length||steps[0].if!==undefined||saga))
+    throw new PlanError('envshare_manual_single_step_only','/steps');
   await validateStaticOutputReferences(steps);
   // Initial reviewed-write slice permits one static external write per Plan.
   // Do not turn a single owner grant into a multi-write fan-out.

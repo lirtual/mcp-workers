@@ -258,7 +258,7 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
      properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
     {type:'object',additionalProperties:false,
      required:['executor','provider','action','contract_digest','input'],properties:{
-       executor:{const:'cloudflare'},provider:{enum:['weixin','bark','dub']},action:{enum:['weixin.send_text','weixin.notify_download','bark.send_notification','dub.shorten_url']},
+       executor:{const:'cloudflare'},provider:{enum:['weixin','bark','dub','envshare']},action:{enum:['weixin.send_text','weixin.notify_download','bark.send_notification','dub.shorten_url','envshare.share_text']},
        contract_digest:{type:'string',pattern:'^[a-f0-9]{64}$'},
        input:{oneOf:[
         {type:'object',additionalProperties:false,required:['download_step_id'],
@@ -267,6 +267,12 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
          properties:{text:{type:'string',minLength:1,maxLength:2048},session_step_id:{type:'string'}}},
         {type:'object',additionalProperties:false,required:['url'],
          properties:{url:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.url'}}},public_stats:{type:'boolean'}}},
+        {type:'object',additionalProperties:false,
+         required:['encrypted','iv','ttl','reads'],properties:{
+          encrypted:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.encrypted'}}},
+          iv:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.iv'}}},
+          ttl:{type:'integer',minimum:60,maximum:604800},
+          reads:{type:'integer',minimum:1,maximum:10}}},
         {type:'object',additionalProperties:false,required:['notification'],
          properties:{notification:{type:'object'}}}]},
      }},
@@ -580,7 +586,7 @@ export async function workflowCapabilities(env:Pick<Env,
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
       connection_status:'workflow_connection_status',connection_revoke:'workflow_connection_revoke',connection_enable:'workflow_connection_enable',
-      status:'workflow_status',result:'workflow_result',approval:'workflow_approval'},
+      status:'workflow_status',result:'workflow_result',envshare_link:'workflow_envshare_link',approval:'workflow_approval'},
     admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
     note:'Discovery and inline validation never publish or grant execution.',
   };
@@ -595,7 +601,7 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
       reviewed_manifest:await cloudflareActionManifest(),
-      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('download'),await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub')],
+      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('download'),await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub'),await cloudflareActionManifest('envshare')],
       deployment_id:env.ACTIONS_DEPLOYMENT_ID??null}:{}),
   };
   // Design-only contracts make unsupported features discoverable without
