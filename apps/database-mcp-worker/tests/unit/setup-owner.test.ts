@@ -216,7 +216,7 @@ describe('Spec #605 Owner /setup presentation', () => {
     expect(body).toContain('<details id="add-panel" class="add-panel" open');
     expect(body).toContain('name="replacement_for" value="primary_pg"');
     expect(body).toContain('Replace');
-    expect(body).toContain('In-progress Hyperdrive operations');
+    expect(body).toContain('Open Hyperdrive operations');
     expect(body).toContain('candidate_pg');
     expect(body).toContain('Run 44');
     expect(body).not.toContain('name="transport" value="direct" checked');
@@ -234,6 +234,44 @@ describe('Spec #605 Owner /setup presentation', () => {
     expect(body).toContain('Awaiting confirmation');
     expect(body).not.toContain('candidate</strong> <span class="meta">');
     expect(body).not.toContain('Active database connection');
+  });
+});
+
+describe('Spec #605 operation history labels', () => {
+  const csrf = 'a'.repeat(43);
+  const operation = (phase: string, index: number) => ({
+    operation_id: '12345678-1234-1234-1234-' + String(index).padStart(12, '0'),
+    logical_id: 'op_' + phase, action: 'create', phase, expected_revision: 0,
+    config_id: null, binding_name: null, pr_number: null,
+    prepare_run_id: 100 + index, apply_run_id: null, ci_run_id: null, release_run_id: null,
+    head_sha: null, expected_source_sha: null, error_class: phase === 'failed' ? 'apply_denied' : null,
+    expires_at: Date.now() + 60_000
+  });
+  it('keeps open operations visible, terminal failures collapsed, and completions in history', async () => {
+    const body = await setupPage([], csrf, [
+      operation('pending', 1), operation('unknown', 2),
+      operation('failed', 3), operation('completed', 4)
+    ]).text();
+    const openAt = body.indexOf('<h2>Open Hyperdrive operations</h2>');
+    const failedAt = body.indexOf('<details><summary>Failed operation history (1)</summary>');
+    const completedAt = body.indexOf('<details><summary>Completed operation history</summary>');
+    expect(openAt).toBeGreaterThan(-1);
+    expect(failedAt).toBeGreaterThan(openAt);
+    expect(completedAt).toBeGreaterThan(failedAt);
+    expect(body.slice(openAt, failedAt)).toContain('op_pending');
+    expect(body.slice(openAt, failedAt)).toContain('op_unknown');
+    expect(body.slice(openAt, failedAt)).not.toContain('op_failed');
+    expect(body.slice(failedAt, completedAt)).toContain('op_failed');
+    expect(body.slice(failedAt, completedAt)).toContain('Run 103');
+    expect(body.slice(completedAt)).toContain('op_completed');
+  });
+  it('does not mislabel historical failures as running work when no operation is open', async () => {
+    const body = await setupPage([], csrf,
+      Array.from({length:9},(_,i) => operation('failed', i))).text();
+    expect(body).not.toContain('Open Hyperdrive operations');
+    expect(body).toContain('<details><summary>Failed operation history (9)</summary>');
+    expect(body).not.toContain('<details open><summary>Failed operation history');
+    expect(body).toContain('Run 108');
   });
 });
 
