@@ -1,6 +1,7 @@
 # Browser MCP — bounded idle pairing and minimal Profile UI
 
 Status: Owner-approved design consensus (2026-10-31). **Design only; not implemented, merged or deployed.**
+Spec: [#626](https://github.com/lirtual/mcp-workers/issues/626).
 Scope: An increment to [#418](https://github.com/lirtual/mcp-workers/issues/418) and completed [#531](https://github.com/lirtual/mcp-workers/issues/531). The newer design overrides only the indefinite **permanent** grant lifetime, Profile naming/discovery and Options presentation; the Access activation proof, Stop/Revoke priority, temporary mode, sensitive grants and Operation/Unknown contracts remain intact.
 
 ## Goal and terminology
