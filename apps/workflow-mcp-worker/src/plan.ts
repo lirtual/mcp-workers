@@ -132,7 +132,7 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
 async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
   const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
   for(const s of steps)if(s.uses==='action.run'){
-    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':'unified-generic';
+    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':'unified-generic';
     manifests.set(s.id,await cloudflareActionManifest(kind));
   }
   const knownRef=(ref:string,path:string):KnownOutput=>{
@@ -768,7 +768,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':'unified-generic');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
@@ -781,6 +781,15 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('dub_url_must_be_run_input',stepPath+'/with/input/url');
         if(input.public_stats!==undefined&&typeof input.public_stats!=='boolean')
           throw new PlanError('invalid_dub_public_stats',stepPath+'/with/input/public_stats');
+      }else if(manifest.provider==='envshare'){
+        keys(input,['encrypted','iv','ttl','reads'],stepPath+'/with/input');
+        for(const field of ['encrypted','iv','ttl','reads']){
+          const target=input[field];
+          if(!target||typeof target!=='object'||Array.isArray(target)||
+             Object.keys(target).length!==1||
+             (target as {ref?:unknown}).ref!=='inputs.'+field)
+            throw new PlanError('envshare_input_must_be_sealed_reference',stepPath+'/with/input/'+field);
+        }
       }else if(manifest.provider==='bark'){
         keys(input,['notification'],stepPath+'/with/input');
         const notification=object(input.notification,'invalid_bark_notification');
@@ -959,6 +968,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       }
     } else if(s.uses==='action.run'&&s.with.provider==='dub') {
       expression((s.with.input as Record<string,unknown>).url,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with/input/url');
+    } else if(s.uses==='action.run'&&s.with.provider==='envshare') {
+      expression((s.with.input as Record<string,unknown>),s,0,false,false,'/steps/'+steps.indexOf(s)+'/with/input');
     } else if(s.uses==='action.run'&&s.with.provider==='bark') {
       expression((s.with.input as {notification:unknown}).notification,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/input/notification');
     } else expression(s.with,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with');
@@ -967,6 +978,15 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       const op=s.if && typeof s.if==='object' && !Array.isArray(s.if)?Object.keys(s.if):[];
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }
+  }
+  // A secret-bearing EnvShare Run may do exactly one reviewed, manual write.
+  // No literal secret in the Plan, additional Step, Flow or event source.
+  if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='envshare')){
+    if(triggers?.length||steps.length!==1||saga||
+       (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
+       steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
+       steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
+      throw new PlanError('envshare_manual_single_step_only','/steps');
   }
   // Dub is a single explicit manual Run; never Cron, Webhook, or GitHub-push fanout.
   if(triggers?.length&&steps.some(s=>s.uses==='action.run'&&s.with.action==='dub.shorten_url'))
