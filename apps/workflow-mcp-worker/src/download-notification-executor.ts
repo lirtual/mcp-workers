@@ -25,13 +25,12 @@ export async function runDownloadNotification(
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
 ):Promise<Result>{
  const manifest=await cloudflareActionManifest('download');
- const provider=env.WEIXIN_ACTION_PROVIDER,version=env.WEIXIN_ACTION_DEPLOYMENT_ID;
+ const provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
  const grant=plan.cloudflare_action_approvals?.find(x=>x.executor==='cloudflare'&&
   x.provider===manifest.provider&&x.action===manifest.action&&
   x.contract_digest===manifest.contract_digest&&x.deployment_id===version);
- if(!provider||!version)return failed('cloudflare_provider_not_configured');
- if(plan.cloudflare_execution_approved!==true||!grant||action.with.executor!=='cloudflare'||
-  action.with.provider!=='weixin'||action.with.action!==manifest.action||action.with.contract_digest!==manifest.contract_digest)
+ if(plan.cloudflare_execution_approved!==true||action.with.executor!=='cloudflare'||
+  action.with.provider!=='weixin'||action.with.action!==manifest.action)
   return failed('cloudflare_action_approval_required');
  const sourceId=(action.with.input as {download_step_id?:unknown}|undefined)?.download_step_id;
  const source=plan.steps.find(x=>x.id===sourceId);
@@ -52,22 +51,29 @@ export async function runDownloadNotification(
   .bind(runId,action.id).first<Frozen>();
  const history=async(row:Frozen):Promise<Result>=>{
   try{
-   const response=await provider.getReceipt({invocation_id:row.invocation_id,
-    binding_generation:row.binding_generation,input_digest:row.input_digest});
+   const query={invocation_id:row.invocation_id,binding_generation:row.binding_generation,input_digest:row.input_digest};
+   const response=env.ACTIONS?await env.ACTIONS.getReceipt('weixin.notify_download',query):
+     await env.WEIXIN_ACTION_PROVIDER!.getReceipt(query);
    return receipt(response.status);
   }catch{return unknown('cloudflare_receipt_unconfirmed');}
  };
  try{
   const prior=await existing();
   if(prior){
-   if(prior.contract_digest!==manifest.contract_digest||prior.deployment_id!==version||
-    prior.input_digest!==await digest(DOWNLOAD_COMPLETED_TEXT)||
-    !Number.isSafeInteger(prior.binding_generation)||prior.binding_generation<1)
+   const historicalGrant=plan.cloudflare_action_approvals?.some(g=>
+     g.action==='weixin.notify_download'&&g.provider==='weixin'&&
+     g.contract_digest===prior.contract_digest&&g.deployment_id===prior.deployment_id);
+   if(!historicalGrant||
+     prior.input_digest!==await digest(DOWNLOAD_COMPLETED_TEXT)||
+     !Number.isSafeInteger(prior.binding_generation)||prior.binding_generation<1)
     return unknown('cloudflare_invocation_conflict');
    return history(prior);
   }
+  if(!provider||!version)return failed('cloudflare_provider_not_configured');
+  if(!grant||action.with.contract_digest!==manifest.contract_digest)
+   return failed('cloudflare_action_approval_required');
   let live;
-  try{live=await provider.getDownloadContract();}
+  try{live=await provider.getContract(manifest.action);}
   catch{return failed('cloudflare_provider_identity_unconfirmed');}
   if(live.deployment_id!==version||live.contract_digest!==manifest.contract_digest)
    return failed('cloudflare_provider_identity_mismatch');
@@ -86,7 +92,7 @@ export async function runDownloadNotification(
    .bind(sourceId,runId,childId).first<{attempt_id:string}>();
   if(!proof)return failed('download_completion_unverified');
   let binding;
-  try{binding=await provider.getBinding();}
+  try{binding=await provider.getBinding(manifest.action);}
   catch{return failed('weixin_binding_unconfirmed');}
   if(!binding?.ready||!Number.isSafeInteger(binding.generation)||binding.generation<1)
    return failed('weixin_binding_not_ready');
@@ -107,6 +113,7 @@ export async function runDownloadNotification(
       AND instr(a.workflow_ref,'lirtual/session-actions/.github/workflows/download.yml@')=1
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt)
+   AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
    AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
        WHERE c.run_id=? AND c.step_id=?)`)
    .bind(runId,action.id,identity,proof.attempt_id,inputDigest,binding.generation,
@@ -117,7 +124,7 @@ export async function runDownloadNotification(
    return raced?history(raced):failed('cloudflare_dispatch_not_admitted');
   }
   try{
-   const response=await provider.sendDownloadComplete({invocation_id:identity,
+   const response=await provider.execute(manifest.action,{invocation_id:identity,
     binding_generation:binding.generation,deployment_id:version,
     contract_digest:manifest.contract_digest});
    if(response.input_digest!==inputDigest)return unknown('weixin_receipt_conflict');

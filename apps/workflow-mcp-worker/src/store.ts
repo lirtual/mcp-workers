@@ -51,6 +51,15 @@ export type Env = {
   GITHUB_ACTION_OIDC_AUDIENCE?: string;
   // Canonical 256-bit AES-GCM key for short-lived Session data.
   SESSION_RUNTIME_DATA_KEY?: string;
+  // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
+  ACTIONS_DEPLOYMENT_ID?: string;
+  ACTIONS?: {
+    listActions():Promise<Array<{action_id:string}>>;
+    getContract(action_id:string,contract_digest?:string):Promise<{deployment_id:string;contract_digest:string}>;
+    execute(action_id:string,input:unknown):Promise<{status:string;input_digest:string}>;
+    getReceipt(action_id:string,query:unknown):Promise<{status:string}>;
+    getBinding(action_id:string):Promise<{generation:number;ready:boolean}>;
+  };
   // The Worker Version ID is pinned by the separately authorized release.
   BARK_ACTION_DEPLOYMENT_ID?: string;
   BARK_ACTION_PROVIDER?: {
@@ -273,10 +282,10 @@ export class WorkflowService {
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':'generic');
+          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':'unified-generic');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
-              (bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID)??null};
+              this.env.ACTIONS_DEPLOYMENT_ID??null};
         }));
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
@@ -398,16 +407,15 @@ export class WorkflowService {
     if(hasCloudflare){
       const step=plan.steps.find(s=>s.uses==='action.run')!;
       const bark=step.with.provider==='bark';
-      const deployment=bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID;
-      const provider=bark?this.env.BARK_ACTION_PROVIDER:this.env.WEIXIN_ACTION_PROVIDER;
+      const deployment=this.env.ACTIONS_DEPLOYMENT_ID;
+      const provider=this.env.ACTIONS;
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':'generic');
+      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':'unified-generic');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
-      try{live=step.with.action==='weixin.notify_download'
-        ?await this.env.WEIXIN_ACTION_PROVIDER!.getDownloadContract():bark?await provider.getContract():await this.env.WEIXIN_ACTION_PROVIDER!.getGenericContract();}
+      try{live=await provider.getContract(contract.action,contract.contract_digest);}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
       if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
         throw new StateError('cloudflare_provider_identity_mismatch');
@@ -453,11 +461,8 @@ export class WorkflowService {
       const previous=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
         .bind(row.active_version_id).first<{plan:string}>();
       const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
-      if(current?.digest===plan_digest &&
-        JSON.stringify(oldPlan?.cloudflare_action_approvals??[])===JSON.stringify(cloudflareGrants) &&
-        JSON.stringify(oldPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
-        (!httpConnection || oldPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
-        (oldPlan?.mcp_connection_generation??0)===portalConnection.generation))
+      if(current?.digest===plan_digest && oldPlan &&
+        canonicalJsonString(oldPlan)===canonicalJsonString(publishedPlan))
         return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
     }
     const version=crypto.randomUUID(),t=now();
@@ -473,11 +478,8 @@ export class WorkflowService {
         const prior=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
           .bind(latest.active_version_id).first<{plan:string}>();
         const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
-        if(current?.digest===plan_digest &&
-          JSON.stringify(priorPlan?.cloudflare_action_approvals??[])===JSON.stringify(cloudflareGrants) &&
-          JSON.stringify(priorPlan?.http_approvals??[])===JSON.stringify(httpRequired) &&
-          (!httpConnection || priorPlan?.http_connection_generation===httpConnection.generation) && (!portalConnection ||
-            (priorPlan?.mcp_connection_generation??0)===portalConnection.generation))
+        if(current?.digest===plan_digest && priorPlan &&
+            canonicalJsonString(priorPlan)===canonicalJsonString(publishedPlan))
           return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
       }
       throw new StateError('revision_conflict');

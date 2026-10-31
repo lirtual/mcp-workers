@@ -18,16 +18,15 @@ export async function runGenericTextNotification(
  env:Env,plan:Plan,action:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
 ):Promise<Result>{
- const manifest=await cloudflareActionManifest('generic');
- const provider=env.WEIXIN_ACTION_PROVIDER,version=env.WEIXIN_ACTION_DEPLOYMENT_ID;
- if(!provider||!version)return fail('cloudflare_provider_not_configured');
+ const legacy=await cloudflareActionManifest('generic');
+ const unified=await cloudflareActionManifest('unified-generic');
+ const isUnified=action.with.contract_digest===unified.contract_digest;
+ const manifest=isUnified?unified:legacy;
+ const provider=isUnified?env.ACTIONS:env.WEIXIN_ACTION_PROVIDER;
+ const version=isUnified?env.ACTIONS_DEPLOYMENT_ID:env.WEIXIN_ACTION_DEPLOYMENT_ID;
  if(plan.cloudflare_execution_approved!==true||action.with.action!==manifest.action||
     action.with.executor!=='cloudflare'||action.with.provider!=='weixin'||
-    action.with.contract_digest!==manifest.contract_digest||
-    !plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&
-      g.provider==='weixin'&&g.action===manifest.action&&
-      g.contract_digest===manifest.contract_digest&&g.deployment_id===version))
-   return fail('cloudflare_action_approval_required');
+    action.with.contract_digest!==manifest.contract_digest)return fail('cloudflare_action_approval_required');
  if(action.needs.some(id=>ctx?.steps[id]?.status!=='succeeded'))
    return fail('notification_dependency_unverified');
  const text=(action.with.input as {text?:unknown}|undefined)?.text;
@@ -40,15 +39,28 @@ export async function runGenericTextNotification(
    FROM cloudflare_action_invocations WHERE run_id=? AND step_id=?`)
    .bind(runId,action.id).first<Frozen>();
  const recover=async(row:Frozen):Promise<Result>=>{
-   if(row.input_digest!==inputDigest||row.contract_digest!==manifest.contract_digest||
-      row.deployment_id!==version||!Number.isSafeInteger(row.binding_generation)||
-      row.binding_generation<1)return unknown('cloudflare_invocation_conflict');
-   try{return outcome((await provider.getReceipt({invocation_id:row.invocation_id,
-     binding_generation:row.binding_generation,input_digest:row.input_digest})).status);}
-   catch{return unknown('cloudflare_receipt_unconfirmed');}
+   const original=plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&
+     g.provider==='weixin'&&g.action===manifest.action&&
+     g.contract_digest===row.contract_digest&&g.deployment_id===row.deployment_id);
+   if(!original||row.input_digest!==inputDigest||row.contract_digest!==manifest.contract_digest||
+      !Number.isSafeInteger(row.binding_generation)||row.binding_generation<1)
+     return unknown('cloudflare_invocation_conflict');
+   try{
+     const query={invocation_id:row.invocation_id,binding_generation:row.binding_generation,
+       input_digest:row.input_digest};
+     const value=env.ACTIONS?await env.ACTIONS.getReceipt(manifest.action,query):
+       await env.WEIXIN_ACTION_PROVIDER!.getReceipt(query);
+     return outcome(value.status);
+   }catch{return unknown('cloudflare_receipt_unconfirmed');}
  };
  try{
    const prior=await existing();if(prior)return recover(prior);
+   if(!provider||!version)return fail('cloudflare_provider_not_configured');
+  if(!plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&
+      g.provider==='weixin'&&g.action===manifest.action&&
+      g.contract_digest===manifest.contract_digest&&g.deployment_id===version))
+    return fail('cloudflare_action_approval_required');
+
    // Only the orchestrator's persisted terminal states authorize a first send;
    // the caller-supplied in-memory context cannot fabricate a completed Task.
    if(action.needs.length){
@@ -59,12 +71,14 @@ export async function runGenericTextNotification(
        return fail('notification_dependency_unverified');
    }
    let identity;
-   try{identity=await provider.getGenericContract();}
+   try{identity=isUnified?await env.ACTIONS!.getContract(manifest.action,manifest.contract_digest):
+      await env.WEIXIN_ACTION_PROVIDER!.getGenericContract();}
    catch{return fail('cloudflare_provider_identity_unconfirmed');}
    if(identity.deployment_id!==version||identity.contract_digest!==manifest.contract_digest)
      return fail('cloudflare_provider_identity_mismatch');
    let binding;
-   try{binding=await provider.getBinding();}
+   try{binding=isUnified?await env.ACTIONS!.getBinding(manifest.action):
+      await env.WEIXIN_ACTION_PROVIDER!.getBinding();}
    catch{return fail('weixin_binding_unconfirmed');}
    if(!binding.ready||!Number.isSafeInteger(binding.generation)||binding.generation<1)
      return fail('weixin_binding_not_ready');
@@ -75,6 +89,7 @@ export async function runGenericTextNotification(
      contract_digest,deployment_id,created_at)
     SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
+    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations
       WHERE run_id=? AND step_id=?)`)
     .bind(runId,action.id,invocationId,invocationId,inputDigest,binding.generation,
@@ -82,9 +97,10 @@ export async function runGenericTextNotification(
    if(admitted.meta.changes!==1){const raced=await existing();
      return raced?recover(raced):fail('cloudflare_dispatch_not_admitted');}
    try{
-     const result=await provider.sendGenericText({invocation_id:invocationId,
-       binding_generation:binding.generation,text,deployment_id:version,
-       contract_digest:manifest.contract_digest});
+     const input={invocation_id:invocationId,binding_generation:binding.generation,
+       text,deployment_id:version,contract_digest:manifest.contract_digest};
+     const result=isUnified?await env.ACTIONS!.execute(manifest.action,input):
+       await env.WEIXIN_ACTION_PROVIDER!.sendGenericText(input);
      return result.input_digest===inputDigest?outcome(result.status):unknown('weixin_receipt_conflict');
    }catch{return recover({invocation_id:invocationId,source_attempt_id:invocationId,
      input_digest:inputDigest,binding_generation:binding.generation,

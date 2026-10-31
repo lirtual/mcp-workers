@@ -23,7 +23,7 @@ async function fixture(t:test.TestContext){
  for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql',
    '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql',
-   '0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql'])
+   '0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
   sql.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  const m=await cloudflareActionManifest();
  const notify:Step={id:'notify',uses:'action.run',needs:['openlist'],with:{
@@ -52,21 +52,21 @@ async function fixture(t:test.TestContext){
  let historical:'accepted'|'rejected'|'unknown'|'missing'='accepted';
  let failSend=false;
  const provider={
-  getBinding:async()=>({generation:1,ready:true}),
-  getContract:async()=>({deployment_id:version,contract_digest:m.contract_digest}),
-  async sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}){
+  getBinding:async(_action_id:string)=>({generation:1,ready:true}),
+  getContract:async(_action_id:string)=>({deployment_id:version,contract_digest:m.contract_digest}),
+  async execute(_action_id:string,input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}){
    sends++;assert.equal(input.binding_generation,1);assert.equal(input.session_url,url);
    assert.equal(input.deployment_id,version);assert.equal(input.contract_digest,m.contract_digest);
    if(failSend)throw Error('secret! must not be logged');
    return {status:upstreamStatus,input_digest:bodyHash};
   },
-  async getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}){
+  async getReceipt(_action_id:string,input:{invocation_id:string;binding_generation:number;input_digest:string}){
    receipts++;assert.equal(input.input_digest,bodyHash);
    return {status:historical};
   },
  };
  const env={DB:{prepare},WORKFLOW_GITHUB_DISPATCH_TOKEN:'fixture-token',
-  WEIXIN_ACTION_DEPLOYMENT_ID:version,WEIXIN_ACTION_PROVIDER:provider} as unknown as Env;
+  ACTIONS_DEPLOYMENT_ID:version,ACTIONS:provider} as unknown as Env;
  const inspect=async()=>({state:'running' as const});
  return {sql,plan,notify,env,inspect,
   sends:()=>sends,receipts:()=>receipts,
@@ -184,7 +184,7 @@ test('public workflow_cancel after a send reservation cannot claim external retr
 
 test('unreviewed live Provider Version ID fails before Workflow reserves a send',async t=>{
  const f=await fixture(t);
- f.env.WEIXIN_ACTION_PROVIDER!.getContract=async()=>({
+ f.env.ACTIONS!.getContract=async()=>({
   deployment_id:'44444444-4444-4444-8444-444444444444',
   contract_digest:(await cloudflareActionManifest()).contract_digest});
  const x=await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect);
@@ -192,17 +192,33 @@ test('unreviewed live Provider Version ID fails before Workflow reserves a send'
  assert.equal(f.sql.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations').get()!.n,0);
 });
 
+test('migration freeze wins atomically before a Weixin send reservation',async t=>{
+ const f=await fixture(t);
+ f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen',changed_at=1 WHERE id=1").run();
+ assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'failed');
+ assert.equal(f.sends(),0);
+ assert.equal(f.sql.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations').get()!.n,0);
+});
+test('old published Weixin grant can recover historical receipt after new active version',async t=>{
+ const f=await fixture(t);
+ assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'succeeded');
+ f.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
+ f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen',changed_at=2 WHERE id=1").run();
+ assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'succeeded');
+ assert.equal(f.sends(),1);
+ assert.equal(f.receipts(),1);
+});
 test('generic send_text composes the authenticated OpenList Session URL without changing legacy sends',async t=>{
  const f=await fixture(t);
- const m=await cloudflareActionManifest('generic');
+ const m=await cloudflareActionManifest('unified-generic');
  f.notify.with.contract_digest=m.contract_digest;
  f.notify.with.input={text:'OpenList Session Ready\n',session_step_id:'openlist'};
  f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'weixin',
    action:'weixin.send_text',contract_digest:m.contract_digest,deployment_id:version}];
- const provider=f.env.WEIXIN_ACTION_PROVIDER! as unknown as Record<string,unknown>;
- provider.getGenericContract=async()=>({deployment_id:version,contract_digest:m.contract_digest});
+ const provider=f.env.ACTIONS! as unknown as Record<string,unknown>;
+ provider.getContract=async()=>({deployment_id:version,contract_digest:m.contract_digest});
  let sends=0;
- provider.sendGenericText=async(value:{text:string;contract_digest:string})=>{
+ provider.execute=async(_action:string,value:{text:string;contract_digest:string})=>{
   sends++;assert.equal(value.text,'OpenList Session Ready\n'+url);
   assert.equal(value.contract_digest,m.contract_digest);
   return {status:'accepted',input_digest:bodyHash};

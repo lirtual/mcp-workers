@@ -29,7 +29,7 @@ source-reviewed Action, exact manifest digest, configured Service Binding
 identity, deployment ID and explicit approval. Previously cached MCP tool
 metadata may require a one-time client refresh.
 
-Cloudflare `action.run` supports generic Owner-only `weixin.send_text` v2
+Cloudflare `action.run` supports generic Owner-only `weixin.send_text` v3
 (`input: {text}` with an optional verified `session_step_id` to append the
 signed OpenList URL), the legacy `weixin.notify_download` v1 for currently
 published Plans, and `bark.send_notification`. A notification that follows
@@ -498,7 +498,7 @@ is collected. No extra Worker, cleanup Cron, queue, or auth service is introduce
 
 ### Cloudflare Provider candidate (Spec #392; not deployed)
 
-The generic `weixin.send_text` v2 accepts bounded, nonempty, publish-time
+The generic `weixin.send_text` v3 accepts bounded, nonempty, publish-time
 literal text (at most 2048 characters and 4096 UTF-8 bytes). An optional
 `session_step_id` appends a verified same-Run OpenList Quick Tunnel URL; this
 reference is validated at compile and execution time, not accepted from a
@@ -506,7 +506,7 @@ caller. An exact reviewed contract digest and immutable Worker version remain
 mandatory. For literal-only messages a successful predecessor may be any
 Workflow Step, subject to the existing DAG and persisted terminal-state checks. An exact reviewed contract digest and independent `approved_cloudflare_actions` plus `approve_cloudflare_execution=true` are required at Publish. A source-level Action does not grant execution; no arbitrary URL, receiver, Worker target, or RPC method can be supplied.
 
-The `WEIXIN_ACTION_PROVIDER` static Service Binding targets the independent `cloudflare-actions` Provider using the unchanged physical Worker name `weixin-mcp-worker`. Production release and version pin are verified separately; no public Weixin MCP ingress remains. D1 migration 0013 is additive and retains immutable historical Plans.
+New v3 Plans use `ACTIONS` -> `cloudflare-actions#ActionsEntrypoint`. Historical v1/v2 Plans retain their old Worker identity and may read already-reserved receipts through the unified Worker after the cutover; they are never re-sent. During the authorized migration the old `WEIXIN_ACTION_PROVIDER` remains only for transitional compatibility. Production release and version pin are verified separately; no public Weixin MCP ingress is added. D1 migrations 0013 and 0018 retain immutable historical Plans.
 
 A physically running GitHub Attempt and signed Ready callback are checked immediately before the D1 first-dispatch fence. The frozen Invocation ID, input digest, source Attempt and binding generation are stored without message text/URL. Once reservation succeeds, retries and recovery call `getReceipt` only. Missing receipts remain indeterminate; handset delivery is separately observed. Cancelling after reservation cannot retract a possible send. Session termination and capacity release use the existing GitHub lifecycle, not notification success.
 

@@ -12,7 +12,7 @@ const source={version:1,name:'OpenList to Owner Weixin',steps:[
   input:{text:'OpenList Session Ready\n',session_step_id:'openlist'}}},
 ]};
 test('Cloudflare source must pin reviewed contract and the same-Run OpenList session',async()=>{
- const manifest=await cloudflareActionManifest('generic');
+ const manifest=await cloudflareActionManifest('unified-generic');
  const plan: any=structuredClone(source);
  plan.steps[1]!.with.contract_digest=manifest.contract_digest;
  const result=await compilePlan(plan);
@@ -29,7 +29,7 @@ test('Cloudflare source must pin reviewed contract and the same-Run OpenList ses
 });
 
 test('one OpenList Session cannot unexpectedly trigger duplicate Cloudflare notification steps',async()=>{
- const m=await cloudflareActionManifest('generic');
+ const m=await cloudflareActionManifest('unified-generic');
  const plan:any=structuredClone(source);
  plan.steps[1].with.contract_digest=m.contract_digest;
  plan.steps.push({...structuredClone(plan.steps[1]),id:'notify_again'});
@@ -65,7 +65,7 @@ test('download notification requires a reviewed one-item download Task foreach',
 });
 
 test('generic Owner text can follow any verified prerequisite without a new action contract',async()=>{
- const manifest=await cloudflareActionManifest('generic');
+ const manifest=await cloudflareActionManifest('unified-generic');
  const p:any={version:1,name:'Download finished',steps:[
   {id:'done',uses:'result.emit',with:{data:'verified'}},
   {id:'notify',needs:['done'],uses:'action.run',with:{executor:'cloudflare',
@@ -87,7 +87,7 @@ test('generic Owner text can follow any verified prerequisite without a new acti
 
 test('existing verified download Task can notify through generic text without a download-specific Action',async()=>{
  const old=await cloudflareActionManifest('download');
- const generic=await cloudflareActionManifest('generic');
+ const generic=await cloudflareActionManifest('unified-generic');
  const task={...github,type:'task',workflowPath:'.github/workflows/download.yml',
   inputs:{batch_json:{ref:'item.value'}}};
  const p:any={version:1,name:'generic download',inputs:{download_batches:['']},steps:[

@@ -25,7 +25,7 @@ test('unchanged Draft reuses only the same reviewed Provider version, and repins
    }catch(e){sqlite.exec('ROLLBACK');throw e;}
   }
  } as unknown as Env['DB'];
- const manifest=await cloudflareActionManifest('generic');
+ const manifest=await cloudflareActionManifest('unified-generic');
  const id='11111111-1111-4111-8111-111111111111';
  const definition={version:1,name:'generic repin',steps:[{
   id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'weixin',
@@ -36,9 +36,9 @@ test('unchanged Draft reuses only the same reviewed Provider version, and repins
  const firstId='33333333-3333-4333-8333-333333333333';
  const nextId='44444444-4444-4444-8444-444444444444';
  let active=firstId;
- const provider={getGenericContract:async()=>({deployment_id:active,contract_digest:manifest.contract_digest})};
- const env={DB:db,WEIXIN_ACTION_PROVIDER:provider,
-  get WEIXIN_ACTION_DEPLOYMENT_ID(){return active;}} as unknown as Env;
+ const provider={getContract:async()=>({deployment_id:active,contract_digest:manifest.contract_digest})};
+ const env={DB:db,ACTIONS:provider,
+  get ACTIONS_DEPLOYMENT_ID(){return active;}} as unknown as Env;
  const service=new WorkflowService(env);
  const grant=()=>[{executor:'cloudflare' as const,provider:'weixin',
   action:'weixin.send_text',contract_digest:manifest.contract_digest,deployment_id:active}];

@@ -90,7 +90,7 @@ export function verifyDatabaseApplyGate(source) {
   assert.ok(job(source,'checks').gate.includes("inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == ''"));
   verifyDatabaseFinalizeGate(source);
   const inputs=source.slice(source.indexOf('    inputs:'),source.indexOf('\npermissions:'));
-  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,10,'Expected exactly ten inputs');
+  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,11,'Expected exactly eleven inputs');
 }
 
 /** Only the successful existing deploy can supply a published version receipt. */
@@ -260,8 +260,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 10,
-  'Release workflow_dispatch must have exactly ten inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 11,
+  'Release workflow_dispatch must have exactly eleven reviewed inputs');
 assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');
 assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]'),
   'Database release expected SHA gate missing');

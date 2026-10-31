@@ -686,7 +686,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'generic');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');

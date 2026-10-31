@@ -17,7 +17,7 @@ async function fixture(t:test.TestContext){
    '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
    '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
    '0008_session_locator.sql','0009_fixed_sessions.sql','0011_awaited_child_capacity.sql',
-   '0013_cloudflare_action_invocations.sql'])
+   '0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
   sql.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  const manifest=await cloudflareActionManifest('generic');
  const done:Step={id:'done',uses:'result.emit',needs:[],with:{data:'ok'}};
@@ -50,7 +50,7 @@ async function fixture(t:test.TestContext){
  const env={DB:{prepare},WEIXIN_ACTION_PROVIDER:provider,WEIXIN_ACTION_DEPLOYMENT_ID:deployment} as unknown as Env;
  const ctx={inputs:{},steps:{done:{status:'succeeded'}}};
  const run=()=>runPublishedCloudflareAction(env,plan,notify,runId,undefined,ctx);
- return {sql,plan,notify,ctx,run,sends:()=>sends,reads:()=>reads,uncertain:()=>{uncertain=true}};
+ return {sql,plan,notify,ctx,env,run,sends:()=>sends,reads:()=>reads,uncertain:()=>{uncertain=true}};
 }
 test('generic text uses one durable Owner-only dispatch and never stores message text',async t=>{
  const f=await fixture(t);
@@ -83,4 +83,50 @@ test('forged in-memory success without persisted prerequisite is refused',async 
  f.sql.prepare("UPDATE run_steps SET status='failed' WHERE step_id='done'").run();
  assert.equal((await f.run()).status,'failed');
  assert.equal(f.sends(),0);
+});
+
+test('v2 immutable Plan can read its old receipt after unified binding replaces legacy Worker',async t=>{
+ const f=await fixture(t);
+ assert.equal((await f.run()).status,'succeeded');
+ let historical=0;
+ f.env.ACTIONS={getReceipt:async()=>{historical++;return {status:'accepted'};}} as unknown as Env['ACTIONS'];
+ f.env.WEIXIN_ACTION_PROVIDER=undefined;
+ f.env.WEIXIN_ACTION_DEPLOYMENT_ID=undefined;
+ f.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
+ assert.equal((await f.run()).status,'succeeded');
+ assert.equal(historical,1);assert.equal(f.sends(),1);
+});
+test('v3 unified text reserves once, verifies pinned identity and cannot cross a frozen gate',async t=>{
+ const f=await fixture(t),m=await cloudflareActionManifest('unified-generic');
+ f.notify.with.contract_digest=m.contract_digest;
+ f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'weixin',
+   action:'weixin.send_text',contract_digest:m.contract_digest,deployment_id:deployment}];
+ const digest=createHash('sha256').update(message).digest('hex');let sends=0;
+ f.env.ACTIONS_DEPLOYMENT_ID=deployment;
+ f.env.ACTIONS={
+   getContract:async()=>({deployment_id:deployment,contract_digest:m.contract_digest}),
+   getBinding:async()=>({generation:1,ready:true}),
+   execute:async(_action:string,request:unknown)=>{sends++;assert.equal((request as {text:string}).text,message);
+     return {status:'accepted',input_digest:digest};},
+   getReceipt:async()=>({status:'accepted'}),
+ } as unknown as Env['ACTIONS'];
+ assert.equal((await f.run()).status,'succeeded');
+ assert.equal((await f.run()).status,'succeeded');
+ assert.equal(sends,1);
+ const other=await fixture(t);other.notify.with.contract_digest=m.contract_digest;
+ other.plan.cloudflare_action_approvals=f.plan.cloudflare_action_approvals;
+ other.env.ACTIONS_DEPLOYMENT_ID=deployment;other.env.ACTIONS=f.env.ACTIONS;
+ other.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
+ assert.equal((await other.run()).status,'failed');assert.equal(sends,1);
+});
+
+test('migration freeze refuses new legacy v2 sends but retains read-only historical receipts',async t=>{
+ const f=await fixture(t);
+ f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
+ assert.equal((await f.run()).status,'failed');assert.equal(f.sends(),0);
+ const existing=await fixture(t);
+ assert.equal((await existing.run()).status,'succeeded');
+ existing.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
+ assert.equal((await existing.run()).status,'indeterminate');
+ assert.equal(existing.sends(),1);
 });

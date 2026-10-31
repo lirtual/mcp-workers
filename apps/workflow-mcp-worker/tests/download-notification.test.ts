@@ -27,7 +27,8 @@ async function fixture(t:test.TestContext){
   '0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
   '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
   '0008_session_locator.sql','0009_fixed_sessions.sql',
-  '0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql'])
+  '0011_awaited_child_capacity.sql','0013_cloudflare_action_invocations.sql',
+  '0018_cloudflare_action_migration_fence.sql'])
   sql.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  const m=await cloudflareActionManifest('download');
  const notify:Step={id:'notify',uses:'action.run',needs:[sourceId],with:{
@@ -59,21 +60,28 @@ async function fixture(t:test.TestContext){
  let failSend=false;
  let sendStatus='accepted';
  const provider={
-  getContract:async()=>({deployment_id:version,contract_digest:m.contract_digest}),
-  getDownloadContract:async()=>({deployment_id:version,contract_digest:m.contract_digest}),
-  getBinding:async()=>({generation:1,ready:true}),
-  sendDownloadComplete:async(input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string})=>{
+  getContract:async(actionId:string)=>{
+   assert.equal(actionId,'weixin.notify_download');
+   return {deployment_id:version,contract_digest:m.contract_digest};
+  },
+  getBinding:async(actionId:string)=>{
+   assert.equal(actionId,'weixin.notify_download');
+   return {generation:1,ready:true};
+  },
+  execute:async(actionId:string,input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string})=>{
+   assert.equal(actionId,'weixin.notify_download');
    assert.equal(input.contract_digest,m.contract_digest);assert.equal(input.binding_generation,1);
    assert.equal(input.deployment_id,version);sends++;
    if(failSend)throw Error('upstream response lost');
    return {status:sendStatus,input_digest:inputDigest};
   },
-  getReceipt:async(input:{input_digest:string})=>{
+  getReceipt:async(actionId:string,input:{input_digest:string})=>{
+   assert.equal(actionId,'weixin.notify_download');
    assert.equal(input.input_digest,inputDigest);receipts++;return {status:'missing'};
   },
  };
- const env={DB:{prepare},WEIXIN_ACTION_PROVIDER:provider,
-  WEIXIN_ACTION_DEPLOYMENT_ID:version} as unknown as Env;
+ const env={DB:{prepare},ACTIONS:provider,
+  ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
  const ctx={inputs:{},steps:{[sourceId]:{status:'succeeded'}}};
  const call=()=>runDownloadNotification(env,plan,notify,runId,ctx);
  return {sql,plan,notify,env,ctx,call,sends:()=>sends,receipts:()=>receipts,

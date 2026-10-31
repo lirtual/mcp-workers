@@ -117,12 +117,13 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
 
-test('Database lifecycle dispatch stays within ten inputs and production pins Owner-reviewed SHA',()=>{
+test('Database lifecycle and Actions ingress dispatch preserve all eleven reviewed inputs',()=>{
   const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
   const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
-  assert.ok(names.length===10,'release workflow_dispatch must have exactly ten inputs');
+  assert.ok(names.length===11,'release workflow_dispatch must have exactly eleven reviewed inputs');
   assert.equal(new Set(names).size,names.length);
   assert.ok(names.includes('database_expected_release_sha'));
+  assert.ok(names.includes('actions_old_ingress_quiesced'));
   const deploy=release.slice(release.indexOf('\n  deploy:\n'));
   assert.match(deploy,/github.actor == 'lirtual'/);
   assert.match(deploy,/GITHUB_ACTOR.*lirtual/);

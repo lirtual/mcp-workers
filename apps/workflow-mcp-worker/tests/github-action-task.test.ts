@@ -170,6 +170,58 @@ test('Session is not accidentally accepted through the Task executor',async()=>{
  }finally{fixture.db.close();}
 });
 
+test('cancelled parent stops a dispatched Task without polling GitHub or rewriting history',async()=>{
+ const f=setup();
+ let inspections=0;
+ const step={do:async(name:string,_opts:unknown,callback:()=>Promise<unknown>)=>{
+  if(name==='github-action-check-build-0'){
+   f.db.prepare("UPDATE runs SET outcome='cancelled',error_code='approval_cancel_requested' WHERE id=?").run(runId);
+   f.db.prepare("UPDATE step_attempts SET state='failed' WHERE run_id=?").run(runId);
+  }
+  return callback();
+ },sleep:async()=>{throw Error('unexpected extra poll sleep');}} as unknown as WorkflowStep;
+ const http=async(req:Request):Promise<Response>=>{
+  const path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref,object:{type:'commit',sha}});
+  if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+  inspections++;
+  return Response.json({status:'completed',conclusion:'failure'});
+ };
+ try{
+  const result=await runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http);
+  assert.deepEqual(result,{status:'indeterminate',error_code:'github_action_parent_not_active'});
+  assert.equal(f.post(),1);
+  assert.equal(inspections,0,'no GitHub inspection after parent cancellation');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'cancelled');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'failed');
+ }finally{f.db.close();}
+});
+test('parent cancellation alone cannot stop checking an unconfirmed physical Task',async()=>{
+ const f=setup();
+ let reads=0,sleeps=0;
+ const stop=new Error('continue_bounded_poll');
+ const step={do:async(name:string,_opts:unknown,callback:()=>Promise<unknown>)=>{
+  if(name==='github-action-check-build-0')
+   f.db.prepare("UPDATE runs SET outcome='cancelled',error_code='approval_cancel_requested' WHERE id=?").run(runId);
+  return callback();
+ },sleep:async()=>{sleeps++;throw stop;}} as unknown as WorkflowStep;
+ const http=async(req:Request):Promise<Response>=>{
+  const path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref,object:{type:'commit',sha}});
+  if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+  reads++;
+  return Response.json({status:'completed',conclusion:'failure'});
+ };
+ try{
+  await assert.rejects(()=>runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http),e=>e===stop);
+  assert.equal(f.post(),1);
+  assert.equal(sleeps,1,'bounded wait continues while physical Attempt lacks a terminal receipt');
+  assert.equal(reads,0,'no untrusted GitHub terminal inference from a cancelled parent');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+ }finally{f.db.close();}
+});
 test('GitHub job failing before OIDC claim reports failed without a false success',async()=>{
  const fixture=setup();
  const http=async(req:Request):Promise<Response>=>{
