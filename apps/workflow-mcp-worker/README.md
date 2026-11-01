@@ -645,3 +645,24 @@ Encode this whole JSON document as the `batch_json` string; replace the
 example URL and remote with real approved values. Successful syntax validation
 is **not** remote authorization, proof of network access or a successful download.
 Do not duplicate the provider's parser in Workflow MCP.
+
+### ChatGPT-selected Litterbox files (Spec #35)
+
+The existing `workflow_litterbox_upload` tool requires a separate, approved
+single-file Published Workflow and a unique idempotency key. The fileParams
+`download_url` is a temporary user-selected **external** input, not proof
+of OpenAI file ownership. The consumer accepts the existing exact
+`files.oaiusercontent.com` HTTPS origin and, as a narrow compatibility case,
+`<storage-account>.blob.core.windows.net/<container>/<blob>` with an Azure
+SAS containing `sig`, `sv`, `se` and no explicit non-read permissions.
+Other `windows.net` subdomains, other Azure services, unsigned Blob URLs,
+generic user-supplied HTTPS URLs and redirects remain rejected.
+
+Only a GET without caller credentials is attempted, with a 15-second timeout
+and strict 10 MiB streaming limit. File bytes and SHA-256 are kept in memory
+until the separately authorized single Provider invocation; signed download
+URLs and file IDs are never persisted or sent to that Provider. Azure Blob
+account ownership is **not attested** by the SAS or hostname. The real
+ChatGPT URL's exact endpoint/SAS form, live byte retrieval, public Litterbox
+upload and independent download/hash/TTL remain separate production E2E
+acceptance gates.
