@@ -1,8 +1,8 @@
 # RCA — Permanent device idle-grant lifecycle
 
-**Status:** Final Grill With Docs design consensus (2026-11-01); **design only**.
+**Status:** Final Grill With Docs consensus (2026-11-01), implementation candidate under review; **not production accepted**.
 Owner selected policy **B** and **Q1–Q12=A**, in three rounds.
-**Not implemented, merged or production deployed for RCA.**
+**Source candidate implemented in Worker and Agent branches; not merged or production deployed for RCA.**
 Related: [Browser Spec #626](https://github.com/lirtual/mcp-workers/issues/626),
 [RCA ADR-0023](./adr/0023-online-held-permanent-device-idle-grants.md),
 [revocation ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md),
@@ -215,6 +215,4 @@ No additional MCP tool, status enum, management UI or history index.
 **Q1–Q12=A; final owner consensus.** Product rule, OFF/Resume authority,
 online evidence, replay/receipt boundaries, old-device migration,
 configuration, discovery and release gates are resolved; no further
-owner architectural question is required. This is a **design artifact**,
-not an RCA implementation, production acceptance or closure of the
-separate Browser #626 unfinished verification.
+owner architectural question is required. This design is accompanied by a code candidate, not production acceptance or closure of the separate Browser #626 unfinished verification.

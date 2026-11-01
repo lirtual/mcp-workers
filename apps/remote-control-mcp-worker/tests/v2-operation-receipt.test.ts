@@ -35,8 +35,8 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
   const monitors: Promise<unknown>[] = [];
   const epochs = new Map([[a, "epoch-a"], [b, "epoch-b"]]);
   const data = new Map<string, unknown>([
-    ["device:" + a, { device_id: a, revoked: false }],
-    ["device:" + b, { device_id: b, revoked: false }],
+    ["device:" + a, { device_id: a, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["device:" + b, { device_id: b, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + a, "epoch-a"], ["session:epoch:" + b, "epoch-b"],
   ]);
   let owner!: V2OwnerCoordinator;
@@ -275,7 +275,7 @@ test("response-lost-after-write returns timeout_unknown; reconnect only queries 
   let epoch = "first";
   let loseFirstResult = true;
   const rows = new Map<string, unknown>([
-    ["device:" + deviceId, { device_id: deviceId, revoked: false }],
+    ["device:" + deviceId, { device_id: deviceId, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + deviceId, epoch],
   ]);
   const state = {

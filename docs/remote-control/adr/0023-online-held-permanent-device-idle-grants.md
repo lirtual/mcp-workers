@@ -1,7 +1,6 @@
 # ADR-0023 — Server-enforced RCA permanent grants with online hold
 
-**Status: Accepted as design consensus, 2026-11-01 (policy B, Grill
-Q1–Q12=A). Not implemented or deployed; not authorization to release.**
+**Status: Accepted design consensus, 2026-11-01 (policy B, Grill Q1–Q12=A); implementation candidate in PR #664 / Agent #666. Not merged, released or production-verified.**
 
 ## Decision
 
@@ -61,5 +60,4 @@ independently checked **before** any authorized rollout/rollback.
 Existing operation effects cannot be undone; expired grants do not
 erase unresolved Unknown or re-authorize replay. See the
 [final design and acceptance conditions](../RCA-IDLE-GRANT-DESIGN.md).
-The PR containing this decision is design-only, Draft and must not
-be merged or treated as production evidence without later authorization.
+The original design Draft was extended to an implementation candidate; source/CI and release approvals remain separate. No PR merge, GitHub Release, real-device upgrade or production deployment is implied.

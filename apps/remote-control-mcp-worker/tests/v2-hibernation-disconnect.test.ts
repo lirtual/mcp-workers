@@ -6,8 +6,8 @@ import { V2OwnerCoordinator } from "../src/worker.ts";
 function testFleet() {
   const a = randomUUID(), b = randomUUID();
   const data = new Map<string, unknown>([
-    ["device:" + a, { device_id: a, name: "home", revoked: false }],
-    ["device:" + b, { device_id: b, name: "office", revoked: false }],
+    ["device:" + a, { device_id: a, name: "home", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["device:" + b, { device_id: b, name: "office", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + a, "epoch-a"], ["session:epoch:" + b, "epoch-b"],
   ]);
   const reads = new Map<string, string[]>();
@@ -87,7 +87,7 @@ test("DO websocket error rejects in-flight work, while a reconstructed DO finds 
   const result = await revived.fetch(new Request("https://v2.internal/devices", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
-  assert.deepEqual(await result.json(), [
+  assert.deepEqual((await result.json() as Array<{idle_expires_at?:number}>).map(({idle_expires_at,...d})=>d), [
     { device_id: f.a, name: "home", status: "offline", grant_type: "permanent" },
     { device_id: f.b, name: "office", status: "online", grant_type: "permanent" },
   ].sort((x, y) => x.device_id.localeCompare(y.device_id)));

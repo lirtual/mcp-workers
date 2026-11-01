@@ -45,7 +45,7 @@ test("lost original pairing response can recover device ID using only approved l
   const id = randomUUID();
   entries.set("device:" + id, {
     device_id: id, name: "approved-node", public_key: keys.request.public_key,
-    fingerprint: "f".repeat(24), approved_at: Date.now(), revoked: false,
+    fingerprint: "f".repeat(24), approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   });
   const dir = await mkdtemp(path.join(os.tmpdir(), "spec46-lost-deviceid-"));
   const keyPath = path.join(dir, "identity.pem");
@@ -67,7 +67,7 @@ test("identity recovery refuses wrong key, revoked device and conflicting local 
   const id = randomUUID();
   entries.set("device:" + id, {
     device_id: id, name: "trusted", public_key: trusted.request.public_key,
-    fingerprint: "e".repeat(24), approved_at: Date.now(), revoked: false,
+    fingerprint: "e".repeat(24), approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   });
   const dir = await mkdtemp(path.join(os.tmpdir(), "spec46-identity-guard-"));
   try {
@@ -90,7 +90,7 @@ test("same signed session challenge is consumed once; a new challenge invalidate
   const id = randomUUID();
   entries.set("device:" + id, {
     device_id: id, name: "one", public_key: keys.request.public_key,
-    fingerprint: "0".repeat(24), approved_at: Date.now(), revoked: false,
+    fingerprint: "0".repeat(24), approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   });
   const first = (await issueSessionChallenge(storage as never, { device_id: id })).body as { nonce: string };
   const signedOld = signedSessionProof(keys.privateKeyPem, id, first.nonce).proof;
@@ -114,7 +114,7 @@ test("hibernation-style reconstruction checks durable epoch and forbids every re
   const key = newEnrollment("a").request.public_key;
   entries.set("device:" + id, {
     device_id: id, name: "a", public_key: key,
-    fingerprint: "0".repeat(24), approved_at: Date.now(), revoked: false,
+    fingerprint: "0".repeat(24), approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   });
   entries.set("session:epoch:" + id, "new-epoch");
   function socket(epoch: string) {
@@ -146,7 +146,7 @@ test("periodic authorization checks the persisted device and epoch after hiberna
   const id = randomUUID();
   entries.set("device:" + id, {
     device_id: id, name: "approved", public_key: newEnrollment("approved").request.public_key,
-    fingerprint: "a".repeat(24), approved_at: Date.now(), revoked: false,
+    fingerprint: "a".repeat(24), approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   });
   entries.set("session:epoch:" + id, "current");
   const state = { storage } as unknown as DurableObjectState;
@@ -216,13 +216,15 @@ test("invalid or binary WSS frames never trigger durable storage reads or attach
 test("rate-limited WSS authority probe is fenced by Hibernation socket attachment", async () => {
   const id = randomUUID();
   let reads = 0;
+  const get = async (key: string) => {
+    reads++;
+    if (key === "session:epoch:" + id) return "current";
+    if (key === "device:" + id) return { device_id: id, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 };
+    return undefined;
+  };
+  const put = async (_key: string, _value: unknown) => {};
   const state = {
-    storage: { get: async (key: string) => {
-      reads++;
-      if (key === "session:epoch:" + id) return "current";
-      if (key === "device:" + id) return { device_id: id, revoked: false };
-      return undefined;
-    } },
+    storage: { get, put, transaction: async <T>(fn: (tx: { get: typeof get; put: typeof put }) => Promise<T>) => fn({ get, put }) },
   } as unknown as DurableObjectState;
   let attachment: { device_id: string; epoch: string; last_auth_check_at?: number } = {
     device_id: id, epoch: "current",

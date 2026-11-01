@@ -8,8 +8,9 @@ const MAX_REGISTRATIONS_PER_MINUTE = 12;
 const MAX_LOOKUPS_PER_MINUTE = 30;
 const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, grantCurrent, revokedSessionAttemptKey, type V2Device, type SessionCheck } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, PERMANENT_IDLE_MS, parsePermanentIdleMs, recordVerifiedSocketClose, grantCurrent, revokedSessionAttemptKey, type V2Device, type SessionCheck } from "./v2-session.ts";
 import { sessionAllowedByWorkflow, type WorkflowSessionAuthorization } from "./session-workflow-authorization.ts";
+import {issueOwnerIntentChallenge,commitOwnerIntent} from './v2-owner-intent.ts';
 import {registerSessionDevice} from "./session-device-registration.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
@@ -103,7 +104,7 @@ export async function verifyRegistration(payload: unknown): Promise<{ record: Pe
   }
 }
 
-export async function registerPending(storage: PendingStorage, payload: unknown): Promise<{ status: number; body: object }> {
+export async function registerPending(storage: PendingStorage, payload: unknown, idleMs = PERMANENT_IDLE_MS): Promise<{ status: number; body: object }> {
   // Charge even invalid requests before performing public-key signature work.
   if (!await consumeBudget(storage, "register", MAX_REGISTRATIONS_PER_MINUTE)) {
     return { status: 429, body: { error: "rate_limited" } };
@@ -114,7 +115,7 @@ export async function registerPending(storage: PendingStorage, payload: unknown)
     // The bootstrap request includes a signed proof of this public key, but
     // never grants permissions. A revoked or previously approved key MUST
     // NOT be allowed to enroll as a new identity, even after reinstall.
-    const grants = await listLiveGrants(txn);
+    const grants = await listLiveGrants(txn, Date.now(), idleMs);
     if (!grants.complete || grants.active.size >= 64) return { status: 503, body: { error: "capacity" } };
     if ([...grants.active.values()].some(d => d.public_key === verified.record.public_key)) {
       return { status: 409, body: { error: "identity_already_used" } };
@@ -217,7 +218,7 @@ export async function lookupPending(storage: PendingStorage, verifier: string): 
  * closed rather than silently convert into owner-only approvals.
  */
 export async function approvePendingKey(
-  storage: PendingStorage, pairingId: unknown, fingerprint: unknown, expectedGrantType: unknown,
+  storage: PendingStorage, pairingId: unknown, fingerprint: unknown, expectedGrantType: unknown, idleMs = PERMANENT_IDLE_MS,
 ): Promise<{ status: number; body: object }> {
   if (typeof pairingId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(pairingId) ||
       typeof fingerprint !== "string" || !/^[a-f0-9]{24}$/.test(fingerprint) ||
@@ -242,7 +243,7 @@ export async function approvePendingKey(
     if (row.pairing_protocol !== "single-code-v1" || row.confirmation_hash) {
       return {status: 409, body: {error: "legacy_pairing_in_progress"}};
     }
-    const grants = await listLiveGrants(txn);
+    const grants = await listLiveGrants(txn, Date.now(), idleMs);
     if (!grants.complete || grants.active.size >= 64) return {status: 503, body: {error: "capacity"}};
     if ([...grants.active.values()].some(device => device.public_key === row.public_key)) {
       return {status: 409, body: {error: "identity_already_used"}};
@@ -253,7 +254,8 @@ export async function approvePendingKey(
       device_id: deviceId, name: row.name, public_key: row.public_key,
       fingerprint: row.fingerprint, approved_at: approvedAt, revoked: false,
       grant_type: mode,
-      ...(mode === "temporary" ? {expires_at: approvedAt + TEMPORARY_GRANT_MS} : {}),
+      ...(mode === "temporary" ? {expires_at: approvedAt + TEMPORARY_GRANT_MS} :
+        {idle_expires_at: approvedAt + idleMs, idle_window_ms: idleMs}),
     } satisfies ApprovedDevice);
     await txn.delete(key);
     // Do not return the pairing code, verifier or public key to MCP.
@@ -287,6 +289,7 @@ export class V2OwnerCoordinator {
   private readonly state: DurableObjectState;
   private readonly env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization };
   private readonly sessionCheck: SessionCheck;
+  private readonly idleMs: number;
   // In-flight reads only: bounded by request timeout; never durable/queued.
   private readonly pendingCleanup = new Map<string, {
     socket: WebSocket;
@@ -591,19 +594,22 @@ export class V2OwnerCoordinator {
     }
   }
 
-  webSocketClose(socket: WebSocket, code: number, reason: string, _wasClean: boolean): void {
+  async webSocketClose(socket: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
     this.rejectSocketReads(socket);
-    // With newer compatibility dates Cloudflare already replies to close.
-    // For older dates this finishes the close handshake without a 1006.
+    try { await recordVerifiedSocketClose(this.state, socket, this.idleMs); }
+    catch { /* Silent-partition checkpoint bounds expiry when close persistence fails. */ }
     try { socket.close(code, reason); } catch { /* Already disconnected. */ }
   }
 
-  webSocketError(socket: WebSocket, _error: unknown): void {
+  async webSocketError(socket: WebSocket, _error: unknown): Promise<void> {
     this.rejectSocketReads(socket);
+    try { await recordVerifiedSocketClose(this.state, socket, this.idleMs); }
+    catch { /* Keep the original socket teardown despite a storage outage. */ }
     try { socket.close(1011, "connection unavailable"); } catch { /* Already disconnected. */ }
   }
 
-  constructor(state: DurableObjectState, env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization }) {
+  constructor(state: DurableObjectState, env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization; RCA_PERMANENT_IDLE_DAYS?: string }) {
+    this.idleMs = parsePermanentIdleMs(env?.RCA_PERMANENT_IDLE_DAYS);
     this.state = state;
     this.env = env;
     this.sessionCheck = sessionAllowedByWorkflow(env?.WORKFLOW_SESSION_AUTHORIZATION);
@@ -620,17 +626,26 @@ export class V2OwnerCoordinator {
     if (typeof message === "string" && this.handleCleanupAck(socket, message)) return;
     if (typeof message === "string" && await this.handleReadResult(socket, message)) return;
     if (await handleDeviceInfoMessage(this.state, socket, message, this.sessionCheck)) return;
-    await handleIdleSocketMessage(this.state, socket, message, this.sessionCheck);
+    await handleIdleSocketMessage(this.state, socket, message, this.sessionCheck, this.idleMs);
   }
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname.startsWith("/ws/")) {
-      return acceptAuthenticatedSocket(this.state.storage, this.state, request, this.sessionCheck);
+      return acceptAuthenticatedSocket(this.state.storage, this.state, request, this.sessionCheck, this.idleMs);
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
     if (path === "/rename") {
       try { return await this.renameDevice(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
+    }
+    if (path === "/owner/intent/challenge" || path === "/owner/intent") {
+      try {
+        const payload = await limitedJson(request, MAX_BOOTSTRAP_BODY);
+        const output = path === "/owner/intent/challenge"
+          ? await issueOwnerIntentChallenge(this.state.storage,payload,this.idleMs)
+          : await commitOwnerIntent(this.state.storage,payload,this.idleMs);
+        return Response.json(output.body,{status:output.status,headers:{"cache-control":"no-store"}});
+      } catch { return Response.json({error:"unavailable"},{status:503}); }
     }
     if (path === "/revoke") {
       try { return await this.revokeDevice(request); }
@@ -648,7 +663,7 @@ export class V2OwnerCoordinator {
       try {
         if (request.headers.get("content-type") !== "application/json" ||
             await request.text() !== "{}") return new Response(null, { status: 400 });
-        const output = await listApprovedDevices(this.state, this.sessionCheck);
+        const output = await listApprovedDevices(this.state, this.sessionCheck, this.idleMs);
         return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
       } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
@@ -658,15 +673,15 @@ export class V2OwnerCoordinator {
     try {
       let output: { status: number; body: object };
       if (path === "/re-pair/status") output = await checkRevokedIdentity(this.state.storage, payload);
-      else if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload, this.sessionCheck);
-      else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload, this.sessionCheck);
+      else if (path === "/session/challenge") output = await issueSessionChallenge(this.state.storage, payload, this.sessionCheck, this.idleMs);
+      else if (path === "/session/recover") output = await authorizeSession(this.state.storage, payload, this.sessionCheck, this.idleMs);
       else if (path === "/register") {
         if ((payload as {kind?:unknown})?.kind === "github_session") {
           if (!await consumeBudget(this.state.storage,"register",MAX_REGISTRATIONS_PER_MINUTE))
             output = {status:429,body:{error:"rate_limited"}};
           else output = await registerSessionDevice(this.state.storage,payload,
-            this.env?.WORKFLOW_SESSION_AUTHORIZATION);
-        } else output = await registerPending(this.state.storage,payload);
+            this.env?.WORKFLOW_SESSION_AUTHORIZATION,this.idleMs);
+        } else output = await registerPending(this.state.storage,payload,this.idleMs);
       }
       else if (path === "/lookup") output = await lookupPending(
         this.state.storage, (payload as { verifier?: unknown })?.verifier as string,
@@ -674,7 +689,7 @@ export class V2OwnerCoordinator {
       else if (path === "/approve") {
         const pending = payload as {pairing_id?:unknown; expected_fingerprint?:unknown; expected_grant_type?:unknown};
         output = await approvePendingKey(this.state.storage, pending?.pairing_id,
-          pending?.expected_fingerprint, pending?.expected_grant_type);
+          pending?.expected_fingerprint, pending?.expected_grant_type, this.idleMs);
       } else return new Response(null, {status:404});
       return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
     } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }

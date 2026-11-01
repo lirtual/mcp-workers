@@ -8,7 +8,7 @@ const now = Date.now();
 const device: V2Device = {
   device_id:'123e4567-e89b-42d3-a456-426614174001', name:'session-ubuntu',
   public_key:'a'.repeat(60), fingerprint:'ab'.repeat(12), approved_at:now-30_000,
-  revoked:false, grant_type:'session', expires_at:now+60_000,
+  revoked:false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000, grant_type:'session', expires_at:now+60_000,
   session_attempt_id:'123e4567-e89b-42d3-a456-426614174002',
   session_run_id:123, session_run_attempt:1, session_workflow_name:'ubuntu',
 };

@@ -225,7 +225,7 @@ test("#97 a legacy approved key without grant_type keeps signed WSS authority af
   const oldId="7e8855e2-e5d8-4bce-a11e-1833e9a0e6b0";
   f.rows.set("device:"+oldId,{
     device_id:oldId,name:"approved-before-migration",public_key:old.request.public_key,
-    fingerprint:"9".repeat(24),approved_at:Date.now()-7200_000,revoked:false,
+    fingerprint:"9".repeat(24),approved_at:Date.now()-7200_000,revoked:false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
     // Historical v2 Preview records do not have grant_type.
   });
   const incoming=newEnrollment("new-one-code-device");
@@ -335,14 +335,18 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     assert.equal(await readFile(keyPath,"utf8"),originalPem);
     await assert.rejects(readFile(keyPath+".device-id","utf8"),{code:"ENOENT"});
     assert.deepEqual(await receipts.get(operationId),before);
-    assert.deepEqual(f.rows.get(grantKey),originalGrant);
+    const withoutLease = (row: Record<string,unknown>) => (({ idle_expires_at, idle_window_ms, ...rest }) => rest)(row);
+    assert.deepEqual(withoutLease(f.rows.get(grantKey) as Record<string,unknown>), withoutLease(originalGrant as Record<string,unknown>));
+    assert.ok(Number.isSafeInteger((f.rows.get(grantKey) as {idle_expires_at:number}).idle_expires_at));
     assert.equal((await authorizeSession(f.store as never,consumedProof)).status,401,
       "signed claim nonce cannot be replayed after the upstream reply is lost");
     assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),deviceId);
     assert.equal((await readFile(keyPath+".device-id","utf8")).trim(),deviceId);
     assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),deviceId);
     assert.equal(await readFile(keyPath,"utf8"),originalPem);
-    assert.deepEqual(f.rows.get(grantKey),originalGrant);
+
+    assert.deepEqual(withoutLease(f.rows.get(grantKey) as Record<string,unknown>), withoutLease(originalGrant as Record<string,unknown>));
+    assert.ok(Number.isSafeInteger((f.rows.get(grantKey) as {idle_expires_at:number}).idle_expires_at));
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
     assert.deepEqual(await receipts.get(operationId),before);
     await receipts.close();

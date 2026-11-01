@@ -27,7 +27,7 @@ export const WORKER_VARIABLES = Object.freeze({
     "MAX_WRITE_AFFECTED_ROWS", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL",
   ],
   "ssh-mcp-worker": [],
-  "remote-control-mcp-worker": [],
+  "remote-control-mcp-worker": ["RCA_PERMANENT_IDLE_DAYS"],
   "github-actions-mcp-worker": [],
   "http-mcp-worker": [],
   "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"],
@@ -81,6 +81,12 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "browser-mcp-worker" && env.BROWSER_REMEMBERED_IDLE_DAYS !== undefined && env.BROWSER_REMEMBERED_IDLE_DAYS !== "") {
     const days=env.BROWSER_REMEMBERED_IDLE_DAYS;
     if (typeof days !== "string" || !/^(?:[1-9]|[1-8][0-9]|90)$/.test(days)) throw Error("Invalid BROWSER_REMEMBERED_IDLE_DAYS: expected integer 1..90");
+  }
+  if (worker === "remote-control-mcp-worker" && env.RCA_PERMANENT_IDLE_DAYS != null && env.RCA_PERMANENT_IDLE_DAYS !== "") {
+    if (typeof env.RCA_PERMANENT_IDLE_DAYS !== "string" ||
+        !/^(?:[1-9]|[1-8][0-9]|90)$/.test(env.RCA_PERMANENT_IDLE_DAYS)) {
+      throw Error("Invalid RCA_PERMANENT_IDLE_DAYS: expected decimal integer 1..90");
+    }
   }
   if (worker === "workflow-mcp-worker") {
     variables.push(

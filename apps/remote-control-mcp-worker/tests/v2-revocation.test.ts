@@ -17,7 +17,7 @@ function setup() {
   const entries = new Map<string, Row>();
   const device = (id: string, label: string) => ({
     device_id: id, name: label, public_key: "key-" + id,
-    fingerprint: "c".repeat(24), approved_at: Date.now(), revoked: false,
+    fingerprint: "c".repeat(24), approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   });
   entries.set("device:" + a, device(a, "home"));
   entries.set("device:" + b, device(b, "work"));

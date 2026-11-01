@@ -491,6 +491,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Fail-closed RCA idle-grant rollback compatibility check
+        if: inputs.worker == 'remote-control-mcp-worker'
+        # Explicit release on main only; no additional deployment or state mutation.
+        run: node --experimental-strip-types scripts/check-rca-idle-release.mjs
+
       - name: Stage pinned public Agent source (remote-control release only)
         if: inputs.worker == 'remote-control-mcp-worker'
         run: bash scripts/stage-public-remote-control-agent.sh
@@ -559,6 +564,7 @@ jobs:
           BROWSER_OWNER_EMAIL: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_OWNER_EMAIL || '' }}
           BROWSER_APPROVAL_ISOLATION: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_APPROVAL_ISOLATION || '' }}
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
+          RCA_PERMANENT_IDLE_DAYS: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.RCA_PERMANENT_IDLE_DAYS || '' }}
           BROWSER_ACTIVATION_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
           BROWSER_ACTIVATION_ORIGIN: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_ORIGIN || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}

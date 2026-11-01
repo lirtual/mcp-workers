@@ -31,7 +31,7 @@ test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
   assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
-  assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], []);
+  assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], ["RCA_PERMANENT_IDLE_DAYS"]);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
     ["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org"]);
@@ -200,4 +200,18 @@ test("Browser remembered idle setting is optional, scoped and validated",()=>{
     assert.throws(()=>collectWorkerVars("browser-mcp-worker",{BROWSER_REMEMBERED_IDLE_DAYS:days}),/BROWSER_REMEMBERED_IDLE_DAYS/);
   }
   assert.deepEqual(collectWorkerVars("ssh-mcp-worker",{BROWSER_REMEMBERED_IDLE_DAYS:"30"}),[]);
+});
+
+
+test('RCA idle release duration is selected-worker scoped, validated and never permissive', () => {
+  const expected = ['REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org'];
+  assert.deepEqual(collectWorkerVars('remote-control-mcp-worker', {}, { config: remoteConfig }), expected);
+  for (const days of ['1','7','14','30','90']) {
+    assert.deepEqual(collectWorkerVars('remote-control-mcp-worker', { RCA_PERMANENT_IDLE_DAYS: days }, { config: remoteConfig }),
+      [...expected, 'RCA_PERMANENT_IDLE_DAYS:' + days]);
+    assert.deepEqual(collectWorkerVars('ssh-mcp-worker', { RCA_PERMANENT_IDLE_DAYS: days }), []);
+  }
+  for (const days of ['0','91','-1','2.5',' 7','07','7 ','Infinity','x','999999999999999999999']) {
+    assert.throws(() => collectWorkerVars('remote-control-mcp-worker', { RCA_PERMANENT_IDLE_DAYS: days }, { config: remoteConfig }), /RCA_PERMANENT_IDLE_DAYS/);
+  }
 });

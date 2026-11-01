@@ -18,12 +18,12 @@ test('Session grant is never permanent and never survives its own deadline',()=>
   assert.equal(deviceIsAuthorized({...session,grant_type:'unknown'} as never),false);
 });
 test('temporary and permanent grants retain their established local semantics',()=>{
-  assert.equal(deviceIsAuthorized({...session,grant_type:'permanent'}),true);
+  assert.equal(deviceIsAuthorized({...session,grant_type:'permanent',last_verified_online_at:now,idle_window_ms:14*86_400_000}),true);
   assert.equal(deviceIsAuthorized({...session,grant_type:'temporary'}),false);
 });
 test('Session devices are only listed after fresh workflow approval and do not affect personal devices',async()=>{
   const personal={...session,device_id:'123e4567-e89b-42d3-a456-426614174003',
-    grant_type:'permanent' as const,name:'personal'};
+    grant_type:'permanent' as const,name:'personal',last_verified_online_at:now,idle_window_ms:14*86_400_000};
   const values=new Map<string,V2Device>([['device:'+session.device_id,session],['device:'+personal.device_id,personal]]);
   const storage={list:async()=>values,delete:async()=>true,
     get:async()=>undefined};
@@ -38,7 +38,7 @@ test('Session devices are only listed after fresh workflow approval and do not a
 });
 test('Workflow RPC outage hides only Session devices, not personal permanent devices',async()=>{
   const personal={...session,device_id:'123e4567-e89b-42d3-a456-426614174003',
-    grant_type:'permanent' as const,name:'personal'};
+    grant_type:'permanent' as const,name:'personal',last_verified_online_at:now,idle_window_ms:14*86_400_000};
   const values=new Map<string,V2Device>([['device:'+session.device_id,session],['device:'+personal.device_id,personal]]);
   const state={storage:{list:async()=>values,delete:async()=>true,get:async()=>undefined},
     getWebSockets:()=>[]} as any;

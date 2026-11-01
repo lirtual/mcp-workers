@@ -32,8 +32,8 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     writeFile(path.join(dir, `walk-${i.toString().padStart(2, "0")}.txt`), "match", { mode: 0o600 })));
   const a = randomUUID(), b = randomUUID(), unknown = randomUUID();
   const rows = new Map<string, unknown>([
-    ["device:" + a, { device_id: a, name: "a", revoked: false }],
-    ["device:" + b, { device_id: b, name: "b", revoked: false }],
+    ["device:" + a, { device_id: a, name: "a", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["device:" + b, { device_id: b, name: "b", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + a, "epoch-a"], ["session:epoch:" + b, "epoch-b"],
   ]);
   const storage = { get: async <T>(key: string) => rows.get(key) as T | undefined };
@@ -200,8 +200,8 @@ test("Agent only accepts bounded read-only frames when explicitly enabled", asyn
 test("a second device cannot spoof a read reply and a superseded epoch cannot return stale content", async () => {
   const a = randomUUID(), b = randomUUID();
   const rows = new Map<string, unknown>([
-    ["device:" + a, { device_id: a, revoked: false }],
-    ["device:" + b, { device_id: b, revoked: false }],
+    ["device:" + a, { device_id: a, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["device:" + b, { device_id: b, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + a, "current-a"],
     ["session:epoch:" + b, "current-b"],
   ]);
@@ -251,7 +251,7 @@ test("old epoch and revoked device are rejected before WSS dispatch", async () =
   const id = randomUUID();
   let sends = 0;
   const rows = new Map<string, unknown>([
-    ["device:" + id, { device_id: id, revoked: false }],
+    ["device:" + id, { device_id: id, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + id, "newer"],
   ]);
   const socket = {
@@ -276,7 +276,7 @@ test("old epoch and revoked device are rejected before WSS dispatch", async () =
 test("five simultaneous DO reads admit only four bounded in-flight requests", async () => {
   const id = randomUUID();
   const rows = new Map<string, unknown>([
-    ["device:" + id, { device_id: id, revoked: false }],
+    ["device:" + id, { device_id: id, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + id, "current"],
   ]);
   const sent: string[] = [];
@@ -317,7 +317,7 @@ test("#72 temporary expiry rejects new work on old WSS and after DO reconstructi
   const id=randomUUID(), epoch="signed-session-epoch";
   const expiresAt=realNow()+120_000;
   const rows=new Map<string, unknown>([
-    ["device:"+id, {device_id:id, name:"temporary-dispatch-fixture", revoked:false,
+    ["device:"+id, {device_id:id, name:"temporary-dispatch-fixture", revoked:false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
       grant_type:"temporary", approved_at:expiresAt-TEMPORARY_GRANT_MS, expires_at:expiresAt}],
     ["session:epoch:"+id,epoch],
   ]);
@@ -374,7 +374,7 @@ test("#72: admitted uncertain operation receipt can settle across expiry without
   const deviceId = randomUUID(), epoch = "prior-authorized-epoch", operationId = "existing-operation-1";
   const expiry = originalNow() + 60_000;
   const rows = new Map<string, unknown>([
-    ["device:" + deviceId, { device_id: deviceId, name: "temporary-inflight", revoked: false,
+    ["device:" + deviceId, { device_id: deviceId, name: "temporary-inflight", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
       grant_type: "temporary", approved_at: expiry - TEMPORARY_GRANT_MS, expires_at: expiry }],
     ["session:epoch:" + deviceId, epoch],
   ]);
