@@ -19,19 +19,18 @@ export const BROWSER_APPROVAL_VARIABLES = Object.freeze([
 ]);
 
 export const WORKER_VARIABLES = Object.freeze({
-  "browser-mcp-worker": BROWSER_APPROVAL_VARIABLES,
+  "browser-mcp-worker": [...BROWSER_APPROVAL_VARIABLES, "BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE", "BROWSER_REMEMBERED_IDLE_DAYS"],
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
     "MAX_WRITE_AFFECTED_ROWS", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL",
   ],
-  "email-mcp-worker": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"],
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": [],
   "github-actions-mcp-worker": [],
   "http-mcp-worker": [],
-  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "WEIXIN_ACTION_DEPLOYMENT_ID", "BARK_ACTION_DEPLOYMENT_ID"],
+  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -56,16 +55,32 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
   if (worker === "browser-mcp-worker") {
-    const configured = BROWSER_APPROVAL_VARIABLES.filter(name => env[name] != null && env[name] !== "");
-    if (configured.length !== 0 && configured.length !== BROWSER_APPROVAL_VARIABLES.length)
-      throw Error("Browser approval requires all five variables or none");
-    if (configured.length && (
-      env.BROWSER_APPROVAL_ORIGIN !== "https://browser.lirtual.dpdns.org" ||
-      env.BROWSER_ACCESS_ISSUER !== "https://lirtualzero.cloudflareaccess.com" ||
-      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACCESS_AUDIENCE) ||
-      env.BROWSER_OWNER_EMAIL !== "lirtual@outlook.com" ||
-      env.BROWSER_APPROVAL_ISOLATION !== "isolated-owner-profile-and-mailbox-v1"
-    )) throw Error("Browser approval runtime identity or isolation assertion invalid");
+    const identity=["BROWSER_ACCESS_ISSUER","BROWSER_OWNER_EMAIL"];
+    const approval=["BROWSER_APPROVAL_ORIGIN","BROWSER_ACCESS_AUDIENCE","BROWSER_APPROVAL_ISOLATION"];
+    const activation=["BROWSER_ACTIVATION_ORIGIN","BROWSER_ACTIVATION_AUDIENCE"];
+    const populated=group=>group.filter(name=>env[name]!=null&&env[name]!=="");
+    const activeApproval=populated(approval),activeActivation=populated(activation),activeIdentity=populated(identity);
+    if(activeApproval.length!==0&&activeApproval.length!==approval.length)
+      throw Error("Browser approval requires its complete, independently verified configuration");
+    if(activeActivation.length!==0&&activeActivation.length!==activation.length)
+      throw Error("Browser activation requires both Access variables or none");
+    if((activeApproval.length||activeActivation.length||activeIdentity.length)&&activeIdentity.length!==identity.length)
+      throw Error("Browser Access issuer and owner identity must be configured together");
+    if(activeIdentity.length && (env.BROWSER_ACCESS_ISSUER!=="https://lirtualzero.cloudflareaccess.com"||
+       env.BROWSER_OWNER_EMAIL!=="lirtual@outlook.com"))
+      throw Error("Browser Access identity issuer or owner mailbox invalid");
+    if(activeApproval.length && (env.BROWSER_APPROVAL_ORIGIN!=="https://browser.lirtual.dpdns.org"||
+      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACCESS_AUDIENCE)||
+      env.BROWSER_APPROVAL_ISOLATION!=="isolated-owner-profile-and-mailbox-v1"))
+      throw Error("Browser approval runtime identity or isolation assertion invalid");
+    if(activeActivation.length && (env.BROWSER_ACTIVATION_ORIGIN!=="https://browser.lirtual.dpdns.org"||
+      !/^[a-f0-9]{64}$/.test(env.BROWSER_ACTIVATION_AUDIENCE)||
+      env.BROWSER_ACTIVATION_AUDIENCE===env.BROWSER_ACCESS_AUDIENCE))
+      throw Error("Browser activation Access origin or audience invalid");
+  }
+  if (worker === "browser-mcp-worker" && env.BROWSER_REMEMBERED_IDLE_DAYS !== undefined && env.BROWSER_REMEMBERED_IDLE_DAYS !== "") {
+    const days=env.BROWSER_REMEMBERED_IDLE_DAYS;
+    if (typeof days !== "string" || !/^(?:[1-9]|[1-8][0-9]|90)$/.test(days)) throw Error("Invalid BROWSER_REMEMBERED_IDLE_DAYS: expected integer 1..90");
   }
   if (worker === "workflow-mcp-worker") {
     variables.push(
@@ -117,17 +132,11 @@ export function collectWorkerVars(worker, env, options = {}) {
           (name === "OWNER_EMAIL" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)))
         throw new Error("Invalid or missing Database Owner Access Variable: " + name);
     }
-    if (worker === "email-mcp-worker") {
-      const expected = { ACCESS_TEAM_DOMAIN: "lirtualzero.cloudflareaccess.com",
-        ACCESS_AUD: "cea1cd806f0f68552c5bed2acd917afcaf8e18a7eda3fb19f5c9704c3a00cd1b",
-        OWNER_EMAIL: "lirtual@outlook.com" };
-      if (value !== expected[name]) throw new Error("Email production Access Variable mismatch: " + name);
-    }
     if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: " + name);
     }
-    if(["WEIXIN_ACTION_DEPLOYMENT_ID","BARK_ACTION_DEPLOYMENT_ID"].includes(name) && value!=null && value!=="" &&
+    if(name==="ACTIONS_DEPLOYMENT_ID" && value!=null && value!=="" &&
        (typeof value!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value)))
       throw new Error("Invalid "+name);
     if (value == null || value === "") continue;
@@ -167,8 +176,8 @@ async function main() {
   const config = worker === "remote-control-mcp-worker"
     ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, "")) : undefined;
-  // The protected release stages WEIXIN_ACTION_DEPLOYMENT_ID from the live,
-  // independently checked Provider after staging other non-secret variables.
+  // The protected release stages ACTIONS_DEPLOYMENT_ID from the live,
+  // independently checked unified Worker after staging other non-secret variables.
   // Do not require the obsolete manual Environment variable here.
   const flags = collectWorkerVars(worker, process.env, { config });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",

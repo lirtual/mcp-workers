@@ -10,7 +10,7 @@ import type {ReviewedGitHubAction} from '../src/github-action-review.ts';
 const aid='11111111-1111-4111-8111-111111111111';
 const did='22222222-2222-4222-8222-222222222222';
 const rid='33333333-3333-4333-8333-333333333333';
-const action:ReviewedGitHubAction={repository:'lirtual/session-actions',repositoryId:12,
+const action:ReviewedGitHubAction={repository:'lirtual/github-actions',repositoryId:12,
  workflowId:34,workflowPath:'.github/workflows/linux.yml',
  commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const data={runId:rid,stepId:'linux',attemptId:aid,dispatchId:did,
@@ -158,7 +158,7 @@ test('dynamic Task D1 input hash blocks altered arguments before registering an 
    outcome:{type:'choice' as const,required:true,options:['success','failure'],default:'success'},
   }};
   const pinned=await reviewedGitHubAction({
-   repository:'lirtual/session-actions',repositoryId:12,workflowId:34,
+   repository:'lirtual/github-actions',repositoryId:12,workflowId:34,
    workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),contract,
   });
   const plan={version:1,name:'Pinned dynamic Task',

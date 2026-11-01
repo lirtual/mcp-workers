@@ -12,6 +12,7 @@ import type {
   SchemaInspection
 } from '../types.js';
 import { withTimeout } from './timeout.js';
+import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from './completion.js';
 
 async function withConnection<T>(
   connection: EffectiveConnection,
@@ -20,22 +21,57 @@ async function withConnection<T>(
 ): Promise<T> {
   let client: Connection | undefined;
   try {
-    client = await createMysqlClient(connection, true);
+    // No SQL can have been sent by this Worker until the connection resolves.
+    // A failed handshake is evidence to release its admission claim.
+    try { client = await createMysqlClient(connection, true); }
+    catch (error) {
+      if (connection.transport === 'hyperdrive') throw new ConfirmedNoSqlFailure(error);
+      throw error;
+    }
     if (connection.transport === 'hyperdrive' || readOnly) {
-      // MySQL READ ONLY is a server-enforced guard against persistent-table
-      // changes from SELECT-invoked routines, even for a writable DB principal.
-      // It also pins the Hyperdrive backend during SQL-mode verification.
-      await withTimeout(readOnly ? client.query('START TRANSACTION READ ONLY').then(() => undefined) : client.beginTransaction(),
-        connection.limits.queryTimeoutMs, () => client?.destroy());
+      // Native READ ONLY blocks persistent writes via SELECT-invoked functions.
+      // The same transaction pins Hyperdrive for SQL-mode verification.
+      try {
+        const begin = readOnly
+          ? client.query('START TRANSACTION READ ONLY').then(() => undefined)
+          : client.beginTransaction();
+        await withTimeout(begin, connection.limits.queryTimeoutMs, () => client?.destroy());
+      } catch (error) {
+        // No workload statement has run. If this same session acknowledges
+        // ROLLBACK, its failed transaction start is conclusively settled.
+        // A failed/unknown rollback must retain the durable admission claim.
+        let rolledBack = false;
+        try {
+          await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
+          rolledBack = true;
+        } catch { /* Remote transaction state unknown. */ }
+        if (rolledBack && connection.transport === 'hyperdrive') throw new ConfirmedReadFailure(error);
+        throw error;
+      }
+      let result: T;
       try {
         await assertMysqlHyperdriveSqlMode(client, connection);
-        return await operation(client);
-      } finally {
-        await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy()).catch(() => undefined);
+        result = await operation(client);
+      } catch (error) {
+        // The pinned session's successful ROLLBACK is observable evidence that
+        // the rejected statement has terminated. An unknown/failed rollback is
+        // NOT evidence of completion: the durable claim must remain held.
+        let rolledBack = false;
+        try {
+          await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
+          rolledBack = true;
+        } catch { /* Unknown backend state; retain the original failure. */ }
+        if (rolledBack && connection.transport === 'hyperdrive') throw new ConfirmedReadFailure(error);
+        throw error;
       }
+      // A successful read without confirmed rollback cannot be treated as a
+      // completely drained backend session for resource-retirement purposes.
+      await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
+      return result;
     }
     return await operation(client);
   } catch (error) {
+    if (error instanceof ConfirmedReadFailure || error instanceof ConfirmedNoSqlFailure) throw error;
     throw mapDatabaseError(error);
   } finally {
     if (client !== undefined) await client.end().catch(() => undefined);

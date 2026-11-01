@@ -24,12 +24,13 @@ function fixture(){
   const socket={
     readyState:1,
     deserializeAttachment(){return {
-      authenticated:true,endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+      authenticated:true,protocol:3,extension_version:"0.2.6",endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
     };},
     send(message){sent.push(JSON.parse(message));},
     close(){sent.push({type:"closed"});}
   };
-  const state={storage:{sql},getWebSockets:()=>[socket]};
+  let nextAlarm=null;
+  const state={storage:{sql,getAlarm:async()=>nextAlarm,setAlarm:async deadline=>{nextAlarm=deadline;}},getWebSockets:()=>[socket]};
   const first=new BrowserOwner(state);
   sql.exec("INSERT INTO endpoints(id,alias,credential_hash,state,generation,revision,updated_at) VALUES(?,?,?,'enabled',7,2,?)",
     id,"test-profile","a".repeat(64),Date.now());
@@ -115,4 +116,56 @@ test("async intent admission reserves the Endpoint before HMAC, blocking both ov
   assert.equal(f.sent.filter(s=>s.type==="prepare_request").length,1);
   owner.close(id,"stopped"); // clear the test-only timer, never exercise a real browser
   f.db.close();
+});
+
+test("snapshot socket close retains only a bounded in-flight stage and close code",async()=>{
+  const f=fixture();
+  try {
+    const read=f.first.fetch(new Request("https://owner.internal/read",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({endpoint_id:id,tool:"snapshot",tab_id:41})
+    }));
+    for(let i=0;i<30&&!f.sent.some(x=>x.type==="read_request");i++)
+      await new Promise(resolve=>setImmediate(resolve));
+    const request=f.sent.find(x=>x.type==="read_request");
+    assert.ok(request,"snapshot must reach current socket");
+    // Invalid and cross-request progress must not enter the diagnostic receipt.
+    await f.first.webSocketMessage(f.socket,JSON.stringify({
+      type:"read_progress",request_id:request.request_id,
+      generation:7,stage:"https://example.com/?secret=DO_NOT_ECHO"
+    }));
+    await f.first.webSocketMessage(f.socket,JSON.stringify({
+      type:"read_progress",request_id:request.request_id,
+      generation:7,stage:"text_injection"
+    }));
+    await f.first.webSocketClose(f.socket,1006,"contains_PRIVATE_REASON",false);
+    const outcome=await (await read).json();
+    assert.equal(outcome.error_code,"offline");
+    assert.equal(outcome.stage,"text_injection");
+    assert.equal(outcome.close_code,1006);
+    assert.ok(Number.isInteger(outcome.stage_elapsed_ms));
+    assert.ok(outcome.stage_elapsed_ms>=0&&outcome.stage_elapsed_ms<=5000);
+    assert.deepEqual(Object.keys(outcome).sort(),["close_code","error_code","stage","stage_elapsed_ms"]);
+    assert.doesNotMatch(JSON.stringify(outcome),/DO_NOT_ECHO|PRIVATE_REASON|example.com/);
+  }finally{f.db.close();}
+});
+
+
+test("old live socket without the new extension version cannot accept reads or writes",async()=>{
+  const f=fixture();
+  try {
+    const oldSocket={...f.socket,deserializeAttachment:()=>({
+      authenticated:true,protocol:3,endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()
+    })};
+    const owner=new BrowserOwner({storage:f.state.storage,getWebSockets:()=>[oldSocket]});
+    const post=async(path,body)=>await owner.fetch(new Request('https://owner.internal/'+path,{
+      method:'POST',body:JSON.stringify(body)}));
+    const read=await post('read',{endpoint_id:id,tool:'tabs'});
+    assert.equal((await read.json()).error_code,'offline');
+    const mutation=await post('mutate',{endpoint_id:id,intent_key:uuid7(),action:'tab_open',url:'https://example.com'});
+    assert.equal((await mutation.json()).error_code,'offline');
+    assert.equal(f.sent.length,0);
+    await owner.webSocketMessage(oldSocket,JSON.stringify({type:'ping'}));
+    assert.deepEqual(f.sent,[{type:'closed'}]);
+  }finally{f.db.close();}
 });

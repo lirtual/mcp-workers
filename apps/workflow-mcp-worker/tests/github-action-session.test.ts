@@ -17,7 +17,7 @@ import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-
 import type {Env} from '../src/store.ts';
 
 const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0');
-const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
  type:'session',contractDigest:'b'.repeat(64)};
 const plan={github_execution_approved:true,github_action_approvals:[action],
@@ -32,7 +32,7 @@ function fixture(){
  }
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
- for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql','0009_fixed_sessions.sql','0011_awaited_child_capacity.sql']){
+ for(const name of ['0006_action_attempt_capabilities.sql','0007_session_executions.sql','0008_session_locator.sql','0009_fixed_sessions.sql','0011_awaited_child_capacity.sql','0019_session_rca_duration.sql']){
   db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
  }
  db.exec('COMMIT');
@@ -391,6 +391,49 @@ test('signed Ready must own the exact claimed physical running GitHub Session; d
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
   assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'held');
+ }finally{f.db.close();}
+});
+test('first signed physical Ready freezes Session RCA duration; duplicate cannot extend it',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  const inspect=async()=>({state:'running' as const});
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined,9),'ready');
+  assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined,9),'already_ready');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined,10),'denied');
+  assert.equal(await recordSignedSessionReady(f.adapter,run(11),jwt,audience,'token',
+   publicKey,inspect,undefined),'denied');
+  assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
+ }finally{f.db.close();}
+});
+test('signed Ready HTTP freezes bounded duration and denies a changed replay',async()=>{
+ const f=fixture();
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.claim(1,'claimed',true);
+  const {jwt,publicKey}=await signedReady();
+  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+   WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as Env;
+  const inspect=async()=>({state:'running' as const});
+  const request=(minutes:unknown)=>new Request('https://worker.example/github/action/ready',{
+    method:'POST',headers:{authorization:'Bearer '+jwt},
+    body:JSON.stringify({attemptId:run(11),durationMinutes:minutes}),
+  });
+  assert.equal((await handleGithubActionClaimRequest(request(0),env,publicKey,inspect)).status,400);
+  assert.equal((await handleGithubActionClaimRequest(request(301),env,publicKey,inspect)).status,400);
+  const first=await handleGithubActionClaimRequest(request(9),env,publicKey,inspect);
+  assert.equal(first.status,200);
+  assert.deepEqual(await first.json(),{result:'ready'});
+  const repeat=await handleGithubActionClaimRequest(request(9),env,publicKey,inspect);
+  assert.deepEqual(await repeat.json(),{result:'already_ready'});
+  assert.equal((await handleGithubActionClaimRequest(request(10),env,publicKey,inspect)).status,403);
+  assert.equal(f.db.prepare('SELECT rca_duration_minutes FROM session_executions').get()?.rca_duration_minutes,9);
  }finally{f.db.close();}
 });
 test('lost Ready HTTP receipt is idempotent even after parent Workflow succeeded',async()=>{
@@ -754,8 +797,8 @@ test('normal cancel is one-shot and 202 never releases Session capacity; force i
   assert.equal(await invoke(true),'force_requested');
   assert.equal(await invoke(true),'already_force_requested');
   assert.deepEqual(requests,[
-   '/repos/lirtual/session-actions/actions/runs/42/cancel',
-   '/repos/lirtual/session-actions/actions/runs/42/force-cancel',
+   '/repos/lirtual/github-actions/actions/runs/42/cancel',
+   '/repos/lirtual/github-actions/actions/runs/42/force-cancel',
   ]);
   const record=f.db.prepare('SELECT cancel_ack,force_ack FROM github_action_cancellations').get();
   assert.equal(record?.cancel_ack,'accepted');

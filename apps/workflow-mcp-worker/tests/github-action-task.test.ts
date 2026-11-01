@@ -11,7 +11,7 @@ import type {Env} from '../src/store.ts';
 import type {WorkflowStep} from 'cloudflare:workers';
 
 const runId='11111111-1111-4111-8111-111111111111';
-const repo='lirtual/session-actions',ref='refs/tags/task-v1',sha='a'.repeat(40);
+const repo='lirtual/github-actions',ref='refs/tags/task-v1',sha='a'.repeat(40);
 const audience='workflow-github-action:production';
 const action={repository:repo,repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/task.yml',commitSha:sha,type:'task' as const,
@@ -99,6 +99,41 @@ test('Task source-to-result: D1 reservation, dispatch ACK, signed OIDC claim and
   assert.equal(fixture.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
  }finally{fixture.db.close();}
 });
+test('native Task sleep and resumed-check errors preserve one external dispatch',async t=>{
+ for(const stage of ['sleep','check'] as const){
+  await t.test(stage,async()=>{
+   const f=setup();
+   let checks=0,sleeps=0;
+   const http=async(req:Request):Promise<Response>=>{
+    if(req.url.includes('/git/ref/'))return Response.json({ref,object:{type:'commit',sha}});
+    if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+    checks++;
+    return Response.json({id:42,workflow_id:456,run_attempt:1,
+     repository:{id:123,full_name:repo},path:action.workflowPath,head_branch:'task-v1',
+     head_sha:sha,event:'workflow_dispatch',status:'in_progress',conclusion:null});
+   };
+   const step={do:async(name:string,_opts:unknown,fn:()=>Promise<unknown>)=>{
+     if(stage==='check'&&name==='github-action-check-build-1')
+      throw Error('opaque native check failure');
+     return fn();
+    },sleep:async()=>{
+     sleeps++;
+     if(stage==='sleep')throw Error('opaque native sleep failure');
+    }} as unknown as WorkflowStep;
+   try{
+    const outcome=await runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http);
+    assert.deepEqual(outcome,{status:'indeterminate',error_code:stage==='sleep'
+     ?'github_action_native_sleep_unconfirmed':'github_action_native_check_unconfirmed'});
+    assert.equal(f.post(),1,'unknown native state must not redispatch');
+    assert.equal(checks,1);
+    assert.equal(sleeps,1);
+    assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+    assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'running');
+   }finally{f.db.close();}
+  });
+ }
+});
+
 test('signed Task result direct CAS distinguishes insert, identical replay and conflicting replay',async()=>{
  const fixture=setup();
  const {privateKey,publicKey}=await generateKeyPair('RS256');
@@ -170,6 +205,59 @@ test('Session is not accidentally accepted through the Task executor',async()=>{
  }finally{fixture.db.close();}
 });
 
+test('cancelled parent stops a dispatched Task without polling GitHub or rewriting history',async()=>{
+ const f=setup();
+ let inspections=0;
+ const step={do:async(name:string,_opts:unknown,callback:()=>Promise<unknown>)=>{
+  if(name==='github-action-check-build-0'){
+   f.db.prepare("UPDATE runs SET outcome='cancelled',error_code='approval_cancel_requested' WHERE id=?").run(runId);
+   f.db.prepare("UPDATE step_attempts SET state='failed' WHERE run_id=?").run(runId);
+  }
+  return callback();
+ },sleep:async()=>{throw Error('unexpected extra poll sleep');}} as unknown as WorkflowStep;
+ const http=async(req:Request):Promise<Response>=>{
+  const path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref,object:{type:'commit',sha}});
+  if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+  inspections++;
+  return Response.json({status:'completed',conclusion:'failure'});
+ };
+ try{
+  const result=await runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http);
+  assert.deepEqual(result,{status:'indeterminate',error_code:'github_action_parent_not_active'});
+  assert.equal(f.post(),1);
+  assert.equal(inspections,0,'no GitHub inspection after parent cancellation');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs').get()?.outcome,'cancelled');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'failed');
+ }finally{f.db.close();}
+});
+test('cancelled parent without physical proof remains unknown after an interrupted native sleep',async()=>{
+ const f=setup();
+ let reads=0,sleeps=0;
+ const stop=new Error('continue_bounded_poll');
+ const step={do:async(name:string,_opts:unknown,callback:()=>Promise<unknown>)=>{
+  if(name==='github-action-check-build-0')
+   f.db.prepare("UPDATE runs SET outcome='cancelled',error_code='approval_cancel_requested' WHERE id=?").run(runId);
+  return callback();
+ },sleep:async()=>{sleeps++;throw stop;}} as unknown as WorkflowStep;
+ const http=async(req:Request):Promise<Response>=>{
+  const path=new URL(req.url).pathname;
+  if(path.endsWith('/git/ref/tags/task-v1'))
+   return Response.json({ref,object:{type:'commit',sha}});
+  if(req.method==='POST'){f.recordPost();return Response.json({workflow_run_id:42});}
+  reads++;
+  return Response.json({status:'completed',conclusion:'failure'});
+ };
+ try{
+  const result=await runPublishedGitHubActionTask(f.env,plan,plan.steps[0],runId,step,http);
+  assert.deepEqual(result,{status:'indeterminate',error_code:'github_action_native_sleep_unconfirmed'});
+  assert.equal(f.post(),1);
+  assert.equal(sleeps,1,'bounded wait continues while physical Attempt lacks a terminal receipt');
+  assert.equal(reads,0,'no untrusted GitHub terminal inference from a cancelled parent');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'confirmed');
+ }finally{f.db.close();}
+});
 test('GitHub job failing before OIDC claim reports failed without a false success',async()=>{
  const fixture=setup();
  const http=async(req:Request):Promise<Response>=>{

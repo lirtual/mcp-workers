@@ -39,6 +39,7 @@ export async function handleGithubActionClaimRequest(
  let attemptId:string;
  let taskResult:Record<string,unknown>|undefined;
  let sessionUrl:string|undefined;
+ let sessionDurationMinutes:number|undefined;
  try{
   // Read at most 8 KiB, even when Content-Length is absent or incorrect.
   // Never buffer an entire caller-controlled HTTP stream before checking it.
@@ -62,9 +63,10 @@ export async function handleGithubActionClaimRequest(
   if(!raw||typeof raw!=='object'||Array.isArray(raw))
     return result(400,'invalid_request');
   const keys=Object.keys(raw).sort().join(',');
+  const readyKeys=new Set(['attemptId','attemptId,sessionUrl',
+    'attemptId,durationMinutes','attemptId,durationMinutes,sessionUrl']);
   const allowed=route==='/github/action/result'?'attemptId,result':
-    route==='/github/action/ready'&&keys==='attemptId,sessionUrl'?
-      'attemptId,sessionUrl':'attemptId';
+    route==='/github/action/ready'&&readyKeys.has(keys)?keys:'attemptId';
   if(keys!==allowed)return result(400,'invalid_request');
   const id=(raw as {attemptId?:unknown}).attemptId;
   if(typeof id!=='string'||!UUID.test(id))return result(400,'invalid_request');
@@ -81,6 +83,12 @@ export async function handleGithubActionClaimRequest(
        !/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/.test(value))
       return result(400,'invalid_session_url');
     sessionUrl=value;
+  }
+  if(route==='/github/action/ready'&&Object.hasOwn(raw,'durationMinutes')){
+    const minutes=(raw as {durationMinutes?:unknown}).durationMinutes;
+    if(typeof minutes!=='number'||!Number.isSafeInteger(minutes)||minutes<1||minutes>300)
+      return result(400,'invalid_session_duration');
+    sessionDurationMinutes=minutes;
   }
   taskResult=route==='/github/action/result' ?
     (raw as {result:Record<string,unknown>}).result:undefined;
@@ -117,7 +125,8 @@ export async function handleGithubActionClaimRequest(
   }
   if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return result(503,'ready_unavailable');
   const ready=await recordSignedSessionReady(env.DB,attemptId,credential,
-    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_GITHUB_DISPATCH_TOKEN,keys,inspect,sessionUrl);
+    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_GITHUB_DISPATCH_TOKEN,keys,inspect,
+    sessionUrl,sessionDurationMinutes);
   if(ready==='physical_unconfirmed')return result(503,'physical_unconfirmed');
   if(ready==='denied')return result(403,'ready_denied');
   if(ready==='ready'&&env.WORKFLOW){

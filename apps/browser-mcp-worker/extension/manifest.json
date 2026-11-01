@@ -2,25 +2,31 @@
   "manifest_version": 3,
   "incognito": "spanning",
   "name": "Browser MCP",
-  "version": "0.1.0",
-  "description": "Owner-approved remote control of this browser profile (Spec #418).",
+  "version": "0.2.6",
+  "description": "Owner-approved Access-verified control of this browser profile (Spec #531).",
   "minimum_chrome_version": "137",
   "permissions": [
     "storage",
     "tabs",
     "webNavigation",
     "scripting",
-    "tabGroups"
+    "tabGroups",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "externally_connectable": {
+    "matches": [
+      "https://browser.lirtual.dpdns.org/*"
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Browser MCP — local control",
-    "default_popup": "popup.html"
+    "default_title": "Browser MCP \u2014 local control"
   },
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqZcWJpcmMRHgVS62nT5vjGOtRTli0mcgc/PbS89pIsylj2jCFuw3ukiIXR1WURbmjPph6iHi5x0XevL1xnlxR2GUrPE2QhZ5S/7XWxefnA56il/ArFY4Z3U9JLsk18KzYzatZoP4MPc8Y3Y1zYl+K/CwB2CDTDf5tJek6NQiUn0nudoTd0G6fwyeOTNB4Gn8BTj0TJY13Iq9VRuMxfvm4vQCm6IWSNG5Bn6gLbFIxVI9vmQWttPAw5vIdKQ/+5gd4t8+SFMLphZsRaD4eW78Jks+Fvdi6vblTsEv1r7o4l/aef591i9XByeAf+gdPawYr9cGd4AX81xQmhAkJS1CTQIDAQAB"
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqZcWJpcmMRHgVS62nT5vjGOtRTli0mcgc/PbS89pIsylj2jCFuw3ukiIXR1WURbmjPph6iHi5x0XevL1xnlxR2GUrPE2QhZ5S/7XWxefnA56il/ArFY4Z3U9JLsk18KzYzatZoP4MPc8Y3Y1zYl+K/CwB2CDTDf5tJek6NQiUn0nudoTd0G6fwyeOTNB4Gn8BTj0TJY13Iq9VRuMxfvm4vQCm6IWSNG5Bn6gLbFIxVI9vmQWttPAw5vIdKQ/+5gd4t8+SFMLphZsRaD4eW78Jks+Fvdi6vblTsEv1r7o4l/aef591i9XByeAf+gdPawYr9cGd4AX81xQmhAkJS1CTQIDAQAB",
+  "options_page": "options.html"
 }

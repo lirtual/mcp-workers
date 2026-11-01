@@ -47,18 +47,18 @@ test('native denial/failure is fail closed and untrusted messages cannot enable 
   }finally{await f.close();}
 });
 
-test('LAN consent normalizes misleading URLs and keeps metadata/auth/protected targets prohibited',async()=>{
+test('LAN consent retains metadata/scheme/Owner boundaries without business-route restrictions',async()=>{
   const f=await fixture();try{
     await grant(f,'lan',true);
     for(const url of ['http://localhost:8000/app','http://printer.lan/app','http://127.1/app','http://0x7f000001/app','http://2130706433/app','http://[::1]/app','http://[fd12::1]/app']){
       f.pageState.url=url;assert.equal((await f.snapshot()).document_id,'doc-1',url);
     }
-    for(const url of ['http://169.254.169.254/latest/meta-data/','http://0xa9fea9fe/','http://2852039166/','http://metadata.google.internal/','http://100.100.100.200/','http://168.63.129.16/','http://[fd00:ec2::254]/','http://[fd20:ce::254]/','http://metadata.tencentyun.com/','http://[::ffff:a9fe:a9fe]/','https://localhost@metadata.google.internal/','file:///x','chrome://settings','chrome-extension://abc/','https://chromewebstore.google.com/','https://localhost/%6cogin','https://localhost/#/login','https://localhost/#/%61pprove','http://printer.lan/approval','https://browser.example/owner/operations/a','https://browser.example.:8443/','http://localhost/auth','https://fixture.cloudflareaccess.com/']){
+    for(const url of ['http://169.254.169.254/latest/meta-data/','http://0xa9fea9fe/','http://2852039166/','http://metadata.google.internal/','http://100.100.100.200/','http://168.63.129.16/','http://[fd00:ec2::254]/','http://[fd20:ce::254]/','http://metadata.tencentyun.com/','http://[::ffff:a9fe:a9fe]/','https://localhost@metadata.google.internal/','file:///x','chrome://settings','chrome-extension://abc/','https://browser.example/owner/operations/a','https://browser.example.:8443/']){
       f.pageState.url=url;assert.equal((await f.snapshot()).error_code,'forbidden',url);
     }
     f.pageState.url='http://localhost/app';f.pageState.frameUrl='http://169.254.169.254/';
     assert.equal((await f.snapshot()).error_code,'stale_target');delete f.pageState.frameUrl;
-    f.pageState.embedded=true;assert.equal((await f.snapshot()).error_code,'sensitive_surface');
+    f.pageState.embedded=true;assert.equal((await f.snapshot()).document_id,'doc-1','embedded children do not suppress parent observation');
   }finally{await f.close();}
 });
 
@@ -102,8 +102,15 @@ test('delayed local grant cannot beat Stop; failed session revocation stops cont
     await grant(f,'lan',true);
     f.chrome.storage.session.set=async values=>{if(values.browser_sensitive_grants)throw Error('storage unavailable');return original(values);};
     await assert.rejects(grant(f,'lan',false),/storage unavailable/);assert.equal(f.local.authorization,'stopped');
-    await f.restartExtension();assert.equal((await f.snapshot()).error_code,'stopped');
-    await assert.rejects(f.popup('resume'),/storage unavailable/);f.chrome.storage.session.set=original;
+    await f.restartExtension();
+    // The local Stop always survives reconstruction. Cloud Stop reconciliation
+    // may still be in flight, so the coordinator can correctly report offline
+    // rather than stopped; neither state may return page content.
+    const afterRestart=await f.snapshot();
+    assert.equal(f.local.authorization,'stopped');
+    assert.ok(['stopped','offline'].includes(afterRestart.error_code),JSON.stringify(afterRestart));
+    assert.equal(afterRestart.text,undefined);
+    await assert.rejects(f.popup('resume'),/toolbar activation must pair|storage unavailable/);f.chrome.storage.session.set=original;
   }finally{await f.close();}
 });
 
@@ -128,10 +135,10 @@ test('actual Popup buttons require local confirmation and independently change s
     let confirmed=false;
     const popup=vm.createContext({document:{getElementById:element},Date,Number,URL,
       BROWSER_MCP_SERVICE_ORIGIN:'https://browser.example',confirm:()=>confirmed,alert:()=>{},
-      chrome:{runtime:{sendMessage:(message,done)=>f.popup(message.type,message).then(result=>done({ok:true,result}),error=>done({ok:false,error:error.message}))}}});
-    vm.runInContext(fs.readFileSync(new URL('../extension/popup.js',import.meta.url),'utf8'),popup);
+      chrome:{storage:{local:f.chrome.storage.local},runtime:{sendMessage:(message,done)=>f.popup(message.type,message).then(result=>done({ok:true,result}),error=>done({ok:false,error:error.message}))}}});
+    vm.runInContext(fs.readFileSync(new URL('../extension/options.js',import.meta.url),'utf8'),popup);
     await vm.runInContext("refresh()",popup);
-    assert.match(element('status').textContent,/native permission: DENIED/);
+    assert.match(element('status').textContent,/native: denied/);
     await element('lan').onclick();assert.equal((await f.popup('status')).sensitive_permissions.lan,false);
     confirmed=true;await element('lan').onclick();
     assert.equal((await f.popup('status')).sensitive_permissions.lan,true);assert.equal((await f.popup('status')).sensitive_permissions.private,false);

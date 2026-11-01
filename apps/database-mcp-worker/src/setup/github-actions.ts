@@ -106,12 +106,181 @@ export async function dispatchHyperdriveAction(
   };
   if (action === 'enable') {
     inputs.database_hyperdrive_enable_approved = 'true';
-    inputs.database_hyperdrive_enable_id = id;
-    inputs.database_hyperdrive_enable_revision = String(revision);
+    inputs.database_hyperdrive_id = id;
+    inputs.database_hyperdrive_revision = String(revision);
   } else {
     inputs.database_hyperdrive_retire_approved = 'true';
-    inputs.database_hyperdrive_retire_id = id;
-    inputs.database_hyperdrive_retire_revision = String(revision);
+    inputs.database_hyperdrive_id = id;
+    inputs.database_hyperdrive_revision = String(revision);
   }
   return dispatchWorkflow(env, inputs, request);
+}
+
+/** Owner-only read-only check. Sends no password, CA PEM, or write approval. */
+export async function dispatchHyperdriveRotationCheck(
+  env: Env, mode: 'credentials' | 'ca', id: string, revision: number,
+  request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+  if ((mode !== 'credentials' && mode !== 'ca') || !ID.test(id) ||
+      !Number.isSafeInteger(revision) || revision < 1) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive rotation check.');
+  }
+  return dispatchWorkflow(env, {
+    worker: 'database-mcp-worker', deploy_to_production: 'false',
+    database_hyperdrive_rotation_mode: mode, database_hyperdrive_id: id,
+    database_hyperdrive_revision: String(revision)
+  }, request);
+}
+
+/** Only a bounded operation ID crosses into protected Actions; origin secrets remain encrypted in D1. */
+export async function dispatchHyperdrivePrepare(
+  env: Env, operationId: string, request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId)) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive operation ID.');
+  }
+  return dispatchWorkflow(env, {
+    worker: 'database-mcp-worker',
+    deploy_to_production: 'false',
+    database_hyperdrive_prepare_id: operationId
+  }, request);
+}
+
+/** Read-only Owner preflight before reserving D1 or dispatching any external mutation. */
+export async function verifyGithubPrCapability(
+  env: Env, request: typeof fetch = fetch
+): Promise<void> {
+  const token = env.DATABASE_GITHUB_ACTIONS_TOKEN;
+  if (typeof token !== 'string' || token.length < 20) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch is not configured.');
+  }
+  // The workflow-default-settings endpoint requires repository Administration
+  // read permission, not PR creation permission. Do not demand it from the
+  // Actions-only Owner token. Preparation still uses the protected Runner;
+  // review, required CI and release are independently gated after PR creation.
+  await verifyGithubRequiredChecks(env, request);
+}
+
+/** Explicit branch metadata and effective rulesets are readable without
+ * Administration permission. Unknown settings and protected branches lacking
+ * a verifiable required-check policy remain fail-closed. */
+export async function verifyGithubRequiredChecks(env: Env, request: typeof fetch = fetch): Promise<void> {
+  const headers = {
+    Authorization: 'Bearer ' + env.DATABASE_GITHUB_ACTIONS_TOKEN,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'lirtual-database-mcp-worker',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
+  const get = (path: string) => request('https://api.github.com/repos/lirtual/mcp-workers' + path, {
+    method: 'GET', redirect: 'manual', headers, signal: AbortSignal.timeout(10000)
+  });
+  try {
+    const branchResponse = await get('/branches/main');
+    if (branchResponse.status !== 200) throw Error('branch policy unknown');
+    const branch = await branchResponse.json() as {name?: unknown; protected?: unknown};
+    if (branch.name !== 'main' || typeof branch.protected !== 'boolean') throw Error('invalid branch metadata');
+    const rules = await get('/rulesets?includes_parents=true&per_page=100');
+    if (rules.status !== 200) throw Error('rulesets unavailable');
+    const inventory: unknown = await rules.json();
+    if (!Array.isArray(inventory) || inventory.length !== 0) throw Error('rulesets unknown or present');
+    // An explicit false (not a 403/404 from the Admin-only endpoint) proves
+    // no active branch protection. The Runner later verifies exact PR/CI.
+    if (!branch.protected) return;
+    const classic = await get('/branches/main/protection');
+    if (classic.status !== 200) throw Error('protected policy unavailable');
+    const policy = await classic.json() as {required_status_checks?: {strict?: unknown; contexts?: unknown}};
+    if (policy.required_status_checks?.strict !== true ||
+        !Array.isArray(policy.required_status_checks.contexts) ||
+        !policy.required_status_checks.contexts.includes('Required checks gate')) {
+      throw Error('unconfirmed classic PR checks');
+    }
+  } catch {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'GitHub required PR checks could not be verified.');
+  }
+}
+
+/** Final apply dispatch carries only the immutable operation UUID. */
+export async function dispatchHyperdriveApply(
+  env: Env, operationId: string, request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(operationId)) {
+    throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive operation ID.');
+  }
+  return dispatchWorkflow(env, {
+    worker: 'database-mcp-worker', deploy_to_production: 'false',
+    database_hyperdrive_apply_id: operationId
+  }, request);
+}
+
+/** Read-only Owner lookup for the exact #476 unbinding branch. PR metadata is
+ * status evidence, never approval to merge, publish or retire any resource. */
+export async function readHyperdriveUnbindStatus(
+  env: Env, id: string, request: typeof fetch = fetch
+): Promise<{phase:'not_staged'|'draft_review'|'review_available'|'merged_unpublished'|'closed_unmerged';prNumber?:number}> {
+  if (!ID.test(id)) throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive connection ID.');
+  const token = env.DATABASE_GITHUB_ACTIONS_TOKEN;
+  if (typeof token !== 'string' || token.length < 20) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Protected GitHub Actions dispatch is not configured.');
+  }
+  const bytes = new TextEncoder().encode('db476:unbind:' + id);
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+    .map(x => x.toString(16).padStart(2,'0')).join('').slice(0,24);
+  const branch = 'db476-unbind-' + hash;
+  const base = 'https://api.github.com/repos/lirtual/mcp-workers';
+  const blocked = () => new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive unbinding status could not be verified.');
+  async function get(path:string): Promise<unknown> {
+    let response:Response;
+    try {
+      response = await request(base + path, {method:'GET',redirect:'manual',
+        headers: { Authorization:'Bearer '+token, Accept:'application/vnd.github+json',
+          'User-Agent':'lirtual-database-mcp-worker','X-GitHub-Api-Version':'2022-11-28' },
+        signal:AbortSignal.timeout(10_000)});
+    } catch { throw blocked(); }
+    if (response.status!==200) throw blocked();
+    try {return await response.json();} catch {throw blocked();}
+  }
+  const found = await get('/pulls?state=all&head=lirtual%3A'+branch+'&per_page=100');
+  if (!Array.isArray(found) || found.length>1) throw blocked();
+  if (found.length===0) return {phase:'not_staged'};
+  const number = (found[0] as {number?:unknown}).number;
+  if (!Number.isSafeInteger(number) || (number as number)<1) throw blocked();
+  const pr = await get('/pulls/'+number) as {
+    number?:number;state?:string;draft?:boolean;merged_at?:unknown;changed_files?:number;
+    head?:{ref?:string;repo?:{full_name?:string}};
+    base?:{ref?:string;repo?:{full_name?:string}};
+  };
+  if (pr?.number!==number || pr.head?.ref!==branch ||
+      pr.head.repo?.full_name!=='lirtual/mcp-workers' ||
+      pr.base?.ref!=='main' || pr.base.repo?.full_name!=='lirtual/mcp-workers' ||
+      pr.changed_files!==2 || !['open','closed'].includes(pr.state??'') ||
+      typeof pr.draft!=='boolean') throw blocked();
+  const files = await get('/pulls/'+number+'/files?per_page=100');
+  if (!Array.isArray(files) || files.length!==2 ||
+      !['apps/database-mcp-worker/wrangler.jsonc',
+        'apps/database-mcp-worker/hyperdrive-bindings.json'].every(path=>
+        files.filter((f:unknown)=>typeof f==='object' && f!==null &&
+          (f as {filename?:string}).filename===path &&
+          (f as {status?:string}).status==='modified').length===1)) throw blocked();
+  let phase:'draft_review'|'review_available'|'merged_unpublished'|'closed_unmerged';
+  if (pr.state==='open') {
+    if (pr.merged_at!=null) throw blocked();
+    phase=pr.draft?'draft_review':'review_available';
+  } else {
+    phase=pr.merged_at==null?'closed_unmerged':'merged_unpublished';
+  }
+  return {phase,prNumber:number as number};
+}
+
+/** Protected password-only rotation: only an encrypted D1 operation UUID is dispatched. */
+export async function dispatchHyperdriveCredentialRotation(
+ env: Env, operationId: string, request: typeof fetch = fetch
+): Promise<DispatchReceipt> {
+ if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(operationId)) {
+  throw new PublicError('INVALID_INPUT', 'Invalid Hyperdrive operation ID.');
+ }
+ return dispatchWorkflow(env, {
+  worker:'database-mcp-worker', deploy_to_production:'false',
+  database_hyperdrive_prepare_id:operationId,
+  database_hyperdrive_rotation_mode:'credentials_apply'
+ }, request);
 }

@@ -53,10 +53,17 @@ test("recognizable sensitive surfaces fail closed before screenshot API",async()
   assert.equal(result.error_code,"sensitive_surface");
   assert.equal(f.calls.includes("capture"),false);
   const docFixture=fixture();
-  docFixture.ctx.document={body:{innerText:"Use OTP code 123456"},querySelector:()=>null};
+  const item=(tag,attrs={},hidden=false)=>({tagName:tag,id:attrs.id||"",getAttribute:k=>attrs[k]??null,
+    labels:[],closest:()=>null,getClientRects:()=>hidden?[]:[{}]});
+  docFixture.ctx.getComputedStyle=()=>({display:"block",visibility:"visible"});
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("INPUT",{autocomplete:"one-time-code"})]};
   assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),false);
-  docFixture.ctx.document={body:{innerText:"Public home"},querySelector:()=>({tagName:"INPUT"})};
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("INPUT",{type:"text"}),item("FORM")]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),true);
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("IFRAME")]};
   assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),false);
+  docFixture.ctx.document={body:{},querySelectorAll:()=>[item("IFRAME",{},true)]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",docFixture.ctx),true);
 });
 test("screenshot refuses stale document or oversized image instead of returning partial sensitive data",async()=>{
   const race=fixture({change:true});assert.equal((await race.read()).error_code,"stale_target");
@@ -82,4 +89,48 @@ test("unattended capture has the canonical all_urls permission (executor still e
   const m=JSON.parse(fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../extension/manifest.json"),"utf8"));
   assert.ok(m.host_permissions.includes("<all_urls>"));
   assert.ok(!m.permissions.includes("debugger"));
+});
+
+test("screenshots reject recognized credentials in open Shadow DOM and visible select controls",()=>{
+  const f=fixture();
+  const make=(tag,attrs={},shadowRoot=null)=>({
+    tagName:tag,id:attrs.id||"",shadowRoot,
+    getAttribute:k=>attrs[k]??null,labels:[],closest:()=>null,getClientRects:()=>[{}]
+  });
+  const password=make("INPUT",{type:"password"});
+  const root={querySelectorAll:selector=>selector==="*"?[password]:[password]};
+  const host=make("MY-WIDGET",{},root);
+  f.ctx.getComputedStyle=()=>({display:"block",visibility:"visible"});
+  f.ctx.document={body:{},querySelectorAll:selector=>selector==="*"?[host]:[]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),false,"open shadow credential must reject");
+  const select=make("SELECT",{autocomplete:"one-time-code"});
+  f.ctx.document={body:{},querySelectorAll:selector=>[select]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),false,"visible select OTP must reject");
+  const normal=make("INPUT",{type:"search"});
+  const benignRoot={querySelectorAll:()=>[normal]};
+  const benignHost=make("MY-WIDGET",{},benignRoot);
+  f.ctx.document={body:{},querySelectorAll:()=>[benignHost]};
+  assert.equal(vm.runInContext("screenshotExposureCheck().allowed",f.ctx),true,"ordinary shadow input should not block capture");
+});
+
+
+test("screenshot blocks aria-labelledby-only secret inputs and custom comboboxes",()=>{
+  const f=fixture();
+  const label={textContent:"Ordinary search"};
+  const input={
+    tagName:"INPUT",id:"search",labels:[],
+    getAttribute:key=>key==="aria-labelledby"?"field-caption":null,
+    closest:()=>null,getClientRects:()=>[{}]
+  };
+  let nodes=[input];
+  f.ctx.document={body:{},querySelectorAll:()=>nodes,getElementById:id=>id==="field-caption"?label:null};
+  f.ctx.getComputedStyle=()=>({display:"block",visibility:"visible"});
+  const allowed=()=>vm.runInContext("screenshotExposureCheck().allowed",f.ctx);
+  assert.equal(allowed(),true,"ordinary linked labels remain eligible");
+  label.textContent="API token";
+  assert.equal(allowed(),false,"aria-labelledby secret label suppresses screenshot");
+  nodes=[{...input,tagName:"DIV",getAttribute:key=>key==="role"?"combobox":key==="aria-labelledby"?"field-caption":null}];
+  assert.equal(allowed(),false,"custom ARIA combobox is also protected");
+  nodes=[input];f.ctx.document.getElementById=()=>null;
+  assert.equal(allowed(),false,"unresolved aria-labelledby fails closed");
 });

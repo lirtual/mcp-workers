@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {
   RUN_CAPACITY_LIMIT,ACTIVE_CAPACITY_UNITS_SQL,
-  capacityAdmissionPredicate,transferAwaitedChildCapacity,startReservedAwaitedChild,awaitedChildRunId,
+  capacityAdmissionPredicate,transferAwaitedChildCapacity,admitDetachedChild,startReservedDetachedChild,startReservedAwaitedChild,awaitedChildRunId,
 } from '../src/child-capacity.ts';
 
 function fixture(t:test.TestContext){
@@ -323,4 +323,146 @@ test('claimed-but-unconfirmed native child expires without blind new create',asy
   assert.equal(f.count(),1);
   assert.equal((f.sqlite.prepare("SELECT outcome FROM runs WHERE id='c1'").get() as
     {outcome:string}).outcome,'indeterminate');
+});
+
+// A detached child must reserve its own slot, not borrow the parent's one.
+test('detached child admission is idempotent and obeys the shared eight-slot limit',async t=>{
+  const {sqlite,db,makeWorkflow,makeParent,count}=fixture(t);
+  makeWorkflow('parent');makeWorkflow('child');
+  makeParent('p1','parent',1);
+  const args=request();
+  assert.deepEqual(await admitDetachedChild(db as unknown as D1Database,args),
+    {childRunId:'c1',alreadyReserved:false});
+  assert.equal(count(),2);
+  assert.deepEqual(await admitDetachedChild(db as unknown as D1Database,args),
+    {childRunId:'c1',alreadyReserved:true});
+  await assert.rejects(()=>admitDetachedChild(db as unknown as D1Database,
+    {...args,requestDigest:'changed'}),/detached_child_admission_rejected/);
+  makeParent('p2','parent',1);
+  for(let i=0;i<5;i++)makeParent('other'+i,'parent',1);
+  assert.equal(count(),8);
+  await assert.rejects(()=>admitDetachedChild(db as unknown as D1Database,
+    request('p2','c2')),/detached_child_admission_rejected/);
+  assert.equal(count(),8);
+  assert.equal((sqlite.prepare('PRAGMA foreign_key_check').all()).length,0);
+});
+
+test('detached native child is started once and survives parent completion',async t=>{
+  const {sqlite,db,makeWorkflow,makeParent}=fixture(t);
+  makeWorkflow('parent');makeWorkflow('child');makeParent('p1','parent',1);
+  await admitDetachedChild(db as unknown as D1Database,request());
+  let creates=0;
+  const env={DB:db,WORKFLOW:{async create(){creates++;}}};
+  const input={parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:3000};
+  assert.deepEqual(await startReservedDetachedChild(env as never,input),
+    {childRunId:'c1',start_state:'started'});
+  sqlite.prepare("UPDATE runs SET outcome='succeeded' WHERE id='p1'").run();
+  assert.deepEqual(await startReservedDetachedChild(env as never,input),
+    {childRunId:'c1',start_state:'started'});
+  assert.equal(creates,1);
+  assert.equal((sqlite.prepare("SELECT outcome FROM runs WHERE id='c1'").get() as {outcome:string}).outcome,'queued');
+});
+
+test('detached child lost native ACK is reconciled without a second create',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  let creates=0,found=false;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;throw Error('native_ack_lost');},
+    async get(){if(!found)throw Error('instance.not_found');return {status:async()=>({status:'running'})};},
+  }};
+  const input={parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:3000};
+  assert.deepEqual(await startReservedDetachedChild(env as never,input),
+    {childRunId:'c1',start_state:'start_unknown'});
+  assert.deepEqual(await startReservedDetachedChild(env as never,{...input,timestamp:4000}),
+    {childRunId:'c1',start_state:'start_unknown'});
+  assert.equal(creates,1);
+  found=true;
+  assert.deepEqual(await startReservedDetachedChild(env as never,{...input,timestamp:5000}),
+    {childRunId:'c1',start_state:'started'});
+  assert.equal(creates,1);
+  assert.equal(f.count(),2);
+});
+
+test('detached child unconfirmed native start expires indeterminate and frees Run capacity',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  let creates=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;throw Error('native_ack_lost');},
+    async get(){throw Error('instance.not_found');},
+  }};
+  const input={parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:3000};
+  assert.equal((await startReservedDetachedChild(env as never,input)).start_state,'start_unknown');
+  assert.deepEqual(await startReservedDetachedChild(env as never,
+    {...input,timestamp:2000+10*60_000}),
+    {childRunId:'c1',start_state:'indeterminate'});
+  assert.equal(creates,1);
+  assert.equal(f.count(),1);
+  assert.equal((f.sqlite.prepare("SELECT outcome FROM runs WHERE id='c1'").get() as
+    {outcome:string}).outcome,'indeterminate');
+});
+
+test('detached child never starts if parent ended before native dispatch claim',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  f.sqlite.prepare("UPDATE runs SET outcome='failed' WHERE id='p1'").run();
+  let creates=0;
+  const result=await startReservedDetachedChild({DB:f.db,WORKFLOW:{
+    async create(){creates++;},
+  }} as never,{parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:3000});
+  assert.deepEqual(result,{childRunId:'c1',start_state:'rejected'});
+  assert.equal(creates,0);
+  assert.equal(f.count(),0);
+});
+
+test('detached child completion after lost create ACK proves native start without replay',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  f.sqlite.prepare("UPDATE runs SET start_state='start_unknown',outcome='succeeded' WHERE id='c1'").run();
+  let creates=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;throw Error('must_never_recreate');},
+    async get(){return {async status(){return {status:'complete'};}};},
+  }};
+  const result=await startReservedDetachedChild(env as never,
+    {parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:4000});
+  assert.deepEqual(result,{childRunId:'c1',start_state:'started'});
+  assert.equal(creates,0);
+  assert.equal((f.sqlite.prepare("SELECT start_state FROM runs WHERE id='c1'").get() as
+    {start_state:string}).start_state,'started');
+});
+
+test('detached start never confirms native create after concurrent timeout won the durable CAS',async t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');f.makeWorkflow('child');f.makeParent('p1','parent',1);
+  await admitDetachedChild(f.db as unknown as D1Database,request());
+  let creates=0,observations=0;
+  const env={DB:f.db,WORKFLOW:{
+    async create(){creates++;throw Error('native_ack_lost');},
+    async get(){
+      observations++;
+      // A second reconciler expires the queued child after this reconciler
+      // reads its old state, but before its observed-native markStarted CAS.
+      const expired=f.sqlite.prepare(`UPDATE runs SET outcome='indeterminate',
+        error_code='detached_child_start_unconfirmed'
+        WHERE id='c1' AND start_state='start_unknown' AND outcome='queued'`).run();
+      assert.equal(expired.changes,1);
+      return {status:async()=>({status:'running'})};
+    },
+  }};
+  const result=await startReservedDetachedChild(env as never,
+    {parentRunId:'p1',parentStepId:'call',childRunId:'c1',timestamp:3000});
+  assert.deepEqual(result,{childRunId:'c1',start_state:'indeterminate'});
+  assert.equal(creates,1,'unknown native ACK must never trigger a second create');
+  assert.equal(observations,1);
+  const durable=f.sqlite.prepare('SELECT start_state,outcome,error_code FROM runs WHERE id=?')
+    .get('c1') as {start_state:string;outcome:string;error_code:string};
+  assert.equal(durable.start_state,'start_unknown');
+  assert.equal(durable.outcome,'indeterminate');
+  assert.equal(durable.error_code,'detached_child_start_unconfirmed');
 });

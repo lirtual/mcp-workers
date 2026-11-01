@@ -36,24 +36,32 @@ test("public MCP and DO ingress reject unknown fields, selectors, keys and missi
   }finally{await f.close();}
 });
 
-test("public path denies sensitive/prohibited pages, expired/mutated refs, stale documents and consequential controls",async()=>{
+test("public path rejects stale and credential targets, private/LAN/scheme/Owner targets",async()=>{
   const f=await fixture();try {
     let args=await f.command("fill",e=>e.type==="text",{text:"draft"});
     const denied=async patch=>assert.equal((await f.perform("fill",{...args,intent_key:intent(),...patch})).result.state,"failed");
     await denied({element_id:"e-"+crypto.randomUUID()});await denied({document_id:"old"});
-    for(const text of ["Enter password","One time code","Approve access","Authentication required"]){f.pageState.text=text;await denied({});}
-    f.pageState.text="Public";f.pageState.sensitive=true;await denied({});f.pageState.sensitive=false;
     f.nodes[1].attrs.autocomplete="one-time-code";await denied({});delete f.nodes[1].attrs.autocomplete;
-    f.pageState.mutated=true;await denied({});await denied({});
+    f.pageState.mutated=true;await denied({});
     const expired=await f.command("fill",e=>e.type==="text",{text:"draft"});f.pageState.now=Date.now()+31000;
     assert.equal((await f.perform("fill",expired)).result.state,"failed");delete f.pageState.now;
     args=await f.command("fill",e=>e.type==="text",{text:"draft"});
-    for(const url of ["https://example.com/login","https://example.com/approval","https://example.com/cdn-cgi/access/authorize","https://accounts.google.com/","https://example.com/operations?confirm=1","https://example.com/?token=secret","http://127.0.0.1/private","chrome://settings/","https://browser.example/"]){f.pageState.url=url;await denied({});}
+    for(const url of ["http://127.0.0.1/private","chrome://settings/","https://browser.example/",
+      "http://169.254.169.254/latest/meta-data/"]){f.pageState.url=url;await denied({});}
     f.pageState.url="https://example.com/clean";f.pageState.incognito=true;await denied({});f.pageState.incognito=false;
-    assert.equal((await f.perform("click",await f.command("click",e=>e.tag==="button"))).result.state,"failed");
-    args=await f.command("click",e=>e.type==="checkbox");f.nodes[2].form=true;assert.equal((await f.perform("click",{...args,intent_key:intent()})).result.state,"failed");f.nodes[2].form=false;
     args=await f.command("fill",e=>e.type==="text",{text:"draft"});f.nodes[1].isConnected=false;await denied({});
     assert.equal(f.effects.length,0);
+  }finally{await f.close();}
+});
+
+test("unrelated DOM mutation retains a fresh element identity, but target mutation invalidates it",async()=>{
+  const f=await fixture();try {
+    let args=await f.command("fill",e=>e.type==="text",{text:"public draft"});
+    f.pageState.mutationTarget=f.nodes[4];f.pageState.mutated=true;
+    assert.equal((await f.perform("fill",args)).result.state,"completed");
+    args=await f.command("fill",e=>e.type==="text",{text:"new draft"});
+    f.pageState.mutationTarget=f.nodes[1];f.pageState.mutated=true;
+    assert.equal((await f.perform("fill",args)).result.state,"failed");
   }finally{await f.close();}
 });
 
@@ -68,7 +76,7 @@ test("lost receipt survives DO recreation as Unknown without replay",async()=>{
 test("execute rechecks sensitive DOM after prepare and respects owner Stop",async()=>{
   for(const stop of [false,true]){const f=await fixture();try{
     const args=await f.command("fill",e=>e.type==="text",{text:"draft"});f.hold();await f.perform("fill",args);
-    if(stop)await f.popup("stop");else f.pageState.text="Approve authentication";await f.release();await f.flush();assert.equal(f.effects.length,0);
+    if(stop)await f.popup("stop");else f.nodes[1].attrs.autocomplete="one-time-code";await f.release();await f.flush();assert.equal(f.effects.length,0);
     assert.equal((await f.rpc("browser_operation_status",{endpoint_id:args.endpoint_id,intent_key:args.intent_key})).state,stop?"unknown":"failed");
   }finally{await f.close();}}
 });
@@ -82,7 +90,7 @@ test("exception after a DOM effect is Unknown and cannot repeat the effect",asyn
 
 // Public MCP → extension behavior seam: expandable UI controls should not require
 // the independent owner approval reserved for consequential actions.
-test("ordinary disclosure button works once without approval, but payment control stays blocked",async()=>{
+test("buttons with different business labels execute only when referenced by a fresh intent",async()=>{
   const f=await fixture();try {
     const button=f.nodes[4];
     button.attrs["aria-expanded"]="false";button.attrs["aria-controls"]="details-panel";
@@ -94,8 +102,8 @@ test("ordinary disclosure button works once without approval, but payment contro
     assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
     button.textContent="Pay now";button.attrs.label="Pay now";
     const dangerous=await f.command("click",e=>e.tag==="button");
-    assert.equal((await f.perform("click",dangerous)).result.state,"failed");
-    assert.equal(f.effects.filter(e=>e[0]==="click").length,1);
+    assert.equal((await f.perform("click",dangerous)).result.state,"completed");
+    assert.equal(f.effects.filter(e=>e[0]==="click").length,2);
   }finally{await f.close();}
 });
 
@@ -103,21 +111,36 @@ test("failed operation receipts preserve safe denial codes across prepare and ex
   for(const afterPrepare of [false,true]){
     const f=await fixture();
     try {
-      const args=await f.command("scroll",e=>e.tag==="body",{delta_y:120});
+      const args=await f.command("fill",e=>e.type==="text",{text:"public draft"});
       if(afterPrepare){
         f.hold();
-        await f.perform("scroll",args);
+        await f.perform("fill",args);
       }
-      f.pageState.text="Enter password";
+      f.nodes[1].attrs.autocomplete="one-time-code";
       if(afterPrepare){await f.release();await f.flush();}
-      else await f.perform("scroll",args);
+      else await f.perform("fill",args);
       const receipt=await f.rpc("browser_operation_status",{endpoint_id:args.endpoint_id,intent_key:args.intent_key});
       assert.equal(receipt.state,"failed");
       assert.equal(receipt.error_code,"sensitive_surface");
       assert.equal(receipt.safe_next_action,"blocked_sensitive_surface");
       const stored=JSON.stringify(f.db.prepare("SELECT * FROM browser_intents").all());
-      assert.ok(!stored.includes("Enter password"));
+      assert.ok(!stored.includes("one-time-code"));
       assert.equal(f.effects.length,0);
     }finally{await f.close();}
   }
+});
+
+test("a referenced control becomes stale when its associated label changes",async()=>{
+  const f=await fixture();
+  try{
+    const label={textContent:"Search",contains:()=>false};
+    f.nodes[1].labels=[label];
+    const args=await f.command("fill",e=>e.type==="text",{text:"draft"});
+    label.textContent="Send order";
+    f.pageState.mutationTarget=label;
+    f.pageState.mutated=true;
+    const {result}=await f.perform("fill",args);
+    assert.equal(result.state,"failed");
+    assert.equal(f.effects.length,0);
+  }finally{await f.close();}
 });

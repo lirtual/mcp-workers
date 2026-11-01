@@ -24,10 +24,13 @@ export async function inspectPersistedGitHubActionAttempt(
  JOIN workflow_versions v ON v.id=r.version_id
  WHERE a.attempt_id=?`).bind(attemptId).first<Row>();
  if(!row || row.capability_id!=='github.action' ||
-    !['confirmed','claimed'].includes(row.state) ||
+    !['confirmed','claimed','succeeded','failed','cancelled'].includes(row.state) ||
     !row.candidate_run_id || !row.candidate_run_attempt ||
-    (row.state==='claimed' && (row.owner_run_id!==row.candidate_run_id ||
-      row.owner_run_attempt!==row.candidate_run_attempt)))return {state:'unknown'};
+    // Another owner request may have already reconciled the exact physical
+    // terminal. Native polling must still be able to verify it and finish.
+    (['claimed','succeeded'].includes(row.state) &&
+      (row.owner_run_id!==row.candidate_run_id ||
+       row.owner_run_attempt!==row.candidate_run_attempt)))return {state:'unknown'};
  // Session physical jobs outlive their parent Workflow after Ready.
  // Only a separately reserved, nonterminated Session may be inspected after
  // the parent reaches a business terminal. Task has no such exception.

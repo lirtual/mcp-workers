@@ -1,8 +1,11 @@
 import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {portalAuthorization} from './portal-authorization.ts';
+import {httpAuthorization} from './http-authorization.ts';
 import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetch.ts';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
+import {REVIEWED_WRITE_TOOL,REVIEWED_APPEND_TOOL,REVIEWED_WRITE_TOOLS,reviewedWriteTool} from './mcp-write-contract.ts';
 import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
 
@@ -12,12 +15,12 @@ type PortalTool={
  annotations?:{readOnlyHint?:boolean;destructiveHint?:boolean};
 };
 type PortalToolContract={
- tool:string;endpoint:string;scope:'read';input_schema:unknown;
- output_schema?:unknown;schema_digest:string;arguments:{limit:number};
+ tool:string;endpoint:string;scope:'read'|'write';input_schema:unknown;
+ output_schema?:unknown;schema_digest:string;arguments:{limit:number}|{content:string}|{note_id:string;content:string};
  availability:'discovered_not_executed';
 };
 type PortalDiscovery={availability:'verified_contract'|'unavailable'|'not_authorized';
- tools:PortalToolContract[];reason?:string};
+ tools:PortalToolContract[];write_tools?:PortalToolContract[];reason?:string};
 
 /**
  * Explicitly source-reviewed operations only. An upstream readOnlyHint does
@@ -58,6 +61,26 @@ export async function reviewedPortalTools(tools:PortalTool[]):Promise<PortalTool
 /** Read the actual restricted Portal catalog with the same credential/URL
  * boundary as runtime. Never call a tool during discovery, never leak errors.
  */
+export async function reviewedPortalWriteTools(tools:PortalTool[]):Promise<PortalToolContract[]>{
+  const found:PortalToolContract[]=[];
+  for(const name of REVIEWED_WRITE_TOOLS){
+    if(tools.filter(x=>x.name===name).length!==1)continue;
+    const tool=tools.find(x=>x.name===name)!;
+    if(!reviewedWriteTool(tool))continue;
+    try{
+      found.push({tool:name,endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'write',
+        input_schema:tool.inputSchema,
+        ...(tool.outputSchema?{output_schema:tool.outputSchema}:{}),
+        schema_digest:await toolSchemaDigest(tool.inputSchema,tool.outputSchema),
+        arguments:name===REVIEWED_APPEND_TOOL?
+          {note_id:'0000000000000000',content:'Owner-reviewed append content'}:
+          {content:'Owner-reviewed note content'},
+        availability:'discovered_not_executed'});
+    }catch{ /* Fail closed for this exact reviewed tool's schema. */ }
+  }
+  return found;
+}
+
 export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscovery>{
  if(env.MCP_PORTAL_ENDPOINT!==PRODUCTION_PORTAL_ENDPOINT ||
     !env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
@@ -79,8 +102,10 @@ export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscov
    await client.connect(transport);
    const result=await client.listTools();
    const contracts=await reviewedPortalTools(result.tools);
+   const write_tools=await reviewedPortalWriteTools(result.tools);
    return {availability:contracts.length?'verified_contract':'not_authorized',
-     tools:contracts,...(!contracts.length?{reason:'approved_read_tool_not_present_or_schema_changed'}:{})};
+     tools:contracts,write_tools,
+     ...(!contracts.length?{reason:'approved_read_tool_not_present_or_schema_changed'}:{})};
  }catch{
    return {availability:authDenied?'not_authorized':'unavailable',
      tools:[],reason:authDenied?'portal_access_denied':'portal_unreachable'};
@@ -121,6 +146,12 @@ const eventWait={version:1,name:'Event wait (illustrative credential)',steps:[
   {id:'done',needs:['signal'],uses:'result.emit',with:{data:{ref:'steps.signal.output'}}},
 ]};
 // Supply a 32-byte random external-event secret and publish only its digest.
+const boundedLoop={version:1,name:'Bounded dynamic until',steps:[
+  {id:'loop',flow:'until',max_iterations:4,
+    condition:{eq:[{ref:'item.value'},2]},
+    template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+  {id:'done',needs:['loop'],uses:'result.emit',with:{data:{ref:'steps.loop.output'}}},
+]};
 const literalRepeat={version:1,name:'Fixed bounded repeat',inputs:{message:'hello'},
   steps:[{id:'emit_each',flow:'repeat',times:3,
     template:{uses:'result.emit',with:{data:{ref:'inputs.message'}}}}]};
@@ -211,12 +242,15 @@ const mcpRead=(tool:PortalToolContract)=>({version:1,name:'Verified Portal contr
 export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
   'result.emit':{type:'object',additionalProperties:false,
     properties:{data:{description:'Bounded literal or safe expression; omitted data emits null at runtime.'}}},
+  'http.request':{type:'object',additionalProperties:false,required:['url','method'],
+    properties:{url:{type:'string',format:'uri',description:'Literal, canonical public HTTPS target without query, fragment or credentials'},
+      method:{enum:['GET','HEAD','POST']},body:{description:'Bounded immutable JSON literal for POST only; runtime refs and expressions are not authorized'}}},
   'mcp.call':{type:'object',additionalProperties:false,
     required:['endpoint','tool','scope','arguments','input_schema'],
     properties:{
       endpoint:{const:PRODUCTION_PORTAL_ENDPOINT},
       tool:{type:'string',pattern:'^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$'},
-      scope:{const:'read'},arguments:{type:'object'},
+      scope:{enum:['read','write']},arguments:{type:'object'},
       input_schema:{type:'object'},output_schema:{type:'object'},
     }},
   'action.run':{oneOf:[
@@ -224,11 +258,21 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
      properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
     {type:'object',additionalProperties:false,
      required:['executor','provider','action','contract_digest','input'],properties:{
-       executor:{const:'cloudflare'},provider:{enum:['weixin','bark']},action:{enum:['weixin.send_text','bark.send_notification']},
+       executor:{const:'cloudflare'},provider:{enum:['weixin','bark','dub','envshare','litterbox']},action:{enum:['weixin.send_text','weixin.notify_download','bark.send_notification','dub.shorten_url','envshare.share_text','litterbox.upload_file']},
        contract_digest:{type:'string',pattern:'^[a-f0-9]{64}$'},
        input:{oneOf:[
-        {type:'object',additionalProperties:false,required:['session_step_id'],
-         properties:{session_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['download_step_id'],
+         properties:{download_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['text'],
+         properties:{text:{type:'string',minLength:1,maxLength:2048},session_step_id:{type:'string'}}},
+        {type:'object',additionalProperties:false,required:['url'],
+         properties:{url:{type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.url'}}},public_stats:{type:'boolean'}}},
+        {type:'object',additionalProperties:false,required:['encrypted','iv','ttl','reads'],
+         properties:Object.fromEntries(['encrypted','iv','ttl','reads'].map(k=>[k,
+           {type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.'+k}}}]))},
+        {type:'object',additionalProperties:false,required:['file_name','size_bytes','sha256','time'],
+         properties:Object.fromEntries(['file_name','size_bytes','sha256','time'].map(k=>[k,
+           {type:'object',additionalProperties:false,required:['ref'],properties:{ref:{const:'inputs.'+k}}}]))},
         {type:'object',additionalProperties:false,required:['notification'],
          properties:{notification:{type:'object'}}}]},
      }},
@@ -251,7 +295,27 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
         }},
     }},
 });
+// Nested dynamic loops and Foreach can only expose the compiler-reviewed operations.
+// Top-level MCP writes and Cloudflare Actions keep their independent contracts.
+const REVIEWED_READ_MCP_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties,scope:{const:'read'}},
+});
+const FOREACH_TASK_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties,
+    action:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties.action,
+      properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['github.run'].properties.action.properties,
+        type:{const:'task'}}}},
+});
+const FOREACH_TASK_ACTION_RUN_WITH_SCHEMA=Object.freeze({
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0].properties,
+    action:FOREACH_TASK_WITH_SCHEMA.properties.action},
+});
+
 export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
+  static_output_validation:'Only literal result.emit values and trusted closed Cloudflare Action outputs can prove fields or numeric reference types; dynamic inputs and unverified/undeclared GitHub or MCP outputs remain unknown.',
   refs:['inputs.<name>','steps.<declared-needs-id>.status',
     'steps.<declared-needs-id>.output[.<field>]'],
   operators:['ref','eq','ne','gt','lt','and','or','not'],
@@ -260,12 +324,14 @@ export const WORKFLOW_EXPRESSION_RULES=Object.freeze({
   needs_policy:'Default all_succeeded; allow_skipped requires at least one succeeded dependency and all others succeeded or skipped; all skipped, failed or indeterminate dependencies block execution.',
   limits:{maxDepth:15,maxArrayElements:100,maxBooleanOperands:16},
   foreach_item_refs:['item.value[.<field>]','item.index'],
+  loop_item_refs:['item.index','item.value[.<field>]'],
+  supported_loop:'flow: while checks condition before each result.emit or granted read-only mcp.call; flow: until checks after each iteration. item.index is zero-based; item.value is previous (while) or current (until) output, initially null. max_iterations 1–8; exhaustion fails closed. No nesting or unreviewed effects.',
   foreach_local_refs:['steps.<earlier-template-child-id>.status','steps.<earlier-template-child-id>.output[.<field>]'],
   session_duration_binding:'For reviewed GitHub Session Actions only: Plan inputs.duration_minutes=300, Action inputs.duration_minutes={ref: inputs.duration_minutes}, Action inputs.duration_mode=explicit; workflow_run.inputs.duration_minutes is optional whole minutes 1–300. This does not authorize arbitrary Action input references; old literal Session Plans require one-time republish.',
   supported_wait:'Use flow: wait with literal duration_seconds 1–300 and optional needs. All wait Steps together are limited to 300 seconds per Plan. Sleep uses Cloudflare-native checkpoints; this is not an externally signaled event wait.',
   supported_wait_event:'Use flow: wait_event with a SHA-256 digest of an independent 32-byte secret and timeout_seconds 1–3600. One per Plan; events address one existing Run/Step with a stable event ID and never create a Run.',
-  supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant, and a single awaited non-recursive child; the legacy child_workflow field is not accepted.',
-  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','while','dynamic_repeat','saga'],
+  supported_child:'Use flow: child with the active child workflow_id and immutable version_id, exact required_children/approved_children grant; awaited by default or mode: detached for an independent child Run. The legacy child_workflow field is not accepted.',
+  unsupported:['foreach_github_sessions','foreach_external_multi_github','nested_foreach','nested_loop','dynamic_repeat'],
 });
 
 export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
@@ -275,6 +341,9 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
     version:{const:1},
     name:{type:'string',minLength:1,maxLength:120},
     inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
+    saga:{type:'object',additionalProperties:false,required:['on'],
+      properties:{on:{type:'array',minItems:1,maxItems:2,uniqueItems:true,
+        items:{enum:['failure','cancel']}}}},
     triggers:{type:'array',minItems:1,maxItems:1,items:{oneOf:[
       {type:'object',additionalProperties:false,required:['type','schedule'],
        properties:{type:{const:'cron'},schedule:{type:'string',maxLength:160,
@@ -303,6 +372,16 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
           {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
           {required:['items']},{required:['max_items']},
         ]}},
+        {required:['flow','condition','max_iterations','template'],
+          properties:{flow:{enum:['while','until']},
+            template:{type:'object',additionalProperties:false,required:['uses','with'],
+              properties:{uses:{enum:['result.emit','mcp.call']},with:{type:'object'}},
+              oneOf:[
+                {properties:{uses:{const:'result.emit'},with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}},
+                {properties:{uses:{const:'mcp.call'},with:REVIEWED_READ_MCP_WITH_SCHEMA}},
+              ]}},
+          not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},
+            {required:['needs_policy']},{required:['times']},{required:['items']},{required:['max_items']}]}},
         {required:['flow','duration_seconds'],properties:{flow:{const:'wait'}},
           not:{anyOf:[
             {required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
@@ -311,7 +390,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {required:['flow','token_sha256','timeout_seconds'],properties:{flow:{const:'wait_event'}},
           not:{anyOf:[{required:['uses']},{required:['with']},{required:['if']},{required:['needs_policy']},
             {required:['times']},{required:['items']},{required:['max_items']},{required:['template']}] }},
-        {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'}},not:{anyOf:[
+        {required:['flow','workflow_id','version_id','inputs'],properties:{flow:{const:'child'},mode:{const:'detached'}},not:{anyOf:[
           {required:['uses']},{required:['with']},{required:['if']},{required:['times']},
           {required:['items']},{required:['max_items']},{required:['template']},
         ]}},
@@ -324,11 +403,17 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
         uses:{enum:[...SUPPORTED_STEP_USES]},
+        compensate:{type:'object',additionalProperties:false,required:['kind'],
+          properties:{kind:{const:'github.session.cancel',
+            description:'Only an explicitly approved temporary lirtual/github-actions Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
-        flow:{enum:['repeat','foreach','child','wait','wait_event']},
+        flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
+        max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
+        condition:{anyOf:[{type:'boolean'},{type:'object'}]},
         duration_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxWaitSeconds},
         timeout_seconds:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxEventWaitSeconds},
         token_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
+        mode:{const:'detached'},
         workflow_id:{type:'string',format:'uuid'},
         version_id:{type:'string',format:'uuid'},
         inputs:{type:'object',maxProperties:PLAN_LIMITS.maxInputs},
@@ -337,7 +422,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
         template:{oneOf:[
           {type:'object',additionalProperties:false,required:['uses','with'],
-            properties:{uses:{enum:[...SUPPORTED_STEP_USES]},with:{type:'object'},
+            properties:{uses:{enum:SUPPORTED_STEP_USES.filter(x=>x!=='http.request')},with:{type:'object'},
               if:{anyOf:[{type:'boolean'},{type:'object'}]}}},
           {type:'object',additionalProperties:false,required:['steps'],
             properties:{steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxForeachTemplateSteps,
@@ -350,11 +435,11 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                 {if:{required:['uses'],properties:{uses:{const:'result.emit'}}},
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
                 {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+                  then:{properties:{with:REVIEWED_READ_MCP_WITH_SCHEMA}}},
                 {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
+                  then:{properties:{with:FOREACH_TASK_WITH_SCHEMA}}},
                 {if:{required:['uses'],properties:{uses:{const:'action.run'}}},
-                  then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
+                  then:{properties:{with:FOREACH_TASK_ACTION_RUN_WITH_SCHEMA}}},
               ]},allOf:[{if:{minItems:2},then:{anyOf:[
                 {items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}}},
                 {contains:{type:'object',required:['uses'],
@@ -371,6 +456,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       allOf:[
         {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
         {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
+        {if:{properties:{uses:{const:'http.request'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['http.request']}}},
         {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
         {if:{properties:{uses:{const:'action.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
       ],
@@ -391,14 +477,14 @@ const entries=[
    description:'Emit a bounded deterministic result; with={data:expression}.'},
   {id:'action.mcp.call',kind:'action',availability:'supported_with_grant',
    description:'Call only reviewed read-scope tools on the pinned MCP Portal. Exact tool/schema grant and risk acceptance are mandatory.'},
-  {id:'action.mcp.write',kind:'action',availability:'unsupported',
-   description:'Write-scope MCP calls and live Connection revocation are not implemented; read-scope mcp.call cannot be widened.'},
-  {id:'action.http',kind:'action',availability:'unsupported',
-   description:'Registered HTTP Action with reviewed origin, method, redirects, credentials and replay-safe semantics is not implemented; arbitrary URLs are forbidden.'},
+  {id:'action.mcp.write',kind:'action',availability:'supported_with_grant',
+   description:'Only the source-reviewed IMA `ima_create_note` or `ima_append_note` tool, with bounded literal content and a fixed numeric note ID for append. One write per Plan; exact operation/schema, explicit write approval and risk acceptance; no dynamic targets, folders, foreach or retry.'},
+  {id:'action.http',kind:'action',availability:'supported_with_grant',
+   description:'Bounded literal public HTTPS GET/HEAD/POST (JSON) using an exact owner-approved URL/method; no caller headers, query, credentials, redirects or automatic retries. Unknown effects remain indeterminate.'},
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
    description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
   {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
-   description:'One explicitly approved, version-pinned Weixin Session Ready or Bark encrypted Owner notification per Plan. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
+   description:'One explicitly approved, version-pinned Weixin notification, Bark encrypted Owner notification, anonymous Dub short link or manual single-step EnvShare ciphertext-only share per Plan. EnvShare requires an unrecoverable delivery_key in the first workflow_run reply and workflow_result combination, never stored in D1. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
   {id:'action.github.run',kind:'action',availability:'supported_with_grant',
    description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
   {id:'flow.static_dag',kind:'flow',availability:'supported',
@@ -429,14 +515,18 @@ const entries=[
    description:'Optional one-use owner API decision before a reviewed top-level GitHub Task/Session. Runs wait up to 600 seconds. Decision must match Run, Step, and Published Version; approval never substitutes for Publish grants.'},
   {id:'flow.wait_event',kind:'flow',availability:'supported',
     description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
-  {id:'flow.loop',kind:'flow',availability:'unsupported',
-   description:'Dynamic while, nested loops, general multi-step GitHub Actions, Session foreach and arbitrary GitHub input expressions remain unsupported.'},
+  {id:'flow.loop',kind:'flow',availability:'supported',
+   description:'Bounded dynamic while/until, 1–8 iterations, with one pure result.emit body or separately granted read-only mcp.call. Nested loops and other external Action bodies remain unsupported.'},
+  {id:'flow.loop_mcp_read',kind:'flow',availability:'supported_with_grant',
+   description:'One owner-reviewed read-only MCP Action per bounded iteration. Native argument snapshot, D1 one-shot child fence and Portal generation-scoped approval; unknown effects stop the loop.'},
   {id:'flow.child',kind:'flow',availability:'supported_with_grant',
-   description:'At most one awaited, non-recursive child per parent (flow: child, not child_workflow). Pin the active child workflow_id and immutable version_id; workflow_validate returns required_children, and workflow_publish requires the exact approved_children grant. Parent reserves two of eight Run capacity units; child completion is awaited. Cancellation is one-shot and never promises external resource rollback.'},
-  {id:'flow.child.detached',kind:'flow',availability:'unsupported',
-   description:'Detached child Run initiation and independent cancellation ownership are not implemented; one pinned awaited child is the only supported composition.'},
-  {id:'flow.saga',kind:'flow',availability:'unsupported',
-   description:'No compensating transaction semantics are provided; cancel does not promise rollback.'},
+   description:'At most one pinned non-recursive child per parent (flow: child, not child_workflow). Default mode awaits completion and reserves two of eight Run units. Explicit mode: detached instead reserves an independent child slot and returns a child Run reference after confirmed native creation. Both modes require exact required_children/approved_children grants; no inherited child credentials or false external cancellation guarantees.'},
+  {id:'flow.child.detached',kind:'flow',availability:'supported_with_grant',
+   description:'Explicit mode: detached on one pinned flow: child; exact approved_children required. Child consumes its own 1-of-8 slot and starts under its own immutable Plan. Parent returns a child Run reference after confirmed native creation without waiting; parent completion does not stop it. An uncertain native start is never blindly retried.'},
+  {id:'flow.nested',kind:'flow',availability:'unsupported',
+   description:'Design-only nested and composed Flow semantics. No executable source form, no Publish grant and no runnable example; current compiler rejects nested templates.'},
+  {id:'flow.saga',kind:'flow',availability:'supported_with_grant',
+   description:'Native Cloudflare rollback for explicitly approved temporary Ubuntu/Windows GitHub Sessions only. Dependent Steps roll back in reverse dependency order; independent branches have no required order. A cancellation request remains pending until verified terminal. Other effects cannot declare compensation; no ACID rollback.'},
 ] as const;
 type Entry=typeof entries[number];
 const byId=new Map<string,Entry>(entries.map(entry=>[entry.id,entry]));
@@ -451,24 +541,32 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'WEIXIN_ACTION_DEPLOYMENT_ID'|'WEIXIN_ACTION_PROVIDER'|'BARK_ACTION_DEPLOYMENT_ID'|'BARK_ACTION_PROVIDER'>,
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS_DEPLOYMENT_ID'|'ACTIONS'> & {DB?:Env['DB']},
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
+  // Discover runtime state without broadening the reviewed Portal target.
+  // Missing/unreadable D1 fails closed in production; compiler-only fixtures
+  // that intentionally omit DB continue to show configured_unverified.
+  const portalState=env.DB?await portalAuthorization(env.DB):null;
+  const portalRevoked=portalState?.state==='revoked';
+  const httpState=env.DB?await httpAuthorization(env.DB):null;
   let githubReady=false;
   try {
     githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
-  const cloudflareReady=(!!env.WEIXIN_ACTION_PROVIDER&&!!env.WEIXIN_ACTION_DEPLOYMENT_ID&&githubReady)||
-    (!!env.BARK_ACTION_PROVIDER&&!!env.BARK_ACTION_DEPLOYMENT_ID);
+  const cloudflareReady=!!env.ACTIONS&&!!env.ACTIONS_DEPLOYMENT_ID;
   const availability=(entry:Entry)=>
-    (entry.id==='action.mcp.call'||entry.id==='flow.foreach_mcp_read'||entry.id==='flow.foreach_multi_mcp_read')&&!portalReady?'unavailable':
+    entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
+    (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
     (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
+    entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.run.cloudflare','action.mcp.call','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
     action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
@@ -477,11 +575,17 @@ export async function workflowCapabilities(env:Pick<Env,
     capability_ids:entries.map(entry=>({
       id:entry.id,kind:entry.kind,availability:availability(entry),description:entry.description,
     })),
-    connections:portalReady?{portal:{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',availability:'configured_unverified'}}:{portal:{availability:'unavailable'}},
+    connections:{portal:portalReady?{endpoint:PRODUCTION_PORTAL_ENDPOINT,scope:'read',
+      availability:portalRevoked?'revoked':'configured_unverified',
+      ...(portalState?{generation:portalState.generation}:{})}:{availability:'unavailable'},
+      http:{availability:httpState?.state??'not_checked',
+        generation:httpState?.generation??null,
+        reenable_requires_new_published_plan:true}},
     availability_note:'Configured means credentials exist, not verified access or publication permission.',
     github_repository_scope:githubReady?'configured':'unavailable',
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
+      connection_status:'workflow_connection_status',connection_revoke:'workflow_connection_revoke',connection_enable:'workflow_connection_enable',
       status:'workflow_status',result:'workflow_result',approval:'workflow_approval'},
     admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
     note:'Discovery and inline validation never publish or grant execution.',
@@ -492,51 +596,119 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='flow.condition'?{expression_rules:WORKFLOW_EXPRESSION_RULES}:{}),
     ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
+    ...(id==='action.http'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['http.request']}:{}),
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
       reviewed_manifest:await cloudflareActionManifest(),
-      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('bark')],
-      deployment_id:env.WEIXIN_ACTION_DEPLOYMENT_ID??null,
-      bark_deployment_id:env.BARK_ACTION_DEPLOYMENT_ID??null}:{}),
+      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('download'),await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub'),await cloudflareActionManifest('envshare'),await cloudflareActionManifest('litterbox')],
+      deployment_id:env.ACTIONS_DEPLOYMENT_ID??null}:{}),
   };
   // Design-only contracts make unsupported features discoverable without
   // advertising a second compiler or presenting a publishable DSL example.
+  if(id==='action.github.run'||id==='action.run.github'){
+    detail.artifact_reference_policy={
+      surface:'workflow_result.artifact_references',provider:'github_actions',
+      eligibility:'Exactly approved, pinned GitHub Task with a physically succeeded Attempt and Step',
+      provenance:'Exact repository ID, Run ID, attempt 1, pinned commit SHA, valid non-expired artifact',
+      fields:['provider','repository','repository_id','workflow_run_id','run_attempt',
+        'artifact_id','name','size_bytes','expires_at','digest','requires_auth'],
+      result_states:['verified','none','unavailable'],
+      authorization:'The reference is metadata, not a download grant; GitHub Actions read permission is required separately',
+      limits:'At most eight artifact-bearing Tasks and eight artifacts per Task per read',
+      restrictions:['no zip bytes in D1','no credential-bearing or redirect download URLs',
+        'rerun attempts are not linked without separate artifact-attempt proof'],
+    };
+  }
   if(id==='flow.loop'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      constructs:['while','until','nested_foreach','dynamic_repeat'],
-      evaluation:'Conditions read only frozen inputs and preceding published Step results',
-      bounds:'Explicit finite iteration/depth/expanded-step/time limits required before any external effect',
-      replay:'Deterministic iteration identities and immutable expansion snapshots before dispatch',
-      failure:'Budget exhaustion must fail closed, never silently count as success',
-      dependencies:'Nested effects must retain the parent Published Plan grants and one-shot dispatch fences'};
+    detail.example=await compilingExample(boundedLoop);
+    detail.loop_policy={modes:['while','until'],max_iterations:PLAN_LIMITS.maxRepeat,
+      body:'single result.emit or approved read-only mcp.call',nested:false,external_actions:'reviewed mcp.call only',
+      refs:['item.index','item.value'],native_checkpoint:'step.do per condition and iteration (reserved identity)',
+      budget:'Maximum iterations reserved in the same 32-step Plan budget',
+      exhaustion:'failed:loop_budget_exceeded',replay:'fixed checkpoint identity per iteration'};
   }
   if(id==='flow.child.detached'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      ownership:'Explicit independent child Run; no inherited Connection, Secret or approval',
-      version:'Pinned active immutable child Published Version at admission',
-      cancellation:'Parent cancellation does not terminate detached child',
-      capacity:'Separate bounded child admission; no implicit reservation/deadlock bypass',
-      idempotency:'Stable identity and no retry of unknown native child creation'};
+    detail.example=await compilingExample({...awaitedChildExample,
+      name:'Pinned detached child (illustrative)',
+      steps:awaitedChildExample.steps.map(s=>('flow' in s&&s.flow==='child'?{...s,mode:'detached'}:s))});
+    detail.grant={required:['approved_children'],version:'active_immutable_child_version',
+      note:'Illustrative UUIDs must be replaced with the real active child and immutable Version. Validate and approve the exact required_children before publication.',
+      limits:'One non-recursive child per parent; parent and child independently consume 1 of 8 Run slots'};
+    detail.detached_policy={ownership:'Independent child Published Plan and grants',
+      completion:'Parent returns pinned child Run reference after confirmed native creation',
+      cancellation:'Parent completion or cancellation does not cancel the detached child',
+      replay:'Stable child identity; unknown native creation is never blindly retried'};
+  }
+  if(id==='flow.nested'){
+    // A proposed design schema is NOT part of the executable Definition Schema.
+    // This document is intentionally separate from compilePlan to prevent an
+    // unimplemented nested interpreter from silently becoming publishable.
+    detail.design_contract={
+      executable:false,source_schema:'not_accepted',validation:'reject_before_publish',
+      proposed_schema:{type:'object',additionalProperties:false,
+        required:['flow','steps'],properties:{
+          flow:{const:'block'},
+          steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxSteps,
+            description:'Conceptual ordered child Steps, potentially recursively composed; not accepted by compilePlan.'},
+          needs:{type:'array',uniqueItems:true,items:{type:'string'}},
+        }},
+      composition:'A nested block is one parent DAG Step. Children may refer to prior siblings or declared enclosing scope inputs; never arbitrary descendants, future siblings or unrelated branches.',
+      identity:'At Publish, each possible child needs a stable path of block and iteration IDs; persist a finite expansion snapshot before any external effect, and reuse it after replay.',
+      ordering:'Outer needs precede block entry; child DAG respects needs, ordered loops serialize their iterations; an enclosing dependent cannot run until the block is complete.',
+      output:'Block results must be bounded and explicitly mapped; no implicit inherited output or external credential/Connection grants.',
+      failure:'An error, indeterminate external effect or exceeded budget stops new dependent effects; already-started external operations keep their independently observed states.',
+      cancellation:'Propagate requests only to owned awaited children; detached children remain independent. A request/ACK does not prove physical termination.',
+      grants:'Every nested external Action must be declared and precisely approved in the immutable Published Plan; child workflows retain their own grants.',
+      budgets:{maxDepth:'Not accepted; a finite nesting-depth budget must be compiler-checked before enabling.',
+        maxSteps:PLAN_LIMITS.maxSteps,maxRepeat:PLAN_LIMITS.maxRepeat,
+        maxForeachItems:PLAN_LIMITS.maxForeachItems,maxParallel:PLAN_LIMITS.maxParallel,
+        rule:'Multiply worst-case nested iteration budgets and reserve all possible child identities before Publish; reject overflow.'},
+      combinations:['conditional DAG blocks','bounded foreach inside bounded loops',
+        'bounded loops inside bounded foreach','awaited child invocation inside a bounded block',
+        'explicit Saga compensation over source-reviewed reversible steps'],
+      unsupported:['nested_loop','nested_foreach','nested_repeat','nested_child',
+        'multi-action looping body','arbitrary compensated writes'],
+      note:'Proposal describes semantic consistency only; no stable executable wire format, runtime support, grant or availability is promised.',
+    };
   }
   if(id==='flow.saga'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      authorization:'Each compensation Action and its Connection require exact explicit Publish grants',
-      ordering:'Reverse dependency order across confirmed effects; parallel branches require deterministic ordering',
-      trigger:'Only declared failed/cancelled policies; no compensation of uncertain forward effects by guesswork',
-      revocation:'Recheck active grants before a compensation side effect; revoked rights never reused',
+    detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
+      authorization:'Exact pinned GitHub Session grant, approve_heavy_execution and approve_saga_compensation at Publish',
+      ordering:'Dependent Steps roll back in reverse dependency order; independent branches have no required order',
+      trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu/Windows Sessions',
+      revocation:'Check exact Published grant and current GitHub executor credential before cancellation; no independent GitHub Connection revoke exists',
       replay:'One durable attempt per compensation effect, with indeterminate outcome on unknown dispatch',
-      result:'Record partial, failed and unknown compensation; never claim ACID rollback'};
+      result:'Expose requested, indeterminate and verified terminal separately; never claim ACID rollback'};
   }
-  if(id==='action.mcp.write'||id==='action.http'){
-    detail.design_contract={executable:false,source_schema:'not_accepted',
-      registry:'Static source-reviewed capability and input/output schema, no arbitrary target or dynamic plugin marketplace',
-      grants:'Exact published Action/Connection/operation rights; parameters only narrow scope',
-      revocation:'Recheck current grants before protected dispatch, including restart and compensation',
-      effects:'Persistent one-shot dispatch fence; ambiguous outcomes remain indeterminate',
-      network:id==='action.http'?
-        'Only explicitly approved public HTTPS origins/methods/paths; deny credentials on redirects and private-address pivots':
-        'Pinned MCP Portal and explicitly reviewed write-capable tools, never readOnlyHint as authorization'};
+  if(id==='action.http'){
+    detail.example=await compilingExample({version:1,name:'Approved public HTTPS request',
+      steps:[{id:'fetch',uses:'http.request',with:{url:'https://example.com/',method:'GET'}}]});
+    detail.connection_auth={state:httpState?.state??'not_checked',
+      generation:httpState?.generation??null,revocation_fence:'durable_effect_reservation'};
+    detail.grant={required:['approved_http_operations','approve_http_execution','accept_target_risks'],
+      target:'literal HTTPS URL, no query, no credentials',methods:['GET','HEAD','POST'],
+      response_limit_bytes:8192,one_shot:'durable Run/Step fence; ambiguous outcomes never retried',
+      unsupported:['credentials','custom_headers','redirects','dynamic_url','foreach_http']};
+  }
+  if(id==='action.mcp.write'){
+    const discovered=portalRevoked?{availability:'revoked' as const,write_tools:[]}:await portalDiscovery(env);
+    const writeTools=discovered.write_tools??[];
+    detail.availability=portalRevoked?'revoked':writeTools.length?'verified_contract':
+      discovered.availability==='unavailable'?'unavailable':'not_authorized';
+    detail.discovered_tools=writeTools;
+    if(writeTools.length){
+      detail.example=await compilingExample({version:1,name:'One reviewed IMA note',steps:[
+        {id:'note',uses:'mcp.call',with:{endpoint:writeTools[0].endpoint,tool:writeTools[0].tool,
+          scope:'write',input_schema:writeTools[0].input_schema,
+          ...(writeTools[0].output_schema?{output_schema:writeTools[0].output_schema}:{}),
+          arguments:writeTools[0].arguments}}]});
+    }
+    detail.connection_auth={state:portalState?.state??'not_checked',generation:portalState?.generation??null,
+      reenable_requires_new_published_plan:true,revocation_fence:'durable_effect_reservation'};
+    detail.grant={scope:'write',tools:[...REVIEWED_WRITE_TOOLS],
+      required:['approved_operations','approve_mcp_write_execution','accept_target_risks'],
+      constraints:'One reviewed IMA note write per Plan. Create needs literal content (1–2048 chars); append needs literal existing numeric note_id (8–24 digits) plus content (1–2048 chars). No folder target, dynamic refs, foreach or automatic retries. Unknown effects remain indeterminate.'};
   }
   if(id==='flow.approval_gate'){
     detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
@@ -608,7 +780,7 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.example=await compilingExample(awaitedChildExample);
     detail.grant={required:['approved_children'],version:'active_immutable_child_version',
       note:'Example UUIDs are illustrative, not deployed Workflows. First publish a real child, replace both identifiers with its real workflow_id and published_version_id, call workflow_validate for required_children and approve that exact list before workflow_publish. Compilation alone is not publication authority.',
-      limits:'One awaited non-recursive child per parent; parent reserves 2 of 8 Run units'};
+      limits:'One non-recursive child per parent; awaited reserves 2 of 8 Run units, detached consumes two independent 1-of-8 slots'};
   }
   if(id==='flow.foreach_multi_emit'){
     detail.example=await compilingExample(foreachMultiEmit);
@@ -643,11 +815,11 @@ export async function workflowCapabilities(env:Pick<Env,
   if(id==='flow.foreach_mixed_task'){
     const [discovered,portal]=await Promise.all([
       githubReady?listAvailableGitHubActions(env):Promise.resolve({actions:[]}),
-      portalDiscovery(env),
+      portalRevoked?Promise.resolve({availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}):portalDiscovery(env),
     ]);
     const task=discovered.actions.find(a=>a.can_publish&&a.type==='task'&&
       'ref' in a&&typeof a.ref==='string'&&Object.values(a.inputs).every(x=>!x.required||x.default!==undefined));
-    detail.availability=task&&portal.tools.length?'publishable_after_owner_approval':
+    detail.availability=portalRevoked?'revoked':task&&portal.tools.length?'publishable_after_owner_approval':
       !task?'no_verified_published_task':portal.availability;
     if(task&&'ref' in task&&typeof task.ref==='string'&&portal.tools.length)
       detail.example=await compilingExample(foreachMixedMcpTask({...task,ref:task.ref},portal.tools[0]!));
@@ -692,7 +864,8 @@ export async function workflowCapabilities(env:Pick<Env,
       unsupported:['session','arbitrary dynamic input expressions','nested templates']};
   }
   if(id==='flow.foreach_multi_mcp_read'){
-    const discovered=await portalDiscovery(env);
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
     detail.availability=discovered.availability;
     detail.discovered_tools=discovered.tools;
     if(discovered.reason)detail.reason=discovered.reason;
@@ -706,8 +879,32 @@ export async function workflowCapabilities(env:Pick<Env,
       required_publish_grants:['approved_operations','accept_target_risks'],
       unsupported:['github.run','nested templates','write-scope tools']};
   }
+  if(id==='flow.loop_mcp_read'){
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
+    detail.availability=discovered.availability;
+    detail.discovered_tools=discovered.tools;
+    if(discovered.reason)detail.reason=discovered.reason;
+    if(discovered.tools.length){
+      const tool=discovered.tools[0]!;
+      detail.example=await compilingExample({version:1,name:'Bounded read-only MCP until',
+        steps:[{id:'loop',flow:'until',max_iterations:2,
+          condition:{eq:[{ref:'item.index'},0]},
+          template:{uses:'mcp.call',with:{endpoint:tool.endpoint,tool:tool.tool,
+            scope:'read',input_schema:tool.input_schema,
+            ...(tool.output_schema?{output_schema:tool.output_schema}:{}),
+            arguments:tool.arguments}}}]});
+    }
+    detail.template_policy={allowed_action:'mcp.call',scope:'read',
+      max_iterations:PLAN_LIMITS.maxRepeat,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
+      args_snapshot:'Native per-iteration argument checkpoint before external dispatch',
+      replay:'D1 one-shot child dispatch fence and Portal generation binding; no blind retry',
+      required_publish_grants:['approved_operations','accept_target_risks'],
+      unsupported:['nested loops','write-scope tools','GitHub/HTTP/Cloudflare Actions']};
+  }
   if(id==='flow.foreach_mcp_read'){
-    const discovered=await portalDiscovery(env);
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
     detail.availability=discovered.availability;
     detail.discovered_tools=discovered.tools;
     if(discovered.reason)detail.reason=discovered.reason;
@@ -720,7 +917,8 @@ export async function workflowCapabilities(env:Pick<Env,
       unsupported:['github.run','nested templates','write-scope tools']};
   }
   if(id==='action.mcp.call'){
-    const discovered=await portalDiscovery(env);
+    const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
+      await portalDiscovery(env);
     detail.availability=discovered.availability;
     detail.discovered_tools=discovered.tools;
     if(discovered.reason)detail.reason=discovered.reason;
@@ -728,6 +926,8 @@ export async function workflowCapabilities(env:Pick<Env,
       detail.example=await compilingExample(mcpRead(discovered.tools[0]));
       detail.example_validation='compiler_valid_and_live_contract_discovered; tools/call not performed';
     }
+    detail.connection_auth={state:portalState?.state??'not_checked',generation:portalState?.generation??null,
+      reenable_requires_new_published_plan:true,revocation_fence:'durable_effect_reservation'};
     detail.grant={scope:'read',...(portalReady?{pinnedEndpoint:PRODUCTION_PORTAL_ENDPOINT}:{}),
       required:['approved_operations','accept_target_risks'],
       warning:'Only source-reviewed, live-advertised read tools; exact schema is rechecked at execution. Discovery is not an execution or permission grant.'};

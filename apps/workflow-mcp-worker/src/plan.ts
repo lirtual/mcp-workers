@@ -1,12 +1,14 @@
 import YAML from 'yaml';
+import {httpOperation,type HttpOperation} from './http-action.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
+import {reviewedWriteArguments} from './mcp-write-contract.ts';
 import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
-export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run'] as const;
+export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run','http.request'] as const;
 export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300,maxEventWaitSeconds:3600});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
@@ -18,11 +20,12 @@ export class PlanError extends Error {
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
 export type Step = {
-  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event'; needs: string[];
+  id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event' | 'flow.loop'; needs: string[];
   needs_policy?: 'allow_skipped';
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
+  compensate?: {kind:'github.session.cancel'};
 };
-export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'; schema_digest:string };
+export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
 export type GithubEventTrigger = {type:'github_event';repository:string;repository_id:number;event:'push';ref:string;workflow_path:string};
 export const GITHUB_EVENT_PATTERNS=Object.freeze({
@@ -31,7 +34,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; saga?:{on:('failure'|'cancel')[]}; saga_compensation_approved?:true; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -85,6 +88,88 @@ function expression(v: unknown, step?: {id:string; needs:string[]}, depth=0, opa
     // Arbitrary object keys may contain secrets; only include a known schema key in a public path.
     expression(x,step,depth+1,opaqueKeys,allowItem,
       ['data','arguments','inputs','notification'].includes(name)?path+'/'+name:path);
+  }
+}
+// Only prove facts about locally literal outputs or a source-reviewed, closed
+// Provider schema. In particular an inline MCP output_schema is caller supplied
+// and is NOT evidence of the remote tool result until Publish/runtime review.
+type KnownOutput = {known:false}|{known:true;type:string};
+const unknownOutput:KnownOutput={known:false};
+const typeOf=(value:unknown)=>value===null?'null':Array.isArray(value)?'array':typeof value;
+const expressionOperators=new Set(['ref','eq','ne','gt','lt','and','or','not']);
+function literalOutputAt(value:unknown,fields:string[],path:string):KnownOutput {
+  for(const field of fields){
+    if(value&&typeof value==='object'&&!Array.isArray(value)){
+      const record=value as Record<string,unknown>;
+      if(Object.keys(record).length===1&&expressionOperators.has(Object.keys(record)[0]!))return unknownOutput;
+      if(!Object.hasOwn(record,field))throw new PlanError('unknown_output_field',path);
+      value=record[field];
+    }else throw new PlanError('unknown_output_field',path);
+  }
+  if(value&&typeof value==='object'&&!Array.isArray(value)&&
+     Object.keys(value).length===1&&expressionOperators.has(Object.keys(value)[0]!))return unknownOutput;
+  return {known:true,type:typeOf(value)};
+}
+function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutput {
+  let current:unknown=schema;
+  for(const field of fields){
+    if(!current||typeof current!=='object'||Array.isArray(current))return unknownOutput;
+    const shape=current as Record<string,unknown>;
+    if(shape.type!=='object'||!shape.properties||typeof shape.properties!=='object'||
+       Array.isArray(shape.properties)||shape.additionalProperties!==false)return unknownOutput;
+    if(!Object.hasOwn(shape.properties,field))throw new PlanError('unknown_output_field',path);
+    current=(shape.properties as Record<string,unknown>)[field];
+  }
+  if(!current||typeof current!=='object'||Array.isArray(current))return unknownOutput;
+  const shape=current as Record<string,unknown>;
+  if(typeof shape.type==='string')return {known:true,type:shape.type};
+  if(Array.isArray(shape.enum)&&shape.enum.length>0){
+    const types=new Set(shape.enum.map(typeOf));
+    if(types.size===1)return {known:true,type:[...types][0]!};
+  }
+  return unknownOutput;
+}
+async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
+  const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
+  for(const s of steps)if(s.uses==='action.run'){
+    const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic';
+    manifests.set(s.id,await cloudflareActionManifest(kind));
+  }
+  const knownRef=(ref:string,path:string):KnownOutput=>{
+    const parts=ref.split('.');
+    if(parts[0]!=='steps'||parts[2]!=='output'||parts.length<3)return unknownOutput;
+    const producer=steps.find(s=>s.id===parts[1]);
+    if(producer?.uses==='result.emit')return literalOutputAt(producer.with.data,parts.slice(3),path);
+    if(producer?.uses==='action.run')return declaredOutputAt(manifests.get(producer.id)?.output_schema,parts.slice(3),path);
+    return unknownOutput;
+  };
+  const visit=(value:unknown,path:string,expectedNumeric=false):void=>{
+    if(!value||typeof value!=='object')return;
+    if(Array.isArray(value)){
+      value.forEach((entry,i)=>visit(entry,path+'/'+i,expectedNumeric));return;
+    }
+    const record=value as Record<string,unknown>, names=Object.keys(record);
+    if(names.length===1&&names[0]==='ref'&&typeof record.ref==='string'){
+      const known=knownRef(record.ref,path+'/ref');
+      if(expectedNumeric&&known.known&&known.type!=='number')
+        throw new PlanError('incompatible_output_type',path+'/ref');
+      return;
+    }
+    for(const [key,child] of Object.entries(record)){
+      if((key==='gt'||key==='lt')&&names.length===1&&Array.isArray(child)){
+        child.forEach((item,i)=>visit(item,path+'/'+key+'/'+i,true));
+      }else visit(child,['ref','eq','ne','gt','lt','and','or','not','data','arguments','inputs','notification'].includes(key)?path+'/'+key:path);
+    }
+  };
+  for(const [index,s] of steps.entries()){
+    const path='/steps/'+index;
+    if(s.uses==='result.emit')visit(s.with.data,path+'/with/data');
+    else if(s.uses==='mcp.call')visit(s.with.arguments,path+'/with/arguments');
+    else if(s.uses==='github.run')visit((s.with.action as Record<string,unknown>).inputs,path+'/with/action/inputs');
+    else if(s.uses==='flow.child')visit(s.with.inputs,path+'/with/inputs');
+    else if(s.uses==='http.request'&&Object.hasOwn(s.with,'body'))visit(s.with.body,path+'/with/body');
+    else if(s.uses==='action.run'&&s.with.provider==='bark')visit((s.with.input as Record<string,unknown>).notification,path+'/with/input/notification');
+    if(s.if!==undefined)visit(s.if,path+'/if');
   }
 }
 // YAML accepts .nan/.inf, but JSON persistence silently changes them to null.
@@ -214,6 +299,19 @@ function checkGitHubActionWith(withData:Record<string,unknown>,path:string):void
   }
 }
 
+// The first HTTP slice intentionally fixes POST bodies at Publish time.
+// Runtime-evaluated body references would need a reviewed typed operation
+// schema to prove parameters cannot widen the owner-approved effect scope.
+function assertLiteralHttpBody(value:unknown,path:string,depth=0):void{
+  if(depth>15)throw new PlanError('http_body_too_deep',path);
+  if(Array.isArray(value)){for(const part of value)assertLiteralHttpBody(part,path,depth+1);return;}
+  if(!value||typeof value!=='object')return;
+  const entries=Object.entries(value as Record<string,unknown>);
+  if(entries.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(entries[0]![0]))
+    throw new PlanError('http_dynamic_body_unsupported',path);
+  for(const [,part] of entries)assertLiteralHttpBody(part,path,depth+1);
+}
+
 export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
@@ -222,7 +320,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     catch{throw new PlanError('invalid_yaml_or_json');}
   }
   validateFiniteNumbers(raw);
-  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps']);
+  const o=object(raw,'invalid_definition');keys(o,['version','name','inputs','triggers','steps','saga']);
+  let saga:{on:('failure'|'cancel')[]}|undefined;
+  if(o.saga!==undefined){
+    const spec=object(o.saga,'invalid_saga');
+    keys(spec,['on'],'/saga');
+    if(!Array.isArray(spec.on)||spec.on.length<1||spec.on.length>2||
+       new Set(spec.on).size!==spec.on.length||
+       spec.on.some(x=>x!=='failure'&&x!=='cancel'))
+      throw new PlanError('invalid_saga','/saga/on');
+    saga={on:spec.on as ('failure'|'cancel')[]};
+  }
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
   if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
@@ -262,20 +370,20 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         ref:item.ref as string,workflow_path:item.workflow_path as string}];
     }else throw new PlanError('unsupported_trigger','/triggers/0/type');
   }
-  // Literal repeat is compiled to existing, ordered DAG Steps at Publish time.
-  // There is no runtime re-evaluation, dynamic item list or second scheduler.
+  // Literal repeat compiles to ordinary DAG Steps. Dynamic foreach/loop
+  // reserve the full possible expansion budget before any execution.
   const expanded:unknown[]=[];
-  let foreachReserved=0;
+  let dynamicReserved=0;
   const foreachChildren=new Set<string>();
   for(let i=0;i<o.steps.length;i++){
     const candidate=object(o.steps[i],'invalid_step');
     if(!Object.hasOwn(candidate,'flow')){
       // Source callers cannot masquerade as an internal compiled Flow Step.
-      // Only the validated flow:foreach branch below may produce this opcode.
-      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait'||candidate.uses==='flow.wait_event')
+      // Only validated source Flow branches may produce these internal opcodes.
+      if(candidate.uses==='flow.foreach'||candidate.uses==='flow.child'||candidate.uses==='flow.wait'||candidate.uses==='flow.wait_event'||candidate.uses==='flow.loop')
         throw new PlanError('unsupported_capability','/steps/'+i+'/uses');
       expanded.push(candidate);
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -297,7 +405,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.wait',needs:deps,
         with:{duration_seconds:candidate.duration_seconds}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -318,12 +426,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.wait_event',needs:deps,
         with:{token_sha256:candidate.token_sha256,timeout_seconds:candidate.timeout_seconds}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
     if(candidate.flow==='child'){
-      keys(candidate,['id','flow','workflow_id','version_id','inputs','needs'],path);
+      keys(candidate,['id','flow','workflow_id','version_id','inputs','needs','mode'],path);
+      if(candidate.mode!==undefined&&candidate.mode!=='detached')
+        throw new PlanError('invalid_child_mode',path+'/mode');
       if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||OBJECT_PROTOTYPE_KEYS.has(candidate.id))
         throw new PlanError('invalid_step_id',path+'/id');
       if(typeof candidate.workflow_id!=='string'||!UUID_RE.test(candidate.workflow_id)||
@@ -336,8 +446,70 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||new Set(deps).size!==deps.length)
         throw new PlanError('invalid_dependencies',path+'/needs');
       expanded.push({id:candidate.id,uses:'flow.child',needs:deps,
-        with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+        with:{workflow_id:candidate.workflow_id,version_id:candidate.version_id,inputs,
+          ...(candidate.mode==='detached'?{mode:'detached'}:{})}});
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
+        throw new PlanError('invalid_step_count','/steps');
+      continue;
+    }
+    if(candidate.flow==='while'||candidate.flow==='until'){
+      // Each bounded iteration reserves an existing Plan budget unit.
+      // Only pure emit or one specifically reviewed read-only MCP Action may
+      // run per iteration; nested/other effects remain unsupported.
+      keys(candidate,['id','flow','needs','condition','max_iterations','template'],path);
+      if(typeof candidate.id!=='string'||!SAFE_ID.test(candidate.id)||
+         OBJECT_PROTOTYPE_KEYS.has(candidate.id))
+        throw new PlanError('invalid_step_id',path+'/id');
+      const deps=candidate.needs??[];
+      if(!Array.isArray(deps)||deps.some(d=>typeof d!=='string'||!SAFE_ID.test(d))||
+         new Set(deps).size!==deps.length)
+        throw new PlanError('invalid_dependencies',path+'/needs');
+      if(!Number.isSafeInteger(candidate.max_iterations)||
+         Number(candidate.max_iterations)<1||
+         Number(candidate.max_iterations)>PLAN_LIMITS.maxRepeat)
+        throw new PlanError('invalid_loop_limit',path+'/max_iterations');
+      const template=object(candidate.template,'invalid_loop_template');
+      keys(template,['uses','with'],path+'/template');
+      if(template.uses!=='result.emit'&&template.uses!=='mcp.call')
+        throw new PlanError('unsupported_loop_action',path+'/template/uses');
+      const withData=object(template.with,'invalid_loop_template');
+      let compiledTemplate:{uses:'result.emit'|'mcp.call';with:Record<string,unknown>};
+      if(template.uses==='result.emit'){
+        keys(withData,['data'],path+'/template/with');
+        if(!Object.hasOwn(withData,'data'))
+          throw new PlanError('invalid_loop_template',path+'/template/with/data');
+        compiledTemplate={uses:'result.emit',with:{data:withData.data}};
+      }else{
+        const target=path+'/template/with';
+        keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],target);
+        if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',target+'/endpoint');
+        try{if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical');}
+        catch{throw new PlanError('invalid_endpoint',target+'/endpoint');}
+        if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))
+          throw new PlanError('invalid_tool',target+'/tool');
+        if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',target+'/scope');
+        object(withData.arguments,'invalid_step_arguments');
+        compiledTemplate={uses:'mcp.call',with:{...withData,
+          schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}};
+      }
+      const ctx={id:candidate.id,needs:deps};
+      const check=(value:unknown,field:string)=>
+        expression(value,ctx,0,false,true,path+field);
+      check(candidate.condition,'/condition');
+      const op=candidate.condition&&typeof candidate.condition==='object'&&
+        !Array.isArray(candidate.condition)?Object.keys(candidate.condition):[];
+      if(typeof candidate.condition!=='boolean'&&
+         !(op.length===1&&['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))
+        throw new PlanError('invalid_loop_condition',path+'/condition');
+      if(template.uses==='mcp.call')
+        expression(withData.arguments,ctx,0,true,true,path+'/template/with/arguments');
+      else check(withData.data,'/template/with/data');
+      dynamicReserved+=Number(candidate.max_iterations);
+      expanded.push({id:candidate.id,uses:'flow.loop',needs:deps,with:{
+        mode:candidate.flow,max_iterations:candidate.max_iterations,
+        condition:candidate.condition,template:compiledTemplate,
+      }});
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -429,10 +601,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
             throw new PlanError('invalid_step_id',path+'/id');
           foreachChildren.add(generatedId);
         }
-        foreachReserved+=Number(candidate.max_items)*children.length;
+        dynamicReserved+=Number(candidate.max_items)*children.length;
         expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
           with:{items:source,max_items:candidate.max_items,templates:children}});
-        if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+        if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
           throw new PlanError('invalid_step_count','/steps');
         continue;
       }
@@ -484,10 +656,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('invalid_step_id',path+'/id');
         foreachChildren.add(generatedId);
       }
-      foreachReserved+=Number(candidate.max_items);
+      dynamicReserved+=Number(candidate.max_items);
       expanded.push({id:candidate.id,uses:'flow.foreach',needs:originalNeeds,
         with:{items:source,max_items:candidate.max_items,template:compiledChild}});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
       continue;
     }
@@ -501,7 +673,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       throw new PlanError('invalid_repeat_count',path+'/times');
     const template=object(candidate.template,'invalid_repeat_template');
     keys(template,['uses','with','if'],path+'/template');
-    if(!isSupportedStepUse(template.uses))
+    if(!isSupportedStepUse(template.uses)||template.uses==='http.request')
       throw new PlanError('unsupported_capability',path+'/template/uses');
     if(template.uses==='action.run' &&
        (template.with as {executor?:unknown}|undefined)?.executor==='cloudflare')
@@ -517,7 +689,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       expanded.push({id:generatedId,uses:template.uses,with:template.with,
         ...(template.if===undefined?{}:{if:template.if}),
         needs:[...originalNeeds,...(n? [candidate.id+'_'+(n-1)]:[])]});
-      if(expanded.length+foreachReserved>PLAN_LIMITS.maxSteps)
+      if(expanded.length+dynamicReserved>PLAN_LIMITS.maxSteps)
         throw new PlanError('invalid_step_count','/steps');
     }
   }
@@ -563,7 +735,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       return {...sourceStep,uses:'github.run',
         with:{capability:withData.capability,action:withData.action}};
     })():sourceStep;
-    keys(s,['id','uses','needs','needs_policy','if','with','approval'],stepPath);
+    keys(s,['id','uses','needs','needs_policy','if','with','approval','compensate'],stepPath);
     if(s.approval!==undefined){
       const a=object(s.approval,'invalid_runtime_approval');
       keys(a,['required'],stepPath+'/approval');
@@ -572,7 +744,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     }
     if(typeof s.id!=='string'||!SAFE_ID.test(s.id)||ids.has(s.id)||OBJECT_PROTOTYPE_KEYS.has(s.id))throw new PlanError('invalid_step_id');
     ids.add(s.id);
-    if(!['flow.foreach','flow.child','flow.wait','flow.wait_event'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
+    if(!['flow.foreach','flow.child','flow.wait','flow.wait_event','flow.loop'].includes(String(s.uses))&&!isSupportedStepUse(s.uses))throw new PlanError('unsupported_capability',stepPath+'/uses');
     const needs=s.needs===undefined?[]:s.needs;
     if(!Array.isArray(needs)||needs.some(n=>typeof n!=='string'||!SAFE_ID.test(n))||new Set(needs).size!==needs.length)throw new PlanError('invalid_dependencies');
     // Opt-in branch fan-in: completed/skipped dependencies may join, but a
@@ -582,22 +754,58 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(s.needs_policy==='allow_skipped'&&!needs.length)
       throw new PlanError('invalid_needs_policy',stepPath+'/needs_policy');
     const withData=object(s.with,'invalid_step_arguments');
-    if(s.uses==='flow.foreach'){
+    if(s.uses==='flow.loop'){
+      keys(withData,['mode','condition','max_iterations','template'],stepPath+'/with');
+    }else if(s.uses==='flow.foreach'){
       keys(withData,['items','max_items','template','templates'],stepPath+'/with');
     }else if(s.uses==='flow.child'){
-      keys(withData,['workflow_id','version_id','inputs'],stepPath+'/with');
+      keys(withData,['workflow_id','version_id','inputs','mode'],stepPath+'/with');
+      if(withData.mode!==undefined&&withData.mode!=='detached')
+        throw new PlanError('invalid_child_mode',stepPath+'/with/mode');
     }else if(s.uses==='flow.wait'){
       keys(withData,['duration_seconds'],stepPath+'/with');
     }else if(s.uses==='flow.wait_event'){
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.provider==='bark'?'bark':'weixin');
+      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':withData.action==='litterbox.upload_file'?'litterbox':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
       const input=object(withData.input,'invalid_cloudflare_input');
-      if(manifest.provider==='bark'){
+      if(manifest.provider==='dub'){
+        keys(input,['url','public_stats'],stepPath+'/with/input');
+        const target=input.url;
+        if(!target||typeof target!=='object'||Array.isArray(target)||
+           Object.keys(target).length!==1||(target as {ref?:unknown}).ref!=='inputs.url')
+          throw new PlanError('dub_url_must_be_run_input',stepPath+'/with/input/url');
+        if(input.public_stats!==undefined&&typeof input.public_stats!=='boolean')
+          throw new PlanError('invalid_dub_public_stats',stepPath+'/with/input/public_stats');
+      }else if(manifest.provider==='envshare'){
+        keys(input,['encrypted','iv','ttl','reads'],stepPath+'/with/input');
+        for(const field of ['encrypted','iv','ttl','reads']){
+          const target=input[field];
+          if(!target||typeof target!=='object'||Array.isArray(target)||
+             Object.keys(target).length!==1||
+             (target as {ref?:unknown}).ref!=='inputs.'+field)
+            throw new PlanError('envshare_input_must_be_sealed_reference',stepPath+'/with/input/'+field);
+        }
+      }else if(manifest.provider==='litterbox'){
+        // A literal file, URL or arbitrary input cannot enter a Published Plan.
+        // The only executable ingress is a manually selected fileParams tool.
+        keys(input,['file_name','size_bytes','sha256','time'],stepPath+'/with/input');
+        if(Object.keys(input).length!==4)
+          throw new PlanError('invalid_litterbox_input',stepPath+'/with/input');
+        for(const field of ['file_name','size_bytes','sha256','time']){
+          const v=input[field];
+          if(!v||typeof v!=='object'||Array.isArray(v)||
+             Object.keys(v).length!==1||
+             (v as {ref?:unknown}).ref!=='inputs.'+field)
+            throw new PlanError('litterbox_input_must_be_transient_reference',stepPath+'/with/input/'+field);
+        }
+        if(expanded.length!==1||o.triggers?.length||needs.length||s.if!==undefined)
+          throw new PlanError('litterbox_manual_single_step_only',stepPath);
+      }else if(manifest.provider==='bark'){
         keys(input,['notification'],stepPath+'/with/input');
         const notification=object(input.notification,'invalid_bark_notification');
         const allowed=Object.keys(manifest.input_schema.properties);
@@ -605,9 +813,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(!Object.hasOwn(notification,'body'))throw new PlanError('missing_bark_body',stepPath+'/with/input/notification');
         if(typeof notification.body==='string'&&notification.body.length>2400)
           throw new PlanError('bark_body_too_large',stepPath+'/with/input/notification');
+      }else if(manifest.action==='weixin.notify_download'){
+        keys(input,['download_step_id'],stepPath+'/with/input');
+        if(typeof input.download_step_id!=='string'||!SAFE_ID.test(input.download_step_id))
+          throw new PlanError('invalid_trusted_download_reference',stepPath+'/with/input/download_step_id');
       }else{
-        keys(input,['session_step_id'],stepPath+'/with/input');
-        if(typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id))
+        keys(input,['text','session_step_id'],stepPath+'/with/input');
+        if(typeof input.text!=='string'||!input.text.trim()||input.text.length>2048||
+           new TextEncoder().encode(input.text).byteLength>4096)
+          throw new PlanError('invalid_weixin_text',stepPath+'/with/input/text');
+        if(input.session_step_id!==undefined&&
+          (typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id)))
           throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
       }
     }else if(s.uses==='github.run'){
@@ -622,36 +838,73 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
           throw new PlanError('invalid_session_duration_binding',
             stepPath+'/with/action/inputs/duration_minutes');
       }
+    }else if(s.uses==='http.request'){
+      keys(withData,['url','method','body'],stepPath+'/with');
+      try{httpOperation(withData);}catch{throw new PlanError('invalid_http_operation',stepPath+'/with');}
+      if(withData.method!=='POST'&&Object.hasOwn(withData,'body'))
+        throw new PlanError('invalid_http_body',stepPath+'/with/body');
     }else if(s.uses==='mcp.call'){
       keys(withData,['endpoint','tool','scope','arguments','input_schema','output_schema'],stepPath+'/with');
       if(typeof withData.endpoint!=='string')throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint');
       try { if(publicMcpEndpoint(withData.endpoint).href!==withData.endpoint)throw Error('noncanonical'); }
       catch { throw new PlanError('invalid_endpoint',stepPath+'/with/endpoint'); }
       if(typeof withData.tool!=='string'||!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$/.test(withData.tool))throw new PlanError('invalid_tool',stepPath+'/with/tool');
-      if(withData.scope!=='read')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
+      if(withData.scope!=='read'&&withData.scope!=='write')throw new PlanError('unsupported_operation_scope',stepPath+'/with/scope');
       object(withData.arguments,'invalid_step_arguments');
+      if(withData.scope==='write' && !reviewedWriteArguments(withData.arguments,withData.tool as string))
+        throw new PlanError('unreviewed_write_operation',stepPath+'/with');
       // Only explicit, bounded expected schema objects may be pinned; never a
       // dynamic expression or network-fetched schema silently approved later.
       await toolSchemaDigest(withData.input_schema,withData.output_schema);
     }else keys(withData,['data'],stepPath+'/with');
+    let compensate:Step['compensate'];
+    if(s.compensate!==undefined){
+      const policy=object(s.compensate,'invalid_compensation');
+      keys(policy,['kind'],stepPath+'/compensate');
+      const action=s.uses==='github.run'?(withData.action as Record<string,unknown>):null;
+      const inputs=action?.inputs as Record<string,unknown>|undefined;
+      if(!saga||policy.kind!=='github.session.cancel'||
+         action?.type!=='session'||inputs?.session_mode!=='temporary'||
+         action?.repository!=='lirtual/github-actions'||
+         !['.github/workflows/ubuntu.yml','.github/workflows/windows.yml'].includes(String(action?.workflowPath)))
+        throw new PlanError('compensation_not_supported',stepPath+'/compensate');
+      compensate={kind:'github.session.cancel'};
+    }
+    if(saga && ((s.uses==='github.run'&&!compensate)||
+       ['mcp.call','http.request','action.run','flow.foreach','flow.child','flow.loop'].includes(String(s.uses))))
+      throw new PlanError('saga_uncompensated_effect',stepPath);
     const compiledWith=s.uses==='mcp.call'?
       {...withData,schema_digest:await toolSchemaDigest(withData.input_schema,withData.output_schema)}:withData;
     steps.push({id:s.id,uses:s.uses as Step['uses'],needs:needs as string[],
       ...(s.needs_policy==='allow_skipped'?{needs_policy:'allow_skipped' as const}:{}),
       with:compiledWith,...(s.if===undefined?{}:{if:s.if}),
-      ...(s.approval===undefined?{}:{approval:{required:true}})});
+      ...(s.approval===undefined?{}:{approval:{required:true}}),
+      ...(compensate?{compensate}:{})});
   }
   for(const s of steps){
-    if(s.uses==='action.run'&&s.with.provider==='weixin'){
-      // Provider URL and recipient never come from a Draft or ordinary Step output.
-      const source=(s.with.input as {session_step_id:string}).session_step_id;
+    if(s.uses==='action.run'&&s.with.action==='weixin.notify_download'){
+      const source=(s.with.input as {download_step_id:string}).download_step_id;
       const upstream=steps.find(x=>x.id===source);
-      const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
-      if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
-         action?.repository!=='lirtual/session-actions'||
-         action?.workflowPath!=='.github/workflows/openlist.yml'||
-         action?.type!=='session')
-        throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      const template=upstream?.with.template as {uses?:unknown;action?:unknown;with?:{action?:unknown}}|undefined;
+      const action=(template?.with?.action??template?.action) as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+      if(!s.needs.includes(source)||upstream?.uses!=='flow.foreach'||
+         upstream.with.max_items!==1||template?.uses!=='github.run'||
+         action?.repository!=='lirtual/github-actions'||
+         action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
+        throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
+    }
+    if(s.uses==='action.run'&&s.with.action==='weixin.send_text'){
+      // Provider URL and recipient never come from a Draft or ordinary Step output.
+      const source=(s.with.input as {session_step_id?:string}).session_step_id;
+      if(source!==undefined){
+        const upstream=steps.find(x=>x.id===source);
+        const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+        if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
+           action?.repository!=='lirtual/github-actions'||
+           action?.workflowPath!=='.github/workflows/openlist.yml'||
+           action?.type!=='session')
+          throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      }
     }
     for(const dep of s.needs)if(!ids.has(dep)||dep===s.id)throw new PlanError('invalid_dependencies');
     if(s.uses==='flow.wait'){
@@ -664,6 +917,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(!Number.isSafeInteger(s.with.timeout_seconds)||Number(s.with.timeout_seconds)<1||
          Number(s.with.timeout_seconds)>PLAN_LIMITS.maxEventWaitSeconds)
         throw new PlanError('invalid_event_wait_timeout','/steps/'+steps.indexOf(s)+'/timeout_seconds');
+    }else if(s.uses==='flow.loop'){
+      // Source validation above owns item-context expressions and mode limits.
     }else if(s.uses==='flow.child'){
       try{expression(s.with.inputs,s,0,true,false,'/steps/'+steps.indexOf(s)+'/inputs');}catch(error){
         if(error instanceof PlanError)throw new PlanError(error.message,error.path==='/'?'/steps/'+steps.indexOf(s)+'/inputs':error.path);
@@ -710,6 +965,14 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
             throw new PlanError('invalid_condition',childPath+'/if');
         }
       }
+    }else if(s.uses==='http.request'){
+      if(Object.hasOwn(s.with,'body')){
+        const path='/steps/'+steps.indexOf(s)+'/with/body';
+        expression(s.with.body,s,0,true,false,path);
+        assertLiteralHttpBody(s.with.body,path);
+        if(new TextEncoder().encode(JSON.stringify(s.with.body)).byteLength>4096)
+          throw new PlanError('http_body_too_large',path);
+      }
     }else if(s.uses==='mcp.call') expression(s.with.arguments,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/arguments');
     else if(s.uses==='github.run' && s.with.capability==='github.action') {
       // Action identity is an immutable literal, never a runtime expression.
@@ -718,6 +981,10 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(key==='inputs') expression(value,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/inputs');
         else if(typeof value==='string'&&value.includes('\${{'))throw new PlanError('dynamic_github_identity');
       }
+    } else if(s.uses==='action.run'&&s.with.provider==='dub') {
+      expression((s.with.input as Record<string,unknown>).url,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with/input/url');
+    } else if(s.uses==='action.run'&&s.with.provider==='envshare') {
+      expression((s.with.input as Record<string,unknown>),s,0,false,false,'/steps/'+steps.indexOf(s)+'/with/input');
     } else if(s.uses==='action.run'&&s.with.provider==='bark') {
       expression((s.with.input as {notification:unknown}).notification,s,0,true,false,'/steps/'+steps.indexOf(s)+'/with/input/notification');
     } else expression(s.with,s,0,false,false,'/steps/'+steps.indexOf(s)+'/with');
@@ -727,6 +994,33 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       if(typeof s.if!=='boolean' && !(op.length===1 && ['ref','eq','ne','gt','lt','and','or','not'].includes(op[0])))throw new PlanError('invalid_condition');
     }
   }
+  // A secret-bearing EnvShare Run may do exactly one reviewed, manual write.
+  // No literal secret in the Plan, additional Step, Flow or event source.
+  if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='envshare')){
+    if(triggers?.length||steps.length!==1||saga||
+       (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
+       steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
+       steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
+      throw new PlanError('envshare_manual_single_step_only','/steps');
+  }
+  // Transient Litterbox bytes must never originate from Plan literals,
+  // scheduled/event admissions, other Steps, or serializable Run inputs.
+  if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox')){
+    if(triggers?.length||steps.length!==1||saga||
+       (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
+       steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
+       steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
+      throw new PlanError('litterbox_manual_single_step_only','/steps');
+  }
+  // Dub is a single explicit manual Run; never Cron, Webhook, or GitHub-push fanout.
+  if(triggers?.length&&steps.some(s=>s.uses==='action.run'&&s.with.action==='dub.shorten_url'))
+    throw new PlanError('dub_manual_run_only','/triggers');
+  await validateStaticOutputReferences(steps);
+  // Initial reviewed-write slice permits one static external write per Plan.
+  // Do not turn a single owner grant into a multi-write fan-out.
+  const writeSteps=steps.filter(s=>s.uses==='mcp.call'&&s.with.scope==='write');
+  if(writeSteps.length>1)
+    throw new PlanError('excessive_mcp_write_steps','/steps');
   const sorted:Step[]=[], pending=new Map(steps.map(s=>[s.id,s]));
   while(pending.size){
     const ready=[...pending.values()].filter(s=>s.needs.every(n=>sorted.some(t=>t.id===n))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
@@ -734,7 +1028,9 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
     if(ready.length>PLAN_LIMITS.maxParallel)throw new PlanError('excessive_parallelism');
     for(const s of ready){sorted.push(s);pending.delete(s.id);}
   }
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
+  if(saga&&!sorted.some(s=>s.compensate))
+    throw new PlanError('saga_requires_compensation','/saga');
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(saga?{saga}:{}),...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');

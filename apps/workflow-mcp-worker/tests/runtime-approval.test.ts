@@ -19,7 +19,7 @@ hook.deregister();
 const workflowId='11111111-1111-4111-8111-111111111111';
 const runId='22222222-2222-4222-8222-222222222222';
 const versionId='33333333-3333-4333-8333-333333333333';
-const action={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
  type:'task',contractDigest:'b'.repeat(64),ref:'refs/tags/v1',inputs:{}};
 const approvedAction={repository:action.repository,repositoryId:action.repositoryId,
@@ -351,5 +351,44 @@ test('pending approval cancellation refuses to terminate another active Step',as
   assert.equal(ctx.sqlite.prepare("SELECT status FROM run_steps WHERE step_id='other_step'").get()?.status,'running');
   await ctx.decide('deny');
   assert.deepEqual(await pending,{ok:false,error_code:'approval_denied'});
+ }finally{ctx.sqlite.close();}
+});
+
+test('approved GitHub Attempt registered without physical ID remains cancellable before Claim',async()=>{
+ const ctx=fixture();try{
+  await ctx.setup();
+  const waiting=ctx.waiting();
+  for(let i=0;i<100;i++){
+   if(ctx.sqlite.prepare("SELECT status FROM run_steps WHERE step_id='run_task'").get()?.status==='waiting_approval')break;
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  await ctx.decide('approve');
+  assert.deepEqual(await waiting,{ok:true});
+  ctx.sqlite.prepare("UPDATE run_steps SET status='running' WHERE step_id='run_task'").run();
+  const attemptId='44444444-4444-4444-8444-444444444444';
+  ctx.sqlite.prepare(`INSERT INTO step_attempts
+    (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,
+    repository_id,workflow_ref,ref,created_at,updated_at)
+    VALUES(?,?,'run_task','github.action',?,'created',?,?,?,?,?,?)`).run(
+    attemptId,runId,'55555555-5555-4555-8555-555555555555',
+    action.repository,String(action.repositoryId),
+    action.repository+'/'+action.workflowPath+'@'+action.ref,action.ref,Date.now(),Date.now());
+  const cancelled=await ctx.service.cancel(runId,'run_task');
+  assert.equal(cancelled.cancellation,'requested_unverified');
+  assert.equal(cancelled.physical_terminated,false);
+  assert.equal((await ctx.service.cancel(runId,'run_task')).cancellation,'requested_unverified',
+    'Repeated request must not send another physical cancel or reopen business execution');
+  assert.equal(ctx.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(runId)?.outcome,'cancelled');
+  assert.equal(ctx.sqlite.prepare("SELECT status FROM run_steps WHERE step_id='run_task'").get()?.status,'cancelled');
+  assert.equal(ctx.sqlite.prepare('SELECT state FROM step_attempts WHERE attempt_id=?').get(attemptId)?.state,'created');
+  // A dispatch ACK may arrive after the Run cancellation: it must not
+  // authorize the physical GitHub Job's signed Claim or protected work.
+  const {recordGithubDispatchResult}=await import('../src/github-claim.ts');
+  assert.equal(await recordGithubDispatchResult(ctx.env.DB,attemptId,{
+    status:'confirmed',runId:9876,runAttempt:1,
+  }),true);
+  assert.equal(ctx.sqlite.prepare(`SELECT 1 FROM step_attempts a JOIN runs r ON r.id=a.run_id
+    WHERE a.attempt_id=? AND a.state='confirmed'
+    AND r.outcome IN ('queued','running')`).get(attemptId),undefined);
  }finally{ctx.sqlite.close();}
 });

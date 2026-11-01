@@ -13,22 +13,24 @@ const id="11111111-1111-4111-8111-111111111111";
 const credential="a".repeat(64);
 const service="https://browser-mcp-worker.invalid";
 async function setup(initial={},respond=async()=>{throw Error("network_offline");},options={}) {
-  const local={...initial}; const session={}; const events=[]; const sockets=[];
-  let handler, startup, installed, onRemoved;
+  const local={...initial,...(initial.endpoint_id?{activation_protocol:2}:{})}; const session={}; const events=[]; const sockets=[];
+  const createdTabs=new Map();
+  let handler, startup, installed, onRemoved,actionClick,alarm,externalHandler;
   const chrome={
     tabs:{
       query:async()=>[{id:73,windowId:5,incognito:false}],
       onRemoved:{addListener(fn){onRemoved=fn;}},
-      async get(tabId){events.push({type:"lookup-tab",tabId});return {id:73,url:"https://example.com/public",windowId:5,incognito:false,active:false};},
+      async get(tabId){events.push({type:"lookup-tab",tabId});return createdTabs.get(tabId)??{id:73,url:"https://example.com/public",windowId:5,incognito:false,active:false};},
       async update(tabId,options){events.push({type:"focus-tab",tabId,options});return {id:tabId};},
-      async create(options){events.push({type:"create-tab",options});return {id:74,...options};},
-      async remove(tabId){events.push({type:"remove-tab",tabId});},
+      async create(options){events.push({type:"create-tab",options});const tab={id:74,...options};createdTabs.set(74,tab);return tab;},
+      async remove(tabId){events.push({type:"remove-tab",tabId});createdTabs.delete(tabId);},
       async group(options){events.push({type:"group-tab",options});return 8;}
     },
     tabGroups:{query:async()=>[],async update(groupId,options){events.push({type:"group-title",groupId,options});}},
     windows:{async update(windowId,options){events.push({type:"focus-window",windowId,options});return {id:windowId};}},
     webNavigation:{async getFrame({tabId,frameId}){events.push({type:"lookup-document",tabId,frameId});return {url:"https://example.com/public",documentId:"document-73",documentLifecycle:"active"};}},
-    action:{setBadgeText:async()=>{},setTitle:async()=>{}},
+    action:{setBadgeText:async()=>{},setTitle:async()=>{},onClicked:{addListener(fn){actionClick=fn;}}},
+    alarms:{create:async()=>{},onAlarm:{addListener(fn){alarm=fn;}}},
     storage:{
       local:{
         async setAccessLevel({accessLevel}){events.push({type:"access",accessLevel});},
@@ -47,7 +49,7 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
     runtime:{
       id:"test-extension",
       getURL:p=>"chrome-extension://test-extension/"+p,
-      onMessage:{addListener(fn){handler=fn;}},
+      onMessage:{addListener(fn){handler=fn;}},onMessageExternal:{addListener(fn){externalHandler=fn;}},
       onStartup:{addListener(fn){startup=fn;}},
       onInstalled:{addListener(fn){installed=fn;}}
     }
@@ -66,12 +68,33 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
   await new Promise(resolve=>setTimeout(resolve,5));
   async function send(type,props={}){
     return new Promise((resolve,reject)=>{
-      handler({type,...props},{id:"test-extension",url:"chrome-extension://test-extension/popup.html"},answer=>answer?.ok?resolve(answer.result):reject(Error(answer?.error||"unknown")));
+      handler({type,...props},{id:"test-extension",url:"chrome-extension://test-extension/options.html"},answer=>answer?.ok?resolve(answer.result):reject(Error(answer?.error||"unknown")));
     });
   }
-  const sendSpoof=(type,sender)=>new Promise(resolve=>handler({type},sender,resolve));
-  return {local,session,events,send,sendSpoof,chrome,startup,installed,removed:tabId=>onRemoved(tabId),ctx,sockets};
+  const sendSpoof=(type,sender,extra={})=>new Promise(resolve=>handler({type,...extra},sender,resolve));
+  return {local,session,events,createdTabs,send,sendSpoof,chrome,startup,installed,click:()=>actionClick(),external:(message,sender)=>new Promise(resolve=>externalHandler(message,sender,resolve)),alarm:()=>alarm({name:"browser-activation"}),removed:tabId=>onRemoved(tabId),ctx,sockets};
 }
+test("native Options browser tab may read status and set Temporary, but spoofed senders remain denied",async()=>{
+  const e=await setup({authorization:"stopped",activation_protocol:2});
+  const optionsURL="chrome-extension://test-extension/options.html";
+  const optionsSender={id:"test-extension",url:optionsURL,frameId:0,
+    tab:{id:91,url:optionsURL,windowId:1}};
+  const status=await e.sendSpoof("status",optionsSender);
+  assert.equal(status.ok,true,"native Options page tab must not be rejected merely because sender.tab exists");
+  assert.equal(status.result.authorization,"stopped");
+  assert.equal(Object.hasOwn(status.result,"credential"),false);
+  const saved=await e.sendSpoof("pairing-preference",optionsSender,{mode:"temporary"});
+  assert.equal(saved.ok,true);
+  assert.equal(saved.result.mode,"temporary");
+  assert.equal(e.local.pairing_preference,"temporary");
+  for(const sender of [
+    {id:"other-extension",url:optionsURL,frameId:0,tab:{id:91,url:optionsURL}},
+    {id:"test-extension",url:"https://example.com/public",frameId:0,tab:{id:91}},
+    {id:"test-extension",url:"chrome-extension://test-extension/popup.html",frameId:0,tab:{id:91}},
+    {id:"test-extension",url:optionsURL,frameId:1,tab:{id:91,url:optionsURL}},
+    {id:"test-extension",url:optionsURL+"?spoof",frameId:0,tab:{id:91,url:optionsURL}}
+  ])assert.equal((await e.sendSpoof("status",sender)).error,"untrusted_sender");
+});
 test("fast WSS open authenticates before any asynchronous connection bookkeeping",async()=>{
   const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{fastOpen:true});
   try {
@@ -81,7 +104,7 @@ test("fast WSS open authenticates before any asynchronous connection bookkeeping
     assert.equal(frames.length,1,"fast WSS open must not be lost while awaiting storage");
     assert.equal(frames[0].endpoint_id,id);
     assert.equal(frames[0].service_origin,service);
-    assert.equal(frames[0].owner_approval_protocol,1);
+    assert.equal(frames[0].owner_approval_protocol,undefined);
   } finally {await e.send("stop");}
 });
 
@@ -136,7 +159,7 @@ test("a stopped Profile never shows persisted stale transport-online after servi
   assert.equal(status.connection,"offline");
 });
 
-test("only the trusted Popup can locate the last observed document, never a stale or unspecified tab",async()=>{
+test("only the trusted Options can locate the last observed document, never a stale or unspecified tab",async()=>{
   const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"});
   await assert.rejects(e.send("locate"),/no_observed_tab/);
   vm.runInContext("lastObserved={tab_id:73,document_id:'stale-document'}",e.ctx);
@@ -166,12 +189,6 @@ test("only an authenticated observation response populates the transient locate 
   assert.equal((await e.send("status")).last_observed_tab_id,null);
 });
 
-test("an unconfirmed cloud Stop blocks local Resume rather than expanding authorization",async()=>{
-  const env=await setup({service,endpoint_id:id,credential,authorization:"stopped",pending_cloud_stop:true});
-  await assert.rejects(env.send("resume"),/cloud_stop_not_confirmed/);
-  assert.equal(env.local.authorization,"stopped");
-  assert.equal(env.local.pending_cloud_stop,true);
-});
 test("offline local revocation removes credential before reaching network and reports unconfirmed cloud revocation",async()=>{
   const env=await setup({service,endpoint_id:id,credential,authorization:"enabled"});
   const status=await env.send("revoke");
@@ -184,49 +201,6 @@ test("offline local revocation removes credential before reaching network and re
   const attempted=env.events.findIndex(e=>e.type==="fetch");
   assert.ok(removed>=0&&attempted>removed);
 });
-test("pairing keeps a new Profile stopped until local Resume succeeds",async()=>{
-  const env=await setup({},async(url)=>{
-    if(url.endsWith("/extension/claim"))
-      return Response.json({endpoint_id:id,credential,authorization:"stopped"});
-    throw Error("offline");
-  });
-  const outcome=await env.send("pair",{service,alias:"My Chrome Profile",code:"a".repeat(24)});
-  assert.equal(outcome.authorization,"stopped");
-  assert.equal(env.local.authorization,"stopped");
-  assert.equal(env.local.endpoint_id,id);
-  assert.equal(env.local.credential,credential);
-  await assert.rejects(env.send("resume"),/offline/);
-  assert.equal(env.local.authorization,"stopped");
-});
-
-test("unconfirmed cloud revocation blocks re-pair until explicit local acknowledgment",async()=>{
-  const env=await setup({authorization:"revoked",pending_revocation_id:id});
-  await assert.rejects(env.send("pair",{service,alias:"new-profile",code:"a".repeat(24)}),/cloud_revocation_unconfirmed/);
-  await env.send("ack-revocation");
-  assert.equal(env.local.pending_revocation_id,null);
-});
-
-test("extension refuses to send credentials or pairing code to unpinned service host",async()=>{
-  const e=await setup({service:"https://attacker.example",endpoint_id:id,credential,authorization:"stopped"});
-  await assert.rejects(e.send("resume"),/invalid_service/);
-  assert.equal(e.events.filter(x=>x.type==="fetch").length,0);
-  const fresh=await setup({});
-  await assert.rejects(fresh.send("pair",{service:"https://attacker.example",code:"a".repeat(24),alias:"trusted"}),/invalid_pairing_details/);
-  assert.equal(fresh.events.filter(x=>x.type==="fetch").length,0);
-});
-
-test("content scripts cannot send privileged commands, and service URL is pinned",async()=>{
-  const env=await setup({service,endpoint_id:id,credential,authorization:"stopped"});
-  const sender={id:"test-extension",url:"https://example.com/"};
-  const result=await env.sendSpoof("resume",sender);
-  assert.equal(result.error,"untrusted_sender");
-  // The test harness exposes the registered handler below instead of creating a page.
-  assert.equal(env.local.authorization,"stopped");
-  await assert.rejects(env.send("pair",{service:"https://attacker.example",alias:"x",code:"a".repeat(24)}),/invalid_pairing_details|revoke_existing_endpoint_first/);
-  assert.ok(env.events.some(e=>e.type==="access"&&e.accessLevel==="TRUSTED_CONTEXTS"));
-});
-
-
 test("replayed execute on one WSS generation consumes the local intent once, never opens two tabs",async()=>{
   const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"});
   const ws=e.sockets[0],operation_id="77777777-7777-4777-8777-777777777777";
@@ -351,121 +325,185 @@ test("provenance persistence failing after tab creation never confirms an uncert
   }finally{await e.send("stop");}
 });
 
-test("popup explicitly preserves original-key Unknown semantics and explicit tab close",()=>{
-  const popup=fs.readFileSync(path.join(dirname,"../extension/popup.js"),"utf8");
-  assert.match(popup,/UNCONFIRMED — do not assume zero/);
-  assert.match(popup,/ORIGINAL intent_key/);
-  assert.match(popup,/Stop\/disconnect\/turn end never auto-close tabs/);
+test("options preserve original-key Unknown semantics and explicit tab close",()=>{
+  const popup=fs.readFileSync(path.join(dirname,"../extension/options.js"),"utf8");
+  assert.match(popup,/Unknown operations:/);
+  assert.match(popup,/Unconfirmed/);
+  assert.match(popup,/original intent_key/);
+  assert.match(popup,/Tabs are retained until explicit close/);
 });
 
 
-test("Stop wins over an earlier delayed local Enable response; stale resume cannot grant or reconnect",async()=>{
-  let completeResume;
-  const resumePromise=new Promise(resolve=>{completeResume=resolve;});
-  let cloud="stopped",stopCalls=0;
-  const e=await setup({service,endpoint_id:id,credential,authorization:"stopped"},
-    async url=>{
-      if(url.endsWith("/extension/resume")){
-        await resumePromise;
-        cloud="enabled"; // simulate the delayed Cloud request completing AFTER Stop
-        return Response.json({authorization:"enabled"});
-      }
-      if(url.endsWith("/extension/stop")){
-        cloud="stopped";stopCalls++;
-        return Response.json({authorization:"stopped"});
-      }
-      throw Error("fixture_unexpected_route");
-    });
-  const enabling=e.send("resume");
-  await new Promise(resolve=>setTimeout(resolve,0));
-  const stopping=await e.send("stop");
-  assert.equal(stopping.authorization,"stopped");
-  assert.equal(stopping.cloud_confirmed,false,"an older pending cloud Enable means cloud Stop is not final yet");
-  assert.equal(e.local.pending_cloud_stop,true);
-  assert.equal(cloud,"stopped");
-  completeResume();
-  await assert.rejects(enabling,/authorization_changed|stopped/);
-  assert.equal(e.local.authorization,"stopped","stale Enable response must not overwrite Stop");
-  assert.equal(e.sockets.length,0,"stale Enable must not connect WSS");
-  assert.equal(cloud,"stopped","late cloud Resume needs a compensating stop");
-  assert.ok(stopCalls>=2,"Stop must be reasserted after the stale cloud Resume");
-  assert.equal(e.local.pending_cloud_stop,false);
-});
 
-
-test("Stop still wins if the earlier Enable storage write completes after Stop's write",async()=>{
-  const e=await setup({service,endpoint_id:id,credential,authorization:"stopped"},async url=>{
-    if(url.endsWith("/extension/resume"))return Response.json({authorization:"enabled"});
-    if(url.endsWith("/extension/stop"))return Response.json({authorization:"stopped"});
-    throw Error("unexpected_mock_route");
+const tickUntil=async(condition)=>{for(let i=0;i<80;i++){if(condition())return;await new Promise(r=>setTimeout(r,2));}assert.fail('state did not settle');};
+test('only toolbar clicks start new Access activation, no runtime message can Resume or pair',async()=>{
+  let verified=false;
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return verified?Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'}):Response.json({state:'awaiting_owner'},{status:409});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    if(url.endsWith('/extension/activate-cancel'))return Response.json({state:'cancelled'});
+    throw Error('unexpected_route');
   });
-  let release,arrived;
-  const pending=new Promise(resolve=>{arrived=resolve;});
-  const gate=new Promise(resolve=>{release=resolve;});
-  const original=e.chrome.storage.local.set;
-  e.chrome.storage.local.set=async v=>{
-    if(v.authorization==="enabled"){
-      arrived();
-      await gate;
+  await assert.rejects(e.send('resume'),/unsupported_message/);
+  await assert.rejects(e.send('pair',{code:'a'.repeat(24)}),/unsupported_message/);
+  assert.equal(e.events.some(x=>x.type==='fetch'),false);
+  e.click();await tickUntil(()=>e.events.some(x=>x.url?.endsWith('/extension/activate-begin')));
+  assert.equal(e.local.endpoint_id,undefined,'Access page alone must never pair');
+  await e.alarm();verified=true;await e.alarm();
+  await tickUntil(()=>e.local.authorization==='enabled');
+  assert.equal(e.local.endpoint_id,id);assert.ok(e.sockets.length>=1);
+  await e.send('stop');assert.equal(e.local.authorization,'stopped');
+});
+test('Access verified wake finishes immediately and closes only the verified extension-created tab once WSS authenticates',async()=>{
+  let verified=false;
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return verified?
+      Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'}):
+      Response.json({state:'awaiting_owner'},{status:409});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    throw Error('unexpected_route');
+  },{fastOpen:true});
+  e.click();
+  await tickUntil(()=>e.session.browser_activation_tab?.tab_id===74);
+  const attempt=e.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension',tab:{id:74}};
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},{...sender,tab:{id:83}})).ok,false);
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},{...sender,origin:'https://evil.example'})).ok,false);
+  assert.equal(e.local.authorization,'stopped','external wake never grants without server proof');
+  verified=true;
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,true);
+  await tickUntil(()=>e.local.authorization==='enabled');
+  assert.equal(e.events.filter(x=>x.type==='remove-tab').length,0,'never close on Access POST alone');
+  assert.equal(e.session.browser_activation_tab.confirmed_endpoint_id,id);
+  await tickUntil(()=>e.sockets.some(x=>x.readyState===1));
+  const ws=e.sockets.at(-1);
+  await ws.onmessage({data:JSON.stringify({type:'authenticated',endpoint_id:id,generation:1})});
+  await tickUntil(()=>e.events.some(x=>x.type==='remove-tab'));
+  assert.deepEqual(e.events.filter(x=>x.type==='remove-tab').map(x=>x.tabId),[74]);
+  assert.equal(e.session.browser_activation_tab,undefined);
+  assert.equal(e.local.authorization,'enabled');
+  await e.send('stop');
+});
+test('Access wake is not lost when an initial completion poll is still in flight',async()=>{
+  let releaseFirst,first=true;
+  const hold=new Promise(resolve=>{releaseFirst=resolve;});
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete')){
+      if(first){first=false;await hold;return Response.json({state:'awaiting_owner'},{status:409});}
+      return Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'});
     }
-    return original(v);
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    throw Error('unexpected_route');
+  });
+  e.click();
+  await tickUntil(()=>e.session.browser_activation_tab?.tab_id===74 &&
+    e.events.some(x=>x.url?.endsWith('/extension/activate-complete')));
+  const attempt=e.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension',tab:{id:74}};
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,true);
+  releaseFirst();
+  await tickUntil(()=>e.local.authorization==='enabled');
+  assert.equal(e.events.filter(x=>x.url?.endsWith('/extension/activate-complete')).length,2,
+    'the pending wake must trigger immediate recheck rather than a 30-second alarm');
+  await e.send('stop');
+});
+test('successful Access never auto-closes a navigated tab, and Stop rejects stale confirmation',async()=>{
+  let verified=false;
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return verified?
+      Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'}):
+      Response.json({state:'awaiting_owner'},{status:409});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    if(url.endsWith('/extension/activate-cancel'))return Response.json({state:'cancelled'});
+    throw Error('unexpected_route');
+  },{fastOpen:true});
+  e.click();await tickUntil(()=>e.session.browser_activation_tab?.tab_id===74);
+  const attempt=e.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension',tab:{id:74}};
+  verified=true;assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,true);
+  await tickUntil(()=>e.local.authorization==='enabled');
+  e.createdTabs.set(74,{...e.createdTabs.get(74),url:'https://example.org/other'});
+  await tickUntil(()=>e.sockets.some(x=>x.readyState===1));
+  await e.sockets.at(-1).onmessage({data:JSON.stringify({type:'authenticated',endpoint_id:id,generation:1})});
+  await tickUntil(()=>e.session.browser_activation_tab===undefined);
+  assert.equal(e.events.some(x=>x.type==='remove-tab'),false,'navigated tab must be preserved');
+  await e.send('stop');
+  assert.equal((await e.external({type:'activation-verified',attempt_id:attempt},sender)).ok,false);
+  assert.equal(e.events.some(x=>x.type==='remove-tab'),false);
+});
+test('Stop during pending Access completion blocks late Enable and never persists proof',async()=>{
+  let release;
+  const hold=new Promise(resolve=>{release=resolve;});
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete')){await hold;return Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'permanent'});}
+    if(url.endsWith('/extension/activate-cancel'))return Response.json({state:'cancelled'});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    throw Error('unexpected_route');
+  });
+  e.click();await tickUntil(()=>e.events.some(x=>x.url?.endsWith('/extension/activate-complete')));
+  await e.send('stop');release();await new Promise(r=>setTimeout(r,20));
+  assert.equal(e.local.authorization,'stopped');assert.equal(e.local.credential,undefined);
+  assert.equal(e.session.browser_activation_attempt,undefined);assert.equal(e.sockets.length,0);
+});
+test('temporary grant credential stays in trusted session and disappears on browser session end',async()=>{
+  const e=await setup({activation_protocol:2,authorization:'stopped'},async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return Response.json({authorization:'enabled',endpoint_id:id,credential,pairing_mode:'temporary',lease_expires_at:Date.now()+3600000});
+    if(url.endsWith('/extension/stop'))return Response.json({authorization:'stopped'});
+    throw Error('unexpected_route');
+  });
+  await e.send('pairing-preference',{mode:'temporary'});e.click();
+  await tickUntil(()=>e.local.authorization==='enabled');
+  assert.equal(e.local.credential,undefined);assert.equal(e.local.endpoint_id,undefined);
+  assert.equal(e.session.browser_temporary_grant.credential,credential);
+  await e.send('stop');await e.chrome.storage.session.clear();
+  assert.equal((await e.send('status')).endpoint_id,undefined);
+  assert.equal((await e.send('status')).authorization,'stopped');
+});
+
+test('protected Access page can acknowledge only the original Profile activation, never a copied callback',async()=>{
+  const respond=async(url)=>{
+    if(url.endsWith('/extension/activate-begin'))return Response.json({state:'pending'});
+    if(url.endsWith('/extension/activate-complete'))return Response.json({state:'awaiting_owner'},{status:409});
+    if(url.endsWith('/extension/activate-cancel'))return Response.json({state:'cancelled'});
+    throw Error('unexpected_route');
   };
-  const enabling=e.send("resume");
-  await pending;
-  const stopping=await e.send("stop");
-  assert.equal(stopping.authorization,"stopped");
-  release();
-  await assert.rejects(enabling,/local_authorization_changed/);
-  assert.equal(e.local.authorization,"stopped");
-  assert.equal(e.local.pending_cloud_stop,false);
-  assert.equal(e.sockets.length,0);
+  const first=await setup({activation_protocol:2,authorization:'stopped'},respond);
+  const second=await setup({activation_protocol:2,authorization:'stopped'},respond);
+  first.click();await tickUntil(()=>first.session.browser_activation_attempt!==undefined);
+  const attempt=first.session.browser_activation_attempt.attempt_id;
+  const sender={origin:service,url:service+'/activate/verify/'+attempt+'?extension=test-extension'};
+  const message={type:'activation-presence',attempt_id:attempt};
+  assert.equal((await first.external(message,sender)).ok,true);
+  assert.equal((await second.external(message,sender)).ok,false,'copied URL in another Profile has no local attempt');
+  assert.equal((await first.external(message,{origin:'https://evil.example',url:sender.url})).ok,false);
+  assert.equal((await first.external(message,{origin:service,url:service+'/activate/verify/'+attempt+'?extension=other'})).ok,false);
+  await first.send('stop');assert.equal((await first.external(message,sender)).ok,false);
 });
 
-
-test("a delayed Enable cannot restore a Profile after local Revoke",async()=>{
-  let finishEnable;
-  const gate=new Promise(resolve=>{finishEnable=resolve;});
-  const e=await setup({service,endpoint_id:id,credential,authorization:"stopped"},async url=>{
-    if(url.endsWith("/extension/resume")){
-      await gate;
-      return Response.json({authorization:"enabled"});
-    }
-    if(url.endsWith("/extension/revoke"))return Response.json({authorization:"revoked"});
-    throw Error("unexpected_route");
-  });
-  const enabling=e.send("resume");
-  await new Promise(resolve=>setTimeout(resolve,0));
-  assert.equal((await e.send("revoke")).cloud_confirmed,true);
-  finishEnable();
-  await assert.rejects(enabling,/local_authorization_changed/);
-  assert.equal(e.local.authorization,"revoked");
-  assert.equal(e.local.credential,undefined);
-  assert.equal(e.local.endpoint_id,undefined);
-  assert.equal(e.sockets.length,0);
-});
-
-test("a failed compensating Stop leaves cloud status explicitly pending, never re-enables locally",async()=>{
-  let finishEnable,stopCalls=0;
-  const gate=new Promise(resolve=>{finishEnable=resolve;});
-  const e=await setup({service,endpoint_id:id,credential,authorization:"stopped"},async url=>{
-    if(url.endsWith("/extension/resume")){
-      await gate;
-      return Response.json({authorization:"enabled"});
-    }
-    if(url.endsWith("/extension/stop")){
-      if(++stopCalls===1)return Response.json({authorization:"stopped"});
-      throw Error("offline_after_stale_enable");
-    }
-    throw Error("unexpected_route");
-  });
-  const enabling=e.send("resume");
-  await new Promise(resolve=>setTimeout(resolve,0));
-  const stopped=await e.send("stop");
-  assert.equal(stopped.cloud_confirmed,false);
-  finishEnable();
-  await assert.rejects(enabling,/local_authorization_changed/);
-  assert.equal(stopCalls,2);
-  assert.equal(e.local.authorization,"stopped");
-  assert.equal(e.local.pending_cloud_stop,true);
-  assert.equal(e.sockets.length,0);
+test("trusted Options rename keeps local Profile identity, denies invalid and failed cloud rename",async()=>{
+  const local=await setup({authorization:"stopped",activation_protocol:2});
+  const a=await local.send("rename",{alias:"  Personal Chrome  "});
+  assert.equal(a.alias,"Personal Chrome");
+  assert.equal(local.local.alias,"Personal Chrome");
+  await assert.rejects(local.send("rename",{alias:"x".repeat(65)}),/invalid_alias/);
+  const paired=await setup({service,endpoint_id:id,credential,authorization:"stopped"},
+    async (url,options)=>{
+      if(url.endsWith("/rename"))return Response.json({alias:JSON.parse(options.body).alias});
+      if(url.endsWith("/summary"))return Response.json({pending:0,unknown:0});
+      throw Error("unexpected_endpoint");
+    });
+  await paired.send("rename",{alias:"Work PC · Edge"});
+  assert.equal(paired.local.alias,"Work PC · Edge");
+  assert.equal(paired.local.endpoint_id,id,"rename must not create a new grant");
+  assert.ok(paired.events.some(e=>e.type==="fetch"&&e.url.endsWith("/rename")));
+  const denied=await setup({service,endpoint_id:id,credential,authorization:"stopped",alias:"Old"},
+    async()=>Response.json({error:"unauthorized"},{status:401}));
+  await assert.rejects(denied.send("rename",{alias:"New"}),/unauthorized/);
+  assert.equal(denied.local.alias,"Old","failed server rename must not diverge local label");
 });

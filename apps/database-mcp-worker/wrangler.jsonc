@@ -53,10 +53,7 @@
       }
     }
   ],
-  "hyperdrive": [
-    { "binding": "HYPERDRIVE_DB344_PG_E2E", "id": "eb4ccbd231ea44beabc72b3f2b483d69" },
-    { "binding": "HYPERDRIVE_DB344_MYSQL_E2E", "id": "38bf39b569484dbb8a9fe1b24f0df854" }
-  ],
+  "hyperdrive": [],
   "routes": [
     {
       "pattern": "database.lirtual.dpdns.org",

@@ -1,68 +1,50 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
-
-const root=new URL("../extension/",import.meta.url);
-const html=fs.readFileSync(new URL("popup.html",root),"utf8");
-const source=fs.readFileSync(new URL("popup.js",root),"utf8");
-
-function popup(){
-  const ids=["status","summary","action-feedback","pairing-details","service","code","alias","pair","locate",
-    "stop","resume","revoke","ack","lan","private"];
-  const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:"",value:"",disabled:false,onclick:null}]));
-  const messages=[];
-  const state={alias:"chrome",authorization:"enabled",connection:"online",last_update:Date.now(),
-    sensitive_permissions:{lan:false,private:false,native_private:false},
-    pending_cloud_stop:false,endpoint_id:"11111111-1111-4111-8111-111111111111",activity:{available:true,pending:0,unknown:0,approvals:[]}};
-  let respondStop;
-  const chrome={runtime:{lastError:null,sendMessage(message,reply){
-    messages.push(message.type);
-    if(message.type==="status")queueMicrotask(()=>reply({ok:true,result:{...state}}));
-    else if(message.type==="stop")respondStop=reply;
-    else if(message.type==="resume")queueMicrotask(()=>reply({ok:false,error:"cloud_stop_not_confirmed"}));
-    else queueMicrotask(()=>reply({ok:false,error:"unsupported"}));
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const root=new URL('../extension/',import.meta.url);
+const html=fs.readFileSync(new URL('options.html',root),'utf8');
+const source=fs.readFileSync(new URL('options.js',root),'utf8');
+function options(){
+  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
+  const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:'',value:'',disabled:false,onclick:null,onchange:null}]));
+  const messages=[],state={alias:'chrome',authorization:'enabled',connection:'online',last_update:Date.now(),
+    pairing_mode:'permanent',sensitive_permissions:{lan:false,private:false,native_private:false},
+    pending_cloud_stop:false,endpoint_id:'11111111-1111-4111-8111-111111111111',activity:{available:true,pending:0,unknown:0,approvals:[]}};
+  let confirmRevocation=false,respondStop;
+  const chrome={storage:{local:{get:async()=>({browser_visual_feedback:true}),set:async()=>{}}},runtime:{lastError:null,sendMessage(message,reply){messages.push(message);
+    if(message.type==='status')queueMicrotask(()=>reply({ok:true,result:{...state}}));
+    else if(message.type==='stop')respondStop=reply;
+    else if(message.type==='revoke')queueMicrotask(()=>reply({ok:true,result:{cloud_confirmed:true}}));
+    else if(message.type==='pairing-preference')queueMicrotask(()=>reply({ok:true,result:{mode:message.mode}}));
+    else queueMicrotask(()=>reply({ok:false,error:'unavailable'}));
   }}};
-  const ctx=vm.createContext({document:{getElementById:id=>nodes[id]??null},chrome,
-    BROWSER_MCP_SERVICE_ORIGIN:"https://browser.lirtual.dpdns.org",
-    URL,Date,console,confirm:()=>true,alert:()=>{}});
+  const ctx=vm.createContext({document:{getElementById:id=>nodes[id]},chrome,URL,Date,console,confirm:()=>confirmRevocation});
   vm.runInContext(source,ctx);
-  return {nodes,state,messages,finishStop:(reply)=>respondStop(reply)};
+  return {nodes,messages,state,finishStop:reply=>respondStop(reply),enableConfirm:()=>{confirmRevocation=true;}};
 }
-const tick=()=>new Promise(resolve=>setImmediate(resolve));
-
-test("stop button provides immediately visible in-place progress and authoritative result",async()=>{
-  assert.ok(html.includes('id="action-feedback"'),"inline feedback element required");
-  const noticeIndex=html.indexOf('id="action-feedback"');
-  assert.ok(noticeIndex<html.indexOf('id="stop"') && noticeIndex>html.indexOf('id="summary"'),
-    "feedback belongs adjacent to action buttons, not inside offscreen diagnostics");
-  const p=popup();
-  await tick();
-  const pending=p.nodes.stop.onclick();
-  assert.match(p.nodes["action-feedback"].textContent,/Stopping locally/);
-  assert.ok(p.messages.includes("stop"),"click must call trusted local Stop message");
-  p.state.authorization="stopped";p.state.connection="offline";
-  p.finishStop({ok:true,result:{authorization:"stopped",cloud_confirmed:true}});
-  await pending;
-  assert.match(p.nodes["action-feedback"].textContent,/stopped/i);
-  assert.match(p.nodes.summary.textContent,/stopped/i);
+const tick=()=>new Promise(r=>setImmediate(r));
+test('single toolbar action has no popup; Options shows status, duration, and permissions',async()=>{
+  const manifest=JSON.parse(fs.readFileSync(new URL('manifest.json',root)));
+  assert.equal(manifest.action.default_popup,undefined);
+  assert.equal(manifest.options_page,'options.html');
+  assert.ok(manifest.permissions.includes('alarms'));
+  assert.ok(html.includes('id="lifetime"'));
+  assert.ok(!html.includes('pairing code')&&!html.includes('id="resume"'));
+  const p=options();await tick();
+  assert.equal(p.nodes.lifetime.value,'permanent');assert.equal(p.nodes.lifetime.disabled,true);
+  assert.match(p.nodes.status.textContent,/native: denied/);
+  assert.equal(p.nodes.prepair.hidden,true,'pairing lifetime should be hidden for an existing Profile');
 });
-
-test("failed local button action shows its rejection in place instead of silent success",async()=>{
-  const p=popup();
-  await tick();
-  const pending=p.nodes.resume.onclick();
-  await pending;
-  assert.match(p.nodes["action-feedback"].textContent,/cloud_stop_not_confirmed/);
-  assert.match(p.nodes.summary.textContent,/enabled/);
+test('Options Stop visibly reports local progress and cloud-confirmed status',async()=>{
+  const p=options();await tick();const pending=p.nodes.stop.onclick();
+  assert.match(p.nodes['action-feedback'].textContent,/Stopping locally/);
+  p.state.authorization='stopped';p.finishStop({ok:true,result:{authorization:'stopped',cloud_confirmed:true}});
+  await pending;assert.match(p.nodes.summary.textContent,/OFF/);
 });
-
-test("popup has fixed intrinsic extension width without viewport-relative circular sizing",()=>{
-  const style=html.match(/<style>([\s\S]*?)<\/style>/)?.[1]||"";
-  assert.match(style,/html\s*\{[^}]*\bwidth\s*:\s*364px/,
-    "extension popup root must set explicit intrinsic width");
-  assert.match(style,/body\s*\{[^}]*\bwidth\s*:\s*340px/,
-    "body should fit the fixed root width minus margins");
-  assert.doesNotMatch(style,/(?:min-width|max-width|width)\s*:\s*[^;}]*\b(?:vw|vh)/,
-    "viewport-relative width caps shrink browser-action popups during intrinsic sizing");
+test('Options Revoke requires confirmation; lifetime becomes editable only when unpaired',async()=>{
+  const p=options();await tick();
+  await p.nodes.revoke.onclick();assert.equal(p.messages.filter(m=>m.type==='revoke').length,0);
+  p.enableConfirm();await p.nodes.revoke.onclick();assert.equal(p.messages.filter(m=>m.type==='revoke').length,1);
+  p.state.endpoint_id=undefined;assert.equal(p.messages.filter(m=>m.type==='resume').length,0);
 });

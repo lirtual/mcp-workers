@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {WorkflowService,type Env} from '../src/store.ts';
 import {validateWorkflowTarget} from '../src/tools.ts';
+import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
 
 const validDefinition=JSON.stringify({
   version:1,name:'Inline preview',
@@ -101,7 +102,7 @@ test('MCP field errors include stable paths while inline validation stays D1-fre
   for(const [property,value,code,path] of [
     ['endpoint','http://localhost/mcp','invalid_endpoint','/steps/0/with/endpoint'],
     ['tool','invalid tool!','invalid_tool','/steps/0/with/tool'],
-    ['scope','write','unsupported_operation_scope','/steps/0/with/scope'],
+    ['scope','write','unreviewed_write_operation','/steps/0/with'],
   ] as const){
     const malformed={...base,steps:[{...base.steps[0],
       with:{...base.steps[0].with,[property]:value}}]};
@@ -143,4 +144,83 @@ test('nested references pinpoint safe fields without reflecting private argument
   assert.equal(answer.issues[0].path,'/steps/0/with/data/ref');
   assert.equal(JSON.stringify(answer).includes(privateField),false);
   assert.equal(JSON.stringify(answer).includes(privateValue),false);
+});
+
+
+test('inline validation rejects proven missing literal output fields at the consumer reference',async()=>{
+  const service=new WorkflowService({DB:{prepare(){throw Error('no D1 reads or writes');}}} as unknown as Env);
+  const steps=[
+    {id:'source',uses:'result.emit',with:{data:{answer:42,nested:{label:'yes'}}}},
+    {id:'consumer',needs:['source'],uses:'result.emit',with:{data:{ref:'steps.source.output.field_that_does_not_exist'}}},
+  ];
+  const validate=async()=>validateWorkflowTarget(service,{definition:JSON.stringify({version:1,name:'Static references',steps})});
+  let response=await validate();
+  assert.equal(response.valid,false);
+  assert.equal(response.issues[0].code,'unknown_output_field');
+  assert.equal(response.issues[0].path,'/steps/1/with/data/ref');
+  assert.ok(response.issues[0].suggestion);
+  steps[1]!.with.data={ref:'steps.source.output.nested.label'};
+  response=await validate();
+  assert.equal(response.valid,true);
+  steps[1]!.with.data={ref:'steps.source.output.nested.absent'};
+  response=await validate();
+  assert.equal(response.issues[0].code,'unknown_output_field');
+});
+
+test('numeric comparison rejects proven incompatible output type, but unknown output remains allowed',async()=>{
+  const service=new WorkflowService({DB:{prepare(){throw Error('no D1 access');}}} as unknown as Env);
+  const source:{id:string;uses:string;with:{data:unknown}}={id:'source',uses:'result.emit',with:{data:{answer:'text'}}};
+  const consumer={id:'consumer',needs:['source'],uses:'result.emit',
+    if:{gt:[{ref:'steps.source.output.answer'},0]},with:{data:'ok'}};
+  const validate=(steps:unknown[])=>validateWorkflowTarget(service,{definition:JSON.stringify({version:1,name:'Types',steps})});
+  let response=await validate([source,consumer]);
+  assert.equal(response.valid,false);
+  assert.equal(response.issues[0].code,'incompatible_output_type');
+  assert.equal(response.issues[0].path,'/steps/1/if/gt/0/ref');
+  source.with.data={answer:12};
+  assert.equal((await validate([source,consumer])).valid,true);
+  source.with.data='text';
+  consumer.if.gt[0]={ref:'steps.source.output'};
+  assert.equal((await validate([source,consumer])).issues[0].code,'incompatible_output_type');
+  source.with.data={ref:'inputs.dynamic'};
+  assert.equal((await validate([source,consumer])).valid,true);
+});
+
+
+test('reviewed closed Cloudflare output schema rejects undeclared fields but accepts declared ones',async()=>{
+ const service=new WorkflowService({DB:{prepare(){throw Error('no D1 access');}}} as unknown as Env);
+ const {contract_digest}=await cloudflareActionManifest('unified-generic');
+ const source={id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'weixin',
+   action:'weixin.send_text',contract_digest,input:{text:'reviewed'}}};
+ const output={id:'done',needs:['notify'],uses:'result.emit',with:{data:{ref:'steps.notify.output.unknown_key'}}};
+ const validate=()=>validateWorkflowTarget(service,{definition:JSON.stringify({version:1,name:'Reviewed contract',steps:[source,output]})});
+ const rejected=await validate();
+ assert.equal(rejected.valid,false);
+ assert.equal(rejected.issues[0].code,'unknown_output_field');
+ output.with.data.ref='steps.notify.output.status';
+ assert.equal((await validate()).valid,true);
+});
+
+test('untrusted MCP declared output and runtime inputs cannot be claimed as statically closed',async()=>{
+ const service=new WorkflowService({DB:{prepare(){throw Error('no D1 access');}}} as unknown as Env);
+ const definition={version:1,name:'Unknown outputs',steps:[
+   {id:'call',uses:'mcp.call',with:{endpoint:'https://mcp.lirtual.dpdns.org/mcp',
+     tool:'ima_list_notebooks',scope:'read',arguments:{},input_schema:{type:'object'},
+     output_schema:{type:'object',additionalProperties:false,properties:{known:{type:'string'}}}}},
+   {id:'done',uses:'result.emit',needs:['call'],with:{data:{ref:'steps.call.output.other'}}},
+ ]};
+ assert.equal((await validateWorkflowTarget(service,{definition:JSON.stringify(definition)})).valid,true);
+});
+
+
+test('static output reference failures never echo arbitrary user object keys',async()=>{
+ const service=new WorkflowService({DB:{prepare(){throw Error('no D1 access');}}} as unknown as Env);
+ const key='PRIVATE_Access_Token_123';
+ const result=await validateWorkflowTarget(service,{definition:JSON.stringify({version:1,name:'Safe errors',steps:[
+   {id:'source',uses:'result.emit',with:{data:{ok:true}}},
+   {id:'done',uses:'result.emit',needs:['source'],with:{data:{[key]:{ref:'steps.source.output.no_such_field'}}}},
+ ]})});
+ assert.equal(result.issues[0].code,'unknown_output_field');
+ assert.equal(result.issues[0].path,'/steps/1/with/data/ref');
+ assert.equal(JSON.stringify(result).includes(key),false);
 });

@@ -17,6 +17,10 @@ const PINNED_DIGEST=await toolSchemaDigest(PINNED_SCHEMA);
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { success } from '../src/tools.ts';
 import readonlyWorker from './fixtures/readonly-worker.ts';
+import {McpServer,createMcpHandler} from '@modelcontextprotocol/server';
+import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
+import {z} from 'zod';
+import {reviewedWriteTool} from '../src/mcp-write-contract.ts';
 import {listAvailableGitHubActions} from '../src/github-action-catalog.ts';
 import {parseGitHubAction} from '../src/github-action-contract.ts';
 import {reviewedGitHubAction} from '../src/github-action-review.ts';
@@ -60,7 +64,7 @@ function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
+  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -88,9 +92,11 @@ function setup(t:test.TestContext){
     await service.publish(w.workflow_id,1,approvals,approvals.length>0);
     return service.start(w.workflow_id,inputs);
   }
-  async function run(run_id:string){
+  async function run(run_id:string,onStep?:(name:string,options:unknown)=>void){
     await new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id}} as WorkflowEvent<{run_id:string}>,
-      {do:async(_name:unknown,_options:unknown,callback:()=>Promise<unknown>)=>callback()} as unknown as WorkflowStep);
+      {do:async(name:string,options:unknown,callback:()=>Promise<unknown>)=>{
+        onStep?.(name,options);return callback();
+      }} as unknown as WorkflowStep);
   }
   return {service,admit,run,env,sqlite};
 }
@@ -366,6 +372,26 @@ test('approved MCP public read-only call succeeds through pinned Portal',async t
   assert.equal(result.steps[0].status,'succeeded');
   assert.ok(JSON.stringify(result.result).includes('hello MCP'));
   assert.ok(publicCalls>0);
+});
+
+test('revoke and enable cannot revive a prior MCP Published Plan or dispatch tools/call',async t=>{
+  const {env,admit,run,service}=setup(t);
+  const started=await admit([echoStep('read',{value:'blocked'})],{},[ECHO_GRANT]);
+  assert.deepEqual(await service.portalConnectionRevoke(),{state:'revoked',generation:1});
+  assert.deepEqual(await service.portalConnectionEnable(),{state:'enabled',generation:1});
+  let called=0;
+  const previous=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    if(request.method==='POST'&&(await request.clone().json() as {method?:string}).method==='tools/call')called++;
+    return readonlyWorker.fetch(request);
+  }) as typeof fetch;
+  try{await run(started.run_id);}finally{globalThis.fetch=previous;}
+  assert.equal(called,0);
+  const outcome=await service.result(started.run_id);
+  assert.equal(outcome.status,'failed');
+  assert.equal(outcome.steps[0].status,'failed');
+  assert.equal(outcome.steps[0].error_code,'portal_connection_revoked');
 });
 
 test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{
@@ -700,7 +726,7 @@ test('MCP pinned Portal refuses a different approved endpoint at Publish',async 
 
 test('pinned Action review stays publishable after default branch advances',async t=>{
   const {service,env,sqlite}=setup(t);
-  const repository='lirtual/session-actions',repositoryId=123,workflowId=456;
+  const repository='lirtual/github-actions',repositoryId=123,workflowId=456;
   const workflowPath='.github/workflows/verify-action.yml';
   const approvedSha='a'.repeat(40),newestSha='b'.repeat(40);
   const yaml=`name: Verified task
@@ -1188,7 +1214,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
   template:{steps:[{id:'emit',uses:'result.emit',with:{data:{ref:'item.value'}}}]}}],
  {items:['A','B']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,
   workflowId:456,workflowPath:'.github/workflows/task.yml',
   commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
  const tag='refs/tags/task-v1';
@@ -1314,7 +1340,7 @@ test('late invalid dynamic Task choice is rejected before any per-item GitHub di
  const contract={name:'Pinned Task',type:'task' as const,inputs:{
   outcome:{type:'choice' as const,required:true,options:['success','failure'],default:'success'},
  }};
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40)};
  const approved=await reviewedGitHubAction({...identity,contract});
  const {plan}=await compilePlan({version:1,name:'dynamic typed Task',steps:[
@@ -1351,7 +1377,7 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
    description:'Verify the real GitHub task success or failure path',
    options:['success','failure'],default:'success'},
  }};
- const base={repository:'lirtual/session-actions',repositoryId:1430925009,
+ const base={repository:'lirtual/github-actions',repositoryId:1430925009,
   workflowId:394689660,workflowPath:'.github/workflows/verify-action.yml',
   commitSha:'3b8114a3e478b8acb28ab2f3c404284c33096bcf'};
  const approved=await reviewedGitHubAction({...base,contract});
@@ -1494,7 +1520,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
   {items:['one','two']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
    workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
    contractDigest:'b'.repeat(64),type:'task' as const};
  const {plan}=await compilePlan({version:1,name:'Three-stage failure guard',steps:[
@@ -1541,7 +1567,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
 test('emit → conditional Task → emit skips all external work and follow-up on false condition',async t=>{
  const {service,admit,env,sqlite,run}=setup(t);
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],{items:['skip']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
   contractDigest:'b'.repeat(64),type:'task' as const};
  const {plan}=await compilePlan({version:1,name:'Skipped physical Task',steps:[
@@ -1577,7 +1603,7 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
    {items:['first','second']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,
   workflowId:456,workflowPath:'.github/workflows/task.yml',
   commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
  const tag='refs/tags/task-v1',audience='workflow-github-action:production';
@@ -1684,7 +1710,7 @@ test('mixed skipped MCP prerequisite never dispatches a reviewed GitHub Task',as
  const {admit,service,run,sqlite}=setup(t);
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
   {items:['one']});
- const identity={repository:'lirtual/session-actions',repositoryId:123,workflowId:456,
+ const identity={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/task.yml',commitSha:'a'.repeat(40),
   contractDigest:'b'.repeat(64),type:'task' as const};
  const {plan}=await compilePlan({version:1,name:'Blocked mixed external stages',steps:[
@@ -1755,6 +1781,83 @@ test('awaited child publish requires exact reviewed target; one native child and
   assert.equal(rows.filter(x=>x.parent_run_id===started.run_id).length,1);
   assert.equal(rows.every(x=>x.outcome==='succeeded'),true);
   assert.equal(rows.every(x=>x.capacity_weight===1),true);
+});
+
+test('detached child completes independently after parent reaches terminal success',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Detached result',
+    steps:[{id:'emit',uses:'result.emit',with:{data:'independent completion'}}]}));
+  const childVersion=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Detached launch',steps:[
+    {id:'launch',flow:'child',mode:'detached',workflow_id:child.workflow_id,
+      version_id:childVersion.published_version_id,inputs:{}},
+    {id:'result',uses:'result.emit',needs:['launch'],with:{data:{ref:'steps.launch.output'}}},
+  ]}));
+  const checked=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {valid:boolean;required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  assert.equal(checked.valid,true);
+  await assert.rejects(()=>service.publish(parent.workflow_id,1),/child_approval_required/);
+  await service.publish(parent.workflow_id,1,[],false,false,[],checked.required_children!);
+  const native={do:async(_n:unknown,_o:unknown,callback:()=>Promise<unknown>)=>callback(),
+    sleep:async()=>{}} as unknown as WorkflowStep;
+  const nativeCreated:string[]=[];
+  env.WORKFLOW.create=async({id})=>{nativeCreated.push(id);};
+  const started=await service.start(parent.workflow_id);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  const parentResult=await service.result(started.run_id);
+  assert.equal(parentResult.status,'succeeded');
+  const ref=parentResult.result as {run_id:string;published_version_id:string};
+  assert.equal(ref.published_version_id,childVersion.published_version_id);
+  assert.equal(nativeCreated.length,2);
+  const childRow=sqlite.prepare('SELECT outcome,capacity_weight FROM runs WHERE id=?')
+    .get(ref.run_id) as {outcome:string;capacity_weight:number};
+  assert.equal(childRow.outcome,'queued');
+  assert.equal(childRow.capacity_weight,1);
+  assert.equal((sqlite.prepare('SELECT capacity_weight FROM runs WHERE id=?')
+    .get(started.run_id) as {capacity_weight:number}).capacity_weight,1);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:ref.run_id}} as WorkflowEvent<{run_id:string}>,native);
+  assert.equal((await service.result(ref.run_id)).status,'succeeded');
+  assert.equal((await service.result(started.run_id)).status,'succeeded');
+  await assert.rejects(()=>service.cancel(started.run_id,'launch'),/child_not_cancellable/);
+  assert.equal((await service.result(ref.run_id)).status,'succeeded');
+  assert.equal(nativeCreated.length,2,'parent replay must not create another child');
+});
+
+test('detached child at capacity limit fails definitely without a native child create',async t=>{
+  const {service,env,sqlite}=setup(t);
+  const child=await service.create(JSON.stringify({version:1,name:'Only emit',
+    steps:[{id:'emit',uses:'result.emit',with:{data:1}}]}));
+  const childPublished=await service.publish(child.workflow_id,1);
+  const parent=await service.create(JSON.stringify({version:1,name:'Bounded detached',steps:[
+    {id:'launch',flow:'child',mode:'detached',workflow_id:child.workflow_id,
+      version_id:childPublished.published_version_id,inputs:{}},
+  ]}));
+  const check=await service.validateDefinition((await service.get(parent.workflow_id)).definition) as
+    {required_children?:Array<{workflow_id:string;version_id:string;digest:string}>};
+  await service.publish(parent.workflow_id,1,[],false,false,[],check.required_children!);
+  let nativeCreates=0;
+  env.WORKFLOW.create=async()=>{nativeCreates++;};
+  const started=await service.start(parent.workflow_id);
+  const filler=await service.create(JSON.stringify({version:1,name:'Filler',steps:[
+    {id:'emit',uses:'result.emit',with:{data:1}},
+  ]}));
+  await service.publish(filler.workflow_id,1);
+  for(let i=0;i<7;i++)await service.start(filler.workflow_id,{},'filler-'+i);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome IN ('queued','running')")
+    .get() as {n:number}).n,8);
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:started.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(_n:unknown,_o:unknown,cb:()=>Promise<unknown>)=>cb(),
+      sleep:async()=>{}} as unknown as WorkflowStep);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find((s:{step_id:string})=>s.step_id==='launch')?.error_code,
+    'detached_child_admission_rejected');
+  assert.equal(nativeCreates,8,'only parent and seven previously reserved Runs were created');
+  assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs WHERE parent_run_id=?')
+    .get(started.run_id) as {n:number}).n,0);
 });
 
 test('late child success after an uncertain native cancellation never authorizes parent output',async t=>{
@@ -2274,4 +2377,384 @@ test('event wait timeout fails and nonrunning owner fences downstream',async t=>
   assert.equal(cancelledResult.status,'cancelled');
   assert.equal(cancelledResult.steps.find(x=>x.step_id==='done')?.status,'skipped');
   assert.equal((await handleWaitEvent(signalRequest(cancelled.run_id),env)).status,409);
+});
+
+test('reviewed MCP write calls exactly one IMA ima_create_note after pinned publish approval',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let writes=0;
+  let dropAcknowledgment=false;
+  const createPeer=()=>{
+    const server=new McpServer({name:'workflow-reviewed-write-fixture',version:'0.1.0'},
+      {capabilities:{tools:{}}});
+    server.registerTool('ima_create_note',{
+      description:'One reviewed, non-idempotent IMA note creation',
+      inputSchema:z.object({content:z.string().min(1).max(2048)}).strict(),
+      annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false},
+    },async({content})=>{writes++;return {content:[{type:'text',text:'note created: '+content}]};});
+    return server;
+  };
+  const peer=createMcpHandler(createPeer,{legacy:'stateless'});
+  const oldFetch=globalThis.fetch;
+  const target=ECHO_GRANT.endpoint;
+  let manualRequests=0;
+  const handler=async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    assert.equal(request.url,target);
+    if(request.redirect==='manual')manualRequests++;
+    const isCall=request.method==='POST' &&
+      (await request.clone().json() as {method?:string}).method==='tools/call';
+    const response=await peer.fetch(request);
+    if(dropAcknowledgment && isCall)throw Error('simulated_ack_lost_after_note_created');
+    return response;
+  };
+  globalThis.fetch=handler as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  const client=new Client({name:'write-contract-test',version:'0.1.0'});
+  const transport=new StreamableHTTPClientTransport(new URL(target),{fetch:handler as typeof fetch});
+  let schema:unknown;
+  try{
+    await client.connect(transport);
+    const live=await client.listTools();
+    const candidate=live.tools.find(x=>x.name==='ima_create_note');
+    assert.ok(candidate);
+    assert.equal(reviewedWriteTool(candidate),true);
+    schema=candidate.inputSchema;
+  }finally{await client.close().catch(()=>{});}
+  const {plan}=await compilePlan({version:1,name:'Reviewed write fixture',steps:[
+    {id:'write',uses:'mcp.call',with:{endpoint:target,tool:'ima_create_note',
+      scope:'write',arguments:{content:'One safe static note'},input_schema:schema}},
+  ]});
+  const grant:ReadonlyOperation={endpoint:target,tool:'ima_create_note',scope:'write',
+    schema_digest:String(plan.steps[0]?.with.schema_digest)};
+  const created=await service.create(JSON.stringify({version:1,name:'Reviewed write fixture',steps:[
+    {id:'write',uses:'mcp.call',with:{endpoint:target,tool:'ima_create_note',
+      scope:'write',arguments:{content:'One safe static note'},input_schema:schema}},
+  ]}));
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant],true),
+    /mcp_write_approval_required/);
+  assert.equal(writes,0);
+  await service.publish(created.workflow_id,1,[grant],true,false,[],[],[],false,[],false,true);
+  const started=await service.start(created.workflow_id,{});
+  const timeouts:Array<{name:string;options:unknown}>=[];
+  await run(started.run_id,(name,options)=>timeouts.push({name,options}));
+  assert.deepEqual(timeouts.filter(x=>x.name==='workflow-write').map(x=>x.options),[
+    {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},
+  ]);
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.steps[0]?.status,'succeeded');
+  assert.equal(writes,1);
+  assert.ok(manualRequests>0);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?')
+    .get(started.run_id)?.n,1);
+  // Native duplicate replay is harmless: a terminal Run never gets a second
+  // business effect or dispatch reservation.
+  await run(started.run_id);
+  assert.equal(writes,1);
+
+  // Physical write happens but its response is lost. The immutable Run must
+  // stay indeterminate; neither native replay nor caller retry can write twice.
+  dropAcknowledgment=true;
+  const unknown=await service.start(created.workflow_id,{});
+  await run(unknown.run_id);
+  const unknownResult=await service.result(unknown.run_id);
+  assert.equal(unknownResult.status,'indeterminate');
+  assert.equal(unknownResult.error_code,'external_outcome_unknown');
+  assert.equal(writes,2);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?')
+    .get(unknown.run_id)?.n,1);
+  dropAcknowledgment=false;
+  await run(unknown.run_id);
+  assert.equal(writes,2);
+
+  // Revocation after publication fences a new call from the old generation.
+  await service.portalConnectionRevoke();
+  const revoked=await service.start(created.workflow_id,{});
+  await run(revoked.run_id);
+  const denied=await service.result(revoked.run_id);
+  assert.equal(denied.status,'failed');
+  assert.equal(denied.steps[0]?.error_code,'portal_connection_revoked');
+  assert.equal(writes,2);
+});
+
+// The longer MCP budget must not silently extend unrelated Step types.
+test('non-MCP result.emit keeps the existing 30-second native Step timeout',async t=>{
+  const {admit,run,service}=setup(t);
+  const started=await admit([{id:'out',uses:'result.emit',with:{data:'ok'}}]);
+  const observed:Array<{name:string;options:unknown}>=[];
+  await run(started.run_id,(name,options)=>observed.push({name,options}));
+  assert.deepEqual(observed.filter(x=>x.name==='workflow-out').map(x=>x.options),[
+    {retries:{limit:0,delay:'1 second'},timeout:'30 seconds'},
+  ]);
+  assert.equal((await service.result(started.run_id)).status,'succeeded');
+});
+
+test('reviewed IMA append: exactly one effect, no replay on lost ACK, revoke blocks new dispatch',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  const noteId='7521947772530780';
+  let written='',calls=0,dropAcknowledgment=false;
+  const makePeer=()=>{
+    const server=new McpServer({name:'workflow-reviewed-append-fixture',version:'0.1.0'},
+      {capabilities:{tools:{}}});
+    server.registerTool('ima_append_note',{
+      inputSchema:z.object({note_id:z.string(),content:z.string().min(1)}).strict(),
+      annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false},
+    },async({note_id,content})=>{
+      assert.equal(note_id,noteId);
+      calls++;written+=content;
+      return {content:[{type:'text',text:'appended'}]};
+    });
+    return server;
+  };
+  const peer=createMcpHandler(makePeer,{legacy:'stateless'});
+  const oldFetch=globalThis.fetch;
+  const url=ECHO_GRANT.endpoint;
+  const handler=async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    assert.equal(request.url,url);
+    const isCall=request.method==='POST' &&
+      (await request.clone().json() as {method?:string}).method==='tools/call';
+    const response=await peer.fetch(request);
+    if(dropAcknowledgment&&isCall)throw Error('simulated_ack_lost_after_append');
+    return response;
+  };
+  globalThis.fetch=handler as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  const client=new Client({name:'append-schema-fixture',version:'0.1.0'});
+  const transport=new StreamableHTTPClientTransport(new URL(url),{fetch:handler as typeof fetch});
+  let schema:unknown;
+  try{
+    await client.connect(transport);
+    const found=(await client.listTools()).tools.find(x=>x.name==='ima_append_note');
+    assert.ok(found);
+    assert.equal(reviewedWriteTool(found),true);
+    schema=found.inputSchema;
+  }finally{await client.close().catch(()=>{});}
+  const definition={version:1,name:'Reviewed append one effect',steps:[{
+    id:'append',uses:'mcp.call',with:{endpoint:url,tool:'ima_append_note',
+      scope:'write',input_schema:schema,arguments:{note_id:noteId,content:'safe append'}},
+  }]};
+  const compiled=await compilePlan(definition);
+  const grant:ReadonlyOperation={endpoint:url,tool:'ima_append_note',scope:'write',
+    schema_digest:String(compiled.plan.steps[0].with.schema_digest)};
+  const created=await service.create(JSON.stringify(definition));
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[grant],true),
+    /mcp_write_approval_required/);
+  assert.equal(calls,0);
+  await service.publish(created.workflow_id,1,[grant],true,false,[],[],[],false,[],false,true);
+  const first=await service.start(created.workflow_id,{});
+  await run(first.run_id);
+  assert.equal((await service.result(first.run_id)).status,'succeeded');
+  assert.equal(written,'safe append');
+  assert.equal(calls,1);
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM mcp_dispatch_fences WHERE run_id=?')
+    .get(first.run_id)?.n,1);
+  await run(first.run_id);
+  assert.equal(calls,1);
+  dropAcknowledgment=true;
+  const unknown=await service.start(created.workflow_id,{});
+  await run(unknown.run_id);
+  const result=await service.result(unknown.run_id);
+  assert.equal(result.status,'indeterminate');
+  assert.equal(result.error_code,'external_outcome_unknown');
+  assert.equal(calls,2);
+  assert.equal(written,'safe appendsafe append');
+  dropAcknowledgment=false;
+  await run(unknown.run_id);
+  assert.equal(calls,2);
+  await service.portalConnectionRevoke();
+  const revoked=await service.start(created.workflow_id,{});
+  await run(revoked.run_id);
+  const denied=await service.result(revoked.run_id);
+  assert.equal(denied.status,'failed');
+  assert.equal(denied.steps[0]?.error_code,'portal_connection_revoked');
+  assert.equal(calls,2);
+});
+
+test('bounded pure while/until use deterministic native checkpoints and terminate from prior output',async t=>{
+  const {service,admit,run,sqlite,env}=setup(t);
+  const whileRun=await admit([
+    {id:'loop',flow:'while',max_iterations:5,
+      condition:{lt:[{ref:'item.index'},{ref:'inputs.limit'}]},
+      template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+    {id:'done',uses:'result.emit',needs:['loop'],with:{data:{ref:'steps.loop.output.value'}}},
+  ],{limit:3});
+  const checkpoints:string[]=[];
+  await run(whileRun.run_id,(name)=>checkpoints.push(name));
+  const result=await service.result(whileRun.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result,2);
+  assert.deepEqual(checkpoints.filter(x=>x.includes(':loop:iteration:')),[
+    'workflow-loop:loop:iteration:0','workflow-loop:loop:iteration:1','workflow-loop:loop:iteration:2']);
+  assert.deepEqual(checkpoints.filter(x=>x.includes(':loop:condition:')),[
+    'workflow-loop:loop:condition:0','workflow-loop:loop:condition:1',
+    'workflow-loop:loop:condition:2','workflow-loop:loop:condition:3']);
+
+  const untilRun=await admit([
+    {id:'loop',flow:'until',max_iterations:5,
+      condition:{eq:[{ref:'item.value'},2]},
+      template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+  ]);
+  const durable=new Map<string,unknown>();
+  let callbacks=0;
+  const orchestrate=()=>new WorkflowOrchestrator({} as ExecutionContext,env).run(
+    {payload:{run_id:untilRun.run_id}} as WorkflowEvent<{run_id:string}>,
+    {do:async(name:string,options:unknown,cb:()=>Promise<unknown>)=>{
+      if(durable.has(name))return durable.get(name);
+      callbacks++;
+      const value=await cb();
+      durable.set(name,value);
+      return value;
+    }} as unknown as WorkflowStep);
+  await orchestrate();
+  const completed=await service.result(untilRun.run_id);
+  assert.equal(completed.status,'succeeded');
+  assert.deepEqual(completed.result,{iterations:3,value:2});
+  assert.equal([...durable.keys()].filter(x=>x.includes(':loop:iteration:')).length,3);
+  const firstCallbacks=callbacks;
+  // Simulate a replay of native checkpoints: no computation callback repeats.
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(untilRun.run_id);
+  await orchestrate();
+  assert.equal(callbacks,firstCallbacks);
+  assert.equal((await service.result(untilRun.run_id)).status,'succeeded');
+});
+
+test('bounded loops fail closed on exhaustion, invalid Boolean conditions, and zero-iteration while',async t=>{
+  const {service,admit,run}=setup(t);
+  const zero=await admit([{id:'loop',flow:'while',max_iterations:2,
+    condition:false,template:{uses:'result.emit',with:{data:'never'}}}]);
+  await run(zero.run_id);
+  assert.deepEqual((await service.result(zero.run_id)).result,{iterations:0,value:null});
+  const overflow=await admit([
+    {id:'loop',flow:'until',max_iterations:2,condition:false,
+      template:{uses:'result.emit',with:{data:{ref:'item.index'}}}},
+    {id:'dependent',needs:['loop'],uses:'result.emit',with:{data:'must not execute'}},
+  ]);
+  await run(overflow.run_id);
+  const result=await service.result(overflow.run_id);
+  assert.equal(result.status,'failed');
+  assert.equal(result.steps.find(x=>x.step_id==='loop')?.error_code,'loop_budget_exceeded');
+  assert.equal(result.steps.find(x=>x.step_id==='dependent')?.status,'skipped');
+  const invalid=await admit([{id:'loop',flow:'while',max_iterations:2,
+    condition:{ref:'inputs.count'},
+    template:{uses:'result.emit',with:{data:42}}}],{count:2});
+  await run(invalid.run_id);
+  assert.equal((await service.result(invalid.run_id)).steps[0]?.error_code,'loop_evaluation_failed');
+});
+
+test('reviewed bounded MCP loop requires exact Publish grant and executes one fenced call per iteration',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const source={version:1,name:'Reviewed loop e2e',steps:[
+    {id:'loop',flow:'until',max_iterations:3,condition:{eq:[{ref:'item.index'},1]},
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,
+        tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,
+        arguments:{value:'read-only'}}}},
+  ]};
+  const created=await service.create(JSON.stringify(source));
+  await assert.rejects(()=>service.publish(created.workflow_id,1),
+    /external_approval_required/);
+  await assert.rejects(()=>service.publish(created.workflow_id,1,[ECHO_GRANT]),
+    /target_risk_acknowledgment_required/);
+  assert.equal(calls,0);
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  const started=await service.start(created.workflow_id,{});
+  const names:string[]=[];
+  await run(started.run_id,name=>names.push(name));
+  const result=await service.result(started.run_id);
+  assert.equal(result.status,'succeeded');
+  assert.equal(result.result.iterations,2);
+  assert.equal(calls,2);
+  assert.deepEqual(names.filter(name=>name.includes(':loop:args:')),[
+    'workflow-loop:loop:args:0','workflow-loop:loop:args:1']);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(started.run_id)?.n,2);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM run_steps WHERE run_id=? AND step_id LIKE '%:loop:read:%' AND status='succeeded'")
+    .get(started.run_id)?.n,2);
+});
+
+test('lost MCP acknowledgment fences bounded loop replay and prevents later iteration',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let calls=0;
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=new Request(input,init);
+    const isCall=request.method==='POST'&&
+      (await request.clone().json() as {method:string}).method==='tools/call';
+    const response=await readonlyWorker.fetch(request);
+    if(isCall){calls++;throw Error('simulated_lost_ack_after_remote_execution');}
+    return response;
+  }) as typeof fetch;
+  t.after(()=>{globalThis.fetch=oldFetch;});
+  const created=await service.create(JSON.stringify({version:1,name:'MCP unknown loop',
+    steps:[{id:'loop',flow:'until',max_iterations:3,condition:false,
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',
+        scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'one'}}}},
+      {id:'later',needs:['loop'],uses:'result.emit',with:{data:'never'}}]}));
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  const started=await service.start(created.workflow_id,{});
+  await run(started.run_id);
+  const first=await service.result(started.run_id);
+  assert.equal(first.status,'indeterminate');
+  assert.equal(first.steps.find(x=>x.step_id==='later')?.status,'skipped');
+  assert.equal(calls,1);
+  sqlite.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(started.run_id);
+  await run(started.run_id);
+  assert.equal(calls,1);
+  assert.equal((await service.result(started.run_id)).status,'indeterminate');
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(started.run_id)?.n,1);
+});
+
+test('Portal revoke and stale Published Plan suppress bounded-loop MCP dispatch',async t=>{
+  const {service,env,sqlite,run}=setup(t);
+  let calls=0;
+  mockPublicPeer(t,async()=>{calls++;});
+  const created=await service.create(JSON.stringify({version:1,name:'Revoked loop',
+    steps:[{id:'loop',flow:'until',max_iterations:3,condition:false,
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',
+        scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'safe'}}}}]}));
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  await service.portalConnectionRevoke();
+  const revoked=await service.start(created.workflow_id,{});
+  await run(revoked.run_id);
+  const first=await service.result(revoked.run_id);
+  assert.equal(first.status,'failed');
+  assert.equal(first.steps.find(x=>x.step_id==='loop')?.error_code,'portal_connection_revoked');
+  assert.equal(calls,0);
+
+  // New generation must require new publication; old Plan cannot revive.
+  await service.portalConnectionEnable();
+  const stale=await service.start(created.workflow_id,{});
+  await run(stale.run_id);
+  assert.equal(calls,0);
+  assert.equal((await service.result(stale.run_id)).status,'failed');
+  const fence=sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(stale.run_id) as {n:number};
+  assert.equal(fence.n,0);
+});
+
+
+test('cancellation during first bounded MCP call never admits the next iteration',async t=>{
+  const {service,sqlite,run}=setup(t);
+  let calls=0;
+  let activeRun='';
+  mockPublicPeer(t,async()=>{
+    calls++;
+    if(calls===1)
+      sqlite.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(activeRun);
+  });
+  const created=await service.create(JSON.stringify({version:1,name:'Cancelled loop',
+    steps:[{id:'loop',flow:'until',max_iterations:3,condition:false,
+      template:{uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',
+        scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'test'}}}}]}));
+  await service.publish(created.workflow_id,1,[ECHO_GRANT],true);
+  const started=await service.start(created.workflow_id,{});
+  activeRun=started.run_id;
+  await run(started.run_id);
+  assert.equal(calls,1);
+  assert.equal((await service.result(started.run_id)).status,'cancelled');
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
+    .get(started.run_id)?.n,1);
 });

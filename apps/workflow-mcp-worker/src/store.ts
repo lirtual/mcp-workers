@@ -1,4 +1,6 @@
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import {workflowGitHubArtifactReferences} from './github-action-artifacts.ts';
+import {compensateCancelledSessions} from './saga.ts';
 import {cancelAwaitedChild} from './child-cancel.ts';
 import {ACTIVE_CAPACITY_UNITS_SQL,capacityAdmissionPredicate} from './child-capacity.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from './mcp-public-fetch.ts';
@@ -13,7 +15,9 @@ import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
+import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
   if(!definition || new TextEncoder().encode(definition).byteLength>32768)throw new StateError('definition_too_large');
   try {
@@ -24,13 +28,15 @@ function draftName(definition:string):string {
   return 'Untitled Draft';
 }
 import type { Plan, Step, ReadonlyOperation } from './plan.ts';
+import {httpOperation,type HttpOperation} from './http-action.ts';
+import {httpAuthorization,changeHttpAuthorization} from './http-authorization.ts';
 
 export type Env = {
   DB: D1Database;
   MCP_ACCESS_TOKEN: string;
   WORKFLOW: {
     create(options:{id:string;params:{run_id:string}}):Promise<unknown>;
-    get(id:string):Promise<{status():Promise<{status:string}>;terminate?():Promise<void>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
+    get(id:string):Promise<{status():Promise<{status:string}>;terminate?(options?:{rollback?:boolean}):Promise<void>;sendEvent?(event:{type:string;payload:unknown}):Promise<void>}>;
   };
   // Enabled only through the explicit selected-Worker production release.
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
@@ -47,6 +53,15 @@ export type Env = {
   GITHUB_ACTION_OIDC_AUDIENCE?: string;
   // Canonical 256-bit AES-GCM key for short-lived Session data.
   SESSION_RUNTIME_DATA_KEY?: string;
+  // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
+  ACTIONS_DEPLOYMENT_ID?: string;
+  ACTIONS?: {
+    listActions():Promise<Array<{action_id:string}>>;
+    getContract(action_id:string,contract_digest?:string):Promise<{deployment_id:string;contract_digest:string}>;
+    execute(action_id:string,input:unknown):Promise<{status:string;input_digest:string}>;
+    getReceipt(action_id:string,query:unknown):Promise<{status:string}>;
+    getBinding(action_id:string):Promise<{generation:number;ready:boolean}>;
+  };
   // The Worker Version ID is pinned by the separately authorized release.
   BARK_ACTION_DEPLOYMENT_ID?: string;
   BARK_ACTION_PROVIDER?: {
@@ -58,6 +73,10 @@ export type Env = {
   WEIXIN_ACTION_PROVIDER?: {
     getBinding():Promise<{generation:number;ready:boolean}>;
     getContract():Promise<{deployment_id:string;contract_digest:string}>;
+    getDownloadContract():Promise<{deployment_id:string;contract_digest:string}>;
+    getGenericContract():Promise<{deployment_id:string;contract_digest:string}>;
+    sendGenericText(input:{invocation_id:string;binding_generation:number;text:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
+    sendDownloadComplete(input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
     getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
   };
@@ -114,7 +133,7 @@ const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_r
 function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
   return plan.steps.flatMap(s=>{
     if(s.uses==='mcp.call')return [s];
-    if(s.uses!=='flow.foreach')return [];
+    if(s.uses!=='flow.foreach'&&s.uses!=='flow.loop')return [];
     const templates=(Array.isArray(s.with.templates)?s.with.templates:[s.with.template]) as
       Array<{uses?:unknown;with?:Record<string,unknown>}|undefined>;
     return templates.filter(t=>t?.uses==='mcp.call'&&!!t.with)
@@ -243,7 +262,7 @@ export class WorkflowService {
     // Until child cancellation/physical terminal propagation has independent
     // evidence, a child must not launch a GitHub Task or Session whose
     // physical lifecycle might outlast the child Workflow.
-    if(childPlan.steps.some(s=>s.uses==='github.run'||
+    if(childPlan.steps.some(s=>s.uses==='github.run'||s.uses==='http.request'||
       (s.uses==='flow.foreach'&&
         (Array.isArray(s.with.templates)?s.with.templates:[s.with.template])
           .some((x:unknown)=>x!==null&&typeof x==='object'&&
@@ -265,26 +284,33 @@ export class WorkflowService {
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(bark?'bark':'weixin');
+          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,deployment_id:
-              (bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID)??null};
+              this.env.ACTIONS_DEPLOYMENT_ID??null};
         }));
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
-        const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+        const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
+          scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
         return [JSON.stringify(grant),grant] as const;
+      })).values()];
+      const required_http_operations=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+        const operation=httpOperation(s.with);return [JSON.stringify(operation),operation] as const;
       })).values()];
       return {valid:true,digest,steps:plan.steps.length,issues:[],
         ...(required_children.length?{required_children}:{}),
         ...(plan.steps.some(s=>s.approval?.required)?{approval_gates:plan.steps.filter(s=>s.approval?.required).map(s=>({step_id:s.id,when:'before_dispatch',binding:['run_id','step_id','published_version_id'],timeout_seconds:600}))}:{}),
-        contract_validation:reviewed_cloudflare_actions.length?
+        contract_validation:required_http_operations.length?'http_target_pinned_unverified':reviewed_cloudflare_actions.length?
           'cloudflare_contract_pinned_provider_unverified':required_approvals.length?
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
-        ...(required_approvals.length?{required_approvals}:{}),
-        ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{})};
+        ...(required_approvals.length?{required_approvals,
+          ...(required_approvals.some(x=>x.scope==='write')?{requires_mcp_write_execution_approval:true}:{})}:{}),
+        ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
+        ...(reviewedGitHubSteps(plan).length?{requires_heavy_execution_approval:true}:{}),
+        ...(plan.saga?{saga:{on:plan.saga.on,compensations:plan.steps.filter(s=>s.compensate).map(s=>({step_id:s.id,kind:s.compensate!.kind,source:'approved_github_session'})),acid_rollback:false},requires_saga_compensation_approval:true}:{})};
     }catch(error){
       if(!(error instanceof PlanError))throw error;
       // Never reflect raw YAML, user keys, credentials or upstream errors.
@@ -315,6 +341,8 @@ export class WorkflowService {
         'Call workflow_capabilities and choose a supported Action.':
         code==='unsupported_field'?
         'Remove the unsupported field; use workflow_capabilities for the current schema.':
+        ['unknown_output_field','incompatible_output_type'].includes(code)?
+        'Use a field and type declared by the source Step; inspect a literal result.emit output or the trusted Action output schema. Unknown dynamic outputs cannot be statically confirmed.':
         ['invalid_reference','invalid_step_reference'].includes(code)?
         'Reference inputs or a declared dependency Step output/status.':
         code==='invalid_yaml_or_json'?
@@ -333,9 +361,16 @@ export class WorkflowService {
         ...(suggestion?{suggestion}:{})}]};
     }
   }
+  async portalConnectionStatus(){return portalAuthorization(this.db);}
+  async portalConnectionRevoke(){return changePortalAuthorization(this.db,'revoke');}
+  async portalConnectionEnable(){return changePortalAuthorization(this.db,'enable');}
+  async httpConnectionStatus(){return httpAuthorization(this.db);}
+  async httpConnectionRevoke(){return changeHttpAuthorization(this.db,'revoke');}
+  async httpConnectionEnable(){return changeHttpAuthorization(this.db,'enable');}
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
-    approve_cloudflare_execution=false){
+    approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false,
+    approve_mcp_write_execution=false,approve_saga_compensation=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const {plan,digest:plan_digest}=await compilePlan(row.draft);
@@ -349,11 +384,15 @@ export class WorkflowService {
     // The owner must explicitly approve the exact immutable URL + tool + scope.
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const required=[...new Map(approvedMcpSteps(plan).map(s=>{
-      const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,scope:'read',schema_digest:s.with.schema_digest as string};
+      const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
+        scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
       return [JSON.stringify(grant),grant] as const;
     })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     if(JSON.stringify(required)!==JSON.stringify(provided))throw new StateError('external_approval_required');
+    const hasMcpWrite=required.some(g=>g.scope==='write');
+    if(hasMcpWrite!==approve_mcp_write_execution)
+      throw new StateError('mcp_write_approval_required');
     if(required.length){
       const portal=this.env.MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
@@ -364,20 +403,23 @@ export class WorkflowService {
     // is required at each Publish in addition to exact per-operation grants.
     // This is an authenticated API assertion, not proof of human interaction.
     if(required.length && accept_target_risks!==true)throw new StateError('target_risk_acknowledgment_required');
+    const portalConnection=required.length?await portalAuthorization(this.db):null;
+    if(portalConnection&&portalConnection.state!=='enabled')
+      throw new StateError('portal_connection_revoked');
     const hasCloudflare=plan.steps.some(s=>s.uses==='action.run');
     let cloudflareGrants:typeof approved_cloudflare_actions=[];
     if(hasCloudflare){
       const step=plan.steps.find(s=>s.uses==='action.run')!;
       const bark=step.with.provider==='bark';
-      const deployment=bark?this.env.BARK_ACTION_DEPLOYMENT_ID:this.env.WEIXIN_ACTION_DEPLOYMENT_ID;
-      const provider=bark?this.env.BARK_ACTION_PROVIDER:this.env.WEIXIN_ACTION_PROVIDER;
+      const deployment=this.env.ACTIONS_DEPLOYMENT_ID;
+      const provider=this.env.ACTIONS;
       if(!provider||typeof deployment!=='string'||
          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
         throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(bark?'bark':'weixin');
+      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
-      try{live=await provider.getContract();}
+      try{live=await provider.getContract(contract.action,contract.contract_digest);}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
       if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
         throw new StateError('cloudflare_provider_identity_mismatch');
@@ -389,19 +431,43 @@ export class WorkflowService {
         throw new StateError('cloudflare_action_approval_required');
     }else if(approved_cloudflare_actions.length || approve_cloudflare_execution)
       throw new StateError('unexpected_cloudflare_approval');
+    const httpRequired=[...new Map(plan.steps.filter(s=>s.uses==='http.request').map(s=>{
+      const operation=httpOperation(s.with);return [JSON.stringify(operation),operation] as const;
+    })).values()].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const httpProvided=approved_http_operations.slice().sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    if(JSON.stringify(httpRequired)!==JSON.stringify(httpProvided)||
+       (httpRequired.length>0&&(!approve_http_execution||!accept_target_risks))||
+       (httpRequired.length===0&&approve_http_execution))
+      throw new StateError('http_action_approval_required');
+    const httpConnection=httpRequired.length?await httpAuthorization(this.db):null;
+    if(httpConnection&&httpConnection.state!=='enabled')
+      throw new StateError('http_connection_revoked');
+    if(Boolean(plan.saga)!==approve_saga_compensation)
+      throw new StateError('saga_compensation_approval_required');
     const hasGithub=reviewedGitHubSteps(plan).length>0;
     if(hasGithub && approve_heavy_execution!==true)throw new StateError('github_execution_approval_required');
-    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true}:plan;
-    const grantedPlan:Plan=reviewedActions.length?{...scopedPlan,github_action_approvals:reviewedActions}:scopedPlan;
+    const scopedPlan:Plan=required.length?{...plan,mcp_approvals:required,mcp_target_risks_accepted:true,
+      ...(hasMcpWrite?{mcp_write_execution_approved:true as const}:{}),
+      mcp_connection_generation:portalConnection!.generation}:plan;
+    const httpPlan:Plan=httpRequired.length?{...scopedPlan,http_approvals:httpRequired,
+      http_execution_approved:true,http_connection_generation:httpConnection!.generation}:scopedPlan;
+    const grantedPlan:Plan=reviewedActions.length?{...httpPlan,github_action_approvals:reviewedActions}:httpPlan;
     const actionPlan:Plan=hasGithub?{...grantedPlan,github_execution_approved:true}:grantedPlan;
     const withCloudflare:Plan=hasCloudflare?{
       ...actionPlan,cloudflare_execution_approved:true,
       cloudflare_action_approvals:cloudflareGrants}:actionPlan;
-    const publishedPlan:Plan=children.length?{...withCloudflare,child_approvals:children}:withCloudflare;
+    const publishedPlan:Plan={...(children.length?{...withCloudflare,child_approvals:children}:withCloudflare),
+      ...(plan.saga?{saga_compensation_approved:true as const}:{})};
     // Repeated Publish of an unchanged Draft resolves to its existing Version.
     if(row.active_version_id){
       const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(row.active_version_id,workflow_id).first<{digest:string}>();
-      if(current?.digest===plan_digest)return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
+      // A revoked generation must never be revived by a same-Draft Publish.
+      const previous=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+        .bind(row.active_version_id).first<{plan:string}>();
+      const oldPlan=previous?JSON.parse(previous.plan) as Plan:null;
+      if(current?.digest===plan_digest && oldPlan &&
+        canonicalJsonString(oldPlan)===canonicalJsonString(publishedPlan))
+        return {workflow_id,published_version_id:row.active_version_id,digest:plan_digest,state:row.state};
     }
     const version=crypto.randomUUID(),t=now();
     const batch=await this.db.batch([
@@ -413,7 +479,12 @@ export class WorkflowService {
       const latest=await this.row(workflow_id);
       if(latest.draft_revision===expected_revision&&latest.active_version_id){
         const current=await this.db.prepare('SELECT digest FROM workflow_versions WHERE id=? AND workflow_id=?').bind(latest.active_version_id,workflow_id).first<{digest:string}>();
-        if(current?.digest===plan_digest)return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
+        const prior=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(latest.active_version_id).first<{plan:string}>();
+        const priorPlan=prior?JSON.parse(prior.plan) as Plan:null;
+        if(current?.digest===plan_digest && priorPlan &&
+            canonicalJsonString(priorPlan)===canonicalJsonString(publishedPlan))
+          return {workflow_id,published_version_id:latest.active_version_id,digest:plan_digest,state:latest.state};
       }
       throw new StateError('revision_conflict');
     }
@@ -479,6 +550,20 @@ export class WorkflowService {
       const approval=published?.steps.find(s=>s.id===step_id&&
         s.uses==='github.run'&&s.approval?.required===true);
       if(approval){
+        // Repeated cancellation of an already-fenced approval is read-only.
+        // A dispatched-but-unclaimed physical Job may still exist, so never
+        // claim its termination or issue a second GitHub cancel POST.
+        const prior=await this.db.prepare(`SELECT outcome,error_code FROM runs
+          WHERE id=?`).bind(run_id)
+          .first<{outcome:string;error_code:string|null}>();
+        if(!force&&prior?.outcome==='cancelled'&&
+           prior.error_code==='approval_cancel_requested'){
+          const pending=await this.db.prepare(`SELECT 1 AS present FROM step_attempts
+            WHERE run_id=? AND step_id=? LIMIT 1`)
+            .bind(run_id,step_id).first<{present:number}>();
+          return {run_id,step_id,cancellation:pending?'requested_unverified':'requested',
+            physical_terminated:false};
+        }
         const step=await this.db.prepare('SELECT status FROM run_steps WHERE run_id=? AND step_id=?')
           .bind(run_id,step_id).first<{status:string}>();
         if(step && (step.status==='waiting_approval'||step.status==='running')){
@@ -536,6 +621,39 @@ export class WorkflowService {
             WHERE run_id=? AND step_id=? LIMIT 1`)
             .bind(run_id,step_id).first<{present:number}>();
           if(!attempt)throw new StateError('approval_cancel_conflict');
+          // The Attempt INSERT can win while its outbound GitHub dispatch
+          // has not yet returned a physical Run ID. Refusing cancellation
+          // here leaves an approved Task able to claim and execute.
+          // Fence the business Run before the signed physical Claim instead;
+          // an in-flight dispatch is NOT proof of physical termination.
+          const preclaim=await this.db.batch([
+            this.db.prepare(`UPDATE runs SET outcome='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE id=? AND outcome='running'
+              AND EXISTS(SELECT 1 FROM step_attempts a
+                WHERE a.run_id=runs.id AND a.step_id=?
+                  AND a.capability_id='github.action'
+                  AND a.state IN ('created','dispatch_unknown')
+                  AND a.candidate_run_id IS NULL AND a.candidate_run_attempt IS NULL
+                  AND a.owner_run_id IS NULL AND a.owner_run_attempt IS NULL)
+              AND NOT EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=runs.id
+                AND s.step_id<>? AND s.status IN ('running','waiting','waiting_approval'))`)
+              .bind(now(),run_id,step_id,step_id),
+            this.db.prepare(`UPDATE run_steps SET status='cancelled',
+              error_code='approval_cancel_requested',updated_at=?
+              WHERE run_id=? AND step_id=? AND status IN ('waiting_approval','running')
+                AND EXISTS(SELECT 1 FROM runs r WHERE r.id=?
+                  AND r.outcome='cancelled' AND r.error_code='approval_cancel_requested')`)
+              .bind(now(),run_id,step_id,run_id),
+          ]);
+          if(preclaim[0].meta.changes===1){
+            if(preclaim[1].meta.changes!==1)
+              throw new StateError('approval_cancel_state_unconfirmed');
+            return {run_id,step_id,cancellation:'requested_unverified',
+              physical_terminated:false};
+          }
+          // A signed Claim or confirmed candidate may have won instead;
+          // use the existing immutable physical Job cancellation path.
           }
         }
       }
@@ -597,9 +715,16 @@ export class WorkflowService {
         let nativeTerminated=false;
         try{
           const instance=await this.env.WORKFLOW.get(row.instance_id);
-          if(instance.terminate)await instance.terminate();
+          if(instance.terminate)await instance.terminate(published?.saga?.on.includes('cancel')?{rollback:true}:undefined);
           nativeTerminated=(await instance.status()).status==='terminated';
         }catch{}
+        // Native terminate({rollback:true}) can settle with RollbackMissing:
+        // registered handlers are then not executed. Do not infer success
+        // from the native termination ACK. Reuse the exact D1-fenced,
+        // independently authorized GitHub compensation path; native and
+        // fallback requests share the same receipt and cannot double POST.
+        if(published?.saga?.on.includes('cancel'))
+          await compensateCancelledSessions(this.env,published,run_id);
         return {run_id,step_id,cancellation:nativeTerminated?'terminal_confirmed':'requested',
           native_workflow_terminated:nativeTerminated,
           // A Cloudflare termination never proves external GitHub resources
@@ -684,17 +809,27 @@ export class WorkflowService {
     if(parent)throw new StateError('workflow_referenced_by_parent');
     throw new StateError('workflow_delete_conflict');
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string){
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile=false){
     assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
     if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
       throw new StateError('reserved_idempotency_key');
-    const inputJson=json(inputs);
-    const request_digest=await digest(canonicalJsonString(inputs));
+    let inputJson=json(inputs);
+    let request_digest=await digest(canonicalJsonString(inputs));
     // An accepted admission keeps its pinned version across republish/pause.
     if(idempotency_key){
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-      if(original){if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+      if(original){
+        if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+        // A normal workflow_run cannot use a prior file upload Run's key
+        // to circumvent the selected-file tool gate, even on replay.
+        const oldPlan=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(original.version_id).first<{plan:string}>();
+        if(!oldPlan)throw new StateError('published_version_missing');
+        let parsed:Plan;
+        try{parsed=JSON.parse(oldPlan.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+        if(parsed.steps?.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox'))
+          throw new StateError('litterbox_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -738,6 +873,27 @@ export class WorkflowService {
         throw new StateError('github_action_invalid_duration');
     }
 
+    // Secret never reaches durable D1 inputs, Action outputs or ordinary result.
+    // Litterbox bytes and signed file locator are never durable Run inputs.
+    // Only the selected-file MCP tool may start this manual-only Plan.
+    const isLitterbox=activePlan.steps.length===1&&
+      activePlan.steps[0]?.uses==='action.run'&&
+      activePlan.steps[0].with.provider==='litterbox'&&
+      activePlan.steps[0].with.action==='litterbox.upload_file';
+    if(isLitterbox!==allowTransientFile)throw new StateError('litterbox_file_tool_required');
+    if(isLitterbox&&(!idempotency_key||expected_version_id||
+      activePlan.cloudflare_execution_approved!==true||activePlan.triggers?.length))
+      throw new StateError('litterbox_manual_approval_required');
+    let deliveryKey:string|undefined;
+    if(isEnvsharePlan(activePlan)){
+      if(expected_version_id||!idempotency_key||activePlan.triggers?.length||
+         activePlan.cloudflare_execution_approved!==true)
+        throw new StateError('envshare_manual_approval_required');
+      const sealed=await encryptEnvshareAdmission(inputs);
+      inputJson=json(sealed.inputs);
+      request_digest=sealed.request_digest;
+      deliveryKey=sealed.delivery_key;
+    }
     const protocolActions=activePlan.steps.filter(step=>
       step.uses==='github.run'&&step.with?.capability==='github.action');
     // Session uses the same reviewed GitHub Action admission as Task.
@@ -750,8 +906,9 @@ export class WorkflowService {
     if(protocolActions.length &&
        (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
-    const weight=activePlan.steps.some(s=>s.uses==='flow.child')?2:1;
-    if(weight===2&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
+    const hasChild=activePlan.steps.some(s=>s.uses==='flow.child');
+    const weight=activePlan.steps.some(s=>s.uses==='flow.child'&&s.with.mode!=='detached')?2:1;
+    if(hasChild&&(!activePlan.child_approvals||activePlan.child_approvals.length!==1))
       throw new StateError('child_approval_required');
     const id=crypto.randomUUID(),t=now();
     const insert=await this.db.prepare(
@@ -759,16 +916,17 @@ export class WorkflowService {
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-        if(prior){if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
+        if(prior){if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');if(deliveryKey)throw new StateError('envshare_key_unrecoverable');if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
       const latest=await this.row(workflow_id);
       if(latest.state!=='active')throw new StateError('workflow_not_active');
       if(latest.active_version_id!==version)throw new StateError('published_version_changed');
       throw new StateError('run_capacity_exceeded');
     }
-    try{await this.env.WORKFLOW.create({id,params:{run_id:id}});await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();return {run_id:id,published_version_id:version,status:'queued',start_state:'started'};}
+    try{await this.env.WORKFLOW.create({id,params:{run_id:id}});await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),id).run();return {run_id:id,published_version_id:version,status:'queued',start_state:'started',...(deliveryKey?{delivery_key:deliveryKey}:{})};}
     catch {
       await this.db.prepare("UPDATE runs SET start_state='start_unknown',updated_at=? WHERE id=? AND start_state='reserved'").bind(now(),id).run();
-      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();return this.reconcileStart(prior!);
+      const prior=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(id).first<RunRow>();
+      const ack=await this.reconcileStart(prior!);return {...ack,...(deliveryKey?{delivery_key:deliveryKey}:{})};
     }
   }
   private async reconcileStart(row:RunRow){
@@ -906,7 +1064,7 @@ export class WorkflowService {
     const tailnetSteps=new Map<string,string>(publishedPlan.steps.flatMap(step=>{
       if(step.uses!=='github.run'||step.with.capability!=='github.action')return [];
       const action=step.with.action as {repository?:unknown;workflowPath?:unknown}|undefined;
-      if(action?.repository!=='lirtual/session-actions')return [];
+      if(action?.repository!=='lirtual/github-actions')return [];
       const name=action.workflowPath==='.github/workflows/windows.yml'?'session-windows':
         action.workflowPath==='.github/workflows/ubuntu.yml'?'session-ubuntu':null;
       return name?[[step.id,name] as [string,string]]:[];
@@ -934,11 +1092,71 @@ export class WorkflowService {
             'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt):null,
         attempt_state:record.attempt_state,
         physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
-    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{})};
+    // The Session terminal state is written only after physical GitHub
+    // confirmation. Repair the request-only Saga receipt after that proof,
+    // without inferring physical cleanup from a native rollback ACK.
+    if(publishedPlan.saga)for(const step of publishedPlan.steps){
+      if(!step.compensate)continue;
+      const receipt=byId.get('__saga_'+step.id);
+      if(receipt?.status!=='requested')continue;
+      const updated=await this.db.prepare(`UPDATE run_steps
+        SET status='succeeded',updated_at=?
+        WHERE run_id=? AND step_id=? AND status='requested'
+        AND EXISTS(SELECT 1 FROM session_executions session
+          JOIN step_attempts attempt ON attempt.run_id=session.run_id
+            AND attempt.step_id=session.step_id
+            AND attempt.capability_id='github.action'
+          WHERE session.run_id=run_steps.run_id AND session.step_id=?
+            AND session.state='terminated'
+            AND attempt.state IN ('succeeded','failed','cancelled'))`)
+        .bind(now(),run_id,'__saga_'+step.id,step.id).run();
+      if(updated.meta.changes===1)receipt.status='succeeded';
+    }
+    const saga=publishedPlan.saga?(()=>{
+      const triggered=(row.outcome==='cancelled'&&publishedPlan.saga!.on.includes('cancel'))||
+        (['failed','indeterminate'].includes(row.outcome)&&publishedPlan.saga!.on.includes('failure'));
+      const compensations=publishedPlan.steps.filter(s=>s.compensate).map(s=>{
+        const prior=byId.get('__saga_'+s.id);
+        const session=sessions.find(record=>record.step_id===s.id);
+        const physicalTerminated=session?.recorded_state==='terminated';
+        const confirmed=prior?.status==='succeeded'||(
+          prior?.status==='requested'&&physicalTerminated);
+        const status=confirmed?'succeeded':prior?.status??(
+          triggered&&byId.get(s.id)?.status==='succeeded'?'unconfirmed':'not_required');
+        return {step_id:s.id,kind:s.compensate!.kind,status,
+          // Report verified physical termination independently of how it
+          // happened; a manually cancelled Session is not Saga success.
+          physical_terminated:physicalTerminated||confirmed};
+      });
+      return {on:publishedPlan.saga!.on,acid_rollback:false,
+        status:!triggered?'not_triggered':
+          compensations.some(x=>['requested','indeterminate','unconfirmed','running'].includes(x.status))?
+            'incomplete':compensations.some(x=>x.status==='uncleared')?'partial':
+            'settled',
+        compensations};
+    })():null;
+    return {run_id,workflow_id:row.workflow_id,published_version_id:row.version_id,start_state:row.start_state,status:['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)?row.outcome:row.start_state!=='started'?'start_unknown':applyStatus(native,row.outcome),steps,...(hasSessions?{sessions}:{}),...(saga?{saga}:{})};
   }
-  async result(run_id:string){
+  async result(run_id:string,delivery_key?:string){
     const meta=await this.status(run_id);
     const row=await this.db.prepare('SELECT result,error_code FROM runs WHERE id=?').bind(run_id).first<{result:string|null;error_code:string|null}>();
-    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,error_code:row?.error_code??null},64*1024);
+    const artifactReferences=await workflowGitHubArtifactReferences(
+      this.db,run_id,this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+    let share_url:string|undefined;
+    if(delivery_key!==undefined){
+      if(meta.status!=='succeeded')throw new StateError('envshare_result_unavailable');
+      const saved=await this.db.prepare(`SELECT r.inputs,v.plan FROM runs r
+        JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
+        .bind(run_id).first<{inputs:string;plan:string}>();
+      if(!saved||!isEnvsharePlan(JSON.parse(saved.plan) as Plan))
+        throw new StateError('envshare_not_available');
+      const result=row?.result?JSON.parse(row.result) as Record<string,unknown>:null;
+      if(result?.status!=='accepted')throw new StateError('envshare_result_unavailable');
+      share_url=await buildEnvshareLink(saved?JSON.parse(saved.inputs):null,result.share_id,delivery_key);
+    }
+    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,
+      ...(share_url?{share_url}:{}),
+      ...(artifactReferences.length?{artifact_references:artifactReferences}:{}),
+      error_code:row?.error_code??null},64*1024);
   }
 }

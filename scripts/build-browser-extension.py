@@ -11,7 +11,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "apps/browser-mcp-worker/extension"
-FILES = ("background.js", "config.js", "manifest.json", "observation.js", "mutations.js", "popup.html", "popup.js", "INSTALL.md", "NOTICES.md")
+FILES = ("background.js", "config.js", "manifest.json", "observation.js", "mutations.js", "options.html", "options.js", "INSTALL.md", "NOTICES.md")
 # Public installation identity, never an authentication or signing secret.
 KEY_SHA256 = "9785067d4ec625ebb231d29a2be4354c6d9622a68cc6ac6e5ad0105c0a353075"
 
@@ -40,6 +40,8 @@ def sources():
     coordinator = (ROOT / "apps/browser-mcp-worker/src/coordinator.ts").read_text()
     if package["version"] != version or f'v.extension_version !== "{version}"' not in coordinator:
         raise ValueError("Worker and extension release versions differ")
+    if not files["INSTALL.md"].startswith(f"# Browser MCP {version} —".encode()):
+        raise ValueError("packaged installation guide version differs from extension")
     if b'const BROWSER_MCP_SERVICE_ORIGIN = "https://browser.lirtual.dpdns.org";' not in files["config.js"]:
         raise ValueError("trusted production service origin is not configured")
     return files, manifest

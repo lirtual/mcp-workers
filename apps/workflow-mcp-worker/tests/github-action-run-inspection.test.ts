@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { inspectGitHubActionRun } from '../src/github-action-run-inspection.ts';
 import type { ReviewedGitHubAction } from '../src/github-action-review.ts';
-const action:ReviewedGitHubAction={repository:'lirtual/session-actions',repositoryId:123,workflowId:3,workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
+const action:ReviewedGitHubAction={repository:'lirtual/github-actions',repositoryId:123,workflowId:3,workflowPath:'.github/workflows/linux.yml',commitSha:'a'.repeat(40),type:'session',contractDigest:'b'.repeat(64)};
 const ref='refs/tags/test-v1';
 const physical={id:999,workflow_id:action.workflowId,run_attempt:1,repository:{id:123,full_name:action.repository},path:action.workflowPath,head_branch:'test-v1',head_sha:action.commitSha,event:'workflow_dispatch',status:'completed',conclusion:'success'};
 test('reads pinned physical GitHub Run and confirms real terminal success',async()=>{
  let requests=0;
  const result=await inspectGitHubActionRun(action,999,1,'test',ref,async req=>{
   requests++;
-  assert.equal(new URL(req.url).pathname,'/repos/lirtual/session-actions/actions/runs/999');
+  assert.equal(new URL(req.url).pathname,'/repos/lirtual/github-actions/actions/runs/999');
   assert.equal(req.method,'GET'); assert.equal(req.redirect,'manual');
   return Response.json(physical);
  });

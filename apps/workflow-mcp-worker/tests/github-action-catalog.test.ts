@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { approvedActionRepositories, listAvailableGitHubActions } from '../src/github-action-catalog.ts';
 
-const approved = {repository:'lirtual/session-actions',repositoryId:123,commitSha:'a'.repeat(40)};
+const approved = {repository:'lirtual/github-actions',repositoryId:123,commitSha:'a'.repeat(40)};
 test('no approved repositories means zero actions, without requiring a token', async () => {
   assert.deepEqual(await listAvailableGitHubActions({}), {actions:[]});
 });
@@ -43,7 +43,7 @@ jobs:
     steps:
       - run: echo success
 `;
-function githubMock(requests:string[],mode:'tagged'|'moved'|'head'|'no_tag'='tagged'){
+function githubMock(requests:string[],mode:'tagged'|'moved'|'head'|'no_tag'='tagged',actualName='lirtual/github-actions'){
  return async(req:Request):Promise<Response>=>{
    const u=new URL(req.url),route=u.pathname+u.search;
    requests.push(route);
@@ -58,7 +58,7 @@ function githubMock(requests:string[],mode:'tagged'|'moved'|'head'|'no_tag'='tag
      return Response.json({workflows:[{id:100,path:'.github/workflows/task.yml',state:'active'}]});
    if(u.pathname.endsWith('/contents/.github/workflows/task.yml'))
      return Response.json({path:'.github/workflows/task.yml',encoding:'base64',content:btoa(actionYaml)});
-   return Response.json({id:123,full_name:'lirtual/session-actions',default_branch:'main'});
+   return Response.json({id:123,full_name:actualName,default_branch:'main'});
  };
 }
 const discoveryEnv={GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
@@ -78,8 +78,13 @@ test('catalog emits a verified tag-bound runnable candidate plus unpublished HEA
  const head=found.actions.find(a=>!a.can_publish);
  assert.equal(head?.commitSha,headSha);
  assert.equal(head?.reason,'no_verified_published_tag_for_revision');
- assert(requests.includes('/repos/lirtual/session-actions/git/ref/tags/v0.1.21'));
+ assert(requests.includes('/repos/lirtual/github-actions/git/ref/tags/v0.1.21'));
  assert(requests.some(x=>x.endsWith('?ref='+releaseSha)));
+});
+test('a GitHub redirect to the pre-rename name cannot satisfy the renamed repository grant',async()=>{
+ await assert.rejects(
+  listAvailableGitHubActions(discoveryEnv,githubMock([],'tagged','lirtual/session-actions')),
+  /repository_mismatch/);
 });
 test('moved tag never becomes a publishable candidate',async()=>{
  const found=await listAvailableGitHubActions(discoveryEnv,githubMock([],'moved'));
@@ -98,4 +103,13 @@ test('no tag explicitly reports unavailable rather than inventing an immutable r
  assert.equal(found.actions[0].availability,'unavailable');
  assert.equal(found.actions[0].can_publish,false);
  assert.equal('ref' in found.actions[0],false);
+});
+
+
+test('GitHub discovery explicitly distinguishes unknown business output from Job completion',async()=>{
+ const found=await listAvailableGitHubActions(discoveryEnv,githubMock([]));
+ for(const action of found.actions){
+   assert.equal(action.output_schema_status,'not_declared');
+   assert.equal('output_schema' in action,false);
+ }
 });

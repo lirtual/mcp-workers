@@ -1,8 +1,30 @@
 # Remote Control MCP — Domain Context
 
-**Current state (verified 2026-10-28):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Windows x64 and Ubuntu WSL2 are both online with the immutable **Agent v0.1.35**, permanently paired under their original device IDs. The ten existing Agent-owned browser MCP tools remain available; normal browser automation requires an approved device grant and no per-operation approval page. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
+**Current state (verified 2026-10-31):** Remote Control is deployed through the existing Portal, per-device signed WSS and SQLite-backed Durable Object. Native Windows x64 and two Ubuntu WSL2 devices are permanently paired, online and running the immutable **Agent v0.1.40**, with their original device IDs preserved. [Spec #628](https://github.com/lirtual/mcp-workers/issues/628) retired the ten RCA-owned `browser_*` and three `computer_*` tools at the public Worker, Durable Object and Agent execution boundaries; file, search, Shell, managed sessions and historical read-only operation receipts remain supported. Chrome/Edge control belongs to the independent Browser MCP #418. Browser Handoff [Spec #280](https://github.com/lirtual/mcp-workers/issues/280) was cancelled (`not_planned`), and its MCP/Agent controls and public `/browser-approve/*` entrypoint were retired. MCP-initiated `upgrade_agent` and `/upgrade-approve/*` were also retired in favor of verified, owner-interactive local one-click installers. Historical design and release status below is retained as context and must not be mistaken for current deployment instructions.
 
-## Browser runtime and permission boundaries
+## GitHub-hosted Session scoped access (Spec #62)
+
+Workflow MCP is the sole authority for approved, Ready, still-running Windows/Ubuntu physical Attempts. Production uses the existing D1 v19 duration snapshot, exact GitHub Job start, physical status and cancellation fence, with a private one-way SessionAuthorization WorkerEntrypoint binding. Remote Control's Owner Durable Object owns the unique Ed25519 Session device, its signed WSS and receipts. Unknown authority fails closed for Session grants without affecting personal permanent devices or basic SSH/RDP.
+
+The original v0.1.40 rollout and four GitHub-hosted Ubuntu/Windows stop/expiry E2E runs passed on 2026-10-31. The everyday Workflow versions were published, but admission was held paused during parallel maintenance. Live forced WSS-only disconnect/reconnect remained a separately unverified stress path.
+
+**Follow-up safety rule (source candidate, not yet deployed):** Explicit owner revocation of a Session device must fence the *physical Attempt*, not merely remove its device ID. The existing Owner DO atomically records a nonrenewable Attempt-level denial until the immutable Session deadline together with deleting the grant. Enrollment checks that denial inside the same DO transaction; bounded list activity lazily cleans expired fences. No new Worker, database, alarm, synchronization process or permanent-device policy is introduced. Production behavior changes only after the authorized normal Worker release.
+
+**Spec #628 delivered (2026-10-31):** The retired RCA GUI public and internal
+execution routes were removed in Worker PR #632 and Agent PR #80. The formal
+Worker deployment and immutable Agent v0.1.40 Release succeeded; all three
+permanently paired devices completed version and core-function checks. Signed
+WSS, bundled Node.js 24, Windows Job Object, Linux pidfd, installation,
+historical read-only GUI receipts and Unknown/non-replay rules remain. After
+separate destructive authorization, the RCA-owned Windows automation Profile
+and Desktop Grant/Stop files were checked and precisely cleaned, preserving
+device identity and receipts. The independent Browser MCP #418 was not changed.
+See [Issue #628's final acceptance record](https://github.com/lirtual/mcp-workers/issues/628#issuecomment-6542642703).
+The following browser design notes are historical, not active RCA capabilities.
+
+## Historical browser runtime context (archived, not active source guidance)
+
+
 
 - **Automation browser:** The existing native Windows Agent manages a visible, Agent-private Chrome/Edge `BrowserContext` and Profile, separate from the owner's everyday browser. One active automation session per device contains multiple explicitly selected tabs, including tabs opened manually. A tab has a stable ID within that session; focus, title, URL and array position must not silently select a different target.
 - **On-demand shared use:** MCP browser operations are bounded and serialized within the Agent; a person may also directly interact with the same window. There is no artificial Human/Agent handoff state, exclusive human-input lock, browser-specific session timeout, polling heartbeat, independent server or new business orchestrator. Reuse the session until explicit close, browser/Agent termination or revocation; normal Remote Control WSS lifecycle/authentication still applies.
