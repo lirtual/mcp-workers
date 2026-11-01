@@ -273,6 +273,31 @@ test('remembered day setting validates release fallback and invalid runtime fail
   assert.ok(row.idle_deadline>=Date.now()+7*86400000-2000&&row.idle_deadline<=Date.now()+7*86400000+2000);
  }finally{f.db.close();}
 });
+test('default Profile labels use Endpoint prefixes but retain owner names',async()=>{
+ const f=fixture();try{
+  const grants=[];
+  for(const family of ['chrome','edge']){
+   const attempt_id=crypto.randomUUID();
+   const started=await f.post('activate-begin',{attempt_id,proof_hash:await hash(proof),mode:'permanent',alias:'Browser profile'});
+   assert.equal(started.status,200);
+   await f.post('activate-authorize',{attempt_id});
+   const grant=await f.post('activate-complete',{attempt_id,proof});
+   assert.equal(grant.status,200);
+   f.sql.exec('UPDATE endpoints SET browser_family=? WHERE id=?',family,grant.endpoint_id);
+   const item=(await f.post('list',{})).endpoints.find(e=>e.endpoint_id===grant.endpoint_id);
+   assert.equal(item.browser_family,family);
+   assert.equal(item.alias,grant.endpoint_id.slice(0,8));
+   assert.equal((await f.post('state',{endpoint_id:grant.endpoint_id,credential:grant.credential})).alias,item.alias);
+   assert.equal(f.sql.exec('SELECT alias FROM endpoints WHERE id=?',grant.endpoint_id).toArray()[0].alias,'Browser profile');
+   grants.push(grant);
+  }
+  assert.notEqual(grants[0].endpoint_id,grants[1].endpoint_id);
+  const prior={endpoint_id:grants[0].endpoint_id,credential:grants[0].credential};
+  assert.equal((await f.post('rename',{...prior,alias:'My Chrome'})).alias,'My Chrome');
+  assert.equal((await f.post('state',prior)).alias,'My Chrome');
+  assert.equal((await f.post('list',{})).endpoints.find(e=>e.endpoint_id===prior.endpoint_id).alias,'My Chrome');
+ }finally{f.db.close();}
+});
 test('Profile Rename requires exact credential, does not change Stop epoch or extension grant',async()=>{
  const f=fixture();try{
   const attempt=await begin(f);await f.post('activate-authorize',{attempt_id:attempt});
