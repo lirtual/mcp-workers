@@ -161,7 +161,7 @@ async function handleExtension(request:Request,env:Env,path:string) {
     const allowed=path==="activate-begin"?["attempt_id","proof_hash","alias","mode","endpoint_id","credential"]:
       path==="activate-complete"?["attempt_id","proof","endpoint_id","credential"]:["attempt_id","proof"];
     if(Object.keys(body).some(k=>!allowed.includes(k)))throw Error();
-  }else if(!exact(body,["endpoint_id","credential"]))throw Error();
+  }else if(!exact(body,path==="rename"?["endpoint_id","credential","alias"]:["endpoint_id","credential"]))throw Error();
   }catch{return Response.json({error:"bad_request"},{status:400});}
   const result=await stub(env).fetch("https://owner.internal/"+target,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
   const headers=new Headers(result.headers);headers.set("access-control-allow-origin",request.headers.get("origin")!);headers.set("vary","Origin");headers.set("cache-control","no-store");
