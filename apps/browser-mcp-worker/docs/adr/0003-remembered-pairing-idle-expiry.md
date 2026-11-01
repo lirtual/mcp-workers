@@ -12,6 +12,25 @@ The server owns deadlines using trusted server time and admission checks; neithe
 
 **One release-time configuration:** `BROWSER_REMEMBERED_IDLE_DAYS` is an optional, reviewed integer GitHub Actions Environment Variable scoped to `browser-mcp-worker`. Missing or empty means `14`; configured values must be decimal integers from `1` to `90`. Reject malformed out-of-range nonempty values at the existing release preflight and fail closed in Worker runtime. The existing manual release stages this value through its explicit variable allowlist and Wrangler `--var`; no mutable remote configuration or second deployment pipeline is introduced. Changing the GitHub Variable without a new authorized production release has no runtime effect. New idle countdowns use the released value; already persisted absolute deadlines are not silently rewritten or extended. The server presents truthful actual deadlines. Neither Owner OTP/Access SSO nor temporary pairing is governed by this setting.
 
+## Cross-product clarification — 2026-11-01
+
+RCA and Browser intentionally share the same **online reset** semantics:
+an authentically ON/ONLINE remembered Profile holds indefinitely and has
+**no active clock to keep renewing**; when it becomes OFFLINE, give it a
+fresh full configured interval measured from the last trusted server-observed
+online point. A valid automatic reconnect while still owner-ON and **before**
+expiry removes that offline deadline; a subsequent actual disconnect
+starts a new full interval. This is **not** an extension for owner OFF:
+first Stop keeps its original absolute deadline, and only successfully
+owner-verified OFF→ON before expiry can restore online hold. Late callbacks,
+stale WSS, untrusted client clocks, and per-heartbeat storage writes cannot
+create grants.
+
+See [RCA Draft PR #664](https://github.com/lirtual/mcp-workers/pull/664).
+The two products continue to use their own Worker, storage and authentic
+owner-control mechanisms. This amends the explanatory boundary of the
+design only; Browser #626 remains unimplemented and unshipped.
+
 ## Context and alternatives
 
 The old indefinite remembered grant has good everyday usability but leaves unused OFF/lost devices authorized indefinitely. An absolute periodic 14-day TTL or activity-based rolling renewal would interrupt a deliberately ON, connected Profile or allow background traffic to keep dormant devices forever. Per-action OTP and a separate device-management service would impose additional ongoing complexity and contradict #531's local-control/SSO model. Owner selected ON/online hold + OFF/offline idle expiry (default 14 days) as the intended balance.

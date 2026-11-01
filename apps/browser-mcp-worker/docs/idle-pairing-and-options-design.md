@@ -19,6 +19,37 @@ Replace the user-facing "Permanent" pairing label with **Remembered (14-day idle
 - **Existing deadlines:** a changed setting applies to **newly started** OFF/offline deadlines and first-release migration, not retroactively to already persisted absolute deadlines. Do not reset or extend them merely because configuration changes. Successful, independently owner-verified OFF→ON still clears an unexpired deadline as already specified.
 - **Separation:** the setting does not change existing Access SSO/OTP, session-only temporary pairing/its 24-hour lease, heartbeat intervals or ON-and-online no-countdown behavior. The UI shows the actual server-returned expiry rather than assuming the default when customized.
 
+## RCA / Browser shared online-reset interpretation — confirmed 2026-11-01
+
+The owner confirmed [RCA idle-grant Grill](https://github.com/lirtual/mcp-workers/pull/664)
+should use the **same effective online reset** for RCA permanent grants and
+Browser remembered Profiles. This is a clarification of the existing
+ON-online/no-countdown design, not a new sliding expiration on every ping.
+
+- If **owner ON + authentically ONLINE**, there is **no** active idle
+  countdown, including after a pre-expiry recovery. The device/Profile may
+  stay connected for months without any remote operations.
+- When that live authenticated online session **truly becomes OFFLINE**, start
+  a **fresh full configured interval** from the last trustworthy
+  server-observed online point. A later genuinely online session followed by
+  another disconnection starts another full interval; it is **not** limited by
+  the earlier cancelled offline deadline.
+- A currently **OFF** Profile never auto-renews by appearing online or
+  retaining stale ON storage. First explicit OFF creates one stop deadline
+  only; repeated Stop, late callback or reconnect cannot push it later.
+  Only the existing verified owner OFF→ON flow **before** expiry can clear it.
+- The Worker must infer offline at bounded trusted checkpoint precision,
+  not silently trust an old connected_at, local wall clock, open-but-stale WSS
+  or frequent MCP reads. Persist last verified online evidence as needed
+  without writing to DO storage on every heartbeat. Expiry always takes
+  precedence at authorization boundaries.
+
+This is **shared semantics**, not shared code/database. Browser still uses
+its extension toolbar and Access proof; RCA uses separate owner-local
+service controls and signed WSS. Each release-time variable remains
+separate and each product retains its own temporary mode. This change is
+**design only** pending individual release/real-client verification.
+
 ## Confirmed state machine (remembered pairing only)
 
 All timestamps and deadline comparisons are server authoritative; Options renders dates in the browser's local timezone.
@@ -29,14 +60,14 @@ All timestamps and deadline comparisons are server authoritative; Options render
 | Explicit ON -> OFF (local toolbar or authorized remote Stop) | Begin a single OFF deadline at server-confirmed transition + configured idle days | Immediately deny local work, close WSS, cloud Stop; retries/repeated Stop do **not** extend the deadline |
 | OFF -> ON before deadline, by local toolbar | On successful owner-verified activation, clear OFF deadline; restore the full configured idle allowance | New one-use activation challenge; reuse valid Access SSO only if accepted by Access |
 | ON + healthy authenticated WSS | No countdown, even if no browser tasks | Does not require user clicks, traffic or daily reauthorization |
-| ON + disconnected / stale heartbeat | Countdown the configured idle duration since last credible server-observed online activity | No tool execution while offline; a legitimate automatic reconnect *before* expiry clears offline countdown without changing owner-selected ON |
+| ON + disconnected / stale heartbeat | Start a **fresh full interval** from the latest credible server-observed online activity (not original pairing/connection); if previously recovered online, the former cancelled deadline is irrelevant | No tool execution while offline; a legitimate authenticated automatic reconnect *before* expiry clears offline countdown without changing owner-selected ON |
 | OFF / disconnected countdown reaches its configured deadline | Expire and revoke the **old** Endpoint grant; reject its credential and all later admissions | Re-pair through Access and local proof to create a new grant; do not silently resume |
 | Temporary mode | Existing browser-session storage plus bounded DO lease/reconnect grace | **Unchanged**, not subject to remembered-mode idle rule |
 | Explicit Revoke | Immediate final revocation | No old grant resurrection or automatic replay |
 
 Important distinctions:
 - ON in extension storage is an **intent**, not proof of server permission, connection, or browser readiness. A browser crash, single-window close, MV3 service-worker sleep or brief reconnect must not flip intended ON to OFF or treat a transport flap as a new local ON.
-- An authenticated WSS session/heartbeat supplies recent connection activity; `updated_at` currently also changes for other state transitions and **must not** be used as last-seen truth. A genuinely stale socket cannot keep an Endpoint alive merely by remaining in the socket collection.
+- An authenticated WSS session/heartbeat supplies recent connection activity; `updated_at` currently also changes for other state transitions and **must not** be used as last-seen truth. A genuinely stale socket cannot keep an Endpoint alive merely by remaining in the socket collection. Online reset is recognized only after authenticated reconnection **before** the current deadline, never simply because the socket object or local ON flag exists.
 - For silent disconnects, compare last authenticated liveness timestamp with server time. No heartbeat/client wall clock can forge renewal. Prefer reusing WSS attachment and bounded persisted checkpoint when needed, not per-ping DO storage writes.
 - For OFF, only the initial actual transition starts the deadline; repeated Stop, delayed Stop reconciliation, failed Access attempt, background reconnect or MCP read must not reset it. If an OFF is delivered while an older offline deadline exists, never extend past the older deadline.
 - OFF->ON requires *successful* owner verification, not clicking ON or a pending challenge; failed/cancelled activation leaves the prior deadline unchanged.
