@@ -6,9 +6,9 @@ import { handleDeviceInfoMessage, listApprovedDevices } from "../src/v2-session.
 function harness() {
   const activeId = randomUUID(), otherId = randomUUID();
   const rows = new Map<string, unknown>([
-    ["device:" + activeId, { device_id: activeId, name: "same-host", revoked: false,
+    ["device:" + activeId, { device_id: activeId, name: "same-host", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
       public_key: "never-disclose", fingerprint: "f", approved_at: Date.now() }],
-    ["device:" + otherId, { device_id: otherId, name: "same-host", revoked: false,
+    ["device:" + otherId, { device_id: otherId, name: "same-host", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
       public_key: "never-disclose", fingerprint: "f", approved_at: Date.now() }],
     ["session:epoch:" + activeId, "epoch-live"],
     ["session:epoch:" + otherId, "epoch-other"],

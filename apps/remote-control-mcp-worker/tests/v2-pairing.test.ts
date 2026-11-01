@@ -209,7 +209,7 @@ test("read-only signed negative-status probe denies active/foreign keys and requ
   const id = "d41f1d0c-288c-4ae4-bd0d-9ff8b1b8c321";
   values.set("device:" + id, {
     device_id:id, name:"revoked", public_key:material.request.public_key,
-    fingerprint:"012345678901234567890123", approved_at:Date.now(), revoked:false,
+    fingerprint:"012345678901234567890123", approved_at:Date.now(), revoked:false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
   } as never);
   const issued_at = Date.now();
   const raw = "remote-control:v2:re-pair-revoked:" +

@@ -1,5 +1,5 @@
 /** Session-only enrollment using existing Owner DO and Workflow's private authority. */
-import { deviceIsAuthorized, listLiveGrants, revokedSessionAttemptKey, type V2Device } from './v2-session.ts';
+import { deviceIsAuthorized, listLiveGrants, PERMANENT_IDLE_MS, revokedSessionAttemptKey, type V2Device } from './v2-session.ts';
 import type { WorkflowSessionAuthorization } from './session-workflow-authorization.ts';
 
 const UUID=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
@@ -47,7 +47,7 @@ const approved=(candidate:unknown,attemptId:string):candidate is Admission=>{
 };
 
 /** Trust the Workflow JWT check, not caller-supplied workflow/expiry fields. */
-export async function registerSessionDevice(store:Store,raw:unknown,binding?:WorkflowSessionAuthorization):
+export async function registerSessionDevice(store:Store,raw:unknown,binding?:WorkflowSessionAuthorization, idleMs = PERMANENT_IDLE_MS):
  Promise<{status:number;body:object}>{
  const input=exactInput(raw);
  if(!input)return denied(400,'invalid_request');
@@ -60,7 +60,7 @@ export async function registerSessionDevice(store:Store,raw:unknown,binding?:Wor
     // All Session grants live in this sole Owner DO; scanning the bounded
     // active device set inside one transaction replaces a separate index.
     // An expired Attempt cannot be re-enrolled: Workflow deadline already denies.
-    const live=await listLiveGrants(tx);
+    const live=await listLiveGrants(tx, Date.now(), idleMs);
     if(!live.complete)return denied(503,'capacity');
     // An explicit revocation is for the physical Attempt, not merely the
     // deleted device ID. A replacement key must not bypass owner revocation.

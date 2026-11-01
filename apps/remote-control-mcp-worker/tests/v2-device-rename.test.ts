@@ -8,8 +8,8 @@ const revoked = "33333333-3333-4333-8333-333333333333";
 
 test("owner rename changes only the label; duplicate names require UUID disambiguation", async () => {
   const rows = new Map<string, unknown>([
-    ["device:" + one, { device_id: one, name: "Windows", public_key: "key1", fingerprint: "fp1", approved_at: Date.now(), revoked: false }],
-    ["device:" + two, { device_id: two, name: "Ubuntu", public_key: "key2", fingerprint: "fp2", approved_at: Date.now(), revoked: false }],
+    ["device:" + one, { device_id: one, name: "Windows", public_key: "key1", fingerprint: "fp1", approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["device:" + two, { device_id: two, name: "Ubuntu", public_key: "key2", fingerprint: "fp2", approved_at: Date.now(), revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["device:" + revoked, { device_id: revoked, name: "retired", public_key: "key3", fingerprint: "fp3", approved_at: Date.now(), revoked: true }],
     ["session:epoch:" + one, "unchanged-epoch"],
   ]);

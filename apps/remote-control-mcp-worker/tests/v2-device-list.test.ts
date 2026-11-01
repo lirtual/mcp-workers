@@ -13,6 +13,7 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
     rows.set("device:" + id, {
       device_id: id, name, revoked, public_key: "private-public-key",
       fingerprint: "f".repeat(24), approved_at: Date.now(),
+      last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
     });
   }
   rows.set("session:epoch:" + onlineId, "new-epoch");
@@ -70,7 +71,8 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   const devices = JSON.parse(payload.result.content[0]!.text) as Array<{
     device_id: string; name: string; status: string;
   }>;
-  assert.deepEqual(devices, [
+  const publicDevices = devices.map(({ idle_expires_at, ...device }: {idle_expires_at?: number;[key:string]:unknown}) => device);
+  assert.deepEqual(publicDevices, [
     { device_id: onlineId, name: "home", status: "online", grant_type: "permanent" },
     { device_id: staleId, name: "stale", status: "offline", grant_type: "permanent" },
     { device_id: offlineId, name: "office", status: "offline", grant_type: "permanent" },
@@ -93,7 +95,8 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
 test("silent network partition makes an OPEN socket offline after the server auth lease", async () => {
   const id = randomUUID();
   const rows = new Map<string, unknown>([
-    ["device:" + id, { device_id: id, name: "partitioned", revoked: false }],
+    ["device:" + id, { device_id: id, name: "partitioned", revoked: false,
+      last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + id, "epoch-1"],
   ]);
   let lastAuth: number | undefined = Date.now();
@@ -109,6 +112,11 @@ test("silent network partition makes an OPEN socket offline after the server aut
     getWebSockets: () => [fakeSocket],
   } as unknown as DurableObjectState);
   const status = async () => {
+    // Model an actual trusted checkpoint, not an unauthenticated attachment timestamp.
+    const row = rows.get("device:" + id) as object;
+    rows.set("device:" + id, { ...row,
+      last_verified_online_at: typeof lastAuth === "number" && lastAuth <= Date.now()
+        ? lastAuth : Date.now() - 17 * 60_000 });
     const response = await owner.fetch(new Request("https://v2.internal/devices", {
       method: "POST", headers: { "content-type": "application/json" }, body: "{}",
     }));
@@ -196,6 +204,7 @@ test("device enumeration is bounded and fails closed when the small-owner limit 
     const id = `12345678-1234-4123-8123-${i.toString(16).padStart(12, "0")}`;
     rows.set("device:" + id, {
       device_id: id, name: "test-device", revoked: false, public_key: "unavailable",
+      last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
     });
   }
   const owner = new V2OwnerCoordinator({
@@ -218,6 +227,7 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
     storage: {
       list: async () => new Map([["device:" + id, {
         device_id: id, name: "damaged", revoked: false,
+        last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
       }]]),
       get: async () => "fresh",
     },
@@ -229,14 +239,14 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), [{ device_id: id, name: "damaged", status: "offline", grant_type: "permanent" }]);
+  assert.deepEqual((await response.json() as Array<{idle_expires_at?: number}>).map(({idle_expires_at,...d})=>d), [{ device_id: id, name: "damaged", status: "offline", grant_type: "permanent" }]);
 });
 
 test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can come online again", async () => {
   const id = randomUUID(), other = randomUUID();
   const stateRows = new Map<string, unknown>([
-    ["device:" + id, { device_id: id, name: "wsl2", revoked: false }],
-    ["device:" + other, { device_id: other, name: "linux", revoked: false }],
+    ["device:" + id, { device_id: id, name: "wsl2", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["device:" + other, { device_id: other, name: "linux", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + id, "wsl-epoch-1"],
     ["session:epoch:" + other, "linux-epoch"],
   ]);

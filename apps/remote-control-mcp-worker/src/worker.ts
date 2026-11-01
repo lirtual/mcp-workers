@@ -1113,6 +1113,7 @@ export default {
     }
     if ((url.pathname === "/agent/pair/start" ||
          url.pathname === "/agent/session/challenge" || url.pathname === "/agent/session/recover" ||
+         url.pathname === "/agent/owner/intent/challenge" || url.pathname === "/agent/owner/intent" ||
          url.pathname === "/agent/re-pair/status") && pendingOwner(env)) {
       if (request.method !== "POST" || request.headers.has("origin")) {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
@@ -1122,6 +1123,8 @@ export default {
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
         return await pendingOwner(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
           url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" :
+          url.pathname === "/agent/owner/intent/challenge" ? "https://v2.internal/owner/intent/challenge" :
+          url.pathname === "/agent/owner/intent" ? "https://v2.internal/owner/intent" :
           url.pathname === "/agent/re-pair/status" ? "https://v2.internal/re-pair/status" : "https://v2.internal/register", {
           method: "POST",
           headers: { "content-type": "application/json" },
