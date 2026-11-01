@@ -17,6 +17,10 @@ _Avoid_: TCP connected, last-connected time
 A server-owned time limit on the continuing authorization of a permanent device that is not in its valid online-hold state.
 _Avoid_: Local process timeout, receipt expiry
 
+**Online Reset**:
+The restoration of full unused idle allowance by an already approved, owner-ON device becoming freshly and authentically online before its existing deadline; a subsequent offline period begins a new deadline.
+_Avoid_: Heartbeat extension while OFF, automatic re-pair
+
 **Owner-Stopped Agent**:
 An Agent that its owner has deliberately stopped, unlike a service crash, sleep, or network outage.
 _Avoid_: Offline device, revoked identity
