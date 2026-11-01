@@ -1084,7 +1084,7 @@ export default {
     }
     const url = new URL(request.url);
 
-    if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1") {
+    if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1" || url.pathname === "/install-macos.sh") {
       // Serve pinned public installer only from the existing, configured
       // production owner Worker; other environments remain fail-closed.
       if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
