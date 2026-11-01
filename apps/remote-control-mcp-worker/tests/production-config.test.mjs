@@ -64,7 +64,10 @@ test("production public installer routes use only reviewed pinned release", asyn
   assert.equal(home.status, 200);
   const homepage = await home.text();
   assert.match(homepage, /Remote Control Agent/);
-  assert.match(homepage, /const ready=\{windows:true,linux:true\}/);
+  assert.match(homepage, /const ready=\{windows:true,linux:true,macos:false\}/);
+  const macos = await worker.fetch(new Request(prod + "/install-macos.sh"), env);
+  assert.equal(macos.status, 503, "no official five-asset macOS Release pin exists");
+  assert.doesNotMatch(await macos.text(), /#!\/bin\/sh/);
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);
 });
