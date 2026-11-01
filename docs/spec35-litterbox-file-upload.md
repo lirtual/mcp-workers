@@ -1,67 +1,28 @@
-# Spec #35 — Litterbox trusted file upload boundary
+# Spec #35 — Litterbox user-selected file upload boundary
 
-Status: **source candidate, not deployed and not production-accepted**.
-Companion Provider source: `lirtual/cloudflare-actions#42`. Workflow source: `lirtual/mcp-workers#650`.
+Status (2026-11-01): **production deployed; one real synthetic TXT E2E and observed 1h expiry PASS**. This document describes the accepted implementation, not a future source candidate. Umbrella acceptance: [cloudflare-actions Issue #35](https://github.com/lirtual/cloudflare-actions/issues/35) and [Owner closure checklist](https://github.com/lirtual/cloudflare-actions/issues/35#issuecomment-6554271453).
 
-## One existing authorized Run (no parallel uploader)
+## Deployed components and real evidence
 
-The sole permitted Plan has **one manual-only** `action.run`:
-`executor=cloudflare`, `provider=litterbox`, `action=litterbox.upload_file`,
-with the exact digest returned by `workflow_validate`. Its input has only
-`{file_name:{ref:"inputs.file_name"},size_bytes:{ref:"inputs.size_bytes"},sha256:{ref:"inputs.sha256"},time:{ref:"inputs.time"}}`.
-No Cron, Webhook, GitHub event, child, Saga, extra Step, literal URL or file
-is allowed. Publish requires the existing exact Provider Worker Version ID,
-digest and Cloudflare Action approval checks.
+- Unified Provider [cloudflare-actions PR #42](https://github.com/lirtual/cloudflare-actions/pull/42) and Workflow Consumer [mcp-workers PR #650](https://github.com/lirtual/mcp-workers/pull/650) were merged and protected-released. The bounded Azure Blob fileParams compatibility change [PR #654](https://github.com/lirtual/mcp-workers/pull/654) was subsequently merged, passed CI, and protected-released as Workflow Consumer version `84babc73-5bbd-4bd9-a862-64d09d85e622` (100% production traffic). Provider version `39c5c470-040b-4ae7-b81a-6c47d04f548f` remained pinned. One-MCP Portal was synchronized with the existing `workflow_litterbox_upload` fileParams metadata; no new service or binding.
+- One **explicitly Owner-approved**, non-sensitive synthetic TXT was uploaded via ChatGPT-selected `fileParams` → Workflow MCP → existing private `ACTIONS` Service Binding → pinned Cloudflare Actions Provider → public Litterbox. One manual-only Published Plan `1a7e550b-ed63-411a-91d9-6f9ca22f470b`, version `811bfe49-14bc-481d-a1e6-4dd934ffa4e0`; exactly one external upload Run `3f8b7010-e28b-4a94-8793-ba7277769b0c`, `time=1h`, `status=succeeded`. Scoped D1 readback showed one Run, one invocation, one successful Step; **no retry**. The test Workflow was subsequently **paused** and the five existing business Workflows remained **active**.
+- An independent Linux GET at approximately `2026-11-01T05:17:21Z` returned **HTTP 200**, **379 bytes**, SHA-256 `576d129577bf7b6819cf73d6581ac80f7b0e8b96c51f84ba1b8046febec64ddb`, matching the original fixture exactly. [Full real-upload evidence](https://github.com/lirtual/cloudflare-actions/issues/35#issuecomment-6553845927).
+- The **only post-expiry GET** of `https://litter.catbox.moe/6vzfhl.txt`, on the independently connected Linux Agent `c6d8ca67-a5e8-418a-9a19-7f14d7fdb876`, began `2026-11-01T06:33:19Z` and received **HTTP 404**, `text/html; charset=utf-8`, with **zero redirects followed**. The response body exceeded the intentionally bounded 65,536-byte download cap (`curl` exit 63), but the HTTP **404 status was received**; no second GET was attempted. The observation occurred approximately 76 minutes after the successful content readback and therefore after the selected 1h lifetime. **Expiry observation PASS** under the approved 404/410 criterion; exact deletion time is not established. The nonzero curl exit describes the bounded error-page body, not an HTTP 200 or network timeout.
 
-After such an immutable Plan is published, the user must explicitly select
-the file and authorize a separate `workflow_litterbox_upload` MCP call.
-The top-level `file` is declared as OpenAI `fileParams` and receives
-`download_url` and `file_id`, with optional `file_name`/`mime_type`.
-A positive earlier read-only probe is NOT independent provenance attestation.
+## File input and provenance boundary
 
-The file reader currently accepts **only** HTTPS `files.oaiusercontent.com`,
-requires a `file_...` reference, rejects user-info, ports, fragments,
-redirects, bad responses and files outside the 1 byte–10 MiB range. It streams at
-most 10 MiB into ephemeral memory, hashes SHA-256 and forwards **only the bytes
-and bounded metadata** over the existing private `ACTIONS` Service Binding.
-The pre-existing read-only `workflow_file_transport_probe` now returns only
-`file_source_host_allowed` (boolean), without returning the signed URL
-or fetching the file. This can validate the origin rule with a fresh
-ChatGPT-selected harmless fixture after an independently authorized release.
-A mismatched real ChatGPT download host must block the upload until confirmed;
-do not expand to arbitrary URLs or infer the host from the file ID.
+The top-level `file` is OpenAI `fileParams` metadata: required `download_url` and **opaque, nonempty string** `file_id` (not necessarily prefixed `file_`), optional `file_name`/`mime_type`. The temporary signed URL is a user-selected **external read target**, not independent evidence that the source belongs to OpenAI.
 
-The MCP call creates a real native Workflow Run with only
-`{file_name,size_bytes,sha256,time}` in D1. It durably reserves the
-existing `cloudflare_action_invocations(run_id,step_id)` fence before exactly
-one Provider RPC. The Provider revalidates exact Worker Version and contract
-digest, metadata and bytes, and sends a single fixed multipart POST to
-Litterbox without credentials or redirects. No automatic retry on ambiguous
-results. The native Workflow **only waits for the already durable Step
-receipt** and cannot run the upload itself; a missing wake cannot cause a
-second POST. Public Litterbox URL may be persisted as the result; the private
-ChatGPT file URL, ID and content never enter D1 or a native event.
+Only HTTPS `files.oaiusercontent.com` or the **narrowly bounded Azure Blob public endpoint** `https://<account>.blob.core.windows.net/<container>/<blob>` may be read. The Blob account name is 3–24 lowercase alphanumeric characters; the SAS URL must contain exactly one nonempty `sig`, `sv` and parseable `se`. If supplied, `sp` must be exactly `r` and `sr` one of `b`, `bv`, `bs`. Reject generic `*.windows.net`, other Azure services, generic HTTP(S) URLs, userinfo, nondefault ports, fragments, missing object paths, duplicate signature parameters, non-read permissions and unsafe URL normalization. A matching URL/SAS **does not cryptographically attest OpenAI or Azure account ownership**. The read-only probe reports `origin_family:azure_blob_external`, `provenance_verified:false`, and does not disclose the signed URL, account, SAS, filename or ID.
 
-Runtime publication/admission locks, cancellations and Run history are
-preserved. There is no new Worker, R2, queue, scheduler, public file gateway or
-external upload endpoint other than the fixed Litterbox target.
+The actual file GET uses `credentials:'omit'`, `redirect:'manual'`, a 15-second timeout and a strict **1 byte–10 MiB** streaming bound. Bytes are held ephemerally in memory, hashed with SHA-256 and sent over the existing private Service Binding; neither file content nor the signed download URL or `file_id` is stored in D1, returned by the probe or sent to the Provider. Public Litterbox receives the explicitly authorized file **in plaintext**; its public result URL may be stored.
 
-## Remaining real acceptance
+## Single-use authorization and durable dispatch
 
-- Determine the **actual** OpenAI file download origin from a verified
-  client-selected disposable attachment, without echoing/logging the URL.
-- Confirm the platform's user confirmation/consent boundary. Tool annotations
-  and an authenticated publish grant alone are not independent proof that
-  the owner approved each irreversible file upload.
-- Separate explicit authorization for protected Provider then Consumer
-  production releases, current Version readbacks, One-MCP Portal sync and
-  client refresh.
-- One real explicitly authorized **non-sensitive** file: byte-level upload,
-  independent download/hash comparison, allowed TTL and 10 MiB policy checks.
-  Do not test wall-clock expiry by replaying an unknown POST.
-- Audit actual Run/Step/Invocation records, no persisted signed download URL
-  or file bytes, and existing five business Workflows still active.
+The only accepted Plan is a **manual-only, one-step** `action.run` with `executor=cloudflare`, `provider=litterbox`, `action=litterbox.upload_file`, and exact `inputs.file_name/size_bytes/sha256/time` references. No Cron, Webhook, child, Saga, extra Step, literal external URL, or generic uploader. Publish requires an exact immutable Contract digest, reviewed Provider Worker Version and separate Cloudflare Action grant; **actual file upload also requires an explicit fresh Owner instruction**. Authenticated API grants or tool annotations do not independently prove human UI consent.
 
-Until these stages pass, do not call the uploading tool in production,
-do not claim successful Litterbox transfer or close Spec #35. The
-independent Dub short-link longevity failure is not resolved by this work.
+Workflow persists only bounded file metadata, reserves `cloudflare_action_invocations(run_id,step_id)` before at most one Provider RPC, and waits for the durable Step receipt. Provider rechecks version, digest, byte hash and bounds before one fixed multipart POST to Litterbox with no credentials or redirects. Ambiguous/lost acknowledgements are **unknown**, never automatically retried or replayed. Existing admission, cancellation, Run/Step and historical receipt fences remain in force. No new Worker, R2, queue, scheduler, storage gateway or parallel publisher was introduced.
+
+## Acceptance limits
+
+This is one verified real-file production path, not a guarantee of exact Litterbox deletion time, all future upstream availability, or fileParams provenance. The **404 after the selected TTL** is an observed point-in-time expiry result, not a precise timer measurement. The dedicated acceptance Workflow stays paused. Changes to the Provider, source-origin policy or published Plan require their own risk-based review and explicitly authorized protected release; this docs-only reconciliation does **not** deploy runtime code.
