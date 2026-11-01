@@ -1,6 +1,9 @@
 # ADR 0003 — Remembered Profile pairing expires after a configurable idle interval
 
-Status: Accepted as design consensus, 2026-10-31. **Implemented as v0.2.6 source candidate; production not released.**
+Status: Accepted 2026-10-31; implemented in PR #644 and v0.2.6 production
+Worker. Chrome/Edge scoped native E2E verified; full natural 14-day expiry and
+native Rename/Options acceptance remain open under #626. Online-reset wording
+clarified 2026-11-01 without code or production changes.
 
 ## Decision
 
@@ -11,6 +14,26 @@ A remembered Profile with locally selected ON and genuinely live authenticated W
 The server owns deadlines using trusted server time and admission checks; neither extension local timers nor MCP agent actions can renew a grant. Keep Endpoint identities and historic anti-replay receipts across upgrades/expiry. Expose stable human-editable alias plus truthful browser/platform and connectivity metadata without pretending an Endpoint is a physical machine.
 
 **One release-time configuration:** `BROWSER_REMEMBERED_IDLE_DAYS` is an optional, reviewed integer GitHub Actions Environment Variable scoped to `browser-mcp-worker`. Missing or empty means `14`; configured values must be decimal integers from `1` to `90`. Reject malformed out-of-range nonempty values at the existing release preflight and fail closed in Worker runtime. The existing manual release stages this value through its explicit variable allowlist and Wrangler `--var`; no mutable remote configuration or second deployment pipeline is introduced. Changing the GitHub Variable without a new authorized production release has no runtime effect. New idle countdowns use the released value; already persisted absolute deadlines are not silently rewritten or extended. The server presents truthful actual deadlines. Neither Owner OTP/Access SSO nor temporary pairing is governed by this setting.
+
+## Cross-product clarification — 2026-11-01
+
+RCA and Browser intentionally share the same **online reset** semantics:
+an authentically ON/ONLINE remembered Profile holds indefinitely and has
+**no active clock to keep renewing**; when it becomes OFFLINE, give it a
+fresh full configured interval measured from the last trusted server-observed
+online point. A valid automatic reconnect while still owner-ON and **before**
+expiry removes that offline deadline; a subsequent actual disconnect
+starts a new full interval. This is **not** an extension for owner OFF:
+first Stop keeps its original absolute deadline, and only successfully
+owner-verified OFF→ON before expiry can restore online hold. Late callbacks,
+stale WSS, untrusted client clocks, and per-heartbeat storage writes cannot
+create grants.
+
+See [RCA Draft PR #664](https://github.com/lirtual/mcp-workers/pull/664).
+The two products continue to use their own Worker, storage and authentic
+owner-control mechanisms. This clarifies the existing v0.2.6 implementation contract; Browser #626
+remains OPEN only for the remaining independent acceptance evidence, not
+because its core implementation is unshipped.
 
 ## Context and alternatives
 
