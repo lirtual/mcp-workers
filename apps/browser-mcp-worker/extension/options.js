@@ -8,7 +8,7 @@ async function refresh() {
   try {
     const s=await call("status");
     const remote=s.cloud_state;
-    const name=remote?.alias||s.alias||"Not paired";
+    const name=remote?.alias||(s.alias==="Browser profile"&&s.endpoint_id?s.endpoint_id.slice(0,8):s.alias)||"Not paired";
     const local=s.authorization||"unpaired",connection=s.connection||"offline";
     const ready=local==="enabled"&&connection==="online"&&remote?.authorization==="enabled"&&remote?.online===true;
     $("summary").textContent=ready?"ON · Ready":local==="enabled"?"ON · "+connection:
@@ -17,9 +17,9 @@ async function refresh() {
       name,
       remote?.browser_family&&remote.browser_family!=="unknown"?remote.browser_family:"Browser",
       remote?.browser_platform&&remote.browser_platform!=="other"?remote.browser_platform:null,
-      s.endpoint_id?"#"+s.endpoint_id.slice(0,8):null
+      s.endpoint_id&&name!==s.endpoint_id.slice(0,8)?"#"+s.endpoint_id.slice(0,8):null
     ].filter(Boolean).join(" · ");
-    if(document.activeElement!==$("alias"))$("alias").value=s.alias||remote?.alias||"";
+    if(document.activeElement!==$("alias"))$("alias").value=(s.alias||s.endpoint_id)?name:"";
     $("save-alias").disabled=local==="revoked";
     $("prepair").hidden=Boolean(s.endpoint_id);
     $("lifetime").value=s.pairing_mode||s.pairing_preference||"permanent";

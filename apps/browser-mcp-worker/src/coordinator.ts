@@ -30,8 +30,11 @@ const secret = () => {
   return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 };
 const safeAlias = (v: unknown) => typeof v === "string" && v.trim().length > 0 && v.trim().length <= 64 && v.length <= 64 && !/[\x00-\x1f\x7f]/.test(v);
+// The generic legacy alias is a display placeholder, not a device name.
+// Use the Endpoint prefix; preserve every non-default owner name unchanged.
+const visibleAlias = (e: Endpoint) => e.alias === "Browser profile" ? e.id.slice(0,8) : e.alias;
 const publicEndpoint = (e: Endpoint, online = false) => ({
-  endpoint_id: e.id, alias: e.alias, authorization: e.state,
+  endpoint_id: e.id, alias: visibleAlias(e), authorization: e.state,
   online: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
   // Readiness means connected and locally enabled, never website business success.
   control_ready: e.state === "enabled" && (!e.lease_expires_at || e.lease_expires_at>Date.now()) && online,
