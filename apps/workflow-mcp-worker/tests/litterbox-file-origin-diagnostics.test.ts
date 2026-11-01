@@ -69,3 +69,13 @@ test('origin hint exposes no source URL, full hostname or file token',()=>{
  assert.equal(attachmentOriginSuffixHint({...base,download_url:'https://files.oaiusercontent.com/x'}),null);
  assert.equal(attachmentOriginSuffixHint({...base,file_id:''}),null);
 });
+
+test('signed Azure Blob is an external origin, not an OpenAI attestation',()=>{
+ const azure={...base,download_url:
+  'https://selectedblob123.blob.core.windows.net/uploads/fixture.txt?sv=2024-11-04&se=2026-11-01T22%3A00%3A00Z&sr=b&sp=r&sig=PRIVATE_DO_NOT_ECHO'};
+ assert.ok(approvedAttachmentUrl(azure));
+ assert.deepEqual(classifyAttachmentSource(azure),{
+  failure_code:'none',origin_family:'azure_blob_external'});
+ assert.equal(attachmentOriginSuffixHint(azure),null);
+ assert.equal(JSON.stringify(classifyAttachmentSource(azure)).includes('PRIVATE_DO_NOT_ECHO'),false);
+});
