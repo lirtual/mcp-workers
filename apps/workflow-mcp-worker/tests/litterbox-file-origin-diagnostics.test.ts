@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {approvedAttachmentUrl,classifyAttachmentSource} from '../src/litterbox-file-source.ts';
+import {approvedAttachmentUrl,classifyAttachmentSource,attachmentOriginSuffixHint} from '../src/litterbox-file-source.ts';
 
 const base={file_id:'file_ABC123',download_url:
  'https://files.oaiusercontent.com/file.txt?token=PRIVATE_DO_NOT_ECHO',
@@ -48,4 +48,24 @@ test('read-only diagnostic identifies the violated invariant without leaking ide
    assert.equal(disclosure.includes(secret),false,'diagnostic disclosed file source');
   }
  }
+});
+
+
+test('origin hint exposes no source URL, full hostname or file token',()=>{
+ const input={...base, download_url:
+  'https://private-fixture-bucket.assets.provider-example.dev/x?signature=PRIVATE_DO_NOT_ECHO'};
+ const out=classifyAttachmentSource(input);
+ assert.equal(out.failure_code,'download_host_not_allowlisted');
+ assert.equal(out.origin_family,'other');
+ assert.equal(approvedAttachmentUrl(input),null);
+ assert.equal(attachmentOriginSuffixHint(input),'provider-example.dev');
+ for(const bad of ['PRIVATE_DO_NOT_ECHO','private-fixture-bucket',
+  'private-fixture-bucket.assets.provider-example.dev','file_ABC123']){
+  assert.equal(String(attachmentOriginSuffixHint(input)).includes(bad),false);
+ }
+ assert.equal(attachmentOriginSuffixHint({...base,download_url:'https://evil.test/x'}),null);
+ assert.equal(attachmentOriginSuffixHint({...base,download_url:'http://f.cdn.example.com/x'}),null);
+ assert.equal(attachmentOriginSuffixHint({...base,download_url:'https://f.cdn.example.com/x#secret'}),null);
+ assert.equal(attachmentOriginSuffixHint({...base,download_url:'https://files.oaiusercontent.com/x'}),null);
+ assert.equal(attachmentOriginSuffixHint({...base,file_id:''}),null);
 });
