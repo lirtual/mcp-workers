@@ -86,6 +86,14 @@ describeReadIntegration('real database read-only integration', () => {
     expect(await explainRead(mysql, 'SELECT * FROM users WHERE id = ?', [1])).toBeTruthy();
   });
 
+  it('blocks a MySQL SECURITY DEFINER mutation in query_read even for a writer principal', async () => {
+    if (!mysqlWriteUrl) return;
+    const writer = directConnection('mysql_reader_guard_writer_identity', mysqlWriteUrl);
+    const baseline = await queryRead(writer, 'SELECT value FROM counter', [], 1);
+    await expect(queryRead(writer, 'SELECT test_mcp_mysql_side_effect()', [], 1)).rejects.toBeTruthy();
+    expect((await queryRead(writer, 'SELECT value FROM counter', [], 1)).rows).toEqual(baseline.rows);
+  });
+
   it('database-native PostgreSQL reader permissions reject writes and side-effecting function execution', async () => {
     const client = new PgClient({ connectionString: pgReadUrl!, ssl: false });
     await client.connect();

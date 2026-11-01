@@ -93,6 +93,9 @@ const mysql = await createConnection({
   multipleStatements: true
 });
 try {
+  // Only the disposable CI database creates a deliberately mutating stored
+  // function; MySQL 8.4 binary-log safety otherwise rejects its definition.
+  await mysql.query(`SET GLOBAL log_bin_trust_function_creators = 1`);
   await mysql.query(`CREATE USER IF NOT EXISTS 'mcp_reader'@'%' IDENTIFIED BY 'reader'`);
   await mysql.query(`CREATE USER IF NOT EXISTS 'mcp_writer'@'%' IDENTIFIED BY 'writer'`);
   await mysql.query(`CREATE USER IF NOT EXISTS 'mcp_admin'@'%' IDENTIFIED BY 'admin'`);
@@ -100,6 +103,7 @@ try {
   await mysql.query(`REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'mcp_writer'@'%'`);
   await mysql.query(`REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'mcp_admin'@'%'`);
   await mysql.query(`DROP PROCEDURE IF EXISTS dangerous_bump`);
+  await mysql.query(`DROP FUNCTION IF EXISTS test_mcp_mysql_side_effect`);
   await mysql.query(`DROP TABLE IF EXISTS admin_items`);
   await mysql.query(`DROP TABLE IF EXISTS admin_items_renamed`);
   await mysql.query(`DROP TABLE IF EXISTS counter`);
@@ -111,10 +115,19 @@ try {
   await mysql.query(`CREATE TABLE counter (value INT NOT NULL) ENGINE=InnoDB`);
   await mysql.query(`INSERT INTO counter VALUES (0)`);
   await mysql.query(`CREATE PROCEDURE dangerous_bump() SQL SECURITY DEFINER MODIFIES SQL DATA UPDATE counter SET value = value + 1`);
+  await mysql.query(`CREATE FUNCTION test_mcp_mysql_side_effect() RETURNS INTEGER
+    SQL SECURITY DEFINER MODIFIES SQL DATA
+    BEGIN
+      UPDATE counter SET value = value + 1;
+      RETURN (SELECT value FROM counter);
+    END`);
+
   await mysql.query(`GRANT SELECT ON testdb.users TO 'mcp_reader'@'%'`);
   await mysql.query(`GRANT SELECT ON testdb.write_items TO 'mcp_reader'@'%'`);
   await mysql.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON testdb.users TO 'mcp_writer'@'%'`);
   await mysql.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON testdb.write_items TO 'mcp_writer'@'%'`);
+  await mysql.query(`GRANT SELECT ON testdb.counter TO 'mcp_writer'@'%'`);
+  await mysql.query(`GRANT EXECUTE ON FUNCTION testdb.test_mcp_mysql_side_effect TO 'mcp_writer'@'%'`);
   await mysql.query(`GRANT CREATE, ALTER, DROP, INDEX, INSERT ON testdb.* TO 'mcp_admin'@'%'`);
   await mysql.query(`FLUSH PRIVILEGES`);
 } finally {

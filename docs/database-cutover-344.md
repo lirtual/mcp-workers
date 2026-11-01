@@ -21,8 +21,11 @@
 This section supersedes the historical snapshots below. Independently checked against
 live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
 
-- Production Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f` serves **100%**.
-  The two reviewed Hyperdrive configs are PostgreSQL
+- The final #344 [protected release #41007866068](https://github.com/lirtual/mcp-workers/actions/runs/41007866068)
+  published Worker version `43162fe2-449e-495a-8389-c0316854d76f`
+  at **100%** traffic (verified 2026-10-30). This is a dated acceptance
+  snapshot, **not** a live status indicator; read the current Cloudflare
+  deployment before release or rollback. The two reviewed Hyperdrive configs are PostgreSQL
   `eb4ccbd231ea44beabc72b3f2b483d69` (`verify-full`) and isolated
   MySQL `38bf39b569484dbb8a9fe1b24f0df854` (`VERIFY_IDENTITY`).
   Both have an approved CA and query caching **disabled**.
@@ -57,7 +60,20 @@ live Database MCP, Cloudflare Hyperdrive and the existing GitHub Actions CI:
   existing mandatory CI. Both [PR CI](https://github.com/lirtual/mcp-workers/actions/runs/41000198731)
   and [merged main CI](https://github.com/lirtual/mcp-workers/actions/runs/41000595512)
   **PASS**. Offline tests are not Hyperdrive-client negative E2E.
-  No production Worker redeployment is needed for this CI-only change.
+  That #523 CI-only change did not require a deployment; a later #528
+  release is recorded above.
+
+**Additional read-query hardening in this source revision:** MySQL
+`query_read` and `explain_read` use `START TRANSACTION READ ONLY` and
+`ROLLBACK` for both Direct and Hyperdrive. The server forbids modification
+of ordinary persistent tables from SELECT-invoked routines even for a
+write-capable account. MySQL permits temporary-table changes in read-only
+transactions; native least-privilege permissions and external side-effect
+controls are still required. Direct remains Owner-approved plaintext TCP.
+Production MySQL roles have schema-level write and DDL privileges; do not
+silently revoke them while Safe Write/Admin consumers may depend on them.
+Live Hyperdrive compatibility and the release itself are separate from
+the isolated MySQL integration evidence; this note is not production acceptance.
 
 **Owner disposition:** #344 was subsequently **closed with explicit waivers**
 for Hyperdrive-client negative TLS injection and independent historical-key

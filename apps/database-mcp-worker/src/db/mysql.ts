@@ -16,7 +16,8 @@ import { ConfirmedReadFailure, ConfirmedNoSqlFailure } from './completion.js';
 
 async function withConnection<T>(
   connection: EffectiveConnection,
-  operation: (client: Connection) => Promise<T>
+  operation: (client: Connection) => Promise<T>,
+  readOnly = false
 ): Promise<T> {
   let client: Connection | undefined;
   try {
@@ -27,10 +28,14 @@ async function withConnection<T>(
       if (connection.transport === 'hyperdrive') throw new ConfirmedNoSqlFailure(error);
       throw error;
     }
-    if (connection.transport === 'hyperdrive') {
-      // Pin the backend session during SQL-mode check and client interpolation.
+    if (connection.transport === 'hyperdrive' || readOnly) {
+      // Native READ ONLY blocks persistent writes via SELECT-invoked functions.
+      // The same transaction pins Hyperdrive for SQL-mode verification.
       try {
-        await withTimeout(client.beginTransaction(), connection.limits.queryTimeoutMs, () => client?.destroy());
+        const begin = readOnly
+          ? client.query('START TRANSACTION READ ONLY').then(() => undefined)
+          : client.beginTransaction();
+        await withTimeout(begin, connection.limits.queryTimeoutMs, () => client?.destroy());
       } catch (error) {
         // No workload statement has run. If this same session acknowledges
         // ROLLBACK, its failed transaction start is conclusively settled.
@@ -40,7 +45,7 @@ async function withConnection<T>(
           await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
           rolledBack = true;
         } catch { /* Remote transaction state unknown. */ }
-        if (rolledBack) throw new ConfirmedReadFailure(error);
+        if (rolledBack && connection.transport === 'hyperdrive') throw new ConfirmedReadFailure(error);
         throw error;
       }
       let result: T;
@@ -56,7 +61,7 @@ async function withConnection<T>(
           await withTimeout(client.rollback(), connection.limits.queryTimeoutMs, () => client?.destroy());
           rolledBack = true;
         } catch { /* Unknown backend state; retain the original failure. */ }
-        if (rolledBack) throw new ConfirmedReadFailure(error);
+        if (rolledBack && connection.transport === 'hyperdrive') throw new ConfirmedReadFailure(error);
         throw error;
       }
       // A successful read without confirmed rollback cannot be treated as a
@@ -113,7 +118,7 @@ export async function mysqlQueryRead(
       rowLimit,
       connection.limits.maxResultBytes
     );
-  });
+  }, true);
 }
 
 export async function mysqlExplain(
@@ -131,7 +136,7 @@ export async function mysqlExplain(
     const value = jsonSafe(rows);
     assertJsonWithinBytes(value, connection.limits.maxResultBytes);
     return value;
-  });
+  }, true);
 }
 
 export async function mysqlHealthCheck(connection: EffectiveConnection): Promise<HealthResult> {
