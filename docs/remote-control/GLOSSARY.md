@@ -24,3 +24,12 @@ _Avoid_: Heartbeat extension while OFF, automatic re-pair
 **Owner-Stopped Agent**:
 An Agent that its owner has deliberately stopped, unlike a service crash, sleep, or network outage.
 _Avoid_: Offline device, revoked identity
+
+
+**Pending Owner Stop**:
+A locally persisted intentional Stop that has not yet been reliably acknowledged by the server.
+_Avoid_: Confirmed cloud revocation, ordinary disconnection
+
+**Owner Resume**:
+A deliberate local action that re-enables an existing still-valid permanent grant after the server authenticates the device and accepts the pending Stop state.
+_Avoid_: Automatic reconnect, fresh pairing

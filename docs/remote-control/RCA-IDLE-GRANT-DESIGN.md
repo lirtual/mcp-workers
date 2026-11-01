@@ -1,7 +1,7 @@
 # RCA permanent-device idle grant — Grill With Docs
 
 Status: **design in progress**, not an implementation or deployed policy.
-Owner's confirmed 2026-11-01 decisions: **B — Browser-style ON-online hold; first Grill round Q1–Q4=A**.
+Owner's confirmed 2026-11-01 decisions: **B — Browser-style ON-online hold; Grill Q1–Q8=A**.
 The same online-reset contract is shared with [Browser #626](https://github.com/lirtual/mcp-workers/issues/626).
 Reference [Browser MCP #626](https://github.com/lirtual/mcp-workers/issues/626),
 [ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md)
@@ -36,7 +36,7 @@ nonrenewable **24 hours**.
 | Automatic authenticated reconnect before expiry while owner intent remains ON | Cancel offline countdown and restore indefinite ONLINE hold | Same |
 | A later fresh disconnection after a genuine online interval | Start a **new full configured period**; do not reuse the earlier shorter deadline | Same |
 | Owner explicit OFF | Keep first OFF deadline, repeated stop cannot extend; no automatic reconnect can remove it | Same |
-| Owner-confirmed OFF -> ON before expiry | Only valid local owner-controlled restoration plus signed fresh authorization may clear deadline; see next Grill questions | Browser uses verified local owner activation through existing Access |
+| Owner-confirmed OFF -> ON before expiry | Owner-controlled local start with signed fresh authorization before expiry clears it; no repeat OTP | Browser uses verified local owner activation through existing Access |
 | Expired / revoked | Old grant cannot be refreshed by being online; needs fresh pairing | Same |
 | Temporary | Fixed, nonrenewable 24 hours | Keep existing browser-session semantics, separate from remembered policy |
 
@@ -64,6 +64,54 @@ model, **not** a shared RCA/Browser database or runtime service.
 - **Q4=A:** Extend current list_devices with true online/authorized/OFFLINE
   states and absolute remaining deadline only when counting down. Hide
   expired grants from default valid list; no second device-management UI.
+
+## Second-round resolved decisions (2026-11-01)
+
+- **Q5=A — Owner OFF during a network outage.** A deliberate local
+  OS-owner Stop persists a private, install/upgrade-safe **stop intent**
+  before stopping the Agent. When the Worker cannot be reached, the local
+  service remains OFF and must not auto-reconnect or restart. On a subsequent
+  owner Start, the Agent must first reconcile the pending OFF intent through
+  a fresh signed authorization exchange; the server must apply the earlier
+  of its **already established offline deadline** and any newly acknowledged
+  Stop deadline. The client clock or delayed Stop receipt must **never**
+  move an earlier deadline forward. An offline Stop may remain *cloud-
+  unconfirmed*; local OFF is immediate, cloud revocation/expiry is only
+  promised after server-side validation. Don't claim full cleanup when the
+  server was unreachable.
+- **Q6=A — Owner-controlled local recovery before expiry.** The existing
+  OS owner explicitly runs `rca start` (or an equivalent platform-native
+  service manager command), retains the device private key and proves the
+  same approved identity through existing fresh signed session challenge/
+  epoch. The Worker processes any pending signed Stop first, checks the
+  original deadline, then permits a distinct explicit Resume transition
+  and returns to ON/online hold. This is **not** a new pairing or a fresh
+  OTP; neither remote MCP tools nor ordinary Agent auto-reconnect may
+  clear OFF. Linux/Windows/macOS command support is part of the later
+  implementation, not a claim that every installed CLI already supports it.
+- **Q7=A — Expired local identity and receipts.** On expiry the old
+  device grant is denied, disconnected when feasible, and lazily removed
+  from the 64-slot active authorization registry. Preserve the old local
+  key, device ID and SQLite Operation Receipts, especially Unknown/unresolved
+  operation IDs. A new key and ID may replace the installed identity only
+  through the existing **explicit owner-approved fresh pairing** with
+  separately verified promotion; no background re-pair, deletion of old
+  evidence, or blind replay. The old key cannot authenticate after expiry.
+- **Q8=A — Legacy Agent compatibility.** Previously paired, genuinely
+  online older Agents keep normal behavior; pre-migration legacy offline
+  grants get the full one-time migration allowance. All permanent
+  devices remain subject to server-side *offline* expiry. Old versions
+  lacking explicit signed Stop/Resume support cannot claim or trigger
+  these new control transitions; don't infer deliberate OFF from a
+  disconnected legacy socket. Enable explicit OFF/Resume only with a
+  verified compatible local Agent version. No forced or implicit upgrade
+  of paired Windows/Linux hosts or unshipped macOS candidates.
+
+**Sequence rule:** admission for a newly signed reconnect must check
+existing durable expiry **before** recognizing authenticated online;
+out-of-order Stop/Resume/reconnect must not clear a prior owner OFF. Server
+authorization loss means no new operations even when old local receipts
+still show admitted or Unknown work.
 
 ## Verified existing code boundaries
 
@@ -96,32 +144,39 @@ No production release, credential mutation or installed device change is
 authorized by this design review. macOS candidate CI is not real owner-Mac
 evidence.
 
-## Next dependent Grill frontier (pending owner decisions)
+## Third-round dependent Grill frontier (pending owner decisions)
 
-**Q5 — Stop intent when offline:** The owner can locally Stop while the
-server is unreachable. Choose whether to record the local Stop as immutable
-local intent and later reconcile with the server **without extending an
-earlier trusted offline deadline** (recommended), or use only server-observed
-disconnect (loses explicit Stop semantics).
+**Q9 — Trusted online checkpoint:** Reuse the existing signed 15-minute
+Agent authorization probe, persisted WSS attachment and bounded server-side
+online evidence; checkpoint durable last-online at a bounded frequency
+instead of per-packet writes. Network loss/stale heartbeat starts the full
+period at the latest *trusted* server observation, not last_connected_at.
+Accept a small observation granularity (recommended). Alternative: add
+high-frequency heartbeat and storage writes for near-second precision.
 
-**Q6 — OFF -> ON local owner proof:** RCA has no Browser Access toolbar.
-Choose local, owner-confirmed `rca start` (platform-native equivalent) plus
-existing signed session proof and a new server-accepted grant generation
-**before** expiry (recommended; no OTP every restart) versus a new MCP owner
-approval for every Stop/start. No remote tool may resume a stopped Agent.
+**Q10 — Race priority and accepted work:** Server-side expiry and Revoke,
+then owner OFF, beat a late old socket, Stop retry, offline auto-reconnect,
+or stale Resume. A pre-expiry local owner Resume needs a fresh signed proof
+and epoch; all dispatches recheck authorization. Already admitted work and
+Unknown receipts remain truthful and unreplayed (recommended). Alternative:
+recover connectivity optimistically before durable OFF reconciliation.
 
-**Q7 — Expired local identity:** Preserve local keys, old device ID and
-SQLite Operation Receipts/Unknown. A stopped/expired Agent must use the
-existing *explicit* owner re-pair procedure; fresh key and ID only after
-approval and no automatic retries (recommended). Alternative is deletion
-of identity on expiry, which risks irrecoverable local evidence.
+**Q11 — Client API and status compatibility:** Preserve existing
+list_devices `online|offline` status and stable full device_id; add
+minimal separate `owner_stopped` (only when known) and `idle_expires_at`
+server-owned fields, rather than change the status enum or add a new MCP
+tool, page or management service (recommended). Legacy unknown Stop
+intent must be displayed as unknown, not guessed.
 
-**Q8 — Older Agent and rollout:** Version gate the new signed Stop/Resume
-contract. For legacy Agents, use safe bounded OFFLINE expiry and require
-explicit local upgrade to enable owner Stop/Resume; don't guess intent from a
-legacy disconnected socket (recommended). Alternative is immediate uniform
-enforcement including incompatible old clients.
+**Q12 — Release and owner acceptance gates:** Implement scoped Worker
+and Agent changes using existing CI and release mechanisms; test Worker
+expiry/Stop/reconnect/64-slot behavior plus compatible native Linux and
+Windows. Independently assess macOS only when its candidate and real
+owner Mac are available. Production release and real paired-device
+Stop/Resume/expiry acceptance require specific authorization; keep existing
+service available until then (recommended). Alternative: a single
+big-bang Worker/Agent cutover, which risks disconnecting live devices.
 
-Later frontier: race fences, offline heartbeat checkpoint granularity, genuine
-revocation/Unknown effects, Windows/Linux/macOS native behavior, and real
-end-to-end acceptance. No unanswered option is silently selected.
+Further questions are only necessary if these answers leave a materially
+different safety, compatibility or complexity decision. No unanswered
+option is silently selected.

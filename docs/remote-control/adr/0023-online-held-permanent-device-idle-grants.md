@@ -1,7 +1,7 @@
 # ADR-0023 — Hold permanent RCA device grants while authentically online
 
-Status: **Proposed — owner's B policy and Grill Q1–Q4=A confirmed 2026-11-01;
-Stop reconciliation / owner recovery details remain under review**.
+Status: **Proposed — owner's B policy and Grill Q1–Q8=A confirmed 2026-11-01;
+final race and compatibility boundaries remain under review**.
 
 The owner chose Browser-style online hold for RCA permanent devices instead
 of expiring devices based solely on the absence of remote tool calls. An
@@ -23,7 +23,18 @@ Active OFF deadlines do not renew through auto-reconnect or repeated Stop.
 Existing permanent online devices retain their grant at first migration;
 offline legacy grants receive a full migration-time idle window. Duration is
 release-configurable 1–90 days and device lists show real expiry only while
-counting down. The detailed OFF reconciliation, reactivation, migration
-races and enforcement are **not yet accepted**. See
+counting down. Explicit local Stop intent must persist even during loss of network
+access. A delayed cloud Stop may never extend an older server-owned
+deadline. Existing OS-owner local Start, the existing Ed25519 identity
+and a fresh signed authorization (after reconciling pending Stop) enable
+Resume **only before expiry** without re-pairing or new OTP; background
+reconnect and remote MCP cannot Resume an owner OFF device. An expired
+grant is replaced only by fresh owner-approved pairing and must never
+delete local identity/SQLite Operation Receipts/Unknown; expired grants
+release capacity lazily. Older Agents may remain online under their
+existing protocol but cannot express new Stop/Resume intent until
+upgraded explicitly. The detailed time checkpoint, race fencing,
+observable status fields and release acceptance gates remain under
+review. See
 [Grill design](../RCA-IDLE-GRANT-DESIGN.md).
 No implementation, release or production authorization follows from this ADR.
