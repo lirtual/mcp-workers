@@ -4,7 +4,7 @@ import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { workflowCapabilities } from './capabilities.ts';
 import { WorkflowService, cleanError } from './store.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
-import {approvedAttachmentUrl,classifyAttachmentSource} from './litterbox-file-source.ts';
+import {approvedAttachmentUrl,classifyAttachmentSource,attachmentOriginSuffixHint} from './litterbox-file-source.ts';
 import {getSessionRuntimeData} from './session-runtime-data.ts';
 import type { Env } from './store.ts';
 
@@ -50,14 +50,15 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_action_list',{description:'Discover verified Tag-pinned GitHub Task/Session Action candidates with ref, commitSha, contractDigest, inputs, explicit unknown business output (not_declared), and publishability. Untagged default-branch revisions are explicitly unavailable; Publish still requires separate approval.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
  server.registerTool('workflow_file_transport_probe',{
    title:'Check a selected file parameter (no file access)',
-   description:'Read-only compatibility check for one ChatGPT-selected file. Validates the file-parameter object and returns only safe source-rejection category and recognized origin family without downloading, uploading, storing or returning the URL, hostname, ID or filename. This is NOT provenance attestation or Litterbox upload.',
+   description:'Read-only compatibility check for one ChatGPT-selected file. Returns a safe rejection category and, only for other-origin rejection, a coarse last-two-DNS-label hint (not the full hostname or registrable-domain proof). Never downloads, uploads, stores, or returns the URL, full hostname, ID or filename. This is NOT provenance attestation or upload authorization.',
    inputSchema:z.object({file:fileTransportProbeFile}).strict(),
    _meta:{'openai/fileParams':['file']},
    annotations:{...read,destructiveHint:false},
  },async({file})=>success({file_parameter_received:true,bytes_read:0,
    uploaded:false,persisted:false,provenance_verified:false,
    file_source_host_allowed:approvedAttachmentUrl(file)!==null,
-   file_source_diagnostic:classifyAttachmentSource(file)}));
+   file_source_diagnostic:classifyAttachmentSource(file),
+   file_source_host_suffix_hint:attachmentOriginSuffixHint(file)}));
  server.registerTool('workflow_litterbox_upload',{
    title:'Upload one selected file to Litterbox (public, irreversible)',
    description:'EXTERNAL WRITE. Uploads a user-selected file in PLAINTEXT to public Litterbox storage, expiring after 1/12/24/72h. Requires a previously approved, immutable manual single-step litterbox.upload_file Published Workflow and a unique idempotency key. Do not call without explicit Owner instruction to publish that file. Unknown effects are NEVER replayed.',

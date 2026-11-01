@@ -66,6 +66,22 @@ export function classifyAttachmentSource(file:unknown):{
   return denied('download_host_not_allowlisted',family);
  return denied('none',family);
 }
+// A diagnostic hint only: the final TWO DNS labels, never the complete host,
+// signed URL, path, query, file ID or filename. This is NOT eTLD+1 extraction
+// and MUST NOT be used as an allowlist, provenance or upload authorization.
+// Two-label hosts and all malformed/unsafe sources remain unreported.
+export function attachmentOriginSuffixHint(file:unknown):string|null {
+ const diagnostic=classifyAttachmentSource(file);
+ if(diagnostic.failure_code!=='download_host_not_allowlisted'||
+  diagnostic.origin_family!=='other')return null;
+ const host=new URL((file as ChatGptFile).download_url).hostname;
+ const labels=host.split('.');
+ if(host.length>253||labels.length<3)return null;
+ const last=labels.slice(-2);
+ if(!last.every(label=>label.length>=2&&label.length<=63&&
+   /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)))return null;
+ return last.join('.');
+}
 export class AttachmentReadError extends Error{
  code:string;
  constructor(code:string){super(code);this.code=code;}
