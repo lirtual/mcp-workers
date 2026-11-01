@@ -1,182 +1,220 @@
-# RCA permanent-device idle grant — Grill With Docs
+# RCA — Permanent device idle-grant lifecycle
 
-Status: **design in progress**, not an implementation or deployed policy.
-Owner's confirmed 2026-11-01 decisions: **B — Browser-style ON-online hold; Grill Q1–Q8=A**.
-The same online-reset contract is shared with [Browser #626](https://github.com/lirtual/mcp-workers/issues/626).
-Reference [Browser MCP #626](https://github.com/lirtual/mcp-workers/issues/626),
-[ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md)
-and [ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md).
+**Status:** Final Grill With Docs design consensus (2026-11-01); **design only**.
+Owner selected policy **B** and **Q1–Q12=A**, in three rounds.
+**Not implemented, merged or production deployed for RCA.**
+Related: [Browser Spec #626](https://github.com/lirtual/mcp-workers/issues/626),
+[RCA ADR-0023](./adr/0023-online-held-permanent-device-idle-grants.md),
+[revocation ADR-0017](./adr/0017-v2-device-revocation-without-tombstones.md),
+[temporary grant ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md).
 
-## Settled intent
+## Goal and accepted trade-off
 
-Reduce abandoned RCA devices occupying 64 active-device grant slots while
-normally connected permanent Agents continue without repeated OTP.
+Abandoned permanently paired Agents should stop occupying the existing **64
+active device slots**, while genuinely online owner-enabled Agents retain
+unattended access without repeated OTP. Explicit user choice **B** means a
+device may remain online but completely unused for months **without expiring**.
+This is *not* tool-activity-based renewal, an absolute 14-day grant, or a
+browser Profile's physical device identity.
 
-**ON and genuinely signed-WSS online:** no idle countdown, regardless of
-how long since an actual remote tool was used. **Owner OFF or ON but offline:**
-start an idle countdown, and before expiry a valid owner restart or legitimate
-automatic ON reconnect may recover. After expiry, deny new authorization and
-release the grant; never silently re-pair. Existing fixed, nonrenewable
-24-hour temporary mode is untouched.
+One shared RCA / Browser rule: **ON + freshly authenticated ONLINE = no
+countdown**. Each authentic ONLINE -> OFFLINE transition starts **a new full
+idle period** from the most recent trustworthy **server-observed** online
+instant; valid automatic reconnection **before expiry** cancels that offline
+deadline and restores online hold. A later true disconnection gets its own
+full period. A deliberate local owner OFF has a **sticky, nonrenewable Stop
+deadline**; auto-reconnect, heartbeat, MCP calls, repeated Stop and stale
+messages cannot refresh it. Browser uses its Chrome/Edge Extension/Access
+flow; RCA uses its own Agent identity and local service manager. **Share the
+policy, not the Worker, database, credentials or client runtime.**
 
-**Default idle period = 14 days**, optional reviewed GitHub Actions Environment Variable
-`RCA_PERMANENT_IDLE_DAYS` (1–90 integer days); absent/empty means 14. Invalid
-nonempty values fail release checks and runtime authorization closed. A release
-change affects future newly started deadlines only, not existing persisted
-absolute deadlines. RCA temporary grants retain their independent, fixed,
-nonrenewable **24 hours**.
+## Grant states and transitions
 
-## Shared Browser / RCA online-reset contract — agreed
+| Event / device state | Permanent RCA authorization |
+| --- | --- |
+| Newly approved and genuinely signed ONLINE | Owner ON, **no deadline** |
+| ON, authenticated online for weeks with no tool calls | **No deadline**, continues occupying one active slot |
+| ON -> disconnected, sleep, crash, network loss, stale authenticated liveness | Start one **full configured idle period** from last trusted server online observation; device is unusable while offline |
+| ON automatically reconnects with valid signed proof **before deadline** | Check expiry **first**, then clear offline deadline and restore online hold; next disconnect begins new full period |
+| Owner deliberately stops the managed Agent | Persist protected local OFF intent **before service shutdown**; cloud Stop starts a single deadline on verified transition and blocks new remote operations |
+| Local OFF while cloud is unavailable | Locally deny/reject auto-start immediately. Mark cloud Stop **unconfirmed**; when later reconciled, **never extend** an existing earlier offline deadline. Do not call the cloud state stopped until acknowledged |
+| Owner repeats Stop or retries delayed Stop | Idempotent; **never extend** the first known deadline |
+| Owner locally starts within a valid deadline | Process any pending Stop intent in order; verify current same-device signed proof and **explicit local Resume** before new ordinary tool session. No OTP or fresh pairing |
+| Owner OFF and unexpected service auto-start/reconnect | Remain OFF; unsigned/stale/automatic socket cannot Resume or clear deadline |
+| Deadline reached (offline or OFF) | Server denies old key/ID on **all new admissions**; lazy delete frees active slot; fresh explicit owner-approved pairing required |
+| Owner explicitly Revoke | Immediate final denial on verified server commit, independent of idle countdown |
+| Temporary or Workflow Session grant | **Unchanged**; temporary remains fixed, nonrenewable **24 hours** and Workflow Session retains its own immutable run-bound rules |
 
-| Event | Permanent RCA | Browser remembered Profile |
-| --- | --- | --- |
-| Owner ON and freshly, authentically ONLINE | Hold indefinitely, **no countdown** | Same |
-| Remains ONLINE for weeks without work | Stay paired; remote tool activity is irrelevant | Same |
-| ONLINE -> OFFLINE (not owner Stop) | Start **fresh full configured period** counted from last trustworthy server-observed online evidence; not from initial connection | Same |
-| Automatic authenticated reconnect before expiry while owner intent remains ON | Cancel offline countdown and restore indefinite ONLINE hold | Same |
-| A later fresh disconnection after a genuine online interval | Start a **new full configured period**; do not reuse the earlier shorter deadline | Same |
-| Owner explicit OFF | Keep first OFF deadline, repeated stop cannot extend; no automatic reconnect can remove it | Same |
-| Owner-confirmed OFF -> ON before expiry | Owner-controlled local start with signed fresh authorization before expiry clears it; no repeat OTP | Browser uses verified local owner activation through existing Access |
-| Expired / revoked | Old grant cannot be refreshed by being online; needs fresh pairing | Same |
-| Temporary | Fixed, nonrenewable 24 hours | Keep existing browser-session semantics, separate from remembered policy |
+A scheduled wake-up is not needed to *guarantee admission denial* at/after
+expiry: protected admission must always check server time. Storage may be
+cleaned lazily on subsequent access; an idle record need not physically
+disappear at exactly midnight. A previously admitted operation is **not**
+automatically undone or killed at grant expiry.
 
-**“Online reset” is not a rolling write on every heartbeat**: the server holds
-no deadline while fresh signed WSS connectivity is provable; on losing that
-proof, it starts a full-duration deadline anchored to the latest **trusted
-server-observed** online instant, with bounded checkpoint precision. Reconnect
-*after expiry* cannot reset. A stale open socket, unsigned heartbeat, an
-MCP tool request or a client timestamp cannot refresh the grant. The
-online-reset rule **never resets explicit OFF**. This is one shared logical
-model, **not** a shared RCA/Browser database or runtime service.
+## Duration and deployment configuration
 
-## First-round resolved decisions (2026-11-01)
+- Default **14 * 24 server hours**. Optional existing GitHub Actions
+  Environment **Variable** `RCA_PERMANENT_IDLE_DAYS` scoped to the existing
+  RCA Worker release; unset/empty = 14; valid nonempty decimal integer
+  **1–90**, no whitespace/sign/decimal. Invalid nonempty value fails existing
+  release preflight and Worker policy **closed**, not widened.
+- Use existing selected Worker `release.yml` and reviewed
+  `scripts/worker-release-variables.mjs` allowlist, not another workflow,
+  remote variable reader, Portal form or dynamic settings store.
+  A GitHub Variable edit alone cannot change a running Worker; a separate
+  authorized production release is required.
+- Configure duration **when a new idle deadline starts**, or during initial
+  migration. Never rewrite or silently extend a persisted absolute deadline
+  merely because the variable changes.
+- Do not modify fixed temporary grant deadlines, Workflow Session grant
+  deadlines, pairing-code TTL, Agent protocol keys, or receipt retention.
 
-- **Q1=A:** Only an **explicit local owner-confirmed managed Stop** becomes
-  permanent OFF; crash, sleep and network loss are ON-but-offline. The local
-  stopped marker is retained on reboot and installer upgrades.
-- **Q2=A:** One-time migration: currently approved/verified ONLINE permanent
-  Agents retain online hold; legacy OFFLINE grants start a full 14-day (or
-  configured) server-time period at migration, never immediately expire from
-  stale last_connected_at. Do not restart an owner-stopped service during
-  migration; migrate stopped and uncertain states conservatively.
-- **Q3=A:** Validate the one optional release-time variable and use existing
-  official GitHub Actions release; no management UI or second workflow.
-- **Q4=A:** Extend current list_devices with true online/authorized/OFFLINE
-  states and absolute remaining deadline only when counting down. Hide
-  expired grants from default valid list; no second device-management UI.
+## Stop, local owner recovery and trust boundary
 
-## Second-round resolved decisions (2026-11-01)
+- OS-owner-issued local Stop is **not** simply WebSocket.close(): persist
+  a local private stop marker/intent before a controlled service stop, prevent
+  automatic service restarts while owner OFF, and reconcile against server
+  under a device-signed, replay-resistant sequence. Preserve marker across
+  installer upgrade/rollback. Crash/reboot/sleep **without** this marker
+  remains ON-but-offline. Do not guess an OFF from a legacy disconnected Agent.
+- Owner-controlled `rca start` (or an equivalent platform-native manager
+  command) is **intentional local action**, not a callable remote MCP Resume.
+  It is a **target behavior**, not a claim all installed Linux/Windows/macOS
+  CLIs already implement the contract. Before normal service dispatch,
+  a limited-purpose signed recovery path reconciles pending Stop and
+  atomically transitions a **still-valid** grant to ON, establishing a fresh
+  generation/epoch. Never temporarily admit ordinary tools to do so.
+- Reuse existing Ed25519 pairing key, signed challenge and device epoch,
+  rather than creating another OTP/login service. **A signed key by itself
+  proves the installed device identity, not cryptographic human presence**:
+  local owner intent relies on the existing protected OS account/CLI boundary.
+  This is the same owner-trust assumption as existing RCA pairing; no claim
+  that stolen key material cannot imitate an owner action.
+- Server acknowledgements matter: a local Stop while disconnected is only
+  **locally confirmed**, not cloud-confirmed. Owner Resume must validate the
+  *earliest* existing server deadline before clearing a Stop. Network failure
+  must never be interpreted as an accepted Resume or fresh 14-day lease.
 
-- **Q5=A — Owner OFF during a network outage.** A deliberate local
-  OS-owner Stop persists a private, install/upgrade-safe **stop intent**
-  before stopping the Agent. When the Worker cannot be reached, the local
-  service remains OFF and must not auto-reconnect or restart. On a subsequent
-  owner Start, the Agent must first reconcile the pending OFF intent through
-  a fresh signed authorization exchange; the server must apply the earlier
-  of its **already established offline deadline** and any newly acknowledged
-  Stop deadline. The client clock or delayed Stop receipt must **never**
-  move an earlier deadline forward. An offline Stop may remain *cloud-
-  unconfirmed*; local OFF is immediate, cloud revocation/expiry is only
-  promised after server-side validation. Don't claim full cleanup when the
-  server was unreachable.
-- **Q6=A — Owner-controlled local recovery before expiry.** The existing
-  OS owner explicitly runs `rca start` (or an equivalent platform-native
-  service manager command), retains the device private key and proves the
-  same approved identity through existing fresh signed session challenge/
-  epoch. The Worker processes any pending signed Stop first, checks the
-  original deadline, then permits a distinct explicit Resume transition
-  and returns to ON/online hold. This is **not** a new pairing or a fresh
-  OTP; neither remote MCP tools nor ordinary Agent auto-reconnect may
-  clear OFF. Linux/Windows/macOS command support is part of the later
-  implementation, not a claim that every installed CLI already supports it.
-- **Q7=A — Expired local identity and receipts.** On expiry the old
-  device grant is denied, disconnected when feasible, and lazily removed
-  from the 64-slot active authorization registry. Preserve the old local
-  key, device ID and SQLite Operation Receipts, especially Unknown/unresolved
-  operation IDs. A new key and ID may replace the installed identity only
-  through the existing **explicit owner-approved fresh pairing** with
-  separately verified promotion; no background re-pair, deletion of old
-  evidence, or blind replay. The old key cannot authenticate after expiry.
-- **Q8=A — Legacy Agent compatibility.** Previously paired, genuinely
-  online older Agents keep normal behavior; pre-migration legacy offline
-  grants get the full one-time migration allowance. All permanent
-  devices remain subject to server-side *offline* expiry. Old versions
-  lacking explicit signed Stop/Resume support cannot claim or trigger
-  these new control transitions; don't infer deliberate OFF from a
-  disconnected legacy socket. Enable explicit OFF/Resume only with a
-  verified compatible local Agent version. No forced or implicit upgrade
-  of paired Windows/Linux hosts or unshipped macOS candidates.
+## Trusted ONLINE observation and expiry admission (Q9=A)
 
-**Sequence rule:** admission for a newly signed reconnect must check
-existing durable expiry **before** recognizing authenticated online;
-out-of-order Stop/Resume/reconnect must not clear a prior owner OFF. Server
-authorization loss means no new operations even when old local receipts
-still show admitted or Unknown work.
+1. Existing Agent sends a signed-session **authorization probe every 15
+   minutes**; server currently uses a **16-minute** recently-probed window to
+   display online status. Reuse this channel, session generation/epoch,
+   server time and DO Hibernation attachments. Do **not** introduce high-rate
+   heartbeat, per-message durable writes, another timer or Cron.
+2. **Critical source boundary:** current `handleIdleSocketMessage` updates
+   `last_auth_check_at` in the socket attachment **before** checking the
+   approved device and current epoch. That timestamp is a **rate limiter**,
+   *not* trusted online proof. Introduce/derive a separate trusted
+   `last_verified_online_at` fact only **after** server-side device and
+   epoch validation. Neither `last_connected_at`, WSS.OPEN alone,
+   client-provided time nor a transport ping is sufficient. Preserve the
+   existing precheck rate gate's security role.
+3. Persist a bounded, server-owned last-successful-online checkpoint at
+   the existing authorization-probe cadence as needed to survive DO
+   Hibernation/long-lived online sessions. At most one durable checkpoint
+   per successful 15-minute probe interval per permanent device; no write
+   on every socket frame. A short checkpoint granularity may make the
+   offline deadline up to one probe interval earlier than the physical
+   disconnection; this is accepted over high-frequency machinery.
+4. On authenticated owner-ON -> genuinely OFFLINE, including stale heartbeat
+   but WSS.OPEN, derive **once** `idle_expires_at = trusted_checkpoint +
+   configured_duration`. Subsequent list/dispatch requests never reset
+   it. Genuine, fresh authenticated reconnect **before** expiry may clear
+   it; a later disconnect gets a new full period. ONLINE has no active
+   deadline.
+5. At the first protected call after silent disconnection, calculate
+   expiry from durable trusted evidence and enforce **before** admitting a
+   fresh signed session or treating a stale socket as online. Missing
+   or corrupt trusted checkpoints cannot confer indefinite access; use
+   one-time migration evidence conservatively and fail closed if unknown.
+   Physical grant deletion is lazy; lack of cleanup is never permission.
+6. Reuse `deviceIsAuthorized` / `grantCurrent`, existing Owner DO
+   `listLiveGrants`, signed nonce/epoch checks, message verification
+   and read/mutation authorization. Connection display, grant validity
+   and operation completion remain distinct facts.
 
-## Verified existing code boundaries
+## Concurrent actions and old Agent compatibility (Q10=A)
 
-- Server module apps/remote-control-mcp-worker/src/v2-session.ts authorizes
-  every nonrevoked permanent grant indefinitely; temporary expires after
-  approved_at + 24h. listLiveGrants cleans expired records lazily.
-- Server holds per-socket signed session/epoch information and checks recent
-  authorization evidence (15-minute Agent probe, bounded online lease).
-  The persisted last_connected_at timestamp records connection metadata,
-  NOT the latest trusted activity on a long-lived WebSocket. Using it as
-  the last-online timestamp would prematurely expire healthy long sessions.
-- Server device revocation has no permanent tombstones; deletion invalidates
-  stale session nonce/epoch, and existing 64-slot capacity is bounded.
-- RCA has no common Browser-style ON/OFF toolbar. Linux systemd, Windows
-  user task and candidate macOS LaunchAgent have different local Stop modes.
-  Deliberate stop, sleep, crash and offline transport are different states.
-- Agent-local Ed25519 identity and SQLite operation receipts are separate from
-  server approval. Unknown operations cannot be replayed on expiry/re-pair.
+- **Priority:** confirmed Revoke or elapsed expiry overrides all; owner
+  Stop overrides auto-reconnect; only a valid **later local owner Resume**
+  may clear a still-valid Stop. Use existing signed epoch/revision plus
+  minimal monotonic intent fencing to reject late sockets, duplicate Stop,
+  delayed ACK and stale Resume (including Hibernation). Repeated Stop
+  must not extend a deadline; earlier offline deadline cannot be replaced
+  by a later Stop deadline.
+- **Already admitted effects:** no new unauthorized read/write/command
+  admission after expiry, but an already started operation is not undone
+  or necessarily terminated. Preserve local SQLite receipts, original
+  operation IDs and unresolved Unknown across Stop, expiry, upgrade and
+  re-pair. Keep explicit Revoke's existing best-effort owned-process
+  cleanup and truthful outcome distinctions.
+- **First compatible migration:** perform one idempotent server-time
+  transition. An existing verified ON/online permanent grant holds without
+  a deadline; an existing OFFLINE permanent grant gets the configured
+  **full period from migration**, not historical `last_connected_at`.
+  Legacy WSS is considered online only after current identity/epoch
+  verification. Keep old revoked devices revoked and the old local
+  device IDs/receipts; do not start an owner-stopped service.
+- **Legacy agents:** normal signed legacy clients can continue online and
+  reconnect before their offline deadline. A legacy socket has **no
+  explicit Stop/Resume authority**: require an explicitly locally upgraded
+  compatible Agent and never infer owner OFF from disconnect. No forced
+  upgrade of Windows/Linux hosts or an unpublished macOS candidate.
+- **Rollback safety:** an old Worker that doesn't implement this policy
+  cannot be represented as enforcing it after rollback. Verify
+  authorization/data compatibility and no resurrection of expired keys
+  before choosing a formal rollback release; block unsafe rollback or
+  require separate owner evaluation, rather than quietly restoring
+  indefinite grants or building a second deploy path.
 
-## No expansion of infrastructure or authority
+## Discovery and operator controls (Q11=A)
 
-Reuse existing Owner DO/Worker, signed WSS and pair approvals, on-device
-service management and existing CI/release flows. No new Worker, database,
-periodic Cron, infinite revoked-key blacklist, automatic OTP, or automatic
-new identity. Expiration must deny new session challenge/WSS/read/mutation
-authorization even with a stale socket or late DO Alarm. Past admitted effects
-and durable local Unknown receipts must not be erased or silently replayed.
+Keep `list_devices` with stable full `device_id`, existing name,
+`status: online|offline`, and `grant_type`. Add only
+`owner_stopped` when verifiably known and `idle_expires_at` when counting
+down (plus bounded last-online evidence only if genuinely helpful). An old
+Agent's unobserved Stop intent is **unknown**, not assumed OFF or ON.
+Expired/revoked devices are omitted from active listings, never consume
+the 64 active slots, and remain distinguishable from simply offline
+devices. Display absolute server deadlines, not fabricated client clocks.
+No additional MCP tool, status enum, management UI or history index.
 
-No production release, credential mutation or installed device change is
-authorized by this design review. macOS candidate CI is not real owner-Mac
-evidence.
+## Minimal implementation and verification (Q12=A)
 
-## Third-round dependent Grill frontier (pending owner decisions)
+- **Change only affected seams:** RCA Worker/Owner DO's grant checks and
+  list, WSS signed checkpoint and reconnect, narrowly scoped local
+  stop-intent + manager command and the current official release
+  variable allowlist. Keep existing test/CI and GitHub Actions release
+  paths. No D1/KV/R2, separate Worker/DO, Cron, queue, process monitor,
+  separate config page, high-rate polling or new login provider.
+- **Targeted tests:** default/custom/invalid variable; ON continuously
+  beyond 14 days; rate-limit timestamp vs validated probe; stale WSS,
+  Hibernation, missing close callback, bad checkpoints, repeated
+  Stop and delayed ACK; offline local Stop and pre-/at-/post-deadline
+  owner Start; reconnect before expiration resets only **offline**
+  period; after expiration never resurrects; later valid disconnect
+  gets a fresh full interval. Verify signed epoch/revision ordering,
+  missing/old Client capabilities, initial migration, 64-slot cleanup,
+  admitted operation/Unknown continuity and unchanged temporary
+  24h/Workflow Session grant rules.
+- **Acceptance:** native Windows + Linux/WSL2 genuine paired-device
+  Stop, crash, sleep, reconnect, deadline and local owner Resume
+  separately from Worker/Agent CI. macOS only when its source candidate
+  and independently approved real Mac are available; hosted macOS
+  CI does not replace a real client. Preserve existing device ID until
+  explicitly re-paired; prove old credentials are denied at expiry.
+- **Release gating:** no auto-merge of design PR. Formal Agent Release,
+  production Worker change and changes on paired personal machines
+  require their own explicit authorization. Verify older Agent and
+  rollback compatibility before rollout; do not disconnect existing
+  healthy devices to force migration. Do not rerun unrelated broad CI.
 
-**Q9 — Trusted online checkpoint:** Reuse the existing signed 15-minute
-Agent authorization probe, persisted WSS attachment and bounded server-side
-online evidence; checkpoint durable last-online at a bounded frequency
-instead of per-packet writes. Network loss/stale heartbeat starts the full
-period at the latest *trusted* server observation, not last_connected_at.
-Accept a small observation granularity (recommended). Alternative: add
-high-frequency heartbeat and storage writes for near-second precision.
+## Grill completion
 
-**Q10 — Race priority and accepted work:** Server-side expiry and Revoke,
-then owner OFF, beat a late old socket, Stop retry, offline auto-reconnect,
-or stale Resume. A pre-expiry local owner Resume needs a fresh signed proof
-and epoch; all dispatches recheck authorization. Already admitted work and
-Unknown receipts remain truthful and unreplayed (recommended). Alternative:
-recover connectivity optimistically before durable OFF reconciliation.
-
-**Q11 — Client API and status compatibility:** Preserve existing
-list_devices `online|offline` status and stable full device_id; add
-minimal separate `owner_stopped` (only when known) and `idle_expires_at`
-server-owned fields, rather than change the status enum or add a new MCP
-tool, page or management service (recommended). Legacy unknown Stop
-intent must be displayed as unknown, not guessed.
-
-**Q12 — Release and owner acceptance gates:** Implement scoped Worker
-and Agent changes using existing CI and release mechanisms; test Worker
-expiry/Stop/reconnect/64-slot behavior plus compatible native Linux and
-Windows. Independently assess macOS only when its candidate and real
-owner Mac are available. Production release and real paired-device
-Stop/Resume/expiry acceptance require specific authorization; keep existing
-service available until then (recommended). Alternative: a single
-big-bang Worker/Agent cutover, which risks disconnecting live devices.
-
-Further questions are only necessary if these answers leave a materially
-different safety, compatibility or complexity decision. No unanswered
-option is silently selected.
+**Q1–Q12=A; final owner consensus.** Product rule, OFF/Resume authority,
+online evidence, replay/receipt boundaries, old-device migration,
+configuration, discovery and release gates are resolved; no further
+owner architectural question is required. This is a **design artifact**,
+not an RCA implementation, production acceptance or closure of the
+separate Browser #626 unfinished verification.
