@@ -662,7 +662,11 @@ Only a GET without caller credentials is attempted, with a 15-second timeout
 and strict 10 MiB streaming limit. File bytes and SHA-256 are kept in memory
 until the separately authorized single Provider invocation; signed download
 URLs and file IDs are never persisted or sent to that Provider. Azure Blob
-account ownership is **not attested** by the SAS or hostname. The real
-ChatGPT URL's exact endpoint/SAS form, live byte retrieval, public Litterbox
-upload and independent download/hash/TTL remain separate production E2E
-acceptance gates.
+account ownership is **not attested** by the SAS or hostname. A real
+ChatGPT-selected 379-byte synthetic TXT was successfully uploaded once and
+independently downloaded with matching SHA-256; the only later no-follow
+GET returned HTTP 404 after the selected 1h TTL (2026-11-01 06:33:19 UTC).
+This is an observed expiry, not proof of an exact deletion time or source
+provenance. The dedicated test Workflow is paused. See
+[the accepted file boundary](../../docs/spec35-litterbox-file-upload.md)
+and [Spec #35 evidence](https://github.com/lirtual/cloudflare-actions/issues/35).
