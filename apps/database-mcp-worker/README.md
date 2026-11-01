@@ -143,8 +143,11 @@ production status below remains authoritative until fresh release/readback evide
 
 ## Historical verified state (2026-10-30; superseded by 2026-10-31 acceptance above)
 
-- Worker version `b016569e-dbc8-4cc1-9aa6-fc91efae967f`
-  serves **100%**. Reviewed Hyperdrive bindings point to isolated
+- The final #344 [protected release #41007866068](https://github.com/lirtual/mcp-workers/actions/runs/41007866068)
+  published Worker version `43162fe2-449e-495a-8389-c0316854d76f`
+  at **100%** traffic (verified 2026-10-30). This is a dated acceptance
+  snapshot, **not** a live version indicator; consult current Cloudflare
+  deployments when operating or rolling back. Reviewed Hyperdrive bindings point to isolated
   PostgreSQL `eb4ccbd231ea44beabc72b3f2b483d69`
   (`verify-full`) and isolated MySQL
   `38bf39b569484dbb8a9fe1b24f0df854`
@@ -172,8 +175,22 @@ production status below remains authoritative until fresh release/readback evide
 - The existing strict TLS/config-drift test suite was added to
   mandatory existing CI via [PR #523](https://github.com/lirtual/mcp-workers/pull/523).
   Main [CI #41000595512](https://github.com/lirtual/mcp-workers/actions/runs/41000595512)
-  succeeded; there was no new Worker publication. An offline
-  regression is not a substitute for real Hyperdrive handshake failure.
+  succeeded; that regression-only change itself did not publish a Worker.
+  A later #528 release is recorded above. An offline regression is not
+  a substitute for real Hyperdrive handshake failure.
+
+**Read-query hardening in this source revision:** MySQL `query_read` and
+`explain_read` start a native
+`START TRANSACTION READ ONLY` before accepting user SQL, and roll back
+afterwards, for both Direct and Hyperdrive. This blocks normal persistent-table
+writes by SELECT-invoked stored routines even if a logical connection has
+write/DDL permissions. MySQL still allows changes to temporary tables within
+a read-only transaction; external-effect UDFs and database grants require
+separate least-privilege controls. Do not revoke existing business account
+grants without confirming the intended Safe Write and Safe Admin workloads.
+Direct TCP remains the explicitly accepted **plaintext** mode. Real deployed
+Hyperdrive compatibility must be established through a separate real
+production deployment and read-only acceptance before this change is released.
 
 The Owner explicitly closed #344 with the remaining evidence gaps documented
 as **Waived / Not performed**, not PASS. Do not retry a platform-blocked
