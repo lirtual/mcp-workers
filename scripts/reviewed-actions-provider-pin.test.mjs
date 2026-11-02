@@ -18,19 +18,25 @@ const settings={bindings:[
   {name:"CF_VERSION_METADATA",type:"version_metadata"}
 ]};
 const secrets=[{name:"WEIXIN_ENCRYPTION_KEY"},{name:"BARK_DEVICE_KEY"},{name:"BARK_ENCRYPTION_KEY"}];
-test("unified Actions production requires one active version and all original secrets",()=>{
+test("Bark-only Provider pin requires exact active version and Bark bindings, not historical Weixin Secrets",()=>{
   assert.equal(verifyProviderRelease(deployments,settings,secrets),version);
   for(const bad of [
     {deployments:[{versions:[{percentage:50,version_id:version}]}]},
     {deployments:[{versions:[{percentage:100,version_id:version},{percentage:0,version_id:old}]}]},
     {deployments:[{versions:[{percentage:100,version_id:"invalid"}]}]}
   ])assert.throws(()=>verifyProviderRelease(bad,settings,secrets),/blocked/);
+  // Historic Owner bindings are optional and must not authorize old sends.
+  const barkOnly={bindings:settings.bindings.filter(x=>
+    !["DB","ADMIN_HOST","WEIXIN_ENCRYPTION_KEY"].includes(x.name))};
+  const barkSecrets=secrets.filter(x=>x.name!=="WEIXIN_ENCRYPTION_KEY");
+  assert.equal(verifyProviderRelease(deployments,barkOnly,barkSecrets),version);
   for(const altered of [
-    {bindings:settings.bindings.filter(x=>x.name!=="DB")},
-    {bindings:settings.bindings.filter(x=>x.name!=="WEIXIN_ENCRYPTION_KEY")},
-    {bindings:settings.bindings.filter(x=>x.name!=="CF_VERSION_METADATA")},
-    {bindings:[...settings.bindings,{name:"MCP_ACCESS_TOKEN",type:"secret_text"}]},
-    {bindings:settings.bindings.map(x=>x.name==="ADMIN_HOST"?{...x,text:"other.example"}:x)},
+    {bindings:barkOnly.bindings.filter(x=>x.name!=="BARK_DEVICE_KEY")},
+    {bindings:barkOnly.bindings.filter(x=>x.name!=="BARK_ENCRYPTION_KEY")},
+    {bindings:barkOnly.bindings.filter(x=>x.name!=="CF_VERSION_METADATA")},
+    {bindings:[...barkOnly.bindings,{name:"MCP_ACCESS_TOKEN",type:"secret_text"}]},
+    {bindings:[...barkOnly.bindings,{name:"ACTIONS",type:"service"}]},
+    {bindings:[...barkOnly.bindings,barkOnly.bindings[0]]},
   ])assert.throws(()=>verifyProviderRelease(deployments,altered,secrets),/blocked/);
   assert.throws(()=>verifyProviderRelease(deployments,settings,
     [...secrets,{name:"MCP_ACCESS_TOKEN"}]),/blocked/);
