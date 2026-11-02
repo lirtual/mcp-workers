@@ -2,30 +2,44 @@
 
 Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cloudflare Workflows. One Worker exposes a unified set of capabilities; no separate execution stages, capability enable switches, scheduler, queue or credential issuer.
 
-## Spec #54 / T5 — Weixin Consumer retirement (source only)
+## Spec #54 · Current production checkpoint (2026-11-02)
 
-The **new source candidate**, not yet authorized/deployed to production, disallows
-all Weixin Cloudflare Actions and compatibility spellings at Draft compilation,
-Publish, child review, new Active admission, reactivation of an old Published
-Version, restored Native Run execution, and the Consumer RPC dispatcher.
-Discovery now advertises only Bark, Dub, EnvShare and Litterbox. The retired
-Weixin send implementations are no longer imported into the Consumer runtime.
-Existing Bark OpenList and Download Published Versions remain unchanged.
+**Consumer T5 and Provider T6 production acceptance: PASS; full Spec #54:
+NOT COMPLETE.** The deployed `workflow-mcp-worker` Version
+`9e1845a0-166a-4576-8168-78a19203aa52` and `cloudflare-actions`
+Bark-only Version `960ade68-149a-469c-a4fe-2c5e678df49c` each
+receive 100% of their traffic. The Consumer has exactly one
+`ACTIONS -> cloudflare-actions#ActionsEntrypoint` Service Binding pinned to
+this Provider. All six business Workflows are Active; the D1 Action Gate
+is `open`, the latest nonterminal Run count and six native nonterminal
+instance categories were zero. Three Bark-only Published Plans for Chrome,
+OpenList and Download were re-published with the new Provider pin during
+[T6's protected maintenance](https://github.com/lirtual/cloudflare-actions/issues/60#issuecomment-6576366208).
 
-Historical immutable Plans, Run IDs, Step outcomes and terminal idempotency
-keys remain readable. A historical terminal replay returns its original identity,
-status and start-state *without* re-reading a Provider receipt or restarting a
-Native Workflow; a nonterminal/unknown Weixin Run is not re-created, resent, or
-falsely marked successful/failed. A retained legacy manifest is a **historical
-digest fixture, not an executable or discoverable Action**. Old RPC, send
-examples and pre-T5 migration text later in this README describe history, not
-a supported new deployment workflow. No Tombstone store or D1 rewrite.
+The current Consumer blocks historical `weixin.send_text`,
+`weixin.notify_download` and compatibility spellings at Draft validation,
+Publish, admission and restored Native dispatch. Its discoverable catalog
+is Bark, Dub, EnvShare and Litterbox. Immutable historical Plan/Run/Step
+facts, original terminal idempotency and indeterminate outcomes remain
+read-only; an old authorization never becomes permission for another
+send. [T4](https://github.com/lirtual/cloudflare-actions/issues/58) verified
+OpenList/Download delivery to the handset, a clicked OpenList temporary
+link and physical Session cleanup **before** T6, not as a repeat post-T6 test.
 
-**Release boundary:** production still uses its independently released binary
-until an Owner-approved protected Consumer release. Full Weixin execution
-retirement requires the separate Provider, old-version rollback and upstream
-credential gates in T6/T7; T5 source/CI alone cannot prove production retirement.
-No production configuration, credential, data or backup deletion belongs to T5.
+**T7 physical revocation is still OPEN.** Historical Provider/Consumer
+versions remain visible to privileged recovery, and the former Weixin
+Secret, Owner domain and upstream authorization have not been independently
+invalidated. The former Provider's local unbind did not revoke the
+Tencent/iLink credential. No new message, old Native replay or direct
+privileged rollback may be used as an ad hoc test. The Provider's
+existing protected GitHub maintenance denies unsafe rollback, but a
+separate approval and upstream proof is required to retire all old
+execution rights. T3 Plan-data classification, T8 irreversible historical
+purge and T9 recovery-window verification remain separate.
+
+**Dated legacy Weixin examples and former Provider modes below are
+historical evidence only, not supported new Draft/Publish/Run actions.
+Production changes still require independent specific Owner approval.**
 
 ## Capabilities
 
