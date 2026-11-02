@@ -92,6 +92,38 @@ export function verifyPriorNativeProof(run, jobs) {
     "prior native proof not fully verified");
   return Object.freeze({[VERIFIED_PRIOR_COMPLETION]:true});
 }
+// Native 404 is never a completion receipt. The exact, independently
+// successful protected T5 Consumer release verified these FIVE additional
+// immutable historical instances while the Cloudflare native API retained
+// them. Recheck its unmodified run/job SHA and EVERY named proof step, then
+// recheck today's immutable D1, GitHub physical job and Provider receipt.
+const RECENT_PRIOR_RELEASE_ID=41429815494;
+const RECENT_PRIOR_JOB_ID=125225662362;
+const RECENT_PRIOR_SHA="21d6583fe2b43fbb58f93c68e44cc936fb02b0fb";
+const RECENT_PROOF_STEPS=Object.freeze({
+ seventh:"Verify seventh terminal download Run proof (read-only)",
+ ninth:"Verify ninth terminal Saga Run proof (read-only)",
+ tenth:"Verify tenth terminal Saga Run proof (read-only)",
+ eleventh:"Verify eleventh terminal generic Action proof (read-only)",
+ twelfth:"Verify twelfth terminal Artifact Task proof (read-only)"
+});
+export function verifyRecentPriorNativeProof(run,jobs,kind){
+ requireValid(Object.hasOwn(RECENT_PROOF_STEPS,kind),
+  "recent historical proof kind unreviewed");
+ requireValid(run?.id===RECENT_PRIOR_RELEASE_ID &&
+   run?.workflow_id===394912681 && run?.head_sha===RECENT_PRIOR_SHA &&
+   run?.event==="workflow_dispatch" && run?.status==="completed" &&
+   run?.conclusion==="success","recent prior release identity changed");
+ const job=jobs?.jobs?.find(x=>x.id===RECENT_PRIOR_JOB_ID);
+ requireValid(job?.name==="Manual selected Worker release" &&
+   job?.head_sha===RECENT_PRIOR_SHA && job?.status==="completed" &&
+   job?.conclusion==="success" && Object.values(RECENT_PROOF_STEPS).every(name=>
+    job.steps?.filter(x=>x.name===name&&x.status==="completed"&&
+      x.conclusion==="success").length===1),
+  "prior native verification did not complete every exact historical Run");
+ return Object.freeze({[VERIFIED_PRIOR_COMPLETION]:true});
+}
+
 const nativeCompleteProven = native =>
   (native?.status === "complete" && !!native?.end) ||
   native?.[VERIFIED_PRIOR_COMPLETION] === true;
@@ -440,7 +472,7 @@ export function verifySagaTerminalEvidence(d1,native,github,kind) {
     attempts[0].owner_run_attempt===1&&attempts[0].candidate_run_attempt===1,
     'Saga physical Attempt not cancelled');
   requireValid(invocations.length===0,'Saga Run unexpectedly sent a Cloudflare notification');
-  requireValid(native?.status==='complete'&&!!native?.end,'Saga native instance incomplete');
+  requireValid(nativeCompleteProven(native),'Saga native instance incomplete');
   requireValid(github?.id===config.job&&github?.run_attempt===1&&
     github?.head_branch==='v0.1.42-rc.8'&&
     github?.status==='completed'&&github?.conclusion==='cancelled',
@@ -478,7 +510,7 @@ export function verifyEleventhTerminalEvidence(d1,native,providerReceipts){
     invocations[0].binding_generation===1&&
     invocations[0].deployment_id===ELEVENTH_PROVIDER_VERSION,
     'eleventh Workflow Action reservation identity changed');
-  requireValid(native?.status==='complete'&&!!native.end,
+  requireValid(nativeCompleteProven(native),
     'eleventh native instance did not finish');
   requireValid(Array.isArray(providerReceipts)&&providerReceipts.length===0,
     'eleventh Provider receipt missing proof failed');
@@ -529,26 +561,28 @@ export function verifyTwelfthTerminalEvidence(d1,native,github){
     receipts[0].outcome==="succeeded"&&
     receipts[0].notification_delivered===1,
     "twelfth signed result receipt missing or changed");
-  // Cloudflare REST GET is already scoped to the exact instance ID; unlike
-  // Wrangler CLI, its result omits `id`. Reject a mismatched ID if present.
-  requireValid((native?.id===undefined||native?.id===TWELFTH_TERMINAL_RUN_ID)&&
-    native?.status==="complete"&&native?.success===true&&
-    native?.error===null&&!!native?.end&&
-    native?.step_count===3&&native?.steps?.length===3&&
-    native.steps[0].name==="github-action-dispatch-verify-1"&&
-    native.steps[0].success===true&&
-    native.steps[1].name==="github-action-check-verify-0-1"&&
-    native.steps[1].success===true&&native.steps[1].output==="held"&&
-    native.steps[2].name==="github-action-sleep-verify-0-1"&&
-    native.steps[2].finished===true,
-    "twelfth native instance/checkpoint history changed");
-  let dispatch;
-  try{dispatch=JSON.parse(native.steps[0].output);}catch{}
-  requireValid(dispatch?.attemptId===TWELFTH_ATTEMPT_ID&&
-    dispatch?.status==="confirmed"&&
-    dispatch?.runId===TWELFTH_GITHUB_RUN_ID&&
-    dispatch?.runAttempt===1,
-    "twelfth native dispatch ACK identity changed");
+  if(native?.[VERIFIED_PRIOR_COMPLETION]!==true){
+    // Cloudflare REST GET is already scoped to the exact instance ID; unlike
+    // Wrangler CLI, its result omits `id`. Reject a mismatched ID if present.
+    requireValid((native?.id===undefined||native?.id===TWELFTH_TERMINAL_RUN_ID)&&
+      nativeCompleteProven(native)&&native?.success===true&&
+      native?.error===null&&!!native?.end&&
+      native?.step_count===3&&native?.steps?.length===3&&
+      native.steps[0].name==="github-action-dispatch-verify-1"&&
+      native.steps[0].success===true&&
+      native.steps[1].name==="github-action-check-verify-0-1"&&
+      native.steps[1].success===true&&native.steps[1].output==="held"&&
+      native.steps[2].name==="github-action-sleep-verify-0-1"&&
+      native.steps[2].finished===true,
+      "twelfth native instance/checkpoint history changed");
+    let dispatch;
+    try{dispatch=JSON.parse(native.steps[0].output);}catch{}
+    requireValid(dispatch?.attemptId===TWELFTH_ATTEMPT_ID&&
+      dispatch?.status==="confirmed"&&
+      dispatch?.runId===TWELFTH_GITHUB_RUN_ID&&
+      dispatch?.runAttempt===1,
+      "twelfth native dispatch ACK identity changed");
+  }
   requireValid(github?.id===TWELFTH_GITHUB_RUN_ID&&
     github?.repository?.id===TWELFTH_REPOSITORY_ID&&
     github?.workflow_id===TWELFTH_WORKFLOW_GITHUB_ID&&
@@ -602,14 +636,17 @@ async function main() {
       "native Cloudflare instance readback unavailable");
     native = cf.result;
   } else if (cfResponse.status === 404) {
-    requireValid(!seventh&&!ninth&&!tenth&&!eleventh&&!twelfth,"recent native instance must be independently live-proven");
-    // A 404 alone is never proof. Pin prior successful checks for all six
-    // precise instances, and still check today's D1/GitHub terminal state.
+    // Missing native inventory is not proof. Pin the exact protected release
+    // that had already verified this instance while its record was available.
     requireValid(process.env.GITHUB_TOKEN,
       "prior native proof GitHub read token missing");
-    const base = "https://api.github.com/repos/lirtual/mcp-workers/actions/runs/"+PRIOR_RELEASE_ID;
-    native = verifyPriorNativeProof(await get(base,process.env.GITHUB_TOKEN),
-      await get(base+"/jobs?per_page=100",process.env.GITHUB_TOKEN));
+    const recent=seventh||ninth||tenth||eleventh||twelfth;
+    const base = "https://api.github.com/repos/lirtual/mcp-workers/actions/runs/"+
+      (recent?RECENT_PRIOR_RELEASE_ID:PRIOR_RELEASE_ID);
+    const run=await get(base,process.env.GITHUB_TOKEN);
+    const jobs=await get(base+"/jobs?per_page=100",process.env.GITHUB_TOKEN);
+    native=recent?verifyRecentPriorNativeProof(run,jobs,kind):
+      verifyPriorNativeProof(run,jobs);
     console.log("Historical native instance expired; exact prior release proof verified");
   } else {
     requireValid(false,"independent native state unavailable (HTTP "+cfResponse.status+")");

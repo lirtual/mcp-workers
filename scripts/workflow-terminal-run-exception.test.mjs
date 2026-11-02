@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {readFileSync} from "node:fs";
-import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifySeventhTerminalEvidence, verifyPriorNativeProof, HISTORICAL_GITHUB_RUNS_API, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, SEVENTH_TASK_GITHUB_RUN_ID } from "./workflow-terminal-run-exception.mjs";
+import { verifyTerminalRunEvidence, verifySecondTerminalEvidence, verifyThirdTerminalEvidence, verifyFourthTerminalEvidence, verifyFifthTerminalEvidence, verifySixthTerminalEvidence, verifySeventhTerminalEvidence, verifyPriorNativeProof, verifyRecentPriorNativeProof, HISTORICAL_GITHUB_RUNS_API, TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, SEVENTH_TASK_GITHUB_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 
 test('read renamed GitHub repository but retain immutable pre-rename D1 evidence',()=>{
   assert.equal(HISTORICAL_GITHUB_RUNS_API,
@@ -551,4 +551,38 @@ test("twelfth exact GitHub Artifact Task: native/D1/GitHub proof, fail-closed re
  const unverified=execFileSync(process.execPath,args,{encoding:"utf8",
   env:{...process.env,WORKFLOW_TWELFTH_TERMINAL_RUN_ID:"not-reviewed"}});
  assert.ok(!unverified.includes(id));
+});
+
+test("T6: pruned recent native proofs require exact prior successful release and ALL five checked terminal Steps",()=>{
+ const sha="21d6583fe2b43fbb58f93c68e44cc936fb02b0fb";
+ const run={id:41429815494,workflow_id:394912681,head_sha:sha,
+  event:"workflow_dispatch",status:"completed",conclusion:"success"};
+ const names=[
+  "Verify seventh terminal download Run proof (read-only)",
+  "Verify ninth terminal Saga Run proof (read-only)",
+  "Verify tenth terminal Saga Run proof (read-only)",
+  "Verify eleventh terminal generic Action proof (read-only)",
+  "Verify twelfth terminal Artifact Task proof (read-only)"
+ ];
+ const jobs={jobs:[{id:125225662362,name:"Manual selected Worker release",
+  head_sha:sha,status:"completed",conclusion:"success",
+  steps:names.map(name=>({name,status:"completed",conclusion:"success"}))}]};
+ for(const kind of ["seventh","ninth","tenth","eleventh","twelfth"]){
+  const proof=verifyRecentPriorNativeProof(run,jobs,kind);
+  assert.equal(Object.keys(proof).length,0,"prior proof contains only an unforgeable private marker");
+ }
+ for(const patch of [{id:14},{workflow_id:1},{head_sha:"0".repeat(40)},
+  {event:"push"},{status:"in_progress"},{conclusion:"failure"}])
+  assert.throws(()=>verifyRecentPriorNativeProof({...run,...patch},jobs,"seventh"),/blocked/);
+ for(const patch of [{id:1},{head_sha:"0".repeat(40)},{status:"queued"},
+  {conclusion:"failure"},{name:"other"}]){
+  const bad=structuredClone(jobs);Object.assign(bad.jobs[0],patch);
+  assert.throws(()=>verifyRecentPriorNativeProof(run,bad,"twelfth"),/blocked/);
+ }
+ for(let i=0;i<names.length;i++){
+  const bad=structuredClone(jobs);bad.jobs[0].steps[i].conclusion="skipped";
+  assert.throws(()=>verifyRecentPriorNativeProof(run,bad,"seventh"),/blocked/);
+ }
+ assert.throws(()=>verifyRecentPriorNativeProof(run,jobs,"arbitrary"),/blocked/);
+ assert.throws(()=>verifyRecentPriorNativeProof(run,{jobs:[]},"seventh"),/blocked/);
 });
