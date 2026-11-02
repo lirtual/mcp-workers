@@ -564,12 +564,29 @@ test('macOS synthetic release pin requires two native archives and separately pi
   assert.match(shell,/Owner selection cancelled/);
   assert.match(shell,/Unsupported installer action/);
   assert.match(shell,/1\) \[ "\$1" = "--upgrade" \]/);
-  assert.match(shell,/if \[ "\$mode" != upgrade \]; then/);
+  assert.match(shell,/if \[ "\$mode" != upgrade \] && \[ "\$mode" != remote-upgrade \]; then/);
   assert.match(shell,/sh "\$source" "\$mode" --archive/);
   const rejected=spawnSync('sh',['-c',shell,'macos-script','--unexpected'],{encoding:'utf8'});
   assert.notEqual(rejected.status,0);
   assert.match(rejected.stderr,/Unsupported installer action/);
   assert.doesNotMatch(rejected.stdout,/Downloading pinned/);
+  const forbidden=spawnSync('sh',['-c',shell,'macos-script','--remote-upgrade'],{encoding:'utf8'});
+  assert.notEqual(forbidden.status,0);
+  assert.match(forbidden.stderr,/Unsupported installer action/);
+  assert.doesNotMatch(shell,/mode=remote-upgrade/);
+  const remoteShell=renderAgentInstallMacShell(origin,{
+    ...pin,remoteUpgradeMode:'detached-launchd-v1',
+  });
+  assert.equal(spawnSync('sh',['-n'],{input:remoteShell,encoding:'utf8'}).status,0);
+  assert.match(remoteShell,/--remote-upgrade\) mode=remote-upgrade/);
+  assert.match(remoteShell,/if \[ "\$mode" = remote-upgrade \]; then/);
+  assert.match(remoteShell,/sh "\$source" "\$mode" --archive/);
+  const validButWrongPlatform=spawnSync('sh',['-c',remoteShell,'macos-script','--remote-upgrade'],{encoding:'utf8'});
+  assert.notEqual(validButWrongPlatform.status,0);
+  assert.match(validButWrongPlatform.stderr,/macOS only/);
+  assert.throws(()=>renderAgentInstallMacShell(origin,{
+    ...pin,remoteUpgradeMode:'any-process',
+  } as never),/Unapproved macOS release pin/);
   assert.ok(shell.indexOf("Release asset SHA-256 mismatch") <
     shell.indexOf("Installer source SHA-256 mismatch"));
   assert.ok(shell.indexOf("Installer source SHA-256 mismatch") <
