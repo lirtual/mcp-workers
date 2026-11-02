@@ -9,23 +9,36 @@ Status (2026-11-01): **production deployed; one real synthetic TXT E2E and obser
 - An independent Linux GET at approximately `2026-11-01T05:17:21Z` returned **HTTP 200**, **379 bytes**, SHA-256 `576d129577bf7b6819cf73d6581ac80f7b0e8b96c51f84ba1b8046febec64ddb`, matching the original fixture exactly. [Full real-upload evidence](https://github.com/lirtual/cloudflare-actions/issues/35#issuecomment-6553845927).
 - The **only post-expiry GET** of `https://litter.catbox.moe/6vzfhl.txt`, on the independently connected Linux Agent `c6d8ca67-a5e8-418a-9a19-7f14d7fdb876`, began `2026-11-01T06:33:19Z` and received **HTTP 404**, `text/html; charset=utf-8`, with **zero redirects followed**. The response body exceeded the intentionally bounded 65,536-byte download cap (`curl` exit 63), but the HTTP **404 status was received**; no second GET was attempted. The observation occurred approximately 76 minutes after the successful content readback and therefore after the selected 1h lifetime. **Expiry observation PASS** under the approved 404/410 criterion; exact deletion time is not established. The nonzero curl exit describes the bounded error-page body, not an HTTP 200 or network timeout.
 
-## Subsequent interface consolidation (code-only candidate, 2026-11-02)
+## Generic file input and diagnostic probe retirement (2026-11-02)
 
-The dedicated public upload tool is being replaced with optional top-level
-fileParams on workflow_run. The same published Litterbox Plan, bounded source,
-at-most-once Provider invocation and explicit Owner upload instruction remain.
-This is a new source candidate only: the historical real-file and expiry
-observations below still describe the previous production interface, not a
-verified deployment of the new one. Production release, Portal refresh and a
-fresh ChatGPT-selected file test require separate authorization.
+The public specialized upload tool was consolidated into the optional top-level
+`workflow_run.file` input by merged [PR #678](https://github.com/lirtual/mcp-workers/pull/678).
+The authorized protected Provider/Consumer release and Portal sync passed. A
+new 283-byte synthetic TXT was uploaded exactly once through `workflow_run.file`,
+returned a successful durable Run receipt and a public Litterbox URL, and was
+independently downloaded over HTTP 200 with its original contents and SHA-256
+verified. The test Plan was re-Published with its reviewed Provider grant and
+returned to paused; all six original business Workflows are active. The earlier
+379-byte upload and **observed** one-hour expiry remain historical acceptance
+evidence; no second expiry observation was required for the new test file.
+
+Once the real E2E passed, the temporary public
+`workflow_file_transport_probe` endpoint and its standalone source diagnostics
+were retired. Expected Portal inventory becomes **20 tools**; the optional
+`openai/fileParams` annotation on `workflow_run.file` is unchanged.
+This source-only retirement does not itself publish a new Worker or update
+the One-MCP Portal: both use separate, protected manual release steps.
 
 ## File input and provenance boundary
 
 The top-level `file` is OpenAI `fileParams` metadata: required `download_url` and **opaque, nonempty string** `file_id` (not necessarily prefixed `file_`), optional `file_name`/`mime_type`. The temporary signed URL is a user-selected **external read target**, not independent evidence that the source belongs to OpenAI.
 
-Only HTTPS `files.oaiusercontent.com` or the **narrowly bounded Azure Blob public endpoint** `https://<account>.blob.core.windows.net/<container>/<blob>` may be read. The Blob account name is 3–24 lowercase alphanumeric characters; the SAS URL must contain exactly one nonempty `sig`, `sv` and parseable `se`. If supplied, `sp` must be exactly `r` and `sr` one of `b`, `bv`, `bs`. Reject generic `*.windows.net`, other Azure services, generic HTTP(S) URLs, userinfo, nondefault ports, fragments, missing object paths, duplicate signature parameters, non-read permissions and unsafe URL normalization. A matching URL/SAS **does not cryptographically attest OpenAI or Azure account ownership**. The read-only probe reports `origin_family:azure_blob_external`, `provenance_verified:false`, and does not disclose the signed URL, account, SAS, filename or ID.
+Only HTTPS `files.oaiusercontent.com` or the **narrowly bounded Azure Blob public endpoint** `https://<account>.blob.core.windows.net/<container>/<blob>` may be read. The Blob account name is 3–24 lowercase alphanumeric characters; the SAS URL must contain exactly one nonempty `sig`, `sv` and parseable `se`. If supplied, `sp` must be exactly `r` and `sr` one of `b`, `bv`, `bs`. Reject generic `*.windows.net`, other Azure services, generic HTTP(S) URLs, userinfo, nondefault ports, fragments, missing object paths, duplicate signature parameters, non-read permissions and unsafe URL normalization. A matching URL/SAS **does not cryptographically attest OpenAI or Azure
+account ownership**. The retired diagnostic probe is not required to enforce
+the strict source allowlist: the actual file upload path retains that
+independent validation and never reflects signed URLs, IDs or SAS tokens.
 
-The actual file GET uses `credentials:'omit'`, `redirect:'manual'`, a 15-second timeout and a strict **1 byte–10 MiB** streaming bound. Bytes are held ephemerally in memory, hashed with SHA-256 and sent over the existing private Service Binding; neither file content nor the signed download URL or `file_id` is stored in D1, returned by the probe or sent to the Provider. Public Litterbox receives the explicitly authorized file **in plaintext**; its public result URL may be stored.
+The actual file GET uses `credentials:'omit'`, `redirect:'manual'`, a 15-second timeout and a strict **1 byte–10 MiB** streaming bound. Bytes are held ephemerally in memory, hashed with SHA-256 and sent over the existing private Service Binding; neither file content nor the signed download URL or `file_id` is stored in D1 or sent to the Provider. Public Litterbox receives the explicitly authorized file **in plaintext**; its public result URL may be stored.
 
 ## Single-use authorization and durable dispatch
 

@@ -4,16 +4,14 @@ import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { workflowCapabilities } from './capabilities.ts';
 import { WorkflowService, StateError, cleanError } from './store.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
-import {approvedAttachmentUrl,classifyAttachmentSource,attachmentOriginSuffixHint} from './litterbox-file-source.ts';
 import {getSessionRuntimeData} from './session-runtime-data.ts';
 import type { Env } from './store.ts';
 
 const id=z.string().uuid();
 const revision=z.number().int().positive();
-// ChatGPT fileParams requires a top-level file object, not a nested Workflow
-// Run input. This gate only validates the descriptor and NEVER dereferences
-// the URL, creates a Run, or stores or reflects any file metadata.
-const fileTransportProbeFile=z.object({
+// ChatGPT fileParams needs a top-level descriptor, not a nested Run input.
+// Shape validation only; the upload path enforces the source allowlist.
+const chatGptFileDescriptor=z.object({
  download_url:z.string().min(1).max(4096),
  file_id:z.string().min(1).max(512),
  mime_type:z.string().max(255).optional(),
@@ -48,17 +46,6 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_connection_revoke',{description:'Revoke portal (default) or http Connection. New calls are fenced atomically; existing physical effects may finish. Repeated revoke is idempotent.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionRevoke():service.portalConnectionRevoke()));
  server.registerTool('workflow_connection_enable',{description:'Re-enable portal (default) or http Connection for newly republished Plans. Previous generation stays fenced; no unknown effect replay.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionEnable():service.portalConnectionEnable()));
  server.registerTool('workflow_action_list',{description:'Discover verified Tag-pinned GitHub Task/Session Action candidates with ref, commitSha, contractDigest, inputs, explicit unknown business output (not_declared), and publishability. Untagged default-branch revisions are explicitly unavailable; Publish still requires separate approval.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
- server.registerTool('workflow_file_transport_probe',{
-   title:'Check a selected file parameter (no file access)',
-   description:'Read-only compatibility check for one ChatGPT-selected file. Returns a safe rejection category and, only for other-origin rejection, a coarse last-two-DNS-label hint (not the full hostname or registrable-domain proof). Never downloads, uploads, stores, or returns the URL, full hostname, ID or filename. This is NOT provenance attestation or upload authorization.',
-   inputSchema:z.object({file:fileTransportProbeFile}).strict(),
-   _meta:{'openai/fileParams':['file']},
-   annotations:{...read,destructiveHint:false},
- },async({file})=>success({file_parameter_received:true,bytes_read:0,
-   uploaded:false,persisted:false,provenance_verified:false,
-   file_source_host_allowed:approvedAttachmentUrl(file)!==null,
-   file_source_diagnostic:classifyAttachmentSource(file),
-   file_source_host_suffix_hint:attachmentOriginSuffixHint(file)}));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
@@ -75,7 +62,7 @@ export function buildMcpServer(env:Env){
    inputSchema:z.object({
      workflow_id:id,inputs:z.record(z.string(),z.unknown()).optional(),
      idempotency_key:z.string().min(1).max(128).optional(),
-     file:fileTransportProbeFile.optional(),
+     file:chatGptFileDescriptor.optional(),
    }).strict(),
    _meta:{'openai/fileParams':['file']},
    annotations:externalWrite,
