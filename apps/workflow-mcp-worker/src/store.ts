@@ -821,8 +821,8 @@ export class WorkflowService {
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
       if(original){
         if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
-        // A normal workflow_run cannot use a prior file upload Run's key
-        // to circumvent the selected-file tool gate, even on replay.
+        // A file-less workflow_run cannot use a prior file-backed Run key
+        // to bypass the selected-file admission gate, even on replay.
         const oldPlan=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
           .bind(original.version_id).first<{plan:string}>();
         if(!oldPlan)throw new StateError('published_version_missing');
@@ -875,7 +875,7 @@ export class WorkflowService {
 
     // Secret never reaches durable D1 inputs, Action outputs or ordinary result.
     // Litterbox bytes and signed file locator are never durable Run inputs.
-    // Only the selected-file MCP tool may start this manual-only Plan.
+    // Only workflow_run with an explicitly selected file may start this Plan.
     const isLitterbox=activePlan.steps.length===1&&
       activePlan.steps[0]?.uses==='action.run'&&
       activePlan.steps[0].with.provider==='litterbox'&&
