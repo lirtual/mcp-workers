@@ -25,12 +25,12 @@ test('unchanged Draft reuses only the same reviewed Provider version, and repins
    }catch(e){sqlite.exec('ROLLBACK');throw e;}
   }
  } as unknown as Env['DB'];
- const manifest=await cloudflareActionManifest('unified-generic');
+ const manifest=await cloudflareActionManifest('bark');
  const id='11111111-1111-4111-8111-111111111111';
- const definition={version:1,name:'generic repin',steps:[{
-  id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'weixin',
-   action:'weixin.send_text',contract_digest:manifest.contract_digest,
-   input:{text:'Safe Owner-only test'}}}]};
+ const definition={version:1,name:'Bark repin',steps:[{
+  id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'bark',
+   action:'bark.send_notification',contract_digest:manifest.contract_digest,
+   input:{notification:{body:'Safe Owner-only test'}}}}]};
  sqlite.prepare("INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at) VALUES(?,?,?,1,'draft',1,1)")
   .run(id,'generic repin',JSON.stringify(definition));
  const firstId='33333333-3333-4333-8333-333333333333';
@@ -40,8 +40,8 @@ test('unchanged Draft reuses only the same reviewed Provider version, and repins
  const env={DB:db,ACTIONS:provider,
   get ACTIONS_DEPLOYMENT_ID(){return active;}} as unknown as Env;
  const service=new WorkflowService(env);
- const grant=()=>[{executor:'cloudflare' as const,provider:'weixin',
-  action:'weixin.send_text',contract_digest:manifest.contract_digest,deployment_id:active}];
+ const grant=()=>[{executor:'cloudflare' as const,provider:'bark',
+  action:'bark.send_notification',contract_digest:manifest.contract_digest,deployment_id:active}];
  const publish=()=>service.publish(id,1,[],false,false,[],[],grant(),true);
  const first=await publish();
  assert.equal((await publish()).published_version_id,first.published_version_id);

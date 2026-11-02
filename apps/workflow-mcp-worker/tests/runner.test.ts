@@ -2758,3 +2758,30 @@ test('cancellation during first bounded MCP call never admits the next iteration
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM mcp_dispatch_fences WHERE run_id=?")
     .get(started.run_id)?.n,1);
 });
+
+test('T5: native restart with an old immutable Weixin Plan cannot execute or rewrite a Run',async t=>{
+ const {env,sqlite}=setup(t);
+ const wf='12345678-1234-4234-8234-123456789012';
+ const version='12345678-1234-4234-8234-123456789013';
+ const run='12345678-1234-4234-8234-123456789014';
+ const legacy={version:1,name:'Historical no-replay',steps:[{
+  id:'notify',uses:'action.run',needs:[],with:{executor:'cloudflare',
+   provider:'weixin',action:'weixin.notify_download',contract_digest:'a'.repeat(64),
+   input:{download_step_id:'historical'}}}],cloudflare_execution_approved:true};
+ const snapshot=JSON.stringify(legacy);
+ sqlite.prepare('INSERT INTO workflows(id,name,draft,draft_revision,state,active_version_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+  .run(wf,'Historical',snapshot,1,'active',version,1,1);
+ sqlite.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,?,?,?,1)')
+  .run(version,wf,'historical',snapshot);
+ sqlite.prepare('INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+  .run(run,wf,version,run,'historical','{}','started','queued',1,1);
+ let steps=0;
+ const native={do:async()=>{steps++;throw Error('native step must not execute');}} as unknown as WorkflowStep;
+ const event={payload:{run_id:run}} as WorkflowEvent<{run_id:string}>;
+ await assert.rejects(new WorkflowOrchestrator({} as ExecutionContext,env).run(event,native),
+  /weixin_action_retired/);
+ assert.equal(steps,0);
+ assert.equal(sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(run)?.outcome,'queued');
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM run_steps WHERE run_id=?').get(run)?.n,0);
+ assert.equal(sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version)?.plan,snapshot);
+});

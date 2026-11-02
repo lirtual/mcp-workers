@@ -14,7 +14,7 @@ import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
-import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
@@ -259,6 +259,8 @@ export class WorkflowService {
     try{childPlan=JSON.parse(row.plan) as Plan;}catch{throw new PlanError('invalid_child_publication','/steps');}
     if(!Array.isArray(childPlan.steps)||childPlan.steps.some(s=>s.uses==='flow.child'))
       throw new PlanError('child_nesting_unsupported','/steps');
+    if(hasRetiredWeixinAction(childPlan))
+      throw new PlanError('weixin_action_retired','/steps');
     // Until child cancellation/physical terminal propagation has independent
     // evidence, a child must not launch a GitHub Task or Session whose
     // physical lifecycle might outlast the child Workflow.
@@ -751,7 +753,22 @@ export class WorkflowService {
       physical_terminated:cancellation==='terminal_confirmed'};
   }
   async pause(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='paused',updated_at=? WHERE id=? AND state='active' AND deleted_at IS NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_active');return {workflow_id,state:'paused'};}
-  async resume(workflow_id:string){assertId(workflow_id);const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id IS NOT NULL AND deleted_at IS NULL").bind(now(),workflow_id).run();if(!x.meta.changes)throw new StateError('not_paused');return {workflow_id,state:'active'};}
+  async resume(workflow_id:string){
+    assertId(workflow_id);
+    const current=await this.db.prepare(
+      'SELECT state,active_version_id FROM workflows WHERE id=? AND deleted_at IS NULL')
+      .bind(workflow_id).first<{state:string;active_version_id:string|null}>();
+    if(!current||current.state!=='paused'||!current.active_version_id)throw new StateError('not_paused');
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+      .bind(current.active_version_id,workflow_id).first<{plan:string}>();
+    let plan:unknown;
+    try{plan=JSON.parse(version?.plan??'');}catch{throw new StateError('published_plan_invalid');}
+    if(hasRetiredWeixinAction(plan))throw new StateError('weixin_action_retired');
+    const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id=? AND deleted_at IS NULL")
+      .bind(now(),workflow_id,current.active_version_id).run();
+    if(!x.meta.changes)throw new StateError('not_paused');
+    return {workflow_id,state:'active'};
+  }
 
   /** Non-destructive tombstone: retain published Versions, Runs and receipts.
    * Atomic predicate fences admission/Session/parent references at commit. */
@@ -828,6 +845,16 @@ export class WorkflowService {
         if(!oldPlan)throw new StateError('published_version_missing');
         let parsed:Plan;
         try{parsed=JSON.parse(oldPlan.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+        if(hasRetiredWeixinAction(parsed)){
+          if(!['succeeded','failed','indeterminate','cancelled'].includes(original.outcome))
+            throw new StateError('weixin_action_retired');
+          // Terminal Weixin history is read-only, including its original ACK
+          // ambiguity. Neither native status reads nor receipt reads can amend it.
+          if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');
+          if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');
+          return {run_id:original.id,published_version_id:original.version_id,
+            status:original.outcome,start_state:original.start_state,idempotent_replay:true};
+        }
         if(parsed.steps?.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox'))
           throw new StateError('litterbox_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
@@ -842,6 +869,13 @@ export class WorkflowService {
     if((capacity?.count??0)>=8){
       const active=await this.db.prepare("SELECT * FROM runs WHERE start_state='started' AND outcome IN ('queued','running') ORDER BY created_at ASC LIMIT 8").all<RunRow>();
       for(const run of active.results){
+        const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(run.version_id).first<{plan:string}>();
+        let plan:unknown;
+        try{plan=JSON.parse(version?.plan??'');}catch{throw new StateError('published_plan_invalid');}
+        // Old unresolved Weixin instances keep their original uncertain slot;
+        // never reconcile them into a new physical execution or rewrite facts.
+        if(hasRetiredWeixinAction(plan))continue;
         const observed=await observeInstance(this.env.WORKFLOW,run.instance_id);
         if(observed.kind==='found')await this.settleNativeOutcome(run,observed.status);
       }
@@ -859,6 +893,7 @@ export class WorkflowService {
     try{activePlan=JSON.parse(published.plan) as Plan;}
     catch{throw new StateError('published_plan_invalid');}
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
+    if(hasRetiredWeixinAction(activePlan))throw new StateError('weixin_action_retired');
     // Reject invalid/unapproved runtime overrides before reserving a Run.
     // A legacy literal Session Plan remains immutable and must not pretend
     // that a supplied duration was honored.
@@ -931,6 +966,18 @@ export class WorkflowService {
   }
   private async reconcileStart(row:RunRow){
     if(row.parent_run_id)throw new StateError('child_start_requires_parent');
+    // A stale start-unknown Weixin Run must not be re-created, even with its
+    // original instance ID. Leave the original unknown reservation untouched.
+    if(!['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)){
+      const v=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+        .bind(row.version_id).first<{plan:string}>();
+      let plan:unknown;
+      try{plan=JSON.parse(v?.plan??'');}catch{throw new StateError('published_plan_invalid');}
+      if(hasRetiredWeixinAction(plan))return {run_id:row.id,
+        published_version_id:row.version_id,
+        status:row.start_state==='started'?row.outcome:'start_unknown',
+        start_state:row.start_state,idempotent_replay:true};
+    }
     const started=()=>({run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:'started',idempotent_replay:true});
     if(row.start_state==='started')return started();
     // D1 business terminal state is authoritative. An existing instance can
@@ -994,12 +1041,20 @@ export class WorkflowService {
   async status(run_id:string){
     assertId(run_id);let row=await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>();
     if(!row)throw new StateError('run_not_found');
-    if(row.start_state==='reserved'||row.start_state==='start_unknown'){
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .bind(row.version_id).first<{plan:string}>();
+    if(!version)throw new StateError('version_missing');
+    let publishedPlan:Plan;
+    try{publishedPlan=JSON.parse(version.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+    const legacy=hasRetiredWeixinAction(publishedPlan);
+    // Historical snapshots are readable without re-creating unknown native
+    // instances or rewriting original Run/Step outcome facts.
+    if(!legacy&&(row.start_state==='reserved'||row.start_state==='start_unknown')){
       if(!row.parent_run_id)await this.reconcileStart(row);
       row=(await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>())!;
     }
     let native='unknown';
-    if(row.start_state==='started' && ['queued','running'].includes(row.outcome)){
+    if(!legacy&&row.start_state==='started' && ['queued','running'].includes(row.outcome)){
       const observed=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observed.kind==='found'){
         native=observed.status;
@@ -1007,11 +1062,8 @@ export class WorkflowService {
       }
     }
     const stored=(await this.db.prepare('SELECT step_id,status,error_code FROM run_steps WHERE run_id=? ORDER BY step_id').bind(run_id).all<{step_id:string;status:string;error_code:string|null}>()).results;
-    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
-    if(!version)throw new StateError('version_missing');
     const terminal=['succeeded','failed','indeterminate','cancelled'].includes(row.outcome)||native==='complete';
     const byId=new Map(stored.map(s=>[s.step_id,s]));
-    const publishedPlan=JSON.parse(version.plan) as Plan;
     const dynamicIds=new Set(publishedPlan.steps.flatMap(s=>{
       if(s.uses!=='flow.foreach')return [];
       const templates=(Array.isArray(s.with.templates)?s.with.templates:[s.with.template]) as

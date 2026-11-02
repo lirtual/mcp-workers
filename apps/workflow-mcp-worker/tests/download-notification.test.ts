@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
 import {compilePlan} from '../src/plan.ts';
 import {runBarkAction} from '../src/bark-action-executor.ts';
-import {DOWNLOAD_COMPLETED_TEXT,runDownloadNotification} from '../src/download-notification-executor.ts';
+import {DOWNLOAD_COMPLETED_TEXT} from '../src/download-notification-executor.ts';
 import type {Plan,Step} from '../src/plan.ts';
 import type {Env} from '../src/store.ts';
 
@@ -85,48 +85,10 @@ async function fixture(t:test.TestContext){
  const env={DB:{prepare},ACTIONS:provider,
   ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
  const ctx={inputs:{},steps:{[sourceId]:{status:'succeeded'}}};
- const call=()=>runDownloadNotification(env,plan,notify,runId,ctx);
+ const call=()=>runBarkAction(env,plan,notify,runId,ctx);
  return {sql,plan,notify,env,ctx,call,sends:()=>sends,receipts:()=>receipts,
   fail:()=>{failSend=true},setStatus:(v:string)=>{sendStatus=v}};
 }
-test('OIDC claimed and physically confirmed Task permits exactly one Owner send',async t=>{
- const f=await fixture(t);
- assert.equal((await f.call()).status,'succeeded');
- assert.equal((await f.call()).status,'indeterminate'); // missing read-only receipt is unknown
- assert.equal(f.sends(),1);assert.equal(f.receipts(),1);
- assert.equal(f.sql.prepare('SELECT source_attempt_id,input_digest FROM cloudflare_action_invocations').get()?.source_attempt_id,attempt);
- assert.equal(f.sql.prepare('SELECT input_digest FROM cloudflare_action_invocations').get()?.input_digest,inputDigest);
-});
-test('missing OIDC ownership, failed physical Task, and failed parent cannot trigger a send',async t=>{
- for(const query of [
-  "UPDATE step_attempts SET owner_run_id=NULL",
-  "UPDATE step_attempts SET state='failed'",
-  "UPDATE run_steps SET status='failed' WHERE step_id='download_task'",
-  "UPDATE run_steps SET status='indeterminate' WHERE step_id='download_task_0_submit_download'"
- ]){
-  const f=await fixture(t);f.sql.exec(query);
-  assert.equal((await f.call()).status,'failed');
-  assert.equal(f.sends(),0);
- }
-});
-test('run context, grant and cancellation independently deny notification',async t=>{
- const f=await fixture(t);
- f.ctx.steps[sourceId].status='failed';
- assert.equal((await f.call()).status,'failed');f.ctx.steps[sourceId].status='succeeded';
- f.plan.cloudflare_action_approvals=[];
- assert.equal((await f.call()).status,'failed');
- f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'weixin',
-  action:'weixin.notify_download',contract_digest:(await cloudflareActionManifest('download')).contract_digest,deployment_id:version}];
- f.sql.prepare('INSERT INTO cloudflare_action_cancellations(run_id,step_id,created_at) VALUES(?,?,1)').run(runId,'notify');
- assert.equal((await f.call()).status,'failed');assert.equal(f.sends(),0);
-});
-test('ambiguous send response is not replayed',async t=>{
- const f=await fixture(t);f.fail();
- assert.equal((await f.call()).status,'indeterminate');
- assert.equal((await f.call()).status,'indeterminate');
- assert.equal(f.sends(),1);assert.equal(f.receipts(),2);
-});
-
 test('Download Bark must reference the reviewed single Task and fixed verified completion body',async t=>{
  const f=await fixture(t);
  const manifest=await cloudflareActionManifest('bark');

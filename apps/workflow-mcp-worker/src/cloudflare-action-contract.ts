@@ -5,6 +5,20 @@ export const TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS = new Set([
  '.github/workflows/openlist.yml',
  '.github/workflows/chrome.yml',
 ]);
+// Historical identity predicate: preserve immutable Plan/Run bytes, but never
+// allow an old or compatibility-spelled Weixin action to gain new execution.
+export function isRetiredWeixinAction(step:unknown):boolean{
+ if(!step||typeof step!=='object')return false;
+ const s=step as {uses?:unknown;with?:{executor?:unknown;provider?:unknown;action?:unknown}};
+ if(s.uses!=='action.run'||!s.with||s.with.executor!=='cloudflare')return false;
+ const p=s.with.provider,a=s.with.action;
+ return typeof p==='string'&&p.toLowerCase()==='weixin'||
+   typeof a==='string'&&/^weixin(?:[._-]|$)/i.test(a);
+}
+export function hasRetiredWeixinAction(plan:unknown):boolean{
+ if(!plan||typeof plan!=='object'||!Array.isArray((plan as {steps?:unknown}).steps))return true;
+ return (plan as {steps:unknown[]}).steps.some(isRetiredWeixinAction);
+}
 // Legacy alias for immutable Weixin contracts.
 export const TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS = TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS;
 export const WEIXIN_CLOUDFLARE_ACTION=Object.freeze({
