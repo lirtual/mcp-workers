@@ -5,7 +5,7 @@ import {runGenericTextNotification} from './generic-weixin-executor.ts';
 import {runBarkAction} from './bark-action-executor.ts';
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
-import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {cloudflareActionManifest,TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 
 type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:{status:string}};
@@ -89,10 +89,13 @@ export async function runPublishedCloudflareAction(
  if(!provider||!version)return denied('cloudflare_provider_not_configured');
  const sourceId=(action.with.input as {session_step_id?:unknown}|undefined)?.session_step_id;
  const source=plan.steps.find(x=>x.id===sourceId);
- const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+ const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown}|undefined;
+ const trustedWorkflowRef=typeof pinned?.workflowPath==='string'&&
+   TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath)&&typeof pinned.ref==='string'
+   ?'lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref:undefined;
  if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
    source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
-   pinned.workflowPath!=='.github/workflows/openlist.yml'||pinned.type!=='session')
+   pinned.type!=='session'||!trustedWorkflowRef)
   return denied('untrusted_session_reference');
   // Independently identify the live bound Worker before first dispatch.
   // The Provider repeats this pin check inside sendText against its own
@@ -115,7 +118,7 @@ export async function runPublishedCloudflareAction(
   if(!current||typeof current.session_url!=='string'||
     !URL_PATTERN.test(current.session_url)||current.session_url.length>180||
     current.repository!=='lirtual/github-actions'||
-    !current.workflow_ref.startsWith('lirtual/github-actions/.github/workflows/openlist.yml@'))
+    current.workflow_ref!==trustedWorkflowRef)
    return denied('session_ready_not_trusted');
   // Cloudflare Quick Tunnel's signed Ready callback uses a bare root origin
   // without a slash. Normalize only that equivalent form for Provider digest
@@ -151,7 +154,7 @@ export async function runPublishedCloudflareAction(
        AND s.session_url=? AND a.attempt_id=? AND a.state='claimed'
        AND a.capability_id='github.action'
        AND a.repository='lirtual/github-actions'
-       AND instr(a.workflow_ref,'lirtual/github-actions/.github/workflows/openlist.yml@')=1
+       AND a.workflow_ref=?
        AND a.owner_run_id=a.candidate_run_id AND a.owner_run_attempt=a.candidate_run_attempt
        AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id))
    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
@@ -159,7 +162,7 @@ export async function runPublishedCloudflareAction(
       WHERE c.run_id=? AND c.step_id=?)`)
    .bind(runId,action.id,identity,current.attempt_id,inputDigest,binding.generation,
      manifest.contract_digest,version,Date.now(),runId,runId,sourceId,
-     current.session_url,current.attempt_id,runId,action.id).run();
+     current.session_url,current.attempt_id,trustedWorkflowRef,runId,action.id).run();
   if(admitted.meta.changes!==1){
     const raced=await existing();
     return raced?recover(env,raced):denied('cloudflare_dispatch_not_admitted');

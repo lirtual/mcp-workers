@@ -23,7 +23,7 @@ test('Cloudflare source must pin reviewed contract and the same-Run OpenList ses
   (p:any)=>{p.steps[1]!.with.input.session_step_id='arbitrary';},
   (p:any)=>{p.steps[1]!.with.provider='attacker';},
   (p:any)=>{p.steps[1]!.with.endpoint='https://attacker.example';},
-  (p:any)=>{p.steps[0]!.with.action.workflowPath='.github/workflows/chrome.yml';},
+  (p:any)=>{p.steps[0]!.with.action.workflowPath='.github/workflows/windows.yml';},
   (p:any)=>{p.steps[1]!.needs=[];},
  ]){const changed: any=structuredClone(plan);mutation(changed);await assert.rejects(compilePlan(changed));}
 });
@@ -99,4 +99,24 @@ test('existing verified download Task can notify through generic text without a 
  ]};
  assert.notEqual(generic.contract_digest,old.contract_digest);
  assert.equal((await compilePlan(p)).plan.steps[1]?.with.action,'weixin.send_text');
+});
+
+test('Chrome signed Session source is reviewed',async()=>{
+ const manifest=await cloudflareActionManifest('unified-generic');
+ const plan:any=structuredClone(source);
+ plan.steps[0].with.action.workflowPath='.github/workflows/chrome.yml';
+ plan.steps[1].with.input.text='Chrome Session Ready\n';
+ plan.steps[1].with.contract_digest=manifest.contract_digest;
+ assert.deepEqual((await compilePlan(plan)).plan.steps[1]?.needs,['openlist']);
+
+ for(const change of [
+  (p:any)=>{p.steps[0].with.action.workflowPath='.github/workflows/windows.yml';},
+  (p:any)=>{p.steps[0].with.action.repository='other/actions';},
+  (p:any)=>{p.steps[1].needs=[];},
+  (p:any)=>{p.steps[1].with.input.session_step_id='unknown_session';}
+ ]){
+  const candidate=structuredClone(plan);
+  change(candidate);
+  await assert.rejects(compilePlan(candidate));
+ }
 });
