@@ -806,13 +806,19 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         if(expanded.length!==1||o.triggers?.length||needs.length||s.if!==undefined)
           throw new PlanError('litterbox_manual_single_step_only',stepPath);
       }else if(manifest.provider==='bark'){
-        keys(input,['notification'],stepPath+'/with/input');
+        keys(input,['notification','session_step_id'],stepPath+'/with/input');
+        if(input.session_step_id!==undefined&&
+           (typeof input.session_step_id!=='string'||!SAFE_ID.test(input.session_step_id)))
+          throw new PlanError('invalid_trusted_session_reference',stepPath+'/with/input/session_step_id');
         const notification=object(input.notification,'invalid_bark_notification');
         const allowed=Object.keys(manifest.input_schema.properties);
         keys(notification,allowed,stepPath+'/with/input/notification');
         if(!Object.hasOwn(notification,'body'))throw new PlanError('missing_bark_body',stepPath+'/with/input/notification');
         if(typeof notification.body==='string'&&notification.body.length>2400)
           throw new PlanError('bark_body_too_large',stepPath+'/with/input/notification');
+        // Signed Ready is the sole source of the transient Chrome URL.
+        if(input.session_step_id!==undefined&&Object.hasOwn(notification,'url'))
+          throw new PlanError('untrusted_session_url',stepPath+'/with/input/notification/url');
       }else if(manifest.action==='weixin.notify_download'){
         keys(input,['download_step_id'],stepPath+'/with/input');
         if(typeof input.download_step_id!=='string'||!SAFE_ID.test(input.download_step_id))
@@ -892,6 +898,17 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
          action?.repository!=='lirtual/github-actions'||
          action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
         throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
+    }
+    if(s.uses==='action.run'&&s.with.provider==='bark'){
+      const source=(s.with.input as {session_step_id?:string}).session_step_id;
+      if(source!==undefined){
+        const upstream=steps.find(x=>x.id===source);
+        const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
+        if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
+           action?.repository!=='lirtual/github-actions'||
+           action?.workflowPath!=='.github/workflows/chrome.yml'||action?.type!=='session')
+          throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
+      }
     }
     if(s.uses==='action.run'&&s.with.action==='weixin.send_text'){
       // Provider URL and recipient never come from a Draft or ordinary Step output.

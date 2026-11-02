@@ -43,7 +43,7 @@ export async function runPublishedCloudflareAction(
 ):Promise<Result>{
  if(action.with.provider==='dub')return runDubAction(env,plan,action,runId,ctx);
  if(action.with.provider==='envshare')return runEnvshareAction(env,plan,action,runId,ctx);
- if(action.with.provider==='bark')return runBarkAction(env,plan,action,runId,ctx);
+ if(action.with.provider==='bark')return runBarkAction(env,plan,action,runId,ctx,inspect);
  if(action.with.action==='weixin.notify_download')
    return runDownloadNotification(env,plan,action,runId,ctx);
  const oldGeneric=await cloudflareActionManifest('generic');
