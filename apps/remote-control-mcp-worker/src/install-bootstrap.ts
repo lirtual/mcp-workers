@@ -122,16 +122,14 @@ export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
   assetSha256: "67913d0da1b7ae575f0d911f6c44133a1b891929a36e10b9770c414274214fbf",
 });
 
-/** Staged macOS distribution contract. No production macOS pin is assigned
- * until native host acceptance, immutable five-asset Release and owner approval.
- * Independently pin both archives and the exact owner-local installer source. */
+/** Reviewed macOS distribution contract. Pin native architectures and exact
+ * owner-local installer source separately from the trusted HTTPS Worker script. */
 export type MacInstallPin = Readonly<{
   tag: string; commit: string; arm64Sha256: string; x64Sha256: string;
   scriptSha256: string;
 }>;
-// PREPARED RELEASE PIN ONLY. Never merge this branch before the immutable
-// v0.1.49 Agent Release has been separately authorized, published and verified.
-// This addition does not change the reviewed Linux/Windows v0.1.48 pins.
+// Published immutable v0.1.49 Agent Release; Linux/Windows pins remain v0.1.48.
+// A local upgrade still requires an explicit --upgrade and owner confirmation.
 export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
   tag: "v0.1.49",
   commit: "fedf9a087499552ffdbdc3e3c909ea49179e3f46",
@@ -148,8 +146,8 @@ function validMacPin(pin: MacInstallPin): boolean {
 
 /** HTTPS Worker script is the bootstrap trust root. Pinned GitHub source and
  * Release bytes are separately verified before executing any downloaded file.
- * The pinned macos-local.sh must support both install and temporary actions
- * before publication. The public route stays 503 while the pin is absent. */
+ * The pinned macos-local.sh supports install, upgrade and temporary actions
+ * before execution. The public route stays 503 if the pin is absent. */
 export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): string {
   if (!validInstallerOrigin(origin) || !validMacPin(pin))
     throw new Error("Unapproved macOS release pin or origin");
@@ -157,7 +155,11 @@ export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): 
     "#!/bin/sh",
     "set -eu",
     "umask 077",
-    "[ \"$#\" -eq 0 ] || { echo 'Unexpected installer arguments' >&2; exit 1; }",
+    'case "$#" in',
+    '  0) mode= ;;',
+    '  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; }; mode=upgrade ;;',
+    '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
+    'esac',
     "[ \"$(uname -s)\" = Darwin ] || { echo 'macOS only' >&2; exit 1; }",
     "[ \"$(id -u)\" -ne 0 ] && [ -t 0 ] && [ -t 1 ] || { echo 'Ordinary interactive Terminal required' >&2; exit 1; }",
     "for tool in curl shasum tar mktemp uname id sw_vers awk; do command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing macOS installer tool' >&2; exit 1; }; done",
@@ -183,9 +185,11 @@ export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): 
     "script_url=https://raw.githubusercontent.com/lirtual/remote-control-agent/"+pin.commit+"/apps/remote-control-agent/scripts/macos-local.sh",
     "curl -fSs --proto '=https' --tlsv1.2 --max-redirs 0 --max-time 30 --max-filesize 30000 \"$script_url\" -o \"$source\"",
     "[ \"$(shasum -a 256 \"$source\" | awk '{print $1}')\" = '"+pin.scriptSha256+"' ] || { echo 'Installer source SHA-256 mismatch' >&2; exit 1; }",
-    "printf 'Install mode: [1] Permanent (login LaunchAgent), [2] Temporary (24h foreground): ' > /dev/tty",
-    "IFS= read -r choice < /dev/tty || { echo 'Owner selection cancelled' >&2; exit 1; }",
-    "case \"$choice\" in 1) mode=install ;; 2) mode=temporary ;; *) echo 'No mode selected' >&2; exit 1 ;; esac",
+    'if [ "$mode" != upgrade ]; then',
+    "  printf 'Install mode: [1] Permanent (login LaunchAgent), [2] Temporary (24h foreground): ' > /dev/tty",
+    "  IFS= read -r choice < /dev/tty || { echo 'Owner selection cancelled' >&2; exit 1; }",
+    '  case "$choice" in 1) mode=install ;; 2) mode=temporary ;; *) echo "No mode selected" >&2; exit 1 ;; esac',
+    'fi',
     "echo 'Verified immutable archive and exact installer source.'",
     "sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/' < /dev/tty",
     "",
