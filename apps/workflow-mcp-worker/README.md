@@ -648,8 +648,18 @@ Do not duplicate the provider's parser in Workflow MCP.
 
 ### ChatGPT-selected Litterbox files (Spec #35)
 
-The existing `workflow_litterbox_upload` tool requires a separate, approved
-single-file Published Workflow and a unique idempotency key. The fileParams
+The temporary public file transport diagnostic probe and legacy specialized
+upload tool were retired after the generic fileParams end-to-end acceptance.
+The expected public Workflow tool inventory is **20 tools**; selected files
+still enter exclusively through `workflow_run.file`. The retirement is a
+source change until separately approved Worker release and Portal sync.
+
+The `workflow_run` tool accepts an optional top-level `file` for a
+separately approved single-file Litterbox Published Workflow. That path
+requires a unique `idempotency_key`; optional retention is provided as
+`inputs:{time:'1h'}` (or 12h/24h/72h). When `file` is absent,
+ordinary Workflow Runs retain their asynchronous behavior. No other Plan
+may accept a file. The fileParams
 `download_url` is a temporary user-selected **external** input, not proof
 of OpenAI file ownership. The consumer accepts the existing exact
 `files.oaiusercontent.com` HTTPS origin and, as a narrow compatibility case,

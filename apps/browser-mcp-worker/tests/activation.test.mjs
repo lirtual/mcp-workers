@@ -13,7 +13,7 @@ function fixture(env={}){
   const storage={sql,getAlarm:async()=>nextAlarm,setAlarm:async deadline=>{nextAlarm=deadline;}};
   const owner=new BrowserOwner({storage,getWebSockets:()=>[]},env);
   const post=async(route,payload)=>{const r=await owner.fetch(new Request('https://owner.internal/'+route,{method:'POST',body:JSON.stringify(payload)}));return {status:r.status,...await r.json()};};
-  return {db,sql,storage,post,alarm:()=>owner.alarm(),getAlarm:()=>nextAlarm};
+  return {db,sql,storage,owner,post,alarm:()=>owner.alarm(),getAlarm:()=>nextAlarm};
 }
 async function begin(f,mode='permanent',prior={}){
   const attempt_id=crypto.randomUUID();const r=await f.post('activate-begin',{attempt_id,proof_hash:await hash(proof),mode,alias:'Chrome profile',...prior});assert.equal(r.status,200,JSON.stringify(r));return attempt_id;
@@ -350,4 +350,47 @@ test('disconnected permanent WSS uses trusted server observations, offline Stop 
   const remembered=row().idle_deadline;await f.post('local-stop',prior);
   assert.equal(row().idle_deadline,remembered,'Stop retry leaves persisted expiry unchanged');
  }finally{f.db.close();}
+});
+
+test('official extension rename reaches owner DO, persists alias, and preserves exact-key boundaries',async()=>{
+  const f=fixture();try {
+    const attempt=await begin(f);
+    assert.equal((await f.post('activate-authorize',{attempt_id:attempt})).status,200);
+    const paired=await f.post('activate-complete',{attempt_id:attempt,proof});
+    assert.equal(paired.status,200);
+    const env={BROWSER_OWNER:{idFromName:()=> 'owner-v1',get:()=>({fetch:(url,init)=>f.owner.fetch(new Request(url,init))})}};
+    const origin='chrome-extension://'+OFFICIAL_EXTENSION_ID;
+    const credentials={endpoint_id:paired.endpoint_id,credential:paired.credential};
+    const send=async(route,body,from=origin)=>{
+      const r=await worker.fetch(new Request('https://browser.example/extension/'+route,{
+        method:'POST',headers:{origin:from,'content-type':'application/json'},
+        body:JSON.stringify(body),
+      }),env);
+      const text=await r.text();return {status:r.status,headers:r.headers,data:text?JSON.parse(text):null};
+    };
+    // Options -> background -> extension /rename -> owner Durable Object
+    const newName='Work Chrome';
+    const renamed=await send('rename',{...credentials,alias:newName});
+    assert.equal(renamed.status,200,JSON.stringify(renamed.data));
+    assert.equal(renamed.data.alias,newName);
+    assert.equal(renamed.headers.get('access-control-allow-origin'),origin);
+    assert.equal((await send('state',credentials)).data.alias,newName);
+    assert.equal(f.sql.exec('SELECT alias FROM endpoints WHERE id=?',paired.endpoint_id).toArray()[0].alias,newName);
+
+    // Same authenticated identity may still update when OFF; not a re-pair.
+    assert.equal((await send('stop',credentials)).status,200);
+    assert.equal((await send('rename',{...credentials,alias:'Work Chrome OFF'})).status,200);
+    assert.equal((await send('state',credentials)).data.alias,'Work Chrome OFF');
+
+    // All other extension routes still require exact two-key bodies.
+    for(const route of ['state','stop','revoke','summary'])
+      assert.equal((await send(route,{...credentials,alias:'unwanted'})).status,400,route);
+    for(const malformed of [
+      {...credentials}, {...credentials,alias:'good',unexpected:true},
+      {...credentials,alias:null},{...credentials,alias:''},
+    ])assert.equal((await send('rename',malformed)).status,400,JSON.stringify(Object.keys(malformed)));
+    assert.equal((await send('rename',{...credentials,alias:'untrusted'},'https://evil.example')).status,403);
+    assert.equal((await send('rename',{...credentials,credential:'0'.repeat(64),alias:'attacker'})).status,401);
+    assert.equal((await send('state',credentials)).data.alias,'Work Chrome OFF');
+  }finally{f.db.close();}
 });

@@ -1,10 +1,13 @@
 const $=id=>document.getElementById(id);
+let aliasRevision=0,aliasDirty=false;
+$("alias").oninput=()=>{aliasRevision++;aliasDirty=true;};
 async function call(type,extra={}) {
   return new Promise((resolve,reject)=>chrome.runtime.sendMessage({type,...extra},response=>
     chrome.runtime.lastError?reject(Error(chrome.runtime.lastError.message)):
       !response?.ok?reject(Error(response?.error||"unavailable")):resolve(response.result)));
 }
 async function refresh() {
+  const startedAliasRevision=aliasRevision;
   try {
     const s=await call("status");
     const remote=s.cloud_state;
@@ -19,7 +22,8 @@ async function refresh() {
       remote?.browser_platform&&remote.browser_platform!=="other"?remote.browser_platform:null,
       s.endpoint_id&&name!==s.endpoint_id.slice(0,8)?"#"+s.endpoint_id.slice(0,8):null
     ].filter(Boolean).join(" · ");
-    if(document.activeElement!==$("alias"))$("alias").value=(s.alias||s.endpoint_id)?name:"";
+    if(!aliasDirty&&startedAliasRevision===aliasRevision&&document.activeElement!==$("alias"))
+      $("alias").value=(s.alias||s.endpoint_id)?name:"";
     $("save-alias").disabled=local==="revoked";
     $("prepair").hidden=Boolean(s.endpoint_id);
     $("lifetime").value=s.pairing_mode||s.pairing_preference||"permanent";
@@ -92,7 +96,17 @@ async function action(label,fn){
   await refresh();
 }
 $("lifetime").onchange=()=>action("Pairing lifetime",()=>call("pairing-preference",{mode:$("lifetime").value}));
-$("save-alias").onclick=()=>action("Saving Profile name",()=>call("rename",{alias:$("alias").value}));
+$("save-alias").onclick=()=>{
+  const requested=$("alias").value.trim();
+  return action("Saving Profile name",async()=>{
+    const result=await call("rename",{alias:requested});
+    const checked=await call("status");
+    if(checked.alias!==requested||(checked.endpoint_id&&checked.cloud_state?.alias!==requested))
+      throw Error("rename_unconfirmed");
+    aliasRevision++;aliasDirty=false;
+    return result;
+  });
+};
 $("locate").onclick=()=>action("Locating observed tab",()=>call("locate"));
 $("stop").onclick=()=>action("Stopping locally",()=>call("stop"));
 $("revoke").onclick=()=>action("Revoking locally",async()=>{

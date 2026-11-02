@@ -11,7 +11,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "apps/browser-mcp-worker/extension"
-FILES = ("background.js", "config.js", "manifest.json", "observation.js", "mutations.js", "options.html", "options.js", "INSTALL.md", "NOTICES.md")
+BASE_FILES = ("background.js", "config.js", "manifest.json", "observation.js", "mutations.js", "options.html", "options.js", "INSTALL.md", "NOTICES.md")
+ICON_FILES = tuple(f"icons/{state}-{size}.png" for state in ("off", "on", "auth", "wait", "stop", "rev") for size in (16, 32)) + tuple(f"icons/brand-{size}.png" for size in (16, 32, 48, 128))
+FILES = BASE_FILES + ICON_FILES
 # Public installation identity, never an authentication or signing secret.
 KEY_SHA256 = "9785067d4ec625ebb231d29a2be4354c6d9622a68cc6ac6e5ad0105c0a353075"
 

@@ -85,7 +85,7 @@ export async function fixture(config={},options={}){
     Event:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},
     KeyboardEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},setTimeout,clearTimeout});
   const actionClicked=event(),activationAlarm=event();
-  const chrome={extension:{isAllowedIncognitoAccess:async()=>{if(pageState.nativeFailure)throw Error("native failure");return pageState.nativePrivate===true;}},storage:{local:storage(local),session:storage(session)},action:{setBadgeText:async()=>{},setTitle:async()=>{},onClicked:actionClicked},alarms:{create:async()=>{},onAlarm:activationAlarm},
+  const chrome={extension:{isAllowedIncognitoAccess:async()=>{if(pageState.nativeFailure)throw Error("native failure");return pageState.nativePrivate===true;}},storage:{local:storage(local),session:storage(session)},action:{setBadgeText:async()=>{},setIcon:async()=>{},setTitle:async()=>{},onClicked:actionClicked},alarms:{create:async()=>{},onAlarm:activationAlarm},
     runtime:{id:"jhifaghneomgcfollcdbncjkcloedfem",getURL:p=>extensionOrigin+"/"+p,onMessage:{addListener(fn){receiver=fn;}},onMessageExternal:event(),onStartup:event(),onInstalled:event()},
     tabs:{onRemoved:event(),onActivated:event(),captureVisibleTab:async()=>"data:image/png;base64,SCREENSHOT_SEED",
       create:async opts=>{

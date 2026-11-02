@@ -29,7 +29,10 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
     tabGroups:{query:async()=>[],async update(groupId,options){events.push({type:"group-title",groupId,options});}},
     windows:{async update(windowId,options){events.push({type:"focus-window",windowId,options});return {id:windowId};}},
     webNavigation:{async getFrame({tabId,frameId}){events.push({type:"lookup-document",tabId,frameId});return {url:"https://example.com/public",documentId:"document-73",documentLifecycle:"active"};}},
-    action:{setBadgeText:async()=>{},setTitle:async()=>{},onClicked:{addListener(fn){actionClick=fn;}}},
+    action:{setBadgeText:async value=>{events.push({type:"badge",...value});},
+      setIcon:async value=>{events.push({type:"icon",...value});},
+      setTitle:async value=>{events.push({type:"title",...value});},
+      onClicked:{addListener(fn){actionClick=fn;}}},
     alarms:{create:async()=>{},onAlarm:{addListener(fn){alarm=fn;}}},
     storage:{
       local:{
@@ -506,4 +509,27 @@ test("trusted Options rename keeps local Profile identity, denies invalid and fa
     async()=>Response.json({error:"unauthorized"},{status:401}));
   await assert.rejects(denied.send("rename",{alias:"New"}),/unauthorized/);
   assert.equal(denied.local.alias,"Old","failed server rename must not diverge local label");
+});
+
+test("toolbar state icons preserve existing priority and replace oversized text badges",async()=>{
+  const e=await setup({authorization:"stopped",activation_protocol:2});
+  const last=(type)=>e.events.filter(event=>event.type===type).at(-1);
+  const expectIcon=async(status)=>{
+    await e.ctx.render();
+    assert.deepEqual(JSON.parse(JSON.stringify(last("icon").path)),{
+      16:`icons/${status.toLowerCase()}-16.png`,32:`icons/${status.toLowerCase()}-32.png`});
+    assert.equal(last("badge").text,"","toolbar must not obscure 16px icon");
+    assert.match(last("title").title,new RegExp(`— ${status}:`));
+  };
+  await expectIcon("OFF");
+  e.local.authorization="enabled";
+  await expectIcon("WAIT");
+  vm.runInContext("socket={readyState:1};currentGeneration=1;",e.ctx);
+  await expectIcon("ON");
+  e.local.pending_cloud_stop=true;
+  await expectIcon("STOP");
+  e.session.browser_activation_attempt={attempt_id:"pending"};
+  await expectIcon("AUTH");
+  e.local.authorization="revoked";
+  await expectIcon("REV");
 });

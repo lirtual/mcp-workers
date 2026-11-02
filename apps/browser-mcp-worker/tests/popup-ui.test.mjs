@@ -48,3 +48,59 @@ test('Options Revoke requires confirmation; lifetime becomes editable only when 
   p.enableConfirm();await p.nodes.revoke.onclick();assert.equal(p.messages.filter(m=>m.type==='revoke').length,1);
   p.state.endpoint_id=undefined;assert.equal(p.messages.filter(m=>m.type==='resume').length,0);
 });
+
+function renameOptions({confirmCloud=true}={}){
+  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
+  const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:'',value:'',disabled:false,onclick:null,onchange:null,oninput:null}]));
+  const endpoint_id='11111111-1111-4111-8111-111111111111';
+  const state={alias:'11111111',authorization:'enabled',connection:'online',endpoint_id,
+    pairing_mode:'permanent',sensitive_permissions:{},activity:{available:true,pending:0,unknown:0}};
+  const cloud={alias:'11111111',authorization:'enabled',online:true};
+  const received=[];
+  let holdStatus=false,pendingStatus=null;
+  const response=()=>({...state,cloud_state:{...cloud}});
+  const chrome={storage:{local:{get:async()=>({browser_visual_feedback:true}),set:async()=>{}}},
+    runtime:{lastError:null,sendMessage(message,reply){
+      if(message.type==='status'){
+        if(holdStatus)pendingStatus=reply;
+        else queueMicrotask(()=>reply({ok:true,result:response()}));
+      }else if(message.type==='rename'){
+        received.push(message.alias);
+        state.alias=message.alias;
+        if(confirmCloud)cloud.alias=message.alias;
+        queueMicrotask(()=>reply({ok:true,result:{alias:message.alias}}));
+      }else queueMicrotask(()=>reply({ok:false,error:'unavailable'}));
+    }} };
+  const document={activeElement:null,getElementById:id=>nodes[id]};
+  const ctx=vm.createContext({document,chrome,URL,Date,console,confirm:()=>false});
+  vm.runInContext(source,ctx);
+  return {ctx,nodes,received,cloud,document,
+    hold:()=>{holdStatus=true;},
+    release:()=>{assert.ok(pendingStatus,'expected in-flight status');holdStatus=false;
+      const done=pendingStatus;pendingStatus=null;done({ok:true,result:response()});},
+  };
+}
+
+test('Options preserves typed Profile name across an in-flight stale refresh and Save blur',async()=>{
+  const f=renameOptions();await tick();
+  const desired='111111112';
+  f.nodes.alias.value=desired;f.nodes.alias.oninput?.();f.document.activeElement=f.nodes.alias;
+  f.hold();vm.runInContext('void refresh()',f.ctx);await tick();
+  f.document.activeElement=f.nodes['save-alias'];
+  f.release();await tick();
+  const saving=f.nodes['save-alias'].onclick();await tick();
+  assert.deepEqual(f.received,[desired],'Save must submit exactly the owner-edited name, not a stale default');
+  await saving;
+  assert.equal(f.nodes.alias.value,desired);
+  assert.match(f.nodes['action-feedback'].textContent,/completed/);
+});
+
+test('Options reports rename_unconfirmed rather than completed when authoritative cloud alias is stale',async()=>{
+  const f=renameOptions({confirmCloud:false});await tick();
+  const desired='111111112';
+  f.nodes.alias.value=desired;f.nodes.alias.oninput?.();
+  await f.nodes['save-alias'].onclick();
+  assert.deepEqual(f.received,[desired]);
+  assert.match(f.nodes['action-feedback'].textContent,/failed: rename_unconfirmed/);
+  assert.equal(f.nodes.alias.value,desired,'failed save should preserve user input for correction');
+});

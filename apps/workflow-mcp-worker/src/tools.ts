@@ -2,18 +2,16 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { listAvailableGitHubActions } from './github-action-catalog.ts';
 import { workflowCapabilities } from './capabilities.ts';
-import { WorkflowService, cleanError } from './store.ts';
+import { WorkflowService, StateError, cleanError } from './store.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
-import {approvedAttachmentUrl,classifyAttachmentSource,attachmentOriginSuffixHint} from './litterbox-file-source.ts';
 import {getSessionRuntimeData} from './session-runtime-data.ts';
 import type { Env } from './store.ts';
 
 const id=z.string().uuid();
 const revision=z.number().int().positive();
-// ChatGPT fileParams requires a top-level file object, not a nested Workflow
-// Run input. This gate only validates the descriptor and NEVER dereferences
-// the URL, creates a Run, or stores or reflects any file metadata.
-const fileTransportProbeFile=z.object({
+// ChatGPT fileParams needs a top-level descriptor, not a nested Run input.
+// Shape validation only; the upload path enforces the source allowlist.
+const chatGptFileDescriptor=z.object({
  download_url:z.string().min(1).max(4096),
  file_id:z.string().min(1).max(512),
  mime_type:z.string().max(255).optional(),
@@ -48,27 +46,6 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_connection_revoke',{description:'Revoke portal (default) or http Connection. New calls are fenced atomically; existing physical effects may finish. Repeated revoke is idempotent.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionRevoke():service.portalConnectionRevoke()));
  server.registerTool('workflow_connection_enable',{description:'Re-enable portal (default) or http Connection for newly republished Plans. Previous generation stays fenced; no unknown effect replay.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionEnable():service.portalConnectionEnable()));
  server.registerTool('workflow_action_list',{description:'Discover verified Tag-pinned GitHub Task/Session Action candidates with ref, commitSha, contractDigest, inputs, explicit unknown business output (not_declared), and publishability. Untagged default-branch revisions are explicitly unavailable; Publish still requires separate approval.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listAvailableGitHubActions(env)));
- server.registerTool('workflow_file_transport_probe',{
-   title:'Check a selected file parameter (no file access)',
-   description:'Read-only compatibility check for one ChatGPT-selected file. Returns a safe rejection category and, only for other-origin rejection, a coarse last-two-DNS-label hint (not the full hostname or registrable-domain proof). Never downloads, uploads, stores, or returns the URL, full hostname, ID or filename. This is NOT provenance attestation or upload authorization.',
-   inputSchema:z.object({file:fileTransportProbeFile}).strict(),
-   _meta:{'openai/fileParams':['file']},
-   annotations:{...read,destructiveHint:false},
- },async({file})=>success({file_parameter_received:true,bytes_read:0,
-   uploaded:false,persisted:false,provenance_verified:false,
-   file_source_host_allowed:approvedAttachmentUrl(file)!==null,
-   file_source_diagnostic:classifyAttachmentSource(file),
-   file_source_host_suffix_hint:attachmentOriginSuffixHint(file)}));
- server.registerTool('workflow_litterbox_upload',{
-   title:'Upload one selected file to Litterbox (public, irreversible)',
-   description:'EXTERNAL WRITE. Uploads a user-selected file in PLAINTEXT to public Litterbox storage, expiring after 1/12/24/72h. Requires a previously approved, immutable manual single-step litterbox.upload_file Published Workflow and a unique idempotency key. Do not call without explicit Owner instruction to publish that file. Unknown effects are NEVER replayed.',
-   inputSchema:z.object({workflow_id:id,file:fileTransportProbeFile,
-     time:z.enum(['1h','12h','24h','72h']).optional(),
-     idempotency_key:z.string().min(1).max(128)}).strict(),
-   _meta:{'openai/fileParams':['file']},
-   annotations:externalWrite,
- },async({workflow_id,file,time,idempotency_key})=>
-   safe(()=>startLitterboxUpload(env,{workflow_id,file,time,idempotency_key})));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
  server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
@@ -80,7 +57,26 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_pause',{description:'Block new Run admissions without cancelling active Runs.',inputSchema:z.object({workflow_id:id}).strict(),annotations:write},async({workflow_id})=>safe(()=>service.pause(workflow_id)));
  server.registerTool('workflow_delete',{description:'Tombstone a paused or never-published Workflow at its exact Draft revision. Rejects unsettled Runs, physical Sessions and published parent references; preserves Run, Version and receipt history. Repeated deletion is idempotent.',inputSchema:z.object({workflow_id:id,expected_revision:revision}).strict(),annotations:write},async({workflow_id,expected_revision})=>safe(()=>service.delete(workflow_id,expected_revision)));
  server.registerTool('workflow_resume',{description:'Allow new Run admissions for a previously paused published Workflow.',inputSchema:z.object({workflow_id:id}).strict(),annotations:write},async({workflow_id})=>safe(()=>service.resume(workflow_id)));
- server.registerTool('workflow_run',{description:'Asynchronously start a manual Run of the pinned published plan (Cron admission is automatic for active published UTC schedules). Returns Run ID; never waits for execution. For the reviewed manual-only EnvShare Plan, encrypts plaintext before D1 and returns an unrecoverable one-time delivery_key only on first admission; capture it securely for workflow_result.',inputSchema:z.object({workflow_id:id,inputs:z.record(z.string(),z.unknown()).optional(),idempotency_key:z.string().min(1).max(128).optional()}).strict(),annotations:externalWrite},async({workflow_id,inputs,idempotency_key})=>safe(()=>service.start(workflow_id,inputs??{},idempotency_key)));
+ server.registerTool('workflow_run',{
+   description:'Run an approved Published Workflow. Ordinary calls without a file start asynchronously and return the Run ID; EnvShare may also return a one-time delivery_key. An explicitly selected top-level file is accepted ONLY for a separately approved, manual, single-step Litterbox file Plan: inputs may contain only time (1h/12h/24h/72h), idempotency_key is mandatory, and the result reports the one-shot upload outcome. Public plaintext disclosure requires fresh Owner instruction; never retry an unknown upload. No arbitrary file URL or Provider is allowed.',
+   inputSchema:z.object({
+     workflow_id:id,inputs:z.record(z.string(),z.unknown()).optional(),
+     idempotency_key:z.string().min(1).max(128).optional(),
+     file:chatGptFileDescriptor.optional(),
+   }).strict(),
+   _meta:{'openai/fileParams':['file']},
+   annotations:externalWrite,
+ },async({workflow_id,inputs,idempotency_key,file})=>safe(()=>{
+   if(file===undefined)return service.start(workflow_id,inputs??{},idempotency_key);
+   if(!idempotency_key)throw new StateError('file_idempotency_key_required');
+   const selectedInputs=inputs??{};
+   if(Object.keys(selectedInputs).some(k=>k!=='time')||
+      (selectedInputs.time!==undefined&&typeof selectedInputs.time!=='string'))
+     throw new StateError('file_inputs_invalid');
+   return startLitterboxUpload(env,{workflow_id,file,
+     ...(selectedInputs.time===undefined?{}:{time:selectedInputs.time as string}),
+     idempotency_key});
+ }));
  server.registerTool('workflow_cancel',{description:'Request cancellation for a reviewed GitHub Action, a runtime approval before its first durable GitHub Attempt (even after the decision), awaited child or native external event wait by Run/Step ID. A pending/approved gate or event wait must have no other active Steps; force requires an existing GitHub Attempt and cannot force-cancel an event wait. If a registered GitHub Attempt still has no confirmed physical Run identity, cancellation durably fences any later signed Claim without asserting physical termination. Once a physical Run is confirmed, existing GitHub cancellation and reconciliation govern. For children, check native Cloudflare termination but never infer external resource termination. An explicit force=true is accepted only after a prior normal cancellation and a verified still-running job has exceeded the guarded wait. Force may bypass cleanup. Repeated requests never re-POST an uncertain cancellation.',inputSchema:z.object({run_id:id,step_id:z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),force:z.literal(true).optional()}).strict(),annotations:externalWrite},async({run_id,step_id,force})=>safe(()=>service.cancel(run_id,step_id,force===true)));
  server.registerTool('workflow_status',{description:'Inspect durable Run and Step states; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id}).strict(),annotations:externalReconcile},async({run_id})=>safe(()=>service.status(run_id)));
  server.registerTool('workflow_result',{description:'Inspect safe Run result and errors; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id,delivery_key:z.string().min(1).max(40).optional()}).strict(),annotations:externalReconcile},async({run_id,delivery_key})=>safe(()=>service.result(run_id,delivery_key)));

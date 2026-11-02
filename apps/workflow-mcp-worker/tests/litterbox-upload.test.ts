@@ -6,6 +6,9 @@ import {compilePlan,type Plan} from '../src/plan.ts';
 import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
 import {WorkflowService,type Env} from '../src/store.ts';
 import {startLitterboxUpload,recordedLitterboxStep} from '../src/litterbox-executor.ts';
+import {buildMcpServer} from '../src/tools.ts';
+import {createMcpHandler} from '@modelcontextprotocol/server';
+import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 
 const WF='11111111-1111-4111-8111-111111111111';
 const VERSION='33333333-3333-4333-8333-333333333333';
@@ -184,4 +187,46 @@ test('tampered persisted Plan cannot use a different runtime file reference',asy
  assert.equal(f.audit.reads,0);
  assert.equal(f.audit.posts,0);
  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,0);
+});
+
+test('generic workflow_run carries optional fileParams and keeps ordinary calls file-less',async t=>{
+ const f=fixture(t);await f.publish();
+ const worker=createMcpHandler(()=>buildMcpServer(f.env),{legacy:'stateless'});
+ const client=new Client({name:'workflow-file-input-fixture',version:'0.1.0'});
+ const transport=new StreamableHTTPClientTransport(new URL('https://workflow-fixture.invalid/mcp'),{
+  fetch:async(input,init)=>worker.fetch(new Request(input,init)),
+ });
+ await client.connect(transport);
+ t.after(async()=>client.close());
+ const listing=await client.listTools();
+ assert(!listing.tools.some(tool=>tool.name==='workflow_litterbox_upload'));
+ assert(!listing.tools.some(tool=>tool.name==='workflow_file_transport_probe'));
+ assert.equal(listing.tools.length,20);
+ const run=listing.tools.find(tool=>tool.name==='workflow_run');
+ assert(run);
+ assert.deepEqual(run._meta?.['openai/fileParams'],['file']);
+ assert.equal((run.inputSchema.properties?.file as {type?:string}|undefined)?.type,'object');
+ assert.equal((run.inputSchema.required??[]).includes('file'),false);
+ const invoke=async(args:Record<string,unknown>)=>
+  client.callTool({name:'workflow_run',arguments:{workflow_id:WF,...args}});
+ const ordinary=await invoke({idempotency_key:'ordinary-run-01'});
+ assert.equal(ordinary.isError,true);
+ const missingKey=await invoke({file});
+ assert.equal(missingKey.isError,true);
+ const mixedInputs=await invoke({file,idempotency_key:'mixed-run-01',
+  inputs:{time:'24h',secret:'unapproved'}});
+ assert.equal(mixedInputs.isError,true);
+ assert.equal(f.audit.reads,0);
+ assert.equal(f.audit.posts,0);
+ const good=await invoke({file,idempotency_key:'file-run-01',inputs:{time:'24h'}});
+ assert.equal(good.isError,undefined);
+ assert.equal(good.content?.[0]?.type,'text');
+ const result=JSON.parse((good.content?.[0] as {text:string}).text);
+ assert.equal(result.status,'succeeded');
+ assert.equal(result.download_url,'https://litter.catbox.moe/fixture.txt');
+ assert.equal(f.audit.reads,1);
+ assert.equal(f.audit.posts,1);
+ const replay=await invoke({file,idempotency_key:'file-run-01'});
+ assert.equal(replay.isError,true);
+ assert.equal(f.audit.posts,1);
 });
