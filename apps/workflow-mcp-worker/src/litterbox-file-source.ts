@@ -44,62 +44,6 @@ export function approvedAttachmentUrl(file:unknown):URL|null {
   return url;
  }catch{return null;}
 }
-// Read-only privacy-preserving rejection diagnostics. Never expose URL,
-// hostname, file ID, path, query or token; no fetch, logging or D1 access.
-// An origin-family label is NOT authorization to extend the fixed allowlist.
-export function classifyAttachmentSource(file:unknown):{
- failure_code:'none'|'file_object_invalid'|'file_id_invalid'|
-  'download_url_invalid'|'download_url_not_https'|'download_url_unsafe'|
-  'download_host_not_allowlisted';
- origin_family:'expected_file_origin'|'azure_blob_external'|
-  'oaiusercontent_other'|'chatgpt'|'openai_other'|'other'|'invalid';
-}{
- const denied=(failure_code:ReturnType<typeof classifyAttachmentSource>['failure_code'],
-  origin_family:ReturnType<typeof classifyAttachmentSource>['origin_family']='invalid')=>
-  ({failure_code,origin_family});
- if(!file||typeof file!=='object'||Array.isArray(file))
-  return denied('file_object_invalid');
- const f=file as Record<string,unknown>;
- if(Object.keys(f).some(k=>!['download_url','file_id','mime_type','file_name'].includes(k)))
-  return denied('file_object_invalid');
- if(!validFileId(f.file_id))
-  return denied('file_id_invalid');
- if(typeof f.download_url!=='string'||f.download_url.length===0||
-    f.download_url.length>4096)return denied('download_url_invalid');
- let u:URL;
- try{u=new URL(f.download_url);}
- catch{return denied('download_url_invalid');}
- const host=u.hostname;
- const azure=approvedAzureBlobSas(u);
- const family:ReturnType<typeof classifyAttachmentSource>['origin_family']=
-  host==='files.oaiusercontent.com'?'expected_file_origin':
-  azure?'azure_blob_external':
-  host==='oaiusercontent.com'||host.endsWith('.oaiusercontent.com')?'oaiusercontent_other':
-  host==='chatgpt.com'||host.endsWith('.chatgpt.com')?'chatgpt':
-  host==='openai.com'||host.endsWith('.openai.com')?'openai_other':'other';
- if(u.protocol!=='https:')return denied('download_url_not_https',family);
- if(u.port||u.username||u.password||u.hash||u.pathname==='/'||
-    u.href!==f.download_url)return denied('download_url_unsafe',family);
- if(host!=='files.oaiusercontent.com'&&!azure)
-  return denied('download_host_not_allowlisted',family);
- return denied('none',family);
-}
-// A diagnostic hint only: the final TWO DNS labels, never the complete host,
-// signed URL, path, query, file ID or filename. This is NOT eTLD+1 extraction
-// and MUST NOT be used as an allowlist, provenance or upload authorization.
-// Two-label hosts and all malformed/unsafe sources remain unreported.
-export function attachmentOriginSuffixHint(file:unknown):string|null {
- const diagnostic=classifyAttachmentSource(file);
- if(diagnostic.failure_code!=='download_host_not_allowlisted'||
-  diagnostic.origin_family!=='other')return null;
- const host=new URL((file as ChatGptFile).download_url).hostname;
- const labels=host.split('.');
- if(host.length>253||labels.length<3)return null;
- const last=labels.slice(-2);
- if(!last.every(label=>label.length>=2&&label.length<=63&&
-   /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)))return null;
- return last.join('.');
-}
 export class AttachmentReadError extends Error{
  code:string;
  constructor(code:string){super(code);this.code=code;}

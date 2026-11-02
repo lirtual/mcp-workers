@@ -648,6 +648,12 @@ Do not duplicate the provider's parser in Workflow MCP.
 
 ### ChatGPT-selected Litterbox files (Spec #35)
 
+The temporary public file transport diagnostic probe and legacy specialized
+upload tool were retired after the generic fileParams end-to-end acceptance.
+The expected public Workflow tool inventory is **20 tools**; selected files
+still enter exclusively through `workflow_run.file`. The retirement is a
+source change until separately approved Worker release and Portal sync.
+
 The `workflow_run` tool accepts an optional top-level `file` for a
 separately approved single-file Litterbox Published Workflow. That path
 requires a unique `idempotency_key`; optional retention is provided as
