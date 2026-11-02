@@ -39,7 +39,13 @@ Publish requires separate explicit grants, the exact contract digest and
 Worker Version ID; the Service Binding must independently confirm live identity.
 D1 grants a single first-dispatch right. Weixin can recover by historical
 receipts; Bark preserves unknown outcomes without a second send. No public
-Weixin MCP write is used.
+Weixin MCP write is used. For a reviewed Chrome GitHub Session only, Bark
+`input.session_step_id` may reference a direct `needs` dependency: Workflow
+resolves its signed, still-physical-Ready Quick Tunnel root and injects that
+URL into the encrypted Bark notification's `url` field. The Draft must not
+supply a `notification.url` alongside this reference. The runtime verifies
+the exact source workflow/ref and claimed Attempt and atomically rechecks
+Ready before its single dispatch; URL plaintext is never stored in receipts.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
 ### Non-executable nested Flow composition design (Spec #176 / #186)

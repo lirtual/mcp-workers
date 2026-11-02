@@ -2,6 +2,7 @@ import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
 import {canonical,cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
+import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 
 /** Stateless Bark: the existing D1 reservation is the only send admission.
  * A prior reservation can never trigger another RPC; without receipts it is unknown.
@@ -15,7 +16,8 @@ function normalize(value:unknown){
  return JSON.stringify(canonical(value));
 }
 export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
- ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
+ ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
+ inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt):Promise<Result>{
  const provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
  const manifest=await cloudflareActionManifest('bark');
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&
@@ -43,6 +45,45 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    return deny('cloudflare_action_approval_required');
   if(!provider||!version)return deny('cloudflare_provider_not_configured');
   if(grant.deployment_id!==version)return deny('cloudflare_provider_version_changed');
+  // Optional reviewed Chrome Session: resolve its signed Ready URL from D1,
+  // not from a caller-supplied URL or an undeclared Step output.
+  const sourceId=(action.with.input as {session_step_id?:unknown}|undefined)?.session_step_id;
+  let ready:{attempt_id:string;session_url:string;repository:string;workflow_ref:string}|undefined;
+  let trustedWorkflowRef:string|undefined;
+  if(sourceId!==undefined){
+   const source=plan.steps.find(x=>x.id===sourceId);
+   const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown}|undefined;
+   if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
+      source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
+      pinned.workflowPath!=='.github/workflows/chrome.yml'||pinned.type!=='session'||
+      typeof pinned.ref!=='string'||!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref))
+    return deny('untrusted_session_reference');
+   trustedWorkflowRef='lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref;
+   const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref
+     FROM session_executions s JOIN step_attempts a
+     ON a.run_id=s.run_id AND a.step_id=s.step_id
+     WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
+      AND a.capability_id='github.action' AND a.state='claimed'
+      AND a.owner_run_id=a.candidate_run_id
+      AND a.owner_run_attempt=a.candidate_run_attempt
+      AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+        WHERE c.attempt_id=a.attempt_id)`)
+    .bind(runId,sourceId).first<typeof ready>();
+   const raw=current?.session_url;
+   if(!current||typeof raw!=='string'||raw.length>180||
+      !/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/.test(raw)||
+      current.repository!=='lirtual/github-actions'||current.workflow_ref!==trustedWorkflowRef)
+    return deny('session_ready_not_trusted');
+   const canonical=new URL(raw).href;
+   if(canonical!==raw&&canonical!==raw+'/')
+    return deny('session_ready_not_trusted');
+   if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return deny('session_physical_unconfirmed');
+   let live;
+   try{live=await inspect(db,current.attempt_id,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);}
+   catch{return deny('session_physical_unconfirmed');}
+   if(live.state!=='running')return deny('session_physical_unconfirmed');
+   ready=current;
+  }
   let notification:Record<string,unknown>;
   try{
    if(!ctx)throw Error('missing_context');
@@ -51,6 +92,10 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    if(!evaluated||typeof evaluated!=='object'||Array.isArray(evaluated))
     throw Error('invalid_bark_notification');
    const values=evaluated as Record<string,unknown>;
+   if(ready){
+    if(Object.hasOwn(values,'url'))throw Error('untrusted_session_url');
+    values.url=new URL(ready.session_url).href;
+   }
    if(typeof values.body!=='string')values.body=normalize(values.body);
    if(Object.keys(values).some(k=>!Object.hasOwn(manifest.input_schema.properties,k)))
     throw Error('invalid_bark_notification');
@@ -67,18 +112,31 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(payload));
   const inputDigest=Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join('');
   const id=crypto.randomUUID();
-  // Reuse existing persisted fence; non-Weixin rows use generation=0 and
-  // source_attempt_id=invocation_id as a non-sensitive sentinel.
+  // Reuse existing D1 fence. A signed Session URL may dispatch only while
+  // that same immutable physical Attempt is still claimed and Ready.
+  const sourceFence=ready?`AND EXISTS(
+      SELECT 1 FROM session_executions s JOIN step_attempts a
+       ON a.run_id=s.run_id AND a.step_id=s.step_id
+      WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
+       AND s.session_url=? AND a.attempt_id=? AND a.state='claimed'
+       AND a.capability_id='github.action'
+       AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+       AND a.owner_run_id=a.candidate_run_id
+       AND a.owner_run_attempt=a.candidate_run_attempt
+       AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+        WHERE c.attempt_id=a.attempt_id))`:'';
   const fence=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
     (run_id,step_id,invocation_id,source_attempt_id,input_digest,
      binding_generation,contract_digest,deployment_id,created_at)
     SELECT ?,?,?,?,?,0,?,?,? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
+    ${sourceFence}
     AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
       WHERE c.run_id=? AND c.step_id=?)`)
-    .bind(runId,action.id,id,id,inputDigest,manifest.contract_digest,version,
-      Date.now(),runId,runId,action.id).run();
+    .bind(runId,action.id,id,ready?.attempt_id??id,inputDigest,manifest.contract_digest,version,
+      Date.now(),runId,...(ready?[runId,sourceId,ready.session_url,ready.attempt_id,trustedWorkflowRef]:[]),
+      runId,action.id).run();
   if(fence.meta.changes!==1){
    return await existing()?unknown('bark_receipt_unavailable'):deny('cloudflare_dispatch_not_admitted');
   }
