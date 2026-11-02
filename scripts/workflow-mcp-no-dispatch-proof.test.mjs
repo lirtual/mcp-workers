@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {verifyMcpNoDispatchEvidence,EIGHTH_MCP_RUN_ID} from './workflow-mcp-no-dispatch-proof.mjs';
+import {verifyMcpNoDispatchEvidence,verifyPriorMcpNoDispatchProof,EIGHTH_MCP_RUN_ID} from './workflow-mcp-no-dispatch-proof.mjs';
 
 const runId=EIGHTH_MCP_RUN_ID;
 function sample(){
@@ -64,4 +64,71 @@ test('release only excludes the exact eighth Run after independent proof output'
   assert.equal(workflow.split("id <> '$WORKFLOW_EIGHTH_TERMINAL_RUN_ID'").length-1,2);
   assert.ok(workflow.indexOf('Verify eighth MCP no-dispatch Run proof')<
     workflow.indexOf('Verify Workflow release configuration'));
+});
+
+const PRIOR_RELEASE_ID=41451130475;
+const PRIOR_SHA='4c422150237d50f67210c75e39a4ef1fc0b53a6c';
+function priorSuccess(){
+  return {run:{id:PRIOR_RELEASE_ID,workflow_id:394912681,head_branch:'main',
+    head_sha:PRIOR_SHA,event:'workflow_dispatch',run_attempt:1,
+    status:'completed',conclusion:'success'},
+  jobs:{jobs:[{id:125296945646,run_id:PRIOR_RELEASE_ID,
+    name:'Manual selected Worker release',head_sha:PRIOR_SHA,
+    run_attempt:1,status:'completed',conclusion:'success',
+    steps:[{name:'Verify eighth MCP no-dispatch Run proof (read-only)',
+      number:23,status:'completed',conclusion:'success'}]}]}};
+}
+
+test('only exact prior successful run, job, SHA and eighth step prove expired native',()=>{
+  const {run,jobs}=priorSuccess();
+  const signed=verifyPriorMcpNoDispatchProof(run,jobs);
+  assert.equal(verifyMcpNoDispatchEvidence(sample().d1,signed),runId);
+  for(const [key,value] of [
+    ['id',41451130474],['workflow_id',123],['head_sha','0'.repeat(40)],
+    ['head_branch','other'],['event','push'],['run_attempt',2],
+    ['status','in_progress'],['conclusion','failure']]){
+    const p=structuredClone(priorSuccess());p.run[key]=value;
+    assert.throws(()=>verifyPriorMcpNoDispatchProof(p.run,p.jobs),/blocked/);
+  }
+  for(const [key,value] of [
+    ['id',12],['run_id',123],['name','wrong'],['head_sha','1'.repeat(40)],
+    ['run_attempt',2],['status','in_progress'],['conclusion','failure']]){
+    const p=structuredClone(priorSuccess());p.jobs.jobs[0][key]=value;
+    assert.throws(()=>verifyPriorMcpNoDispatchProof(p.run,p.jobs),/blocked/);
+  }
+  for(const [key,value] of [
+    ['name','Wrong step'],['number',22],['status','queued'],['conclusion','failure']]){
+    const p=structuredClone(priorSuccess());p.jobs.jobs[0].steps[0][key]=value;
+    assert.throws(()=>verifyPriorMcpNoDispatchProof(p.run,p.jobs),/blocked/);
+  }
+  const dup=priorSuccess();dup.jobs.jobs[0].steps.push({...dup.jobs.jobs[0].steps[0]});
+  assert.throws(()=>verifyPriorMcpNoDispatchProof(dup.run,dup.jobs),/blocked/);
+  assert.throws(()=>verifyMcpNoDispatchEvidence(sample().d1,{}),/blocked/);
+});
+
+test('a pinned prior native proof never overrides changed D1 or a dispatch fence',()=>{
+  const {run,jobs}=priorSuccess();
+  const native=verifyPriorMcpNoDispatchProof(run,jobs);
+  for(const [idx,key,value] of [
+    [0,'outcome','succeeded'],[0,'version_id','wrong'],
+    [1,'status','succeeded'],[1,'step_id','other']]){
+    const bad=sample();bad.d1[idx].results[0][key]=value;
+    assert.throws(()=>verifyMcpNoDispatchEvidence(bad.d1,native),/blocked/);
+  }
+  const sent=sample();sent.d1[2].results.push({run_id:runId,step_id:'create_note'});
+  assert.throws(()=>verifyMcpNoDispatchEvidence(sent.d1,native),/blocked/);
+  const sess=sample();sess.d1[3].results.push({run_id:runId,state:'ready'});
+  assert.throws(()=>verifyMcpNoDispatchEvidence(sess.d1,native),/blocked/);
+  const other=sample();other.d1[4].results[0].id='incorrect';
+  assert.throws(()=>verifyMcpNoDispatchEvidence(other.d1,native),/blocked/);
+});
+
+test('the protected release supplies GitHub read token only to pinned eighth proof',()=>{
+  const source=readFileSync('.github/workflows/release.yml','utf8');
+  const start=source.indexOf('- name: Verify eighth MCP no-dispatch Run proof (read-only)');
+  const end=source.indexOf('- name: Verify ninth terminal Saga Run proof',start);
+  assert.ok(start>0&&end>start);
+  const step=source.slice(start,end);
+  assert.match(step,/GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(step,/workflow-mcp-no-dispatch-proof\.mjs/);
 });
