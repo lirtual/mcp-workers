@@ -1,10 +1,12 @@
 /** Static, source-reviewed Cloudflare Provider catalog. Discovery is not authority. */
 // Only reviewed GitHub Session Actions with signed Ready and a live claimed
-// physical attempt may supply ephemeral URLs to the Owner-only Weixin action.
-export const TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS = new Set([
+// physical attempt may supply ephemeral URLs to an Owner notification.
+export const TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS = new Set([
  '.github/workflows/openlist.yml',
  '.github/workflows/chrome.yml',
 ]);
+// Legacy alias for immutable Weixin contracts.
+export const TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS = TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS;
 export const WEIXIN_CLOUDFLARE_ACTION=Object.freeze({
  executor:'cloudflare',provider:'weixin',action:'weixin.send_text',version:1,
  source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',

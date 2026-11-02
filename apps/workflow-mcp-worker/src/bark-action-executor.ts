@@ -1,8 +1,9 @@
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
-import {canonical,cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {canonical,cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
+import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 
 /** Stateless Bark: the existing D1 reservation is the only send admission.
  * A prior reservation can never trigger another RPC; without receipts it is unknown.
@@ -45,9 +46,39 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    return deny('cloudflare_action_approval_required');
   if(!provider||!version)return deny('cloudflare_provider_not_configured');
   if(grant.deployment_id!==version)return deny('cloudflare_provider_version_changed');
-  // Optional reviewed Chrome Session: resolve its signed Ready URL from D1,
+  // Optional reviewed Session: resolve its signed Ready URL from D1,
   // not from a caller-supplied URL or an undeclared Step output.
   const sourceId=(action.with.input as {session_step_id?:unknown}|undefined)?.session_step_id;
+  const downloadId=(action.with.input as {download_step_id?:unknown}|undefined)?.download_step_id;
+  if(sourceId!==undefined&&downloadId!==undefined)return deny('untrusted_download_reference');
+  let download:{attempt_id:string;workflow_ref:string;child_id:string}|undefined;
+  if(downloadId!==undefined){
+   const upstream=plan.steps.find(x=>x.id===downloadId);
+   const template=upstream?.with.template as {id?:unknown;uses?:unknown;with?:{action?:unknown}}|undefined;
+   const pinned=template?.with?.action as {repository?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   if(typeof downloadId!=='string'||!action.needs.includes(downloadId)||
+      ctx?.steps[downloadId]?.status!=='succeeded'||upstream?.uses!=='flow.foreach'||
+      upstream.with.max_items!==1||template?.uses!=='github.run'||typeof template.id!=='string'||
+      pinned?.repository!=='lirtual/github-actions'||pinned.workflowPath!=='.github/workflows/download.yml'||
+      pinned.type!=='task'||typeof pinned.ref!=='string'||
+      !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)||
+      typeof pinned.commitSha!=='string'||!/^[a-f0-9]{40}$/.test(pinned.commitSha))
+    return deny('untrusted_download_reference');
+   const childId=downloadId+'_0_'+template.id;
+   const workflowRef='lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref;
+   const proof=await db.prepare(`SELECT a.attempt_id FROM step_attempts a
+     JOIN run_steps child ON child.run_id=a.run_id AND child.step_id=a.step_id
+     JOIN run_steps parent ON parent.run_id=a.run_id AND parent.step_id=?
+     WHERE a.run_id=? AND a.step_id=? AND a.capability_id='github.action'
+      AND a.state='succeeded' AND child.status='succeeded' AND parent.status='succeeded'
+      AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+      AND a.owner_run_id=a.candidate_run_id
+      AND a.owner_run_attempt=a.candidate_run_attempt
+      AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id)`)
+      .bind(downloadId,runId,childId,workflowRef).first<{attempt_id:string}>();
+   if(!proof)return deny('download_completion_unverified');
+   download={attempt_id:proof.attempt_id,workflow_ref:workflowRef,child_id:childId};
+  }
   let ready:{attempt_id:string;session_url:string;repository:string;workflow_ref:string}|undefined;
   let trustedWorkflowRef:string|undefined;
   if(sourceId!==undefined){
@@ -55,7 +86,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown}|undefined;
    if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
       source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
-      pinned.workflowPath!=='.github/workflows/chrome.yml'||pinned.type!=='session'||
+      (typeof pinned.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath))||pinned.type!=='session'||
       typeof pinned.ref!=='string'||!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref))
     return deny('untrusted_session_reference');
    trustedWorkflowRef='lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref;
@@ -92,6 +123,8 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    if(!evaluated||typeof evaluated!=='object'||Array.isArray(evaluated))
     throw Error('invalid_bark_notification');
    const values=evaluated as Record<string,unknown>;
+   if(download&&(Object.keys(values).length!==1||values.body!==DOWNLOAD_COMPLETED_TEXT))
+    throw Error('untrusted_download_notification');
    if(ready){
     if(Object.hasOwn(values,'url'))throw Error('untrusted_session_url');
     values.url=new URL(ready.session_url).href;
@@ -125,17 +158,30 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
        AND a.owner_run_attempt=a.candidate_run_attempt
        AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
         WHERE c.attempt_id=a.attempt_id))`:'';
+  const downloadFence=download?`AND EXISTS(
+    SELECT 1 FROM step_attempts a
+    JOIN run_steps child ON child.run_id=a.run_id AND child.step_id=a.step_id
+    JOIN run_steps parent ON parent.run_id=a.run_id AND parent.step_id=?
+    WHERE a.run_id=? AND a.step_id=? AND a.attempt_id=?
+      AND a.capability_id='github.action' AND a.state='succeeded'
+      AND child.status='succeeded' AND parent.status='succeeded'
+      AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+      AND a.owner_run_id=a.candidate_run_id
+      AND a.owner_run_attempt=a.candidate_run_attempt
+      AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id))`:'';
   const fence=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
     (run_id,step_id,invocation_id,source_attempt_id,input_digest,
      binding_generation,contract_digest,deployment_id,created_at)
     SELECT ?,?,?,?,?,0,?,?,? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
     ${sourceFence}
+    ${downloadFence}
     AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
       WHERE c.run_id=? AND c.step_id=?)`)
-    .bind(runId,action.id,id,ready?.attempt_id??id,inputDigest,manifest.contract_digest,version,
+    .bind(runId,action.id,id,ready?.attempt_id??download?.attempt_id??id,inputDigest,manifest.contract_digest,version,
       Date.now(),runId,...(ready?[runId,sourceId,ready.session_url,ready.attempt_id,trustedWorkflowRef]:[]),
+      ...(download?[downloadId,runId,download.child_id,download.attempt_id,download.workflow_ref]:[]),
       runId,action.id).run();
   if(fence.meta.changes!==1){
    return await existing()?unknown('bark_receipt_unavailable'):deny('cloudflare_dispatch_not_admitted');
