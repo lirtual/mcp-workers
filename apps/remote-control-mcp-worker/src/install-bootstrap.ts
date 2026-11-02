@@ -98,28 +98,28 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// Reviewed immutable v0.1.45 Linux Release, candidate CI #41316512738.
-// Publication is guarded by the existing three-asset release pin workflow;
-// the Windows installer retains a separately validated script SHA-256.
+// Reviewed immutable v0.1.46 Linux/Windows Release, candidate CI #41367131028.
+// Publication passed protected Agent Release #41367882532 and is immutable;
+// the Windows installer retains an independently verified script SHA-256.
 export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.45",
+  tag: "v0.1.46",
   pairingProtocol: "single-code-v1",
   upgradeMode: "explicit-v1",
-  commit: "2940b9bae9f4a5ec2a95ab6bc3b33b90d440a575",
-  x64Sha256: "a627e2fe10a66b38dda3f8ed94d86edca44f5b6cd4c40dad9f93fed47c45154b",
-  arm64Sha256: "b0aa35b96c1f30825b7fbc63c751886da7dc5747e6ef67fd78255b5c90560fd9",
+  commit: "b7d9f89d84b087acb751c1423f92fedc85cc15ea",
+  x64Sha256: "5dd67c43b88313858ed115fd307dc3fdf5416bc45cfd930d39bd31d9d351adad",
+  arm64Sha256: "dae18a32ab9b5fc9ea70eeea2c169adb98aa523f727a362932319f05b969e133",
 });
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
   tag: string; commit: string; scriptSha256: string; assetSha256: string;
 }>;
-// Public Windows bootstrap source is pinned to the exact immutable v0.1.45 Agent
+// Public Windows bootstrap source is pinned to the exact immutable v0.1.46 Agent
 // commit; the source hash is separate from the official Windows asset digest.
 export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
-  tag: "v0.1.45",
-  commit: "2940b9bae9f4a5ec2a95ab6bc3b33b90d440a575",
+  tag: "v0.1.46",
+  commit: "b7d9f89d84b087acb751c1423f92fedc85cc15ea",
   scriptSha256: "94267de0bdb9c8e8776929190e92143128ec15dcb714ca9dd37d15ba97778cb2",
-  assetSha256: "b4410aa8bb7026708fa0ef563026bcaf25c7e618b9c1d814909d3177617061bd",
+  assetSha256: "0189525bdf27e9885db3cb8e37f68424424c8f67616b13d4a3d276882c457935",
 });
 
 function validWindowsPin(pin: WindowsInstallPin): boolean {

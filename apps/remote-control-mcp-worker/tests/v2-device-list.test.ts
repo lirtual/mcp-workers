@@ -223,11 +223,14 @@ test("device enumeration is bounded and fails closed when the small-owner limit 
 
 test("device status fails closed for corrupt Hibernation attachment", async () => {
   const id = randomUUID();
+  // Fix the observation before list(): listLiveGrants snapshots time on entry.
+  // A Date.now() evaluated inside list() can be 1 ms in the future and trigger expiry cleanup.
+  const observedAt = Date.now() - 1_000;
   const owner = new V2OwnerCoordinator({
     storage: {
       list: async () => new Map([["device:" + id, {
         device_id: id, name: "damaged", revoked: false,
-        last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
+        last_verified_online_at: observedAt, idle_window_ms: 14 * 86_400_000,
       }]]),
       get: async () => "fresh",
     },
