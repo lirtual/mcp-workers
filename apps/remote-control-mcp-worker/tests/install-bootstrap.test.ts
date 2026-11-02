@@ -225,18 +225,18 @@ test('homepage copy state follows the separately verified platform pins',async()
 });
 
 
-test('reviewed Linux and Windows v0.1.46 public installers pin immutable local upgrade sources', async () => {
+test('reviewed Linux and Windows v0.1.47 public installers pin immutable local upgrade sources', async () => {
   const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.46');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'b7d9f89d84b087acb751c1423f92fedc85cc15ea');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.47');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '50c85b549b6eebaf1fd52f524969692b668e808f');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '5dd67c43b88313858ed115fd307dc3fdf5416bc45cfd930d39bd31d9d351adad');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, 'dae18a32ab9b5fc9ea70eeea2c169adb98aa523f727a362932319f05b969e133');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.tag, 'v0.1.46');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, 'b7d9f89d84b087acb751c1423f92fedc85cc15ea');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '0189525bdf27e9885db3cb8e37f68424424c8f67616b13d4a3d276882c457935');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, 'db93c3ea8396d814cb0bff98dc1e9db3a0e33505cb380e834b3c734cc0ca8eed');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '593afb50c545ea49338eb03ea73a61a6ae6f1b68b125d52b95e85d8abce4d2b8');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.tag, 'v0.1.47');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, '50c85b549b6eebaf1fd52f524969692b668e808f');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '139478946f37f65513c79cb09fd5f2fb1fa87df047111ccacbdb7c4361a118a2');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '94267de0bdb9c8e8776929190e92143128ec15dcb714ca9dd37d15ba97778cb2');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
@@ -244,16 +244,16 @@ test('reviewed Linux and Windows v0.1.46 public installers pin immutable local u
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.46/);
+  assert.match(shell, /remote-control-agent-v0\.1\.47/);
   assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
   assert.match(shell, /"\$@" < \/dev\/tty/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /v0\.1\.46/);
-  assert.match(ps1, /b7d9f89d84b087acb751c1423f92fedc85cc15ea/);
+  assert.match(ps1, /v0\.1\.47/);
+  assert.match(ps1, /50c85b549b6eebaf1fd52f524969692b668e808f/);
   assert.match(ps1, /94267de0bdb9c8e8776929190e92143128ec15dcb714ca9dd37d15ba97778cb2/);
-  assert.match(ps1, /0189525bdf27e9885db3cb8e37f68424424c8f67616b13d4a3d276882c457935/);
+  assert.match(ps1, /139478946f37f65513c79cb09fd5f2fb1fa87df047111ccacbdb7c4361a118a2/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
