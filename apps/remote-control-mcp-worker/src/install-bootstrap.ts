@@ -129,6 +129,17 @@ export type MacInstallPin = Readonly<{
   tag: string; commit: string; arm64Sha256: string; x64Sha256: string;
   scriptSha256: string;
 }>;
+// PREPARED RELEASE PIN ONLY. Never merge this branch before the immutable
+// v0.1.49 Agent Release has been separately authorized, published and verified.
+// This addition does not change the reviewed Linux/Windows v0.1.48 pins.
+export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
+  tag: "v0.1.49",
+  commit: "fedf9a087499552ffdbdc3e3c909ea49179e3f46",
+  arm64Sha256: "7a49613c843465bd181af926f02778457961a3f2b6355b654c7ac3c2f3c2b6a4",
+  x64Sha256: "cb861f5858f0e85bb629ed808d6015287d7651a1bbc918d54569853a020f2e32",
+  scriptSha256: "78e76eeffa845a2f5af0e924467cc0d2d648356c2a069b2834938c19a6d2fece",
+});
+
 function validMacPin(pin: MacInstallPin): boolean {
   return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
     /^[a-f0-9]{40}$/.test(pin.commit) &&

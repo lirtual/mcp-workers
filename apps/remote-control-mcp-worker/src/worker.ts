@@ -1,5 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -1094,7 +1094,7 @@ export default {
       }
       return handleAgentInstallerRequest(request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,
         (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org",
-        REVIEWED_WINDOWS_INSTALL_PIN);
+        REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);
