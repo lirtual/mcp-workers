@@ -9,6 +9,16 @@ Status (2026-11-01): **production deployed; one real synthetic TXT E2E and obser
 - An independent Linux GET at approximately `2026-11-01T05:17:21Z` returned **HTTP 200**, **379 bytes**, SHA-256 `576d129577bf7b6819cf73d6581ac80f7b0e8b96c51f84ba1b8046febec64ddb`, matching the original fixture exactly. [Full real-upload evidence](https://github.com/lirtual/cloudflare-actions/issues/35#issuecomment-6553845927).
 - The **only post-expiry GET** of `https://litter.catbox.moe/6vzfhl.txt`, on the independently connected Linux Agent `c6d8ca67-a5e8-418a-9a19-7f14d7fdb876`, began `2026-11-01T06:33:19Z` and received **HTTP 404**, `text/html; charset=utf-8`, with **zero redirects followed**. The response body exceeded the intentionally bounded 65,536-byte download cap (`curl` exit 63), but the HTTP **404 status was received**; no second GET was attempted. The observation occurred approximately 76 minutes after the successful content readback and therefore after the selected 1h lifetime. **Expiry observation PASS** under the approved 404/410 criterion; exact deletion time is not established. The nonzero curl exit describes the bounded error-page body, not an HTTP 200 or network timeout.
 
+## Subsequent interface consolidation (code-only candidate, 2026-11-02)
+
+The dedicated public upload tool is being replaced with optional top-level
+fileParams on workflow_run. The same published Litterbox Plan, bounded source,
+at-most-once Provider invocation and explicit Owner upload instruction remain.
+This is a new source candidate only: the historical real-file and expiry
+observations below still describe the previous production interface, not a
+verified deployment of the new one. Production release, Portal refresh and a
+fresh ChatGPT-selected file test require separate authorization.
+
 ## File input and provenance boundary
 
 The top-level `file` is OpenAI `fileParams` metadata: required `download_url` and **opaque, nonempty string** `file_id` (not necessarily prefixed `file_`), optional `file_name`/`mime_type`. The temporary signed URL is a user-selected **external read target**, not independent evidence that the source belongs to OpenAI.
