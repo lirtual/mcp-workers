@@ -4,6 +4,9 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 
 ## 2026-11-02 Bark-only retirement design (Grill With Docs round 1)
 
+**Implementation status as of 2026-11-02:** T1 #55 and T2 #56 trusted OpenList and verified Download Bark Consumer source were implemented and merged into `main` by [PR #686](https://github.com/lirtual/mcp-workers/pull/686) (`b15137e6`); 525/525 affected tests, TypeScript, PR checks and post-merge main CI passed. The Chrome-only and source-not-yet-implemented wording retained in the earlier Grill decision history *below* describes the pre-implementation baseline, **not current Consumer source**. Neither the unified Provider nor the Workflow Consumer has been released to production as part of Spec #54; the two existing Active Weixin business Versions still await separately authorized migration and true Bark handset E2E. [T3 #57](https://github.com/lirtual/cloudflare-actions/issues/57#issuecomment-6573546403) documents read-only redacted historical classification (39 Weixin Plan Versions, 16 literal text-bearing Versions, 19 Weixin reservations, 20 Provider receipts) with unresolved immutable-content/controlled-copy safety. No Weixin execution retirement, credential revocation, historical mutation or purge has been performed.
+
+
 **Design/documentation only — not yet deployed.** Owner accepted Q1=A, Q2=B, Q3=A:
 migrate existing Weixin notification paths to Bark (only `openlist` and
 `download`; `chrome` is already Bark); do **not** add notifications to
