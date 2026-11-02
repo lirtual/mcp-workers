@@ -57,6 +57,56 @@ operationally accurate until a protected release changes them.
 
 No runtime, published Plan, production data, secrets, Provider, publisher or current binding is changed by these design-only documents. Q3=A remains strict: rejected Bark Step fails the parent; indeterminate or lost acknowledgements never automatically resend.
 
+### 2026-11-02 final Bark-only retirement design (round 3: Q8=A / Q9=A / Q10=A)
+
+**Historical immutability and no replay (Q8=A):** preserve existing
+`workflow_versions.plan`, `runs.version_id`, non-sensitive original Action
+identifiers and terminal `run_steps` statuses as read-only shared business
+provenance; do not rewrite or re-Publish them. Retire all Weixin-only D1
+receipt, pairing and audit data **after** proving source ownership and removing
+every send-capable old-code path. `runs.outcome='indeterminate'` remains
+indeterminate, even if its original receipt was `unknown` or subsequently
+deleted. A same-key repeat returns original terminal Run identity/status;
+neither a missing receipt nor an immutable old Plan permits another send.
+The current runtime *already* preserves terminal `runs` and existing
+idempotency admission identity; **it does not yet reject all legacy Weixin
+execution**. Implementation must reject both Weixin IDs in Consumer
+publish/start/runner and the unified Provider's static catalog/dispatch,
+including native resumed Runs and stale Plan versions; prove physical drain
+or stop at the non-destructive gate. Do not add a tombstone database by
+default, and never delete applied migration files or unrelated shared
+records.
+
+**No-Weixin rollback (Q9=A):** the existing protected GitHub Actions
+Provider **and** Consumer release/repin/rollback checks must reject every
+historical Worker or Plan candidate capable of dispatching
+`weixin.send_text` / `weixin.notify_download`. Require verified
+Bark-only, other-Action-compatible runtime/version pairs; if unavailable,
+fail closed and retain the currently safe operational Version rather than
+restore old Weixin functionality. The current old-release compatibility
+checks and old D1/Owner-domain assumptions still exist and need updating
+during implementation. Prior Version IDs stay historical identifiers,
+not authorized rollback destinations.
+
+**Irreversible deletion (Q10=A):** live removal, original D1 Time Travel
+history, database undelete, user-controlled exports and provider-held
+copies have separately verified states. Do not claim fully permanent
+deletion while any permitted restore window or copy remains. Current
+Cloudflare D1 limits: 30 days Workers Paid / 7 days Free for Time Travel
+(the actual plan/backend must be independently checked). Do not infer
+anything about the real account tier or platform-controlled snapshots.
+No deletion, credentials, release, Workflow publish or Worker change is
+performed by the Draft design. See the existing
+[ADR-0002 and retire runbook](https://github.com/lirtual/cloudflare-actions/pull/53)
+for the single reviewed migration order, fail-closed regressions and
+required **fresh explicit destructive-production approval**.
+
+**Design frontier closed:** Q1–Q10 now have owner-confirmed answers; any
+remaining historical Run/backup inventory, compatibility implementation,
+GitHub/Workers CI, physical Session/Download and on-device Bark acceptance,
+or recovery-window expiry is **execution evidence**, not a reason to
+invent another pipeline or relax the accepted Bark-only objective.
+
 ## Capabilities
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
