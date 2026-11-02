@@ -75,6 +75,9 @@ test("production public installer routes use only reviewed pinned release", asyn
   assert.match(macShell, /7a49613c843465bd181af926f02778457961a3f2b6355b654c7ac3c2f3c2b6a4/);
   assert.match(macShell, /cb861f5858f0e85bb629ed808d6015287d7651a1bbc918d54569853a020f2e32/);
   assert.match(macShell, /78e76eeffa845a2f5af0e924467cc0d2d648356c2a069b2834938c19a6d2fece/);
+  assert.match(macShell,/1\) \[ "\$1" = "--upgrade" \]/);
+  assert.match(macShell,/if \[ "\$mode" != upgrade \]/);
+  assert.match(macShell,/sh "\$source" "\$mode" --archive/);
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);
 });

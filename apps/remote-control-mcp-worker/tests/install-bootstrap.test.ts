@@ -299,8 +299,8 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   }
   assert.match(html, /@media\(max-width:520px\)/);
   assert.match(html, /<html lang="en">/);
-  assert.match(html, /Install on your device/);
-  assert.match(html, /Run the command, then approve in MCP\./);
+  assert.match(html, /Install or upgrade your device/);
+  assert.match(html, /For a new installation, approve pairing in MCP/);
   assert.match(html, /Copy install command/);
   assert.doesNotMatch(html, /[\u3400-\u9fff]/, "install page must use English throughout");
   assert.match(html, /-webkit-text-size-adjust:100%/);
@@ -396,7 +396,8 @@ test('narrow install commands break only at URL path while copied text stays exa
     };
   }
   const windows=element(),linux=element(),macos=element(),copy=element(),shellLabel=element(),message=element();
-  const elems:Record<string,unknown>={windows,linux,macos,copy,'shell-label':shellLabel,message,command:code};
+  const elems:Record<string,unknown>={windows,linux,macos,copy,'shell-label':shellLabel,message,command:code,
+    'mac-action':element(),'mac-install':element(),'mac-upgrade':element()};
   const copied:string[]=[];
   runInNewContext(source,{
     document:{
@@ -458,7 +459,7 @@ test('icon-copy feedback resets correctly and retains SVG children', async () =>
       focus(){},
     };
   }
-  const els = Object.fromEntries(['windows','linux','macos','command','shell-label','message','copy'].map(id=>[id,element()])) as Record<'windows'|'linux'|'macos'|'command'|'shell-label'|'message'|'copy',FakeElement>;
+  const els = Object.fromEntries(['windows','linux','macos','command','shell-label','message','copy','mac-action','mac-install','mac-upgrade'].map(id=>[id,element()])) as Record<'windows'|'linux'|'macos'|'command'|'shell-label'|'message'|'copy',FakeElement>;
   const clipboard:string[] = [];
   let rejectCopy=false;
   const pending=new Map<number,()=>void>();
@@ -561,7 +562,14 @@ test('macOS synthetic release pin requires two native archives and separately pi
   assert.match(shell,/--endpoint/);
   assert.match(shell,/mode=temporary/);
   assert.match(shell,/Owner selection cancelled/);
-  assert.match(shell,/Unexpected installer arguments/);
+  assert.match(shell,/Unsupported installer action/);
+  assert.match(shell,/1\) \[ "\$1" = "--upgrade" \]/);
+  assert.match(shell,/if \[ "\$mode" != upgrade \]; then/);
+  assert.match(shell,/sh "\$source" "\$mode" --archive/);
+  const rejected=spawnSync('sh',['-c',shell,'macos-script','--unexpected'],{encoding:'utf8'});
+  assert.notEqual(rejected.status,0);
+  assert.match(rejected.stderr,/Unsupported installer action/);
+  assert.doesNotMatch(rejected.stdout,/Downloading pinned/);
   assert.ok(shell.indexOf("Release asset SHA-256 mismatch") <
     shell.indexOf("Installer source SHA-256 mismatch"));
   assert.ok(shell.indexOf("Installer source SHA-256 mismatch") <
@@ -583,7 +591,7 @@ test('macOS synthetic release pin requires two native archives and separately pi
   assert.notEqual(denied.status,0);
 });
 
-test('synthetic macOS page exposes a single trustworthy command only with a reviewed pin', async () => {
+test('reviewed macOS page copies separate explicit install and upgrade commands', async () => {
   const pin={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
     arm64Sha256:'b'.repeat(64),x64Sha256:'c'.repeat(64),scriptSha256:'d'.repeat(64)};
   const origin='https://rca.lirtual.dpdns.org';
@@ -595,13 +603,13 @@ test('synthetic macOS page exposes a single trustworthy command only with a revi
   assert.ok(script);
   const fake=()=>({
     attributes:{} as Record<string,string>, handlers:{} as Record<string,()=>void>,
-    textContent:'',disabled:false,tabIndex:0,
+    textContent:'',disabled:false,tabIndex:0,hidden:false,
     setAttribute(name:string,value:string){this.attributes[name]=value;},
     removeAttribute(name:string){delete this.attributes[name];},
     addEventListener(name:string,fn:()=>void){this.handlers[name]=fn;},
     focus(){},
   });
-  const elements=Object.fromEntries(['windows','linux','macos','command','shell-label','message','copy']
+  const elements=Object.fromEntries(['windows','linux','macos','command','shell-label','message','copy','mac-action','mac-install','mac-upgrade']
     .map(name=>[name,fake()])) as Record<string,ReturnType<typeof fake>>;
   const copied:string[]=[];
   runInNewContext(script,{
@@ -618,4 +626,20 @@ test('synthetic macOS page exposes a single trustworthy command only with a revi
   assert.doesNotMatch(copied[0]!,/\| sh/);
   assert.match(copied[0]!,/\[ "\$code" = 200 \]/);
   assert.equal(spawnSync('sh',['-n'],{input:copied[0]!,encoding:'utf8'}).status,0);
+  assert.doesNotMatch(copied[0]!,/sh "\$f" --upgrade/);
+  assert.equal(elements['mac-action']!.hidden,false);
+  elements['mac-upgrade']!.handlers.click!();
+  assert.equal(elements['mac-upgrade']!.attributes['aria-pressed'],'true');
+  assert.equal(elements['mac-install']!.attributes['aria-pressed'],'false');
+  await elements.copy!.handlers.click!();
+  assert.equal(copied.length,2);
+  assert.match(copied[1]!,/sh "\$f" --upgrade < \/dev\/tty/);
+  assert.match(copied[1]!,/\[ "\$code" = 200 \] && \[ -s "\$f" \]/);
+  assert.equal(spawnSync('sh',['-n'],{input:copied[1]!,encoding:'utf8'}).status,0);
+  elements['mac-install']!.handlers.click!();
+  assert.equal(elements['mac-install']!.attributes['aria-pressed'],'true');
+  await elements.copy!.handlers.click!();
+  assert.equal(copied[2],copied[0]);
+  elements.windows!.handlers.click!();
+  assert.equal(elements['mac-action']!.hidden,true);
 });
