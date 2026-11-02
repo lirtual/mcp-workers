@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import {httpOperation,type HttpOperation} from './http-action.ts';
-import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
+import {cloudflareActionManifest,TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {reviewedWriteArguments} from './mcp-write-contract.ts';
@@ -711,7 +711,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   },0);
   if(totalWaitSeconds>PLAN_LIMITS.maxWaitSeconds)
     throw new PlanError('wait_budget_exceeded','/steps');
-  // Current reviewed Provider is one notification from one physical OpenList Session.
+  // At most one reviewed Cloudflare notification Action per Plan.
   if(expanded.filter(x=>(x as {uses?:unknown;with?:{executor?:unknown}}).uses==='action.run'&&
       (x as {with?:{executor?:unknown}}).with?.executor==='cloudflare').length>1)
     throw new PlanError('multiple_cloudflare_actions_unsupported','/steps');
@@ -901,7 +901,7 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
         const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
         if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
            action?.repository!=='lirtual/github-actions'||
-           action?.workflowPath!=='.github/workflows/openlist.yml'||
+           (typeof action?.workflowPath!=='string'||!TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS.has(action.workflowPath))||
            action?.type!=='session')
           throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
       }

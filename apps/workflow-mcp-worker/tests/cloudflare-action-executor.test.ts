@@ -227,3 +227,82 @@ test('generic send_text composes the authenticated OpenList Session URL without 
  assert.equal((await runPublishedCloudflareAction(f.env,f.plan,f.notify,runId,f.inspect)).status,'succeeded');
  assert.equal(sends,1);
 });
+
+test('Chrome signed Ready notification is sent once',async t=>{
+ const f=await fixture(t);
+ const manifest=await cloudflareActionManifest('unified-generic');
+ f.plan.steps[0]!.with.action={
+  ...github,workflowPath:'.github/workflows/chrome.yml'
+ };
+ f.sql.prepare(
+  "UPDATE step_attempts SET workflow_ref=?"
+ ).run('lirtual/github-actions/.github/workflows/chrome.yml@refs/tags/v1');
+
+ f.notify.with.contract_digest=manifest.contract_digest;
+ f.notify.with.input={
+  text:'Chrome Session Ready\n',session_step_id:'openlist'
+ };
+ f.plan.cloudflare_action_approvals=[{
+  executor:'cloudflare',provider:'weixin',
+  action:'weixin.send_text',
+  contract_digest:manifest.contract_digest,deployment_id:version
+ }];
+
+ const provider=f.env.ACTIONS! as unknown as Record<string,unknown>;
+ provider.getContract=async()=>({
+  deployment_id:version,contract_digest:manifest.contract_digest
+ });
+
+ const text='Chrome Session Ready\n'+url;
+ const hash=createHash('sha256').update(text).digest('hex');
+ let sends=0;
+
+ provider.execute=async(_action:string,input:{text:string})=>{
+  sends++;
+  assert.equal(input.text,text);
+  return {status:'accepted',input_digest:hash};
+ };
+ provider.getReceipt=async(_action:string,input:{input_digest:string})=>{
+  assert.equal(input.input_digest,hash);
+  return {status:'accepted'};
+ };
+
+ assert.equal(
+  (await runPublishedCloudflareAction(
+   f.env,f.plan,f.notify,runId,f.inspect
+  )).status,'succeeded'
+ );
+ assert.equal(
+  (await runPublishedCloudflareAction(
+   f.env,f.plan,f.notify,runId,f.inspect
+  )).status,'succeeded'
+ );
+ assert.equal(sends,1);
+ assert.ok(!JSON.stringify(
+  f.sql.prepare('SELECT * FROM cloudflare_action_invocations').get()
+ ).includes(url));
+});
+
+test('Chrome notification rejects another workflow or tag',async t=>{
+ const f=await fixture(t);
+ f.plan.steps[0]!.with.action={
+  ...github,workflowPath:'.github/workflows/chrome.yml'
+ };
+
+ assert.equal(
+  (await runPublishedCloudflareAction(
+   f.env,f.plan,f.notify,runId,f.inspect
+  )).error_code,'session_ready_not_trusted'
+ );
+
+ f.sql.prepare(
+  "UPDATE step_attempts SET workflow_ref=?"
+ ).run('lirtual/github-actions/.github/workflows/chrome.yml@refs/tags/other');
+
+ assert.equal(
+  (await runPublishedCloudflareAction(
+   f.env,f.plan,f.notify,runId,f.inspect
+  )).error_code,'session_ready_not_trusted'
+ );
+ assert.equal(f.sends(),0);
+});
