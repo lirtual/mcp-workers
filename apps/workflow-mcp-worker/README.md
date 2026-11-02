@@ -101,6 +101,29 @@ performed by the Draft design. See the existing
 for the single reviewed migration order, fail-closed regressions and
 required **fresh explicit destructive-production approval**.
 
+**Spec review: E2E admission and original Plan literals.** A real
+`workflow_run` requires Active. After the existing approval-controlled
+Pause → Publish, briefly Resume for one authorized E2E, returning to Pause
+on failure and retaining Active only when accepted; never demand prior
+handset E2E as a prerequisite to the test's Active admission. A legacy
+`weixin.send_text` immutable Plan may retain a message `text` literal,
+not just non-sensitive Action identity. Inventory the original JSON by
+read-only classification without printing plaintext. If material Weixin-only
+payload is inseparable from a historical Plan whose immutability Q8=A
+requires, block irreversible deletion and request a **scoped** decision;
+never mutate immutable Plan records or silently waive Q2=B.
+
+**Spec review: defense beyond protected releases.** Provider/Consumer
+catalog and GitHub Actions release checks are necessary but not sufficient
+to prove that a privileged direct Cloudflare rollback could never restore
+an older Weixin sender. The retirement gate must also independently verify
+actual old-version credential/binding, Owner pairing and upstream-send
+revocation. Avoid assuming secret removal from a newer Worker Version
+retroactively deletes a historical Version's bindings. There is no need
+for a new watchdog or separate rollout mechanism. D1 Time Travel and
+deleted-database undelete are distinct restore paths with separately
+applicable windows, never automatically added together.
+
 **Design frontier closed:** Q1–Q10 now have owner-confirmed answers; any
 remaining historical Run/backup inventory, compatibility implementation,
 GitHub/Workers CI, physical Session/Download and on-device Bark acceptance,
