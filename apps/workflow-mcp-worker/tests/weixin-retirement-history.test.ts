@@ -93,6 +93,60 @@ test('retired Published Weixin Plan cannot resume or accept new Run with any ide
  assert.equal((active.sqlite.prepare('SELECT COUNT(*) AS count FROM runs').get() as {count:number}).count,1);
 });
 
+test('a reserved old Weixin send stays possibly dispatched when cancellation is requested',async t=>{
+ for(const reserved of [true,false]){
+  await t.test(reserved?'reserved':'not reserved',async sub=>{
+   const f=await fixture(sub,'active','running','started');
+   if(reserved)f.sqlite.prepare(`INSERT INTO cloudflare_action_invocations
+     (run_id,step_id,invocation_id,source_attempt_id,input_digest,binding_generation,
+      contract_digest,deployment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(run,'notify','legacy-reservation','original-attempt',digest,1,'reviewed-old-contract',version,1);
+   const result=await f.service.cancel(run,'notify');
+   assert.equal(result.cancellation,reserved?'dispatched_may_complete':'requested');
+   assert.equal(result.physical_terminated,false);
+   const current=f.sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(run) as {outcome:string};
+   assert.equal(current.outcome,reserved?'running':'cancelled');
+   const count=f.sqlite.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations WHERE run_id=? AND step_id=?')
+    .get(run,'notify') as {n:number};
+   assert.equal(count.n,reserved?1:0,'preserve the original send-reservation identity');
+  });
+ }
+});
+
+test('Weixin reservation attribution follows the original Run/Version/Step, not binding generation',async t=>{
+ const f=await fixture(t,'active','indeterminate','started');
+ const otherWf='44444444-4444-4444-8444-444444444444';
+ const otherVersion='55555555-5555-4555-8555-555555555555';
+ const otherRun='66666666-6666-4666-8666-666666666666';
+ const barkPlan=JSON.stringify({version:1,name:'Different provider',steps:[{
+  id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'bark',
+   action:'bark.send_notification',input:{body:'synthetic'}}}]});
+ f.sqlite.prepare('INSERT INTO workflows(id,name,draft,state,active_version_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+  .run(otherWf,'Other',barkPlan,'active',otherVersion,1,1);
+ f.sqlite.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,?,?,?,?)')
+  .run(otherVersion,otherWf,'synthetic-digest',barkPlan,1);
+ f.sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,
+  start_state,outcome,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+  .run(otherRun,otherWf,otherVersion,otherRun,digest,'{}','started','succeeded',1,1);
+ const insert=f.sqlite.prepare(`INSERT INTO cloudflare_action_invocations
+  (run_id,step_id,invocation_id,source_attempt_id,input_digest,binding_generation,
+   contract_digest,deployment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)`);
+ insert.run(run,'notify','weixin-invocation','attempt-1',digest,1,'shared-contract','same-deployment',1);
+ insert.run(otherRun,'notify','bark-invocation','attempt-2',digest,1,'shared-contract','same-deployment',1);
+ const matches=f.sqlite.prepare(`SELECT i.invocation_id
+  FROM cloudflare_action_invocations i
+  JOIN runs r ON r.id=i.run_id
+  JOIN workflow_versions v ON v.id=r.version_id
+  JOIN json_each(v.plan,'$.steps') s ON json_extract(s.value,'$.id')=i.step_id
+  WHERE json_extract(s.value,'$.uses')='action.run'
+   AND json_extract(s.value,'$.with.executor')='cloudflare'
+   AND (lower(COALESCE(json_extract(s.value,'$.with.provider'),''))='weixin'
+    OR lower(COALESCE(json_extract(s.value,'$.with.action'),'')) IN
+      ('weixin.send_text','weixin.notify_download'))`)
+   .all() as Array<{invocation_id:string}>;
+ assert.deepEqual(matches.map(x=>x.invocation_id),['weixin-invocation']);
+ assert.equal((f.sqlite.prepare('SELECT COUNT(*) n FROM cloudflare_action_invocations').get() as {n:number}).n,2);
+});
 
 test('stale historical Weixin start cannot block unrelated reviewed Workflow admission',async t=>{
  const f=await fixture(t,'active','queued','start_unknown');
