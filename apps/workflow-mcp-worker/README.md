@@ -2,6 +2,51 @@
 
 Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cloudflare Workflows. One Worker exposes a unified set of capabilities; no separate execution stages, capability enable switches, scheduler, queue or credential issuer.
 
+## 2026-11-02 Bark-only retirement design (Grill With Docs round 1)
+
+**Design/documentation only — not yet deployed.** Owner accepted Q1=A, Q2=B, Q3=A:
+migrate existing Weixin notification paths to Bark (only `openlist` and
+`download`; `chrome` is already Bark); do **not** add notifications to
+`windows`, `ubuntu` or `code-server`. Keep Bark notification errors
+strictly failing the notification Step and parent Run, and keep current
+at-most-once/unknown-without-replay semantics. Remove the paused one-off
+Weixin test Workflow during the separately approved retirement.
+
+The target is to remove **both** `weixin.send_text` and
+`weixin.notify_download` from the executable catalog, old Weixin Provider
+and credentials, Owner pairing page/domain, obsolete release/binding paths,
+and eventually **permanently delete Weixin-specific D1 receipts/audit data**.
+That deliberately supersedes the earlier migration-specific *permanent
+retention* choice, **not** the safety requirement to keep history intact
+during transition. There is no production-deletion authorization now.
+Do not mutate historical Published Plan/Run identities, re-send any old
+Weixin invocation, erase shared Bark/Workflow evidence or remove applied
+migration files before all dependent paths are understood.
+
+Required parity: OpenList needs the same **reviewed signed Ready + physical
+GitHub Session + same-Run + atomic D1 fence** used for Chrome Bark, with its
+own explicitly approved source identity (the runtime currently restricts
+Bark's URL binding to `chrome.yml`). Download needs the **existing single
+reviewed GitHub Task's signed Claim, native terminal success and remote
+SHA-256 readback evidence**, not merely an ordinary `needs`-succeeded Bark
+message; a new proof-bound Bark source path is still needed. Source
+changes must not widen static Bark to arbitrary URLs, users or repositories.
+Provider `accepted` and handset actual receipt are separate validations.
+
+Retirement gate: inspect legacy v1/v2/v3 Weixin versions, frozen receipts and
+unknown Run outcomes, current and paused Plans, physical/nonnative Actions,
+shared Worker/Consumer version pins, release guards, migration schemas and
+permanent deletion scope. Stage any deployment only through existing
+protected GitHub Actions; publish updated live definitions under their own
+grants after freeze/drain; block old IDs before allowing destructive cleanup.
+Each irreversible step needs **new explicit production and deletion approval**.
+Full compatibility, history purge scope, and E2E/rollback details remain
+questions for later Grill rounds. See canonical
+[Cloudflare Actions ADR-0002](https://github.com/lirtual/cloudflare-actions/pull/53/files)
+and its [Spec #21 runbook](https://github.com/lirtual/cloudflare-actions/pull/53/files)
+on the review branch until merged. Current Weixin details below remain
+operationally accurate until a protected release changes them.
+
 ## Capabilities
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.

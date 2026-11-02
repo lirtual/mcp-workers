@@ -18,4 +18,9 @@ The active repository contains independently owned MCP Worker bounded contexts:
 
 - [Weixin Action Provider](https://github.com/lirtual/cloudflare-actions/tree/main/apps/weixin-mcp-worker): independently owns the original Weixin Worker, encrypted owner binding, D1 receipts and private RPC. The public MCP ingress and this repository's Weixin release path were retired by Spec #392.
 
+> **Design-only 2026-11-02:** Weixin Action/Provider, pairing and history are
+> selected for future full retirement in favor of existing Bark (see
+> [Cloudflare Actions ADR-0002](https://github.com/lirtual/cloudflare-actions/pull/53/files)).
+> The preceding mapping reflects **current runtime**, not deletion approval.
+
 Each context maintains its own application contract, upstream credentials, deployment lifecycle, and runtime behavior. The shared `packages/portal-auth` package is limited to the MCP ingress authentication boundary and does not centralize application business logic.
