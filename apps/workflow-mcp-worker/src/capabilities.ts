@@ -258,7 +258,7 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
      properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
     {type:'object',additionalProperties:false,
      required:['executor','provider','action','contract_digest','input'],properties:{
-       executor:{const:'cloudflare'},provider:{enum:['weixin','bark','dub','envshare','litterbox']},action:{enum:['weixin.send_text','weixin.notify_download','bark.send_notification','dub.shorten_url','envshare.share_text','litterbox.upload_file']},
+       executor:{const:'cloudflare'},provider:{enum:['bark','dub','envshare','litterbox']},action:{enum:['bark.send_notification','dub.shorten_url','envshare.share_text','litterbox.upload_file']},
        contract_digest:{type:'string',pattern:'^[a-f0-9]{64}$'},
        input:{oneOf:[
         {type:'object',additionalProperties:false,required:['download_step_id'],
@@ -600,8 +600,8 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
-      reviewed_manifest:await cloudflareActionManifest(),
-      reviewed_manifests:[await cloudflareActionManifest(),await cloudflareActionManifest('download'),await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub'),await cloudflareActionManifest('envshare'),await cloudflareActionManifest('litterbox')],
+      reviewed_manifest:await cloudflareActionManifest('bark'),
+      reviewed_manifests:[await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub'),await cloudflareActionManifest('envshare'),await cloudflareActionManifest('litterbox')],
       deployment_id:env.ACTIONS_DEPLOYMENT_ID??null}:{}),
   };
   // Design-only contracts make unsupported features discoverable without

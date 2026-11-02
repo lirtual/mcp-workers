@@ -2,6 +2,31 @@
 
 Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cloudflare Workflows. One Worker exposes a unified set of capabilities; no separate execution stages, capability enable switches, scheduler, queue or credential issuer.
 
+## Spec #54 / T5 — Weixin Consumer retirement (source only)
+
+The **new source candidate**, not yet authorized/deployed to production, disallows
+all Weixin Cloudflare Actions and compatibility spellings at Draft compilation,
+Publish, child review, new Active admission, reactivation of an old Published
+Version, restored Native Run execution, and the Consumer RPC dispatcher.
+Discovery now advertises only Bark, Dub, EnvShare and Litterbox. The retired
+Weixin send implementations are no longer imported into the Consumer runtime.
+Existing Bark OpenList and Download Published Versions remain unchanged.
+
+Historical immutable Plans, Run IDs, Step outcomes and terminal idempotency
+keys remain readable. A historical terminal replay returns its original identity,
+status and start-state *without* re-reading a Provider receipt or restarting a
+Native Workflow; a nonterminal/unknown Weixin Run is not re-created, resent, or
+falsely marked successful/failed. A retained legacy manifest is a **historical
+digest fixture, not an executable or discoverable Action**. Old RPC, send
+examples and pre-T5 migration text later in this README describe history, not
+a supported new deployment workflow. No Tombstone store or D1 rewrite.
+
+**Release boundary:** production still uses its independently released binary
+until an Owner-approved protected Consumer release. Full Weixin execution
+retirement requires the separate Provider, old-version rollback and upstream
+credential gates in T6/T7; T5 source/CI alone cannot prove production retirement.
+No production configuration, credential, data or backup deletion belongs to T5.
+
 ## Capabilities
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.

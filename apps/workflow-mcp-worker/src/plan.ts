@@ -1,7 +1,7 @@
 import YAML from 'yaml';
 import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 import {httpOperation,type HttpOperation} from './http-action.ts';
-import {cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS,TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
+import {cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS,TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS,isRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {reviewedWriteArguments} from './mcp-write-contract.ts';
@@ -769,6 +769,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
       keys(withData,['token_sha256','timeout_seconds'],stepPath+'/with');
     }else if(s.uses==='action.run'){
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
+      if(isRetiredWeixinAction({uses:'action.run',with:withData}))
+        throw new PlanError('weixin_action_retired',stepPath+'/with');
       const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':withData.action==='litterbox.upload_file'?'litterbox':'unified-generic');
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)

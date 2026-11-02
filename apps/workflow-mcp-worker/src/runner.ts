@@ -16,6 +16,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest, PLAN_LIMITS } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
+import {hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import type { Env } from './store.ts';
 import { limitResult,WorkflowService } from './store.ts';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT, type PortalServiceToken } from './mcp-public-fetch.ts';
@@ -816,6 +817,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
     const plan=JSON.parse(version.plan) as Plan;
+    // Native wake/restore must never run an immutable Weixin Plan. Do not
+    // rewrite its previous step/terminal facts or attempt a replacement send.
+    if(hasRetiredWeixinAction(plan))throw Error('weixin_action_retired');
     const ctx:{inputs:Record<string,unknown>;steps:Record<string,Outcome>}={inputs:JSON.parse(row.inputs),steps:{}};
     if(row.outcome==='queued'){
       // A native child create can become visible AFTER a cancellation request
