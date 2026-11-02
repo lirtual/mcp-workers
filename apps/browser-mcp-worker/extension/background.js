@@ -79,8 +79,12 @@ async function render() {
   const activation=(await chrome.storage.session.get("browser_activation_attempt")).browser_activation_attempt;
   const label=s.authorization==="revoked"?"REV":activation?"AUTH":s.pending_cloud_stop?"STOP":
     s.authorization!=="enabled"?"OFF":s.connection==="online"?"ON":"WAIT";
-  await chrome.action.setBadgeText({text:label});
-  await chrome.action.setTitle({title:`Browser MCP — ${activation?"authenticating":s.authorization} / ${s.connection}${s.pending_cloud_stop?" · cloud Stop pending":""}`});
+  // Fixed identity with an accessible state icon; never obscure 16px artwork with text badges.
+  await chrome.action.setIcon({path:{16:`icons/${label.toLowerCase()}-16.png`,32:`icons/${label.toLowerCase()}-32.png`}});
+  await chrome.action.setBadgeText({text:""});
+  const description={OFF:"Off",ON:"On and connected",AUTH:"Owner authentication in progress",
+    WAIT:"Enabled, waiting for connection",STOP:"Cloud Stop pending confirmation",REV:"Pairing revoked"}[label];
+  await chrome.action.setTitle({title:`Browser MCP — ${label}: ${description} (${s.authorization} / ${s.connection})${s.pending_cloud_stop?" · cloud Stop pending":""}`});
 }
 function clearNetwork() {
   currentGeneration=0;

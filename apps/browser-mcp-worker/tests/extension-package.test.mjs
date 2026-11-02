@@ -41,6 +41,20 @@ test("one reproducible Chrome/Edge extension ZIP is source-bound and refuses tam
     const metadata=JSON.parse(readFileSync(zip+".json","utf8"));
     assert.equal(metadata.sha256,before);
     assert.deepEqual(metadata.browsers,["Chrome","Edge"]);
+    const manifest=JSON.parse(readFileSync(join(fixture,"apps/browser-mcp-worker/extension/manifest.json"),"utf8"));
+    assert.equal(manifest.action.default_icon["16"],"icons/off-16.png");
+    assert.equal(manifest.icons["128"],"icons/brand-128.png");
+    for(const name of Object.values(manifest.icons).concat(Object.values(manifest.action.default_icon))){
+      assert.ok(Object.hasOwn(metadata.source_files,name),`packaged icon ${name}`);
+    }
+    const icon=join(fixture,"apps/browser-mcp-worker/extension/icons/on-16.png");
+    const originalIcon=readFileSync(icon);
+    assert.equal(originalIcon.readUInt32BE(16),16);
+    assert.equal(originalIcon.readUInt32BE(20),16);
+    writeFileSync(icon,Buffer.concat([originalIcon,Buffer.from("changed")]));
+    assert.notEqual(invoke("--verify",zip).status,0,"changed icon must fail artifact verification");
+    writeFileSync(icon,originalIcon);
+    assert.equal(invoke("--verify",zip).status,0);
     assert.equal(typeof metadata.source_dirty,"boolean");
     // Changing the packaged guide must change the immutable URL even if the
     // Chrome manifest version stays exactly the same.
