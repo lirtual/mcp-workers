@@ -6,7 +6,7 @@ Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cl
 
 **Consumer T5 and Provider T6 production acceptance: PASS; full Spec #54:
 NOT COMPLETE.** The deployed `workflow-mcp-worker` Version
-`9e1845a0-166a-4576-8168-78a19203aa52` and `cloudflare-actions`
+`8420fe1e-c67f-4a61-91ef-375b8686b77d` and `cloudflare-actions`
 Bark-only Version `960ade68-149a-469c-a4fe-2c5e678df49c` each
 receive 100% of their traffic. The Consumer has exactly one
 `ACTIONS -> cloudflare-actions#ActionsEntrypoint` Service Binding pinned to
@@ -26,15 +26,19 @@ send. [T4](https://github.com/lirtual/cloudflare-actions/issues/58) verified
 OpenList/Download delivery to the handset, a clicked OpenList temporary
 link and physical Session cleanup **before** T6, not as a repeat post-T6 test.
 
-**T7 physical revocation is still OPEN.** Historical Provider/Consumer
-versions remain visible to privileged recovery, and the former Weixin
-Secret, Owner domain and upstream authorization have not been independently
-invalidated. The former Provider's local unbind did not revoke the
-Tencent/iLink credential. No new message, old Native replay or direct
-privileged rollback may be used as an ad hoc test. The Provider's
-existing protected GitHub maintenance denies unsafe rollback, but a
-separate approval and upstream proof is required to retire all old
-execution rights. T3 Plan-data classification, T8 irreversible historical
+**T7 project-controlled retirement is still OPEN.** Protected production
+maintenance deleted exactly historical Provider Version #1, independently
+read back in [T7 evidence](https://github.com/lirtual/cloudflare-actions/issues/61#issuecomment-6577368084), while five Weixin-capable
+Provider Versions #2–#6 remain; current Bark-only Provider #7 stays
+pinned and unchanged. An independent protected Consumer release reopened
+the D1 gate and restored six business Workflow Plans without replaying
+any old Run. The inherited Weixin Secret and legacy Owner domain remain.
+The Owner confirms WeChat-side unbinding was already completed and excludes
+further upstream work; this is not an independently verified old-binary
+send-denial test. Do not initiate legacy messages, old Native replay or
+privileged rollback as ad hoc tests. The existing protected release denies
+unsafe rollback and requires a new exact approval for **each** additional
+Version retirement. T3 historical Plan classification, T8 irreversible
 purge and T9 recovery-window verification remain separate.
 
 **Dated legacy Weixin examples and former Provider modes below are
