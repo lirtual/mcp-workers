@@ -126,7 +126,7 @@ export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
  * owner-local installer source separately from the trusted HTTPS Worker script. */
 export type MacInstallPin = Readonly<{
   tag: string; commit: string; arm64Sha256: string; x64Sha256: string;
-  scriptSha256: string;
+  scriptSha256: string; remoteUpgrade?: true;
 }>;
 // Published immutable v0.1.49 Agent Release; Linux/Windows pins remain v0.1.48.
 // A local upgrade still requires an explicit --upgrade and owner confirmation.
@@ -141,7 +141,8 @@ export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
 function validMacPin(pin: MacInstallPin): boolean {
   return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
     /^[a-f0-9]{40}$/.test(pin.commit) &&
-    [pin.arm64Sha256,pin.x64Sha256,pin.scriptSha256].every(s=>/^[a-f0-9]{64}$/.test(s));
+    [pin.arm64Sha256,pin.x64Sha256,pin.scriptSha256].every(s=>/^[a-f0-9]{64}$/.test(s)) &&
+    (pin.remoteUpgrade === undefined || (pin.remoteUpgrade === true && pin.tag !== "v0.1.49"));
 }
 
 /** HTTPS Worker script is the bootstrap trust root. Pinned GitHub source and
@@ -151,17 +152,23 @@ function validMacPin(pin: MacInstallPin): boolean {
 export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): string {
   if (!validInstallerOrigin(origin) || !validMacPin(pin))
     throw new Error("Unapproved macOS release pin or origin");
+  const remote = pin.remoteUpgrade === true;
   return [
     "#!/bin/sh",
     "set -eu",
     "umask 077",
     'case "$#" in',
     '  0) mode= ;;',
-    '  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; }; mode=upgrade ;;',
+    remote
+      ? '  1) case "$1" in --upgrade) mode=upgrade ;; --remote-upgrade) mode=remote-upgrade ;; *) echo "Unsupported installer action" >&2; exit 1 ;; esac ;;'
+      : '  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; }; mode=upgrade ;;',
     '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
     'esac',
     "[ \"$(uname -s)\" = Darwin ] || { echo 'macOS only' >&2; exit 1; }",
-    "[ \"$(id -u)\" -ne 0 ] && [ -t 0 ] && [ -t 1 ] || { echo 'Ordinary interactive Terminal required' >&2; exit 1; }",
+    remote
+      ? "[ \"$(id -u)\" -ne 0 ] || { echo 'Ordinary owner required' >&2; exit 1; }"
+      : "[ \"$(id -u)\" -ne 0 ] && [ -t 0 ] && [ -t 1 ] || { echo 'Ordinary interactive Terminal required' >&2; exit 1; }",
+    ...(remote ? ['[ "$mode" = remote-upgrade ] || { [ -t 0 ] && [ -t 1 ]; } || { echo "Owner Terminal required" >&2; exit 1; }'] : []),
     "for tool in curl shasum tar mktemp uname id sw_vers awk; do command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing macOS installer tool' >&2; exit 1; }; done",
     "major=$(sw_vers -productVersion | awk -F. '{print $1}')",
     "case \"$major\" in ''|*[!0-9]*) exit 1 ;; esac",
@@ -185,13 +192,19 @@ export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): 
     "script_url=https://raw.githubusercontent.com/lirtual/remote-control-agent/"+pin.commit+"/apps/remote-control-agent/scripts/macos-local.sh",
     "curl -fSs --proto '=https' --tlsv1.2 --max-redirs 0 --max-time 30 --max-filesize 30000 \"$script_url\" -o \"$source\"",
     "[ \"$(shasum -a 256 \"$source\" | awk '{print $1}')\" = '"+pin.scriptSha256+"' ] || { echo 'Installer source SHA-256 mismatch' >&2; exit 1; }",
-    'if [ "$mode" != upgrade ]; then',
+    remote ? 'if [ "$mode" != upgrade ] && [ "$mode" != remote-upgrade ]; then' : 'if [ "$mode" != upgrade ]; then',
     "  printf 'Install mode: [1] Permanent (login LaunchAgent), [2] Temporary (24h foreground): ' > /dev/tty",
     "  IFS= read -r choice < /dev/tty || { echo 'Owner selection cancelled' >&2; exit 1; }",
     '  case "$choice" in 1) mode=install ;; 2) mode=temporary ;; *) echo "No mode selected" >&2; exit 1 ;; esac',
     'fi',
     "echo 'Verified immutable archive and exact installer source.'",
+    ...(remote ? [
+      'if [ "$mode" = remote-upgrade ]; then',
+      "  sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/'",
+      'else',
+    ] : []),
     "sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/' < /dev/tty",
+    ...(remote ? ['fi'] : []),
     "",
   ].join("\n");
 }

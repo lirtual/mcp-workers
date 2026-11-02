@@ -643,3 +643,24 @@ test('reviewed macOS page copies separate explicit install and upgrade commands'
   elements.windows!.handlers.click!();
   assert.equal(elements['mac-action']!.hidden,true);
 });
+
+test('remote Mac upgrade remains unavailable on the existing v0.1.49 pin',async()=>{
+  const {renderAgentInstallMacShell,REVIEWED_MACOS_INSTALL_PIN}=
+    await import('../src/install-bootstrap.ts');
+  const origin='https://rca.lirtual.dpdns.org';
+  const old=renderAgentInstallMacShell(origin,REVIEWED_MACOS_INSTALL_PIN);
+  assert.doesNotMatch(old,/remote-upgrade/);
+  const future={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
+    arm64Sha256:'b'.repeat(64),x64Sha256:'c'.repeat(64),
+    scriptSha256:'d'.repeat(64),remoteUpgrade:true as const};
+  const shell=renderAgentInstallMacShell(origin,future);
+  assert.match(shell,/--remote-upgrade/);
+  assert.match(shell,/mode=remote-upgrade/);
+  assert.equal(spawnSync('sh',['-n'],{input:shell,encoding:'utf8'}).status,0);
+  const bad=spawnSync('sh',['-c',shell,'shell','--bad'],{encoding:'utf8',timeout:3000});
+  assert.notEqual(bad.status,0);
+  assert.match(bad.stderr,/Unsupported installer action/);
+  assert.throws(()=>renderAgentInstallMacShell(origin,{
+    ...REVIEWED_MACOS_INSTALL_PIN,remoteUpgrade:true,
+  }),/Unapproved/);
+});
