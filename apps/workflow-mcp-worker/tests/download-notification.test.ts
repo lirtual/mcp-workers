@@ -4,6 +4,8 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
+import {compilePlan} from '../src/plan.ts';
+import {runBarkAction} from '../src/bark-action-executor.ts';
 import {DOWNLOAD_COMPLETED_TEXT,runDownloadNotification} from '../src/download-notification-executor.ts';
 import type {Plan,Step} from '../src/plan.ts';
 import type {Env} from '../src/store.ts';
@@ -123,4 +125,79 @@ test('ambiguous send response is not replayed',async t=>{
  assert.equal((await f.call()).status,'indeterminate');
  assert.equal((await f.call()).status,'indeterminate');
  assert.equal(f.sends(),1);assert.equal(f.receipts(),2);
+});
+
+test('Download Bark must reference the reviewed single Task and fixed verified completion body',async t=>{
+ const f=await fixture(t);
+ const manifest=await cloudflareActionManifest('bark');
+ const draft=structuredClone(f.plan);
+ draft.inputs={download_batches:['fixture']};
+ draft.steps[0] = {id:sourceId,flow:'foreach',items:{ref:'inputs.download_batches'},
+  max_items:1,template:{steps:[{id:'submit_download',uses:'github.run',
+   with:{capability:'github.action',action:{
+    ...(source.with.template as any).with.action,inputs:{batch_json:'fixture'}}}}]}} as any;
+ const notify=draft.steps[1]!;
+ notify.with={executor:'cloudflare',provider:'bark',action:'bark.send_notification',
+  contract_digest:manifest.contract_digest,input:{download_step_id:sourceId,
+   notification:{body:DOWNLOAD_COMPLETED_TEXT}}};
+ delete draft.cloudflare_execution_approved;
+ delete draft.cloudflare_action_approvals;
+ assert.equal((await compilePlan(draft)).plan.steps[1]!.uses,'action.run');
+ for(const mutate of [
+  (p:Plan)=>{(p.steps[1]!.with.input as any).notification.body='download completed';},
+  (p:Plan)=>{(p.steps[1]!.with.input as any).notification.url='https://evil.example';},
+  (p:Plan)=>{(p.steps[0] as any).template.steps[0].with.action.workflowPath='.github/workflows/windows.yml';},
+  (p:Plan)=>{p.steps[1]!.needs=[];}
+ ]){
+  const rejected=structuredClone(draft);mutate(rejected);
+  await assert.rejects(compilePlan(rejected));
+ }
+});
+
+test('Bark Download admission binds physical Task and refuses replay, false proof, cancellation',async t=>{
+ for(const invalid of ['none','physical','cancelled','parent'] as const){
+  const f=await fixture(t);
+  const m=await cloudflareActionManifest('bark');
+  f.notify.with={executor:'cloudflare',provider:'bark',action:'bark.send_notification',
+   contract_digest:m.contract_digest,input:{download_step_id:sourceId,
+    notification:{body:DOWNLOAD_COMPLETED_TEXT}}};
+  f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'bark',
+   action:'bark.send_notification',contract_digest:m.contract_digest,deployment_id:version}];
+  let sends=0;
+  (f.env as any).ACTIONS={getContract:async()=>({deployment_id:version,contract_digest:m.contract_digest}),
+   execute:async(_action:string,input:any)=>{sends++;assert.equal(input.notification.body,DOWNLOAD_COMPLETED_TEXT);
+    return {status:'accepted',input_digest:input.input_digest};}};
+  if(invalid==='physical')f.sql.exec("UPDATE step_attempts SET state='failed'");
+  if(invalid==='parent')f.sql.exec("UPDATE run_steps SET status='failed' WHERE step_id='download_task'");
+  if(invalid==='cancelled')f.sql.prepare('INSERT INTO cloudflare_action_cancellations(run_id,step_id,created_at) VALUES(?,?,1)').run(runId,'notify');
+  const r=await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx);
+  assert.equal(r.status,invalid==='none'?'succeeded':'failed');
+  assert.equal(sends,invalid==='none'?1:0);
+  if(invalid==='none'){
+   assert.equal(f.sql.prepare('SELECT source_attempt_id FROM cloudflare_action_invocations').get()?.source_attempt_id,attempt);
+   assert.equal((await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx)).status,'indeterminate');
+   assert.equal(sends,1);
+  }
+ }
+});
+
+test('Download Task revoked after proof but before D1 reservation never sends Bark',async t=>{
+ const f=await fixture(t),m=await cloudflareActionManifest('bark');
+ f.notify.with={executor:'cloudflare',provider:'bark',action:'bark.send_notification',
+  contract_digest:m.contract_digest,input:{download_step_id:sourceId,
+   notification:{body:DOWNLOAD_COMPLETED_TEXT}}};
+ f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'bark',
+  action:'bark.send_notification',contract_digest:m.contract_digest,deployment_id:version}];
+ let sends=0;
+ (f.env as any).ACTIONS={
+  getContract:async()=>{
+   f.sql.exec("UPDATE step_attempts SET state='failed'");
+   return {deployment_id:version,contract_digest:m.contract_digest};
+  },
+  execute:async()=>{sends++;return {status:'accepted',input_digest:''};}
+ };
+ const result=await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx);
+ assert.equal(result.status,'failed');
+ assert.equal(sends,0);
+ assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get()?.n,0);
 });
