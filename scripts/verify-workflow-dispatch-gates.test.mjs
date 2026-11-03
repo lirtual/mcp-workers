@@ -123,14 +123,15 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
 
-test('Database lifecycle and Actions ingress dispatch preserve all twelve reviewed inputs',()=>{
+test('Database lifecycle and Actions ingress dispatch preserve all thirteen reviewed inputs',()=>{
   const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
   const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
-  assert.ok(names.length===12,'release workflow_dispatch must have exactly twelve reviewed inputs');
+  assert.ok(names.length===13,'release workflow_dispatch must have exactly thirteen reviewed inputs');
   assert.equal(new Set(names).size,names.length);
   assert.ok(names.includes('database_expected_release_sha'));
   assert.ok(names.includes('actions_old_ingress_quiesced'));
   assert.ok(names.includes('actions_migration_prepare'));
+  assert.ok(names.includes('actions_gate_reopen'));
   const deploy=release.slice(release.indexOf('\n  deploy:\n'));
   assert.match(deploy,/github.actor == 'lirtual'/);
   assert.match(deploy,/GITHUB_ACTOR.*lirtual/);
