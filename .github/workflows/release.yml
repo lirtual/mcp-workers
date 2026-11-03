@@ -62,6 +62,11 @@ on:
         type: boolean
         required: false
         default: false
+      actions_gate_reopen:
+        description: 'Spec #54: reopen the existing frozen Actions admission gate without Worker release'
+        type: boolean
+        required: false
+        default: false
       actions_old_ingress_quiesced:
         description: Workflow first cutover only - Owner verified legacy admissions are stopped independently (not a technical substitute)
         type: boolean
@@ -361,7 +366,7 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
-          inputs.actions_old_ingress_quiesced == true }}
+          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true }}
     runs-on: ubuntu-latest
     environment:
       name: workflow-mcp-worker
@@ -413,9 +418,85 @@ jobs:
           ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs postflight
 
+  workflow-actions-gate-reopen:
+    name: Reopen reviewed Workflow Actions gate (no Worker deployment)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.worker == 'workflow-mcp-worker' &&
+          inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
+          inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true &&
+          inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' &&
+          inputs.database_expected_release_sha == '' && inputs.database_hyperdrive_rotation_mode == '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: worker-release-workflow-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify current reviewed main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify reviewed Bark-only Provider and exact Consumer pin (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          node --input-type=module -e '
+            import {inspectProvider,inspectConsumer,verifyConsumerPin} from "./scripts/reviewed-actions-provider-pin.mjs";
+            const {CLOUDFLARE_ACCOUNT_ID:account,CLOUDFLARE_API_TOKEN:token}=process.env;
+            const active=await inspectProvider(account,token);
+            if(active!=="960ade68-149a-469c-a4fe-2c5e678df49c")throw Error("Reviewed Bark-only Provider changed");
+            verifyConsumerPin(await inspectConsumer(account,token),active);
+            console.log("Reviewed Bark-only Provider and Consumer pin match; read-only");
+          '
+      - name: Verify frozen gate, paused Workflows and native drain (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+        run: node scripts/actions-cutover-prepare.mjs activate-preflight
+      - name: Reopen exactly the existing frozen admission gate (no release)
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "UPDATE cloudflare_action_gate SET state='open',changed_at=unixepoch()*1000 WHERE id=1 AND state='frozen'") > /dev/null
+      - name: Verify gate open, unchanged paused Workflows and native drain (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+        run: node scripts/actions-cutover-prepare.mjs activate-postflight
+
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.actions_migration_prepare != true && inputs.database_hyperdrive_rotation_mode == '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && inputs.database_hyperdrive_rotation_mode == '' }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -431,7 +512,7 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.database_hyperdrive_rotation_mode == '' &&
+          needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && inputs.database_hyperdrive_rotation_mode == '' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
