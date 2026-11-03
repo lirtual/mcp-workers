@@ -124,14 +124,44 @@ test('activation remains read-only before and after the UPDATE and refuses unpau
 });
 test('consumer release reopens only after exact version and Provider pin verification',()=>{
  const source=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const deployed=source.slice(source.indexOf('  deploy:'));
  const first=source.indexOf('Verify Workflow pin matches deployed Actions Worker (read-only)');
- const pre=source.indexOf('actions-cutover-prepare.mjs activate-preflight');
- const update=source.indexOf("UPDATE cloudflare_action_gate SET state='open'");
- const post=source.indexOf('actions-cutover-prepare.mjs activate-postflight');
+ const pre=source.indexOf('actions-cutover-prepare.mjs activate-preflight',first);
+ const update=source.indexOf("UPDATE cloudflare_action_gate SET state='open'",first);
+ const post=source.indexOf('actions-cutover-prepare.mjs activate-postflight',first);
  assert.ok(first>=0&&first<pre&&pre<update&&update<post);
- assert.equal(source.split("UPDATE cloudflare_action_gate SET state='open'").length,2);
+ assert.equal(deployed.split("UPDATE cloudflare_action_gate SET state='open'").length,2);
  const activation=source.slice(first,post+65);
  assert.match(activation,/inputs.actions_old_ingress_quiesced == true/g);
  assert.match(activation,/inputs.worker == 'workflow-mcp-worker'/);
  assert.match(activation,/GITHUB_SHA.*git ls-remote origin refs\/heads\/main/);
+});
+
+test('protected gate-only recovery is mutually exclusive with freeze and Worker deployment',()=>{
+ const s=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const start=s.indexOf('  workflow-actions-gate-reopen:');
+ const end=s.indexOf('  checks:',start);
+ const recovery=s.slice(start,end);
+ const freeze=s.slice(s.indexOf('  workflow-actions-migration-prepare:'),start);
+ const checks=s.slice(end,s.indexOf('  deploy:',end));
+ const deploy=s.slice(s.indexOf('  deploy:',end));
+ assert.ok(start>=0&&end>start);
+ for(const guard of ["github.actor == 'lirtual'","inputs.worker == 'workflow-mcp-worker'",
+  'inputs.actions_gate_reopen == true','inputs.deploy_to_production == false',
+  'inputs.actions_migration_prepare != true','inputs.actions_old_ingress_quiesced == true',
+  "inputs.database_hyperdrive_prepare_id == ''","inputs.database_hyperdrive_rotation_mode == ''",
+  'name: workflow-mcp-worker','group: worker-release-workflow-mcp-worker',
+  'actions-cutover-prepare.mjs activate-preflight','actions-cutover-prepare.mjs activate-postflight',
+  'inspectProvider,inspectConsumer,verifyConsumerPin',
+  '960ade68-149a-469c-a4fe-2c5e678df49c'])
+  assert.ok(recovery.includes(guard),guard);
+ assert.ok(recovery.indexOf('inspectProvider,inspectConsumer')<recovery.indexOf('activate-preflight'));
+ assert.ok(recovery.indexOf('activate-preflight')<recovery.indexOf("UPDATE cloudflare_action_gate SET state='open'"));
+ assert.ok(recovery.indexOf("UPDATE cloudflare_action_gate SET state='open'")<recovery.indexOf('activate-postflight'));
+ assert.equal(recovery.split("UPDATE cloudflare_action_gate SET state='open'").length,2);
+ assert.ok(!recovery.includes('wrangler deploy')&&!recovery.includes('migrations apply'));
+ assert.ok(freeze.includes('inputs.actions_gate_reopen != true'));
+ assert.ok(checks.includes('inputs.actions_gate_reopen != true'));
+ assert.ok(deploy.slice(0,1900).includes('inputs.actions_gate_reopen != true'));
+ assert.equal(s.split("UPDATE cloudflare_action_gate SET state='open'").length,3);
 });
