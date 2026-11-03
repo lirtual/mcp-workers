@@ -98,28 +98,28 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// Reviewed immutable v0.1.48 Linux/Windows Release, candidate CI #41384354983.
-// Publication passed protected Agent Release #41385231280 and is immutable;
-// the Windows installer retains an independently verified script SHA-256.
+// Reviewed immutable v0.1.51 five-platform Agent Release (source 03a14fd).
+// The published Linux/Windows asset digests and unchanged Windows installer
+// source SHA-256 were independently verified; no device upgrades on Worker deploy.
 export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.48",
+  tag: "v0.1.51",
   pairingProtocol: "single-code-v1",
   upgradeMode: "explicit-v1",
-  commit: "a9e65ce194f2859d609d42b054b57b23adf5ea27",
-  x64Sha256: "99de75a02ea8b5b8a4e62263685a081d622921331a9404ca5b1f9bfb231c7ca8",
-  arm64Sha256: "f7c1936a56ac51d7e0de7a569da0ddd342ec97f43c56202b92a87932f4bb3c1a",
+  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
+  x64Sha256: "5330d88b5f1df4f250f453ea70cf43fe14b4cf362c437f6aac84a7c24981bbfc",
+  arm64Sha256: "5b52f3e873e510a2810f6f0c7ee3b69c9226a4e4d00ebe8b8b6aabd73e415566",
 });
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
   tag: string; commit: string; scriptSha256: string; assetSha256: string;
 }>;
-// Public Windows bootstrap source is pinned to the exact immutable v0.1.48 Agent
+// Public Windows bootstrap source is pinned to the exact immutable v0.1.51 Agent
 // commit; the source hash is separate from the official Windows asset digest.
 export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
-  tag: "v0.1.48",
-  commit: "a9e65ce194f2859d609d42b054b57b23adf5ea27",
+  tag: "v0.1.51",
+  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
   scriptSha256: "6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a",
-  assetSha256: "67913d0da1b7ae575f0d911f6c44133a1b891929a36e10b9770c414274214fbf",
+  assetSha256: "03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311",
 });
 
 /** Reviewed macOS distribution contract. Pin native architectures and exact
@@ -130,7 +130,7 @@ export type MacInstallPin = Readonly<{
   // Deliberate opt-in only after a separately reviewed immutable Agent Release.
   remoteUpgradeMode?: "detached-launchd-v1";
 }>;
-// Independently verified immutable v0.1.51 Agent Release; Linux/Windows pins remain v0.1.48.
+// Independently verified immutable v0.1.51 Agent Release for all three installer routes.
 // The detached launchd one-shot path is explicitly authorized by the Mac owner,
 // not an automatic upgrade or new pairing. This source change does not deploy Worker.
 export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
