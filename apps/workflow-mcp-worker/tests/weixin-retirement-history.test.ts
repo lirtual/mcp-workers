@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {WorkflowService,type Env} from '../src/store.ts';
-import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
+import {cloudflareActionManifest,isRetiredWeixinAction} from '../src/cloudflare-action-contract.ts';
 
 const wf='11111111-1111-4111-8111-111111111111';
 const version='22222222-2222-4222-8222-222222222222';
@@ -133,19 +133,80 @@ test('Weixin reservation attribution follows the original Run/Version/Step, not 
    contract_digest,deployment_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)`);
  insert.run(run,'notify','weixin-invocation','attempt-1',digest,1,'shared-contract','same-deployment',1);
  insert.run(otherRun,'notify','bark-invocation','attempt-2',digest,1,'shared-contract','same-deployment',1);
- const matches=f.sqlite.prepare(`SELECT i.invocation_id
+ // Historical aliases are broader than two exact Action names. Reuse the
+ // runtime identity predicate against the original compiled Plan Step instead
+ // of drifting into an independently maintained SQL Action allowlist.
+ const aliasWf='77777777-7777-4777-8777-777777777777';
+ const aliasVersion='88888888-8888-4888-8888-888888888888';
+ const aliasRun='99999999-9999-4999-8999-999999999999';
+ const aliasPlan=JSON.stringify({version:1,name:'Legacy alias',steps:[{
+  id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'bark',
+   action:'WeIxIn_legacy',input:{text:'synthetic'}}}]});
+ f.sqlite.prepare('INSERT INTO workflows(id,name,draft,state,active_version_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+  .run(aliasWf,'Alias',aliasPlan,'paused',aliasVersion,1,1);
+ f.sqlite.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,?,?,?,?)')
+  .run(aliasVersion,aliasWf,'alias-digest',aliasPlan,1);
+ f.sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,
+  start_state,outcome,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+  .run(aliasRun,aliasWf,aliasVersion,aliasRun,digest,'{}','started','indeterminate',1,1);
+ insert.run(aliasRun,'notify','weixin-alias-invocation','attempt-3',digest,0,
+  'shared-contract','same-deployment',1);
+ // An unmatched Step is indeterminate, not a certified non-Weixin reservation.
+ insert.run(aliasRun,'not-a-plan-step','unknown-step-invocation','attempt-4',digest,0,
+  'shared-contract','same-deployment',1);
+ const attribution=f.sqlite.prepare(`SELECT i.invocation_id,s.value AS step_json
   FROM cloudflare_action_invocations i
   JOIN runs r ON r.id=i.run_id
   JOIN workflow_versions v ON v.id=r.version_id
-  JOIN json_each(v.plan,'$.steps') s ON json_extract(s.value,'$.id')=i.step_id
-  WHERE json_extract(s.value,'$.uses')='action.run'
-   AND json_extract(s.value,'$.with.executor')='cloudflare'
-   AND (lower(COALESCE(json_extract(s.value,'$.with.provider'),''))='weixin'
-    OR lower(COALESCE(json_extract(s.value,'$.with.action'),'')) IN
-      ('weixin.send_text','weixin.notify_download'))`)
-   .all() as Array<{invocation_id:string}>;
- assert.deepEqual(matches.map(x=>x.invocation_id),['weixin-invocation']);
- assert.equal((f.sqlite.prepare('SELECT COUNT(*) n FROM cloudflare_action_invocations').get() as {n:number}).n,2);
+  LEFT JOIN json_each(v.plan,'$.steps') s
+   ON json_extract(s.value,'$.id')=i.step_id
+  ORDER BY i.invocation_id`);
+ const rows=attribution.all() as Array<{invocation_id:string;step_json:string|null}>;
+ const total=(f.sqlite.prepare('SELECT COUNT(*) n FROM cloudflare_action_invocations')
+  .get() as {n:number}).n;
+ assert.equal(rows.length,total,'all reservation rows must be accounted for');
+ const matches=rows.filter(x=>x.step_json!==null&&
+  isRetiredWeixinAction(JSON.parse(x.step_json))).map(x=>x.invocation_id);
+ assert.deepEqual(matches,['weixin-alias-invocation','weixin-invocation']);
+ assert.deepEqual(rows.filter(x=>x.step_json===null).map(x=>x.invocation_id),
+  ['unknown-step-invocation'],'unmatched original Step remains indeterminate');
+ assert.equal(total,4);
+ // A corrupted immutable Plan with duplicate Step IDs creates a one-to-many
+ // join. The reservation cardinality check must stop attribution, not treat
+ // either matched Step as safe evidence for deleting that invocation.
+ const duplicateAliasPlan=JSON.stringify({version:1,name:'Ambiguous old Plan',steps:[
+  {id:'notify',uses:'action.run',with:{executor:'cloudflare',
+   provider:'bark',action:'WeIxIn_legacy'}},
+  {id:'notify',uses:'action.run',with:{executor:'cloudflare',
+   provider:'bark',action:'bark.send_notification'}},
+ ]});
+ f.sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+  .run(duplicateAliasPlan,aliasVersion);
+ const ambiguousRows=attribution.all() as Array<{invocation_id:string;step_json:string|null}>;
+ assert.equal(ambiguousRows.length,total+1);
+ assert.throws(()=>assert.equal(ambiguousRows.length,total,
+  'each reservation must resolve to at most one original Plan Step'),
+ {name:'AssertionError'});
+ // An invalid stored Plan cannot be interpreted as a safe nonmatch.
+ f.sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+  .run('{invalid historical json',aliasVersion);
+ assert.throws(()=>attribution.all(),/malformed JSON/i);
+ f.sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+  .run(aliasPlan,aliasVersion);
+ // The shared reservation schema has no run_id FK. If a historic Run is
+ // missing, the inner join loses a row; total cardinality still rejects it.
+ insert.run('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','notify',
+  'orphan-invocation','attempt-5',digest,0,'shared-contract','same-deployment',1);
+ const orphanRows=attribution.all() as Array<{invocation_id:string;step_json:string|null}>;
+ assert.equal(orphanRows.length,total);
+ const nowTotal=(f.sqlite.prepare('SELECT COUNT(*) n FROM cloudflare_action_invocations')
+  .get() as {n:number}).n;
+ assert.equal(nowTotal,total+1);
+ assert.throws(()=>assert.equal(orphanRows.length,nowTotal,
+  'all original reservations require a complete Run/Plan link'),
+ {name:'AssertionError'});
+ // No WorkflowService writes or physical sends were made by classification.
+ assert.equal(f.counters.write,0);
 });
 
 test('stale historical Weixin start cannot block unrelated reviewed Workflow admission',async t=>{
