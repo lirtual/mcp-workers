@@ -130,14 +130,14 @@ export type MacInstallPin = Readonly<{
   // Deliberate opt-in only after a separately reviewed immutable Agent Release.
   remoteUpgradeMode?: "detached-launchd-v1";
 }>;
-// Independently verified immutable v0.1.50 Agent Release; Linux/Windows pins remain v0.1.48.
+// Independently verified immutable v0.1.51 Agent Release; Linux/Windows pins remain v0.1.48.
 // The detached launchd one-shot path is explicitly authorized by the Mac owner,
 // not an automatic upgrade or new pairing. This source change does not deploy Worker.
 export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
-  tag: "v0.1.50",
-  commit: "1195b8c9fb7d511bd685e32bf3fc00039be0d815",
-  arm64Sha256: "b92cc99dd48fdbe83972080ee425fef6fd99f096d779669bb23dbc06f1358c86",
-  x64Sha256: "7bb8cd7dc11370d130e78916ee50bf0b10c8df840c501744b16132c09caece71",
+  tag: "v0.1.51",
+  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
+  arm64Sha256: "dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803",
+  x64Sha256: "f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5",
   scriptSha256: "59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55",
   remoteUpgradeMode: "detached-launchd-v1",
 });

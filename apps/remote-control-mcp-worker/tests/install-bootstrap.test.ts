@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, renderAgentInstallMacShell } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
@@ -543,6 +543,21 @@ test('macOS tab remains visible but non-executable until a reviewed native Relea
   assert.equal(handleAgentInstallerRequest(
     new Request(custom+'/install-macos.sh',{headers:{host:'evil.example'}}),
     null,custom,null).status,403);
+});
+
+test('reviewed macOS v0.1.51 pin serves exactly the published ARM64/Intel assets and explicit remote upgrade', () => {
+  const pin=REVIEWED_MACOS_INSTALL_PIN;
+  assert.equal(pin.tag,'v0.1.51');
+  assert.equal(pin.commit,'03a14fd4138ca8d77fa8aced78f7a53ccc51724e');
+  assert.equal(pin.arm64Sha256,'dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803');
+  assert.equal(pin.x64Sha256,'f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5');
+  assert.equal(pin.scriptSha256,'59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55');
+  assert.equal(pin.remoteUpgradeMode,'detached-launchd-v1');
+  const shell=renderAgentInstallMacShell('https://rca.lirtual.dpdns.org',pin);
+  assert.match(shell,/releases\/download\/v0\.1\.51\/remote-control-agent-v0\.1\.51-\$target\.tar\.gz/);
+  assert.match(shell,/--remote-upgrade\) mode=remote-upgrade/);
+  assert.doesNotMatch(shell,/releases\/download\/v0\.1\.50\//);
+  assert.equal(spawnSync('sh',['-n'],{input:shell,encoding:'utf8'}).status,0);
 });
 
 test('macOS synthetic release pin requires two native archives and separately pinned source', async () => {
