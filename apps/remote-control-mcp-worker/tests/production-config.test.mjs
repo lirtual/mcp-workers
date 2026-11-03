@@ -71,9 +71,9 @@ test("production public installer routes use only reviewed pinned release", asyn
   assert.match(macShell, /#!\/bin\/sh/);
   assert.match(macShell, /arm64\) target=darwin-arm64/);
   assert.match(macShell, /x86_64\) target=darwin-x64/);
-  assert.match(macShell, /remote-control-agent-v0\.1\.50-\$target\.tar\.gz/);
-  assert.match(macShell, /b92cc99dd48fdbe83972080ee425fef6fd99f096d779669bb23dbc06f1358c86/);
-  assert.match(macShell, /7bb8cd7dc11370d130e78916ee50bf0b10c8df840c501744b16132c09caece71/);
+  assert.match(macShell, /remote-control-agent-v0\.1\.51-\$target\.tar\.gz/);
+  assert.match(macShell, /dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803/);
+  assert.match(macShell, /f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5/);
   assert.match(macShell, /59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55/);
   assert.ok(macShell.includes('1) case "$1" in --upgrade) mode=upgrade ;; --remote-upgrade) mode=remote-upgrade ;;'));
   assert.match(macShell,/if \[ "\$mode" != upgrade \] && \[ "\$mode" != remote-upgrade \]/);
