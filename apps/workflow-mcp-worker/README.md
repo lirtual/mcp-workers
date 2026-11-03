@@ -2,48 +2,51 @@
 
 Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cloudflare Workflows. One Worker exposes a unified set of capabilities; no separate execution stages, capability enable switches, scheduler, queue or credential issuer.
 
-## Spec #54 · Current production checkpoint (2026-11-02)
+## Spec #54 · Recorded production checkpoint (2026-11-03)
 
-**Consumer T5 and Provider T6 production acceptance: PASS; full Spec #54:
-NOT COMPLETE.** The deployed `workflow-mcp-worker` Version
-`8420fe1e-c67f-4a61-91ef-375b8686b77d` and `cloudflare-actions`
-Bark-only Version `960ade68-149a-469c-a4fe-2c5e678df49c` each
-receive 100% of their traffic. The Consumer has exactly one
+**Consumer T5 and Provider T6 production acceptance: Pass; full Spec #54:
+Open/Partial.** At the last independently recorded T7 readback, the
+Bark-only Provider Version `960ade68-149a-469c-a4fe-2c5e678df49c` and
+Workflow Consumer Version `988ca3ab-d13b-41e8-8b41-3760d9c7af69`
+each served 100% traffic, with exactly one Consumer
 `ACTIONS -> cloudflare-actions#ActionsEntrypoint` Service Binding pinned to
-this Provider. All six business Workflows are Active; the D1 Action Gate
-is `open`, the latest nonterminal Run count and six native nonterminal
-instance categories were zero. Three Bark-only Published Plans for Chrome,
-OpenList and Download were re-published with the new Provider pin during
-[T6's protected maintenance](https://github.com/lirtual/cloudflare-actions/issues/60#issuecomment-6576366208).
+that Provider. This is a **dated evidence snapshot**, not a new production
+query. T6 previously reopened the D1 Action Gate and resumed six original
+business Workflows after republishing Bark-only Chrome, OpenList and
+Download Plans through the [protected maintenance](https://github.com/lirtual/cloudflare-actions/issues/60#issuecomment-6576366208).
 
-The current Consumer blocks historical `weixin.send_text`,
+The current Consumer denies historical `weixin.send_text`,
 `weixin.notify_download` and compatibility spellings at Draft validation,
-Publish, admission and restored Native dispatch. Its discoverable catalog
-is Bark, Dub, EnvShare and Litterbox. Immutable historical Plan/Run/Step
-facts, original terminal idempotency and indeterminate outcomes remain
-read-only; an old authorization never becomes permission for another
-send. [T4](https://github.com/lirtual/cloudflare-actions/issues/58) verified
-OpenList/Download delivery to the handset, a clicked OpenList temporary
-link and physical Session cleanup **before** T6, not as a repeat post-T6 test.
+Publish, admission and restored Native dispatch. The discoverable Provider
+catalog contains only Bark, Dub, EnvShare and Litterbox. Original terminal
+idempotency, immutable historical Plans/Run identities and indeterminate
+outcomes remain read-only; disappearance of an old receipt never grants
+permission to resend. [T4](https://github.com/lirtual/cloudflare-actions/issues/58)
+verified OpenList and Download Bark handset delivery and physical Session
+behavior before T6; this is not a new post-T6 handset E2E.
 
-**T7 project-controlled retirement is still OPEN.** Protected production
-maintenance deleted exactly historical Provider Version #1, independently
-read back in [T7 evidence](https://github.com/lirtual/cloudflare-actions/issues/61#issuecomment-6577368084), while five Weixin-capable
-Provider Versions #2–#6 remain; current Bark-only Provider #7 stays
-pinned and unchanged. An independent protected Consumer release reopened
-the D1 gate and restored six business Workflow Plans without replaying
-any old Run. The inherited Weixin Secret and legacy Owner domain remain.
-The Owner confirms WeChat-side unbinding was already completed and excludes
-further upstream work; this is not an independently verified old-binary
-send-denial test. Do not initiate legacy messages, old Native replay or
-privileged rollback as ad hoc tests. The existing protected release denies
-unsafe rollback and requires a new exact approval for **each** additional
-Version retirement. T3 historical Plan classification, T8 irreversible
-purge and T9 recovery-window verification remain separate.
+**T7 #61 is Blocked / not complete.** Historically Weixin-capable Provider
+Versions #1–#4 were retired, but #5/#6 remain in the last verified version
+inventory. The inherited `WEIXIN_ENCRYPTION_KEY` name remains in the last
+authorized Secret-name inventory, while the former
+`weixin.lirtual.dpdns.org` Worker Custom Domain was independently verified
+absent on 2026-11-03. The official protected remaining-Version retirement
+dispatch was blocked by an external safety gate before a Run ID was issued.
+Do not retry through another execution path, replay old Runs, exercise old
+Weixin sends or treat the domain's absence as proof of old-version
+credential invalidation. Owner-reported WeChat-side unbinding is not an
+independent old-binary send-denial test and is excluded from further work.
+See the [T7 execution boundary](https://github.com/lirtual/cloudflare-actions/issues/61).
 
-**Dated legacy Weixin examples and former Provider modes below are
-historical evidence only, not supported new Draft/Publish/Run actions.
-Production changes still require independent specific Owner approval.**
+**T3 #57 remains Open/Partial:** synthetic historical attribution tests and
+the canonical ADR are merged, but sensitive immutable Plan literals, exact
+legacy Plan-to-Run ownership and controlled backups are not fully cleared.
+[T8](https://github.com/lirtual/cloudflare-actions/issues/62) destructive
+historical purge and [T9](https://github.com/lirtual/cloudflare-actions/issues/63)
+final irrecoverability are Not performed and need independent approval.
+No source documentation or PR merge is production deletion authorization.
+Older Weixin examples below are historical only, not currently supported
+new Draft/Publish/Run actions.
 
 ## Capabilities
 
