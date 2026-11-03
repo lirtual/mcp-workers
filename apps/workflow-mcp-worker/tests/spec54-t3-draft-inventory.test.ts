@@ -8,6 +8,18 @@ import {isRetiredWeixinAction} from '../src/cloudflare-action-contract.ts';
 type Outcome='weixin'|'other'|'indeterminate';
 const record=(x:unknown):x is Record<string,unknown> =>
  !!x && typeof x==='object' && !Array.isArray(x);
+// Treat unreviewed nested executable shapes as unknown; this is a test-only
+// conservative screen, not a production source parser or a deletion rule.
+function unreviewedNested(value:unknown,depth=0):boolean {
+ if(depth>16)return true;
+ if(Array.isArray(value))return value.some(x=>unreviewedNested(x,depth+1));
+ if(!record(value))return false;
+ if(['flow','steps','template','templates'].some(key=>Object.hasOwn(value,key)) ||
+   value.uses==='action.run' ||
+   (typeof value.uses==='string'&&value.uses.startsWith('flow.')))
+  return true;
+ return Object.values(value).some(x=>unreviewedNested(x,depth+1));
+}
 // Test-only interpretation of existing strict JSON/YAML parser and legacy identity predicate.
 // Historical Drafts must NOT be recompiled: compilePlan intentionally retires Weixin Actions.
 function classifyDraft(source:string):Outcome {
@@ -17,14 +29,17 @@ function classifyDraft(source:string):Outcome {
   if(doc.errors.length)return 'indeterminate';
   value=doc.toJS({maxAliasCount:16});
  } catch{return 'indeterminate';}
- if(!record(value)||!Array.isArray(value.steps))return 'indeterminate';
+ if(!record(value)||!Array.isArray(value.steps)||!value.steps.length)return 'indeterminate';
  let uncertain=false;
  for(const step of value.steps){
   if(!record(step)){uncertain=true;continue;}
   if(isRetiredWeixinAction(step))return 'weixin';
   if('flow' in step || typeof step.uses!=='string' ||
+     step.uses.startsWith('flow.') ||
      (step.uses==='action.run' && (!record(step.with)||
-      typeof step.with.executor!=='string' || typeof step.with.action!=='string')))
+      typeof step.with.executor!=='string' || typeof step.with.action!=='string')) ||
+     Object.entries(step).some(([key,value])=>
+      key!=='uses'&&unreviewedNested(value)))
     uncertain=true;
  }
  return uncertain?'indeterminate':'other';
@@ -84,4 +99,63 @@ test('identity comes from structural alias/provider, never incidental prose or Y
  assert.equal(classifyDraft('version: 1\nname: Nested\nsteps:\n  - flow: {repeat: {times: 1, template: {uses: action.run}}}\n'),'indeterminate');
  for(const i of historicalWeixin)assert.equal(classifyDraft(definition(i)),'weixin');
  assert.equal(classifyDraft('unparseable: [yaml'),'indeterminate');
+});
+
+
+test('YAML historical Drafts classify by structured Action identity, not text search',()=>{
+ const legacy=[
+  'version: 1','name: Old provider',
+  'steps:','  - id: notify','    uses: action.run','    with:',
+  '      executor: cloudflare','      provider: WEIXIN','      action: send_text',
+ ].join('\n');
+ const alias=[
+  'version: 1','name: Old alias',
+  'steps:','  - id: notify','    uses: action.run','    with:',
+  '      executor: cloudflare','      provider: bark','      action: WeIxIn_legacy',
+ ].join('\n');
+ const other=[
+  'version: 1','name: "weixin.send_text is documentation only"',
+  'steps:','  - id: emit','    uses: result.emit',
+  '    with:','      data: safe',
+ ].join('\n');
+ assert.equal(classifyDraft(legacy),'weixin');
+ assert.equal(classifyDraft(alias),'weixin');
+ assert.equal(classifyDraft(other),'other');
+ assert.equal(classifyDraft(JSON.stringify({version:1,name:'Regular',steps:[
+  {id:'emit',uses:'result.emit',with:{data:'weixin.send_text only as text'}}]})),
+  'other');
+});
+
+test('historical Flow nesting and unknown executable shapes fail closed',()=>{
+ const action={uses:'action.run',with:{executor:'cloudflare',
+  provider:'weixin',action:'weixin.send_text'}};
+ const unknowns=[
+  {id:'repeat',flow:'repeat',times:1,template:action},
+  {id:'foreach',flow:'foreach',items:{ref:'inputs.list'},max_items:1,
+   template:{steps:[action]}},
+  {id:'compiled',uses:'flow.foreach',with:{templates:[action]}},
+  {id:'wrapper',uses:'result.emit',with:{data:{child:action}}},
+  {id:'unknown',uses:'flow.custom',with:{}},
+ ];
+ for(const step of unknowns){
+  const source={version:1,name:'Historical nested',steps:[step]};
+  assert.equal(classifyDraft(JSON.stringify(source)),'indeterminate');
+  assert.equal(classifyDraft(YAML.stringify(source)),'indeterminate');
+ }
+ const malformed=[
+  'version: 1\nname: First\nname: Duplicate\nsteps: []\n',
+  'version: 1\nsteps: [unclosed\n',
+ ];
+ for(const source of malformed)assert.equal(classifyDraft(source),'indeterminate');
+ // A known retired top-level Action remains a positive even with other unknown Steps.
+ assert.equal(classifyDraft(YAML.stringify({version:1,name:'Mixed',steps:
+  [action,unknowns[0]]})),'weixin');
+});
+
+test('no executable Step array cannot count as a confirmed negative',()=>{
+ for(const source of [
+  JSON.stringify({version:1,name:'Empty',steps:[]}),
+  YAML.stringify({version:1,name:'Missing'}),
+  YAML.stringify({version:1,name:'Bad',steps:[null]}),
+ ]) assert.equal(classifyDraft(source),'indeterminate');
 });
