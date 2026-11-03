@@ -189,9 +189,9 @@ test('numeric comparison rejects proven incompatible output type, but unknown ou
 
 test('reviewed closed Cloudflare output schema rejects undeclared fields but accepts declared ones',async()=>{
  const service=new WorkflowService({DB:{prepare(){throw Error('no D1 access');}}} as unknown as Env);
- const {contract_digest}=await cloudflareActionManifest('unified-generic');
- const source={id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'weixin',
-   action:'weixin.send_text',contract_digest,input:{text:'reviewed'}}};
+ const {contract_digest}=await cloudflareActionManifest('bark');
+ const source={id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'bark',
+   action:'bark.send_notification',contract_digest,input:{notification:{body:'reviewed'}}}};
  const output={id:'done',needs:['notify'],uses:'result.emit',with:{data:{ref:'steps.notify.output.unknown_key'}}};
  const validate=()=>validateWorkflowTarget(service,{definition:JSON.stringify({version:1,name:'Reviewed contract',steps:[source,output]})});
  const rejected=await validate();

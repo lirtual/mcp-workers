@@ -119,3 +119,15 @@ test('concurrent Ready or attempt revocation during live inspection blocks Bark 
   assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
  }
 });
+
+test('OpenList signed live Session uses the same Bark admission as Chrome',async t=>{
+ const f=await fixture(t);
+ (f.plan.steps[0]!.with.action as {workflowPath:string}).workflowPath='.github/workflows/openlist.yml';
+ f.sql.exec("UPDATE step_attempts SET workflow_ref='lirtual/github-actions/.github/workflows/openlist.yml@refs/tags/v1'");
+ const draft=structuredClone(f.plan);
+ delete draft.cloudflare_execution_approved;
+ delete draft.cloudflare_action_approvals;
+ assert.equal((await compilePlan(draft)).plan.steps[1]!.uses,'action.run');
+ assert.equal((await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect)).status,'succeeded');
+ assert.equal(f.sends(),1);
+});

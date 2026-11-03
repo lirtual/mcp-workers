@@ -98,29 +98,118 @@ export const REVIEWED_AGENT_RELEASE_PIN: InstallReleasePin = Object.freeze({
   x64Sha256: "bcb932d9f3539233204decf70ed0a748e2e31ac2a069e5b8b29484ab8733a0e3",
   arm64Sha256: "bdbe443d6010e372a03bff773d0e0bce946ac7bbbd45d9d1b75c99477eb23aa9",
 });
-// Reviewed immutable v0.1.48 Linux/Windows Release, candidate CI #41384354983.
-// Publication passed protected Agent Release #41385231280 and is immutable;
-// the Windows installer retains an independently verified script SHA-256.
+// Reviewed immutable v0.1.51 five-platform Agent Release (source 03a14fd).
+// The published Linux/Windows asset digests and unchanged Windows installer
+// source SHA-256 were independently verified; no device upgrades on Worker deploy.
 export const REVIEWED_PUBLIC_INSTALL_RELEASE_PIN: InstallReleasePin = Object.freeze({
-  tag: "v0.1.48",
+  tag: "v0.1.51",
   pairingProtocol: "single-code-v1",
   upgradeMode: "explicit-v1",
-  commit: "a9e65ce194f2859d609d42b054b57b23adf5ea27",
-  x64Sha256: "99de75a02ea8b5b8a4e62263685a081d622921331a9404ca5b1f9bfb231c7ca8",
-  arm64Sha256: "f7c1936a56ac51d7e0de7a569da0ddd342ec97f43c56202b92a87932f4bb3c1a",
+  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
+  x64Sha256: "5330d88b5f1df4f250f453ea70cf43fe14b4cf362c437f6aac84a7c24981bbfc",
+  arm64Sha256: "5b52f3e873e510a2810f6f0c7ee3b69c9226a4e4d00ebe8b8b6aabd73e415566",
 });
 /** Independent reviewed source and Release asset pins; both are required. */
 export type WindowsInstallPin = Readonly<{
   tag: string; commit: string; scriptSha256: string; assetSha256: string;
 }>;
-// Public Windows bootstrap source is pinned to the exact immutable v0.1.48 Agent
+// Public Windows bootstrap source is pinned to the exact immutable v0.1.51 Agent
 // commit; the source hash is separate from the official Windows asset digest.
 export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
-  tag: "v0.1.48",
-  commit: "a9e65ce194f2859d609d42b054b57b23adf5ea27",
+  tag: "v0.1.51",
+  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
   scriptSha256: "6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a",
-  assetSha256: "67913d0da1b7ae575f0d911f6c44133a1b891929a36e10b9770c414274214fbf",
+  assetSha256: "03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311",
 });
+
+/** Reviewed macOS distribution contract. Pin native architectures and exact
+ * owner-local installer source separately from the trusted HTTPS Worker script. */
+export type MacInstallPin = Readonly<{
+  tag: string; commit: string; arm64Sha256: string; x64Sha256: string;
+  scriptSha256: string;
+  // Deliberate opt-in only after a separately reviewed immutable Agent Release.
+  remoteUpgradeMode?: "detached-launchd-v1";
+}>;
+// Independently verified immutable v0.1.51 Agent Release for all three installer routes.
+// The detached launchd one-shot path is explicitly authorized by the Mac owner,
+// not an automatic upgrade or new pairing. This source change does not deploy Worker.
+export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
+  tag: "v0.1.51",
+  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
+  arm64Sha256: "dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803",
+  x64Sha256: "f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5",
+  scriptSha256: "59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55",
+  remoteUpgradeMode: "detached-launchd-v1",
+});
+
+function validMacPin(pin: MacInstallPin): boolean {
+  return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
+    /^[a-f0-9]{40}$/.test(pin.commit) &&
+    [pin.arm64Sha256,pin.x64Sha256,pin.scriptSha256].every(s=>/^[a-f0-9]{64}$/.test(s)) &&
+    (pin.remoteUpgradeMode === undefined ||
+      pin.remoteUpgradeMode === "detached-launchd-v1");
+}
+
+/** HTTPS Worker script is the bootstrap trust root. Pinned GitHub source and
+ * Release bytes are separately verified before executing any downloaded file.
+ * The pinned macos-local.sh supports install, upgrade and temporary actions
+ * before execution. The public route stays 503 if the pin is absent. */
+export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): string {
+  if (!validInstallerOrigin(origin) || !validMacPin(pin))
+    throw new Error("Unapproved macOS release pin or origin");
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    "umask 077",
+    'case "$#" in',
+    '  0) mode= ;;',
+    ...(pin.remoteUpgradeMode === "detached-launchd-v1"
+      ? ['  1) case "$1" in --upgrade) mode=upgrade ;; --remote-upgrade) mode=remote-upgrade ;; *) echo "Unsupported installer action" >&2; exit 1 ;; esac ;;']
+      : ['  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; }; mode=upgrade ;;']),
+    '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
+    'esac',
+    "[ \"$(uname -s)\" = Darwin ] || { echo 'macOS only' >&2; exit 1; }",
+    "[ \"$(id -u)\" -ne 0 ] || { echo 'Non-root macOS owner required' >&2; exit 1; }",
+    'if [ "$mode" != remote-upgrade ]; then',
+    '  [ -t 0 ] && [ -t 1 ] || { echo "Ordinary interactive Terminal required" >&2; exit 1; }',
+    'fi',
+    "for tool in curl shasum tar mktemp uname id sw_vers awk; do command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing macOS installer tool' >&2; exit 1; }; done",
+    "major=$(sw_vers -productVersion | awk -F. '{print $1}')",
+    "case \"$major\" in ''|*[!0-9]*) exit 1 ;; esac",
+    "[ \"$major\" -ge 15 ] || { echo 'Requires macOS 15 or newer' >&2; exit 1; }",
+    "case \"$(uname -m)\" in",
+    "  arm64) target=darwin-arm64; expected="+pin.arm64Sha256+" ;;",
+    "  x86_64) target=darwin-x64; expected="+pin.x64Sha256+"; [ \"$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || :)\" != 1 ] || { echo 'Rosetta not supported' >&2; exit 1; } ;;",
+    "  *) echo 'Unsupported macOS architecture' >&2; exit 1 ;;",
+    "esac",
+    "stage=$(mktemp -d \"${TMPDIR:-/tmp}/rca-macos.XXXXXXXX\")",
+    "trap 'rm -rf -- \"$stage\"' EXIT",
+    "trap 'exit 130' INT",
+    "trap 'exit 143' TERM",
+    "archive=\"$stage/agent.tar.gz\"",
+    "source=\"$stage/macos-local.sh\"",
+    "download=https://github.com/lirtual/remote-control-agent/releases/download/"+pin.tag+"/remote-control-agent-"+pin.tag+"-$target.tar.gz",
+    "echo 'Downloading pinned native macOS Agent...'",
+    "effective=$(curl -fL --progress-bar --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 3 --max-time 180 --max-filesize 180000000 -w '%{url_effective}' \"$download\" -o \"$archive\")",
+    "case \"$effective\" in \"$download\"|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*) ;; *) echo 'Unexpected Release redirect' >&2; exit 1 ;; esac",
+    "[ \"$(shasum -a 256 \"$archive\" | awk '{print $1}')\" = \"$expected\" ] || { echo 'Release asset SHA-256 mismatch' >&2; exit 1; }",
+    "script_url=https://raw.githubusercontent.com/lirtual/remote-control-agent/"+pin.commit+"/apps/remote-control-agent/scripts/macos-local.sh",
+    "curl -fSs --proto '=https' --tlsv1.2 --max-redirs 0 --max-time 30 --max-filesize 30000 \"$script_url\" -o \"$source\"",
+    "[ \"$(shasum -a 256 \"$source\" | awk '{print $1}')\" = '"+pin.scriptSha256+"' ] || { echo 'Installer source SHA-256 mismatch' >&2; exit 1; }",
+    'if [ "$mode" != upgrade ] && [ "$mode" != remote-upgrade ]; then',
+    "  printf 'Install mode: [1] Permanent (login LaunchAgent), [2] Temporary (24h foreground): ' > /dev/tty",
+    "  IFS= read -r choice < /dev/tty || { echo 'Owner selection cancelled' >&2; exit 1; }",
+    '  case "$choice" in 1) mode=install ;; 2) mode=temporary ;; *) echo "No mode selected" >&2; exit 1 ;; esac',
+    'fi',
+    "echo 'Verified immutable archive and exact installer source.'",
+    'if [ "$mode" = remote-upgrade ]; then',
+    "  sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/'",
+    'else',
+    "  sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/' < /dev/tty",
+    'fi',
+    "",
+  ].join("\n");
+}
 
 function validWindowsPin(pin: WindowsInstallPin): boolean {
   return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
@@ -232,10 +321,11 @@ export function handleAgentInstallerRequest(
   release: InstallReleasePin | null = null,
   trustedOrigin?: string,
   windowsPin: WindowsInstallPin | null = null,
+  macosPin: MacInstallPin | null = null,
 ): Response {
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
-  if (!["/", "/install.sh", "/install.ps1"].includes(u.pathname)) return new Response("Not found.\n", { status:404, headers });
+  if (!["/", "/install.sh", "/install.ps1", "/install-macos.sh"].includes(u.pathname)) return new Response("Not found.\n", { status:404, headers });
   // The public home page is static. Mobile/in-app links may append tracking
   // query parameters or send Origin; neither is read or reflected by the page.
   // Keep both restrictions for executable installer scripts.
@@ -250,9 +340,17 @@ export function handleAgentInstallerRequest(
     return new Response("Unapproved Worker origin.\n", { status:403, headers });
   if (u.pathname === "/") {
     return new Response(renderInstallHome({linux:!!release && validPin(release),
-      windows:!!windowsPin && validWindowsPin(windowsPin)}), {status:200, headers:{...headers,
+      windows:!!windowsPin && validWindowsPin(windowsPin),
+      macos:!!macosPin && validMacPin(macosPin)}), {status:200, headers:{...headers,
       "content-type":"text/html; charset=utf-8", "x-frame-options":"DENY",
       "referrer-policy":"no-referrer", "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}});
+  }
+  if (u.pathname === "/install-macos.sh") {
+    if (!macosPin || !validMacPin(macosPin))
+      return new Response("Reviewed macOS Agent release is not published yet.\n",{status:503,headers});
+    return new Response(renderAgentInstallMacShell(u.origin,macosPin),{
+      status:200,headers:{...headers,"content-type":"text/x-shellscript; charset=utf-8","x-frame-options":"DENY"},
+    });
   }
   if (u.pathname === "/install.ps1") {
     if (!windowsPin || !validWindowsPin(windowsPin)) {

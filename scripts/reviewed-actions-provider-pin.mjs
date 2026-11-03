@@ -4,8 +4,6 @@ import {pathToFileURL} from "node:url";
 
 const PROVIDER="cloudflare-actions";
 const CONSUMER="workflow-mcp-worker";
-const DB_ID="051c3b6d-e3bc-4d69-907f-37e8ab00618f";
-const OWNER_HOST="weixin.lirtual.dpdns.org";
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const PIN_NAME="ACTIONS_DEPLOYMENT_ID";
 const fail=message=>{throw Error("Reviewed Actions pin blocked: "+message);};
@@ -18,16 +16,16 @@ export function verifyProviderRelease(deployments,settings,secrets){
   const bindings=settings?.bindings;
   if(!Array.isArray(bindings)||!Array.isArray(secrets))fail("Provider bindings and Secret inventory unavailable");
   const find=(name,type)=>bindings.filter(x=>x.name===name&&x.type===type);
-  if(find("DB","d1").length!==1||
-     (find("DB","d1")[0]?.id||find("DB","d1")[0]?.database_id)!==DB_ID||
-     find("ADMIN_HOST","plain_text").length!==1||
-     find("ADMIN_HOST","plain_text")[0].text!==OWNER_HOST||
-     ["WEIXIN_ENCRYPTION_KEY","BARK_DEVICE_KEY","BARK_ENCRYPTION_KEY"].some(name=>
-       find(name,"secret_text").length!==1||secrets.filter(x=>x.name===name).length!==1)||
-     !bindings.some(x=>x.name==="CF_VERSION_METADATA")||
-     bindings.some(x=>x.name==="MCP_ACCESS_TOKEN"||x.name==="MCP_HOST")||
+  // The Provider is now Bark-only. Inherited historic Owner D1/Secret
+  // bindings may remain until separately authorized T7 physical revocation;
+  // they are neither necessary nor proof of new execution authority.
+  if(["BARK_DEVICE_KEY","BARK_ENCRYPTION_KEY"].some(name=>
+       find(name,"secret_text").length!==1||
+       secrets.filter(x=>x.name===name).length!==1)||
+     find("CF_VERSION_METADATA","version_metadata").length!==1||
+     bindings.some(x=>x.name==="MCP_ACCESS_TOKEN"||x.name==="MCP_HOST"||x.type==="service")||
      secrets.some(x=>x.name==="MCP_ACCESS_TOKEN"))
-    fail("Provider D1, owner, encryption key, version metadata or retired credential drift");
+    fail("Provider Bark key, version metadata or retired credential drift");
   return versions[0].version_id.toLowerCase();
 }
 export function verifyConsumerPin(settings,expected){

@@ -1,5 +1,8 @@
 /** Public onboarding page: it has no credential, live device list or remote operation. */
-export function renderInstallHome(readiness: {windows: boolean; linux: boolean} = {windows:false,linux:false}): string {
+// Download must complete successfully before executing the HTTPS-origin script.
+// Unlike `curl | sh`, this command cannot return success for an empty download.
+const macosCommand = (upgrade: boolean) => `sh -c 'set -eu; f=$(mktemp /tmp/rca-macos.XXXXXXXX); trap "rm -f $f" EXIT; code=$(curl -fSs --proto "=https" --tlsv1.2 --max-redirs 0 --max-time 30 -w "%{http_code}" https://rca.lirtual.dpdns.org/install-macos.sh -o "$f"); [ "$code" = 200 ] && [ -s "$f" ] || exit 1; sh "$f"${upgrade ? " --upgrade" : ""} < /dev/tty'`;
+export function renderInstallHome(readiness: {windows: boolean; linux: boolean; macos?: boolean} = {windows:false,linux:false}): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Remote Control Agent · Install</title>
@@ -23,6 +26,10 @@ p{color:var(--muted);font-size:15px;line-height:1.65;margin:0 0 25px;max-width:5
 [role=tabpanel]{padding:17px 0 0}
 .command{background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:22px 24px 25px;min-width:0}
 .command-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+.mac-action{display:flex;align-items:center;gap:8px;margin:0 0 14px}
+.mac-action[hidden]{display:none}
+.mac-action button{font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--fg);cursor:pointer}
+.mac-action button[aria-pressed=true]{border-color:var(--fg);font-weight:600}
 .command-label{font-size:18px;font-weight:600;letter-spacing:-.02em;color:var(--fg)}
 .command-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin}
 code{display:block;width:max-content;max-width:none;font:clamp(14px,2.6vw,17px)/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre;color:var(--fg);user-select:all}
@@ -64,17 +71,20 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
   li strong{font-size:13.5px;margin-bottom:2px}
 }
 </style></head>
-<body><main><small>Remote Control Agent</small><h1>Install on your device</h1>
-<p>Run the command, then approve in MCP.</p>
-<div role="tablist" aria-label="Operating system"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button></div>
-<section id="installer" role="tabpanel" aria-label="Install command"><div class="command"><div class="command-head"><span id="shell-label" class="command-label">PowerShell</span><button type="button" class="copy" id="copy" aria-label="Copy install command" title="Copy install command"><svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="8" y="3" width="13" height="13" rx="2"></rect><rect x="3" y="8" width="13" height="13" rx="2"></rect></svg><svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12l5 5L20 6"></path></svg></button></div><div class="command-scroll"><code id="command"></code></div></div><div id="message" role="status" aria-live="polite"></div></section>
-<ol role="list"><li><strong>1 · Install</strong>Run the command; choose temporary or permanent</li><li><strong>2 · Approve</strong>Match the 10-character code and fingerprint in MCP</li><li><strong>3 · Verify</strong>Confirm online status with a safe read</li></ol>
+<body><main><small>Remote Control Agent</small><h1>Install or upgrade your device</h1>
+<p>For a new installation, approve pairing in MCP. Existing devices upgrade without re-pairing.</p>
+<div role="tablist" aria-label="Operating system"><button type="button" id="windows" role="tab" aria-controls="installer" aria-selected="false">Windows</button><button type="button" id="linux" role="tab" aria-controls="installer" aria-selected="false">Linux</button><button type="button" id="macos" role="tab" aria-controls="installer" aria-selected="false">macOS</button></div>
+<section id="installer" role="tabpanel" aria-label="Install command"><div id="mac-action" class="mac-action" role="group" aria-label="macOS action" hidden><button type="button" id="mac-install" aria-pressed="true">Install new</button><button type="button" id="mac-upgrade" aria-pressed="false">Upgrade existing</button></div><div class="command"><div class="command-head"><span id="shell-label" class="command-label">PowerShell</span><button type="button" class="copy" id="copy" aria-label="Copy install command" title="Copy install command"><svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="8" y="3" width="13" height="13" rx="2"></rect><rect x="3" y="8" width="13" height="13" rx="2"></rect></svg><svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12l5 5L20 6"></path></svg></button></div><div class="command-scroll"><code id="command"></code></div></div><div id="message" role="status" aria-live="polite"></div></section>
+<ol role="list"><li><strong>1 · Install / Upgrade</strong>Choose a new install mode or upgrade an existing Mac</li><li><strong>2 · Approve if new</strong>For first pairing, match the code and fingerprint in MCP</li><li><strong>3 · Verify</strong>Confirm online status with a safe read</li></ol>
 </main>
 <script>
-(()=>{'use strict';const cmds={windows:'irm https://rca.lirtual.dpdns.org/install.ps1 | iex',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh'};
-const ready={windows:${readiness.windows},linux:${readiness.linux}};
-const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux')};
+(()=>{'use strict';const cmds={windows:'irm https://rca.lirtual.dpdns.org/install.ps1 | iex',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh',macos:${JSON.stringify(macosCommand(false))}};
+const macosInstallCommand=${JSON.stringify(macosCommand(false))};
+const macosUpgradeCommand=${JSON.stringify(macosCommand(true))};
+const ready={windows:${readiness.windows},linux:${readiness.linux},macos:${readiness.macos===true}};
+const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux'),macos:document.getElementById('macos')};
 const field=document.getElementById('command'),shellLabel=document.getElementById('shell-label'),message=document.getElementById('message'),copy=document.getElementById('copy');
+const macAction=document.getElementById('mac-action'),macInstall=document.getElementById('mac-install'),macUpgrade=document.getElementById('mac-upgrade');
 let platform='windows';
 let copyResetTimer;
 function resetCopyFeedback(){
@@ -86,6 +96,7 @@ function resetCopyFeedback(){
 function select(value){
   resetCopyFeedback();
   platform=value;
+  macAction.hidden=value!=='macos'||!ready.macos;
   shellLabel.textContent=value==='windows'?'PowerShell':'Shell';
   field.textContent=ready[value]?cmds[value]:'Not available';
   // Let narrow screens wrap at the URL path boundary, never inside .ps1/.sh.
@@ -102,20 +113,28 @@ function select(value){
     tab.setAttribute('aria-selected',String(name===value));
     tab.tabIndex=name===value?0:-1;
   }
-  message.textContent=ready[value]?'':'Installer not released.';
+  message.textContent=!ready[value]?'Installer not released.':value==='macos'&&cmds.macos===macosUpgradeCommand?'Upgrade preserves your existing device identity and receipts; do not pair again.':'';
 }
+function macMode(upgrade){
+  cmds.macos=upgrade?macosUpgradeCommand:macosInstallCommand;
+  macInstall.setAttribute('aria-pressed',String(!upgrade));
+  macUpgrade.setAttribute('aria-pressed',String(upgrade));
+  select('macos');
+}
+macInstall.addEventListener('click',()=>macMode(false));
+macUpgrade.addEventListener('click',()=>macMode(true));
 for(const [name,tab] of Object.entries(tabs)){
   tab.addEventListener('click',()=>select(name));
   tab.addEventListener('keydown',event=>{
     if(event.key==='ArrowLeft'||event.key==='ArrowRight'){
       event.preventDefault();
-      const other=name==='windows'?'linux':'windows';
+      const order=['windows','linux','macos']; const offset=event.key==='ArrowRight'?1:order.length-1; const other=order[(order.indexOf(name)+offset)%order.length];
       select(other);tabs[other].focus();
     }
   });
 }
 const detected=(navigator.userAgentData?.platform||navigator.platform||'').toLowerCase();
-select(detected.includes('linux')?'linux':'windows');
+select(detected.includes('mac')?'macos':detected.includes('linux')?'linux':'windows');
 copy.addEventListener('click',async()=>{
   if(!ready[platform])return;
   const requestedPlatform=platform;

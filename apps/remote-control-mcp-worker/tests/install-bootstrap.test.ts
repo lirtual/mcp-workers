@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, renderAgentInstallMacShell } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
@@ -181,7 +181,7 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(html,/>Linux<\/button>/);
   assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
   assert.match(html,/aria-selected/);
-  assert.match(html,/const ready=\{windows:false,linux:false\}/);
+  assert.match(html,/const ready=\{windows:false,linux:false,macos:false\}/);
   assert.match(html,/copy\.disabled=!ready\[value\]/);
   assert.match(html,/Not available/);
   assert.match(html,/navigator\.userAgentData/);
@@ -213,47 +213,47 @@ test('homepage copy state follows the separately verified platform pins',async()
   const closed=renderInstallHome();
   const linux=renderInstallHome({linux:true,windows:false});
   const windows=renderInstallHome({linux:false,windows:true});
-  assert.match(closed,/const ready=\{windows:false,linux:false\}/);
-  assert.match(linux,/const ready=\{windows:false,linux:true\}/);
-  assert.match(windows,/const ready=\{windows:true,linux:false\}/);
+  assert.match(closed,/const ready=\{windows:false,linux:false,macos:false\}/);
+  assert.match(linux,/const ready=\{windows:false,linux:true,macos:false\}/);
+  assert.match(windows,/const ready=\{windows:true,linux:false,macos:false\}/);
   assert.match(closed,/field\.textContent=ready\[value\]\?cmds\[value\]:'Not available'/);
   assert.match(closed,/copy\.disabled=!ready\[value\]/);
   assert.match(closed,/if\(!ready\[platform\]\)return;/);
   const custom='https://rca.lirtual.dpdns.org';
   const resp=requestInstall(new Request(custom+'/'),pin,custom);
-  assert.match(await resp.text(),/const ready=\{windows:false,linux:true\}/);
+  assert.match(await resp.text(),/const ready=\{windows:false,linux:true,macos:false\}/);
 });
 
 
-test('reviewed Linux and Windows v0.1.48 public installers pin immutable local upgrade sources', async () => {
+test('reviewed Linux and Windows v0.1.51 public installers pin immutable local upgrade sources', async () => {
   const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
     await import('../src/install-bootstrap.ts');
   const base = 'https://rca.lirtual.dpdns.org';
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.48');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, 'a9e65ce194f2859d609d42b054b57b23adf5ea27');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.51');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '03a14fd4138ca8d77fa8aced78f7a53ccc51724e');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '99de75a02ea8b5b8a4e62263685a081d622921331a9404ca5b1f9bfb231c7ca8');
-  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, 'f7c1936a56ac51d7e0de7a569da0ddd342ec97f43c56202b92a87932f4bb3c1a');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.tag, 'v0.1.48');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, 'a9e65ce194f2859d609d42b054b57b23adf5ea27');
-  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '67913d0da1b7ae575f0d911f6c44133a1b891929a36e10b9770c414274214fbf');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.x64Sha256, '5330d88b5f1df4f250f453ea70cf43fe14b4cf362c437f6aac84a7c24981bbfc');
+  assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.arm64Sha256, '5b52f3e873e510a2810f6f0c7ee3b69c9226a4e4d00ebe8b8b6aabd73e415566');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.tag, 'v0.1.51');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, '03a14fd4138ca8d77fa8aced78f7a53ccc51724e');
+  assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a');
   const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(home.status, 200);
-  assert.match(await home.text(), /const ready=\{windows:true,linux:true\}/);
+  assert.match(await home.text(), /const ready=\{windows:true,linux:true,macos:false\}/);
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(linux.status, 200);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.48/);
+  assert.match(shell, /remote-control-agent-v0\.1\.51/);
   assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
   assert.match(shell, /"\$@" < \/dev\/tty/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /v0\.1\.48/);
-  assert.match(ps1, /a9e65ce194f2859d609d42b054b57b23adf5ea27/);
+  assert.match(ps1, /v0\.1\.51/);
+  assert.match(ps1, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
   assert.match(ps1, /6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a/);
-  assert.match(ps1, /67913d0da1b7ae575f0d911f6c44133a1b891929a36e10b9770c414274214fbf/);
+  assert.match(ps1, /03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
@@ -299,8 +299,8 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   }
   assert.match(html, /@media\(max-width:520px\)/);
   assert.match(html, /<html lang="en">/);
-  assert.match(html, /Install on your device/);
-  assert.match(html, /Run the command, then approve in MCP\./);
+  assert.match(html, /Install or upgrade your device/);
+  assert.match(html, /For a new installation, approve pairing in MCP/);
   assert.match(html, /Copy install command/);
   assert.doesNotMatch(html, /[\u3400-\u9fff]/, "install page must use English throughout");
   assert.match(html, /-webkit-text-size-adjust:100%/);
@@ -319,7 +319,7 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.match(html, /class="icon-copy"/);
   assert.match(html, /class="icon-check"/);
   assert.doesNotMatch(html, /id="copy"[^>]*>复制<\/button>/);
-  assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
+  assert.match(html, /select\(detected\.includes\('mac'\)/);
   assert.doesNotMatch(html, /先选择 Windows 或 Linux|const mobile=/);
   assert.match(html, /copy\.disabled=!ready\[value\]/);
   assert.match(html, /aria-selected/);
@@ -395,8 +395,9 @@ test('narrow install commands break only at URL path while copied text stays exa
       focus(){},
     };
   }
-  const windows=element(),linux=element(),copy=element(),shellLabel=element(),message=element();
-  const elems:Record<string,unknown>={windows,linux,copy,'shell-label':shellLabel,message,command:code};
+  const windows=element(),linux=element(),macos=element(),copy=element(),shellLabel=element(),message=element();
+  const elems:Record<string,unknown>={windows,linux,macos,copy,'shell-label':shellLabel,message,command:code,
+    'mac-action':element(),'mac-install':element(),'mac-upgrade':element()};
   const copied:string[]=[];
   runInNewContext(source,{
     document:{
@@ -425,7 +426,7 @@ test('installer home drops source/docs and defaults unknown device to first Wind
   const html=renderInstallHome({windows:true,linux:true});
   assert.doesNotMatch(html, /<footer\b|>源码<\/a>|>文档<\/a>|#readme/);
   assert.match(html, /let platform='windows'/);
-  assert.match(html, /select\(detected\.includes\('linux'\)\?'linux':'windows'\)/);
+  assert.match(html, /select\(detected\.includes\('mac'\)/);
   assert.match(html, /id="windows" role="tab"/);
   assert.match(html, /id="linux" role="tab"/);
   assert.match(html, /tab\.setAttribute\('aria-selected',String\(name===value\)\)/);
@@ -458,7 +459,7 @@ test('icon-copy feedback resets correctly and retains SVG children', async () =>
       focus(){},
     };
   }
-  const els = Object.fromEntries(['windows','linux','command','shell-label','message','copy'].map(id=>[id,element()])) as Record<'windows'|'linux'|'command'|'shell-label'|'message'|'copy',FakeElement>;
+  const els = Object.fromEntries(['windows','linux','macos','command','shell-label','message','copy','mac-action','mac-install','mac-upgrade'].map(id=>[id,element()])) as Record<'windows'|'linux'|'macos'|'command'|'shell-label'|'message'|'copy',FakeElement>;
   const clipboard:string[] = [];
   let rejectCopy=false;
   const pending=new Map<number,()=>void>();
@@ -522,4 +523,155 @@ test('icon copy card adapts to system light/dark color scheme and remains access
   assert.ok(html.includes("copy.setAttribute('data-copied','true')"));
   assert.ok(html.includes("copy.removeAttribute('data-copied')"));
   assert.doesNotMatch(html,/--copied-bg|--copied-fg/);
+});
+
+test('macOS tab remains visible but non-executable until a reviewed native Release pin exists', async () => {
+  const {renderInstallHome}=await import('../src/install-home.ts');
+  const {REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,REVIEWED_WINDOWS_INSTALL_PIN}=await import('../src/install-bootstrap.ts');
+  const custom='https://rca.lirtual.dpdns.org';
+  const serve=(path:string)=>handleAgentInstallerRequest(new Request(custom+path),
+    REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,custom,REVIEWED_WINDOWS_INSTALL_PIN);
+  const page=await serve('/').text();
+  assert.match(page,/>macOS<\/button>/);
+  assert.match(page,/macos:false/);
+  assert.match(page,/macos:document.getElementById\('macos'\)/);
+  assert.match(page,/\[\s*'windows','linux','macos'\]/);
+  assert.match(page,/install-macos\.sh/);
+  assert.equal(serve('/install-macos.sh').status,503);
+  assert.doesNotMatch(await serve('/install-macos.sh').text(),/#!\/bin\/sh/);
+  assert.equal(serve('/install-macos.sh?untrusted=true').status,405);
+  assert.equal(handleAgentInstallerRequest(
+    new Request(custom+'/install-macos.sh',{headers:{host:'evil.example'}}),
+    null,custom,null).status,403);
+});
+
+test('reviewed macOS v0.1.51 pin serves exactly the published ARM64/Intel assets and explicit remote upgrade', () => {
+  const pin=REVIEWED_MACOS_INSTALL_PIN;
+  assert.equal(pin.tag,'v0.1.51');
+  assert.equal(pin.commit,'03a14fd4138ca8d77fa8aced78f7a53ccc51724e');
+  assert.equal(pin.arm64Sha256,'dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803');
+  assert.equal(pin.x64Sha256,'f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5');
+  assert.equal(pin.scriptSha256,'59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55');
+  assert.equal(pin.remoteUpgradeMode,'detached-launchd-v1');
+  const shell=renderAgentInstallMacShell('https://rca.lirtual.dpdns.org',pin);
+  assert.match(shell,/releases\/download\/v0\.1\.51\/remote-control-agent-v0\.1\.51-\$target\.tar\.gz/);
+  assert.match(shell,/--remote-upgrade\) mode=remote-upgrade/);
+  assert.doesNotMatch(shell,/releases\/download\/v0\.1\.50\//);
+  assert.equal(spawnSync('sh',['-n'],{input:shell,encoding:'utf8'}).status,0);
+});
+
+test('macOS synthetic release pin requires two native archives and separately pinned source', async () => {
+  const {renderAgentInstallMacShell}=await import('../src/install-bootstrap.ts');
+  const pin={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
+    arm64Sha256:'b'.repeat(64),x64Sha256:'c'.repeat(64),scriptSha256:'d'.repeat(64)};
+  const origin='https://rca.lirtual.dpdns.org';
+  const shell=renderAgentInstallMacShell(origin,pin);
+  assert.equal(spawnSync('sh',['-n'],{input:shell,encoding:'utf8'}).status,0);
+  assert.match(shell,/darwin-arm64/);
+  assert.match(shell,/darwin-x64/);
+  assert.match(shell,/hw\.optional\.arm64/);
+  assert.match(shell,/shasum -a 256/);
+  assert.match(shell,/macos-local\.sh/);
+  assert.match(shell,/--max-redirs 0/);
+  assert.match(shell,/--source-sha/);
+  assert.match(shell,/--endpoint/);
+  assert.match(shell,/mode=temporary/);
+  assert.match(shell,/Owner selection cancelled/);
+  assert.match(shell,/Unsupported installer action/);
+  assert.match(shell,/1\) \[ "\$1" = "--upgrade" \]/);
+  assert.match(shell,/if \[ "\$mode" != upgrade \] && \[ "\$mode" != remote-upgrade \]; then/);
+  assert.match(shell,/sh "\$source" "\$mode" --archive/);
+  const rejected=spawnSync('sh',['-c',shell,'macos-script','--unexpected'],{encoding:'utf8'});
+  assert.notEqual(rejected.status,0);
+  assert.match(rejected.stderr,/Unsupported installer action/);
+  assert.doesNotMatch(rejected.stdout,/Downloading pinned/);
+  const forbidden=spawnSync('sh',['-c',shell,'macos-script','--remote-upgrade'],{encoding:'utf8'});
+  assert.notEqual(forbidden.status,0);
+  assert.match(forbidden.stderr,/Unsupported installer action/);
+  assert.doesNotMatch(shell,/mode=remote-upgrade/);
+  const remoteShell=renderAgentInstallMacShell(origin,{
+    ...pin,remoteUpgradeMode:'detached-launchd-v1',
+  });
+  assert.equal(spawnSync('sh',['-n'],{input:remoteShell,encoding:'utf8'}).status,0);
+  assert.match(remoteShell,/--remote-upgrade\) mode=remote-upgrade/);
+  assert.match(remoteShell,/if \[ "\$mode" = remote-upgrade \]; then/);
+  assert.match(remoteShell,/sh "\$source" "\$mode" --archive/);
+  const validButWrongPlatform=spawnSync('sh',['-c',remoteShell,'macos-script','--remote-upgrade'],{encoding:'utf8'});
+  assert.notEqual(validButWrongPlatform.status,0);
+  assert.match(validButWrongPlatform.stderr,/macOS only/);
+  assert.throws(()=>renderAgentInstallMacShell(origin,{
+    ...pin,remoteUpgradeMode:'any-process',
+  } as never),/Unapproved macOS release pin/);
+  assert.ok(shell.indexOf("Release asset SHA-256 mismatch") <
+    shell.indexOf("Installer source SHA-256 mismatch"));
+  assert.ok(shell.indexOf("Installer source SHA-256 mismatch") <
+    shell.indexOf('sh "$source" "$mode"'));
+  const resp=handleAgentInstallerRequest(new Request(origin+'/install-macos.sh'),
+    null,origin,null,pin);
+  assert.equal(resp.status,200);
+  assert.equal(await resp.text(),shell);
+  for(const bad of [
+    {...pin,tag:'v0.1.4; id'},
+    {...pin,commit:'short'},
+    {...pin,arm64Sha256:'X'.repeat(64)},
+    {...pin,x64Sha256:'b'.repeat(63)},
+    {...pin,scriptSha256:'wrong'},
+  ])assert.throws(()=>renderAgentInstallMacShell(origin,bad),/Unapproved/);
+  assert.throws(()=>renderAgentInstallMacShell('http://untrusted.example',pin),/Unapproved/);
+  // Unix CI must refuse before any network or OS mutations.
+  const denied=spawnSync('sh',['-c',shell],{encoding:'utf8',timeout:3000});
+  assert.notEqual(denied.status,0);
+});
+
+test('reviewed macOS page copies separate explicit install and upgrade commands', async () => {
+  const pin={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
+    arm64Sha256:'b'.repeat(64),x64Sha256:'c'.repeat(64),scriptSha256:'d'.repeat(64)};
+  const origin='https://rca.lirtual.dpdns.org';
+  const html=await handleAgentInstallerRequest(new Request(origin+'/'),null,origin,null,pin).text();
+  assert.match(html,/const ready=\{windows:false,linux:false,macos:true\}/);
+  assert.match(html,/macos:document.getElementById\('macos'\)/);
+  assert.match(html,/install-macos\.sh/);
+  const script=html.split('<script>')[1]?.split('</script>')[0];
+  assert.ok(script);
+  const fake=()=>({
+    attributes:{} as Record<string,string>, handlers:{} as Record<string,()=>void>,
+    textContent:'',disabled:false,tabIndex:0,hidden:false,
+    setAttribute(name:string,value:string){this.attributes[name]=value;},
+    removeAttribute(name:string){delete this.attributes[name];},
+    addEventListener(name:string,fn:()=>void){this.handlers[name]=fn;},
+    focus(){},
+  });
+  const elements=Object.fromEntries(['windows','linux','macos','command','shell-label','message','copy','mac-action','mac-install','mac-upgrade']
+    .map(name=>[name,fake()])) as Record<string,ReturnType<typeof fake>>;
+  const copied:string[]=[];
+  runInNewContext(script,{
+    document:{getElementById:(name:string)=>elements[name]},
+    navigator:{platform:'MacIntel',clipboard:{writeText:async(value:string)=>{copied.push(value);}}},
+    clearTimeout:()=>{},setTimeout:()=>1,
+  });
+  assert.equal(elements.macos?.attributes['aria-selected'],'true');
+  assert.equal(elements.copy?.disabled,false);
+  await elements.copy?.handlers.click?.();
+  assert.equal(copied.length,1);
+  assert.match(copied[0]!,/curl -fSs --proto/);
+  assert.match(copied[0]!,/\[ -s "\$f" \] \|\| exit 1/);
+  assert.doesNotMatch(copied[0]!,/\| sh/);
+  assert.match(copied[0]!,/\[ "\$code" = 200 \]/);
+  assert.equal(spawnSync('sh',['-n'],{input:copied[0]!,encoding:'utf8'}).status,0);
+  assert.doesNotMatch(copied[0]!,/sh "\$f" --upgrade/);
+  assert.equal(elements['mac-action']!.hidden,false);
+  elements['mac-upgrade']!.handlers.click!();
+  assert.equal(elements['mac-upgrade']!.attributes['aria-pressed'],'true');
+  assert.equal(elements['mac-install']!.attributes['aria-pressed'],'false');
+  await elements.copy!.handlers.click!();
+  assert.equal(copied.length,2);
+  assert.match(copied[1]!,/sh "\$f" --upgrade < \/dev\/tty/);
+  assert.match(copied[1]!,/\[ "\$code" = 200 \] && \[ -s "\$f" \]/);
+  assert.equal(spawnSync('sh',['-n'],{input:copied[1]!,encoding:'utf8'}).status,0);
+  elements['mac-install']!.handlers.click!();
+  assert.equal(elements['mac-install']!.attributes['aria-pressed'],'true');
+  await elements.copy!.handlers.click!();
+  assert.equal(copied[2],copied[0]);
+  elements.windows!.handlers.click!();
+  assert.equal(elements['mac-action']!.hidden,true);
 });
