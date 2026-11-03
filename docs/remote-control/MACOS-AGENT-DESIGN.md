@@ -1,10 +1,11 @@
 # RCA — Native macOS Agent support (Grill With Docs)
 
-> **Status:** **Design consensus reached (2026-11-01)** — Q1–Q6=A, **Q7=B**, Q8–Q15=A. Security, compatibility, minimum-complexity and release-boundary review complete at design level; **no macOS implementation or real-device validation has occurred**. [ADR-0022](./adr/0022-native-macos-owned-session-boundary.md) records the long-lived native process-safety choice. This design does not authorize implementation or any production action.
+> **Delivery status (verified 2026-11-03):** [Spec #657](https://github.com/lirtual/mcp-workers/issues/657) and its five sub-issues are `closed/completed`. Existing workflows published the [immutable, public Agent v0.1.51 prerelease](https://github.com/lirtual/remote-control-agent/releases/tag/v0.1.51) with five native CI/Release assets and deployed the macOS pin via [Worker #700](https://github.com/lirtual/mcp-workers/pull/700) and [protected release](https://github.com/lirtual/mcp-workers/actions/runs/41557653717). The original permanent ARM64 Mac completed [v0.1.51 remote-upgrade / signed-WSS / LaunchAgent E2E](https://github.com/lirtual/mcp-workers/issues/660#issuecomment-6593124915). Physical Intel E2E, fresh final public first-install, login/sleep and physical rollback, TCC-denial/differential, and original SQLite row-continuity were explicitly **Waived**, not Pass; TCC `read_file` remains **Unknown**, while Finder first-open was **Blocked by Gatekeeper** (safe-denial Pass). These are the recorded final acceptance boundaries, not a claim of exhaustive real-host testing.
+> **Original design record (2026-11-01, historical):** Q1–Q6=A, **Q7=B**, Q8–Q15=A. At that point no macOS implementation or real-device validation had occurred. [ADR-0022](./adr/0022-native-macos-owned-session-boundary.md) retains the adopted native owned-process decision; the design record itself never authorized publishing or production changes.
 > **Scope:** Existing Remote Control MCP in `lirtual/mcp-workers` and the existing Node.js Agent in `lirtual/remote-control-agent`. This document records **design decisions only**. It authorizes no code implementation, PR merge, CI/Release publication, production Worker deployment, local installation, pairing, privileged operation, or device-data deletion.
 > **Active design context:** [CONTEXT.md](./CONTEXT.md); existing cross-platform and distribution decisions [ADR-0015](./adr/0015-v2-pairing-and-identity.md), [ADR-0016](./adr/0016-agent-local-receipts-and-bounded-commands.md), [ADR-0018](./adr/0018-v2-temporary-agent-pairing-lifecycle.md), [ADR-0019](./adr/0019-standalone-linux-agent-distribution.md), [ADR-0020](./adr/0020-public-agent-repository.md), [ADR-0021](./adr/0021-retire-rca-owned-gui-tools.md). Historical #505 macOS Computer Use is **cancelled** and is not the basis for this design.
 
-## Problem and current implementation boundary
+## Historical problem and pre-implementation boundary (2026-11-01)
 
 RCA currently distributes verified, version-pinned, bundled-Node.js Agent archives for **Linux glibc x64/ARM64** (including WSL2) and **Windows x64**. It has no approved native macOS installer, managed-process supervisor, lifetime manager, CI Release target, or real macOS acceptance. The currently delivered GUI retirement in Spec #628 removed RCA-owned Browser/Computer execution tools; a new platform must not reintroduce them.
 
@@ -65,9 +66,11 @@ Source-level reasons a Linux archive cannot simply be relabelled as macOS includ
 - A public `curl | sh` example's exit status is **not** sufficient evidence of successful download because a shell may exit successfully after receiving no script. Require an explicit download-error check and real installation result, followed by owner-approved device pairing and signed-WSS online verification; do not weaken existing Linux/Windows install commands. Keep local prompts connected to a real terminal, never silently select permanent mode on no-TTY execution.
 - Gatekeeper/manual authorization and TCC access must be validated for the **actual program identity that runs as the LaunchAgent**, not assumed from an interactive Terminal session's access. A newly upgraded embedded Node/native helper may present different Gatekeeper outcomes; preserve rollback and explicit Blocked reporting.
 
-## Proposed acceptance and release evidence (not yet performed)
+## Historical proposed acceptance matrix (2026-11-01; superseded)
 
-| Layer | Minimum required evidence | Today |
+*The Not performed entries below describe the original design baseline, not the final 2026-11-03 release and real-device acceptance.*
+
+| Layer | Minimum required evidence in original plan | Design-time status (2026-11-01) |
 | --- | --- | --- |
 | Document/design | Q1–Q15 decisions, existing domain context and one necessary ADR consistent | **Design accepted; Draft PR not merged** |
 | Source and CI | Exact Agent+Worker commits, existing Linux/Windows regression, both macOS native artifact build/verify and targeted process/failure tests | **Not performed** |
@@ -76,5 +79,7 @@ Source-level reasons a Linux archive cannot simply be relabelled as macOS includ
 | Immutable Agent Release | Reviewed five-asset pin, exact official checksums and published Release verification, no historical asset rewrite | **Not performed** |
 | Worker and public macOS installer | Separately authorized existing-Worker deployment, exact verified route/page, old Windows/Linux paths preserved | **Not performed** |
 | Production device install/online | Each tested Mac device key and ID, grant, authenticated online status and harmless read, independently recorded | **Not performed** |
+
+*The following paragraph is the original design-to-implementation handoff record, preserved for historical context.*
 
 **No new design questions remain on the accepted boundary.** Platform-specific helper internals and OS failure behavior are implementation facts to test against the above invariants, **not permission to silently weaken them**. An actual impossibility (e.g., no safe owned-process termination on macOS or no usable first-run path under Q7=B) is a **blocking contradiction** and must be surfaced with evidence for a later owner decision, not solved by ad hoc OS-security bypass or a new service. Design acceptance does not authorize code implementation, PR merge, GitHub Release/Worker publishing, credentials access, Mac installation or real-device side effects. Proceed to a separate formal implementation/spec handoff only after this Draft design is explicitly accepted for that next stage.
