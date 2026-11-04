@@ -1275,3 +1275,14 @@ test('Browser release pins resources, protects namespace and stages only its ind
   assert.match(workflow,/name: Register production Browser MCP with existing One-MCP Portal\n        if: inputs.worker == 'browser-mcp-worker'/);
   assert.match(workflow,/run: node scripts\/register-browser-portal\.mjs/);
 });
+
+test('production release external actions use immutable commit SHAs', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const references = [...workflow.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)]
+    .map(match => match[1])
+    .filter(reference => !reference.startsWith('./'));
+  assert.ok(references.length > 0, 'expected third-party actions in release workflow');
+  for (const reference of references) {
+    assert.match(reference, /^[^@\s]+@[a-f0-9]{40}$/, `unlocked release action: ${reference}`);
+  }
+});
