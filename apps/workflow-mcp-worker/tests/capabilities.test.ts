@@ -15,13 +15,17 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.uses.enum,
     [...SUPPORTED_STEP_USES]);
   assert.deepEqual(overview.limits,PLAN_LIMITS);
-  const catalog=new Map((overview.capability_ids as Array<{id:string;availability:string}>).map(x=>[x.id,x]));
+  const catalog=new Map((overview.capability_ids as Array<{id:string;availability:string;description?:string}>).map(x=>[x.id,x]));
   assert.equal(catalog.get('trigger.manual')?.availability,'supported');
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.write')?.availability,'unavailable');
   assert.equal(catalog.get('flow.saga')?.availability,'supported_with_grant');
+  const cloudflareDescription=String(catalog.get('action.run.cloudflare')?.description);
+  assert.doesNotMatch(cloudflareDescription,/Weixin/);
+  assert.match(cloudflareDescription,/Bark.*Dub.*EnvShare.*Litterbox/);
+  assert.match(String(catalog.get('flow.saga')?.description),/Ubuntu\/Windows/);
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
   assert.equal(catalog.get('flow.wait')?.availability,'supported');
   const wait=(await workflowCapabilities(env,'flow.wait')) as {example:{definition:unknown;digest:string};wait_policy:{native_checkpoint:string;total_budget_seconds:number}};
