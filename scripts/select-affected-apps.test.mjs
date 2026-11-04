@@ -106,3 +106,17 @@ test('candidate CI selects full Database checks only for Owner/repo and exact db
     ['MANUAL_REF','refs/heads/db476-invalid'],['MANUAL_WORKER','retired-worker']])
     assert.throws(()=>selectionForEvent({...env,[key]:value}),/Unsupported manual Worker selection/);
 });
+
+
+test('main push validates every active Worker regardless of diff history', () => {
+  const result = selectionForEvent({EVENT_NAME: 'push', MANUAL_REF: 'refs/heads/main',
+    BEFORE_SHA: 'unavailable'});
+  assert.deepEqual(result.selected, APPLICATIONS);
+  assert.deepEqual(result.changedFiles, []);
+});
+
+test('CI cancels only obsolete PR runs and isolates release callers', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /^concurrency:\n  group: mcp-workers-ci-.*github\.run_id.*\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/m);
+  assert.doesNotMatch(workflow, /^    concurrency:/m);
+});
