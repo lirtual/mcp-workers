@@ -17,14 +17,19 @@ test('retired Email encryption secret is not referenced by production release', 
 });
 
 test('a missing or duplicated manual Worker choice fails', () => {
-  assert.throws(() => verifyReleaseWorkers(release.replace('          - http-mcp-worker\n', ''), RELEASE_WORKERS), /Mismatched manual release choices/);
-  assert.throws(() => verifyReleaseWorkers(release.replace('          - http-mcp-worker\n', '          - http-mcp-worker\n          - http-mcp-worker\n'), RELEASE_WORKERS), /Duplicate manual release choices/);
+  assert.throws(() => verifyReleaseWorkers(release.replace('          - github-actions-mcp-worker\n', ''), RELEASE_WORKERS), /Mismatched manual release choices/);
+  assert.throws(() => verifyReleaseWorkers(release.replace('          - github-actions-mcp-worker\n', '          - github-actions-mcp-worker\n          - github-actions-mcp-worker\n'), RELEASE_WORKERS), /Duplicate manual release choices/);
 });
 
 test('a missing allowed Worker or an unsafe gate bypass fails', () => {
-  assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'http-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
+  assert.throws(() => verifyReleaseWorkers(release.replace("            inputs.worker == 'github-actions-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+});
+
+test('retired HTTP MCP cannot enter the release allowlist', () => {
+  assert.ok(!RELEASE_WORKERS.includes('http-mcp-worker'));
+  assert.doesNotMatch(release, /http-mcp-worker|HTTP_CREDENTIALS_JSON|register-http-portal/);
 });
 
 test('historical registry activation job is retired and cannot be dispatched', () => {
