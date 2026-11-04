@@ -95,6 +95,14 @@ test("Workflow deployment readback retries only bounded propagation or read-only
   assert.equal(exhausted,6);
 });
 
+test("code-only preflight requires already deployed Secrets, normal bootstrap is unchanged", () => {
+  assert.equal(verifyBindings("raindrop-mcp-worker", goodSettings, [], {mode:"preflight"}), true);
+  assert.throws(() => verifyBindings("raindrop-mcp-worker", goodSettings, [],
+    {mode:"preflight",requireExistingSecrets:true}), /Required runtime Secret missing/);
+  assert.equal(verifyBindings("raindrop-mcp-worker", goodSettings, secretList,
+    {mode:"preflight",requireExistingSecrets:true}), true);
+});
+
 test("Active-version readback requires exactly one 100 percent version", () => {
   const good = { deployments: [{ id: "deployment-one", versions: [{ version_id: "version-one", percentage: 100 }] }] };
   assert.deepEqual(activeVersion(good), { deployment_id: "deployment-one", version_id: "version-one" });
@@ -512,6 +520,34 @@ test("SSH release requires EdgeSSH D1, own DO and scoped key", () => {
   assert.throws(() => verifyBindings(worker, settings, secrets.slice(0, 1)), /Secret missing/);
 });
 
+test("Workflow code-only release never stages secrets or runs migrations, preserves variables and rejects drift", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(workflow, /workflow_code_only:\n\s*description:.*no D1 migrations or secret upload/);
+  assert.match(workflow, /WORKFLOW_CODE_ONLY: \$\{\{ inputs.workflow_code_only \}\}/);
+  const releaseScript = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
+  assert.match(releaseScript, /requireExistingSecrets: mode === "preflight"/,
+    "existing Secret names checked in read-only preflight");
+  assert.match(releaseScript, /Code-only release requires an existing Workflow Worker/);
+  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only == true/);
+  assert.match(workflow, /WORKFLOW_REQUIRE_COMPLETE_SCHEMA: \$\{\{ inputs.workflow_code_only && 'true' \|\| '' \}\}/);
+  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true/);
+  const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
+  assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
+  assert.match(deployment, /deploy_args=\(--keep-vars\)/);
+  assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
+  assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
+  assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
+  for (const job of ["database-hyperdrive-prepare","database-hyperdrive-apply",
+    "database-hyperdrive-enable","database-hyperdrive-credentials",
+    "database-hyperdrive-rotation-check","database-hyperdrive-retire",
+    "workflow-actions-migration-prepare","workflow-actions-gate-reopen"]) {
+    const block = workflow.slice(workflow.indexOf("  "+job+":"));
+    assert.match(block.slice(0,550), /inputs.workflow_code_only != true/,
+      "code-only selection must not enter maintenance job "+job);
+  }
+  assert.match(workflow, /Require complete Workflow code-only migration inventory/);
+});
+
 test("manual release selects GitHub Environment directly from the allowlisted Worker name", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.ok(workflow.includes("      name: ${{ inputs.worker }}"),
@@ -523,7 +559,7 @@ test("manual release selects GitHub Environment directly from the allowlisted Wo
   assert.match(workflow, /github\.ref == 'refs\/heads\/main'/,
     "only main branch may publish");
   assert.match(workflow, /Stage selected Worker Secrets for every release/,
-    "every selected Worker must stage required secret values before deploy");
+    "default manual releases must stage required secrets unless the guarded Workflow code-only path is chosen");
 });
 
 test("manual release always syncs selected Worker Secrets from GitHub and never silently falls back", () => {
@@ -532,7 +568,8 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const variableStart = workflow.indexOf("      - name: Stage approved Worker variables", secretStart);
   assert.ok(secretStart > 0 && variableStart > secretStart);
   const secretStep = workflow.slice(secretStart, variableStart);
-  assert.doesNotMatch(secretStep, /^\s*if:/m, "existing Workers must never skip Secret staging");
+  assert.match(secretStep, /if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/,
+    "only explicitly selected Workflow code-only release may omit Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
     "DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);

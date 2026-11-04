@@ -81,6 +81,11 @@ on:
         type: boolean
         required: false
         default: false
+      workflow_code_only:
+        description: 'Workflow Worker only: deploy code with existing D1 schema and Secrets/Variables preserved; no D1 migrations or secret upload'
+        required: false
+        type: boolean
+        default: false
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -99,7 +104,7 @@ jobs:
     name: Owner-approved Hyperdrive preparation (no deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'database-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id != '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_enable_approved != true &&
           inputs.database_hyperdrive_retire_approved != true && inputs.database_hyperdrive_rotation_mode == '' }}
@@ -142,7 +147,7 @@ jobs:
     name: Owner final Hyperdrive confirmation (protected merge and release request)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'database-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_apply_id != '' &&
           inputs.database_hyperdrive_prepare_id == '' &&
           inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true &&
@@ -188,7 +193,7 @@ jobs:
     name: Protected Hyperdrive Owner activation (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'database-mcp-worker' &&
           inputs.database_hyperdrive_enable_approved == true &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_retire_approved != true &&
@@ -230,7 +235,7 @@ jobs:
     name: Owner-confirmed isolated Hyperdrive password update (no deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'database-mcp-worker' &&
           inputs.deploy_to_production == false &&
           inputs.database_hyperdrive_rotation_mode == 'credentials_apply' &&
           inputs.database_hyperdrive_prepare_id != '' && inputs.database_hyperdrive_apply_id == '' &&
@@ -278,7 +283,7 @@ jobs:
     name: Check Hyperdrive rotation safety (read-only, no deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'database-mcp-worker' &&
           inputs.deploy_to_production == false &&
           (inputs.database_hyperdrive_rotation_mode == 'credentials' || inputs.database_hyperdrive_rotation_mode == 'ca') &&
           inputs.database_hyperdrive_id != '' && inputs.database_hyperdrive_revision != '' &&
@@ -321,7 +326,7 @@ jobs:
     name: Protected Hyperdrive D1 identity retirement (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'database-mcp-worker' &&
           inputs.database_hyperdrive_retire_approved == true &&
           inputs.deploy_to_production == false && inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_enable_approved != true &&
@@ -373,7 +378,7 @@ jobs:
     name: First Actions D1 cutover preparation (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'workflow-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
           inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true }}
     runs-on: ubuntu-latest
@@ -431,7 +436,7 @@ jobs:
     name: Reopen reviewed Workflow Actions gate (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.worker == 'workflow-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
@@ -554,6 +559,8 @@ jobs:
       - name: Validate current trusted main without deployment credentials
         env:
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
+          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
+          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
         shell: bash
         run: |
           set -euo pipefail
@@ -563,6 +570,12 @@ jobs:
             echo "Manual dispatch source no longer matches main HEAD" >&2
             exit 1
           }
+          if [[ "$WORKFLOW_CODE_ONLY" == "true" ]]; then
+            [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$ACTIONS_OLD_INGRESS_QUIESCED" != "true" ]] || {
+              echo "Code-only release accepts only existing Workflow Worker without admission-gate changes" >&2
+              exit 1
+            }
+          fi
           if [[ "$SELECTED_WORKER" == 'database-mcp-worker' ]]; then
             [[ "$DATABASE_EXPECTED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
             [[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]] || {
@@ -612,13 +625,15 @@ jobs:
       - name: Cloudflare release preflight (read-only)
         id: preflight
         env:
+          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      # GitHub Secrets are the source of truth for all selected Workers, on every
-      # explicitly authorized manual release, not just during bootstrap.
+      # Existing Workflow code-only releases use deployed Secrets (verified by
+      # read-only inventory), never stage or re-upload their values.
       - name: Stage selected Worker Secrets for every release
+        if: inputs.worker != 'workflow-mcp-worker' || inputs.workflow_code_only != true
         shell: bash
         env:
           # GitHub automatically uses same-name Environment Secrets over
@@ -1011,10 +1026,22 @@ jobs:
               WHERE run_id='f99bb918-2909-46df-b196-d07faa64df27'
           ") | node scripts/workflow-terminal-run-exception.mjs
 
+      # A code-only deployment must have precisely the reviewed schema on disk;
+      # the following remote read-only gate checks all nineteen applied migrations.
+      - name: Require complete Workflow code-only migration inventory
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          migrations=(apps/workflow-mcp-worker/migrations/*.sql)
+          [[ "${#migrations[@]}" -eq 19 ]] || { echo 'Code-only release requires unchanged reviewed migration inventory' >&2; exit 1; }
+
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
+          WORKFLOW_REQUIRE_COMPLETE_SCHEMA: ${{ inputs.workflow_code_only && 'true' || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
@@ -1092,7 +1119,7 @@ jobs:
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
       - name: Apply complete Workflow D1 migrations
-        if: inputs.worker == 'workflow-mcp-worker'
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1289,6 +1316,7 @@ jobs:
         shell: bash
         env:
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
+          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
@@ -1313,15 +1341,21 @@ jobs:
             echo "Source became stale immediately before publication" >&2
             exit 1
           }
-          # Fail closed if any selected Worker Secret is absent. Wrangler
-          # atomically uploads the staged values with the selected deployment,
-          # including existing Workers; unspecified secrets are preserved.
-          test -s "$RUNNER_TEMP/mcp-worker-secrets.json"
-          deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-worker-secrets.json")
-          test -f "$RUNNER_TEMP/mcp-worker-variables.txt"
-          while IFS= read -r variable_pair; do
-            deploy_args+=(--var "$variable_pair")
-          done < "$RUNNER_TEMP/mcp-worker-variables.txt"
+          if [[ "$WORKFLOW_CODE_ONLY" == "true" ]]; then
+            [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]] || exit 1
+            [[ ! -e "$RUNNER_TEMP/mcp-worker-secrets.json" ]] || { echo 'Code-only release must not stage Secrets' >&2; exit 1; }
+            # Wrangler retains deployed Secrets automatically; keep plain Variables
+            # without re-uploading either, after existing read-only binding gates.
+            deploy_args=(--keep-vars)
+          else
+            # Existing releases always restage exactly the approved GitHub Secrets.
+            test -s "$RUNNER_TEMP/mcp-worker-secrets.json"
+            deploy_args=(--secrets-file "$RUNNER_TEMP/mcp-worker-secrets.json")
+            test -f "$RUNNER_TEMP/mcp-worker-variables.txt"
+            while IFS= read -r variable_pair; do
+              deploy_args+=(--var "$variable_pair")
+            done < "$RUNNER_TEMP/mcp-worker-variables.txt"
+          fi
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${deploy_args[@]}") >"$log" 2>&1; then
             echo "Wrangler deploy failed (stage=deploy); no automated rollback attempted" >&2
             # Report only a whitelisted error code and a bounded, sanitized summary.

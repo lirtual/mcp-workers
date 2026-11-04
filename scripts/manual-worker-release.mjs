@@ -187,7 +187,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     // On preflight a missing runtime Secret can be repaired from GitHub.
     // The unconditional Secrets staging step fails closed before deployment.
     // Readback must still prove that every required Secret binding exists.
-    if (options.mode !== "preflight") {
+    if (options.mode !== "preflight" || options.requireExistingSecrets === true) {
       invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
       invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
     }
@@ -1083,9 +1083,13 @@ async function main() {
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
+  if (mode === "preflight" && process.env.WORKFLOW_CODE_ONLY === "true")
+    invariant(worker === "workflow-mcp-worker" && exists,
+      "Code-only release requires an existing Workflow Worker");
   const read = async () => {
     const observed = await current(account, worker, token, {
-      mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
+      mode, sourceConfig, requireExistingSecrets: mode === "preflight" &&
+        process.env.WORKFLOW_CODE_ONLY === "true", previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
       expectedBrowserActivationAudience: worker === "browser-mcp-worker"
         ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
