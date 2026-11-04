@@ -1,6 +1,6 @@
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
-import {cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
+import {reviewedActionDeployment,cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
 
 type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;
@@ -17,7 +17,7 @@ function size(s:unknown):number{
 export async function runEnvshareAction(env:Env,plan:Plan,action:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
  const manifest=await cloudflareActionManifest('envshare');
- const db=env.DB,provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
+ const db=env.DB,provider=env.ACTIONS;
  if(!plan.cloudflare_execution_approved||plan.triggers?.length||plan.steps.length!==1||
    action.uses!=='action.run'||action.with.executor!=='cloudflare'||
    action.with.provider!=='envshare'||action.with.action!==manifest.action||
@@ -26,9 +26,9 @@ export async function runEnvshareAction(env:Env,plan:Plan,action:Step,runId:stri
    .bind(runId,action.id).first<{invocation_id:string}>();
  try{
   if(await current())return unknown('envshare_receipt_unavailable');
-  if(!provider||!version)return failed('cloudflare_provider_not_configured');
+  if(!provider)return failed('cloudflare_provider_not_configured');
   if(!plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&g.provider==='envshare'&&
-     g.action===manifest.action&&g.contract_digest===manifest.contract_digest&&g.deployment_id===version))
+     g.action===manifest.action&&g.contract_digest===manifest.contract_digest))
    return failed('cloudflare_action_approval_required');
   let sealed:{encrypted:string;iv:string;ttl:number;reads:number};
   try{
@@ -53,8 +53,8 @@ export async function runEnvshareAction(env:Env,plan:Plan,action:Step,runId:stri
   let identity;
   try{identity=await provider.getContract(manifest.action,manifest.contract_digest);}
   catch{return failed('cloudflare_provider_identity_unconfirmed');}
-  if(identity.contract_digest!==manifest.contract_digest||identity.deployment_id!==version)
-   return failed('cloudflare_provider_identity_mismatch');
+  const version=reviewedActionDeployment(identity,manifest.contract_digest);
+  if(!version)return failed('cloudflare_provider_identity_mismatch');
   const invocation_id=crypto.randomUUID();
   const reservation=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
    (run_id,step_id,invocation_id,source_attempt_id,input_digest,binding_generation,

@@ -150,10 +150,10 @@ test('D1 reservation failure prevents every Bark side effect',async t=>{
  assert.equal(f.sent(),0);
  assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
 });
-test('provider identity or pinned version mismatch cannot consume a fence or dispatch',async t=>{
+test('invalid current Provider identity denies before reservation; stale Consumer pin is ignored',async t=>{
  const f=await fixture(t);
  f.env.ACTIONS={
-  getContract:async(_action_id:string)=>({deployment_id:'44444444-4444-4444-8444-444444444444',
+  getContract:async(_action_id:string)=>({deployment_id:'untrusted-version',
    contract_digest:f.action.with.contract_digest}),
   execute:async()=>{throw Error('must not dispatch');},
  } as any;
@@ -163,8 +163,29 @@ test('provider identity or pinned version mismatch cannot consume a fence or dis
  assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
  const other=await fixture(t);
  other.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
- assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'failed');
- assert.equal(other.sent(),0);
+ assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'succeeded');
+ assert.equal(other.sent(),1);
+ const row=other.sql.prepare('SELECT deployment_id FROM cloudflare_action_invocations').get() as any;
+ assert.equal(row.deployment_id,version);
+});
+test('old Published Plan uses behavior-compatible live Provider and records its actual version once',async t=>{
+ const f=await fixture(t);
+ const upgraded='44444444-4444-4444-8444-444444444444';
+ let calls=0;
+ f.env.ACTIONS={
+  getContract:async()=>({deployment_id:upgraded,
+   contract_digest:(await cloudflareActionManifest('bark')).contract_digest}),
+  execute:async(_id:string,payload:any)=>{
+   calls++;assert.equal(payload.deployment_id,upgraded);
+   return {status:'accepted',input_digest:payload.input_digest};
+  }
+ } as any;
+ assert.equal(f.plan.cloudflare_action_approvals?.[0]?.deployment_id,version);
+ assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'succeeded');
+ assert.equal((f.sql.prepare('SELECT deployment_id FROM cloudflare_action_invocations').get() as any).deployment_id,upgraded);
+ assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'indeterminate');
+ assert.equal(calls,1);
+ assert.equal(f.plan.cloudflare_action_approvals?.[0]?.deployment_id,version);
 });
 test('a rejected or ambiguous Provider reply is terminal for the same invocation',async t=>{
  for(const response of ['rejected','unknown'] as const){

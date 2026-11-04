@@ -1006,11 +1006,11 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
   assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),
-    /Unexpected production resource binding/);
+    /Service Binding/);
   assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS"?{...x,entrypoint:"UnexpectedEntrypoint"}:x)),
     /Service Binding/);
-  assert.throws(()=>check(bindings.filter(x=>x.name!=="ACTIONS_DEPLOYMENT_ID")),/Provider Version ID/);
-  assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS_DEPLOYMENT_ID"?{...x,text:"latest"}:x)),/Provider Version ID/);
+  assert.equal(check(bindings.filter(x=>x.name!=="ACTIONS_DEPLOYMENT_ID")),true);
+  assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS_DEPLOYMENT_ID"?{...x,text:"latest"}:x)),/Unexpected Actions Provider metadata/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"}]),/Unexpected production resource binding/);
   assert.throws(()=>check(bindings.filter(x=>x.name!=="GITHUB_ACTION_OIDC_AUDIENCE")),
     /Action OIDC audience/);

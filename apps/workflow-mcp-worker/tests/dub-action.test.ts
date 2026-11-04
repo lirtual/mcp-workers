@@ -64,20 +64,38 @@ test('single admitted manual Dub create, second entry is unknown without resend'
  assert.equal((row as any).binding_generation,0);
  assert(!JSON.stringify(row).includes('private-query'));
 });
-test('unapproved version, malformed URL, canceled Run and frozen gate prevent POST',async t=>{
+test('unauthorized grant, malformed URL, cancellation and frozen gate prevent POST',async t=>{
  const f=await fixture(t);
  delete f.plan.cloudflare_execution_approved;
  assert.equal((await f.run()).status,'failed');
  f.plan.cloudflare_execution_approved=true;
  f.ctx.inputs.url='https://me:pw@example.org/';
  assert.equal((await f.run()).status,'failed');f.ctx.inputs.url=url;
- f.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
- assert.equal((await f.run()).status,'failed');f.env.ACTIONS_DEPLOYMENT_ID=version;
+ const grant=f.plan.cloudflare_action_approvals!;
+ f.plan.cloudflare_action_approvals=[];
+ assert.equal((await f.run()).status,'failed');
+ f.plan.cloudflare_action_approvals=grant;
  f.sql.prepare("UPDATE cloudflare_action_gate SET state='frozen' WHERE id=1").run();
  assert.equal((await f.run()).status,'failed');
  f.sql.prepare("UPDATE cloudflare_action_gate SET state='open' WHERE id=1").run();
  f.sql.prepare("INSERT INTO cloudflare_action_cancellations(run_id,step_id,created_at) VALUES(?,'shorten',1)").run(runId);
  assert.equal((await f.run()).status,'failed');assert.equal(f.sends(),0);
+});
+test('Dub old immutable grant authorizes matching contract on a new Provider once',async t=>{
+ const f=await fixture(t);
+ const upgraded='44444444-4444-4444-8444-444444444444';
+ f.env.ACTIONS_DEPLOYMENT_ID=version; // old configuration is only history
+ f.env.ACTIONS={
+  getContract:async()=>({deployment_id:upgraded,
+    contract_digest:(await cloudflareActionManifest('dub')).contract_digest}),
+  execute:async(_id:string,invocation:any)=>{
+   assert.equal(invocation.deployment_id,upgraded);
+   return {status:'accepted',input_digest:invocation.input_digest,short_link:'https://dub.sh/AbC123'};
+  }
+ } as any;
+ assert.equal((await f.run()).status,'succeeded');
+ assert.equal((f.sql.prepare('SELECT deployment_id FROM cloudflare_action_invocations').get() as any).deployment_id,upgraded);
+ assert.equal((await f.run()).status,'indeterminate');
 });
 test('lost response and parallel competitors cannot repeat a third-party create',async t=>{
  const f=await fixture(t);f.uncertain();

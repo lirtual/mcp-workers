@@ -14,7 +14,7 @@ import { approvedActionRepositories } from './github-action-catalog.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
-import {cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
+import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
@@ -287,9 +287,14 @@ export class WorkflowService {
         .map(async s=>{
           const bark=s.with.provider==='bark';
           const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
+          // Validation is read-only: display the actual bound Provider version
+          // for approval, never a potentially stale Consumer deployment Pin.
+          let live=null;
+          try{live=this.env.ACTIONS?await this.env.ACTIONS.getContract(manifest.action,manifest.contract_digest):null;}
+          catch{/* Unavailable Provider must not become an approval. */}
           return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
-            contract_digest:manifest.contract_digest,deployment_id:
-              this.env.ACTIONS_DEPLOYMENT_ID??null};
+            contract_digest:manifest.contract_digest,
+            deployment_id:reviewedActionDeployment(live,manifest.contract_digest)};
         }));
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
@@ -413,18 +418,15 @@ export class WorkflowService {
     if(hasCloudflare){
       const step=plan.steps.find(s=>s.uses==='action.run')!;
       const bark=step.with.provider==='bark';
-      const deployment=this.env.ACTIONS_DEPLOYMENT_ID;
       const provider=this.env.ACTIONS;
-      if(!provider||typeof deployment!=='string'||
-         !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deployment))
-        throw new StateError('cloudflare_provider_not_configured');
+      if(!provider)throw new StateError('cloudflare_provider_not_configured');
       const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
       try{live=await provider.getContract(contract.action,contract.contract_digest);}
       catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
-      if(live.deployment_id!==deployment||live.contract_digest!==contract.contract_digest)
-        throw new StateError('cloudflare_provider_identity_mismatch');
+      const deployment=reviewedActionDeployment(live,contract.contract_digest);
+      if(!deployment)throw new StateError('cloudflare_provider_identity_mismatch');
       cloudflareGrants=[{executor:'cloudflare',provider:contract.provider,
         action:contract.action,contract_digest:contract.contract_digest,
         deployment_id:deployment}];

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {mkdtemp,writeFile,readFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {verifyProviderRelease,verifyConsumerPin,inspectProvider,stagePin,verifyStagedPin,
+import {verifyProviderRelease,verifyConsumerBinding,inspectProvider,stagePin,verifyStagedPin,
    verifySafeRecoveryProvider,verifyRecoveryConsumerVersion,inspectGateRecovery}
   from "./reviewed-actions-provider-pin.mjs";
 
@@ -57,7 +57,7 @@ test("Provider inspection performs exactly three read-only Cloudflare requests",
   await assert.rejects(()=>inspectProvider("a".repeat(32),"test-token",
     async()=>({ok:false,status:503})),/blocked/);
 });
-test("staged exact pin is single immutable value, stale override blocked and drift fails",async()=>{
+test("reviewed version stays temporary; legacy Consumer pin is not execution authority",async()=>{
   const temp=await mkdtemp(join(tmpdir(),"actions-reviewed-"));
   const variablesFile=join(temp,"mcp-worker-variables.txt");
   const pinFile=join(temp,"actions-provider-version.txt");
@@ -66,17 +66,24 @@ test("staged exact pin is single immutable value, stale override blocked and dri
     assert.equal(await stagePin({pin:version,variablesFile,pinFile,runnerTemp:temp}),version);
     assert.equal(await readFile(pinFile,"utf8"),version+"\n");
     assert.equal(await readFile(variablesFile,"utf8"),
-      "MCP_PORTAL_CLIENT_ID:test-id\nACTIONS_DEPLOYMENT_ID:"+version+"\n");
+      "MCP_PORTAL_CLIENT_ID:test-id\n");
     assert.equal(verifyStagedPin(await readFile(pinFile,"utf8"),version),version);
     assert.throws(()=>verifyStagedPin(version,old),/blocked/);
-    await assert.rejects(()=>stagePin({pin:old,variablesFile,pinFile,runnerTemp:temp}),/blocked/);
+    await assert.rejects(()=>stagePin({pin:old,variablesFile,pinFile,runnerTemp:temp}),/EEXIST/);
     assert.equal(await readFile(pinFile,"utf8"),version+"\n");
-    assert.throws(()=>verifyConsumerPin({bindings:[
-      {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:old}
-    ]},version),/blocked/);
-    assert.equal(verifyConsumerPin({bindings:[
-      {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:version}
-    ]},version),true);
+    const service={name:'ACTIONS',type:'service',service:'cloudflare-actions',
+      entrypoint:'ActionsEntrypoint'};
+    assert.throws(()=>verifyConsumerBinding({bindings:[
+      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}
+    ]}),/blocked/);
+    assert.equal(verifyConsumerBinding({bindings:[service]}),true);
+    assert.equal(verifyConsumerBinding({bindings:[service,
+      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}]}),true);
+    assert.throws(()=>verifyConsumerBinding({bindings:[service,
+      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}]},version),/blocked/);
+    assert.equal(verifyConsumerBinding({bindings:[service]},version),true);
+    assert.throws(()=>verifyConsumerBinding({bindings:[service,
+      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:'latest'}]}),/blocked/);
   }finally{await rm(temp,{recursive:true,force:true});}
 });
 test("cannot write a pin outside approved Runner temporary directory",async()=>{
@@ -123,8 +130,8 @@ test("gate-only recovery requires the exact live Secret-free Provider and 100% C
         path.endsWith("/workers/scripts/cloudflare-actions/settings")?{bindings:cleanBindings}:
         path.endsWith("/workers/scripts/cloudflare-actions/secrets")?cleanSecrets:
         path.endsWith("/workers/scripts/cloudflare-actions/deployments")?deployments:null;
-      if(opts.badPin&&path.endsWith("/workflow-mcp-worker/settings"))
-        result={bindings:[{name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:old}]};
+      if(opts.badBinding&&path.endsWith("/workflow-mcp-worker/settings"))
+        result={bindings:[{name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"Bad"}]};
       if(opts.badSecret&&path.endsWith("/cloudflare-actions/secrets"))result=secrets;
       if(opts.badConsumer&&path.endsWith("/workflow-mcp-worker/deployments"))
         result={deployments:[{versions:[{version_id:version,percentage:100}]}]};
@@ -137,7 +144,7 @@ test("gate-only recovery requires the exact live Secret-free Provider and 100% C
     version,consumerVersion,fetcher(ok)),true);
   assert.equal(ok.calls.length,7);
   assert.ok(ok.calls.every(x=>x.method===undefined));
-  for(const variation of [{badPin:true},{badSecret:true},{badConsumer:true}]){
+  for(const variation of [{badBinding:true},{badSecret:true},{badConsumer:true}]){
     const x={calls:[],...variation};
     await assert.rejects(()=>inspectGateRecovery("a".repeat(32),"test-token",
       version,consumerVersion,fetcher(x)),/blocked/);

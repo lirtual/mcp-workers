@@ -1,4 +1,4 @@
-import {readFile,writeFile,appendFile} from "node:fs/promises";
+import {readFile,writeFile} from "node:fs/promises";
 import {join,resolve} from "node:path";
 import {pathToFileURL} from "node:url";
 
@@ -28,12 +28,21 @@ export function verifyProviderRelease(deployments,settings,secrets){
     fail("Provider Bark key, version metadata or retired credential drift");
   return versions[0].version_id.toLowerCase();
 }
-export function verifyConsumerPin(settings,expected){
-  if(!UUID.test(expected??""))fail("expected version missing");
-  const pin=settings?.bindings?.filter(x=>x.name===PIN_NAME);
-  if(!Array.isArray(pin)||pin.length!==1||pin[0].type!=="plain_text"||
-     pin[0].text?.toLowerCase()!==expected.toLowerCase())
-    fail("published Workflow binding differs from approved Provider version");
+export function verifyConsumerBinding(settings,expectedProvider){
+  const b=settings?.bindings;
+  if(!Array.isArray(b)||b.filter(x=>x.type==='service').length!==1||
+     b.filter(x=>x.name==='ACTIONS'&&x.type==='service'&&
+       x.service===PROVIDER&&x.entrypoint==='ActionsEntrypoint').length!==1)
+    fail('trusted Workflow ACTIONS Service Binding missing or changed');
+  // Legacy plaintext version metadata is optional and never execution authority.
+  const legacy=b.filter(x=>x.name===PIN_NAME);
+  if(legacy.length>1||legacy.some(x=>x.type!=='plain_text'||!UUID.test(x.text??'')))
+    fail('invalid legacy Provider version metadata');
+  // Gate reopening must not resume an old exact-pin Consumer against a newer
+  // Provider. The compatible Consumer release omits this obsolete variable.
+  if(expectedProvider&&(!UUID.test(expectedProvider)||legacy.some(x=>
+    x.text.toLowerCase()!==expectedProvider.toLowerCase())))
+    fail('legacy Consumer cannot safely reopen against a different Provider');
   return true;
 }
 export async function inspectProvider(account,token,fetchImpl=fetch){
@@ -96,7 +105,7 @@ export async function inspectGateRecovery(account,token,provider,consumer,fetchI
     fail("exact reviewed recovery versions and read credential required");
   const active=await inspectProvider(account,token,fetchImpl);
   if(active!==provider.toLowerCase())fail("active Provider version drift");
-  verifyConsumerPin(await inspectConsumer(account,token,fetchImpl),provider);
+  verifyConsumerBinding(await inspectConsumer(account,token,fetchImpl),provider);
   const base="https://api.cloudflare.com/client/v4/accounts/"+account;
   const read=async path=>{
     const response=await fetchImpl(base+path,{redirect:"manual",headers:{
@@ -125,8 +134,9 @@ export async function stagePin({pin,variablesFile,pinFile,runnerTemp}){
   const vars=await readFile(variablesFile,"utf8");
   if(vars.split("\n").some(line=>line.startsWith(PIN_NAME+":")))
     fail("manual Provider override is forbidden in guarded release");
+  // The reviewed version is a short-lived release consistency check only.
+  // Never stage it as a persistent Consumer environment variable.
   await writeFile(pinFile,pin+"\n",{flag:"wx",mode:0o600});
-  await appendFile(variablesFile,PIN_NAME+":"+pin+"\n");
   return pin;
 }
 export function verifyStagedPin(staged,active){
@@ -153,9 +163,9 @@ async function main(){
   const pin=verifyStagedPin(await readFile(pinFile,"utf8"),active);
   if(mode==="postflight"){
     const settings=await inspectConsumer(account,token);
-    verifyConsumerPin(settings,pin);
+    verifyConsumerBinding(settings);
   }
-  console.log("Exact Provider version "+pin+" verified at "+mode+"; no Provider write or message sent");
+  console.log("Reviewed Provider version "+pin+" and Consumer binding verified at "+mode+"; no Provider write or message sent");
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)
   main().catch(e=>{console.error(e.message);process.exitCode=1;});

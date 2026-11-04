@@ -144,9 +144,9 @@ test('unknown private RPC outcome stays fenced and never retries, even with same
  assert.equal(f.audit.posts,1);
 });
 
-test('missing grant, bound provider mismatch, or frozen gate never sends file POST',async t=>{
+test('missing grant, invalid Provider identity, or frozen gate never sends file POST',async t=>{
  for(const variant of [
-  {grant:false},{providerVersion:'44444444-4444-4444-8444-444444444444'},
+  {grant:false},{providerVersion:'untrusted-version'},
   {gate:'frozen'},
  ]){
   await t.test(JSON.stringify(variant),async sub=>{
@@ -158,6 +158,14 @@ test('missing grant, bound provider mismatch, or frozen gate never sends file PO
  }
 });
 
+test('compatible Litterbox Provider rotation retains old grant and records live identity',async t=>{
+ const current='44444444-4444-4444-8444-444444444444';
+ const f=fixture(t,{providerVersion:current});await f.publish();
+ const result=await startLitterboxUpload(f.env,{workflow_id:WF,file,idempotency_key:'compat01'});
+ assert.equal(result.status,'succeeded');assert.equal(f.audit.posts,1);
+ const row=f.db.prepare('SELECT deployment_id FROM cloudflare_action_invocations').get() as any;
+ assert.equal(row.deployment_id,current);
+});
 test('concurrent identical admissions reserve at most one provider POST',async t=>{
  const f=fixture(t);await f.publish();
  const outcomes=await Promise.allSettled([
