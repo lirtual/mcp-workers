@@ -22,6 +22,10 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('trigger.github_event')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.write')?.availability,'unavailable');
   assert.equal(catalog.get('flow.saga')?.availability,'supported_with_grant');
+  const cloudflareDescription=String(catalog.get('action.run.cloudflare')?.description);
+  assert.doesNotMatch(cloudflareDescription,/Weixin/);
+  assert.match(cloudflareDescription,/Bark.*Dub.*EnvShare.*Litterbox/);
+  assert.match(String(catalog.get('flow.saga')?.description),/Ubuntu\/Windows/);
   assert.equal(catalog.get('flow.child')?.availability,'supported_with_grant');
   assert.equal(catalog.get('flow.wait')?.availability,'supported');
   const wait=(await workflowCapabilities(env,'flow.wait')) as {example:{definition:unknown;digest:string};wait_policy:{native_checkpoint:string;total_budget_seconds:number}};

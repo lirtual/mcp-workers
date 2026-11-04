@@ -484,7 +484,7 @@ const entries=[
   {id:'action.run.github',kind:'action',availability:'supported_with_grant',
    description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
   {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
-   description:'One explicitly approved, version-pinned Weixin notification, Bark encrypted Owner notification, anonymous Dub short link or manual single-step EnvShare ciphertext-only share per Plan. EnvShare requires an unrecoverable delivery_key in the first workflow_run reply and workflow_result combination, never stored in D1. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
+   description:'Explicitly approved, version-pinned Bark Owner notification, anonymous Dub short link, EnvShare ciphertext-only share, or manual public Litterbox file upload; exact Provider/Action support comes from the reviewed manifest. EnvShare requires an unrecoverable delivery_key in the first workflow_run reply and workflow_result combination, never stored in D1. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
   {id:'action.github.run',kind:'action',availability:'supported_with_grant',
    description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
   {id:'flow.static_dag',kind:'flow',availability:'supported',
