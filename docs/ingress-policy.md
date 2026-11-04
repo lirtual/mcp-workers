@@ -18,7 +18,6 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 | Database | `database-mcp-worker` | workers.dev | `https://database-mcp-worker.aiyaya.workers.dev/mcp` |
 | SSH | `ssh-mcp-worker` | workers.dev | `https://ssh-mcp-worker.aiyaya.workers.dev/mcp` |
 | GitHub Actions | `github-actions-mcp-worker` | workers.dev | `https://github-actions-mcp-worker.aiyaya.workers.dev/mcp` |
-| HTTP | `http-mcp-worker` | workers.dev | `https://http-mcp-worker.aiyaya.workers.dev/mcp` |
 | Remote Control | `remote-control-mcp-worker` | workers.dev + custom domain | `https://rca.lirtual.dpdns.org/mcp` |
 | Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
 | Weixin Action Provider | `weixin-mcp-worker` (existing physical Worker) | Access owner setup domain + internal Service Binding | No public MCP ingress; `weixin.lirtual.dpdns.org` is owner administration only |
