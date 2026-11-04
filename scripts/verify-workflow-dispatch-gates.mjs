@@ -91,7 +91,7 @@ export function verifyDatabaseApplyGate(source) {
   assert.ok(job(source,'checks').gate.includes("inputs.deploy_to_production == true && inputs.database_hyperdrive_prepare_id == ''"));
   verifyDatabaseFinalizeGate(source);
   const inputs=source.slice(source.indexOf('    inputs:'),source.indexOf('\npermissions:'));
-  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,13,'Expected exactly thirteen reviewed inputs');
+  assert.equal([...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].length,15,'Expected exactly fifteen reviewed inputs');
 }
 
 /** Only the successful existing deploy can supply a published version receipt. */
@@ -261,8 +261,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 13,
-  'Release workflow_dispatch must have exactly thirteen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 15,
+  'Release workflow_dispatch must have exactly fifteen reviewed inputs');
 const prepare = job(release, 'workflow-actions-migration-prepare');
 assert.ok(prepare.gate.includes("inputs.actions_migration_prepare == true")&&
   prepare.gate.includes("inputs.deploy_to_production == false")&&
