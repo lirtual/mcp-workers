@@ -7,7 +7,7 @@ import { collectWorkerVars, BROWSER_APPROVAL_VARIABLES } from "./worker-release-
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
-const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "http-mcp-worker", "workflow-mcp-worker"]);
+const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 const REQUIRED_SECRETS = {
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
@@ -16,7 +16,6 @@ const REQUIRED_SECRETS = {
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
-  "http-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
 };
 const WORKER_ENTRIES = {
@@ -27,7 +26,6 @@ const WORKER_ENTRIES = {
   "ssh-mcp-worker": "src/index.ts",
   "remote-control-mcp-worker": "src/worker.ts",
   "github-actions-mcp-worker": "src/index.ts",
-  "http-mcp-worker": "src/index.ts",
   "workflow-mcp-worker": "src/index.ts",
 };
 
@@ -192,25 +190,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     if (options.mode !== "preflight") {
       invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
       invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
-    }
-  }
-  if (worker === "http-mcp-worker") {
-    const managed = secretNames.has("HTTP_CREDENTIALS_JSON") &&
-      !!find("HTTP_CREDENTIALS_JSON", "secret_text");
-    const configured = options.expectedHttpCredentials === true;
-    invariant(!find("HTTP_CREDENTIALS_JSON", "plain_text"),
-      "Managed HTTP credentials must be a Secret");
-    // --secrets-file preserves omitted Secrets. Block a stale credential when
-    // the selected GitHub Environment no longer supplies it.
-    if (options.mode === "preflight") {
-      invariant(configured || (!bindings.some(b => b.name === "HTTP_CREDENTIALS_JSON") &&
-        !secretNames.has("HTTP_CREDENTIALS_JSON")),
-        "Stale HTTP_CREDENTIALS_JSON must be removed before release");
-    } else {
-      invariant(managed === configured &&
-        secretNames.has("HTTP_CREDENTIALS_JSON") === configured &&
-        bindings.some(b => b.name === "HTTP_CREDENTIALS_JSON") === configured,
-        "Optional HTTP_CREDENTIALS_JSON binding inventory drift");
     }
   }
   if (worker === "ssh-mcp-worker") {
@@ -830,15 +809,6 @@ export function readConfiguration(worker, content, reviewedManifest) {
   }
   invariant(REQUIRED_SECRETS[worker].every((s) => conf.secrets?.required?.includes(s)),
     "Source required Secret names changed unexpectedly");
-  if (worker === "http-mcp-worker") {
-    invariant(conf.workers_dev === true && conf.preview_urls === false &&
-      JSON.stringify(conf.compatibility_flags) === JSON.stringify(["global_fetch_strictly_public"]) &&
-      JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN"]) &&
-      !conf.services?.length && !conf.vpc_services && !conf.d1_databases?.length &&
-      !conf.durable_objects?.bindings?.length && !conf.r2_buckets?.length &&
-      !conf.ratelimits?.length && !conf.vars,
-      "HTTP strict-public Worker source or binding drift");
-  }
   if (worker === "ima-mcp-worker") {
     invariant(!conf.secrets?.required?.includes("IMA_CLIENT_ID"),
       "IMA IMA_CLIENT_ID must be provided as a Variable, not a Secret");
@@ -1005,7 +975,6 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
     catch (error) {
       const message = error instanceof Error ? error.message : "";
       const transient = /^Required (Secret binding|runtime Secret) missing: /.test(message) ||
-        message === "Optional HTTP_CREDENTIALS_JSON binding inventory drift" ||
         message === "Active Worker version does not match the Wrangler-published version" ||
         /^Cloudflare read-only \/(?:settings|secrets|script-settings|deployments\?per_page=1) HTTP 5\d\d$/.test(message);
       if (attempt === 5 || !transient) throw error;
@@ -1104,7 +1073,6 @@ async function main() {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
-      expectedHttpCredentials: worker === "http-mcp-worker" && !!process.env.HTTP_CREDENTIALS_JSON,
       expectedBrowserApproval: worker === "browser-mcp-worker" &&
         process.env.BROWSER_APPROVAL_EXPECTED === "isolated-owner-profile-and-mailbox-v1",
       expectedBrowserActivationAudience: worker === "browser-mcp-worker"
@@ -1112,12 +1080,12 @@ async function main() {
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Keep identity and binding drift failures fatal.
-    if (mode === 'readback' && (worker === 'workflow-mcp-worker' || worker === 'http-mcp-worker'))
+    if (mode === 'readback' && worker === 'workflow-mcp-worker')
       verifyPublishedVersion(previous, observed, process.env.EXPECTED_VERSION_ID);
     return observed;
   };
   const observed = !exists ? { mode: "bootstrap" }
-    : mode === "readback" && (worker === "workflow-mcp-worker" || worker === "http-mcp-worker")
+    : mode === "readback" && worker === "workflow-mcp-worker"
       ? await retryReleaseReadback(read) : await read();
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });

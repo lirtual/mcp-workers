@@ -7,7 +7,6 @@ export const APPLICATIONS = [
   'browser-mcp-worker',
   'database-mcp-worker',
   'github-actions-mcp-worker',
-  'http-mcp-worker',
   'ima-mcp-worker',
   'raindrop-mcp-worker',
   'remote-control-mcp-worker',

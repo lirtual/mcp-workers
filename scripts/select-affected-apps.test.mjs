@@ -61,11 +61,6 @@ test('Workflow MCP Workflow is CI-checked and may only be manually released from
 });
 
 
-test('HTTP MCP is CI-selected',()=>{
-  assert.deepEqual(selectAffectedApps(['apps/http-mcp-worker/src/http.ts']),['http-mcp-worker']);
-  assert.equal(selectAffectedApps(['pnpm-lock.yaml']).includes('http-mcp-worker'),true);
-});
-
 test('Browser MCP Worker and packaging changes select CI and the existing manual release gate', () => {
   assert.deepEqual(selectAffectedApps(['apps/browser-mcp-worker/src/worker.ts']), ['browser-mcp-worker']);
   assert.deepEqual(selectAffectedApps(['apps/browser-mcp-worker/extension/background.js']), ['browser-mcp-worker']);

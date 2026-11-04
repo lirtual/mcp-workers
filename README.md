@@ -6,7 +6,6 @@ Private source monorepo for independently deployed Cloudflare MCP Worker apps.
 
 - [GitHub Actions MCP](apps/github-actions-mcp-worker/README.md)
 - [Database MCP](apps/database-mcp-worker/README.md)
-- [HTTP MCP](apps/http-mcp-worker/README.md)
 - [IMA MCP](apps/ima-mcp-worker/README.md)
 - [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
 - [Remote Control MCP](docs/remote-control/README.md)

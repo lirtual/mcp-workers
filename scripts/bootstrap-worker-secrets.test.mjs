@@ -10,7 +10,6 @@ const fixtures = {
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
-  "http-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24), SESSION_RUNTIME_DATA_KEY: Buffer.alloc(32, 9).toString("base64") },
 };
 
@@ -124,24 +123,4 @@ test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>
   const names=BOOTSTRAP_SECRETS["workflow-mcp-worker"];
   assert.ok(names.includes("WORKFLOW_GITHUB_DISPATCH_TOKEN"));
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
-});
-
-
-test("HTTP optional managed credentials are staged only when configured",()=>{
-  const required={MCP_ACCESS_TOKEN:"synthetic-token"};
-  assert.deepEqual(collectBootstrapSecrets("http-mcp-worker",required),required);
-  const value="[]";
-  assert.deepEqual(collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:value}),
-    {...required,HTTP_CREDENTIALS_JSON:value});
-  assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"{invalid"}),/Invalid/);
-  assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:"x".repeat(5200)}),/Invalid/);
-  const valid=JSON.stringify([{origin:"https://api.example.org",pathPrefix:"/v1",headers:{"X-API-Key":"fake"}}]);
-  assert.equal(collectBootstrapSecrets("http-mcp-worker",{...required,HTTP_CREDENTIALS_JSON:valid}).HTTP_CREDENTIALS_JSON,valid);
-  for(const invalid of [
-    JSON.stringify([{origin:"http://api.example.org",pathPrefix:"/v1",headers:{"X-API-Key":"fake"}}]),
-    JSON.stringify([{origin:"https://api.example.org",pathPrefix:"/v1",headers:{Host:"localhost"}}]),
-    JSON.stringify([{origin:"https://api.example.org",pathPrefix:"/v1",headers:{"X-API-Key":"a"}},
-      {origin:"https://api.example.org",pathPrefix:"/v1/items",headers:{"X-API-Key":"b"}}])
-  ]) assert.throws(()=>collectBootstrapSecrets("http-mcp-worker",
-    {...required,HTTP_CREDENTIALS_JSON:invalid}),/Invalid/);
 });

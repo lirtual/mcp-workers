@@ -29,7 +29,6 @@ export const WORKER_VARIABLES = Object.freeze({
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": ["RCA_PERMANENT_IDLE_DAYS"],
   "github-actions-mcp-worker": [],
-  "http-mcp-worker": [],
   "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"],
 });
 
