@@ -33,10 +33,9 @@
 | `browser-mcp-worker` | 无；必须用独立 `MCP_ACCESS_TOKEN` 同名 Environment Secret 覆盖全局默认值 | 无；生产路由未配置，预检阻断 |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
-| `http-mcp-worker` | `HTTP_CREDENTIALS_JSON`（可选） | 无 |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
-表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。HTTP 的 `HTTP_CREDENTIALS_JSON` 是可选 Secret，未配置时不要提交空占位值。
+表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
