@@ -586,3 +586,15 @@ test("T6: pruned recent native proofs require exact prior successful release and
  assert.throws(()=>verifyRecentPriorNativeProof(run,jobs,"arbitrary"),/blocked/);
  assert.throws(()=>verifyRecentPriorNativeProof(run,{jobs:[]},"seventh"),/blocked/);
 });
+
+
+test("expired recent native proof steps require a scoped GitHub read token",()=>{
+  const release=readFileSync(".github/workflows/release.yml","utf8");
+  const steps=release.split(/^      - name: /m);
+  for(const kind of ["ninth","tenth","eleventh","twelfth"]){
+    const matches=steps.filter(x=>x.includes(`TERMINAL_PROOF_KIND: ${kind}\n`));
+    assert.equal(matches.length,1,`expected one ${kind} historical proof step`);
+    const config=matches[0].split("        run: |")[0];
+    assert.match(config,/^          GITHUB_TOKEN: \$\{\{ github\.token \}\}$/m);
+  }
+});
