@@ -995,7 +995,6 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -1009,8 +1008,12 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     /Service Binding/);
   assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS"?{...x,entrypoint:"UnexpectedEntrypoint"}:x)),
     /Service Binding/);
-  assert.equal(check(bindings.filter(x=>x.name!=="ACTIONS_DEPLOYMENT_ID")),true);
-  assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS_DEPLOYMENT_ID"?{...x,text:"latest"}:x)),/Unexpected Actions Provider metadata/);
+  const oldPin={name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",
+    text:"33333333-3333-4333-8333-333333333333"};
+  assert.equal(verifyBindings("workflow-mcp-worker",
+    {...settings,bindings:[...bindings,oldPin]},secrets,{mode:"preflight"}),true);
+  assert.throws(()=>check([...bindings,oldPin]),/legacy Provider deployment pin/);
+  assert.throws(()=>check([...bindings,{...oldPin,text:"latest"}]),/legacy Provider deployment pin/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"}]),/Unexpected production resource binding/);
   assert.throws(()=>check(bindings.filter(x=>x.name!=="GITHUB_ACTION_OIDC_AUDIENCE")),
     /Action OIDC audience/);
@@ -1074,7 +1077,6 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
@@ -1100,7 +1102,6 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:"33333333-3333-4333-8333-333333333333"},
     {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];

@@ -244,15 +244,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         bindings.filter(x=>x.name==='ACTIONS'&&x.type==='service'&&
           x.service==='cloudflare-actions'&&x.entrypoint==='ActionsEntrypoint').length===1,
         "Workflow reviewed ACTIONS Service Binding drift");
-      // Accept a valid historical variable if still retained by the platform,
-      // but it must not be required or treated as a runtime version pin.
-      const legacy=bindings.filter(x=>x.name==='ACTIONS_DEPLOYMENT_ID');
-      invariant(legacy.length<=1 && legacy.every(x=>x.type==='plain_text'&&
-        typeof x.text==='string'&&
-        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(x.text))&&
-        !secretNames.has('ACTIONS_DEPLOYMENT_ID') &&
-        !bindings.some(x=>['WEIXIN_ACTION_DEPLOYMENT_ID','BARK_ACTION_DEPLOYMENT_ID'].includes(x.name)),
-        "Unexpected Actions Provider metadata or retired binding");
+      // The old deployed Consumer can still carry its historic pin during
+      // first-cutover preflight. The *new* release readback must remove it.
+      invariant(!bindings.some(x => [
+        'ACTIONS_DEPLOYMENT_ID', 'WEIXIN_ACTION_DEPLOYMENT_ID',
+        'BARK_ACTION_DEPLOYMENT_ID'].includes(x.name)) &&
+        !secretNames.has('ACTIONS_DEPLOYMENT_ID'),
+        "Workflow legacy Provider deployment pin still present");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
