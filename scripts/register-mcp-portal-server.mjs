@@ -1,12 +1,12 @@
-// Shared guarded One-MCP registration for already deployed, explicitly selected Workers.
+// Shared guarded MCP Portal registration for already deployed, explicitly selected Workers.
 // Never log Cloudflare bearer, upstream secret, or sensitive tools payloads.
 import assert from 'node:assert/strict';
 import { portalServerMapping, assertSamePortalMappings } from './register-workflow-portal.mjs';
 import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
 
 export function portalPlan(portal) {
-  assert.equal(portal?.id, 'one-mcp', 'portal_identity_drift');
-  assert.equal(portal?.name, 'One-MCP', 'portal_identity_drift');
+  assert.equal(portal?.id, 'mcp', 'portal_identity_drift');
+  assert.equal(portal?.name, 'MCP', 'portal_identity_drift');
   assert.equal(portal?.hostname, 'mcp.lirtual.dpdns.org', 'portal_identity_drift');
   assert.ok(Array.isArray(portal.servers) && portal.servers.length >= 9,
     'portal_existing_servers_missing');
@@ -49,7 +49,7 @@ export async function attachFixedPortalServer(env, target, transport = fetch) {
     if (json?.success !== true || json.result == null) throw Error('portal_api_unavailable');
     return json.result;
   };
-  const before = portalPlan(await request('GET', '/portals/one-mcp'));
+  const before = portalPlan(await request('GET', '/portals/mcp'));
   assert.ok(before.servers.filter(x => x.server_id === id).length <= 1,
     'portal_duplicate_' + id);
   const existing = await request('GET', '/servers');
@@ -79,21 +79,21 @@ export async function attachFixedPortalServer(env, target, transport = fetch) {
   assert.deepEqual((detail.tools ?? []).map(x => x.name).sort(), [...tools].sort(),
     'portal_' + id + '_tool_inventory_drift');
   // Access policies are a separate Cloudflare resource from MCP server tools.
-  // Never attach a new server to One-MCP when its Access application lacks
-  // the same reusable service-token and owner policies as One-MCP itself.
+  // Never attach a new server to MCP Portal when its Access application lacks
+  // the same reusable service-token and owner policies as MCP Portal itself.
   // This check is read-only and deliberately fails closed; no broad grant.
   await verifyMcpAccessPolicies(env, { id, name }, transport);
   console.log(id.toUpperCase() + '_ACCESS_POLICIES_VERIFIED');
   console.log(id.toUpperCase() + '_PORTAL_TOOLS_SYNCED');
-  const fresh = portalPlan(await request('GET', '/portals/one-mcp'));
+  const fresh = portalPlan(await request('GET', '/portals/mcp'));
   assertSamePortalMappings(before.servers, fresh.servers);
   if (!fresh.servers.some(x => x.server_id === id)) {
-    const updated = await request('PUT', '/portals/one-mcp', {
+    const updated = await request('PUT', '/portals/mcp', {
       ...fresh, servers: [...fresh.servers, { server_id: id, on_behalf: false, default_disabled: false }],
     });
     assert.ok(updated.servers?.some(x => x.server_id === id), 'portal_' + id + '_attach_failed');
   }
-  const after = portalPlan(await request('GET', '/portals/one-mcp'));
+  const after = portalPlan(await request('GET', '/portals/mcp'));
   const priorIds = new Set(before.servers.map(x => x.server_id));
   assertSamePortalMappings(before.servers, after.servers.filter(x => priorIds.has(x.server_id)));
   assert.equal(after.servers.filter(x => x.server_id === id).length, 1, 'portal_' + id + '_attach_failed');

@@ -15,7 +15,7 @@ const policies = () => [
    include:[{email:{email:'synthetic@example.invalid'}}],exclude:[],require:[]},
 ];
 export const fakeApps = (name='OpenList MCP') => [
-  {id:'portal',name:'One-MCP',type:'mcp_portal',
+  {id:'portal',name:'MCP',type:'mcp_portal',
    domain:'mcp.lirtual.dpdns.org',policies:policies()},
   {id:'app',name,type:'mcp',policies:policies()},
 ];
@@ -57,7 +57,8 @@ test('missing or ambiguous target/Portal apps, pagination and transport errors f
   for(const apps of [
     fakeApps().slice(0,1),
     fakeApps().concat(fakeApps()[1]),
-    fakeApps().filter(x=>x.name!=='One-MCP'),
+    fakeApps().filter(x=>x.name!=='MCP'),
+    fakeApps().map(x=>({...x,name:x.type==='mcp_portal'?'One-MCP':x.name})),
   ]) {
     await assert.rejects(
       ()=>verifyMcpAccessPolicies(env,target,async()=>fakeAccessAppResponse(apps)),
