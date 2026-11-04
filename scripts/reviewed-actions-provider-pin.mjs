@@ -65,6 +65,58 @@ export async function inspectConsumer(account,token,fetchImpl=fetch){
   if(payload?.success!==true||!payload.result)fail("Workflow binding unavailable");
   return payload.result;
 }
+export function verifySafeRecoveryProvider(version,secrets,expected){
+  const bindings=version?.bindings;
+  if(!UUID.test(expected??"")||version?.id?.toLowerCase()!==expected.toLowerCase()||
+     !Array.isArray(bindings)||!Array.isArray(secrets)||
+     ["BARK_DEVICE_KEY","BARK_ENCRYPTION_KEY"].some(name=>
+       bindings.filter(x=>x.name===name&&x.type==="secret_text").length!==1||
+       secrets.filter(x=>x.name===name).length!==1)||
+     bindings.some(x=>["WEIXIN_ENCRYPTION_KEY","MCP_ACCESS_TOKEN","DB"].includes(x.name)||
+       x.type==="service")||
+     secrets.some(x=>x.name==="WEIXIN_ENCRYPTION_KEY"))
+    fail("reviewed immutable Secret-free Provider or live Secret inventory changed");
+  return true;
+}
+
+export function verifyRecoveryConsumerVersion(result,expected){
+  const deployments=result?.deployments;
+  const versions=deployments?.[0]?.versions;
+  if(!UUID.test(expected??"")||!Array.isArray(deployments)||
+     deployments.length!==1||!Array.isArray(versions)||
+     versions.length!==1||versions[0].percentage!==100||
+     versions[0].version_id?.toLowerCase()!==expected.toLowerCase())
+    fail("reviewed Consumer deployment identity or 100% traffic drift");
+  return true;
+}
+
+export async function inspectGateRecovery(account,token,provider,consumer,fetchImpl=fetch){
+  if(!UUID.test(provider??"")||!UUID.test(consumer??"")||
+     !/^[a-f0-9]{32}$/i.test(account??"")||!token)
+    fail("exact reviewed recovery versions and read credential required");
+  const active=await inspectProvider(account,token,fetchImpl);
+  if(active!==provider.toLowerCase())fail("active Provider version drift");
+  verifyConsumerPin(await inspectConsumer(account,token,fetchImpl),provider);
+  const base="https://api.cloudflare.com/client/v4/accounts/"+account;
+  const read=async path=>{
+    const response=await fetchImpl(base+path,{redirect:"manual",headers:{
+      Authorization:"Bearer "+token,Accept:"application/json"},
+      signal:AbortSignal.timeout(15000)});
+    if(!response.ok)fail("read-only recovery Cloudflare HTTP unavailable");
+    const body=await response.json();
+    if(body?.success!==true||body.result==null)fail("read-only recovery response invalid");
+    return body.result;
+  };
+  const [metadata,secrets,activeConsumer]=await Promise.all([
+    read("/workers/workers/cloudflare-actions/versions/"+provider),
+    read("/workers/scripts/cloudflare-actions/secrets"),
+    read("/workers/scripts/workflow-mcp-worker/deployments?per_page=1")
+  ]);
+  verifySafeRecoveryProvider(metadata,secrets,provider);
+  verifyRecoveryConsumerVersion(activeConsumer,consumer);
+  return true;
+}
+
 export async function stagePin({pin,variablesFile,pinFile,runnerTemp}){
   if(!UUID.test(pin??"")||
      resolve(variablesFile)!==join(resolve(runnerTemp),"mcp-worker-variables.txt")||
