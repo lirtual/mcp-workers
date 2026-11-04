@@ -2,26 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {fixture,intent} from './helpers/t4-browser.mjs';
 const origin='https://browser.example';
-const config={BROWSER_APPROVAL_ORIGIN:origin,BROWSER_ACCESS_ISSUER:'https://fixture.cloudflareaccess.com',BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),BROWSER_OWNER_EMAIL:'owner@example.com',BROWSER_APPROVAL_ISOLATION:'isolated-owner-profile-and-mailbox-v1'};
-const pair=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
-const jwk={...await crypto.subtle.exportKey('jwk',pair.publicKey),kid:'fixture-key',alg:'RS256',use:'sig'};
-const enc=v=>Buffer.from(JSON.stringify(v)).toString('base64url');
-async function jwt(patch={},header={}){
-  const t=Math.floor(Date.now()/1000);
-  const value=enc({alg:'RS256',kid:jwk.kid,...header})+'.'+enc({iss:config.BROWSER_ACCESS_ISSUER,aud:[config.BROWSER_ACCESS_AUDIENCE],sub:'owner-identity',type:'app',iat:t-1,exp:t+300,email:config.BROWSER_OWNER_EMAIL,...patch});
-  return value+'.'+Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',pair.privateKey,new TextEncoder().encode(value))).toString('base64url');
-}
-const originalFetch=globalThis.fetch;
-let forceCertRedirect=false;
-test.before(()=>{globalThis.fetch=async (url,init)=>{
-  assert.equal(url,config.BROWSER_ACCESS_ISSUER+'/cdn-cgi/access/certs');
-  // Production Workers rejects redirect:'error' before any outbound request.
-  if(init?.redirect==='error')throw new TypeError('Unsupported redirect mode');
-  assert.equal(init?.redirect,'manual');
-  if(forceCertRedirect)return new Response(null,{status:302,headers:{location:'https://untrusted.example/certs'}});
-  return Response.json({keys:[jwk]});
-};});
-test.after(()=>{globalThis.fetch=originalFetch;});
+const config={BROWSER_APPROVAL_ORIGIN:origin,
+  BROWSER_ACCESS_ISSUER:'https://fixture.cloudflareaccess.com',
+  BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),
+  BROWSER_OWNER_EMAIL:'owner@example.com',
+  BROWSER_APPROVAL_ISOLATION:'isolated-owner-profile-and-mailbox-v1'};
 
 const legacy=op=>'/owner/operations/'+op;
 const unknown=op=>'/owner/unknown/'+op;
@@ -29,7 +14,7 @@ const opStatus=(f,args)=>f.rpc('browser_operation_status',{endpoint_id:args.endp
 
 test('retired owner approval URL and POST never authorize, even with valid signed Owner Access',async()=>{
   const f=await fixture(config);try{
-    const signed=await jwt(),id='00000000-0000-0000-0000-000000000000';
+    const signed="synthetic-jwt",id='00000000-0000-0000-0000-000000000000';
     for(const path of [legacy(id),'/owner/operations/'+id+'?utm_source=chatgpt.com']){
       const response=await f.http(path,{headers:{'cf-access-jwt-assertion':signed}});
       assert.equal(response.status,404);
@@ -92,7 +77,7 @@ test('existing pending_approval state is expired on DO recreation, without dispa
   }finally{await f.close();}
 });
 
-test('independent Unknown owner review retains signed Access, one-time nonce and no execute authority',async()=>{
+test('retired Unknown Review GET/POST never mutate an Unknown even with historical Owner config',async()=>{
   const f=await fixture(config);try{
     const args=await f.command('click',e=>e.tag==='input'&&e.type==='checkbox');
     f.drop();const {admitted}=await f.perform('click',args);
@@ -101,35 +86,22 @@ test('independent Unknown owner review retains signed Access, one-time nonce and
     const receipt=await opStatus(f,args);
     assert.equal(receipt.state,'unknown');
     assert.equal(receipt.operation_id,admitted.operation_id);
-    assert.equal(receipt.owner_review_url,origin+unknown(receipt.operation_id));
-    const raw=await f.http(unknown(receipt.operation_id));
-    assert.equal(raw.status,401);
-    const signed=await jwt();
-    const response=await f.http(unknown(receipt.operation_id),{headers:{'cf-access-jwt-assertion':signed}});
-    assert.equal(response.status,200);
-    const html=await response.text(),nonce=/name="nonce" value="([a-f0-9]{64})"/.exec(html)?.[1];
-    assert.ok(nonce);
-    assert.doesNotMatch(html,/Approve this exact operation/);
-    const report=async()=>f.http(unknown(receipt.operation_id),{method:'POST',headers:{
-      'cf-access-jwt-assertion':signed,origin,'content-type':'application/x-www-form-urlencoded'
-    },body:new URLSearchParams({nonce,outcome:'effect_seen'})});
-    assert.equal((await report()).status,200);
-    assert.notEqual((await report()).status,200);
-    const recorded=await opStatus(f,args);
-    assert.equal(recorded.state,'owner_reported_resolution');
-    assert.equal(recorded.owner_reported_resolution,'effect_seen');
-    assert.equal(f.effects.length,before);
+    assert.equal(receipt.owner_review_url,undefined);
+    assert.match(receipt.safe_next_action,/never_retry/);
+    for(const path of [unknown(receipt.operation_id),
+      unknown(receipt.operation_id)+'?utm_source=chatgpt.com',
+      '/owner/operations/'+receipt.operation_id]){
+      assert.equal((await f.http(path,{headers:{'cf-access-jwt-assertion':'synthetic-jwt'}})).status,404);
+    }
+    const submitted=await f.http(unknown(receipt.operation_id),{method:'POST',headers:{
+      'cf-access-jwt-assertion':'synthetic-jwt',origin,
+      'content-type':'application/x-www-form-urlencoded'
+    },body:new URLSearchParams({nonce:'a'.repeat(64),outcome:'effect_seen'})});
+    assert.equal(submitted.status,404);
+    assert.equal((await opStatus(f,args)).state,'unknown');
+    assert.equal((await f.rpc('browser_click',args)).state,'unknown');
+    assert.equal(f.effects.length,before,'no historical Unknown was re-dispatched');
   }finally{await f.close();}
-});
-
-test('Unknown review refuses invalid audience, wrong origin, and redirected JWKS',async()=>{
-  const f=await fixture(config);try{
-    const id='00000000-0000-0000-0000-000000000000';
-    assert.equal((await f.http(unknown(id),{headers:{'cf-access-jwt-assertion':await jwt({aud:['b'.repeat(64)]})}})).status,401);
-    assert.equal((await f.http('https://evil.example'+unknown(id),{headers:{'cf-access-jwt-assertion':await jwt()}})).status,403);
-    forceCertRedirect=true;
-    assert.equal((await f.http(unknown(id),{headers:{'cf-access-jwt-assertion':await jwt()}})).status,401);
-  }finally{forceCertRedirect=false;await f.close();}
 });
 
 test('legacy owner-approved execute frame never consumes or executes a current prepared operation',async()=>{

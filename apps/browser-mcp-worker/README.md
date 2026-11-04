@@ -2,6 +2,29 @@
 
 This component implements Browser MCP [Spec #418](https://github.com/lirtual/mcp-workers/issues/418) and [Spec #531](https://github.com/lirtual/mcp-workers/issues/531). **The #418 v0.2.1 / WSS 3 release has scoped production acceptance**, including matching Chrome/Edge Profiles. The separate physical Owner OTP/Unknown-review channel was **Waived by Owner**, not verified Pass.
 
+## 2026-11-04 source candidate — retire independent Unknown Review
+
+The accepted [Owner Access design](../../docs/owner-access-sso-browser-review-design.md) and
+[Browser ADR 0004](docs/adr/0004-retire-owner-unknown-review.md) retire only the independent
+`/owner/unknown/*` interface and manual `effect_seen/no_effect_seen` submission.
+The current source removes the associated Worker/DO routes and Review-only release variables.
+Operation receipts (including previously recorded Owner reports), original intent identity,
+late signed observations and no-replay behavior remain intact. Only still-Unknown operations
+created in the last seven days count toward the 100-Unknown admission cap; **old Unknown
+receipts remain Unknown and queryable**, not silently settled or purged. This is
+**source/CI work only**, not proof of production publication.
+
+Browser Profile Activation **remains Access-protected**, with separate Audience, exact
+Owner email, same-Profile one-use proof, local gesture and unchanged 15-minute
+Access application session. The existing release gate accepts OTP-only before the
+separately authorized Access login-method cutover and also OTP plus restricted
+Cloudflare-account IdP afterward; it does not widen the Owner policy or session.
+No extra Worker, DB migration, queue, or browser-extension protocol change is introduced.
+The historical Review Access application and production Review Variables must be
+retired **only after** a separately approved Worker release is independently verified
+to reject the former Review routes. Production Access/Worker/credential changes have
+**not** been authorized or performed by this source candidate.
+
 ## Spec #531 verification boundaries
 
 - **Released (Pass):** implementation and follow-up fixes #533, #535, #537, #542, #544, #545, and [#552](https://github.com/lirtual/mcp-workers/pull/552) were merged. [Manual release #41039823675](https://github.com/lirtual/mcp-workers/actions/runs/41039823675) deployed the bounded temporary reconnect/lease fix; the later [manual release #41057088952](https://github.com/lirtual/mcp-workers/actions/runs/41057088952) deployed the reviewed-extension-ID ingress restriction at merge commit `94ef126c11a01e51d89914d0730126d82600ccda`. Independent Cloudflare deployment readback found version `d36bd189-43c7-4d49-a1cf-96eba2c402d3` at 100% traffic (2026-10-30). CI, deployment, and real browser behavior remain separate verification stages.
@@ -29,7 +52,7 @@ Per-operation Owner Approval is retired. This #418 usability increment is **rele
 
 Source tests use the existing extension VM, public Worker ingress and DO SQLite fixtures. The validated release is one extension ZIP for both browsers, pinned to `https://browser.lirtual.dpdns.org`, built by `python3 scripts/build-browser-extension.py` using the existing GitHub Actions manual release. [Installation and recovery](../../docs/browser-extension/INSTALL.md) explains the supported UI and known evidence limits.
 
-For any future separately authorized production release, retain the already configured `browser-mcp-worker` GitHub Environment Variables `BROWSER_ACTIVATION_ORIGIN=https://browser.lirtual.dpdns.org` and a distinct `BROWSER_ACTIVATION_AUDIENCE` for a Cloudflare Access application guarding `/activate/verify/*`. The existing `BROWSER_ACCESS_ISSUER` and `BROWSER_OWNER_EMAIL` remain mandatory. Existing `BROWSER_APPROVAL_*` inputs remain solely for Access-protected **Unknown post-fact review**, not per-operation approvals; do not delete or rotate these production resources as part of this code change. The activation page must retain its own Access and JWT boundary. No new Worker, database, Queue, CI or Acceptance environment is required.
+For any future separately authorized production release, retain the already configured `browser-mcp-worker` GitHub Environment Variables `BROWSER_ACTIVATION_ORIGIN=https://browser.lirtual.dpdns.org` and a distinct `BROWSER_ACTIVATION_AUDIENCE` for a Cloudflare Access application guarding `/activate/verify/*`. The existing `BROWSER_ACCESS_ISSUER` and `BROWSER_OWNER_EMAIL` remain mandatory. The retired `BROWSER_APPROVAL_*` and `BROWSER_ACCESS_AUDIENCE` Review-only variables are intentionally not staged for new releases; the existing deployed values and protected Access application must remain until the separately approved cutover proves the Review routes return 404. The activation page must retain its own Access and JWT boundary. No new Worker, database, Queue, CI or Acceptance environment is required.
 
 For subsequent changes, run typecheck, `node --experimental-strip-types --test tests/*.test.mjs`, build ZIP with SHA/manifest verification, and the existing workerd/native Chrome and Edge flows using the matching protocol. Track uncovered real Access SSO/no SSO, wrong Owner/issuer/audience, copied callbacks, Stop/late callback/restart race, temporary expiry, WSS connection generations, protected-surface exclusions, upgrade/rollback and Chrome/Edge Profile behavior as individual test cases without overriding existing dated evidence. CI passes, GitHub dispatch acceptance, cloud rollout, WSS readiness and real browser effect are different milestones; none is interchangeable with a production E2E pass.
 

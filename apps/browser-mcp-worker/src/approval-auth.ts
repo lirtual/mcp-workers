@@ -1,31 +1,12 @@
-// Independent owner ingress. No MCP/Endpoint credential or bare identity header.
-export interface ApprovalEnv {
-  BROWSER_APPROVAL_ORIGIN?:string;
+// Dedicated Access-backed Browser Activation. No independent Unknown Review ingress.
+export interface BrowserAccessEnv {
   BROWSER_ACTIVATION_ORIGIN?:string;
   BROWSER_ACTIVATION_AUDIENCE?:string;
   BROWSER_ACCESS_ISSUER?:string;
-  BROWSER_ACCESS_AUDIENCE?:string;
   BROWSER_OWNER_EMAIL?:string;
-  // Operator assertion backed by separately recorded acceptance evidence; never
-  // inferred from Access identity, an extension grant, or an Agent request.
-  BROWSER_APPROVAL_ISOLATION?:string;
 }
-export function approvalConfig(env:ApprovalEnv) {
-  try {
-    const origin=new URL(env.BROWSER_APPROVAL_ORIGIN!);
-    const issuer=new URL(env.BROWSER_ACCESS_ISSUER!);
-    if(origin.protocol!=="https:"||origin.origin!==env.BROWSER_APPROVAL_ORIGIN||
-       issuer.origin!==env.BROWSER_ACCESS_ISSUER||issuer.protocol!=="https:"||
-       !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(issuer.hostname)||
-       !/^[a-f0-9]{64}$/.test(env.BROWSER_ACCESS_AUDIENCE??"")||
-       !/^[^\s@]+@[^\s@]+$/.test(env.BROWSER_OWNER_EMAIL??"")||
-       env.BROWSER_APPROVAL_ISOLATION!=="isolated-owner-profile-and-mailbox-v1")return null;
-    return {origin:origin.origin,issuer:issuer.origin,audience:env.BROWSER_ACCESS_AUDIENCE!,email:env.BROWSER_OWNER_EMAIL!};
-  }catch{return null;}
-}
-// Separate Access application and audience for identity confirmation. No approval
-// isolation assertion or operation nonce is reused for activation.
-export function activationConfig(env:ApprovalEnv) {
+// Independent activation Access audience; never derived from Portal or extension credentials.
+export function activationConfig(env:BrowserAccessEnv) {
   try {
     const origin=new URL(env.BROWSER_ACTIVATION_ORIGIN!);
     const issuer=new URL(env.BROWSER_ACCESS_ISSUER!);
@@ -41,13 +22,10 @@ function decode(s:string):Uint8Array<ArrayBuffer> {
   if(!/^[A-Za-z0-9_-]+$/.test(s))throw Error();
   return Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")),c=>c.charCodeAt(0));
 }
-export async function verifyOwner(request:Request,env:ApprovalEnv):Promise<boolean> {
-  return verifyIdentity(request,approvalConfig(env));
-}
-export async function verifyActivationOwner(request:Request,env:ApprovalEnv):Promise<boolean> {
+export async function verifyActivationOwner(request:Request,env:BrowserAccessEnv):Promise<boolean> {
   return verifyIdentity(request,activationConfig(env));
 }
-async function verifyIdentity(request:Request,config:ReturnType<typeof approvalConfig>):Promise<boolean> {
+async function verifyIdentity(request:Request,config:ReturnType<typeof activationConfig>):Promise<boolean> {
   if(!config)return false;
   try {
     const token=request.headers.get("cf-access-jwt-assertion")??"";
@@ -76,11 +54,3 @@ async function verifyIdentity(request:Request,config:ReturnType<typeof approvalC
   }catch{return false;}
 }
 export const ownerHeaders={"cache-control":"no-store","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'","x-frame-options":"DENY","referrer-policy":"no-referrer","x-content-type-options":"nosniff"};
-const escape=(v:unknown)=>String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
-// Unknown resolution is an owner observation, NEVER a browser execute permit.
-export function ownerUnknownPage(data:Record<string,unknown>,operation:string):Response {
-  const form=data.nonce?'<form method="post" action="/owner/unknown/'+escape(operation)+'"><input type="hidden" name="nonce" value="'+escape(data.nonce)+'"><button name="outcome" value="effect_seen">I observed an effect</button><button name="outcome" value="no_effect_seen">I verified no effect</button></form>':'';
-  return new Response('<!doctype html><html lang="en"><meta charset="utf-8"><title>Review Unknown browser operation</title><h1>Review Unknown browser operation</h1><p>The website effect is unknown. Review it independently; do not retry this intent. Your report is not an observed completion and never grants execution. If uncertain, leave it Unknown.</p><pre>'+escape(JSON.stringify({...data,nonce:undefined},null,2))+'</pre>'+form+'</html>',{
-    headers:{...ownerHeaders,"content-type":"text/html; charset=utf-8"}
-  });
-}

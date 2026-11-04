@@ -59,7 +59,8 @@ try{
   assert.equal((await response('/downloads/old.zip')).status,404);
   assert.equal((await response('/index.html')).status,404,'no implicit static asset paths');
   assert.equal((await response('/unexpected')).status,404,'no SPA fallback');
-  assert.equal((await response('/owner/unknown/'+crypto.randomUUID())).status,403);
+  assert.equal((await response('/owner/unknown/'+crypto.randomUUID())).status,404,
+    'retired Review path must be absent even without an Access app');
   assert.equal((await response('/extension/socket')).status,403);
   assert.equal((await response('/mcp',{method:'POST'})).status,401);
   const inventory=await rpc('tools/list');assert.equal(inventory.status,200);

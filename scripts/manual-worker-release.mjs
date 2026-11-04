@@ -3,7 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectWorkerVars, BROWSER_APPROVAL_VARIABLES } from "./worker-release-variables.mjs";
+import { collectWorkerVars, BROWSER_ACCESS_VARIABLES } from "./worker-release-variables.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
@@ -369,25 +369,34 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!bindings.some(b => b.name === "ASSETS" && b.type !== "assets") &&
       (options.mode !== "readback" || !!assets),
       "Browser public Assets binding missing or changed");
-    // Unknown owner review and Profile Activation retain distinct Access applications.
-    // Validate every observed binding as a single reviewed, exact configuration.
-    const approvalFields = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
+    // Transition preflight accepts only the previously reviewed legacy Review
+    // variables; the new published Worker must have none of them.
+    const legacyReview = ["BROWSER_APPROVAL_ORIGIN", "BROWSER_ACCESS_AUDIENCE",
       "BROWSER_APPROVAL_ISOLATION"];
-    const activationFields = ["BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"];
-    const names = [...new Set([...BROWSER_APPROVAL_VARIABLES, ...activationFields])];
+    const names = BROWSER_ACCESS_VARIABLES;
+    const legacyPresent = legacyReview.filter(name => !!find(name, "plain_text"));
+    invariant(options.mode !== "preflight" || legacyPresent.length === 0 ||
+      legacyPresent.length === legacyReview.length,
+      "Browser legacy Review binding inventory incomplete");
+    if (legacyPresent.length) {
+      invariant(options.mode === "preflight",
+        "Retired Browser Review bindings remain after publication");
+      invariant(find("BROWSER_APPROVAL_ORIGIN", "plain_text")?.text === "https://browser.lirtual.dpdns.org" &&
+        /^[a-f0-9]{64}$/.test(find("BROWSER_ACCESS_AUDIENCE", "plain_text")?.text ?? "") &&
+        find("BROWSER_APPROVAL_ISOLATION", "plain_text")?.text === "isolated-owner-profile-and-mailbox-v1",
+        "Browser legacy Review binding inventory drift");
+    }
     const fields = names.map(name => [name, find(name, "plain_text")]);
     const env = Object.fromEntries(fields.filter(([, value]) => !!value)
       .map(([name, value]) => [name, value.text]));
-    const approvalCount = approvalFields.filter(name => Object.hasOwn(env, name)).length;
+    const activationFields = ["BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"];
     const activationCount = activationFields.filter(name => Object.hasOwn(env, name)).length;
-    invariant(approvalCount === 0 || approvalCount === approvalFields.length,
-      "Browser approval binding inventory incomplete");
     invariant(activationCount === 0 || activationCount === activationFields.length,
       "Browser activation binding inventory incomplete");
     if (Object.keys(env).length) collectWorkerVars("browser-mcp-worker", env);
     if (options.mode === "readback") {
-      invariant((approvalCount === approvalFields.length) === !!options.expectedBrowserApproval,
-        "Browser approval binding inventory differs from reviewed GitHub Environment");
+      invariant(legacyPresent.length === 0,
+        "Retired Browser Review bindings remain after publication");
       invariant(activationCount === (options.expectedBrowserActivationAudience ? activationFields.length : 0) &&
         (!options.expectedBrowserActivationAudience ||
           env.BROWSER_ACTIVATION_AUDIENCE === options.expectedBrowserActivationAudience),
@@ -395,9 +404,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
-      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length + (assets ? 1 : 0) &&
+      !coordinator.script_name && bindings.length === 2 + Object.keys(env).length + legacyPresent.length + (assets ? 1 : 0) &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
-      !bindings.some(b => b.type === "plain_text" && !names.includes(b.name)),
+      !bindings.some(b => b.type === "plain_text" && !names.includes(b.name) &&
+        !(options.mode === "preflight" && legacyReview.includes(b.name))),
       "Browser binding inventory drift");
     invariant(settings.observability?.logs?.head_sampling_rate === 0,
       "Browser logs sampling must remain zero");
@@ -1077,8 +1087,6 @@ async function main() {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
-      expectedBrowserApproval: worker === "browser-mcp-worker" &&
-        process.env.BROWSER_APPROVAL_EXPECTED === "isolated-owner-profile-and-mailbox-v1",
       expectedBrowserActivationAudience: worker === "browser-mcp-worker"
         ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
     });

@@ -1229,46 +1229,43 @@ test('Browser release pins resources, protects namespace and stages only its ind
   assert.throws(()=>collectBootstrapSecrets(worker,{}),/MCP_ACCESS_TOKEN/);
   const {collectWorkerVars}=await import('./worker-release-variables.mjs');
   assert.deepEqual(collectWorkerVars(worker,{MANIFEST_KEY:'public-not-a-secret'}),[]);
-  const approve={BROWSER_APPROVAL_ORIGIN:'https://browser.lirtual.dpdns.org',
-    BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',
-    BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),BROWSER_OWNER_EMAIL:'lirtual@outlook.com',
+  const legacyReview={BROWSER_APPROVAL_ORIGIN:'https://browser.lirtual.dpdns.org',
+    BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),
     BROWSER_APPROVAL_ISOLATION:'isolated-owner-profile-and-mailbox-v1'};
-  const enabled={...settings,bindings:[...settings.bindings,
-    ...Object.entries(approve).map(([name,text])=>({name,type:'plain_text',text}))]};
-  assert.equal(verifyBindings(worker,enabled,secrets,{...options,expectedBrowserApproval:true}),true);
+  const identity={BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',
+    BROWSER_OWNER_EMAIL:'lirtual@outlook.com'};
   const activation={BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',
     BROWSER_ACTIVATION_AUDIENCE:'b'.repeat(64)};
-  const both={...enabled,bindings:[...enabled.bindings,
-    ...Object.entries(activation).map(([name,text])=>({name,type:'plain_text',text}))]};
-  const expectedBoth={...options,expectedBrowserApproval:true,
-    expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE};
-  assert.equal(verifyBindings(worker,both,secrets,expectedBoth),true);
-  assert.equal(verifyBindings(worker,both,secrets,{mode:'preflight'}),true);
-  assert.throws(()=>verifyBindings(worker,both,secrets,{...options,expectedBrowserApproval:true}),
-    /activation binding inventory differs/);
-  assert.throws(()=>verifyBindings(worker,both,secrets,{...expectedBoth,
+  const bindings=Object.entries({...legacyReview,...identity,...activation})
+    .map(([name,text])=>({name,type:'plain_text',text}));
+  const oldPublished={...settings,bindings:[...settings.bindings,...bindings]};
+  const nextPublished={...settings,bindings:[...settings.bindings,
+    ...Object.entries({...identity,...activation}).map(([name,text])=>({name,type:'plain_text',text}))]};
+  const expected={...options,expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE};
+  assert.equal(verifyBindings(worker,oldPublished,secrets,{...expected,mode:'preflight'}),true,
+    'old Review variables are allowed only while inspecting the previous Worker');
+  assert.throws(()=>verifyBindings(worker,oldPublished,secrets,expected),/Retired Browser Review bindings remain/,
+    'published Worker must not retain retired Review settings');
+  assert.equal(verifyBindings(worker,nextPublished,secrets,expected),true);
+  assert.throws(()=>verifyBindings(worker,nextPublished,secrets,{...expected,
     expectedBrowserActivationAudience:'c'.repeat(64)}),/activation binding inventory differs/);
-  assert.throws(()=>verifyBindings(worker,{...both,bindings:both.bindings.filter(x=>
-    x.name!=='BROWSER_ACTIVATION_ORIGIN')},secrets,expectedBoth),/activation binding inventory incomplete/);
-  assert.throws(()=>verifyBindings(worker,{...both,bindings:both.bindings.map(x=>
-    x.name==='BROWSER_ACTIVATION_ORIGIN'?{...x,text:'https://wrong.example'}:x)},
-    secrets,expectedBoth),/activation Access origin/);
-  assert.throws(()=>verifyBindings(worker,{...both,bindings:[...both.bindings,
-    {name:'OTHER_VAR',type:'plain_text',text:'bad'}]},secrets,expectedBoth),/inventory drift/);
-  const temporaryOnly={...settings,bindings:[...settings.bindings,
-    ...Object.entries(Object.fromEntries(Object.entries(approve).filter(([name])=>
-      ['BROWSER_ACCESS_ISSUER','BROWSER_OWNER_EMAIL'].includes(name)))).map(([name,text])=>({name,type:'plain_text',text})),
-    ...Object.entries(activation).map(([name,text])=>({name,type:'plain_text',text}))]};
-  assert.equal(verifyBindings(worker,temporaryOnly,secrets,{
-    ...options,expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE}),true);
+  assert.throws(()=>verifyBindings(worker,{...nextPublished,
+    bindings:nextPublished.bindings.filter(x=>x.name!=='BROWSER_ACTIVATION_ORIGIN')},
+    secrets,expected),/activation binding inventory incomplete/);
+  assert.throws(()=>verifyBindings(worker,{...oldPublished,
+    bindings:oldPublished.bindings.filter(x=>x.name!=='BROWSER_APPROVAL_ORIGIN')},
+    secrets,{...expected,mode:'preflight'}),/legacy Review binding inventory incomplete/);
+  assert.throws(()=>verifyBindings(worker,{...oldPublished,bindings:oldPublished.bindings.map(x=>
+    x.name==='BROWSER_APPROVAL_ISOLATION'?{...x,text:'invalid'}:x)},
+    secrets,{...expected,mode:'preflight'}),/legacy Review binding inventory drift/);
+  assert.throws(()=>verifyBindings(worker,{...nextPublished,bindings:nextPublished.bindings.map(x=>
+    x.name==='BROWSER_OWNER_EMAIL'?{...x,text:'wrong@example.com'}:x)},
+    secrets,expected),/identity/);
+  assert.throws(()=>verifyBindings(worker,{...nextPublished,bindings:[...nextPublished.bindings,
+    {name:'OTHER_VAR',type:'plain_text',text:'bad'}]},secrets,expected),/inventory drift/);
   assert.match(readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8'),
     /BROWSER_ACTIVATION_EXPECTED:/);
 
-  assert.throws(()=>verifyBindings(worker,enabled,secrets,options),/differs from reviewed/);
-  assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,expectedBrowserApproval:true}),/differs from reviewed/);
-  assert.throws(()=>verifyBindings(worker,{...enabled,bindings:enabled.bindings.slice(0,-1)},secrets,options),/incomplete/);
-  assert.throws(()=>verifyBindings(worker,{...enabled,bindings:enabled.bindings.map(b=>b.name==='BROWSER_OWNER_EMAIL'?{...b,text:'bad@example.com'}:b)},secrets,options),/identity/);
-  assert.throws(()=>verifyBindings(worker,{...enabled,bindings:[...enabled.bindings,{name:'BAD_VAR',type:'plain_text',text:'no'}]},secrets,{...options,expectedBrowserApproval:true}),/inventory drift/);
   const workflow=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   assert.match(workflow,/name: Build and verify shared Browser extension artifact\n        if: inputs.worker == 'browser-mcp-worker'/);
   assert.match(workflow,/mcp_endpoint="https:\/\/browser.lirtual.dpdns.org\/mcp"/);

@@ -1,6 +1,6 @@
 # Owner Access SSO and Browser Unknown Review retirement — accepted design
 
-Status: **Design accepted 2026-11-04; not implemented or deployed.** Grill With Docs decisions: Q1=A (Cloudflare account login with OTP fallback), Q2=A (all active Owner OTP entrypoints), Q3=retire Browser Owner Review rather than adding login, Q4=A (7-day rolling Unknown capacity). This is an implementation plan, **not** an authorization to change production Access, Worker versions, secrets, or data.
+Status: **Design accepted 2026-11-04. Browser source candidate implemented, not deployed; live Cloudflare Access configuration unchanged.** Grill With Docs decisions: Q1=A (Cloudflare account login with OTP fallback), Q2=A (all active Owner OTP entrypoints), Q3=retire Browser Owner Review rather than adding login, Q4=A (7-day rolling Unknown capacity). This is an implementation plan, **not** an authorization to change production Access, Worker versions, secrets, or data.
 
 ## Verified configuration at design time
 
@@ -23,7 +23,7 @@ Prior to a real cutover, prove that the Cloudflare-account IdP emits the expecte
 
 ## Browser Owner Review retirement (see Browser ADR 0004)
 
-Once separately authorized for implementation:
+The following Browser source contract is now implemented as a non-deployed candidate; any production release or Access changes require separate authorization:
 - Remove the Browser Worker `/owner/unknown/*` GET/POST flow, dedicated Review Access identity verifier/config and the coordinator's `owner-unknown-view`/`owner-unknown-report` handlers, associated URLs, standalone UI and tests. Remove stale `owner_review_url` and `safe_next_action` instructions directing users to an independent Review page from **both** the coordinator and intent-ledger responses; preserve honest Unknown/no-retry guidance. Retired paths must fail closed (404) and cannot become publicly available when Access is later removed. Keep protected-target exclusions for live activation routes; do not broaden browser control just because Review is retired.
 - Remove only Review-specific code, references, and release-time variables once verified unused; **retain** `BROWSER_OWNER_EMAIL`, `BROWSER_ACCESS_ISSUER`, the separate Browser Activation audience/config and other activation protections. Do not alter or wipe historical Durable Object tables or previously recorded `owner_reported_resolution` facts.
 - Preserve `browser_operation_status`, original `operation_id`/`intent_key`, historical receipts, the existing signed late-receipt transition rules, and **no automatic replay** of Unknown. No manual report, automatic resolution, or fabricated website result replaces the retired page.
