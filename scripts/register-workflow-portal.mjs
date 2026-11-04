@@ -1,4 +1,4 @@
-// Attach one already-deployed Workflow MCP to the existing Cloudflare One-MCP
+// Attach one already-deployed Workflow MCP to the existing Cloudflare MCP
 // Portal. No Worker deploy or credential creation. Fail closed on drift.
 // GitHub Actions supplies the existing Workflow Worker's MCP_ACCESS_TOKEN.
 import assert from 'node:assert/strict';
@@ -58,9 +58,9 @@ export function assertSamePortalMappings(expected,actual){
 }
 
 export function buildPortalUpdate(portal,server){
-  assert.equal(portal?.id,'one-mcp','portal_identity_drift');
+  assert.equal(portal?.id,'mcp','portal_identity_drift');
   assert.equal(portal?.hostname,PORTAL_HOST,'portal_identity_drift');
-  assert.equal(portal?.name,'One-MCP','portal_identity_drift');
+  assert.equal(portal?.name,'MCP','portal_identity_drift');
   assert.ok(Array.isArray(portal.servers) && portal.servers.length>=9,
     'portal_existing_servers_missing');
   const preserved=portal.servers.map(portalServerMapping);
@@ -102,7 +102,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
       throw Error('portal_api_unavailable');
     return json.result;
   };
-  const portal=await request('GET','/portals/one-mcp');
+  const portal=await request('GET','/portals/mcp');
   const before=buildPortalUpdate(portal);
   const old=await request('GET','/servers');
   assert.ok(Array.isArray(old)&&old.length>=9,'portal_server_inventory_incomplete');
@@ -136,21 +136,21 @@ export async function attachWorkflowPortal(env,transport=fetch){
   assert.deepEqual((details.tools||[]).map(x=>x.name).sort(),EXPECTED_TOOLS,
     'portal_server_tool_inventory_drift');
   // A synced/ready MCP server is not proof of Cloudflare Access policy
-  // attachment. Never modify One-MCP unless the target shares the exact
-  // reusable service-token and owner-identity policy set with One-MCP.
+  // attachment. Never modify MCP Portal unless the target shares the exact
+  // reusable service-token and owner-identity policy set with MCP Portal.
   await verifyMcpAccessPolicies(env, { id: 'workflow', name: 'Workflow' }, transport);
   console.log('WORKFLOW_ACCESS_POLICIES_VERIFIED');
   console.log('WORKFLOW_PORTAL_TOOLS_SYNCED');
   // Re-read just before updating to guard against concurrent Portal edits.
-  const fresh=await request('GET','/portals/one-mcp');
+  const fresh=await request('GET','/portals/mcp');
   const body=buildPortalUpdate(fresh,details);
   assertSamePortalMappings(before.servers,body.servers);
   if(!fresh.servers.some(x=>x.server_id==='workflow')){
-    const updated=await request('PUT','/portals/one-mcp',body);
+    const updated=await request('PUT','/portals/mcp',body);
     assert.ok(updated.servers?.some(x=>x.server_id==='workflow'),
       'portal_attach_unconfirmed');
   }
-  const final=await request('GET','/portals/one-mcp');
+  const final=await request('GET','/portals/mcp');
   const normalized=buildPortalUpdate(final,details);
   assertSamePortalMappings(before.servers,normalized.servers);
   assert.equal(normalized.servers.filter(x=>x.server_id==='workflow').length,1,
@@ -161,7 +161,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
   assert.equal(final.code_mode,portal.code_mode,'portal_auth_mode_changed');
   assert.equal(final.secure_web_gateway,portal.secure_web_gateway,
     'portal_gateway_mode_changed');
-  console.log('WORKFLOW_PORTAL_ATTACHED_OK: one-mcp, exact tools, unchanged previous servers');
+  console.log('WORKFLOW_PORTAL_ATTACHED_OK: mcp, exact tools, unchanged previous servers');
   return true;
 }
 

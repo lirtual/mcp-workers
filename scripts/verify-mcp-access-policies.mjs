@@ -2,7 +2,7 @@
 // Registration and tool-sync alone are not evidence that an MCP Access app can
 // authenticate callers. This check is read-only: it never creates broad Allow
 // rules, edits policies, or discloses selectors/credentials in errors or logs.
-const PORTAL = 'One-MCP';
+const PORTAL = 'MCP';
 const PORTAL_HOSTNAME = 'mcp.lirtual.dpdns.org';
 
 function fail(code) { throw new Error('portal_access_policy_' + code); }
