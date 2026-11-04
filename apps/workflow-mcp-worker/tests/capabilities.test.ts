@@ -15,7 +15,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.uses.enum,
     [...SUPPORTED_STEP_USES]);
   assert.deepEqual(overview.limits,PLAN_LIMITS);
-  const catalog=new Map((overview.capability_ids as Array<{id:string;availability:string}>).map(x=>[x.id,x]));
+  const catalog=new Map((overview.capability_ids as Array<{id:string;availability:string;description?:string}>).map(x=>[x.id,x]));
   assert.equal(catalog.get('trigger.manual')?.availability,'supported');
   assert.equal(catalog.get('trigger.cron')?.availability,'supported');
   assert.equal(catalog.get('trigger.webhook')?.availability,'supported');
