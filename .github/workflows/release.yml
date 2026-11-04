@@ -113,7 +113,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -124,7 +124,7 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Prepare an isolated unbound candidate and bounded PR
@@ -161,7 +161,7 @@ jobs:
       statuses: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -172,7 +172,7 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Verify exact PR, required checks and merge eligibility before requesting existing release
@@ -202,7 +202,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -213,7 +213,7 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Check Cloudflare TLS, D1 CAS and live Worker health before activation
@@ -246,7 +246,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -257,10 +257,10 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.17.1
       - name: Install existing read-only MySQL/PostgreSQL probe drivers
@@ -294,7 +294,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -305,7 +305,7 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Inspect disabled D1, current Workers and rollback references only
@@ -336,7 +336,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -347,7 +347,7 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Stage safe source unbinding as Draft PR, or prove source already unbound
@@ -385,7 +385,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -396,11 +396,11 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.17.1
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
@@ -448,7 +448,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -459,11 +459,11 @@ jobs:
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.17.1
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
@@ -547,7 +547,7 @@ jobs:
       SELECTED_WORKER: ${{ inputs.worker }}
       RELEASE_STATE_FILE: /tmp/worker-release-state.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -571,12 +571,12 @@ jobs:
             }
           fi
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.17.1
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
@@ -602,7 +602,7 @@ jobs:
 
       - name: Retain Browser ZIP and provenance for separately authorized GitHub Release publication
         if: inputs.worker == 'browser-mcp-worker'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: browser-mcp-extension-${{ github.sha }}
           path: ${{ runner.temp }}/browser-extension/*.zip*
@@ -1512,11 +1512,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - name: Reconcile exact published version before disabled handoff
