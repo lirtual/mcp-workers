@@ -83,6 +83,10 @@ export function selectionForEvent(env) {
     }
     selected = [env.MANUAL_WORKER];
     changedFiles = [];
+  } else if (env.EVENT_NAME === 'push' && env.MANUAL_REF === 'refs/heads/main') {
+    // Main always validates the full active application set, not only the diff.
+    selected = [...APPLICATIONS];
+    changedFiles = [];
   } else {
     changedFiles = changedFilesForCurrentEvent(env);
     selected = selectAffectedApps(changedFiles);
@@ -96,6 +100,10 @@ function main(env = process.env) {
   process.stdout.write(`Changed files:\n${changedFiles.map(file => `  ${file}\n`).join('')}`);
   const details = selectionDetails(changedFiles);
   details.apps = selected;
+  if (env.EVENT_NAME === 'push' && env.MANUAL_REF === 'refs/heads/main') {
+    details.portalAuthChanged = true;
+    details.remoteControlChanged = true;
+  }
   if (env.REUSABLE_WORKER === 'remote-control-mcp-worker' ||
       (env.EVENT_NAME === 'workflow_dispatch' && env.MANUAL_WORKER === 'remote-control-mcp-worker')) {
     details.remoteControlChanged = true;

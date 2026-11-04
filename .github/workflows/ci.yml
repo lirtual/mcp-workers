@@ -31,6 +31,12 @@ on:
 permissions:
   contents: read
 
+# Supersede only obsolete PR runs. Each main update and each manual/reusable
+# release candidate gets an isolated run group and is never auto-cancelled.
+concurrency:
+  group: mcp-workers-ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CI: "true"
   HUSKY: "0"
@@ -40,9 +46,6 @@ jobs:
     name: Application checks
     # Reusable CI inherits the caller event (including manual release dispatch).
     if: ${{ github.event_name != 'workflow_dispatch' || !contains(github.workflow_ref, '/.github/workflows/ci.yml@') || (github.repository == 'lirtual/mcp-workers' && github.actor == 'lirtual' && inputs.worker == 'database-mcp-worker' && startsWith(github.ref, 'refs/heads/db476-')) }}
-    concurrency:
-      group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}-${{ inputs.worker || 'affected' }}
-      cancel-in-progress: true
     runs-on: ubuntu-latest
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
