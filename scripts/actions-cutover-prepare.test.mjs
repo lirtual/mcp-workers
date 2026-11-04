@@ -152,8 +152,9 @@ test('protected gate-only recovery is mutually exclusive with freeze and Worker 
   "inputs.database_hyperdrive_prepare_id == ''","inputs.database_hyperdrive_rotation_mode == ''",
   'name: workflow-mcp-worker','group: worker-release-workflow-mcp-worker',
   'actions-cutover-prepare.mjs activate-preflight','actions-cutover-prepare.mjs activate-postflight',
-  'inspectProvider,inspectConsumer,verifyConsumerPin',
-  '960ade68-149a-469c-a4fe-2c5e678df49c'])
+'inspectGateRecovery',
+  "inputs.actions_expected_provider_version != ''",
+  "inputs.actions_expected_consumer_version != ''"])
   assert.ok(recovery.includes(guard),guard);
  assert.ok(recovery.indexOf('inspectProvider,inspectConsumer')<recovery.indexOf('activate-preflight'));
  assert.ok(recovery.indexOf('activate-preflight')<recovery.indexOf("UPDATE cloudflare_action_gate SET state='open'"));

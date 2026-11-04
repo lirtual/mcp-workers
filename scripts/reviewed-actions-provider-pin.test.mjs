@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {mkdtemp,writeFile,readFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {verifyProviderRelease,verifyConsumerPin,inspectProvider,stagePin,verifyStagedPin}
+import {verifyProviderRelease,verifyConsumerPin,inspectProvider,stagePin,verifyStagedPin,
+   verifySafeRecoveryProvider,verifyRecoveryConsumerVersion,inspectGateRecovery}
   from "./reviewed-actions-provider-pin.mjs";
 
 const version="3d61997c-eb30-46e3-b96f-334343d061af";
@@ -85,4 +86,63 @@ test("cannot write a pin outside approved Runner temporary directory",async()=>{
       variablesFile:join(temp,"unrelated.txt"),
       pinFile:join(temp,"actions-provider-version.txt")}),/blocked/);
   }finally{await rm(temp,{recursive:true,force:true});}
+});
+
+
+test("gate-only recovery requires the exact live Secret-free Provider and 100% Consumer",async()=>{
+  const cleanBindings=settings.bindings.filter(x=>
+    !["DB","ADMIN_HOST","WEIXIN_ENCRYPTION_KEY"].includes(x.name));
+  const cleanSecrets=secrets.filter(x=>x.name!=="WEIXIN_ENCRYPTION_KEY");
+  const metadata={id:version,bindings:cleanBindings};
+  const consumerVersion=old;
+  const consumerLive={deployments:[{versions:[{version_id:consumerVersion,percentage:100}]}]};
+  const consumerSettings={bindings:[
+    {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
+    {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:version}
+  ]};
+  assert.equal(verifySafeRecoveryProvider(metadata,cleanSecrets,version),true);
+  assert.equal(verifyRecoveryConsumerVersion(consumerLive,consumerVersion),true);
+  for(const bad of [
+    {...metadata,bindings:[...cleanBindings,{name:"WEIXIN_ENCRYPTION_KEY",type:"secret_text"}]},
+    {...metadata,bindings:[...cleanBindings,{name:"DB",type:"d1"}]},
+    {...metadata,id:old}
+  ])assert.throws(()=>verifySafeRecoveryProvider(bad,cleanSecrets,version),/blocked/);
+  assert.throws(()=>verifySafeRecoveryProvider(metadata,secrets,version),/blocked/);
+  for(const bad of [
+    {deployments:[{versions:[{version_id:consumerVersion,percentage:50}]}]},
+    {deployments:[{versions:[{version_id:version,percentage:100}]}]},
+    {deployments:[{versions:[{version_id:consumerVersion,percentage:100},{version_id:version,percentage:0}]}]}
+  ])assert.throws(()=>verifyRecoveryConsumerVersion(bad,consumerVersion),/blocked/);
+  function fetcher(opts){
+    return async(url,options)=>{
+      const path=new URL(url).pathname;
+      opts.calls.push({path,method:options.method});
+      let result=path.includes("/workers/workers/cloudflare-actions/versions/")?metadata:
+        path.endsWith("/workers/scripts/workflow-mcp-worker/settings")?consumerSettings:
+        path.endsWith("/workers/scripts/workflow-mcp-worker/deployments")?consumerLive:
+        path.endsWith("/workers/scripts/cloudflare-actions/settings")?{bindings:cleanBindings}:
+        path.endsWith("/workers/scripts/cloudflare-actions/secrets")?cleanSecrets:
+        path.endsWith("/workers/scripts/cloudflare-actions/deployments")?deployments:null;
+      if(opts.badPin&&path.endsWith("/workflow-mcp-worker/settings"))
+        result={bindings:[{name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:old}]};
+      if(opts.badSecret&&path.endsWith("/cloudflare-actions/secrets"))result=secrets;
+      if(opts.badConsumer&&path.endsWith("/workflow-mcp-worker/deployments"))
+        result={deployments:[{versions:[{version_id:version,percentage:100}]}]};
+      if(result==null)throw Error("unexpected mocked URL "+path);
+      return {ok:true,json:async()=>({success:true,result})};
+    };
+  }
+  const ok={calls:[]};
+  assert.equal(await inspectGateRecovery("a".repeat(32),"test-token",
+    version,consumerVersion,fetcher(ok)),true);
+  assert.equal(ok.calls.length,7);
+  assert.ok(ok.calls.every(x=>x.method===undefined));
+  for(const variation of [{badPin:true},{badSecret:true},{badConsumer:true}]){
+    const x={calls:[],...variation};
+    await assert.rejects(()=>inspectGateRecovery("a".repeat(32),"test-token",
+      version,consumerVersion,fetcher(x)),/blocked/);
+    assert.ok(x.calls.every(c=>c.method===undefined));
+  }
+  await assert.rejects(()=>inspectGateRecovery("a".repeat(32),"test-token",
+    "not-a-version",consumerVersion,fetcher({calls:[]})),/blocked/);
 });

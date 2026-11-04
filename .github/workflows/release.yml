@@ -67,6 +67,16 @@ on:
         type: boolean
         required: false
         default: false
+      actions_expected_provider_version:
+        description: 'Gate-only recovery: exact reviewed live Bark-only Provider version'
+        type: string
+        required: false
+        default: ''
+      actions_expected_consumer_version:
+        description: 'Gate-only recovery: exact reviewed live Consumer version'
+        type: string
+        required: false
+        default: ''
       actions_old_ingress_quiesced:
         description: Workflow first cutover only - Owner verified legacy admissions are stopped independently (not a technical substitute)
         type: boolean
@@ -425,6 +435,7 @@ jobs:
           github.actor == 'lirtual' && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
           inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
           inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true &&
           inputs.database_hyperdrive_id == '' && inputs.database_hyperdrive_revision == '' &&
@@ -457,18 +468,19 @@ jobs:
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Verify reviewed Bark-only Provider and exact Consumer pin (read-only)
+      - name: Verify exact Secret-free Provider, Consumer deployment and Pin (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_EXPECTED_PROVIDER_VERSION: ${{ inputs.actions_expected_provider_version }}
+          ACTIONS_EXPECTED_CONSUMER_VERSION: ${{ inputs.actions_expected_consumer_version }}
         run: |
           node --input-type=module -e '
-            import {inspectProvider,inspectConsumer,verifyConsumerPin} from "./scripts/reviewed-actions-provider-pin.mjs";
-            const {CLOUDFLARE_ACCOUNT_ID:account,CLOUDFLARE_API_TOKEN:token}=process.env;
-            const active=await inspectProvider(account,token);
-            if(active!=="960ade68-149a-469c-a4fe-2c5e678df49c")throw Error("Reviewed Bark-only Provider changed");
-            verifyConsumerPin(await inspectConsumer(account,token),active);
-            console.log("Reviewed Bark-only Provider and Consumer pin match; read-only");
+            import {inspectGateRecovery} from "./scripts/reviewed-actions-provider-pin.mjs";
+            const e=process.env;
+            await inspectGateRecovery(e.CLOUDFLARE_ACCOUNT_ID,e.CLOUDFLARE_API_TOKEN,
+              e.ACTIONS_EXPECTED_PROVIDER_VERSION,e.ACTIONS_EXPECTED_CONSUMER_VERSION);
+            console.log("Exact active Bark-only Provider, Consumer and Pin verified; read-only");
           '
       - name: Verify frozen gate, paused Workflows and native drain (read-only)
         env:
