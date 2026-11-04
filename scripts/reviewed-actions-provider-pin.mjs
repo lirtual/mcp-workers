@@ -28,7 +28,7 @@ export function verifyProviderRelease(deployments,settings,secrets){
     fail("Provider Bark key, version metadata or retired credential drift");
   return versions[0].version_id.toLowerCase();
 }
-export function verifyConsumerBinding(settings,expectedProvider){
+export function verifyConsumerBinding(settings,expectedProvider,requireCompatible=false){
   const b=settings?.bindings;
   if(!Array.isArray(b)||b.filter(x=>x.type==='service').length!==1||
      b.filter(x=>x.name==='ACTIONS'&&x.type==='service'&&
@@ -38,6 +38,7 @@ export function verifyConsumerBinding(settings,expectedProvider){
   const legacy=b.filter(x=>x.name===PIN_NAME);
   if(legacy.length>1||legacy.some(x=>x.type!=='plain_text'||!UUID.test(x.text??'')))
     fail('invalid legacy Provider version metadata');
+  if(requireCompatible&&legacy.length)fail('compatible Consumer still retains legacy deployment pin');
   // Gate reopening must not resume an old exact-pin Consumer against a newer
   // Provider. The compatible Consumer release omits this obsolete variable.
   if(expectedProvider&&(!UUID.test(expectedProvider)||legacy.some(x=>
@@ -163,7 +164,7 @@ async function main(){
   const pin=verifyStagedPin(await readFile(pinFile,"utf8"),active);
   if(mode==="postflight"){
     const settings=await inspectConsumer(account,token);
-    verifyConsumerBinding(settings);
+    verifyConsumerBinding(settings,undefined,true);
   }
   console.log("Reviewed Provider version "+pin+" and Consumer binding verified at "+mode+"; no Provider write or message sent");
 }

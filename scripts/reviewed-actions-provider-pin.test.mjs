@@ -77,6 +77,9 @@ test("reviewed version stays temporary; legacy Consumer pin is not execution aut
       {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}
     ]}),/blocked/);
     assert.equal(verifyConsumerBinding({bindings:[service]}),true);
+    assert.equal(verifyConsumerBinding({bindings:[service]},undefined,true),true);
+    assert.throws(()=>verifyConsumerBinding({bindings:[service,
+      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:version}]},undefined,true),/blocked/);
     assert.equal(verifyConsumerBinding({bindings:[service,
       {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}]}),true);
     assert.throws(()=>verifyConsumerBinding({bindings:[service,
