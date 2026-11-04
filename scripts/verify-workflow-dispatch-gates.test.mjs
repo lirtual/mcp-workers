@@ -128,7 +128,7 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
 
-test('Database lifecycle and Actions ingress dispatch preserve all fifteen reviewed inputs',()=>{
+test('Database lifecycle and Actions ingress dispatch preserve all sixteen reviewed inputs',()=>{
   const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
   const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
   assert.ok(names.length===16,'release workflow_dispatch must have exactly sixteen reviewed inputs');
