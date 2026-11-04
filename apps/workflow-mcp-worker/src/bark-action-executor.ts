@@ -1,6 +1,6 @@
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
-import {canonical,cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
+import {reviewedActionDeployment,canonical,cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
@@ -19,7 +19,7 @@ function normalize(value:unknown){
 export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>},
  inspect:typeof inspectPersistedGitHubActionAttempt=inspectPersistedGitHubActionAttempt):Promise<Result>{
- const provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
+ const provider=env.ACTIONS;
  const manifest=await cloudflareActionManifest('bark');
  const grant=plan.cloudflare_action_approvals?.find(g=>g.executor==='cloudflare'&&
   g.provider==='bark'&&g.action===manifest.action&&
@@ -44,8 +44,8 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   }
   if(!grant||action.with.contract_digest!==manifest.contract_digest)
    return deny('cloudflare_action_approval_required');
-  if(!provider||!version)return deny('cloudflare_provider_not_configured');
-  if(grant.deployment_id!==version)return deny('cloudflare_provider_version_changed');
+  if(!provider)return deny('cloudflare_provider_not_configured');
+  // Grant's original deployment_id remains immutable audit evidence, not a new-send pin.
   // Optional reviewed Session: resolve its signed Ready URL from D1,
   // not from a caller-supplied URL or an undeclared Step output.
   const sourceId=(action.with.input as {session_step_id?:unknown}|undefined)?.session_step_id;
@@ -139,8 +139,8 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   }catch{return deny('invalid_bark_notification');}
   let bound;
   try{bound=await provider.getContract(manifest.action);}catch{return deny('cloudflare_provider_identity_unconfirmed');}
-  if(bound.deployment_id!==version||bound.contract_digest!==manifest.contract_digest)
-   return deny('cloudflare_provider_identity_mismatch');
+  const version=reviewedActionDeployment(bound,manifest.contract_digest);
+  if(!version)return deny('cloudflare_provider_identity_mismatch');
   const payload=JSON.stringify(canonical(notification));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(payload));
   const inputDigest=Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join('');

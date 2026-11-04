@@ -1,5 +1,5 @@
 import {WorkflowService,StateError,type Env} from './store.ts';
-import {cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
+import {reviewedActionDeployment,cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
 import {readBoundedAttachment,approvedAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
 import type {Plan} from './plan.ts';
 
@@ -85,16 +85,15 @@ export async function startLitterboxUpload(env:Env,args:{
    plan.cloudflare_action_approvals?.length!==1||
    !plan.cloudflare_action_approvals.some(g=>g.provider==='litterbox'&&
     g.action===manifest.action&&g.executor==='cloudflare'&&
-    g.contract_digest===manifest.contract_digest&&g.deployment_id===env.ACTIONS_DEPLOYMENT_ID))
+    g.contract_digest===manifest.contract_digest))
   throw new StateError('litterbox_approval_required');
- if(!env.ACTIONS||!env.ACTIONS_DEPLOYMENT_ID)
+ if(!env.ACTIONS)
   throw new StateError('cloudflare_provider_not_configured');
  let identity;
  try{identity=await env.ACTIONS.getContract(manifest.action,manifest.contract_digest);}
  catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
- if(identity.deployment_id!==env.ACTIONS_DEPLOYMENT_ID||
-   identity.contract_digest!==manifest.contract_digest)
-  throw new StateError('cloudflare_provider_identity_mismatch');
+ const version=reviewedActionDeployment(identity,manifest.contract_digest);
+ if(!version)throw new StateError('cloudflare_provider_identity_mismatch');
  // Allowlisted download, bounded byte count and SHA256, memory only.
  const selected=await readBoundedAttachment(args.file);
  const meta={file_name,size_bytes:selected.size_bytes,sha256:selected.sha256,time};
@@ -112,14 +111,14 @@ export async function startLitterboxUpload(env:Env,args:{
    AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
    AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations WHERE run_id=? AND step_id=?)`)
   .bind(run.run_id,action.id,invocation_id,invocation_id,input_digest,
-    manifest.contract_digest,env.ACTIONS_DEPLOYMENT_ID,Date.now(),run.run_id,
+    manifest.contract_digest,version,Date.now(),run.run_id,
     wf.active_version_id,wf.active_version_id,run.run_id,action.id).run();
  if(reserved.meta.changes!==1)throw new StateError('litterbox_dispatch_not_admitted');
  let result:Receipt={status:'indeterminate',error_code:'litterbox_outcome_unknown'};
  try{
   const remote=await env.ACTIONS.execute(manifest.action,{
    ...meta,bytes:selected.bytes,invocation_id,contract_digest:manifest.contract_digest,
-   deployment_id:env.ACTIONS_DEPLOYMENT_ID,input_digest,
+   deployment_id:version,input_digest,
   }) as {status:string;input_digest:string;download_url?:string};
   if(remote.input_digest===input_digest&&remote.status==='accepted'&&safeLink(remote.download_url))
    result={status:'succeeded',output:{status:'accepted',download_url:remote.download_url}};

@@ -1,6 +1,6 @@
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
-import {cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
+import {reviewedActionDeployment,cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
 
 type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:{status:string;short_link?:string}};
@@ -19,7 +19,7 @@ function checkedUrl(value:unknown):value is string{
 export async function runDubAction(env:Env,plan:Plan,action:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
  const manifest=await cloudflareActionManifest('dub');
- const db=env.DB,provider=env.ACTIONS,version=env.ACTIONS_DEPLOYMENT_ID;
+ const db=env.DB,provider=env.ACTIONS;
  if(plan.cloudflare_execution_approved!==true||plan.triggers?.length||
     action.uses!=='action.run'||action.with.executor!=='cloudflare'||
     action.with.provider!=='dub'||action.with.action!==manifest.action||
@@ -37,9 +37,9 @@ export async function runDubAction(env:Env,plan:Plan,action:Step,runId:string,
      g.deployment_id===prior.deployment_id);
    return unknown(grant&&prior.binding_generation===0?'dub_receipt_unavailable':'cloudflare_invocation_conflict');
   }
-  if(!provider||!version)return failed('cloudflare_provider_not_configured');
+  if(!provider)return failed('cloudflare_provider_not_configured');
   if(!plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&g.provider==='dub'&&
-      g.action===manifest.action&&g.contract_digest===manifest.contract_digest&&g.deployment_id===version))
+      g.action===manifest.action&&g.contract_digest===manifest.contract_digest))
    return failed('cloudflare_action_approval_required');
   let input:{url:string;public_stats:boolean};
   try{
@@ -60,8 +60,8 @@ export async function runDubAction(env:Env,plan:Plan,action:Step,runId:string,
   let live;
   try{live=await provider.getContract(manifest.action,manifest.contract_digest);}
   catch{return failed('cloudflare_provider_identity_unconfirmed');}
-  if(live.contract_digest!==manifest.contract_digest||live.deployment_id!==version)
-   return failed('cloudflare_provider_identity_mismatch');
+  const version=reviewedActionDeployment(live,manifest.contract_digest);
+  if(!version)return failed('cloudflare_provider_identity_mismatch');
   const invocation_id=crypto.randomUUID();
   const fence=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
     (run_id,step_id,invocation_id,source_attempt_id,input_digest,

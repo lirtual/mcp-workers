@@ -240,13 +240,19 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
         !secretNames.has("MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
-      const providerVersion=find("ACTIONS_DEPLOYMENT_ID","plain_text");
-      invariant(bindings.filter(x=>x.name==="ACTIONS_DEPLOYMENT_ID").length===1 &&
-        typeof providerVersion?.text==="string" &&
-        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(providerVersion.text) &&
-        !secretNames.has("ACTIONS_DEPLOYMENT_ID") &&
-        !bindings.some(x=>["WEIXIN_ACTION_DEPLOYMENT_ID","BARK_ACTION_DEPLOYMENT_ID"].includes(x.name)),
-        "Workflow reviewed Actions Provider Version ID drift");
+      invariant(bindings.filter(x=>x.type==='service').length===1 &&
+        bindings.filter(x=>x.name==='ACTIONS'&&x.type==='service'&&
+          x.service==='cloudflare-actions'&&x.entrypoint==='ActionsEntrypoint').length===1,
+        "Workflow reviewed ACTIONS Service Binding drift");
+      // Accept a valid historical variable if still retained by the platform,
+      // but it must not be required or treated as a runtime version pin.
+      const legacy=bindings.filter(x=>x.name==='ACTIONS_DEPLOYMENT_ID');
+      invariant(legacy.length<=1 && legacy.every(x=>x.type==='plain_text'&&
+        typeof x.text==='string'&&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(x.text))&&
+        !secretNames.has('ACTIONS_DEPLOYMENT_ID') &&
+        !bindings.some(x=>['WEIXIN_ACTION_DEPLOYMENT_ID','BARK_ACTION_DEPLOYMENT_ID'].includes(x.name)),
+        "Unexpected Actions Provider metadata or retired binding");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");

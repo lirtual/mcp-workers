@@ -541,7 +541,7 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS_DEPLOYMENT_ID'|'ACTIONS'> & {DB?:Env['DB']},
+ 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS'> & {DB?:Env['DB']},
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
@@ -556,7 +556,7 @@ export async function workflowCapabilities(env:Pick<Env,
     githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
-  const cloudflareReady=!!env.ACTIONS&&!!env.ACTIONS_DEPLOYMENT_ID;
+  const cloudflareReady=!!env.ACTIONS;
   const availability=(entry:Entry)=>
     entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
     (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
@@ -602,7 +602,7 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
       reviewed_manifest:await cloudflareActionManifest('bark'),
       reviewed_manifests:[await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub'),await cloudflareActionManifest('envshare'),await cloudflareActionManifest('litterbox')],
-      deployment_id:env.ACTIONS_DEPLOYMENT_ID??null}:{}),
+      deployment_id:null,identity_verification:'live_at_publish_and_dispatch'}:{}),
   };
   // Design-only contracts make unsupported features discoverable without
   // advertising a second compiler or presenting a publishable DSL example.

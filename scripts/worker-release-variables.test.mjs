@@ -29,7 +29,7 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
-  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID", "ACTIONS_DEPLOYMENT_ID"]);
+  assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["MCP_PORTAL_CLIENT_ID"]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], ["RCA_PERMANENT_IDLE_DAYS"]);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
@@ -156,16 +156,13 @@ test("No other Worker inherits the Workflow GitHub executor's variables",()=>{
 
 
 
-test("Workflow Provider version variable accepts one reviewed immutable Worker Version ID only",()=>{
- const good="33333333-3333-4333-8333-333333333333";
- const values=collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",
-  ACTIONS_DEPLOYMENT_ID:good});
- assert.ok(values.includes("ACTIONS_DEPLOYMENT_ID:"+good));
- for(const value of ["main","latest","", "00000000-0000-0000-0000-000000000000",
-   "abc\nSECRET","33333333-3333-4333-8333-333333333333 extra"]) {
-  if(!value)continue; // Absence rejected by the production CLI release entrypoint.
-  assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{MCP_PORTAL_CLIENT_ID:"test-id",
-   ACTIONS_DEPLOYMENT_ID:value}),/ACTIONS_DEPLOYMENT_ID/);
+test("Workflow release never injects a deployment UUID from GitHub Variables",()=>{
+ for(const value of ["33333333-3333-4333-8333-333333333333","latest","",
+   "abc\nSECRET"]) {
+  const vars=collectWorkerVars("workflow-mcp-worker",{
+   MCP_PORTAL_CLIENT_ID:"test-id",ACTIONS_DEPLOYMENT_ID:value});
+  assert.ok(!vars.some(x=>x.startsWith("ACTIONS_DEPLOYMENT_ID:")));
+  assert.ok(vars.includes("MCP_PORTAL_CLIENT_ID:test-id"));
  }
 });
 

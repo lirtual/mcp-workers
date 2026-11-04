@@ -105,6 +105,14 @@ export const LITTERBOX_CLOUDFLARE_ACTION=Object.freeze({
   properties:{status:{enum:['accepted','rejected','unknown']},
    download_url:{type:'string'}}},
 });
+// A deployment UUID is execution evidence, not a permanent compatible-Plan pin.
+export function reviewedActionDeployment(live:unknown,digest:string):string|null{
+ if(!live||typeof live!=='object')return null;
+ const identity=live as {deployment_id?:unknown;contract_digest?:unknown};
+ return typeof identity.deployment_id==='string'&&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identity.deployment_id)&&
+  identity.contract_digest===digest?identity.deployment_id:null;
+}
 export function canonical(value:unknown):unknown{
  if(Array.isArray(value))return value.map(canonical);
  if(value&&typeof value==='object')return Object.fromEntries(

@@ -2,7 +2,28 @@
 
 Versioned, durable workflows using the existing MCP Portal, Cloudflare D1 and Cloudflare Workflows. One Worker exposes a unified set of capabilities; no separate execution stages, capability enable switches, scheduler, queue or credential issuer.
 
-## Spec #54 · Recorded production checkpoint (2026-11-03)
+## Current contract and history (2026-11-04)
+
+[Spec #54](https://github.com/lirtual/cloudflare-actions/issues/54)
+and [T7 #61](https://github.com/lirtual/cloudflare-actions/issues/61)
+were closed/completed. T7 records a new Bark-only Provider and a pinned
+Consumer at 100% with six business Workflows restored. T8/T9 historical
+data deletion was closed `not_planned`: old Plan/Run/receipt evidence
+is not discarded or replayable. This is **Issue evidence**, not a
+new Cloudflare inventory check.
+
+[Spec #711](https://github.com/lirtual/mcp-workers/issues/711)
+and [ADR-0003](https://github.com/lirtual/cloudflare-actions/blob/main/docs/adr/0003-compatible-action-contracts.md)
+retain Workflow as the sole generic orchestrator and the source-reviewed
+Bark/Dub/EnvShare/Litterbox Provider over the private `ACTIONS` binding.
+Compatible new dispatch verifies the live Provider contract and records
+its **actual** deployment identity in the one-shot D1 reservation; original
+Published Plan grants and Unknown no-retry semantics stay unchanged.
+**No source/CI change is a production release or live acceptance.**
+
+## Historical 2026-11-03 production checkpoint (dated evidence only)
+
+
 
 **Consumer T5 and Provider T6 production acceptance: Pass; full Spec #54:
 Open/Partial.** At the last independently recorded T7 readback, the
