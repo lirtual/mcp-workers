@@ -84,7 +84,7 @@ export class IntentLedger {
     const review=this.sql.exec<{outcome:string}>("SELECT outcome FROM browser_owner_resolutions WHERE operation_id=?",row.operation_id).toArray()[0];
     return {operation_id:row.operation_id,state:row.state,...(row.tab_id===null?{}:{tab_id:row.tab_id}),
       ...(review?.outcome==="effect_seen"||review?.outcome==="no_effect_seen"?{owner_reported_resolution:review.outcome as "effect_seen"|"no_effect_seen"}:{}),
-      ...(row.state==="unknown"?{safe_next_action:"review_unknown_in_independent_owner_page; never retry with a new key"}:{}),
+      ...(row.state==="unknown"?{safe_next_action:"outcome_unknown; inspect_original_receipt; never_retry_original_intent"}:{}),
       ...(row.state==="owner_reported_resolution"?{safe_next_action:"owner_report_recorded; no automatic execution or confirmed website result"}:{}),
       ...(row.result_code==="capacity_exceeded"?{error_code:"capacity_exceeded"}:{}),
       ...(row.result_code==="approval_blocked"?{error_code:"approval_blocked",safe_next_action:"Blocked: independent owner approval is unavailable"}:{}),
@@ -116,7 +116,7 @@ export class IntentLedger {
     if(timestamp>now+30000)return {error_code:"clock_skew"};
     if(timestamp<now-fiveMinutes)return {error_code:"expired_intent_key"};
     this.sweep(now);
-    const unknownCount=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM browser_intents WHERE state='unknown'").toArray()[0]?.n??0;
+    const unknownCount=this.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM browser_intents WHERE state='unknown' AND created_at>=?",now-sevenDays).toArray()[0]?.n??0;
     if(unknownCount>=(limits.maxUnknown??100))return {error_code:"unknown_capacity_exceeded"};
     const operation_id=crypto.randomUUID();
     // All fields are minimal, and the private command payload remains transient.
@@ -188,18 +188,6 @@ export class IntentLedger {
     const row=this.row(endpoint_id,intent_key);
     if(!row)return {error_code:"not_found"};
     this.sql.exec("UPDATE browser_intents SET state='unknown',updated_at=? WHERE endpoint_id=? AND intent_key=? AND state='dispatching'",now,endpoint_id,intent_key);
-    return this.status(endpoint_id,intent_key);
-  }
-  ownerReport(endpoint_id:string,intent_key:string,outcome:"effect_seen"|"no_effect_seen",now=Date.now()):Answer {
-    if(outcome!=="effect_seen"&&outcome!=="no_effect_seen")return {error_code:"invalid_arguments"};
-    const row=this.row(endpoint_id,intent_key);
-    if(!row)return {error_code:"not_found"};
-    if(row.state!=="unknown")return {error_code:"not_unknown"};
-    // No browser effect, new execute token or optimistic completion is ever created here.
-    this.sql.exec("INSERT INTO browser_owner_resolutions(operation_id,outcome,reported_at) VALUES(?,?,?) ON CONFLICT(operation_id) DO UPDATE SET outcome=excluded.outcome,reported_at=excluded.reported_at WHERE outcome IS NULL",
-      row.operation_id,outcome,now);
-    this.sql.exec("UPDATE browser_intents SET state='owner_reported_resolution',updated_at=? WHERE operation_id=? AND state='unknown'",
-      now,row.operation_id);
     return this.status(endpoint_id,intent_key);
   }
   hasDispatching(endpoint_id:string):boolean {

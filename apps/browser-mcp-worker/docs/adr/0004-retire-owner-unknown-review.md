@@ -1,6 +1,6 @@
 # ADR 0004 — Retire Browser Owner Unknown Review without weakening operation receipts
 
-Status: **Accepted design 2026-11-04; not implemented or deployed.**
+Status: **Accepted design 2026-11-04; Browser source candidate implemented but not deployed.**
 
 The Owner chose to **remove**, rather than reauthenticate or relocate, the independent Browser Owner Unknown Review page and its dedicated Access application. It provided only a retrospective human `effect_seen`/`no_effect_seen` report, not execution permission; its separate browser/mailbox requirement created maintenance burden and had previously been **Waived**, not proven. This decision supersedes **only** the independent Owner Unknown-review-channel requirement in [ADR 0002](0002-profile-grant-not-business-authorization.md). It does **not** supersede the task-authorization boundary, protected targets, immutable intent identity, no-blind-replay rule, or Browser Activation's Access and same-Profile one-use proof.
 

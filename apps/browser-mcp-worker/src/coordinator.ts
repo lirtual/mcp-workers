@@ -1,4 +1,3 @@
-import { approvalConfig, type ApprovalEnv } from "./approval-auth.ts";
 import { isInteraction, validInteraction, interactionExtra } from "./interactions.ts";
 import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
 const TEMP_RECONNECT_GRACE_MS = 90000;
@@ -70,10 +69,8 @@ export class BrowserOwner implements DurableObject {
   // URL, extension-provided duration, or arbitrary text is stored or relayed.
   private readonly readStages = new Set(["extension_received","tab_lookup",
     "frame_lookup","text_injection","element_refs","final_validation","result_transport"]);
-  private readonly env:ApprovalEnv;
   private readonly idleMs:number;
-  constructor(state: DurableObjectState, env:ApprovalEnv & {BROWSER_REMEMBERED_IDLE_DAYS?:string} = {}) {
-    this.env=env;
+  constructor(state: DurableObjectState, env:{BROWSER_REMEMBERED_IDLE_DAYS?:string} = {}) {
     this.idleMs=rememberedIdleDays(env.BROWSER_REMEMBERED_IDLE_DAYS)*DAY_MS;
     this.state = state;
     this.sql = state.storage.sql;
@@ -94,7 +91,6 @@ export class BrowserOwner implements DurableObject {
     this.sql.exec("CREATE TABLE IF NOT EXISTS activation_attempts (id TEXT PRIMARY KEY, proof_hash TEXT NOT NULL, alias TEXT NOT NULL, mode TEXT NOT NULL, endpoint_id TEXT, stop_epoch INTEGER, owner_verified INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)");
     this.intents = new IntentLedger(this.sql);
-    this.sql.exec("CREATE TABLE IF NOT EXISTS browser_approvals (operation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, binding TEXT NOT NULL, expires_at INTEGER NOT NULL, nonce_hash TEXT)");
     // Dispatch effects may have occurred before a DO recreation. Never replay them.
     this.intents.recoverUnknown(Date.now());
     // Existing approval requests had no execute token. Retire them permanently
@@ -104,44 +100,6 @@ export class BrowserOwner implements DurableObject {
     // during DO construction, even when no subsequent request arrives.
     if(typeof state.blockConcurrencyWhile==="function")
       void state.blockConcurrencyWhile(async()=>{await this.reconcileRemembered();});
-  }
-  private withOwnerReview<T extends {operation_id?:string;state?:string}>(answer:T) {
-    if(answer.state!=="unknown"||!answer.operation_id)return answer;
-    const config=approvalConfig(this.env);
-    return {...answer,...(config?{
-      owner_review_url:config.origin+"/owner/unknown/"+answer.operation_id,
-      safe_next_action:"independently_review_unknown; never retry the original effect"
-    }:{safe_next_action:"blocked: independent owner review unavailable; never retry"})};
-  }
-  private async ownerUnknown(arg:Record<string,unknown>,report:boolean):Promise<Response> {
-    if(!approvalConfig(this.env)||!validId(arg.operation_id))return json({error_code:"forbidden"},403);
-    const row=this.intents.byOperation(arg.operation_id);
-    if(!row)return json({error_code:"not_found"},404);
-    if(row.state!=="unknown" && row.state!=="owner_reported_resolution")
-      return json({error_code:"not_unknown"},409);
-    if(!report){
-      const nonce=row.state==="unknown"?secret():undefined;
-      if(nonce){
-        const digest=await hash(nonce);
-        // GET grants no execution authority; it merely rotates a bounded nonce.
-        if(this.intents.byOperation(row.operation_id)?.state!=="unknown")return json({error_code:"not_unknown"},409);
-        this.sql.exec("INSERT INTO browser_owner_resolutions(operation_id,nonce_hash,nonce_expires_at) VALUES(?,?,?) ON CONFLICT(operation_id) DO UPDATE SET nonce_hash=excluded.nonce_hash,nonce_expires_at=excluded.nonce_expires_at WHERE outcome IS NULL",
-          row.operation_id,digest,Date.now()+300000);
-      }
-      return json({operation_id:row.operation_id,endpoint_id:row.endpoint_id,action:row.action,
-        state:this.intents.status(row.endpoint_id,row.intent_key).state,
-        ...(nonce?{nonce}:{})});
-    }
-    if(typeof arg.nonce!=="string"||!/^[a-f0-9]{64}$/.test(arg.nonce)||
-      arg.outcome!=="effect_seen"&&arg.outcome!=="no_effect_seen")
-      return json({error_code:"invalid_arguments"},400);
-    const nonceHash=await hash(arg.nonce);
-    // Atomic one-use nonce consumption closes concurrent/replayed owner POSTs.
-    const used=this.sql.exec<{operation_id:string}>("UPDATE browser_owner_resolutions SET nonce_hash=NULL,nonce_expires_at=NULL WHERE operation_id=? AND nonce_hash=? AND nonce_expires_at>? AND outcome IS NULL RETURNING operation_id",
-      row.operation_id,nonceHash,Date.now()).toArray();
-    if(used.length!==1)return json({error_code:"invalid_nonce"},403);
-    const outcome=this.intents.ownerReport(row.endpoint_id,row.intent_key,arg.outcome);
-    return json(outcome,outcome.error_code?409:200);
   }
   private endpoint(id: string): Endpoint | undefined {
     return this.sql.exec<Endpoint>("SELECT * FROM endpoints WHERE id = ?", id).toArray()[0];
@@ -245,8 +203,6 @@ export class BrowserOwner implements DurableObject {
     const now = Date.now();
     this.expireTemporary(now);
     try{await this.reconcileRemembered(now);}catch{return json({error_code:"idle_unavailable"},503);}
-    if(url.pathname==="/owner-unknown-view"||url.pathname==="/owner-unknown-report")
-      return this.ownerUnknown(arg,url.pathname==="/owner-unknown-report");
     if (url.pathname === "/operation-status") {
       if (Object.keys(arg).length!==2 || !Object.hasOwn(arg,"endpoint_id") || (!Object.hasOwn(arg,"intent_key")&&!Object.hasOwn(arg,"operation_id")))
         return json({error_code:"invalid_arguments"},400);
@@ -255,7 +211,7 @@ export class BrowserOwner implements DurableObject {
       const result=Object.hasOwn(arg,"operation_id")?
         original&&original.endpoint_id===arg.endpoint_id?this.intents.status(original.endpoint_id,original.intent_key):{error_code:"not_found"}:
         this.intents.status(arg.endpoint_id as string,arg.intent_key as string);
-      return json(this.withOwnerReview(result),result.error_code?result.error_code==="not_found"?404:400:200);
+      return json((result),result.error_code?result.error_code==="not_found"?404:400:200);
     }
     if (url.pathname === "/activity-summary") {
       if(Object.keys(arg).length!==2 || !validId(arg.endpoint_id) || typeof arg.credential!=="string" || arg.credential.length!==64)
@@ -361,7 +317,7 @@ export class BrowserOwner implements DurableObject {
       const prior=this.intents.status(command.endpoint_id,command.intent_key);
       if(prior.operation_id){
         const recovered=await this.intents.admit(command,now);
-        return json(this.withOwnerReview(recovered),recovered.error_code?409:200);
+        return json((recovered),recovered.error_code?409:200);
       }
       const e=this.endpoint(command.endpoint_id);
       if(!e||e.state!=="enabled"||!this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
@@ -405,7 +361,7 @@ export class BrowserOwner implements DurableObject {
       try {socket.send(JSON.stringify({type:"prepare_request",operation_id,
         intent_key:command.intent_key,generation:e.generation,command}));}
       catch {this.terminateMutation(operation_id);}
-      return json(this.withOwnerReview(this.intents.status(e.id,command.intent_key)));
+      return json((this.intents.status(e.id,command.intent_key)));
     }
     if (url.pathname === "/read") {
       const id=arg.endpoint_id;

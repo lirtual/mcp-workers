@@ -1,9 +1,9 @@
-import { type ApprovalEnv, approvalConfig, verifyOwner, ownerUnknownPage, ownerHeaders, activationConfig, verifyActivationOwner } from "./approval-auth.ts";
+import { type BrowserAccessEnv, ownerHeaders, activationConfig, verifyActivationOwner } from "./approval-auth.ts";
 import { interactionActions, interactionExtra, isInteraction, validInteraction } from "./interactions.ts";
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 export { BrowserOwner } from "./coordinator.ts";
 
-interface Env extends ApprovalEnv {
+interface Env extends BrowserAccessEnv {
   MCP_ACCESS_TOKEN?: string;
   MCP_ALLOWED_ORIGINS?: string;
   BROWSER_OWNER: DurableObjectNamespace;
@@ -167,11 +167,6 @@ async function handleExtension(request:Request,env:Env,path:string) {
   const headers=new Headers(result.headers);headers.set("access-control-allow-origin",request.headers.get("origin")!);headers.set("vary","Origin");headers.set("cache-control","no-store");
   return new Response(result.body,{status:result.status,headers});
 }
-// Explicit inline text response for fail-closed owner errors. Without a content type,
-// mobile browsers may download an owner review URL as a file.
-const ownerRejection = (status:number,message:string):Response => new Response(message,{
-  status,headers:{...ownerHeaders,"content-type":"text/plain; charset=utf-8"}
-});
 // The published page and reviewed ZIP are the only anonymously readable assets.
 // The page's path is generated from the same verified build as the ZIP.
 async function publicDistribution(request:Request,env:Env,path:string):Promise<Response> {
@@ -252,37 +247,6 @@ else chrome.runtime.sendMessage(target,{type:"activation-presence",attempt_id:at
       return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser MCP activation</title><h1>Browser MCP</h1><p id="status">Checking this Profile's pending activation…</p><script nonce="${nonce}">${script}</script></html>`,
         {headers:{...ownerHeaders,"content-type":"text/html; charset=utf-8",
          "content-security-policy":`default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`}});
-    }
-    if(url.pathname.startsWith("/owner/")) {
-      const config=approvalConfig(env);
-      if(!config)return ownerRejection(403,"Owner review is not enabled.");
-      // ChatGPT can append this exact attribution when an Owner opens the independent
-      // review link. Only a signed, read-only GET may canonicalize it; never trust
-      // arbitrary query strings, redirects, POSTs, or cross-origin requests.
-      const attributionGet=request.method==="GET"&&url.search==="?utm_source=chatgpt.com";
-      if(url.origin!==config.origin||(url.search&&!attributionGet)||(request.headers.has("origin")&&request.headers.get("origin")!==config.origin))return ownerRejection(403,"Owner request rejected.");
-      if(!await verifyOwner(request,env))return ownerRejection(401,"Owner identity not verified.");
-      const match=/^\/owner\/unknown\/([a-f0-9-]{36})$/.exec(url.pathname);
-      if(!match)return ownerRejection(404,"Owner operation not found.");
-      if(request.method!=="GET"&&request.method!=="POST")return ownerRejection(405,"Owner method not allowed.");
-      if(attributionGet)return new Response(null,{status:303,headers:{...ownerHeaders,location:config.origin+url.pathname}});
-      let body:Record<string,unknown>={operation_id:match[1]};
-      if(request.method==="POST") {
-        if(request.headers.get("origin")!==config.origin||request.headers.get("content-type")?.split(";")[0]!=="application/x-www-form-urlencoded")return ownerRejection(403,"Owner request rejected.");
-        try {
-          const form=new URLSearchParams(await boundedText(request,1024));
-          const field="outcome";
-          if([...form.keys()].length!==2||!form.has("nonce")||!form.has(field))throw Error();
-          body={...body,nonce:form.get("nonce"),[field]:form.get(field)};
-        }catch{return ownerRejection(400,"Invalid owner request.");}
-      }
-      try {
-        const route=request.method==="GET"?"owner-unknown-view":"owner-unknown-report";
-        const result=await post(env,route,body);
-        if(request.headers.get("accept")==="application/json")return Response.json(result.data,{status:result.status,headers:ownerHeaders});
-        const page=ownerUnknownPage(result.data as Record<string,unknown>,match[1]!);
-        return new Response(page.body,{status:result.status,headers:page.headers});
-      }catch{return ownerRejection(503,"Owner review temporarily unavailable.");}
     }
     if(url.pathname==="/mcp")return handleMcp(request,env);
     if(url.pathname.startsWith("/extension/"))return handleExtension(request,env,url.pathname.slice("/extension/".length));

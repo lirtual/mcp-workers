@@ -174,8 +174,7 @@ test("Browser activation requires two independent validated Access Variables",()
     {...good,BROWSER_ACTIVATION_AUDIENCE:undefined},
     {...good,BROWSER_ACTIVATION_ORIGIN:undefined},
     {...good,BROWSER_ACTIVATION_ORIGIN:"https://evil.example"},
-    {...good,BROWSER_ACTIVATION_AUDIENCE:"invalid"},
-    {...good,BROWSER_ACCESS_AUDIENCE:good.BROWSER_ACTIVATION_AUDIENCE}
+    {...good,BROWSER_ACTIVATION_AUDIENCE:"invalid"}
   ])assert.throws(()=>collectWorkerVars("browser-mcp-worker",bad),/activation|approval/);
 });
 
@@ -183,7 +182,7 @@ test("Browser activation requires two independent validated Access Variables",()
 test("activation identity does not require an unverified high-impact approval isolation assertion",()=>{
   const env={BROWSER_ACCESS_ISSUER:"https://lirtualzero.cloudflareaccess.com",BROWSER_OWNER_EMAIL:"lirtual@outlook.com",BROWSER_ACTIVATION_ORIGIN:"https://browser.lirtual.dpdns.org",BROWSER_ACTIVATION_AUDIENCE:"c".repeat(64)};
   assert.equal(collectWorkerVars("browser-mcp-worker",env).length,4);
-  assert.throws(()=>collectWorkerVars("browser-mcp-worker",{...env,BROWSER_APPROVAL_ORIGIN:"https://browser.lirtual.dpdns.org"}),/approval/);
+  assert.deepEqual(collectWorkerVars("browser-mcp-worker",{...env,BROWSER_APPROVAL_ORIGIN:"https://browser.lirtual.dpdns.org"}),Object.entries(env).map(([k,v])=>k+":"+v));
 });
 
 

@@ -150,6 +150,43 @@ test("unknown capacity denies additional admissions without deleting evidence",a
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM browser_intents").get().n,2);
 });
 
+test("7-day Unknown admission cap has an inclusive cutoff without aging or replaying receipts",async()=>{
+  const {ledger,db}=fixture();
+  const sevenDays=7*86400000;
+  const keys=[uuid7(t,201),uuid7(t,202)];
+  for(const [index,key] of keys.entries()){
+    await ledger.admit(command(key),t);
+    await ledger.dispatch(endpoint_id,key,1,t+index);
+    ledger.recoverUnknown(t+index+1);
+  }
+  assert.equal((await ledger.admit(command(uuid7(t+sevenDays,203)),t+sevenDays,{maxUnknown:2})).error_code,
+    "unknown_capacity_exceeded","exactly seven days old still counts");
+  const admitted=await ledger.admit(command(uuid7(t+sevenDays+1,204)),t+sevenDays+1,{maxUnknown:2});
+  assert.equal(admitted.state,"admitted","aged Unknowns stop consuming *capacity* only");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM browser_intents WHERE state='unknown'").get().n,2);
+  assert.equal(ledger.status(endpoint_id,keys[0]).state,"unknown");
+  assert.match(ledger.status(endpoint_id,keys[0]).safe_next_action,/never_retry_original_intent/);
+  assert.equal((await ledger.admit(command(keys[0]),t+sevenDays+2)).state,"unknown",
+    "original intent recovers its historical receipt, never a new dispatch");
+  assert.equal((await ledger.dispatch(endpoint_id,keys[0],2,t+sevenDays+3)).error_code,
+    "already_dispatched");
+  ledger.sweep(t+15*86400000);
+  assert.equal(ledger.status(endpoint_id,keys[0]).state,"unknown",
+    "old Unknown rows are not garbage-collected");
+});
+test("default 100 recent Unknowns block the 101st without deleting history",async()=>{
+  const {ledger,db}=fixture();
+  for(let n=0;n<100;n++){
+    const key=uuid7(t,n+300);
+    await ledger.admit(command(key),t);
+    await ledger.dispatch(endpoint_id,key,1,t);
+    ledger.recoverUnknown(t+1);
+  }
+  assert.equal((await ledger.admit(command(uuid7(t,500)),t+2)).error_code,
+    "unknown_capacity_exceeded");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM browser_intents WHERE state='unknown'").get().n,100);
+});
+
 test("durable prepare binding survives a fresh ledger while never storing raw command",async()=>{
   const {ledger,sql,db}=fixture();
   const key=uuid7();
@@ -203,7 +240,13 @@ test("owner-reported Unknown resolution stays distinct from observed success and
   await ledger.admit(command(key),t);
   const dispatched=await ledger.dispatch(endpoint_id,key,5,t+1);
   ledger.recoverUnknown(t+2);
-  const reported=ledger.ownerReport(endpoint_id,key,"effect_seen",t+3);
+  const operation=ledger.status(endpoint_id,key).operation_id;
+  // A prior version wrote this historical fact. New versions preserve but cannot create it.
+  db.prepare("INSERT INTO browser_owner_resolutions(operation_id,outcome,reported_at) VALUES(?,?,?)")
+    .run(operation,"effect_seen",t+3);
+  db.prepare("UPDATE browser_intents SET state='owner_reported_resolution',updated_at=? WHERE operation_id=?")
+    .run(t+3,operation);
+  const reported=ledger.status(endpoint_id,key);
   assert.equal(reported.state,"owner_reported_resolution");
   assert.equal(reported.owner_reported_resolution,"effect_seen");
   assert.notEqual(reported.state,"completed");
