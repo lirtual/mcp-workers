@@ -41,19 +41,19 @@ export type Env = {
   };
   // Enabled only through the explicit selected-Worker production release.
   // Optional, MCP-only machine identity for the pinned Cloudflare MCP Portal.
-  MCP_PORTAL_CLIENT_ID?: string;
-  MCP_PORTAL_CLIENT_SECRET?: string;
+  WORKFLOW_MCP_PORTAL_CLIENT_ID?: string;
+  WORKFLOW_MCP_PORTAL_CLIENT_SECRET?: string;
   // The sole approved Portal is fixed by release configuration.
-  MCP_PORTAL_ENDPOINT?: string;
+  WORKFLOW_MCP_PORTAL_ENDPOINT?: string;
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
   WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
   // Server-owned, read-only Action discovery scopes; no publication or execution grant.
-  GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
+  WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
-  GITHUB_ACTION_OIDC_AUDIENCE?: string;
+  WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?: string;
   // Canonical 256-bit AES-GCM key for short-lived Session data.
-  SESSION_RUNTIME_DATA_KEY?: string;
+  WORKFLOW_SESSION_RUNTIME_DATA_KEY?: string;
   // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
@@ -199,7 +199,7 @@ export class WorkflowService {
     if(!actions.length)return [];
     const token=this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
     if(!token)throw new PlanError('github_action_token_missing','/steps');
-    const grants=approvedActionRepositories(this.env.GITHUB_ACTION_APPROVED_REPOSITORIES);
+    const grants=approvedActionRepositories(this.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES);
     const approved:ReviewedGitHubAction[]=[];
     for(const {step,path} of actions){
       const raw=step.with.action as Record<string,unknown>;
@@ -226,7 +226,7 @@ export class WorkflowService {
         const validated=isDynamic?validateForeachTaskInputTemplate(candidate.contract,given):
           expected.type==='session'&&isSessionDurationInputRef(given.duration_minutes)?
             {...given,duration_minutes:300}:given;
-        await assertReviewedGitHubAction(expected,candidate,this.env.GITHUB_ACTION_APPROVED_REPOSITORIES,validated);
+        await assertReviewedGitHubAction(expected,candidate,this.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES,validated);
         if(isDynamic){
           const controller=plan.steps[Number(path.split('/')[2])];
           if(!controller||controller.uses!=='flow.foreach'||candidate.contract.type!=='task')
@@ -404,7 +404,7 @@ export class WorkflowService {
     if(hasMcpWrite!==approve_mcp_write_execution)
       throw new StateError('mcp_write_approval_required');
     if(required.length){
-      const portal=this.env.MCP_PORTAL_ENDPOINT;
+      const portal=this.env.WORKFLOW_MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
       if(portal!==PRODUCTION_PORTAL_ENDPOINT ||
          required.some(grant=>grant.endpoint!==portal))throw new StateError('portal_target_not_authorized');
@@ -944,7 +944,7 @@ export class WorkflowService {
        String((step.with.action as {type?:unknown}|undefined)?.type))))
       throw new StateError('github_action_invalid_publication');
     if(protocolActions.length &&
-       (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.GITHUB_ACTION_OIDC_AUDIENCE))
+       (!this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!this.env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE))
       throw new StateError('github_action_executor_not_configured');
     const hasChild=activePlan.steps.some(s=>s.uses==='flow.child');
     const weight=activePlan.steps.some(s=>s.uses==='flow.child'&&s.with.mode!=='detached')?2:1;

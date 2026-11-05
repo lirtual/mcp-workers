@@ -76,9 +76,9 @@ function setup(t:test.TestContext){
     };
   }
   const env={
-    MCP_PORTAL_ENDPOINT:'https://mcp.lirtual.dpdns.org/mcp',
-    MCP_PORTAL_CLIENT_ID:'test-id',
-    MCP_PORTAL_CLIENT_SECRET:'test-secret',
+    WORKFLOW_MCP_PORTAL_ENDPOINT:'https://mcp.lirtual.dpdns.org/mcp',
+    WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-id',
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret',
     DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){
       sqlite.exec('BEGIN IMMEDIATE');
       try{const results=[];for(const stmt of statements)results.push(await stmt.run());sqlite.exec('COMMIT');return results;}
@@ -311,7 +311,7 @@ test('MCP approved Run fails closed if pinned Portal is removed',async t=>{
   const {env,admit,run,service}=setup(t);
   const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'test'}}}],{},[grant]);
-  env.MCP_PORTAL_ENDPOINT=undefined;
+  env.WORKFLOW_MCP_PORTAL_ENDPOINT=undefined;
   const oldFetch=globalThis.fetch;
   let requests=0;
   globalThis.fetch=(async()=>{requests++;throw Error('unexpected_public_fetch');}) as typeof fetch;
@@ -696,7 +696,7 @@ test('retired fixed GitHub executor is neither publishable nor runnable',async t
 
 test('MCP refuses publish when Portal is not configured',async t=>{
   const {service,env,sqlite}=setup(t);
-  env.MCP_PORTAL_ENDPOINT=undefined;
+  env.WORKFLOW_MCP_PORTAL_ENDPOINT=undefined;
   const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const wf=await service.create(JSON.stringify({version:1,name:'requires pinned Portal',steps:[
     {id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',
@@ -708,7 +708,7 @@ test('MCP refuses publish when Portal is not configured',async t=>{
 
 test('MCP pinned Portal refuses a different approved endpoint at Publish',async t=>{
   const {service,env,sqlite}=setup(t);
-  env.MCP_PORTAL_ENDPOINT='https://mcp.lirtual.dpdns.org/mcp';
+  env.WORKFLOW_MCP_PORTAL_ENDPOINT='https://mcp.lirtual.dpdns.org/mcp';
   const grant:ReadonlyOperation={
     endpoint:'https://another.example.org/mcp',tool:'echo',scope:'read',
     schema_digest:PINNED_DIGEST,
@@ -751,7 +751,7 @@ jobs:
       - run: echo verified
 `;
   env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
-  env.GITHUB_ACTION_APPROVED_REPOSITORIES=JSON.stringify([{repository,repositoryId}]);
+  env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES=JSON.stringify([{repository,repositoryId}]);
   const requests:string[]=[];
   const previous=globalThis.fetch;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -1229,7 +1229,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
    .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
  let calls=0;
  const old=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -1356,7 +1356,7 @@ test('late invalid dynamic Task choice is rejected before any per-item GitHub di
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
  let posts=0;
  const before=globalThis.fetch;
  globalThis.fetch=(async()=>{posts++;throw Error('must not dispatch');}) as typeof fetch;
@@ -1393,7 +1393,7 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
  const checkpoints:string[]=[];
  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
   {payload:{run_id:start.run_id}} as WorkflowEvent<{run_id:string}>,
@@ -1540,7 +1540,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),started.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
  let posts=0;
  const savedFetch=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -1626,7 +1626,7 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),started.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.GITHUB_ACTION_OIDC_AUDIENCE=audience;
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE=audience;
  const {privateKey,publicKey}=await generateKeyPair('RS256');
  const signed=new Map<number,string>();
  let posts=0;let mcpCalls=0;const claimed=new Set<number>();

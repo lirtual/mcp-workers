@@ -9,7 +9,7 @@ import {REVIEWED_WRITE_TOOL,REVIEWED_APPEND_TOOL,REVIEWED_WRITE_TOOLS,reviewedWr
 import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
 
-type PortalConfig=Pick<Env,'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'>;
+type PortalConfig=Pick<Env,'WORKFLOW_MCP_PORTAL_ENDPOINT'|'WORKFLOW_MCP_PORTAL_CLIENT_ID'|'WORKFLOW_MCP_PORTAL_CLIENT_SECRET'>;
 type PortalTool={
  name:string;inputSchema:unknown;outputSchema?:unknown;
  annotations?:{readOnlyHint?:boolean;destructiveHint?:boolean};
@@ -82,8 +82,8 @@ export async function reviewedPortalWriteTools(tools:PortalTool[]):Promise<Porta
 }
 
 export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscovery>{
- if(env.MCP_PORTAL_ENDPOINT!==PRODUCTION_PORTAL_ENDPOINT ||
-    !env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
+ if(env.WORKFLOW_MCP_PORTAL_ENDPOINT!==PRODUCTION_PORTAL_ENDPOINT ||
+    !env.WORKFLOW_MCP_PORTAL_CLIENT_ID||!env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET)
    return {availability:'unavailable',tools:[],reason:'portal_not_configured'};
  const client=new Client({name:'workflow-mcp-action-discovery',version:'0.1.0'});
  let authDenied=false;
@@ -95,7 +95,7 @@ export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscov
  };
  const transport=new StreamableHTTPClientTransport(new URL(PRODUCTION_PORTAL_ENDPOINT),{
    fetch:scopedPublicMcpFetch(PRODUCTION_PORTAL_ENDPOINT,trackedFetch,{
-     clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET,
+     clientId:env.WORKFLOW_MCP_PORTAL_CLIENT_ID,clientSecret:env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET,
    },PRODUCTION_PORTAL_ENDPOINT),
  });
  try{
@@ -540,11 +540,11 @@ async function compilingExample(definition:unknown){
 }
 
 export async function workflowCapabilities(env:Pick<Env,
- 'MCP_PORTAL_ENDPOINT'|'MCP_PORTAL_CLIENT_ID'|'MCP_PORTAL_CLIENT_SECRET'|
- 'GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS'> & {DB?:Env['DB']},
+ 'WORKFLOW_MCP_PORTAL_ENDPOINT'|'WORKFLOW_MCP_PORTAL_CLIENT_ID'|'WORKFLOW_MCP_PORTAL_CLIENT_SECRET'|
+ 'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS'> & {DB?:Env['DB']},
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
-  const portalReady=env.MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
-    !!env.MCP_PORTAL_CLIENT_ID && !!env.MCP_PORTAL_CLIENT_SECRET;
+  const portalReady=env.WORKFLOW_MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
+    !!env.WORKFLOW_MCP_PORTAL_CLIENT_ID && !!env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET;
   // Discover runtime state without broadening the reviewed Portal target.
   // Missing/unreadable D1 fails closed in production; compiler-only fixtures
   // that intentionally omit DB continue to show configured_unverified.
@@ -553,7 +553,7 @@ export async function workflowCapabilities(env:Pick<Env,
   const httpState=env.DB?await httpAuthorization(env.DB):null;
   let githubReady=false;
   try {
-    githubReady=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
+    githubReady=approvedActionRepositories(env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const cloudflareReady=!!env.ACTIONS;
@@ -565,7 +565,7 @@ export async function workflowCapabilities(env:Pick<Env,
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
-    entry.id==='trigger.github_event'&&!env.GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
+    entry.id==='trigger.github_event'&&!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
     ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,

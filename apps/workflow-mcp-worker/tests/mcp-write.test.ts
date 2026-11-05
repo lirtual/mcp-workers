@@ -40,8 +40,8 @@ test('only source-reviewed IMA ima_create_note is discoverable; annotations neve
   assert.deepEqual(allowed[0]?.arguments,{content:'Owner-reviewed note content'});
   assert.deepEqual(await reviewedPortalWriteTools([upstream,upstream]),[]);
   assert.deepEqual(await reviewedPortalWriteTools([{...upstream,name:'append_note'}]),[]);
-  const env={MCP_PORTAL_ENDPOINT:endpoint,MCP_PORTAL_CLIENT_ID:'test-id',
-    MCP_PORTAL_CLIENT_SECRET:'test-secret'};
+  const env={WORKFLOW_MCP_PORTAL_ENDPOINT:endpoint,WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-id',
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret'};
   const detail=await workflowCapabilities(env,'action.mcp.write',
     async()=>({availability:'verified_contract' as const,tools:[],write_tools:allowed}));
   assert.equal(detail.availability,'verified_contract');
@@ -91,7 +91,7 @@ function fixture(){
       sqlite.exec('COMMIT');return results;
     }catch(e){sqlite.exec('ROLLBACK');throw e;}
   }} as unknown as Env['DB'];
-  const service=new WorkflowService({DB:db,MCP_PORTAL_ENDPOINT:endpoint} as Env);
+  const service=new WorkflowService({DB:db,WORKFLOW_MCP_PORTAL_ENDPOINT:endpoint} as Env);
   return {sqlite,db,service};
 }
 const grant=async()=>({endpoint,tool:'ima_create_note',scope:'write' as const,
@@ -181,8 +181,8 @@ test('only exact source-reviewed append note schema and bounded literal inputs a
   await assert.rejects(()=>compilePlan({...appendDefinition(),steps:[
     appendDefinition().steps[0],{...appendDefinition().steps[0],id:'append_again'}]}),
     /excessive_mcp_write_steps/);
-  const env={MCP_PORTAL_ENDPOINT:endpoint,MCP_PORTAL_CLIENT_ID:'test-id',
-    MCP_PORTAL_CLIENT_SECRET:'test-secret'};
+  const env={WORKFLOW_MCP_PORTAL_ENDPOINT:endpoint,WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-id',
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret'};
   const detail=await workflowCapabilities(env,'action.mcp.write',
     async()=>({availability:'verified_contract' as const,tools:[],write_tools:contracts}));
   assert.deepEqual((detail.discovered_tools as Array<{tool:string}>).map(x=>x.tool),

@@ -62,7 +62,7 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
   const client=new Client({name:'workflow-mcp-reviewed-candidate',version:'0.1.0'});
   // Environment-scoped Portal identity cannot be changed by a Draft, a
   // Published Plan, or Run inputs. Only the production Portal is supported.
-  const chosenPortal=env.MCP_PORTAL_ENDPOINT;
+  const chosenPortal=env.WORKFLOW_MCP_PORTAL_ENDPOINT;
   if(chosenPortal===undefined)throw Error('portal_target_not_configured');
   if(chosenPortal!==PRODUCTION_PORTAL_ENDPOINT || endpoint!==PRODUCTION_PORTAL_ENDPOINT)
     throw Error('portal_target_not_authorized');
@@ -70,9 +70,9 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
   if(endpoint===PRODUCTION_PORTAL_ENDPOINT){
     // Fail closed before making a network request; never fall back to
     // unauthenticated access or pass credentials through Workflow inputs.
-    if(!env.MCP_PORTAL_CLIENT_ID||!env.MCP_PORTAL_CLIENT_SECRET)
+    if(!env.WORKFLOW_MCP_PORTAL_CLIENT_ID||!env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET)
       throw Error('portal_auth_not_configured');
-    portalToken={clientId:env.MCP_PORTAL_CLIENT_ID,clientSecret:env.MCP_PORTAL_CLIENT_SECRET};
+    portalToken={clientId:env.WORKFLOW_MCP_PORTAL_CLIENT_ID,clientSecret:env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET};
   }
   const transport=new StreamableHTTPClientTransport(new URL(endpoint),{
     fetch:scopedPublicMcpFetch(endpoint,fetch,portalToken,PRODUCTION_PORTAL_ENDPOINT),

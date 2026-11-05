@@ -165,8 +165,8 @@ async function runSmoke() {
 }
 async function runS2Smoke() {
   // The exact production Portal and tool/schema must be explicitly approved.
-  const pair = { clientId:process.env.MCP_PORTAL_CLIENT_ID,
-    clientSecret:process.env.MCP_PORTAL_CLIENT_SECRET };
+  const pair = { clientId:process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
+    clientSecret:process.env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET };
   assert.ok(pair.clientId && pair.clientSecret, 'Production Portal secrets missing');
   // This path invokes only a pinned, approved read-only Portal tool.
   // Historical indeterminate external effects are preserved for reconciliation,

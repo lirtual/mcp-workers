@@ -60,7 +60,7 @@ export async function handleGithubEvent(
   const match=/^\/triggers\/github\/([^/]+)$/.exec(new URL(request.url).pathname);
   if(!match||!UUID.test(match[1]))return response(404,'not_found');
   if(request.method!=='POST')return response(405,'method_not_allowed');
-  if(!env.DB||!env.WORKFLOW||!env.GITHUB_ACTION_OIDC_AUDIENCE)
+  if(!env.DB||!env.WORKFLOW||!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE)
     return response(503,'github_event_unavailable');
   // Accept an empty POST even when the runtime exposes it as an empty
   // stream. Never parse or trust caller-supplied event attributes.
@@ -96,7 +96,7 @@ export async function handleGithubEvent(
     const trigger=plan.triggers?.length===1&&plan.triggers[0].type==='github_event'?
       plan.triggers[0]:null;
     if(!trigger)return response(404,'not_found');
-    const signed=await verifyGithubPushEvent(auth.slice(7),env.GITHUB_ACTION_OIDC_AUDIENCE,trigger,keys);
+    const signed=await verifyGithubPushEvent(auth.slice(7),env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,trigger,keys);
     if(!signed)return response(401,'unauthorized');
     if(row.state!=='active')return response(409,'workflow_not_active');
     const inputs={github:signed};

@@ -11,10 +11,10 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
@@ -68,15 +68,15 @@ export function collectBootstrapSecrets(worker, env) {
       /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))
     throw new Error("Invalid WORKFLOW_GITHUB_DISPATCH_TOKEN");
   if (worker === "workflow-mcp-worker") {
-    const key = payload.SESSION_RUNTIME_DATA_KEY;
+    const key = payload.WORKFLOW_SESSION_RUNTIME_DATA_KEY;
     if (!/^[A-Za-z0-9+/]{43}=$/.test(key) ||
         Buffer.from(key, "base64").length !== 32 ||
         Buffer.from(key, "base64").toString("base64") !== key)
-      throw new Error("SESSION_RUNTIME_DATA_KEY must be canonical Base64 for a 32-byte key");
+      throw new Error("WORKFLOW_SESSION_RUNTIME_DATA_KEY must be canonical Base64 for a 32-byte key");
   }
   if (worker === "ssh-mcp-worker") {
-    const key = payload.ENCRYPTION_KEY;
-    if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, "base64").length !== 32 || Buffer.from(key, "base64").toString("base64") !== key) throw new Error("ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
+    const key = payload.SSH_ENCRYPTION_KEY;
+    if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, "base64").length !== 32 || Buffer.from(key, "base64").toString("base64") !== key) throw new Error("SSH_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
   }
   if (worker === "github-actions-mcp-worker") {
     // Preserve the single, multiline GitHub Environment Secret unchanged.

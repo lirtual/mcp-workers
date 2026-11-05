@@ -57,7 +57,7 @@ function fixture(onRead?: (readCount:number)=>void){
     },
   })})} as unknown as D1Database;
   const env={DB:adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
-    GITHUB_ACTION_OIDC_AUDIENCE:'test-audience'} as Env;
+    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'test-audience'} as Env;
   const services={oidc:async()=>true,physical:async()=>({state:'running' as const}),
     jobStart:async()=>Date.now()-60_000};
   const admit=(overrides:object={})=>decideSessionAdmission(env,

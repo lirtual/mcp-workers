@@ -115,19 +115,19 @@ export function parseDirectDatabaseUrl(raw: string, connectionId: string): Parse
 
 export function getRuntimeLimits(env: Env): RuntimeLimits {
   return {
-    maxRows: positiveInt(env.MAX_ROWS, 'MAX_ROWS', HARD_MAX.maxRows) ?? DEFAULT_LIMITS.maxRows,
+    maxRows: positiveInt(env.DATABASE_MAX_ROWS, 'DATABASE_MAX_ROWS', HARD_MAX.maxRows) ?? DEFAULT_LIMITS.maxRows,
     maxResultBytes:
-      positiveInt(env.MAX_RESULT_BYTES, 'MAX_RESULT_BYTES', HARD_MAX.maxResultBytes) ?? DEFAULT_LIMITS.maxResultBytes,
+      positiveInt(env.DATABASE_MAX_RESULT_BYTES, 'DATABASE_MAX_RESULT_BYTES', HARD_MAX.maxResultBytes) ?? DEFAULT_LIMITS.maxResultBytes,
     maxSchemaBytes:
-      positiveInt(env.MAX_SCHEMA_BYTES, 'MAX_SCHEMA_BYTES', HARD_MAX.maxSchemaBytes) ?? DEFAULT_LIMITS.maxSchemaBytes,
+      positiveInt(env.DATABASE_MAX_SCHEMA_BYTES, 'DATABASE_MAX_SCHEMA_BYTES', HARD_MAX.maxSchemaBytes) ?? DEFAULT_LIMITS.maxSchemaBytes,
     queryTimeoutMs:
-      positiveInt(env.QUERY_TIMEOUT_MS, 'QUERY_TIMEOUT_MS', HARD_MAX.queryTimeoutMs) ?? DEFAULT_LIMITS.queryTimeoutMs
+      positiveInt(env.DATABASE_QUERY_TIMEOUT_MS, 'DATABASE_QUERY_TIMEOUT_MS', HARD_MAX.queryTimeoutMs) ?? DEFAULT_LIMITS.queryTimeoutMs
   };
 }
 
 export function getMaxWriteAffectedRows(env: Env): number {
   return (
-    positiveInt(env.MAX_WRITE_AFFECTED_ROWS, 'MAX_WRITE_AFFECTED_ROWS', HARD_MAX_WRITE_AFFECTED_ROWS) ??
+    positiveInt(env.DATABASE_MAX_WRITE_AFFECTED_ROWS, 'DATABASE_MAX_WRITE_AFFECTED_ROWS', HARD_MAX_WRITE_AFFECTED_ROWS) ??
     DEFAULT_MAX_WRITE_AFFECTED_ROWS
   );
 }

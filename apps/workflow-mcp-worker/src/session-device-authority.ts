@@ -33,9 +33,9 @@ type AdmissionServices={
 const boundedHttp=(request:Request)=>fetch(new Request(request,{signal:AbortSignal.timeout(5_000)}));
 const services:AdmissionServices={
  oidc:async(env,attemptId,jwt)=>{
-   if(!env.GITHUB_ACTION_OIDC_AUDIENCE)return false;
+   if(!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE)return false;
    const verified=await verifyPinnedGitHubActionIdentity(env.DB,attemptId,jwt,
-     env.GITHUB_ACTION_OIDC_AUDIENCE,undefined,true);
+     env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,undefined,true);
    return verified?.action.type==='session' && verified.row.state==='claimed';
  },
  physical:async(env,attemptId)=>{

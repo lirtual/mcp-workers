@@ -23,7 +23,7 @@ test('explicit allowlist accepts only pinned, unique repository identities', () 
 });
 test('approved discovery requires a server-owned credential', async () => {
   await assert.rejects(listAvailableGitHubActions({
-    GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
+    WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
   }), /token_missing/);
 });
 
@@ -61,7 +61,7 @@ function githubMock(requests:string[],mode:'tagged'|'moved'|'head'|'no_tag'='tag
    return Response.json({id:123,full_name:actualName,default_branch:'main'});
  };
 }
-const discoveryEnv={GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
+const discoveryEnv={WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
   WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'};
 test('catalog emits a verified tag-bound runnable candidate plus unpublished HEAD',async()=>{
  const requests:string[]=[];

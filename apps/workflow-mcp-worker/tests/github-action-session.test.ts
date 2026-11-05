@@ -296,7 +296,7 @@ test('lost first OIDC Claim 200 is recoverable only by the same signed physical 
  try{
   f.claim(1,'confirmed',false);
   const {jwt,publicKey}=await signedReady();
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const request=(token:string)=>new Request('https://worker.example/github/action/claim',{
    method:'POST',headers:{authorization:'Bearer '+token},
    body:JSON.stringify({attemptId:run(11)}),
@@ -329,7 +329,7 @@ test('real signed GitHub Claim is retryable only until persisted dispatch candid
   f.db.prepare(`UPDATE step_attempts SET state='created',
     candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?`).run(run(1));
   const signed=await signedReady();
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const req=(jwt:string)=>new Request('https://worker.example/github/action/claim',{
    method:'POST',headers:{authorization:'Bearer '+jwt},
    body:JSON.stringify({attemptId:run(11)}),
@@ -357,7 +357,7 @@ test('pending signed Claim is permanently denied on cancel, wrong publication or
   f.db.prepare(`UPDATE step_attempts SET state='created',
     candidate_run_id=NULL,candidate_run_attempt=NULL WHERE run_id=?`).run(run(1));
   const signed=await signedReady();
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const req=()=>new Request('https://worker.example/github/action/claim',{
    method:'POST',headers:{authorization:'Bearer '+signed.jwt},
    body:JSON.stringify({attemptId:run(11)}),
@@ -418,7 +418,7 @@ test('signed Ready HTTP freezes bounded duration and denies a changed replay',as
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
   f.claim(1,'claimed',true);
   const {jwt,publicKey}=await signedReady();
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as Env;
   const inspect=async()=>({state:'running' as const});
   const request=(minutes:unknown)=>new Request('https://worker.example/github/action/ready',{
@@ -448,7 +448,7 @@ test('lost Ready HTTP receipt is idempotent even after parent Workflow succeeded
   f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
   // The first response can be lost after a durable D1 Ready and parent
   // completion. A signed duplicate must not be treated as a new late Ready.
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as Env;
   const request=()=>new Request('https://worker.example/github/action/ready',{
    method:'POST',headers:{authorization:'Bearer '+jwt},
@@ -583,7 +583,7 @@ test('HTTP Ready is OIDC-only and returns no private credentials; wake is adviso
   f.claim(1,'claimed',true);
   const {jwt,publicKey}=await signedReady();
   let notifications=0;
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
    WORKFLOW:{get:async()=>({sendEvent:async()=>{notifications++;}})}} as unknown as Env;
   const url='https://worker.example/github/action/ready';
@@ -642,7 +642,7 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
    },
   } as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
    (plan as unknown as Plan).steps[0],run(1),workflow,http);
   assert.deepEqual(outcome,{status:'succeeded',output:{session:{recorded_state:'ready'}}});
@@ -695,7 +695,7 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
     },
    } as unknown as WorkflowStep;
    const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-    GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
    const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
     (plan as unknown as Plan).steps[0],run(1),workflow,http);
    assert.deepEqual(outcome,{status:expected==='github_session_ended_before_ready'?'failed':'indeterminate',
@@ -711,7 +711,7 @@ test('fifth Session is rejected before any GitHub outbound request',async()=>{
   let requests=0;
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
    (plan as unknown as Plan).steps[0],run(5),workflow,async()=>{
      requests++;return new Response(null,{status:500});
@@ -1075,7 +1075,7 @@ test('reviewed Session Run admission is allowed with server credentials and does
   let created=0;
   const env={DB:f.adapter,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'private-test-token',
-   GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-action:production',
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-action:production',
    WORKFLOW:{create:async()=>{created++;}}
   } as unknown as Env;
   const service=new WorkflowService(env);
@@ -1110,7 +1110,7 @@ test('definitively rejected GitHub dispatch releases a Session slot with no phys
  try{
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   let posts=0;
   const response=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
    (plan as unknown as Plan).steps[0],run(1),workflow,async req=>{
@@ -1172,7 +1172,7 @@ test('unknown outbound dispatch ACK never releases a Session slot or posts twice
  try{
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-   GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   let posts=0;
   const response=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
    (plan as unknown as Plan).steps[0],run(1),workflow,async req=>{
@@ -1204,7 +1204,7 @@ test('signed web Ready persists the exact Quick Tunnel locator without inventing
   const {jwt,publicKey}=await signedReady({workflow_ref:webAction.repository+'/'+webAction.workflowPath+'@refs/tags/release-v1'});
   const inspect=async()=>({state:'running' as const});
   const url='https://example-test-session.trycloudflare.com';
-  const env={DB:f.adapter,GITHUB_ACTION_OIDC_AUDIENCE:audience,
+  const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW:{}} as Env;
   const request=(sessionUrl:string)=>new Request('https://worker.example/github/action/ready',{
    method:'POST',headers:{authorization:'Bearer '+jwt},
@@ -1260,7 +1260,7 @@ test('Workflow admission only permits opted-in Session duration override within 
   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(bound),'v');
   const service=new WorkflowService({
    DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-   GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-test',
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-test',
    WORKFLOW:{create:async()=>({})},
   } as unknown as Env);
   for(const invalid of [0,301,-1,'10',10.25]){

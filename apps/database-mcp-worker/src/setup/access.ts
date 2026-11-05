@@ -50,9 +50,9 @@ export async function verifyAccess(
   if (url.protocol !== 'https:' || url.hostname !== ownerHost(env) || url.port ||
       (request.headers.has('host') && request.headers.get('host') !== url.host)) fail('not_found');
   const team = env.ACCESS_TEAM_DOMAIN;
-  if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(team ?? '') || !env.ACCESS_AUD || !env.OWNER_EMAIL) fail('auth_misconfigured');
+  if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(team ?? '') || !env.DATABASE_ACCESS_AUD || !env.OWNER_EMAIL) fail('auth_misconfigured');
   if (access) {
-    if (access.aud !== env.ACCESS_AUD) fail('unauthorized');
+    if (access.aud !== env.DATABASE_ACCESS_AUD) fail('unauthorized');
     let identity: CloudflareAccessIdentity | undefined;
     try { identity = await access.getIdentity(); }
     catch { return fail('auth_identity_unavailable'); }
@@ -71,7 +71,7 @@ export async function verifyAccess(
   if (header.alg !== 'RS256' || !header.kid || typeof header.kid !== 'string') fail('unauthorized');
   const now = Math.floor(Date.now() / 1000);
   if (payload.iss !== 'https://' + team ||
-    !(Array.isArray(payload.aud) ? payload.aud.includes(env.ACCESS_AUD) : payload.aud === env.ACCESS_AUD) ||
+    !(Array.isArray(payload.aud) ? payload.aud.includes(env.DATABASE_ACCESS_AUD) : payload.aud === env.DATABASE_ACCESS_AUD) ||
     typeof payload.exp !== 'number' || payload.exp <= now ||
     (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || payload.nbf > now + 30)) ||
     !payload.sub || !payload.email || payload.email.toLowerCase() !== env.OWNER_EMAIL.toLowerCase()) fail('unauthorized');

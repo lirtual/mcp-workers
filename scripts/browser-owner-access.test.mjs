@@ -4,9 +4,8 @@ import {verifyBrowserActivationAccess,verifyBrowserActivationAccessCloudflare} f
 import {readFileSync} from 'node:fs';
 import {collectWorkerVars,BROWSER_ACCESS_VARIABLES} from './worker-release-variables.mjs';
 
-const env={BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',
-  BROWSER_OWNER_EMAIL:'lirtual@outlook.com',
-  BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',
+const env={ACCESS_TEAM_DOMAIN:'lirtualzero.cloudflareaccess.com',
+  OWNER_EMAIL:'lirtual@outlook.com',
   BROWSER_ACTIVATION_AUDIENCE:'b'.repeat(64),
   CLOUDFLARE_ACCOUNT_ID:'c'.repeat(32),CLOUDFLARE_API_TOKEN:'test-only'};
 const domain='browser.lirtual.dpdns.org/activate/verify/*';
@@ -18,26 +17,31 @@ const app={id:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',type:'self_hosted',
   domain,aud:env.BROWSER_ACTIVATION_AUDIENCE,self_hosted_domains:[domain],
   destinations:[{type:'public',uri:domain}],allowed_idps:[otp.id,cf.id],
   auto_redirect_to_identity:false,session_duration:'15m'};
-const policy={decision:'allow',include:[{email:{email:env.BROWSER_OWNER_EMAIL}}],
+const policy={decision:'allow',include:[{email:{email:env.OWNER_EMAIL}}],
   require:[],exclude:[]};
 
-test('activation-only Worker stages no retired Review variables',async()=>{
-  assert.deepEqual(collectWorkerVars('browser-mcp-worker',{}),[]);
-  await assert.rejects(verifyBrowserActivationAccessCloudflare({},()=>{throw Error('unexpected request')}),/activation_config_required/);
-  assert.deepEqual(collectWorkerVars('browser-mcp-worker',env),
-    BROWSER_ACCESS_VARIABLES.map(name=>name+':'+env[name]));
+test('Browser staging uses global identity and only reviewed Wrangler route',async()=>{
+  const cfg=JSON.parse(readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
+  assert.deepEqual(collectWorkerVars('browser-mcp-worker',env,{config:cfg}),[
+    'BROWSER_ACCESS_ISSUER:https://lirtualzero.cloudflareaccess.com',
+    'BROWSER_OWNER_EMAIL:lirtual@outlook.com',
+    'BROWSER_ACTIVATION_ORIGIN:https://browser.lirtual.dpdns.org',
+    'BROWSER_ACTIVATION_AUDIENCE:'+'b'.repeat(64)
+  ]);
   assert.deepEqual(collectWorkerVars('browser-mcp-worker',{
-    ...env,BROWSER_APPROVAL_ORIGIN:'https://browser.lirtual.dpdns.org',
+    ...env,BROWSER_APPROVAL_ORIGIN:'https://wrong.example',
     BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),
     BROWSER_APPROVAL_ISOLATION:'isolated-owner-profile-and-mailbox-v1'
-  }),BROWSER_ACCESS_VARIABLES.map(name=>name+':'+env[name]));
+  },{config:cfg}),collectWorkerVars('browser-mcp-worker',env,{config:cfg}));
   assert.throws(()=>collectWorkerVars('browser-mcp-worker',{
-    ...env,BROWSER_OWNER_EMAIL:'wrong@example.com'}),/identity/);
+    ...env,BROWSER_OWNER_EMAIL:'wrong@example.com'},{config:cfg}),/obsolete/);
+  await assert.rejects(verifyBrowserActivationAccessCloudflare({},()=>{throw Error('unexpected request')}),
+    /activation_config_required/);
 });
 test('only exact Cloudflare account-member SSO plus OTP is accepted after cutover',()=>{
-  assert.equal(verifyBrowserActivationAccess(app,[policy],providers,env),true);
+  assert.equal(verifyBrowserActivationAccess(app,[policy],providers,{BROWSER_OWNER_EMAIL:env.OWNER_EMAIL,BROWSER_ACTIVATION_AUDIENCE:env.BROWSER_ACTIVATION_AUDIENCE}),true);
   const dual=app;
-  assert.equal(verifyBrowserActivationAccess({...app,allowed_idps:[cf.id,otp.id]},[policy],providers,env),true);
+  assert.equal(verifyBrowserActivationAccess({...app,allowed_idps:[cf.id,otp.id]},[policy],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),true);
   for(const bad of [
     {...app,allowed_idps:[]},{...app,allowed_idps:[cf.id]},
     {...app,allowed_idps:[otp.id],auto_redirect_to_identity:true},
@@ -49,16 +53,16 @@ test('only exact Cloudflare account-member SSO plus OTP is accepted after cutove
     {...app,domain:'browser.lirtual.dpdns.org/*'},
     {...app,session_duration:'24h'},
     {...app,destinations:[{type:'public',uri:domain,overrides:[{}]}]}
-  ])assert.throws(()=>verifyBrowserActivationAccess(bad,[policy],providers,env));
+  ])assert.throws(()=>verifyBrowserActivationAccess(bad,[policy],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}));
   assert.throws(()=>verifyBrowserActivationAccess(dual,[policy],
-    [otp,{...cf,config:{restrict_to_account_members:false}}],env),/idp_scope/);
+    [otp,{...cf,config:{restrict_to_account_members:false}}],{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/idp_scope/);
   assert.throws(()=>verifyBrowserActivationAccess(dual,[policy],
-    [otp,{...cf,config:{}}],env),/idp_scope/);
+    [otp,{...cf,config:{}}],{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/idp_scope/);
   assert.throws(()=>verifyBrowserActivationAccess(dual,[{
-    ...policy,include:[{email:{email:'other@example.com'}}]}],providers,env),/policy_identity/);
+    ...policy,include:[{email:{email:'other@example.com'}}]}],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/policy_identity/);
   assert.throws(()=>verifyBrowserActivationAccess(dual,[{
-    ...policy,include:[{everyone:{}}]}],providers,env),/policy_identity/);
-  assert.throws(()=>verifyBrowserActivationAccess(dual,[policy,policy],providers,env),/policy_count/);
+    ...policy,include:[{everyone:{}}]}],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/policy_identity/);
+  assert.throws(()=>verifyBrowserActivationAccess(dual,[policy,policy],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/policy_count/);
 });
 const inventoryInfo=result=>({page:1,per_page:100,count:result.length,total_count:result.length,total_pages:1});
 const mockedResponse=(result,info=Array.isArray(result)?inventoryInfo(result):undefined)=>({
@@ -113,13 +117,10 @@ test('policy and provider inventory must prove complete single-page results',asy
   }
 });
 
-test('release keeps only Activation and Owner identity configuration',()=>{
+test('release consumes shared Browser identity and independent activation Audience',()=>{
   const yml=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  for(const name of BROWSER_ACCESS_VARIABLES){
+  for(const name of ['ACCESS_TEAM_DOMAIN','OWNER_EMAIL','BROWSER_ACTIVATION_AUDIENCE'])
     assert.ok(yml.includes('vars.'+name));
-  }
-  for(const retired of ['BROWSER_APPROVAL_ORIGIN','BROWSER_ACCESS_AUDIENCE',
-    'BROWSER_APPROVAL_ISOLATION','BROWSER_APPROVAL_EXPECTED']){
-    assert.ok(!yml.includes(retired));
-  }
+  for(const obsolete of ['vars.BROWSER_OWNER_EMAIL','vars.BROWSER_ACCESS_ISSUER',
+    'vars.BROWSER_ACTIVATION_ORIGIN'])assert.ok(!yml.includes(obsolete));
 });

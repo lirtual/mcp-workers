@@ -269,7 +269,7 @@ export async function runPublishedGitHubActionSession(
  if(plan.github_execution_approved!==true||
     !isPublishedGitHubActionApproved(plan.github_action_approvals,identity))
   return {status:'failed',error_code:'github_action_approval_missing'};
- if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.GITHUB_ACTION_OIDC_AUDIENCE)
+ if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE)
   return {status:'failed',error_code:'github_action_executor_not_configured'};
  if(typeof raw.ref!=='string'||!(
     raw.ref.startsWith('refs/tags/')||

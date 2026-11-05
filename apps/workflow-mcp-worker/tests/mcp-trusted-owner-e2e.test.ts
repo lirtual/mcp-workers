@@ -54,9 +54,9 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
   }
   const env={
     MCP_ACCESS_TOKEN:TOKEN,
-    MCP_PORTAL_CLIENT_ID:PORTAL_ID,
-    MCP_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
-    MCP_PORTAL_ENDPOINT:TRUSTED,
+    WORKFLOW_MCP_PORTAL_CLIENT_ID:PORTAL_ID,
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
+    WORKFLOW_MCP_PORTAL_ENDPOINT:TRUSTED,
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
   } as unknown as Env;
@@ -202,7 +202,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
 
     // An environment pointing to any unapproved Portal must not execute
     // an approved Plan or leak the production Portal credentials.
-    env.MCP_PORTAL_ENDPOINT='https://untrusted.example.org/mcp';
+    env.WORKFLOW_MCP_PORTAL_ENDPOINT='https://untrusted.example.org/mcp';
     const crossEnvironment=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'blocked wrong Portal'},
     });
@@ -215,10 +215,10 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(wrongPortal.status,'failed');
     assert.equal(wrongPortal.steps[0].status,'failed');
     assert.equal(toolCalls,1,'cross-environment Portal was not contacted');
-    env.MCP_PORTAL_ENDPOINT=TRUSTED;
+    env.WORKFLOW_MCP_PORTAL_ENDPOINT=TRUSTED;
 
     // A missing outbound Portal secret must fail without sending any requests.
-    env.MCP_PORTAL_CLIENT_SECRET=undefined;
+    env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET=undefined;
     const noCredential=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'no portal identity'},
     });
@@ -231,7 +231,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(rejected.status,'failed');
     assert.equal(rejected.steps[0].status,'failed');
     assert.equal(toolCalls,1,'missing portal credentials cannot reach target');
-    env.MCP_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
+    env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET=PORTAL_SECRET;
 
     // A generic public approval shape is only an input envelope, not a grant.
     // Publish must match the already-reviewed Provider manifest and live binding.

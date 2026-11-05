@@ -22,7 +22,7 @@ function directWritableConnection(
   const env: Env = {
     RATE_LIMITER: { async limit() { return { success: true }; } },
 
-    MAX_WRITE_AFFECTED_ROWS: String(maxAffectedRows)
+    DATABASE_MAX_WRITE_AFFECTED_ROWS: String(maxAffectedRows)
   };
   const catalog = parseDatabaseConfig(JSON.stringify({ [id]: connectionUrl }));
   return {
