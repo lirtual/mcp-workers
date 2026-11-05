@@ -1,6 +1,6 @@
 # Owner Access SSO and Browser Unknown Review retirement — accepted design
 
-Status: **Design accepted 2026-11-04. Browser source candidate implemented, not deployed; live Cloudflare Access configuration unchanged.** Grill With Docs decisions: Q1=A (Cloudflare account login with OTP fallback), Q2=A (all active Owner OTP entrypoints), Q3=retire Browser Owner Review rather than adding login, Q4=A (7-day rolling Unknown capacity). This is an implementation plan, **not** an authorization to change production Access, Worker versions, secrets, or data.
+Status: **Design accepted 2026-11-04; production rollout and Owner-reported real-login acceptance completed 2026-11-05.** Grill With Docs decisions: Q1=A (Cloudflare account login with OTP fallback), Q2=A (all active Owner OTP entrypoints), Q3=retire Browser Owner Review rather than adding login, Q4=A (7-day rolling Unknown capacity). At design time this plan **did not authorize** production changes; the later scoped approvals, releases, and independent readbacks are recorded below.
 
 ## Verified configuration at design time
 
@@ -23,7 +23,7 @@ Prior to a real cutover, prove that the Cloudflare-account IdP emits the expecte
 
 ## Browser Owner Review retirement (see Browser ADR 0004)
 
-The following Browser source contract is now implemented as a non-deployed candidate; any production release or Access changes require separate authorization:
+The following Browser source contract was approved and implemented as a candidate on 2026-11-04, then separately authorized, deployed, and verified on 2026-11-05:
 - Remove the Browser Worker `/owner/unknown/*` GET/POST flow, dedicated Review Access identity verifier/config and the coordinator's `owner-unknown-view`/`owner-unknown-report` handlers, associated URLs, standalone UI and tests. Remove stale `owner_review_url` and `safe_next_action` instructions directing users to an independent Review page from **both** the coordinator and intent-ledger responses; preserve honest Unknown/no-retry guidance. Retired paths must fail closed (404) and cannot become publicly available when Access is later removed. Keep protected-target exclusions for live activation routes; do not broaden browser control just because Review is retired.
 - Remove only Review-specific code, references, and release-time variables once verified unused; **retain** `BROWSER_OWNER_EMAIL`, `BROWSER_ACCESS_ISSUER`, the separate Browser Activation audience/config and other activation protections. Do not alter or wipe historical Durable Object tables or previously recorded `owner_reported_resolution` facts.
 - Preserve `browser_operation_status`, original `operation_id`/`intent_key`, historical receipts, the existing signed late-receipt transition rules, and **no automatic replay** of Unknown. No manual report, automatic resolution, or fabricated website result replaces the retired page.
@@ -31,13 +31,20 @@ The following Browser source contract is now implemented as a non-deployed candi
 - Old Unknown rows never change state merely because they age out of the **capacity count**; they remain readable and non-replayable. New recent Unknowns still trip the cap; existing receipt/status reads remain available during capacity refusal. Historical `owner_reported_resolution` rows remain intact, including the ability of an authentic late extension receipt to settle an otherwise eligible older operation. Do not use aging as completion evidence.
 - Storage can continue to grow because historical Unknowns are deliberately retained; this accepted trade-off is separate from the **admission** limit. Any future retention policy or destructive purge needs a new decision and authorization.
 
-### Cutover ordering and acceptance for a future separately authorized change
+### Original cutover ordering and acceptance gates (historical plan)
 
 1. Review exact live IdP, application identity, Owner email selector, session settings, current Worker/routes and fallback path. Record only sanitized configuration identifiers; do not expose personal addresses or tokens.
 2. Change source and existing targeted tests first. Confirm direct Worker `/owner/*` denial and absence of internal Review handlers, unchanged activation, existing record readback, no duplicate effects, Unknown 100/101 capacity boundary, 7-day boundary, historical Unknown persistence and valid late receipts. Do not introduce a second CI or new storage model.
 3. After separately approved Worker release, independently verify the old Review route is denied and Browser Activation still works. **Only then**, with separate explicit authorization, retire the now-unused Cloudflare **Browser Production Owner Approval** Access app and its Review-only config; never delete the shared Browser Activation Access app or its required settings. A failed or Unknown cutover requires readback, not blind retry or removal of protection.
 4. For each of the three active Owner apps, separately approve the minimal `allowed_idps` change while retaining the exact Owner policies. Verify Cloudflare-account login, OTP fallback, expected claims/identity, route-specific denial for wrong Owner/audience, and original session durations. If login fails, restore the prior IdP list without weakening the Owner grant. No Worker release should be necessary solely for the login-method change.
 5. Confirm no unexpected Browser control authority, replays, loss of historical receipts, credential changes or changes to unrelated MCP/Portal/legacy apps. Track source, CI, Access readback, released Worker and real client login as **separate** acceptance statuses.
+
+## Production completion (2026-11-05)
+
+- Browser Worker [release #41871291888](https://github.com/lirtual/mcp-workers/actions/runs/41871291888) passed; Cloudflare independently confirmed version `3943aa81-23c1-4b31-805c-3a2a93e3846c` at 100% traffic with the original Durable Object namespace and seven activation-required bindings.
+- The separate Browser Owner Review Access app was deleted only after the Worker cutover. Public `/owner/unknown/*` then returned 404 while `/activate/verify/*` still required Access. See [production retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175).
+- Browser Activation, Database Owner Setup, and EdgeSSH were switched **individually** to existing account-member-restricted Cloudflare SSO **plus** OTP, without changing their exact Owner Allow policies, audiences, domains, or session lengths. Their API readbacks and the Owner's separate real SSO/OTP login and original-feature confirmations are documented in the [final acceptance record](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813). The original plan and historical waivers above remain historical evidence, not newly performed tests.
+- As migration is complete, subsequent Browser releases must **reject OTP-only rollback** and require the exact dual-IdP Access configuration with complete policy and provider inventory.
 
 ## Source anchors
 

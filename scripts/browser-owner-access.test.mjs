@@ -16,8 +16,8 @@ const cf={id:'22222222-2222-4222-8222-222222222222',type:'cloudflare',
 const providers=[otp,cf];
 const app={id:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',type:'self_hosted',
   domain,aud:env.BROWSER_ACTIVATION_AUDIENCE,self_hosted_domains:[domain],
-  destinations:[{type:'public',uri:domain}],allowed_idps:[otp.id],
-  auto_redirect_to_identity:true,session_duration:'15m'};
+  destinations:[{type:'public',uri:domain}],allowed_idps:[otp.id,cf.id],
+  auto_redirect_to_identity:false,session_duration:'15m'};
 const policy={decision:'allow',include:[{email:{email:env.BROWSER_OWNER_EMAIL}}],
   require:[],exclude:[]};
 
@@ -34,15 +34,16 @@ test('activation-only Worker stages no retired Review variables',async()=>{
   assert.throws(()=>collectWorkerVars('browser-mcp-worker',{
     ...env,BROWSER_OWNER_EMAIL:'wrong@example.com'}),/identity/);
 });
-test('OTP-only and exact Cloudflare account-member + OTP are the only allowed login methods',()=>{
+test('only exact Cloudflare account-member SSO plus OTP is accepted after cutover',()=>{
   assert.equal(verifyBrowserActivationAccess(app,[policy],providers,env),true);
-  const dual={...app,allowed_idps:[cf.id,otp.id],auto_redirect_to_identity:false};
-  assert.equal(verifyBrowserActivationAccess(dual,[policy],providers,env),true);
+  const dual=app;
+  assert.equal(verifyBrowserActivationAccess({...app,allowed_idps:[cf.id,otp.id]},[policy],providers,env),true);
   for(const bad of [
     {...app,allowed_idps:[]},{...app,allowed_idps:[cf.id]},
+    {...app,allowed_idps:[otp.id],auto_redirect_to_identity:true},
+    {...app,allowed_idps:[otp.id],auto_redirect_to_identity:false},
     {...app,allowed_idps:[otp.id,otp.id],auto_redirect_to_identity:false},
     {...app,allowed_idps:[otp.id,cf.id],auto_redirect_to_identity:true},
-    {...app,allowed_idps:[otp.id],auto_redirect_to_identity:false},
     {...app,allowed_idps:[otp.id,cf.id,'33333333-3333-4333-8333-333333333333']},
     {...app,aud:'other'},
     {...app,domain:'browser.lirtual.dpdns.org/*'},
@@ -59,26 +60,59 @@ test('OTP-only and exact Cloudflare account-member + OTP are the only allowed lo
     ...policy,include:[{everyone:{}}]}],providers,env),/policy_identity/);
   assert.throws(()=>verifyBrowserActivationAccess(dual,[policy,policy],providers,env),/policy_count/);
 });
-test('prepublication gate reads only Activation app, policies, and IdP inventory',async()=>{
-  for(const target of [app,{...app,allowed_idps:[otp.id,cf.id],auto_redirect_to_identity:false}]){
-    const seen=[];
-    const transport=async(url,opts)=>{
-      seen.push(url);assert.equal(opts.headers.authorization,'Bearer test-only');
-      const result=url.includes('/identity_providers')?providers:
-        url.includes('/policies?')?[policy]:target;
-      return {ok:true,json:async()=>({success:true,result})};
-    };
-    assert.equal(await verifyBrowserActivationAccessCloudflare(env,transport),true);
-    assert.equal(seen.length,3);
-    assert.ok(seen.every(url=>url.startsWith('https://api.cloudflare.com/client/v4/accounts/')));
-    assert.ok(seen.every(url=>url.includes('/access/')));
-    assert.ok(!seen.some(url=>url.includes('/owner/')));
-  }
-  await assert.rejects(verifyBrowserActivationAccessCloudflare(env,async url=>
-    ({ok:true,json:async()=>({success:true,
-      result:url.includes('/identity_providers')?providers:url.includes('/policies?')?[policy]:
-        {...app,allowed_idps:[]}})})),/otp_pin/);
+const inventoryInfo=result=>({page:1,per_page:100,count:result.length,total_count:result.length,total_pages:1});
+const mockedResponse=(result,info=Array.isArray(result)?inventoryInfo(result):undefined)=>({
+  ok:true,json:async()=>({success:true,result,...(info===undefined?{}:{result_info:info})})
 });
+
+test('prepublication gate reads only Activation app, complete policies, and IdP inventory',async()=>{
+  const seen=[];
+  const transport=async(url,opts)=>{
+    seen.push(url);assert.equal(opts.headers.authorization,'Bearer test-only');
+    const result=url.includes('/identity_providers')?providers:
+      url.includes('/policies?')?[policy]:app;
+    return mockedResponse(result);
+  };
+  assert.equal(await verifyBrowserActivationAccessCloudflare(env,transport),true);
+  assert.equal(seen.length,3);
+  assert.ok(seen.every(url=>url.startsWith('https://api.cloudflare.com/client/v4/accounts/')));
+  assert.ok(seen.every(url=>url.includes('/access/')));
+  assert.ok(!seen.some(url=>url.includes('/owner/')));
+  await assert.rejects(verifyBrowserActivationAccessCloudflare(env,async url=>{
+    const result=url.includes('/identity_providers')?providers:url.includes('/policies?')?[policy]:
+      {...app,allowed_idps:[]};
+    return mockedResponse(result);
+  }),/otp_pin/);
+});
+
+test('policy and provider inventory must prove complete single-page results',async()=>{
+  const badInfos=[
+    undefined,
+    {page:1,per_page:100,count:1,total_count:1,total_pages:2},
+    {page:2,per_page:100,count:1,total_count:1,total_pages:1},
+    {page:1,per_page:99,count:1,total_count:1,total_pages:1},
+    {page:1,per_page:100,count:0,total_count:1,total_pages:1},
+    {page:1,per_page:100,count:1,total_count:2,total_pages:1},
+    {page:1,per_page:100,count:1,total_count:1,total_pages:0},
+    {page:1,per_page:100,count:'1',total_count:1,total_pages:1},
+    {page:1,per_page:100,count:1,total_count:1.5,total_pages:1}
+  ];
+  for(const source of ['policies','providers']){
+    for(const info of badInfos){
+      const transport=async url=>{
+        const isPolicy=url.includes('/policies?');
+        const isProvider=url.includes('/identity_providers?');
+        const result=isProvider?providers:isPolicy?[policy]:app;
+        if(source==='policies'&&isPolicy || source==='providers'&&isProvider)
+          return {ok:true,json:async()=>({success:true,result,...(info===undefined?{}:{result_info:info})})};
+        return mockedResponse(result);
+      };
+      await assert.rejects(verifyBrowserActivationAccessCloudflare(env,transport),
+        new RegExp(source+'_inventory'));
+    }
+  }
+});
+
 test('release keeps only Activation and Owner identity configuration',()=>{
   const yml=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   for(const name of BROWSER_ACCESS_VARIABLES){
