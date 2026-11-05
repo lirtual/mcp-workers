@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import worker from "../src/worker.ts";
 
 // This suite deliberately exercises the production DO transport. The removed v1
@@ -189,4 +190,21 @@ test("retired RCA GUI tools are absent and rejected before any paired DO dispatc
   }
   assert.equal(f.calls.length, 0);
   assert.equal(f.legacyCalls(), 0);
+});
+
+
+test("Remote Control Skill does not re-advertise retired GUI capabilities", async () => {
+  const skill = await readFile(new URL("../skills/remote-control/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /Spec #628 removed RCA-owned Browser\/Computer MCP tools/);
+  assert.match(skill, /Cached ChatGPT tool definitions are not evidence of current support/);
+  assert.match(skill, /browser control use the independently authorized BrowserMCP Profile/);
+  for (const retiredTool of [
+    "browser_start", "browser_status", "browser_navigate", "browser_snapshot",
+    "browser_close", "browser_tabs", "browser_click", "browser_fill",
+    "browser_press_key", "browser_select_option",
+    "computer_status", "computer_observe", "computer_stop",
+  ]) {
+    assert.ok(!skill.includes(retiredTool), `Retired tool ${retiredTool} is advertised in the Skill`);
+  }
+  assert.doesNotMatch(skill, /Operate an Agent-owned browser|Agent-owned browser:/);
 });
