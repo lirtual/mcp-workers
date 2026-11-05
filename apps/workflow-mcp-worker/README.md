@@ -274,6 +274,9 @@ remains ordinary source control, not a recovery replay of an Unknown Attempt.
 **Release prerequisite:** apply existing additive D1 migration
 `0020_github_action_main_sha.sql` *before* deploying compatible Worker code,
 using the protected release workflow and a separate production authorization.
+The protected full release accepts exactly v19 before the migration and
+requires v20 plus the new nullable column before publication; future
+`workflow_code_only` releases also require the v20 inventory.
 The migration adds only a nullable per-Attempt SHA field, preserving all
 historical Tag-pinned records and receipts. Do not apply or test this against
 production as part of the non-production implementation PR.

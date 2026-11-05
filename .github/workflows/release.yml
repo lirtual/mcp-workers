@@ -1049,7 +1049,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           migrations=(apps/workflow-mcp-worker/migrations/*.sql)
-          [[ "${#migrations[@]}" -eq 19 ]] || { echo 'Code-only release requires unchanged reviewed migration inventory' >&2; exit 1; }
+          [[ "${#migrations[@]}" -eq 20 ]] || { echo 'Code-only release requires unchanged reviewed migration inventory' >&2; exit 1; }
 
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
@@ -1097,6 +1097,8 @@ jobs:
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='http_connection_auth') AS http_auth_table,
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
+              (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
+              (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
@@ -1179,6 +1181,8 @@ jobs:
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='http_connection_auth') AS http_auth_table,
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
+              (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
+              (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
