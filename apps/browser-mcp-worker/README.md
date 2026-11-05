@@ -2,7 +2,7 @@
 
 This component implements Browser MCP [Spec #418](https://github.com/lirtual/mcp-workers/issues/418) and [Spec #531](https://github.com/lirtual/mcp-workers/issues/531). **The #418 v0.2.1 / WSS 3 release has scoped production acceptance**, including matching Chrome/Edge Profiles. The separate physical Owner OTP/Unknown-review channel was **Waived by Owner**, not verified Pass.
 
-## 2026-11-04 source candidate — retire independent Unknown Review
+## 2026-11-05 production — independent Unknown Review retired
 
 The accepted [Owner Access design](../../docs/owner-access-sso-browser-review-design.md) and
 [Browser ADR 0004](docs/adr/0004-retire-owner-unknown-review.md) retire only the independent
@@ -12,18 +12,13 @@ Operation receipts (including previously recorded Owner reports), original inten
 late signed observations and no-replay behavior remain intact. Only still-Unknown operations
 created in the last seven days count toward the 100-Unknown admission cap; **old Unknown
 receipts remain Unknown and queryable**, not silently settled or purged. This is
-**source/CI work only**, not proof of production publication.
+**released and independently verified in production** on [release #41871291888](https://github.com/lirtual/mcp-workers/actions/runs/41871291888): Worker version `3943aa81-23c1-4b31-805c-3a2a93e3846c`, 100% traffic, unchanged Durable Object namespace.
 
 Browser Profile Activation **remains Access-protected**, with separate Audience, exact
 Owner email, same-Profile one-use proof, local gesture and unchanged 15-minute
-Access application session. The existing release gate accepts OTP-only before the
-separately authorized Access login-method cutover and also OTP plus restricted
-Cloudflare-account IdP afterward; it does not widen the Owner policy or session.
+Access application session. After the [completed Owner Access migration](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813), the release gate accepts **only** OTP plus account-member-restricted Cloudflare SSO with no forced single-IdP redirect; it rejects OTP-only rollback and never widens the Owner policy or session.
 No extra Worker, DB migration, queue, or browser-extension protocol change is introduced.
-The historical Review Access application and production Review Variables must be
-retired **only after** a separately approved Worker release is independently verified
-to reject the former Review routes. Production Access/Worker/credential changes have
-**not** been authorized or performed by this source candidate.
+The historical Review Access application was removed **after** the authorized Worker release and readback: public `/owner/unknown/*` returns 404 while Browser Activation remains Access-protected ([retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175)). The retired Review-only variables are absent from the new deployment; the original activation variables, Owner identity, and historical receipts remain intact. No new Worker or identity service was introduced.
 
 ## Spec #531 verification boundaries
 

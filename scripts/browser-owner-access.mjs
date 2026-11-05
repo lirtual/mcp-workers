@@ -1,6 +1,6 @@
 // Read-only Browser Profile Activation (#531) Access release gate.
-// It accepts the current OTP-only application and the agreed Cloudflare SSO + OTP
-// application, never an unreviewed IdP or broader Owner policy. No API writes.
+// After the production cutover, only the exact Cloudflare account-member SSO + OTP
+// configuration is accepted; OTP-only rollback or incomplete inventories fail closed. No API writes.
 import { pathToFileURL } from "node:url";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
 
@@ -8,9 +8,14 @@ const ACTIVATION_APP_ID = "77945f97-e1ea-4b2b-b89a-ec71c0472afa";
 const ACTIVATION_DOMAIN = "browser.lirtual.dpdns.org/activate/verify/*";
 const fail = (ok,code) => {if(!ok)throw Error(code);};
 function responseList(body,code) {
+  const info=body?.result_info;
   fail(body?.success === true && Array.isArray(body.result) &&
-    (body.result_info?.total_pages ?? 1) <= 1 &&
-    (body.result_info?.total_count ?? body.result.length) <= body.result.length,code);
+    body.result.length <= 100 &&
+    Number.isSafeInteger(info?.page) && info.page === 1 &&
+    Number.isSafeInteger(info?.per_page) && info.per_page === 100 &&
+    Number.isSafeInteger(info?.count) && info.count === body.result.length &&
+    Number.isSafeInteger(info?.total_count) && info.total_count === body.result.length &&
+    Number.isSafeInteger(info?.total_pages) && info.total_pages === 1,code);
   return body.result;
 }
 export function verifyBrowserActivationAccess(app,policies,providers,env) {
@@ -29,10 +34,8 @@ export function verifyBrowserActivationAccess(app,policies,providers,env) {
     p.config?.restrict_to_account_members === true);
   fail(otp.length===1 && /^[a-f0-9-]{36}$/i.test(otp[0].id),"otp_provider");
   fail(Array.isArray(app.allowed_idps) && app.allowed_idps.includes(otp[0].id),"otp_pin");
-  const dual = app.allowed_idps.length===2;
-  fail((app.allowed_idps.length===1 && app.auto_redirect_to_identity===true) ||
-    (dual && app.auto_redirect_to_identity===false &&
-      cloudflare.length===1 && app.allowed_idps.includes(cloudflare[0].id)),
+  fail(app.allowed_idps.length===2 && app.auto_redirect_to_identity===false &&
+    cloudflare.length===1 && app.allowed_idps.includes(cloudflare[0].id),
     "idp_scope");
   fail(new Set(app.allowed_idps).size === app.allowed_idps.length,"idp_scope");
   fail(Array.isArray(policies) && policies.length===1,"policy_count");

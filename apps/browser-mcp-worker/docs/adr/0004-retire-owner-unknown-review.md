@@ -1,6 +1,6 @@
 # ADR 0004 — Retire Browser Owner Unknown Review without weakening operation receipts
 
-Status: **Accepted design 2026-11-04; Browser source candidate implemented but not deployed.**
+Status: **Accepted 2026-11-04; production deployment and independent retirement verification Pass 2026-11-05.**
 
 The Owner chose to **remove**, rather than reauthenticate or relocate, the independent Browser Owner Unknown Review page and its dedicated Access application. It provided only a retrospective human `effect_seen`/`no_effect_seen` report, not execution permission; its separate browser/mailbox requirement created maintenance burden and had previously been **Waived**, not proven. This decision supersedes **only** the independent Owner Unknown-review-channel requirement in [ADR 0002](0002-profile-grant-not-business-authorization.md). It does **not** supersede the task-authorization boundary, protected targets, immutable intent identity, no-blind-replay rule, or Browser Activation's Access and same-Profile one-use proof.
 
@@ -12,6 +12,6 @@ To prevent a permanently accumulated Unknown count from eventually denying all n
 
 ## Consequences
 
-The Owner accepts the loss of a dedicated human-reporting page and the residual historical storage growth in exchange for simpler day-to-day use. Removing the Access app before disabling and verifying the corresponding Worker routes would risk an exposed Owner surface and is forbidden. Any later real Worker release, Access application deletion, credential/config cleanup or other production action needs separate explicit approval and independent readback. Historical waivers and operational evidence remain historical facts; this design is not a deployment or real-client acceptance claim.
+The Owner accepts the loss of a dedicated human-reporting page and the residual historical storage growth in exchange for simpler day-to-day use. Removing the Access app before disabling and verifying the corresponding Worker routes would risk an exposed Owner surface and is forbidden. The subsequent [authorized Worker release](https://github.com/lirtual/mcp-workers/actions/runs/41871291888) and [Review Access deletion with production 404 readback](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175) completed on 2026-11-05. The [three Owner Access SSO+OTP logins](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813) separately passed Owner-reported real-client verification. Further production configuration, credential, or data changes still need their own authorization. Historical waivers remain historical facts and are not retroactively counted as Pass.
 
 See the [accepted cross-application design](../../../../docs/owner-access-sso-browser-review-design.md) for the remaining Cloudflare SSO + OTP login decisions and cutover order.
