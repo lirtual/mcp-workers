@@ -612,6 +612,8 @@ describe("T07 public MCP schemas and invocation", () => {
         expect(schema.safeParse({ [field]: id }).success).toBe(false);
       for (const extra of [
         { confirm: true },
+        { confirm: false, expectedTotal: 0 },
+        { confirm: false, digest: `collection-deletion:sha256:${"0".repeat(64)}` },
         { all: true },
         { expectedTotal: 1 },
         { confirm: "true" },
