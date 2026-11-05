@@ -145,10 +145,7 @@ export const TagRenameInputSchema = z.strictObject({
 });
 export const TagMergeInputSchema = z.strictObject({
   collectionId: TagScopeSchema,
-  tagNames: TagNamesSchema.refine(
-    (names) => names.length >= 2,
-    "Merge requires at least two sources",
-  ),
+  tagNames: TagNamesSchema.min(2),
   newName: TagNameSchema,
 });
 export const TagDeleteInputSchema = z.strictObject({
@@ -238,20 +235,39 @@ const CollectionDeleteIdsSchema = z.array(CollectionDeleteIdSchema).max(60).refi
   "IDs must be unique and sorted ascending",
 );
 const CollectionDigestSchema = z.string().regex(/^collection-deletion:sha256:[a-f0-9]{64}$/);
-const CollectionConfirmationShape = {
-  confirm: z.literal(true),
-  expectedTotal: z.number().int().nonnegative().safe(),
-  collectionIds: CollectionDeleteIdsSchema,
-  digest: CollectionDigestSchema,
+// Emit one object shape for MCP tool discovery. Validation still enforces the
+// two exclusive stages: read-only preview, then exact snapshot confirmation.
+const CollectionConfirmationFields = {
+  confirm: z.boolean().optional().describe("Omit/false for preview; true requires all confirmation fields from the preview"),
+  expectedTotal: z.number().int().nonnegative().safe().optional()
+    .describe("For confirm:true, copy preview.total"),
+  collectionIds: CollectionDeleteIdsSchema.optional()
+    .describe("For confirm:true, copy preview.collectionIds in ascending order"),
+  digest: CollectionDigestSchema.optional()
+    .describe("For confirm:true, copy preview.digest"),
 };
-export const CollectionDeleteInputSchema = z.union([
-  z.strictObject({ id: CollectionDeleteIdSchema, confirm: z.literal(false).optional() }),
-  z.strictObject({ id: CollectionDeleteIdSchema, ...CollectionConfirmationShape }),
-]);
-export const CollectionRemoveEmptyInputSchema = z.union([
-  z.strictObject({ rootId: CollectionDeleteIdSchema, confirm: z.literal(false).optional() }),
-  z.strictObject({ rootId: CollectionDeleteIdSchema, ...CollectionConfirmationShape }),
-]);
+const validConfirmationFields = (args: {
+  confirm?: boolean;
+  expectedTotal?: number;
+  collectionIds?: number[];
+  digest?: string;
+}) => {
+  const fields = [args.expectedTotal, args.collectionIds, args.digest];
+  return args.confirm === true
+    ? fields.every(field => field !== undefined)
+    : fields.every(field => field === undefined);
+};
+const confirmationRule = {
+  message: "Preview omits confirmation fields; confirm:true requires expectedTotal, collectionIds and digest from a fresh preview",
+};
+export const CollectionDeleteInputSchema = z.strictObject({
+  id: CollectionDeleteIdSchema,
+  ...CollectionConfirmationFields,
+}).refine(validConfirmationFields, confirmationRule);
+export const CollectionRemoveEmptyInputSchema = z.strictObject({
+  rootId: CollectionDeleteIdSchema,
+  ...CollectionConfirmationFields,
+}).refine(validConfirmationFields, confirmationRule);
 export const CollectionDeletionMemberSchema = z.strictObject({
   id: CollectionDeleteIdSchema,
   parentId: CollectionDeleteIdSchema.nullable(),

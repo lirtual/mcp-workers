@@ -83,6 +83,44 @@ describe("Spec #145 public contract cutover", () => {
     } finally { await client.close(); await service.cleanup(); }
   });
 
+  it("exposes preview/confirm fields and runtime bounds to first-time MCP agents", async () => {
+    const service = new RaindropMCPService({ accessToken: "mock-only" });
+    const client = new Client({ name: "raindrop-first-use", version: "1.0.0" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([service.getServer().connect(st), client.connect(ct)]);
+      const { tools } = await client.listTools();
+      const tool = (name: string) => {
+        const found = tools.find(entry => entry.name === name);
+        expect(found, name).toBeDefined();
+        return found!;
+      };
+      for (const [name, rootField] of [
+        ["collection_delete", "id"],
+        ["collection_remove_empty", "rootId"],
+      ] as const) {
+        const schema = tool(name).inputSchema;
+        expect(schema.type, name).toBe("object");
+        expect(schema.additionalProperties, name).toBe(false);
+        expect(schema.required, name).toContain(rootField);
+        for (const field of [rootField, "confirm", "expectedTotal", "collectionIds", "digest"]) {
+          expect(schema.properties, name).toHaveProperty(field);
+        }
+        expect(tool(name).description, name).toContain("preview.total");
+        expect(tool(name).description, name).toContain("explicit approval");
+      }
+      const searchPage = tool("bookmark_search").inputSchema.properties?.page as Record<string, unknown>;
+      expect(searchPage.minimum).toBe(0);
+      const mergeTags = tool("tag_merge").inputSchema.properties?.tagNames as Record<string, unknown>;
+      expect(mergeTags.minItems).toBe(2);
+      expect(tool("highlight_update").description).toContain("Patch text or color");
+      expect(tool("bookmark_update").description).toContain("tags replaces the entire tag list");
+    } finally {
+      await client.close();
+      await service.cleanup();
+    }
+  });
+
   it("enforces representative read/write/destructive schemas before upstream access over tools/call", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected HTTP"); });
     vi.stubGlobal("fetch", fetch);
