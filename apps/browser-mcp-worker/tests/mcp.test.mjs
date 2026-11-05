@@ -173,3 +173,12 @@ test("T3 mutation ingress requires stable intent, exact target and a bounded URL
     assert.equal(calls.at(-1).path,"/mutate");
   }
 });
+
+
+test("BrowserMCP Skill preserves receipt parameters and retired RCA GUI boundary", () => {
+  const skill = readFileSync(new URL("../skills/browsermcp/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /RCA-owned GUI tools were retired in Spec #628/);
+  assert.ok(skill.includes("**exactly one** of `intent_key` and `operation_id`"));
+  assert.match(skill, /stale ChatGPT client displays an untyped object/);
+  assert.doesNotMatch(skill, /Remote Control Agent-owned browser|Remote Control browser unless/);
+});
