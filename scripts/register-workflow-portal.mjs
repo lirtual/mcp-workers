@@ -114,7 +114,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
     server=await request('POST','/servers',{
       id:'workflow',name:'Workflow',hostname:ORIGIN,auth_type:'bearer',
       auth_credentials:workerToken,
-      description:'Versioned owner-approved Workflow MCP (Workflow/MCP/GitHub registered Echo)',
+      description:'Persistent workflow orchestration with versioned plans, scheduled and event-driven execution, approved MCP/GitHub/Cloudflare Actions, and run monitoring.',
     });
     assert.equal(server.id,'workflow','portal_server_creation_mismatch');
     console.log('WORKFLOW_PORTAL_SERVER_CREATED');
