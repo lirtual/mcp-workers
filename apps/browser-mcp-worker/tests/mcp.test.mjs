@@ -40,6 +40,18 @@ test("tool discovery publishes only implemented lifecycle tools and strict expli
   const body=await response.json();
   assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
   for(const entry of body.result.tools)assert.equal(entry.inputSchema.additionalProperties,false);
+  const receipt=body.result.tools.find(x=>x.name==="browser_operation_status");
+  assert.deepEqual(receipt.inputSchema.required,["endpoint_id"]);
+  assert.ok(!Object.hasOwn(receipt.inputSchema,"oneOf"),"use flat properties so clients expose both receipt locator fields");
+  assert.deepEqual(Object.keys(receipt.inputSchema.properties).sort(),["endpoint_id","intent_key","operation_id"]);
+  const uuidV7="019a2b3c-4d5e-7aaa-8bbb-1234567890ab";
+  const uuidV4="11111111-1111-4111-8111-111111111111";
+  for(const name of ["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select",
+    "browser_tab_open","browser_tab_navigate","browser_tab_close","browser_operation_status"]){
+    const schema=body.result.tools.find(x=>x.name===name).inputSchema.properties.intent_key;
+    assert.match(uuidV7,new RegExp(schema.pattern),name);
+    assert.doesNotMatch(uuidV4,new RegExp(schema.pattern),name);
+  }
   for(const args of [{endpoint_id:"invalid"},{endpoint_id:"11111111-1111-4111-8111-111111111111",unexpected:true},{}]){
     const rejected=await rpc(env,"tools/call",{name:"browser_revoke",arguments:args});
     assert.equal((await rejected.json()).result.isError,true);
@@ -55,7 +67,8 @@ test("pair and revoke route only through single owner Durable Object",async()=>{
     ["browser_screenshot",{endpoint_id:"11111111-1111-4111-8111-111111111111",tab_id:23},"/read"],
     ["browser_stop",{endpoint_id:"11111111-1111-4111-8111-111111111111"},"/stop"],
     ["browser_revoke",{endpoint_id:"11111111-1111-4111-8111-111111111111"},"/revoke"],
-    ["browser_operation_status",{endpoint_id:"11111111-1111-4111-8111-111111111111",intent_key:"019a2b3c-4d5e-7aaa-8bbb-1234567890ab"},"/operation-status"]]){
+    ["browser_operation_status",{endpoint_id:"11111111-1111-4111-8111-111111111111",intent_key:"019a2b3c-4d5e-7aaa-8bbb-1234567890ab"},"/operation-status"],
+    ["browser_operation_status",{endpoint_id:"11111111-1111-4111-8111-111111111111",operation_id:"11111111-1111-4111-8111-111111111111"},"/operation-status"]]){
     const result=await rpc(env,"tools/call",{name:tool,arguments:args});
     assert.equal((await result.json()).result.isError,false,tool);
     assert.equal(calls.at(-1).path,path);
@@ -64,6 +77,8 @@ test("pair and revoke route only through single owner Durable Object",async()=>{
 test("operation status rejects malformed or extra keys before Durable Object access",async()=>{
   const {env,calls}=fixture();
   for(const args of [
+    {endpoint_id:"11111111-1111-4111-8111-111111111111"},
+    {endpoint_id:"11111111-1111-4111-8111-111111111111",intent_key:"019a2b3c-4d5e-7aaa-8bbb-1234567890ab",operation_id:"11111111-1111-4111-8111-111111111111"},
     {endpoint_id:"11111111-1111-4111-8111-111111111111",intent_key:"not-uuid7"},
     {endpoint_id:"11111111-1111-4111-8111-111111111111",intent_key:"11111111-1111-4111-8111-111111111111"},
     {endpoint_id:"11111111-1111-4111-8111-111111111111",intent_key:"019a2b3c-4d5e-7aaa-8bbb-1234567890ab",execute:true}
