@@ -63,6 +63,20 @@ async function clientFor(env:Env){
 }
 const query={name:'query_read',arguments:{connection:'synthetic_hd',sql:'SELECT 7 AS value',params:[]}};
 
+it('MCP descriptions expose the no-Skill connection, read-cost and mutation safeguards',async()=>{
+  const f=fixture();const client=await clientFor(f.env);
+  try{
+    const listed=await client.listTools();
+    const descriptions=new Map(listed.tools.map(tool=>[tool.name,tool.description??'']));
+    expect(descriptions.get('list_connections')).toContain('explicit id');
+    expect(descriptions.get('query_read')).toContain('not scan cost');
+    expect(descriptions.get('insert_rows')).toContain('Non-idempotent');
+    expect(descriptions.get('update_rows')).toContain('nonempty set');
+    expect(descriptions.get('delete_rows')).toContain('One to 20 where columns');
+    expect(descriptions.get('update_rows')).toContain('uncertain outcomes');
+  }finally{await client.close();}
+});
+
 it('real MCP HTTP protocol holds D1 claim across SQL and rejects new SQL after disable',async()=>{
   const f=fixture();const client=await clientFor(f.env);
   try{

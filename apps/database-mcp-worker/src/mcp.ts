@@ -214,7 +214,7 @@ export function buildMcpServer(env: Env): McpServer {
   server.registerTool(
     'list_connections',
     {
-      description: 'List configured logical connection ids, dialects, and transports.',
+      description: 'List configured logical connection ids, dialects, transports and status. When multiple connections exist, select an explicit id for subsequent tools.',
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false }
     },
@@ -284,7 +284,7 @@ export function buildMcpServer(env: Env): McpServer {
     'query_read',
     {
       description:
-        'Execute exactly one bounded read query using the configured database principal; database grants determine whether the requested read succeeds. Writes, locking reads, multi-statements, and dangerous MySQL read side effects are rejected.',
+        'Execute exactly one bounded read query using the configured database principal; database grants determine whether the requested read succeeds. Writes, locking reads, multi-statements, and dangerous MySQL read side effects are rejected. Row limits bound returned rows, not scan cost.',
       inputSchema: z.object({
         connection: connectionIdSchema.optional(),
         sql: sqlSchema,
@@ -355,7 +355,7 @@ export function buildMcpServer(env: Env): McpServer {
     'insert_rows',
     {
       description:
-        'Insert 1 to 100 rows into one table using a configured database principal and internally parameterized SQL. Raw SQL, UPSERT, and client-supplied RETURNING expressions are not accepted.',
+        'Insert 1 to 100 rows into one table using a configured database principal and internally parameterized SQL. Raw SQL, UPSERT, and client-supplied RETURNING expressions are not accepted. Non-idempotent: reconcile uncertain outcomes before retrying.',
       inputSchema: z.object({
         connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
@@ -379,7 +379,7 @@ export function buildMcpServer(env: Env): McpServer {
     'update_rows',
     {
       description:
-        'Update targeted rows through structured AND-only eq/in/isNull predicates. The mutation is rolled back when its affected-row count exceeds the configured safety limit.',
+        'Update targeted rows through structured AND-only eq/in/isNull predicates. A nonempty set and 1 to 20 where columns are required. Exceeding the affected-row cap requests transaction rollback; engine support and uncertain outcomes still require verification.',
       inputSchema: z.object({
         connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),
@@ -404,7 +404,7 @@ export function buildMcpServer(env: Env): McpServer {
     'delete_rows',
     {
       description:
-        'Delete targeted rows through structured AND-only eq/in/isNull predicates. The mutation is rolled back when its affected-row count exceeds the configured safety limit.',
+        'Delete targeted rows through structured AND-only eq/in/isNull predicates. One to 20 where columns are required. Exceeding the affected-row cap requests transaction rollback; engine support and uncertain outcomes still require verification.',
       inputSchema: z.object({
         connection: connectionIdSchema.optional(),
         schema: databaseIdentifierSchema.optional(),

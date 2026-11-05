@@ -62,6 +62,8 @@ describe('safe write SQL builder', () => {
 
   it('rejects empty or ambiguous predicates and unsupported expression shapes', () => {
     expect(() => buildUpdateStatement('postgres', 'public', 'users', { status: 'x' }, {})).toThrow(PublicError);
+    expect(() => buildUpdateStatement('postgres', 'public', 'users', {}, { id: 1 })).toThrow(PublicError);
+    expect(() => buildDeleteStatement('mysql', 'app', 'users', {})).toThrow(PublicError);
     expect(() => buildDeleteStatement('postgres', 'public', 'users', { id: null })).toThrow(PublicError);
     expect(() => buildDeleteStatement('postgres', 'public', 'users', { id: { eq: 1, isNull: false } })).toThrow(
       PublicError
