@@ -88,8 +88,12 @@ test("production tools require explicit device_id and retain owner controls", as
   for (const name of ["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]) {
     assert.ok(tools.some(item => item.name === name), "missing owner tool " + name);
   }
+  const file = tools.find(item => item.name === "read_file");
+  assert.match(file?.description ?? "", /authorized paired device/);
+  assert.match(file?.description ?? "", /native local path/);
+  assert.ok(!file?.description?.includes("Linux device"));
   const shell = tools.find(item => item.name === "run_command");
-  assert.match(shell?.description ?? "", /Linux/);
+  assert.match(shell?.description ?? "", /Linux\/macOS/);
   assert.match(shell?.description ?? "", /Windows PowerShell/);
   assert.match(shell?.description ?? "", /OS account.*permissions/);
   assert.match(shell?.description ?? "", /not a security sandbox/);

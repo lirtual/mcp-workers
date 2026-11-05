@@ -363,7 +363,7 @@ const READ_FILE_TOOL = {
   name: "read_file",
   title: "Read local file",
   description:
-    "Read a local file on the authorized Linux device. Only a filesystem path is accepted. URL fetches are not supported.",
+    "Read a local file on the explicitly authorized paired device under its Agent account's OS permissions. Provide a native local path; URL fetches are not supported.",
   inputSchema: {
     type: "object",
     properties: {
@@ -606,7 +606,7 @@ const GET_OPERATION_STATUS_TOOL = {
 
 const START_PROCESS_TOOL = {
   name: "run_command", title: "Start development command",
-  description: "Start a development command using the authorized Agent account: the configured local shell on Linux, or Windows PowerShell on native Windows. Commands have that OS account's permissions; the current working directory is not a security sandbox. Every start requires a stable operation_id; after an uncertain response, query that ID before a new intent. A running command returns an Agent-owned session_id.",
+  description: "Start a development command under the authorized Agent account using its configured shell on Linux/macOS or Windows PowerShell on native Windows. Commands have that OS account's permissions; the current working directory is not a security sandbox. Every start requires a stable operation_id; after an uncertain response, query that ID before a new intent. A running command returns an Agent-owned session_id.",
   inputSchema: { type: "object", properties: { device_id: { type: "string", description: "Explicit authorized device ID; required." }, operation_id: { type: "string", minLength: 1, maxLength: 128 }, command: { type: "string", minLength: 1, maxLength: 8192 }, timeout_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Maximum time to wait before returning a running session; defaults to 1000 ms." } }, required: ["operation_id", "command"], additionalProperties: false },
   annotations: { title: "Start development command", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 } as const;
