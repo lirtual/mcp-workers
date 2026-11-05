@@ -6,32 +6,32 @@ function requireCondition(condition, message) {
   if (!condition) throw Error(message);
 }
 
-export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId }) {
-  requireCondition(app?.type === "self_hosted" && app.domain === host &&
-    Array.isArray(app.self_hosted_domains) &&
-    app.self_hosted_domains.length === 1 &&
-    app.self_hosted_domains[0] === host &&
+const DATABASE_OWNER_APP_ID = "9f91a9ea-d498-49e5-9d9d-2289d1c08f65";
+
+export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId, ssoId }) {
+  requireCondition(app?.id === DATABASE_OWNER_APP_ID && app.type === "self_hosted" &&
+    app.domain === host && Array.isArray(app.self_hosted_domains) &&
+    app.self_hosted_domains.length === 1 && app.self_hosted_domains[0] === host &&
     app.aud === audience,
     "Database Owner Access app identity or host mismatch");
   requireCondition(app.session_duration === "15m" &&
-    app.auto_redirect_to_identity === true &&
+    app.auto_redirect_to_identity === false &&
     app.same_site_cookie_attribute === "lax",
-    "Database Owner Access OTP session configuration drift");
-  // An empty/unset allowed_idps list inherits all account login methods.
-  // Exact owner email is necessary but does not prove OTP-only authentication.
-  requireCondition(typeof otpId === "string" &&
-    /^[a-f0-9-]{36}$/i.test(otpId) &&
-    Array.isArray(app.allowed_idps) &&
-    app.allowed_idps.length === 1 &&
-    app.allowed_idps[0] === otpId,
-    "Database Owner Access must restrict login to the One-time PIN identity provider");
+    "Database Owner Access SSO and OTP session configuration drift");
+  // Exact owner email is not an IdP restriction. Reject inherited, OTP-only,
+  // duplicated or extra login methods; allow only reviewed SSO + OTP.
+  requireCondition(typeof otpId === "string" && /^[a-f0-9-]{36}$/i.test(otpId) &&
+    typeof ssoId === "string" && /^[a-f0-9-]{36}$/i.test(ssoId) &&
+    ssoId !== otpId && Array.isArray(app.allowed_idps) &&
+    app.allowed_idps.length === 2 && new Set(app.allowed_idps).size === 2 &&
+    app.allowed_idps.includes(otpId) && app.allowed_idps.includes(ssoId),
+    "Database Owner Access must restrict login to account-member SSO and OTP");
   requireCondition(Array.isArray(policies) && policies.length === 1,
     "Database Owner must have one restricted Access policy");
   const policy = policies[0];
   const include = policy?.include;
   requireCondition(policy?.decision === "allow" && Array.isArray(include) &&
-    include.length === 1 &&
-    typeof include[0]?.email?.email === "string" &&
+    include.length === 1 && typeof include[0]?.email?.email === "string" &&
     include[0].email.email.toLowerCase() === ownerEmail.toLowerCase() &&
     Object.keys(include[0]).length === 1 &&
     (!policy.require || (Array.isArray(policy.require) && policy.require.length === 0)) &&
@@ -41,27 +41,34 @@ export function verifyDatabaseOwnerPolicy(app, policies, { host, audience, owner
 }
 
 function ensureList(response, label) {
+  const info = response?.result_info;
   requireCondition(response?.success === true && Array.isArray(response.result) &&
-    (response.result_info?.total_pages ?? 1) <= 1 &&
-    (!response.result_info?.total_count ||
-      response.result_info.total_count <= response.result.length),
+    response.result.length <= 100 &&
+    Number.isSafeInteger(info?.page) && info.page === 1 &&
+    Number.isSafeInteger(info?.per_page) && info.per_page === 100 &&
+    Number.isSafeInteger(info?.count) && info.count === response.result.length &&
+    Number.isSafeInteger(info?.total_count) && info.total_count === response.result.length &&
+    Number.isSafeInteger(info?.total_pages) && info.total_pages === 1,
     "Database Owner Access " + label + " inventory unavailable or incomplete");
   return response.result;
 }
 
-export function findDatabaseOwnerOtpProvider(inventory) {
-  const matches = ensureList(inventory, "identity providers")
-    .filter(provider => provider?.type === "onetimepin");
-  requireCondition(matches.length === 1 &&
-    /^[a-f0-9-]{36}$/i.test(matches[0]?.id ?? ""),
+export function findDatabaseOwnerLoginProviders(inventory) {
+  const providers = ensureList(inventory, "identity providers");
+  const otp = providers.filter(provider => provider?.type === "onetimepin");
+  const sso = providers.filter(provider => provider?.type === "cloudflare" &&
+    provider.config?.restrict_to_account_members === true);
+  requireCondition(otp.length === 1 && /^[a-f0-9-]{36}$/i.test(otp[0]?.id ?? ""),
     "Database Owner One-time PIN provider missing or ambiguous");
-  return matches[0].id;
+  requireCondition(sso.length === 1 && /^[a-f0-9-]{36}$/i.test(sso[0]?.id ?? ""),
+    "Database Owner account-member SSO provider missing or ambiguous");
+  return { otpId: otp[0].id, ssoId: sso[0].id };
 }
 
 export function findDatabaseOwnerApp(inventory, host) {
   const matches = ensureList(inventory, "applications")
-    .filter(app => app?.domain === host ||
-      app?.self_hosted_domains?.includes(host));
+    .filter(app => app?.id === DATABASE_OWNER_APP_ID &&
+      (app.domain === host || app?.self_hosted_domains?.includes(host)));
   requireCondition(matches.length === 1,
     "Database Owner Access application missing or ambiguous");
   return matches[0];
@@ -90,12 +97,13 @@ const safeValidationCodes = Object.freeze({
   "Database Owner Access validation environment missing": "env",
   "Database Owner Access identity providers inventory unavailable or incomplete": "idps_inventory",
   "Database Owner One-time PIN provider missing or ambiguous": "idps_otp",
+  "Database Owner account-member SSO provider missing or ambiguous": "idps_sso",
   "Database Owner Access applications inventory unavailable or incomplete": "apps_inventory",
   "Database Owner Access application missing or ambiguous": "apps_match",
   "Database Owner Access policies inventory unavailable or incomplete": "policies_inventory",
   "Database Owner Access app identity or host mismatch": "app_identity",
-  "Database Owner Access OTP session configuration drift": "app_session",
-  "Database Owner Access must restrict login to the One-time PIN identity provider": "app_otp",
+  "Database Owner Access SSO and OTP session configuration drift": "app_session",
+  "Database Owner Access must restrict login to account-member SSO and OTP": "app_idps",
   "Database Owner must have one restricted Access policy": "policy_count",
   "Database Owner Access policy must allow exactly the designated email": "policy_email"
 });
@@ -144,12 +152,12 @@ export async function verifyDatabaseOwnerAccessCloudflare(config, environment, t
     if (body?.success !== true) throw new AccessInventoryHttpError(stage, response.status);
     return body;
   };
-  const otpId = findDatabaseOwnerOtpProvider(await get(
+  const { otpId, ssoId } = findDatabaseOwnerLoginProviders(await get(
     "https://api.cloudflare.com/client/v4/accounts/" + account + "/access/identity_providers?per_page=100", "idps"));
   const app = findDatabaseOwnerApp(await get(url + "?per_page=100", "apps"), host);
   const policies = ensureList(await get(url + "/" + encodeURIComponent(app.id) + "/policies?per_page=100", "policies"),
     "policies");
-  return verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId });
+  return verifyDatabaseOwnerPolicy(app, policies, { host, audience, ownerEmail, otpId, ssoId });
 }
 
 async function main() {
