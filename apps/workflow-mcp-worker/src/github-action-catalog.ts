@@ -1,6 +1,7 @@
 import { discoverGitHubActions, type GitHubActionSource } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import { reviewedGitHubAction } from './github-action-review.ts';
+import {isDynamicMainAction,DYNAMIC_MAIN_REF} from './github-action-main.ts';
 
 export type ActionCatalogEnv = {
   WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
@@ -101,9 +102,17 @@ export async function listAvailableGitHubActions(env:ActionCatalogEnv,http:Http=
     const current=await discoverGitHubActions({...grant,token},http);
     const currentSha=current[0]?.commitSha;
     if(!currentSha)continue;
+    // Only five explicitly allowlisted owner Workflows expose a moving main
+    // candidate. All other Actions retain the immutable Tag review gate.
+    for(const candidate of current){
+      if(isDynamicMainAction({...candidate,type:candidate.contract.type},DYNAMIC_MAIN_REF))
+        actions.push(await describeSource(candidate,DYNAMIC_MAIN_REF));
+    }
     const published=await latestConfirmedTag(grant.repository,token,http);
     if(!published){
-      for(const candidate of current)actions.push(await describeSource(candidate));
+      for(const candidate of current)
+        if(!isDynamicMainAction({...candidate,type:candidate.contract.type},DYNAMIC_MAIN_REF))
+          actions.push(await describeSource(candidate));
       continue;
     }
     const source=published.sha===currentSha
@@ -111,7 +120,9 @@ export async function listAvailableGitHubActions(env:ActionCatalogEnv,http:Http=
       :await discoverGitHubActions({...grant,token,commitSha:published.sha},http);
     for(const candidate of source)actions.push(await describeSource(candidate,published.ref));
     if(published.sha!==currentSha)
-      for(const candidate of current)actions.push(await describeSource(candidate));
+      for(const candidate of current)
+        if(!isDynamicMainAction({...candidate,type:candidate.contract.type},DYNAMIC_MAIN_REF))
+          actions.push(await describeSource(candidate));
   }
   return {actions};
 }

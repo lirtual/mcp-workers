@@ -48,6 +48,7 @@ function fixture(){
  db.prepare('INSERT INTO step_attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
   .run(attemptId,runId,stepId,'claimed','github.action',repository,'123',
    claims.workflow_ref,ref,42,1,42,1);
+ db.exec(readFileSync(new URL('../migrations/0020_github_action_main_sha.sql',import.meta.url),'utf8'));
  db.prepare('INSERT INTO session_executions VALUES (?,?,?)').run(runId,stepId,'ready');
  const d1={
   prepare:(sql:string)=>({

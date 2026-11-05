@@ -1209,6 +1209,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  // Only this test needs the existing approved github.action schema migration.
  sqlite.exec('BEGIN');
  sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ sqlite.exec(readFileSync(new URL('../migrations/0020_github_action_main_sha.sql',import.meta.url),'utf8'));
  sqlite.exec('COMMIT');
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const start=await admit([{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
@@ -1516,6 +1517,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  const {service,admit,run,env,sqlite}=setup(t);
  sqlite.exec('BEGIN');
  sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ sqlite.exec(readFileSync(new URL('../migrations/0020_github_action_main_sha.sql',import.meta.url),'utf8'));
  sqlite.exec('COMMIT');
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],
@@ -1599,6 +1601,7 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  const {admit,service,env,sqlite}=setup(t);
  sqlite.exec('BEGIN');
  sqlite.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ sqlite.exec(readFileSync(new URL('../migrations/0020_github_action_main_sha.sql',import.meta.url),'utf8'));
  sqlite.exec('COMMIT');
  sqlite.exec(readFileSync(new URL('../migrations/0007_session_executions.sql',import.meta.url),'utf8'));
  const started=await admit([{id:'seed',uses:'result.emit',with:{data:'seed'}}],

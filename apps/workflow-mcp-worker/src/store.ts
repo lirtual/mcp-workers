@@ -11,6 +11,7 @@ import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSessionDurationInputRef} from './github-action-inputs.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
+import {isDynamicMainAction} from './github-action-main.ts';
 import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
@@ -234,8 +235,10 @@ export class WorkflowService {
           plan.github_dynamic_input_contracts[controller.id]=candidate.contract;
         }
       }catch{throw new PlanError('github_action_contract_or_inputs_changed',path+'/inputs');}
-      // GitHub workflow_dispatch only accepts a verified branch/Tag ref, never
-      // an arbitrary SHA. The existing dispatch/OIDC checks remain mandatory.
+      // A live branch is allowed only for the five named business Plans.
+      // Publish still verifies the exact reviewed initial commit and contract.
+      if(raw.ref==='refs/heads/main'&&!isDynamicMainAction(expected,raw.ref,plan.name))
+        throw new PlanError('github_action_main_not_allowed',path+'/ref');
       try{await verifyActionDispatchRef(expected,raw.ref as string,token);}
       catch(error){
         const mismatch=error instanceof Error&&error.message==='github_action_ref_mismatch';
@@ -357,7 +360,7 @@ export class WorkflowService {
         ['invalid_step_count','excessive_parallelism','too_many_inputs'].includes(code)?
         'Reduce the definition to the limits returned by workflow_capabilities.':
         ['github_action_ref_mismatch','github_action_ref_unconfirmed'].includes(code)?
-        'Choose a verified refs/tags/... ref paired with this exact commitSha from workflow_action_list; do not use a branch or raw SHA.':
+        'Use a verified Tag. Only the five approved lirtual/github-actions business Plans may use refs/heads/main after per-Run CI and SHA verification.':
         ['github_action_contract_or_inputs_changed','github_action_not_found'].includes(code)?
         'Rediscover the released Action contract and inputs with workflow_action_list.':
         code==='github_action_repository_not_approved'?

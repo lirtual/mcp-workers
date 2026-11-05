@@ -9,6 +9,7 @@ import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspe
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import type {Plan} from './plan.ts';
 import {resolveSessionActionInputs} from './github-action-inputs.ts';
+import {isDynamicMainAction} from './github-action-main.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -270,7 +271,9 @@ export async function runPublishedGitHubActionSession(
   return {status:'failed',error_code:'github_action_approval_missing'};
  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.GITHUB_ACTION_OIDC_AUDIENCE)
   return {status:'failed',error_code:'github_action_executor_not_configured'};
- if(typeof raw.ref!=='string'||!raw.ref.startsWith('refs/tags/')||
+ if(typeof raw.ref!=='string'||!(
+    raw.ref.startsWith('refs/tags/')||
+    isDynamicMainAction(identity,raw.ref,plan.name))||
     !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))
   return {status:'failed',error_code:'github_action_invalid_publication'};
  const db=env.DB,token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;

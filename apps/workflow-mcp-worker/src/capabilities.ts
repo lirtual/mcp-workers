@@ -290,7 +290,7 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
           commitSha:{type:'string',pattern:'^[a-fA-F0-9]{40}$'},
           type:{enum:['task','session']},
           contractDigest:{type:'string',pattern:'^[a-fA-F0-9]{64}$'},
-          ref:{type:'string',pattern:'^refs/tags/[A-Za-z0-9]'},
+          ref:{type:'string',pattern:'^refs/(tags/[A-Za-z0-9]|heads/main$)'},
           inputs:{type:'object'},
         }},
     }},

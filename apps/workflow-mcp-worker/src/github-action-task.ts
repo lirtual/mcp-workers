@@ -8,6 +8,7 @@ import {reconcilePersistedGitHubActionAttempt} from './github-action-attempt-rec
 import type {TerminalCasResult} from './github-action-terminal-cas.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
+import {isDynamicMainAction} from './github-action-main.ts';
 
 type Outcome={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:unknown};
 type Http=(request:Request)=>Promise<Response>;
@@ -33,7 +34,9 @@ export async function runPublishedGitHubActionTask(
   return {status:'failed',error_code:'github_action_approval_missing'};
  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.GITHUB_ACTION_OIDC_AUDIENCE)
   return {status:'failed',error_code:'github_action_executor_not_configured'};
- if(typeof raw.ref!=='string'||!raw.ref.startsWith('refs/tags/')||
+ if(typeof raw.ref!=='string'||!(
+    raw.ref.startsWith('refs/tags/')||
+    isDynamicMainAction(identity,raw.ref,plan.name))||
     !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))
   return {status:'failed',error_code:'github_action_invalid_publication'};
  const inputs:Record<string,string>={};
