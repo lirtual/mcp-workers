@@ -189,7 +189,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
   }), env);
   const missingData = (await missingOverwrite.text()).split('\n').find(line => line.startsWith('data: '))?.slice(6);
   assert.ok(missingData);
-  assert.match(missingData, /invalid_args/);
+  assert.match(missingData, /Input validation error: Invalid arguments for tool file_write_text: overwrite/);
   assert.equal(doCalls, 0);
   const renameResponse = await worker.fetch(new Request('https://worker.example/mcp', {
     method: 'POST',
@@ -224,7 +224,7 @@ test('the authenticated MCP boundary rejects commands over 16 KiB UTF-8 before D
   }), env);
   const deleteData = (await deleteResponse.text()).split('\n').find(line => line.startsWith('data: '))?.slice(6);
   assert.ok(deleteData);
-  assert.match(deleteData, /invalid_args/);
+  assert.match(deleteData, /Input validation error: Invalid arguments for tool file_delete/);
   assert.equal(db.reads, 0);
   assert.equal(doCalls, 0);
 });

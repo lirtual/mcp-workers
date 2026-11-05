@@ -29,7 +29,7 @@ const specProperties: Record<(typeof toolNames)[number], string[]> = {
   file_read_text: ['host_id', 'path', 'timeout_ms'],
   file_write_text: ['host_id', 'path', 'text', 'overwrite', 'operation_id', 'timeout_ms'],
   file_move: ['host_id', 'old_path', 'new_path', 'overwrite', 'operation_id', 'timeout_ms'],
-  file_delete: ['host_id', 'path', 'kind', 'confirm', 'recursive', 'operation_id', 'timeout_ms'],
+  file_delete: ['host_id', 'path', 'kind', 'confirm', 'operation_id', 'timeout_ms'],
   file_mkdir: ['host_id', 'path', 'operation_id', 'timeout_ms'],
   get_operation_status: ['operation_id'],
 };
@@ -120,6 +120,20 @@ test('a real MCP client discovers all 15 tools and their SPEC parameters', async
     for (const tool of tools) {
       const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
       assert.deepEqual(Object.keys(schema.properties ?? {}).sort(), [...specProperties[tool.name as (typeof toolNames)[number]]].sort(), tool.name);
+      const mutationRequired: Record<string, string[]> = {
+        file_write_text: ['host_id', 'operation_id', 'path', 'text', 'overwrite'],
+        file_move: ['host_id', 'operation_id', 'old_path', 'new_path', 'overwrite'],
+        file_delete: ['host_id', 'operation_id', 'path', 'kind', 'confirm'],
+      };
+      if (mutationRequired[tool.name]) {
+        assert.deepEqual([...(schema.required ?? [])].sort(), mutationRequired[tool.name]!.sort(), tool.name);
+      }
+      if (tool.name === 'file_delete') {
+        assert.deepEqual((schema.properties?.kind as { enum?: string[] })?.enum, ['file', 'empty_directory']);
+        const confirmation = schema.properties?.confirm as { const?: boolean; enum?: boolean[] } | undefined;
+        assert.ok(confirmation?.const === true || (confirmation?.enum?.length === 1 && confirmation.enum[0] === true));
+        assert.equal('recursive' in (schema.properties ?? {}), false);
+      }
       for (const field of Object.keys(schema.properties ?? {})) {
         assert.equal(['password', 'privateKey', 'private_key', 'ENCRYPTION_KEY', 'initialCommand'].includes(field), false, field);
       }
@@ -162,8 +176,6 @@ test('the external /mcp entry enforces 16 KiB commands and 4 KiB SFTP paths, inc
     ['file_move', { host_id: fixture.hostId, operation_id: operation, old_path: '/fixture/a', new_path: overPath, overwrite: true }],
     ['file_delete', { host_id: fixture.hostId, operation_id: operation, path: overPath, kind: 'file', confirm: true }],
     ['file_mkdir', { host_id: fixture.hostId, operation_id: operation, path: overPath }],
-    ['file_write_text', { host_id: fixture.hostId, operation_id: operation, path: '/fixture/out.txt', text: 'x' }],
-    ['file_delete', { host_id: fixture.hostId, operation_id: operation, path: '/fixture/a', kind: 'file', confirm: true, recursive: true }],
   ];
   for (const [index, [name, args]] of rejected.entries()) {
     const response = await post(env, 70 + index, 'tools/call', { name, arguments: args }, headers);

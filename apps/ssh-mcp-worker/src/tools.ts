@@ -161,7 +161,7 @@ export function buildMcpServer(env: Env): McpServer {
       operation_id: z.string().uuid(),
       path: z.string().min(1),
       text: z.string(),
-      overwrite: z.boolean().optional(),
+      overwrite: z.boolean(),
       timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
     }).strict(),
     annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
@@ -189,7 +189,7 @@ export function buildMcpServer(env: Env): McpServer {
       operation_id: z.string().uuid(),
       old_path: z.string().min(1),
       new_path: z.string().min(1),
-      overwrite: z.boolean().optional(),
+      overwrite: z.boolean(),
       timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
     }).strict(),
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
@@ -208,20 +208,19 @@ export function buildMcpServer(env: Env): McpServer {
     }
   });
   server.registerTool('file_delete', {
-    description: 'Delete one remote file or one empty directory. kind must be file or empty_directory and confirm must be true. Recursive delete is rejected. The same operation id is not deleted twice; a changed path or kind conflicts. A disconnect or timeout after the delete starts is unknown and is not replayed or repaired. The connection closes when the call finishes.',
+    description: 'Delete one remote file or one empty directory. kind must be file or empty_directory and confirm must be true. Recursive delete is unsupported (omit recursive). The same operation id is not deleted twice; a changed path or kind conflicts. A disconnect or timeout after the delete starts is unknown and is not replayed or repaired. The connection closes when the call finishes.',
     inputSchema: z.object({
       host_id: z.string().uuid(),
       operation_id: z.string().uuid(),
       path: z.string().min(1),
-      kind: z.string().optional(),
-      confirm: z.boolean().optional(),
-      recursive: z.boolean().optional(),
+      kind: z.enum(['file', 'empty_directory']),
+      confirm: z.literal(true),
       timeout_ms: z.number().int().min(1_000).max(60_000).optional(),
     }).strict(),
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
-  }, async ({ host_id, operation_id, path, kind, confirm, recursive, timeout_ms }) => {
+  }, async ({ host_id, operation_id, path, kind, confirm, timeout_ms }) => {
     const timeoutMs = timeout_ms ?? 30_000;
-    const invalid = validSftpDeleteInput(host_id, operation_id, path, kind, confirm, recursive, timeoutMs);
+    const invalid = validSftpDeleteInput(host_id, operation_id, path, kind, confirm, undefined, timeoutMs);
     if (invalid || (kind !== 'file' && kind !== 'empty_directory') || confirm !== true) return rejectedArgs(invalid ?? 'invalid_args');
     try {
       const stub = env.SSH_OPERATIONS.getByName('single-admin-operations');

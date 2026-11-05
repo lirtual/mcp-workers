@@ -138,7 +138,14 @@ try {
     const envelope = JSON.parse(data) as { result?: { content?: Array<{ text: string }>; isError?: boolean } };
     const text = envelope.result?.content?.[0]?.text;
     assert.ok(text, data);
-    return { value: JSON.parse(text) as Record<string, unknown>, isError: envelope.result?.isError === true };
+    let value: Record<string, unknown>;
+    try {
+      value = JSON.parse(text) as Record<string, unknown>;
+    } catch (error) {
+      if (!envelope.result?.isError || !text.startsWith('Input validation error:')) throw error;
+      value = { error: 'input_validation_error', message: text };
+    }
+    return { value, isError: envelope.result?.isError === true };
   };
   const control = async (method: 'PUT' | 'DELETE', path = 'receipt-store-failure') => {
     const response = await fetch(`${endpoint}/__fixture/${path}`, { method });
@@ -957,7 +964,8 @@ try {
     path: '/fixture/created-92.txt', text: 'x',
   });
   assert.equal(missingOverwrite.isError, true);
-  assert.equal(missingOverwrite.value.error, 'invalid_args');
+  assert.equal(missingOverwrite.value.error, 'input_validation_error');
+  assert.match(String(missingOverwrite.value.message), /overwrite/);
   const unauthenticatedWrite = await authedCall('wrong-bearer', 219, 'file_write_text', {
     host_id: secondHostId, operation_id: 'd5d5d5d5-d5d5-45d5-85d5-d5d5d5d5d5d5',
     path: '/fixture/created-92.txt', text: 'x', overwrite: true,
@@ -980,7 +988,8 @@ try {
     old_path: '/fixture/a.txt', new_path: '/fixture/b.txt',
   });
   assert.equal(missingOverwriteRename.isError, true);
-  assert.equal(missingOverwriteRename.value.error, 'invalid_args');
+  assert.equal(missingOverwriteRename.value.error, 'input_validation_error');
+  assert.match(String(missingOverwriteRename.value.message), /overwrite/);
   const unauthenticatedRename = await authedCall('wrong-bearer', 246, 'file_move', {
     host_id: secondHostId, operation_id: 'dcdcdcdc-dcdc-4cdc-8cdc-dcdcdcdcdcdc',
     old_path: '/fixture/a.txt', new_path: '/fixture/b.txt', overwrite: false,
@@ -991,19 +1000,22 @@ try {
     path: '/fixture/a.txt', kind: 'file',
   });
   assert.equal(implicitDelete.isError, true);
-  assert.equal(implicitDelete.value.error, 'invalid_args');
+  assert.equal(implicitDelete.value.error, 'input_validation_error');
+  assert.match(String(implicitDelete.value.message), /confirm/);
   const recursiveDelete = await call(248, 'file_delete', {
     host_id: secondHostId, operation_id: 'dededede-dede-4ede-8ede-dededededede',
     path: '/fixture/a.txt', kind: 'file', confirm: true, recursive: true,
   });
   assert.equal(recursiveDelete.isError, true);
-  assert.equal(recursiveDelete.value.error, 'invalid_args');
+  assert.equal(recursiveDelete.value.error, 'input_validation_error');
+  assert.match(String(recursiveDelete.value.message), /recursive/);
   const wrongDeleteKind = await call(249, 'file_delete', {
     host_id: secondHostId, operation_id: 'dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf',
     path: '/fixture/a.txt', kind: 'directory', confirm: true,
   });
   assert.equal(wrongDeleteKind.isError, true);
-  assert.equal(wrongDeleteKind.value.error, 'invalid_args');
+  assert.equal(wrongDeleteKind.value.error, 'input_validation_error');
+  assert.match(String(wrongDeleteKind.value.message), /kind/);
   const unauthenticatedDelete = await authedCall('wrong-bearer', 250, 'file_delete', {
     host_id: secondHostId, operation_id: 'e0e0e0e0-e0e0-40e0-80e0-e0e0e0e0e0e0',
     path: '/fixture/a.txt', kind: 'file', confirm: true,
