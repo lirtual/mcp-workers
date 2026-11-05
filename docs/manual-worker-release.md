@@ -22,7 +22,7 @@
 
 ## Workflow 当前生产资源
 
-正式 Worker 仅绑定 `DB` → `workflow-mcp-db` 与 `WORKFLOW` → `workflow-mcp-orchestrator` / `WorkflowOrchestrator`。旧 Cloudflare Workflow 实例及资源已在所有者授权后退役，不再保留 `WORKFLOW_LEGACY`、`WorkflowRunner` 等兼容入口。已应用的 D1 Migration 文件名属于数据库历史标识，保持不变。
+正式 Worker 绑定 `DB` → `workflow-mcp-db`、`WORKFLOW` → `workflow-mcp-orchestrator` / `WorkflowOrchestrator`，以及 `ACTIONS` → `cloudflare-actions` / `ActionsEntrypoint` Service Binding。旧 Cloudflare Workflow 实例及资源已在所有者授权后退役，不再保留 `WORKFLOW_LEGACY`、`WorkflowRunner` 等兼容入口。已应用的 D1 Migration 文件名属于数据库历史标识，保持不变。
 
 后续 Workflow 日常发布继续使用现有 GitHub Actions Release Worker，保留严格的 D1 schema、真实 GitHub Executor/OIDC 和生产绑定读回校验。不为本次历史清理增加功能开关、迁移系统或第二套发布链路。
 
@@ -37,4 +37,4 @@
 
 正常版本回退需重新审核代码并人工发布，不要在不确定性操作发生后盲目重试或擦除状态。`MCP_ACCESS_TOKEN` 来自 Repository Secret（允许每个 Environment 同名覆盖），并在被选 Worker 每次手动发布时同步。修改 Repository Secret 不会自动部署全部 Worker；需要协调逐个手动发布与 Portal 客户端凭据切换，尤其共享的 `MCP_ACCESS_TOKEN` 和 SSH 的 `ENCRYPTION_KEY`（EdgeSSH 与 SSH MCP 需与既有加密记录对应并分别验收），以及 GitHub Actions MCP 的 `ACTIONS_GITHUB_DISPATCH_TOKENS`。发布前确认 GitHub 中的 IMA 等凭据已与现网有效值一致，否则会覆盖现有生效 Secret。IMA 的 `IMA_CLIENT_ID` 改由该 Worker 的必填 GitHub Environment Variable 提供，`IMA_API_KEY` 仍保密。只有遗留部署仍带有旧 `CLIENT_ID` Variable 时，才需要按部署指南执行一次性迁移；当前 IMA 生产绑定已是 `IMA_CLIENT_ID` 的 `plain_text`，正常发布仍须通过绑定读回，不能把失败当成迁移完成。
 
-Browser T8：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret，不沿用共享值），无额外 Variable。Manifest Key 是公开安装标识，不是 Secret。当前 `workers_dev: false`、`preview_urls: false` 且没有生产路由；现有手动 Release 的 Browser 预检将阻断发布。不得以本次接线创建资源、写 Portal/Access 或切换凭据；参见 [T8 发布与验收边界](../apps/browser-mcp-worker/docs/t8-release.md)。
+Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 Owner Access 激活配置；旧独立 Unknown Review / `BROWSER_APPROVAL_*` 运行时配置已退役。既有 Browser 独立 `MCP_ACCESS_TOKEN` 要求不因仓库级默认 Token 机制而自动豁免。参见 [runtime configuration](./runtime-configuration.md) 的当前配置与历史候选清单；本文档修改不触发 Worker 发布或凭据更新。
