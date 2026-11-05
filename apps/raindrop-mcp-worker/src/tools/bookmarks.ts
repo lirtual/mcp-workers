@@ -23,7 +23,7 @@ const BookmarkSearchInputSchema = z.object({
     .optional().describe("Collection ID; 0=All, -1=Unsorted, -99=Trash"),
   tags: z.array(z.string().trim().min(1).max(100)).max(20).optional().describe("Tags to filter by"),
   important: z.boolean().optional().describe("Filter by favorites (false excludes favorites)"),
-  page: z.number().int().min(0).safe().optional().describe("Zero-based page (default 0)"),
+  page: z.number().int().safe().min(0).optional().describe("Zero-based page (default 0)"),
   perPage: z.number().int().min(1).max(50).optional().describe("Page size (1–50)"),
   sort: z.enum(["-created", "created", "score", "-sort", "title", "-title", "domain", "-domain"])
     .optional().describe("Official Raindrop sort order"),
@@ -382,7 +382,7 @@ const bookmarkCreateTool = defineTool({
 
 const bookmarkUpdateTool = defineTool({
   name: "bookmark_update",
-  description: "Update selected fields of one existing, non-Trash bookmark.",
+  description: "Update selected fields of one existing, non-Trash bookmark. Supplying tags replaces the entire tag list; to append tags use bookmark_batch_update with exact source collection and IDs. Inspect unknown results before retrying.",
   inputSchema: BookmarkUpdateInputSchema,
   outputSchema: AtomicBookmarkMutationOutputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
