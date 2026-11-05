@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       test_type:
-        description: Acceptance type (Portal registration changes production configuration)
+        description: Acceptance type (legacy cleanup readback is GET-only; portal-register can write)
         required: true
         type: choice
         options:
@@ -19,6 +19,8 @@ on:
           - portal-readonly
           - github-action-result-cloud
           - portal-register
+          - legacy-cleanup-readonly-ssh
+          - legacy-cleanup-readonly-workflow
       session_run_id:
         description: Existing temporary Spec 288 Windows Run ID; never contains sensitive values
         type: string
@@ -36,6 +38,11 @@ on:
         required: true
         type: boolean
         default: false
+      cleanup_expected_version:
+        description: Cleanup readback only - exact reviewed active Worker version UUID
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -45,6 +52,44 @@ env:
   HUSKY: "0"
 
 jobs:
+  legacy-secret-cleanup-readback:
+    name: Spec 733 legacy Secret cleanup inventory (GET only)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.confirm_portal_write == false &&
+          contains(fromJSON('["legacy-cleanup-readonly-ssh","legacy-cleanup-readonly-workflow"]'), inputs.test_type) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ${{ inputs.test_type == 'legacy-cleanup-readonly-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+    concurrency:
+      group: worker-release-${{ inputs.test_type == 'legacy-cleanup-readonly-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Verify exact trusted main and old Secret absence (read-only)
+        env:
+          SELECTED_WORKER: ${{ inputs.test_type == 'legacy-cleanup-readonly-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+          EXPECTED_VERSION_ID: ${{ inputs.cleanup_expected_version }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          [[ "$EXPECTED_VERSION_ID" =~ ^[0-9a-fA-F-]{36}$ ]]
+          node scripts/manual-worker-release.mjs cleanup-readback "$SELECTED_WORKER"
+
   checks:
     name: Pre-acceptance checks
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && contains(fromJSON('["production-native","production-child","production-mcp","production-http","production-github","production-action-task","production-webhook","production-session-data","portal-register"]'), inputs.test_type) }}
