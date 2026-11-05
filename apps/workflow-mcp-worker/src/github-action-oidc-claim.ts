@@ -3,12 +3,13 @@ import type {JWTPayload} from 'jose';
 import {matchPinnedActionRunIdentity} from './github-dispatch.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {publishedGitHubActionStep,type Plan} from './plan.ts';
+import {actionForAttempt} from './github-action-main.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 export type GithubActionKeys=Parameters<typeof jwtVerify>[1];
 const githubKeys=createRemoteJWKSet(new URL('https://token.actions.githubusercontent.com/.well-known/jwks'));
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export type PinnedActionRow={run_id:string;step_id:string;state:string;capability_id:string;repository:string;repository_id:string;workflow_ref:string;ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;owner_run_id:number|null;owner_run_attempt:number|null;run_outcome:string;plan:string};
+export type PinnedActionRow={run_id:string;step_id:string;state:string;capability_id:string;repository:string;repository_id:string;workflow_ref:string;ref:string;resolved_sha:string|null;candidate_run_id:number|null;candidate_run_attempt:number|null;owner_run_id:number|null;owner_run_attempt:number|null;run_outcome:string;plan:string};
 
 /**
  * Shared, read-only signature and immutable Published Plan verification for
@@ -23,7 +24,7 @@ export async function verifyPinnedGitHubActionIdentity(
  if(!UUID.test(attemptId)||typeof jwt!=='string'||jwt.length>8192||
     !/^workflow-github-[a-z0-9:-]{4,120}$/.test(audience))return null;
  const row=await db.prepare(`SELECT a.run_id,a.step_id,a.state,a.capability_id,a.repository,
-  a.repository_id,a.workflow_ref,a.ref,a.candidate_run_id,a.candidate_run_attempt,
+  a.repository_id,a.workflow_ref,a.ref,a.resolved_sha,a.candidate_run_id,a.candidate_run_attempt,
   a.owner_run_id,a.owner_run_attempt,r.outcome AS run_outcome,v.plan
   FROM step_attempts a JOIN runs r ON r.id=a.run_id
   JOIN workflow_versions v ON v.id=r.version_id WHERE a.attempt_id=?`)
@@ -59,6 +60,8 @@ export async function verifyPinnedGitHubActionIdentity(
     row.repository!==action.repository||row.repository_id!==String(action.repositoryId)||
     row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
     row.ref!==raw.ref)return null;
+ const runtime=actionForAttempt(action,row.ref,plan.name,row.resolved_sha);
+ if(!runtime)return null;
  let claims:JWTPayload;
  try{
   const verified=await jwtVerify(jwt,keys,{issuer:'https://token.actions.githubusercontent.com',
@@ -72,9 +75,9 @@ export async function verifyPinnedGitHubActionIdentity(
    },{
     repository:row.repository,repositoryId:row.repository_id,workflowRef:row.workflow_ref,
     ref:row.ref,runId:row.candidate_run_id,runAttempt:row.candidate_run_attempt,
-    commitSha:action.commitSha,
+    commitSha:runtime.commitSha,
    }))return null;
- return {row,action};
+ return {row,action:runtime};
 }
 
 /** First, one-time owner Claim; re-using the same JWT cannot claim twice. */
@@ -114,7 +117,7 @@ export async function verifySignedPendingGitHubActionClaim(
  if(!UUID.test(attemptId)||typeof jwt!=='string'||jwt.length>8192||
     !/^workflow-github-[a-z0-9:-]{4,120}$/.test(audience))return false;
  const row=await db.prepare(`SELECT a.state,a.capability_id,a.step_id,
-   a.repository,a.repository_id,a.workflow_ref,a.ref,
+   a.repository,a.repository_id,a.workflow_ref,a.ref,a.resolved_sha,
    a.candidate_run_id,a.candidate_run_attempt,a.owner_run_id,a.owner_run_attempt,
    r.outcome AS run_outcome,v.plan
    FROM step_attempts a JOIN runs r ON r.id=a.run_id
@@ -145,6 +148,8 @@ export async function verifySignedPendingGitHubActionClaim(
     row.repository_id!==String(action.repositoryId)||
     row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
     row.ref!==raw.ref)return false;
+ const runtime=actionForAttempt(action,row.ref,plan.name,row.resolved_sha);
+ if(!runtime)return false;
  try{
   const {payload}=await jwtVerify(jwt,keys,{
    issuer:'https://token.actions.githubusercontent.com',audience,
@@ -161,7 +166,7 @@ export async function verifySignedPendingGitHubActionClaim(
   },{
    repository:row.repository,repositoryId:row.repository_id,
    workflowRef:row.workflow_ref,ref:row.ref,
-   runId:Number(payload.run_id),runAttempt:1,commitSha:action.commitSha,
+   runId:Number(payload.run_id),runAttempt:1,commitSha:runtime.commitSha,
   });
  }catch{return false;}
 }

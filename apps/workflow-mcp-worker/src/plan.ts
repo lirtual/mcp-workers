@@ -7,6 +7,7 @@ import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {reviewedWriteArguments} from './mcp-write-contract.ts';
 import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
+import {isDynamicMainAction} from './github-action-main.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run','http.request'] as const;
@@ -282,7 +283,9 @@ function checkGitHubActionWith(withData:Record<string,unknown>,path:string):void
      !Number.isSafeInteger(action.workflowId)||Number(action.workflowId)<=0||
      typeof action.workflowPath!=='string'||!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(action.workflowPath)||
      typeof action.commitSha!=='string'||!/^[a-f0-9]{40}$/i.test(action.commitSha)||
-     typeof action.ref!=='string'||!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(action.ref)||
+     typeof action.ref!=='string'||!(
+       /^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(action.ref)||
+       isDynamicMainAction(action as Parameters<typeof isDynamicMainAction>[0],action.ref))||
      action.ref.includes('..')||action.ref.includes('//')||action.ref.endsWith('/')||
      !['task','session'].includes(String(action.type))||
      typeof action.contractDigest!=='string'||!/^[a-f0-9]{64}$/i.test(action.contractDigest))

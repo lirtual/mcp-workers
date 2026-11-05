@@ -1,6 +1,8 @@
 import {resolveSessionActionInputs} from './github-action-inputs.ts';
 import type { ReviewedGitHubAction } from './github-action-review.ts';
 import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
+import {isDynamicMainAction} from './github-action-main.ts';
+import {resolveApprovedMainAction} from './github-action-main-preflight.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
 import type { DispatchOutcome } from './github-dispatch.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction as PublishedAction} from './github-action-review.ts';
@@ -30,7 +32,8 @@ export async function registerAndDispatchGitHubAction(
  if(!UUID.test(data.attemptId)||!UUID.test(data.dispatchId)||
     !UUID.test(data.runId)||!/^[a-zA-Z0-9_-]{1,64}$/.test(data.stepId)||
     !Number.isSafeInteger(data.action.repositoryId)||data.action.repositoryId<=0||
-    !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(data.ref)||
+    !(/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,190}$/.test(data.ref)||
+      isDynamicMainAction(data.action,data.ref))||
     data.ref.includes('..')||data.ref.includes('//')||
     !data.action.workflowPath.startsWith('.github/workflows/')||
     !/^[a-z0-9_-]+\.ya?ml$/.test(data.action.workflowPath.slice('.github/workflows/'.length)))
@@ -101,19 +104,33 @@ export async function registerAndDispatchGitHubAction(
  if(!isPublishedGitHubActionApproved(plan.github_action_approvals,identity)||
     !isPublishedGitHubActionApproved([identity],data.action))
   throw Error('github_action_publication_missing');
+ const moving=data.ref==='refs/heads/main';
+ if(moving&&!isDynamicMainAction(identity,data.ref,plan.name))
+  throw Error('github_action_publication_missing');
+ // Freeze the selected SHA before any physical dispatch.
+ let runtimeAction=identity;
+ let preflightDenied=false;
+ if(moving){
+  try{runtimeAction=await resolveApprovedMainAction(identity,data.token,http);}
+  catch{preflightDenied=true;}
+ }
  const saved=await db.prepare(`INSERT OR IGNORE INTO step_attempts
  (attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,
- repository_id,workflow_ref,ref,created_at,updated_at)
- SELECT ?,?,?, 'github.action',?,'created',?,?,?,?,?,?
+ repository_id,workflow_ref,ref,resolved_sha,created_at,updated_at)
+ SELECT ?,?,?, 'github.action',?,'created',?,?,?,?,?,?,?
  WHERE EXISTS(SELECT 1 FROM runs WHERE id=? AND outcome IN ('queued','running'))`)
   .bind(data.attemptId,data.runId,data.stepId,data.dispatchId,
    data.action.repository,String(data.action.repositoryId),
    data.action.repository+'/'+data.action.workflowPath+'@'+data.ref,
-   data.ref,Date.now(),Date.now(),data.runId).run();
+   data.ref,moving&&!preflightDenied?runtimeAction.commitSha:null,
+   Date.now(),Date.now(),data.runId).run();
  if(saved.meta.changes!==1)throw Error('github_action_attempt_not_registered');
  let outcome:DispatchOutcome;
- try{
-  outcome=await dispatchReviewedGitHubAction(data.action,data.ref,data.token,
+ if(preflightDenied){
+  // This is definite pre-dispatch denial, not an Unknown POST outcome.
+  outcome={status:'rejected',httpStatus:422,reason:'policy'};
+ }else try{
+  outcome=await dispatchReviewedGitHubAction(runtimeAction,data.ref,data.token,
    {attemptId:data.attemptId,dispatchId:data.dispatchId},data.inputs,http);
  }catch(error){
   // GitHub explicitly resolved this tag to a different SHA before any POST.

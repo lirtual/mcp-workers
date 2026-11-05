@@ -2,9 +2,10 @@ import { inspectGitHubActionRun } from './github-action-run-inspection.ts';
 import { isPublishedGitHubActionApproved, type ReviewedGitHubAction } from './github-action-review.ts';
 import {publishedGitHubActionStep,type Plan} from './plan.ts';
 import type { PhysicalRunState } from './github-action-run-state.ts';
+import {actionForAttempt} from './github-action-main.ts';
 
 type Db=Pick<D1Database,'prepare'>;
-type Row={attempt_id:string;run_id:string;step_id:string;state:string;capability_id:string;owner_run_id:number|null;owner_run_attempt:number|null;repository:string;repository_id:string;workflow_ref:string;ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;plan:string;run_outcome:string};
+type Row={attempt_id:string;run_id:string;step_id:string;state:string;capability_id:string;owner_run_id:number|null;owner_run_attempt:number|null;repository:string;repository_id:string;workflow_ref:string;ref:string;resolved_sha:string|null;candidate_run_id:number|null;candidate_run_attempt:number|null;plan:string;run_outcome:string};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -18,7 +19,7 @@ export async function inspectPersistedGitHubActionAttempt(
  if(!UUID.test(attemptId))return {state:'unknown'};
  const row=await db.prepare(`SELECT a.attempt_id,a.run_id,a.step_id,a.state,a.capability_id,
  a.owner_run_id,a.owner_run_attempt,
- a.repository,a.repository_id,a.workflow_ref,a.ref,
+ a.repository,a.repository_id,a.workflow_ref,a.ref,a.resolved_sha,
  a.candidate_run_id,a.candidate_run_attempt,v.plan,r.outcome AS run_outcome
  FROM step_attempts a JOIN runs r ON r.id=a.run_id
  JOIN workflow_versions v ON v.id=r.version_id
@@ -59,5 +60,7 @@ export async function inspectPersistedGitHubActionAttempt(
     row.workflow_ref!==identity.repository+'/'+identity.workflowPath+'@'+row.ref ||
     row.ref!==raw.ref ||
     !row.ref.startsWith('refs/'))return {state:'unknown'};
- return inspect(identity,row.candidate_run_id,row.candidate_run_attempt,token,row.ref);
+ const runtime=actionForAttempt(identity,row.ref,plan.name,row.resolved_sha);
+ if(!runtime)return {state:'unknown'};
+ return inspect(runtime,row.candidate_run_id,row.candidate_run_attempt,token,row.ref);
 }
