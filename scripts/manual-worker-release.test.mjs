@@ -1096,7 +1096,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
     assert.equal(ci.split(name).length,3);
   }
   assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"));
-  assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"));
+  assert.ok(ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"), "Legacy grants are allowed only through reviewed release fallback");
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
@@ -1105,6 +1105,34 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
   assert.match(ci,/body\.scope !== "workflow"/);
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+});
+
+test("Spec 733: Workflow-only release fallbacks map old GitHub Environment names into new bindings",()=> {
+  const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+  const lines=release.split(/\r?\n/);
+  // The old Settings names are only source lookups inside the protected
+  // Workflow release; Worker bindings and bootstrap names remain canonical.
+  const mappings=[
+    ["WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.MCP_PORTAL_CLIENT_ID",3],
+    ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES",3],
+    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET","secrets.MCP_PORTAL_CLIENT_SECRET",1],
+    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY","secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY","secrets.SESSION_RUNTIME_DATA_KEY",1],
+  ];
+  for(const [binding,canonical,legacy,count] of mappings){
+    const matched=lines.filter(line=>line.trimStart().startsWith(binding+": "));
+    assert.equal(matched.length,count,binding+" must be staged only at reviewed release gates");
+    const expected=binding+": "+String.fromCharCode(36)+"{{ inputs.worker == 'workflow-mcp-worker' && ("+
+      canonical+" || "+legacy+") || '' }}";
+    for(const line of matched)assert.equal(line.trim(),expected);
+    assert.equal(release.split(legacy).length-1,count,
+      legacy+" must not be referenced from unrelated Worker steps");
+  }
+  assert.match(release,/if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/);
+  assert.match(release,/node scripts\/bootstrap-worker-secrets\.mjs/);
+  assert.match(release,/node scripts\/worker-release-variables\.mjs/);
+  const worker=readFileSync(new URL("../apps/workflow-mcp-worker/wrangler.jsonc",import.meta.url),"utf8");
+  assert.ok(!worker.includes('"MCP_PORTAL_CLIENT_SECRET"'));
+  assert.ok(!worker.includes('"SESSION_RUNTIME_DATA_KEY"'));
 });
 
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
