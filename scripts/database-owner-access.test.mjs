@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findDatabaseOwnerApp, findDatabaseOwnerOtpProvider, verifyDatabaseOwnerPolicy,
+import { findDatabaseOwnerApp, findDatabaseOwnerLoginProviders, verifyDatabaseOwnerPolicy,
   verifyDatabaseOwnerAccessCloudflare, AccessInventoryHttpError,
   AccessInventoryStageError, safeDatabaseOwnerAccessDiagnostic } from "./database-owner-access.mjs";
 
@@ -8,140 +8,147 @@ const host = "owner.example.net";
 const audience = "a".repeat(64);
 const ownerEmail = "owner@example.net";
 const otpId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const app = { id: "app-one", name: "Database Owner Setup", type: "self_hosted",
-  domain: host, self_hosted_domains: [host], aud: audience, session_duration: "15m",
-  auto_redirect_to_identity: true, same_site_cookie_attribute: "lax", allowed_idps: [otpId] };
+const ssoId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const app = { id: "9f91a9ea-d498-49e5-9d9d-2289d1c08f65", name: "Database Owner Setup",
+  type: "self_hosted", domain: host, self_hosted_domains: [host], aud: audience,
+  session_duration: "15m", auto_redirect_to_identity: false,
+  same_site_cookie_attribute: "lax", allowed_idps: [otpId, ssoId] };
 const allowed = { decision: "allow", include: [{ email: { email: ownerEmail } }],
   exclude: [], require: [] };
-const params = { host, audience, ownerEmail, otpId };
-const envelope = result => ({ success: true, result,
-  result_info: { total_pages: 1, total_count: result.length } });
+const params = { host, audience, ownerEmail, otpId, ssoId };
+const providers = [
+  { id: otpId, type: "onetimepin" },
+  { id: ssoId, type: "cloudflare", config: { restrict_to_account_members: true } }
+];
+const envelope = result => ({ success: true, result, result_info: {
+  page: 1, per_page: 100, count: result.length, total_count: result.length, total_pages: 1 } });
+const config = { vars: { DATABASE_SETUP_HOST: host } };
+const env = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32),
+  CLOUDFLARE_API_TOKEN: "fake-token", DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
+const transport = async url => Response.json(url.includes("/identity_providers") ? envelope(providers) :
+  url.includes("/policies") ? envelope([allowed]) : envelope([app]));
 
-test("Owner Access allows only a matching app and exactly one email policy", () => {
+test("Database Owner requires the exact app, SSO + OTP and one Owner policy", () => {
   assert.equal(verifyDatabaseOwnerPolicy(app, [allowed], params), true);
-  for (const altered of [
-    { ...app, aud: "b".repeat(64) },
-    { ...app, domain: "other.example.net" },
-    { ...app, self_hosted_domains: [host, "other.example.net"] },
-    { ...app, type: "mcp" },
-    { ...app, session_duration: "24h" },
-    { ...app, auto_redirect_to_identity: false },
-    { ...app, same_site_cookie_attribute: "strict" },
-    { ...app, same_site_cookie_attribute: undefined },
-    { ...app, allowed_idps: undefined },
-    { ...app, allowed_idps: [] },
-    { ...app, allowed_idps: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] },
-    { ...app, allowed_idps: [otpId, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }
-  ]) assert.throws(() => verifyDatabaseOwnerPolicy(altered, [allowed], params), /identity|session|One-time PIN/);
-  for (const policies of [
-    [], [allowed, allowed],
-    [{ ...allowed, decision: "bypass" }],
+  assert.equal(verifyDatabaseOwnerPolicy({ ...app, allowed_idps: [ssoId, otpId] }, [allowed], params), true);
+  for (const changed of [
+    { id: "00000000-0000-4000-8000-000000000000" },
+    { aud: "b".repeat(64) }, { domain: "other.example.net" },
+    { self_hosted_domains: [host, "other.example.net"] },
+    { type: "mcp" }, { session_duration: "24h" },
+    { auto_redirect_to_identity: true }, { same_site_cookie_attribute: "strict" },
+    { same_site_cookie_attribute: undefined }, { allowed_idps: undefined },
+    { allowed_idps: [] }, { allowed_idps: [otpId] },
+    { allowed_idps: [ssoId] }, { allowed_idps: [otpId, otpId] },
+    { allowed_idps: [ssoId, ssoId] },
+    { allowed_idps: [otpId, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"] },
+    { allowed_idps: [otpId, ssoId, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"] }
+  ]) assert.throws(() => verifyDatabaseOwnerPolicy({ ...app, ...changed }, [allowed], params),
+    /identity|session|SSO/);
+  for (const changes of [
+    [], [allowed, allowed], [{ ...allowed, decision: "bypass" }],
     [{ ...allowed, include: [{ everyone: {} }] }],
     [{ ...allowed, include: [{ email: { email: "other@example.net" } }] }],
     [{ ...allowed, include: [{ email: { email: ownerEmail } }, { everyone: {} }] }],
-    [{ ...allowed, require: [{ email: { email: "other@example.net" } }] }]
-  ]) assert.throws(() => verifyDatabaseOwnerPolicy(app, policies, params), /restricted|designated/);
+    [{ ...allowed, include: [{ email: { email: ownerEmail }, extra: true }] }],
+    [{ ...allowed, require: [{ email: { email: ownerEmail } }] }],
+    [{ ...allowed, exclude: [{ email: { email: ownerEmail } }] }]
+  ]) assert.throws(() => verifyDatabaseOwnerPolicy(app, changes, params), /restricted|designated/);
 });
 
-test("Owner Access app inventory must be complete and unambiguous", () => {
-  assert.equal(findDatabaseOwnerApp(envelope([app]), host).id, "app-one");
-  assert.throws(() => findDatabaseOwnerApp(envelope([]), host), /missing or ambiguous/);
+test("Database Owner login provider inventory requires one OTP and one restricted account-member SSO", () => {
+  assert.deepEqual(findDatabaseOwnerLoginProviders(envelope(providers)), { otpId, ssoId });
+  for (const bad of [
+    [], [providers[0]], [providers[1]], [providers[0], providers[0], providers[1]],
+    [providers[0], providers[1], providers[1]],
+    [providers[0], { ...providers[1], config: { restrict_to_account_members: false } }],
+    [providers[0], { id: "invalid", type: "cloudflare", config: { restrict_to_account_members: true } }]
+  ]) assert.throws(() => findDatabaseOwnerLoginProviders(envelope(bad)), /missing or ambiguous/);
+});
+
+test("All Access inventories must be complete single-page responses", () => {
+  assert.equal(findDatabaseOwnerApp(envelope([app]), host).id, app.id);
+  assert.throws(() => findDatabaseOwnerApp(envelope([{ ...app, id: "other" }]), host), /missing or ambiguous/);
   assert.throws(() => findDatabaseOwnerApp(envelope([app, app]), host), /missing or ambiguous/);
-  assert.throws(() => findDatabaseOwnerApp({ success: true, result: [app],
-    result_info: { total_pages: 2, total_count: 20 } }, host), /incomplete/);
+  for (const bad of [
+    { result_info: undefined },
+    { result_info: { page: 2 } }, { result_info: { per_page: 10 } },
+    { result_info: { count: 0 } }, { result_info: { total_count: 2 } },
+    { result_info: { total_pages: 2 } }, { success: false }
+  ]) {
+    const baseline = envelope([app]);
+    assert.throws(() => findDatabaseOwnerApp({ ...baseline, ...bad,
+      result_info: bad.result_info === undefined ? undefined :
+        { ...baseline.result_info, ...bad.result_info } }, host), /incomplete/);
+  }
+  for (const bad of [
+    { ...envelope(providers), result_info: undefined },
+    { ...envelope(providers), result_info: { ...envelope(providers).result_info, total_pages: 2 } }
+  ]) assert.throws(() => findDatabaseOwnerLoginProviders(bad), /incomplete/);
 });
 
-test("Owner Access requires exactly one configured OTP identity provider", () => {
-  const otp = { id: otpId, type: "onetimepin" };
-  assert.equal(findDatabaseOwnerOtpProvider(envelope([otp])), otpId);
-  assert.throws(() => findDatabaseOwnerOtpProvider(envelope([])), /missing or ambiguous/);
-  assert.throws(() => findDatabaseOwnerOtpProvider(envelope([{ id: otpId, type: "cloudflare" }])),
-    /missing or ambiguous/);
-  assert.throws(() => findDatabaseOwnerOtpProvider(envelope([otp, otp])), /missing or ambiguous/);
-  assert.throws(() => findDatabaseOwnerOtpProvider({
-    success: true, result: [otp], result_info: { total_pages: 2, total_count: 101 }
-  }), /incomplete/);
-});
-
-test("Release checks real OTP, Access app and app policies without logging credentials", async () => {
+test("Release reads only configured canonical Audience and exact Access inventories", async () => {
   const visited = [];
-  const config = { vars: { DATABASE_SETUP_HOST: host } };
-  const env = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "fake-token",
-    DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
-  const transport = async (url, opts) => {
-    visited.push({ url, authorization: opts.headers.Authorization });
-    return Response.json(url.includes("/identity_providers") ?
-      envelope([{ id: otpId, type: "onetimepin" }, { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", type: "cloudflare" }]) :
-      url.includes("/policies") ? envelope([allowed]) : envelope([app]));
+  const fetcher = async (url, options) => {
+    visited.push({ url, auth: options.headers.Authorization });
+    return transport(url);
   };
-  assert.equal(await verifyDatabaseOwnerAccessCloudflare(config, env, transport), true);
+  assert.equal(await verifyDatabaseOwnerAccessCloudflare(config, env, fetcher), true);
   assert.equal(visited.length, 3);
   assert.ok(visited.every(v => v.url.startsWith(
     "https://api.cloudflare.com/client/v4/accounts/" + "f".repeat(32))));
-  assert.ok(visited.every(v => v.authorization === "Bearer fake-token"));
-  await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, { ...env, OWNER_EMAIL: "" },
-    transport), /environment missing/);
+  assert.ok(visited.every(v => v.auth === "Bearer fake-token"));
+  await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config,
+    { ...env, DATABASE_ACCESS_AUD: undefined, ACCESS_AUD: audience }, fetcher), /environment missing/);
+  await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config,
+    { ...env, OWNER_EMAIL: "" }, fetcher), /environment missing/);
   await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, env,
-    async () => Response.json({ success: false, result: [] }, { status: 403 })),
-  /request failed/);
+    async url => Response.json(url.includes("/policies") ?
+      { ...envelope([allowed]), result_info: undefined } :
+      url.includes("/identity_providers") ? envelope(providers) : envelope([app]))), /incomplete/);
 });
 
-
-test("Owner Access HTTP errors expose only the request stage and status", async () => {
-  const config = { vars: { DATABASE_SETUP_HOST: host } };
-  const e = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "secret-should-not-leak",
-    DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
-  for (const [target, expected] of [
+test("Owner Access HTTP failures expose only stage and status", async () => {
+  for (const [target, stage] of [
     ["identity_providers", "idps"], ["/apps?", "apps"], ["/policies?", "policies"]
   ]) {
-    const transport = async url => {
-      if (url.includes(target)) return Response.json({ errors: [{ message: "very-sensitive-secret" }] }, { status: 403 });
-      return Response.json(url.includes("identity_providers") ? envelope([{ id: otpId, type: "onetimepin" }]) :
-        url.includes("/policies?") ? envelope([allowed]) : envelope([app]));
-    };
-    await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, e, transport), error => {
+    const fetcher = async url => url.includes(target)
+      ? Response.json({ errors: [{ message: "sensitive-payload" }] }, { status: 403 })
+      : transport(url);
+    await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, env, fetcher), error => {
       assert.ok(error instanceof AccessInventoryHttpError);
-      assert.equal(error.stage, expected);
+      assert.equal(error.stage, stage);
       assert.equal(error.status, 403);
-      assert.equal(error.message, "Database Owner Access inventory request failed");
-      assert.doesNotMatch(JSON.stringify({ stage: error.stage, status: error.status, message: error.message }),
-        /very-sensitive-secret|secret-should-not-leak/);
+      assert.doesNotMatch(safeDatabaseOwnerAccessDiagnostic(error), /sensitive|token|email/);
       return true;
     });
   }
 });
 
-test("Safe Owner Access diagnostics classify validation failures without exposing arbitrary errors", () => {
-  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
-    "Database Owner Access validation environment missing")), " (check=env)");
-  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
-    "Database Owner Access applications inventory unavailable or incomplete")), " (check=apps_inventory)");
-  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
-    "Database Owner Access OTP session configuration drift")), " (check=app_session)");
-  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
-    "Database Owner Access policy must allow exactly the designated email")), " (check=policy_email)");
-  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error("token-and-owner-secret")),
-    " (check=unknown)");
-  assert.equal(safeDatabaseOwnerAccessDiagnostic(new AccessInventoryHttpError("policies", 403)),
-    " (stage=policies; http=403)");
-});
-
-test("Owner Access transport and JSON errors expose only fixed stage and kind", async () => {
-  const config = { vars: { DATABASE_SETUP_HOST: host } };
-  const env = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "secret-token",
-    DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
-  for (const [transport, kind] of [
-    [async () => { throw new Error("secret-transport-details"); }, "transport"],
-    [async () => new Response("secret-invalid-json", { status: 200 }), "json"]
+test("Owner Access transport and invalid JSON errors remain sanitized", async () => {
+  for (const [fetcher, kind] of [
+    [async () => { throw Error("secret-transport"); }, "transport"],
+    [async () => new Response("secret-bad-json", { status: 200 }), "json"]
   ]) {
-    await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, env, transport), error => {
+    await assert.rejects(verifyDatabaseOwnerAccessCloudflare(config, env, fetcher), error => {
       assert.ok(error instanceof AccessInventoryStageError);
       assert.equal(error.stage, "idps");
       assert.equal(error.kind, kind);
-      const diagnostic = safeDatabaseOwnerAccessDiagnostic(error);
-      assert.equal(diagnostic, " (stage=idps; kind=" + kind + ")");
-      assert.doesNotMatch(diagnostic, /secret/);
+      assert.equal(safeDatabaseOwnerAccessDiagnostic(error), ` (stage=idps; kind=${kind})`);
+      assert.doesNotMatch(safeDatabaseOwnerAccessDiagnostic(error), /secret/);
       return true;
     });
   }
+});
+
+test("Safe diagnostic codes are fixed and never echo underlying input", () => {
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access SSO and OTP session configuration drift")), " (check=app_session)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access must restrict login to account-member SSO and OTP")), " (check=app_idps)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner account-member SSO provider missing or ambiguous")), " (check=idps_sso)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error(
+    "Database Owner Access applications inventory unavailable or incomplete")), " (check=apps_inventory)");
+  assert.equal(safeDatabaseOwnerAccessDiagnostic(new Error("sensitive-token-or-email")), " (check=unknown)");
 });

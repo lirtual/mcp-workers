@@ -44,7 +44,7 @@ The following Browser source contract was approved and implemented as a candidat
 - Browser Worker [release #41871291888](https://github.com/lirtual/mcp-workers/actions/runs/41871291888) passed; Cloudflare independently confirmed version `3943aa81-23c1-4b31-805c-3a2a93e3846c` at 100% traffic with the original Durable Object namespace and seven activation-required bindings.
 - The separate Browser Owner Review Access app was deleted only after the Worker cutover. Public `/owner/unknown/*` then returned 404 while `/activate/verify/*` still required Access. See [production retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175).
 - Browser Activation, Database Owner Setup, and EdgeSSH were switched **individually** to existing account-member-restricted Cloudflare SSO **plus** OTP, without changing their exact Owner Allow policies, audiences, domains, or session lengths. Their API readbacks and the Owner's separate real SSO/OTP login and original-feature confirmations are documented in the [final acceptance record](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813). The original plan and historical waivers above remain historical evidence, not newly performed tests.
-- As migration is complete, subsequent Browser releases must **reject OTP-only rollback** and require the exact dual-IdP Access configuration with complete policy and provider inventory.
+- As migration is complete, subsequent Browser and Database releases must **reject OTP-only rollback** and require the exact account-member SSO + OTP Access configuration with complete policy and provider inventory.
 
 ## Source anchors
 
