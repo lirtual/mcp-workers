@@ -90,7 +90,7 @@ const createTool = defineTool({
 const updateTool = defineTool({
   name: "highlight_update",
   description:
-    "Patch text, note or color of one string highlight ID after verifying bookmark membership. Empty text is forbidden; use highlight_delete. Unknown results must be inspected before any retry.",
+    "Patch text or color of one string highlight ID after verifying bookmark membership. Empty text is forbidden; use highlight_delete. Unknown results must be inspected before any retry.",
   inputSchema: updateInput,
   outputSchema: HighlightWriteOutcomeSchema,
   annotations: writes,
