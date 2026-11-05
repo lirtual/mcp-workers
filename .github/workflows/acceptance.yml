@@ -160,8 +160,8 @@ jobs:
     environment:
       name: workflow-mcp-worker
     env:
-      WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-      WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET }}
+      WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID }}
+      WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || secrets.MCP_PORTAL_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
