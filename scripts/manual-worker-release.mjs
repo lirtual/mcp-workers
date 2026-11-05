@@ -3,7 +3,7 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectWorkerVars, BROWSER_ACCESS_VARIABLES } from "./worker-release-variables.mjs";
+import { collectWorkerVars, BROWSER_ACCESS_VARIABLES, browserActivationOrigin } from "./worker-release-variables.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
@@ -13,11 +13,17 @@ const REQUIRED_SECRETS = {
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"],
-  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"],
+  "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"],
 };
+// Wrangler retains omitted secret_text bindings after a normal release.
+// These exact old names may coexist until separately approved cleanup.
+export const MIGRATION_LEGACY_SECRETS = Object.freeze({
+  "ssh-mcp-worker": ["ENCRYPTION_KEY"],
+  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_SECRET", "SESSION_RUNTIME_DATA_KEY"],
+});
 const WORKER_ENTRIES = {
   "browser-mcp-worker": "src/worker.ts",
   "raindrop-mcp-worker": "src/worker.ts",
@@ -182,7 +188,12 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   const bindings = settings?.bindings;
   invariant(Array.isArray(bindings), "Cloudflare bindings unavailable");
   const find = (name, type) => bindings.find((x) => x.name === name && x.type === type);
-  const secretNames = new Set(Array.isArray(secrets) ? secrets.map((x) => x.name) : []);
+  invariant(Array.isArray(secrets), "Cloudflare secret inventory unavailable");
+  const secretNames = new Set(secrets.map(x => x.name));
+  invariant(secretNames.size === secrets.length &&
+    new Set(bindings.map(b => b.name)).size === bindings.length,
+    "Duplicate runtime binding or Secret name");
+  const oldSecrets = MIGRATION_LEGACY_SECRETS[worker] ?? [];
   for (const name of REQUIRED_SECRETS[worker]) {
     // On preflight a missing runtime Secret can be repaired from GitHub.
     // The unconditional Secrets staging step fails closed before deployment.
@@ -212,6 +223,35 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       "Unexpected Invocation Logs configuration");
   }
   if (worker === "workflow-mcp-worker") {
+    // These two nonsecret identities must not change across a pure rename.
+    // The GitHub source is read inside the approved selected-Worker release.
+    if (typeof options.expectedWorkflowPortalClientId === "string") {
+      const live = options.mode === "preflight"
+        ? (find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") || find("MCP_PORTAL_CLIENT_ID", "plain_text"))
+        : find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text");
+      invariant(options.expectedWorkflowPortalClientId.length > 0 &&
+        live?.text === options.expectedWorkflowPortalClientId,
+        "Workflow Portal client identity differs from existing reviewed value");
+    }
+    if (typeof options.expectedWorkflowGrants === "string") {
+      const live = options.mode === "preflight"
+        ? (find("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES", "plain_text") ||
+           find("GITHUB_ACTION_APPROVED_REPOSITORIES", "plain_text"))
+        : find("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES", "plain_text");
+      let expected, actual;
+      try {
+        expected = options.expectedWorkflowGrants ? JSON.parse(options.expectedWorkflowGrants) : [];
+        actual = live?.text ? JSON.parse(live.text) : [];
+      } catch { throw Error("Workflow repository grants are not valid JSON"); }
+      invariant(JSON.stringify(expected) === JSON.stringify(actual),
+        "Workflow approved repositories differ from existing reviewed grants");
+    }
+    if (options.mode === "preflight" && options.requireExistingSecrets) {
+      invariant(!!find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") &&
+        !!find("WORKFLOW_MCP_PORTAL_ENDPOINT", "plain_text") &&
+        !!find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE", "plain_text"),
+        "Workflow code-only release blocked until renamed binding cutover");
+    }
     const d1 = find("DB", "d1");
     const liveD1=d1?.id || d1?.database_id;
     invariant(liveD1==="a4a477cd-6339-478c-ab7c-f7d87bb0d772",
@@ -222,23 +262,23 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         flow?.class_name==="WorkflowOrchestrator", "Workflow native Workflow binding drift");
     }
     if (options.mode === "readback") {
-      invariant(find("MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
+      invariant(find("WORKFLOW_MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
         "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
       invariant(!bindings.some(x => ["GITHUB_EXECUTOR_REPOSITORY",
         "GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF",
         "GITHUB_EXECUTOR_AUDIENCE","GITHUB_TEST_WORKER_NAME",
         "GITHUB_TEST_DEDICATED_EXECUTOR"].includes(x.name)),
         "Retired fixed GitHub executor variables must be removed");
-      invariant(find("GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
+      invariant(find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
         "workflow-github-action:production", "Workflow Action OIDC audience drift");
-      for (const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
+      for (const name of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
       }
-      invariant(bindings.filter(x => x.name === "MCP_PORTAL_CLIENT_ID").length === 1 &&
-        typeof find("MCP_PORTAL_CLIENT_ID", "plain_text")?.text === "string" &&
-        find("MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
-        !secretNames.has("MCP_PORTAL_CLIENT_ID"),
+      invariant(bindings.filter(x => x.name === "WORKFLOW_MCP_PORTAL_CLIENT_ID").length === 1 &&
+        typeof find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text")?.text === "string" &&
+        find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text").text.trim().length > 0 &&
+        !secretNames.has("WORKFLOW_MCP_PORTAL_CLIENT_ID"),
         "Workflow Portal Client ID must be exactly one plaintext Variable");
       invariant(bindings.filter(x=>x.type==='service').length===1 &&
         bindings.filter(x=>x.name==='ACTIONS'&&x.type==='service'&&
@@ -251,6 +291,9 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         'BARK_ACTION_DEPLOYMENT_ID'].includes(x.name)) &&
         !secretNames.has('ACTIONS_DEPLOYMENT_ID'),
         "Workflow legacy Provider deployment pin still present");
+      invariant(!bindings.some(x => ["MCP_PORTAL_CLIENT_ID", "MCP_PORTAL_ENDPOINT",
+        "GITHUB_ACTION_OIDC_AUDIENCE", "GITHUB_ACTION_APPROVED_REPOSITORIES"].includes(x.name)),
+        "Workflow unprefixed runtime Variable remains after publication");
       invariant(!bindings.some(x => ["MCP_CALL_ENABLED","GITHUB_EXECUTION_ENABLED",
         "MCP_DIRECT_TARGETS_ENABLED"].includes(x.name)),
         "Obsolete stage flag present after release");
@@ -285,6 +328,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(!bindings.some((x) => x.name === "R2_BUCKET"), "Legacy IMA R2 Worker binding remains");
   }
   if (worker === "database-mcp-worker") {
+    if (options.mode === "preflight") {
+      for (const [name, expected] of [
+        ["ACCESS_TEAM_DOMAIN", options.sharedAccessTeamDomain],
+        ["OWNER_EMAIL", options.sharedOwnerEmail],
+        [find("DATABASE_ACCESS_AUD", "plain_text") ? "DATABASE_ACCESS_AUD" : "ACCESS_AUD", options.databaseAudience],
+      ]) invariant(typeof expected === "string" && expected.length > 0 &&
+        find(name, "plain_text")?.text === expected,
+        "Database Owner Access differs from reviewed source: " + name);
+    }
     if (options.mode !== "preflight") {
       const source = options.sourceConfig;
       const expectedD1 = source?.d1_databases?.[0]?.database_id;
@@ -294,11 +346,16 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       const owner = find("DATABASE_SETUP_HOST", "plain_text");
       invariant(owner?.text === source?.vars?.DATABASE_SETUP_HOST,
         "Database Owner hostname not bound to reviewed custom domain");
-      for (const name of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"]) {
-        const text = find(name, "plain_text")?.text;
-        invariant(typeof text === "string" && text.length > 0 && text.length <= 256,
-          "Database Owner Access variable missing: " + name);
-      }
+      for (const [name, expected] of [
+        ["ACCESS_TEAM_DOMAIN", options.sharedAccessTeamDomain],
+        ["DATABASE_ACCESS_AUD", options.databaseAudience],
+        ["OWNER_EMAIL", options.sharedOwnerEmail],
+      ]) invariant(typeof expected === "string" && expected.length > 0 &&
+        find(name, "plain_text")?.text === expected,
+        "Database Owner Access binding differs from reviewed source: " + name);
+      invariant(!bindings.some(b => ["ACCESS_AUD", "MAX_ROWS", "MAX_RESULT_BYTES",
+        "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS", "MAX_WRITE_AFFECTED_ROWS"].includes(b.name)),
+        "Database old unprefixed Variable remains after publication");
       invariant(!find("DATABASE_CONFIG", "plain_text"), "Legacy DB catalog must not be a plain variable");
       const expectedHD = source?.hyperdrive ?? [];
       const actualHD = bindings.filter(b => b.type === "hyperdrive");
@@ -386,27 +443,42 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("BROWSER_APPROVAL_ISOLATION", "plain_text")?.text === "isolated-owner-profile-and-mailbox-v1",
         "Browser legacy Review binding inventory drift");
     }
-    const fields = names.map(name => [name, find(name, "plain_text")]);
-    const env = Object.fromEntries(fields.filter(([, value]) => !!value)
-      .map(([name, value]) => [name, value.text]));
+    const runtimeNames = [...names, "BROWSER_REMEMBERED_IDLE_DAYS"];
+    const env = Object.fromEntries(runtimeNames.filter(name => !!find(name, "plain_text"))
+      .map(name => [name, find(name, "plain_text").text]));
+    if (options.mode === "preflight") {
+      if (env.BROWSER_ACCESS_ISSUER || env.BROWSER_OWNER_EMAIL)
+        invariant(typeof options.sharedAccessTeamDomain === "string" &&
+          env.BROWSER_ACCESS_ISSUER === "https://" + options.sharedAccessTeamDomain &&
+          env.BROWSER_OWNER_EMAIL === options.sharedOwnerEmail,
+          "Browser live identity differs from reviewed shared source");
+      if (env.BROWSER_ACTIVATION_ORIGIN)
+        invariant(env.BROWSER_ACTIVATION_ORIGIN === browserActivationOrigin(options.sourceConfig),
+          "Browser live activation origin differs from Custom Domain");
+    }
+    if (options.mode === "readback") {
+      const staged = collectWorkerVars("browser-mcp-worker", {
+        ACCESS_TEAM_DOMAIN: options.sharedAccessTeamDomain,
+        OWNER_EMAIL: options.sharedOwnerEmail,
+        BROWSER_ACTIVATION_AUDIENCE: options.expectedBrowserActivationAudience,
+        BROWSER_REMEMBERED_IDLE_DAYS: options.expectedBrowserRememberedDays,
+      }, { config: options.sourceConfig });
+      const expected = Object.fromEntries(staged.map(pair => [
+        pair.slice(0, pair.indexOf(":")), pair.slice(pair.indexOf(":") + 1)]));
+      invariant(JSON.stringify(Object.entries(env).sort()) ===
+        JSON.stringify(Object.entries(expected).sort()),
+        "Browser live bindings differ from reviewed identity, route or audience");
+      invariant(legacyPresent.length === 0, "Retired Browser Review bindings remain after publication");
+    }
     const activationFields = ["BROWSER_ACTIVATION_ORIGIN", "BROWSER_ACTIVATION_AUDIENCE"];
     const activationCount = activationFields.filter(name => Object.hasOwn(env, name)).length;
     invariant(activationCount === 0 || activationCount === activationFields.length,
       "Browser activation binding inventory incomplete");
-    if (Object.keys(env).length) collectWorkerVars("browser-mcp-worker", env);
-    if (options.mode === "readback") {
-      invariant(legacyPresent.length === 0,
-        "Retired Browser Review bindings remain after publication");
-      invariant(activationCount === (options.expectedBrowserActivationAudience ? activationFields.length : 0) &&
-        (!options.expectedBrowserActivationAudience ||
-          env.BROWSER_ACTIVATION_AUDIENCE === options.expectedBrowserActivationAudience),
-        "Browser activation binding inventory differs from reviewed GitHub Environment");
-    }
     invariant(coordinator?.class_name === "BrowserOwner" &&
       typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
       !coordinator.script_name && bindings.length === 2 + Object.keys(env).length + legacyPresent.length + (assets ? 1 : 0) &&
       !!find("MCP_ACCESS_TOKEN", "secret_text") &&
-      !bindings.some(b => b.type === "plain_text" && !names.includes(b.name) &&
+      !bindings.some(b => b.type === "plain_text" && !runtimeNames.includes(b.name) &&
         !(options.mode === "preflight" && legacyReview.includes(b.name))),
       "Browser binding inventory drift");
     invariant(settings.observability?.logs?.head_sampling_rate === 0,
@@ -442,6 +514,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
     }
   }
+  if (options.mode === "readback") {
+    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...oldSecrets,
+      ...(worker === "database-mcp-worker" ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
+    invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
+      bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),
+      "Unexpected runtime Secret name or type after publication");
+    if (options.cleanupVerified) invariant(!oldSecrets.some(name => secretNames.has(name) ||
+      !!find(name, "secret_text")), "Legacy Secret cleanup not complete");
+  }
   return true;
 }
 
@@ -471,7 +552,7 @@ export function verifyWorkflowReleaseConfig(conf) {
     conf.services[0]?.entrypoint === "ActionsEntrypoint" &&
     Object.keys(conf.services[0]).sort().join(",")==="binding,entrypoint,service",
     "Workflow reviewed Cloudflare Service Bindings drift");
-  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "SESSION_RUNTIME_DATA_KEY"]),
+  invariant(JSON.stringify(conf.secrets?.required) === JSON.stringify(["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"]),
     "Workflow Portal Secret declaration drift");
   invariant(!conf.vars || Object.keys(conf.vars).length===0,
     "Workflow MCP source cannot declare runtime feature flags");
@@ -1091,6 +1172,17 @@ async function main() {
       mode, sourceConfig, requireExistingSecrets: mode === "preflight" &&
         process.env.WORKFLOW_CODE_ONLY === "true", previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
+      sharedAccessTeamDomain: ["browser-mcp-worker", "database-mcp-worker"].includes(worker)
+        ? process.env.ACCESS_TEAM_DOMAIN : undefined,
+      sharedOwnerEmail: ["browser-mcp-worker", "database-mcp-worker"].includes(worker)
+        ? process.env.OWNER_EMAIL : undefined,
+      databaseAudience: worker === "database-mcp-worker" ? process.env.DATABASE_ACCESS_AUD : undefined,
+      expectedBrowserRememberedDays: worker === "browser-mcp-worker"
+        ? process.env.BROWSER_REMEMBERED_IDLE_DAYS : undefined,
+      expectedWorkflowPortalClientId: worker === "workflow-mcp-worker"
+        ? process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID : undefined,
+      expectedWorkflowGrants: worker === "workflow-mcp-worker"
+        ? process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES : undefined,
       expectedBrowserActivationAudience: worker === "browser-mcp-worker"
         ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
     });

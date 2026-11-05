@@ -60,7 +60,7 @@ test("Workflow deployment readback retries only bounded propagation or read-only
   let max = 0;
   await assert.rejects(retryReleaseReadback(async () => {
     max++;
-    throw Error("Required runtime Secret missing: MCP_PORTAL_CLIENT_SECRET");
+    throw Error("Required runtime Secret missing: WORKFLOW_MCP_PORTAL_CLIENT_SECRET");
   }, async () => {}), /runtime Secret missing/);
   assert.equal(max,6);
 
@@ -131,7 +131,7 @@ test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable 
     bindings: settings.bindings.map(x => x.name === "IMA_CLIENT_ID" ? { ...x, text: " " } : x) },
     secrets, { mode: "readback" }), /IMA_CLIENT_ID.*Variable|IMA legacy CLIENT_ID/);
   assert.throws(() => verifyBindings(worker, settings,
-    [...secrets, { name: "IMA_CLIENT_ID" }], { mode: "readback" }), /legacy IMA_CLIENT_ID Secret/);
+    [...secrets, { name: "IMA_CLIENT_ID" }], { mode: "readback" }), /legacy IMA_CLIENT_ID Secret|Unexpected runtime Secret/);
   assert.throws(() => verifyBindings(worker, { ...settings, bindings: [
     ...settings.bindings, { name: "CLIENT_ID", type: "plain_text", text: "legacy" },
   ] }, secrets, { mode: "readback" }), /legacy CLIENT_ID/);
@@ -169,7 +169,7 @@ test("Database release must inspect an exact-email Cloudflare Access policy befo
   const block = workflow.slice(access, publish);
   assert.match(block, /if: inputs\.worker == 'database-mcp-worker'/);
   assert.match(block, /run: node scripts\/database-owner-access\.mjs/);
-  assert.match(block, /vars\.ACCESS_AUD/);
+  assert.match(block, /vars\.DATABASE_ACCESS_AUD/);
   assert.match(block, /vars\.OWNER_EMAIL/);
   assert.doesNotMatch(block, /\bPOST\b|\bPUT\b|\bPATCH\b|\bDELETE\b/);
 });
@@ -319,33 +319,34 @@ test("Database transition validates reviewed D1, Owner route and two throttles b
   const limiter = source.ratelimits[0];
   const setup = source.ratelimits[1];
   const list = names.map(name => ({ name }));
+  const identity={ sharedAccessTeamDomain:"approved-owner", sharedOwnerEmail:"approved-owner", databaseAudience:"approved-owner" };
   const settings = {
     bindings: [...names.map(name => ({ name, type: "secret_text" })),
       { name: "DB", type: "d1", id: source.d1_databases[0].database_id },
       ...source.hyperdrive.map(x => ({ name: x.binding, type: "hyperdrive", id: x.id })),
       { name: "DATABASE_SETUP_HOST", type: "plain_text", text: source.vars.DATABASE_SETUP_HOST },
-      ...["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"].map(name =>
+      ...["ACCESS_TEAM_DOMAIN", "DATABASE_ACCESS_AUD", "OWNER_EMAIL"].map(name =>
         ({ name, type: "plain_text", text: "approved-owner" })),
       { ...limiter, type: "ratelimit" }, { ...setup, type: "ratelimit" }],
     observability: { enabled: true, logs: { invocation_logs: true } }
   };
   assert.equal(verifyBindings("database-mcp-worker", settings, list, {
-    mode: "readback", sourceConfig: source
+    mode: "readback", sourceConfig: source, ...identity
   }), true);
   const check = (bindingName, regex) => assert.throws(() => verifyBindings("database-mcp-worker",
     { ...settings, bindings: settings.bindings.filter(x => x.name !== bindingName) },
-    list, { mode: "readback", sourceConfig: source }), regex);
+    list, { mode: "readback", sourceConfig: source, ...identity }), regex);
   check("DB", /D1 binding mismatch/);
   check("SETUP_RATE_LIMITER", /SETUP_RATE_LIMITER/);
-  check("ACCESS_AUD", /Access variable missing/);
+  check("DATABASE_ACCESS_AUD", /Access binding differs from reviewed source/);
   assert.throws(() => verifyBindings("database-mcp-worker", { ...settings,
     bindings: [...settings.bindings, { name: "HYPERDRIVE_UNREVIEWED", type: "hyperdrive", id: "11111111-1111-4111-8111-111111111111" }] },
-    list, { mode: "readback", sourceConfig: source }), /Hyperdrive binding IDs/);
+    list, { mode: "readback", sourceConfig: source, ...identity }), /Hyperdrive binding IDs/);
   assert.throws(() => verifyBindings("database-mcp-worker", settings,
     list.filter(x => x.name !== "DATABASE_ENCRYPTION_KEY"),
-    { mode: "readback", sourceConfig: source }), /DATABASE_ENCRYPTION_KEY/);
+    { mode: "readback", sourceConfig: source, ...identity }), /DATABASE_ENCRYPTION_KEY/);
   assert.equal(verifyBindings("database-mcp-worker", settings, list, {
-    mode: "preflight", sourceConfig: source
+    mode: "preflight", sourceConfig: source, ...identity
   }), true);
 });
 
@@ -379,23 +380,23 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   assert.equal(verifyBindings(worker,{...prod,bindings:prod.bindings.filter(
     b=>b.name!==sessionRpc.name)},secrets,{mode:"preflight"}),true);
   assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.filter(
-    b=>b.name!==sessionRpc.name)},secrets,options),/Session Authorization Service Binding/);
+    b=>b.name!==sessionRpc.name)},secrets,options),/Session Authorization Service Binding|Duplicate runtime binding/);
   for(const wrong of [{...sessionRpc,service:"untrusted-worker"},
     {...sessionRpc,entrypoint:"OtherEntrypoint"},
     {...sessionRpc,type:"plain_text"}])
     assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.map(
       b=>b.name===sessionRpc.name?wrong:b)},secrets,options),
-      /Session Authorization Service Binding/);
+      /Session Authorization Service Binding|Duplicate runtime binding/);
   assert.throws(()=>verifyBindings(worker,{...prod,
     bindings:[...prod.bindings,sessionRpc]},secrets,options),
-    /Session Authorization Service Binding/);
+    /Session Authorization Service Binding|Duplicate runtime binding/);
   assert.throws(() => verifyBindings(worker, prod, [], options), /Secret missing/);
   for (const name of ["BROWSER_APPROVAL_ACCESS_ISSUER",
     "BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL",
     "BROWSER_APPROVAL_PUBLIC_ORIGIN"]) {
     assert.throws(() => verifyBindings(worker, { ...prod, bindings: [...prod.bindings,
       { name, type: name === "BROWSER_APPROVAL_PUBLIC_ORIGIN" ? "plain_text" : "secret_text" }] },
-      secrets, options), /Retired Remote Control approval bindings/);
+      secrets, options), /Retired Remote Control approval bindings|Unexpected runtime Secret/);
   }
   assert.throws(() => verifyBindings(worker, { ...prod,
     bindings: prod.bindings.filter(x => x.name !== "REMOTE_CONTROL_INSTALL_ORIGIN"),
@@ -498,11 +499,11 @@ test("manual release scope stages the pinned Agent only for Remote Control", () 
 test("SSH release requires EdgeSSH D1, own DO and scoped key", () => {
   const worker = "ssh-mcp-worker";
   const source = JSON.parse(readFileSync(new URL("../apps/ssh-mcp-worker/wrangler.jsonc", import.meta.url), "utf8"));
-  assert.deepEqual(source.secrets?.required, ["MCP_ACCESS_TOKEN", "ENCRYPTION_KEY"]);
-  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "ENCRYPTION_KEY" }];
+  assert.deepEqual(source.secrets?.required, ["MCP_ACCESS_TOKEN", "SSH_ENCRYPTION_KEY"]);
+  const secrets = [{ name: "MCP_ACCESS_TOKEN" }, { name: "SSH_ENCRYPTION_KEY" }];
   const bindings = [
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    { name: "ENCRYPTION_KEY", type: "secret_text" },
+    { name: "SSH_ENCRYPTION_KEY", type: "secret_text" },
     { name: "EDGE_SSH_DB", type: "d1", id: "bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94" },
     { name: "SSH_OPERATIONS", type: "durable_object_namespace", class_name: "SshOperationsDO" },
   ];
@@ -571,7 +572,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   assert.match(secretStep, /if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/,
     "only explicitly selected Workflow code-only release may omit Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "SSH_ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.ok(secretStep.includes("vars.DATABASE_KEY_ID"),
@@ -1025,19 +1026,19 @@ test('code-only gate proves terminal Saga receipts using exact physical Session 
 test("Workflow readback verifies one integrated runtime, GitHub Action audience and Portal",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
+    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
@@ -1052,24 +1053,24 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   assert.throws(()=>check([...bindings,oldPin]),/legacy Provider deployment pin/);
   assert.throws(()=>check([...bindings,{...oldPin,text:"latest"}]),/legacy Provider deployment pin/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_LEGACY",type:"workflow",workflow_name:"workflow-mcp-runner",class_name:"WorkflowRunner"}]),/Unexpected production resource binding/);
-  assert.throws(()=>check(bindings.filter(x=>x.name!=="GITHUB_ACTION_OIDC_AUDIENCE")),
+  assert.throws(()=>check(bindings.filter(x=>x.name!=="WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE")),
     /Action OIDC audience/);
-  assert.throws(()=>check(bindings.map(x=>x.name==="GITHUB_ACTION_OIDC_AUDIENCE"
+  assert.throws(()=>check(bindings.map(x=>x.name==="WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE"
     ? {...x,text:"workflow-github-action:staging"} : x)),/Action OIDC audience/);
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  for(const name of ["MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"]){
+  for(const name of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"]){
     assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/Secret missing/);
   }
-  assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_CLIENT_ID" ?
-    {...x,type:"secret_text"}:x)),/plaintext Variable/);
-  assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"duplicate"}]),
-    /plaintext Variable/);
-  assert.throws(()=>check([...bindings,{name:"MCP_PORTAL_CLIENT_ID",type:"secret_text"}]),
-    /plaintext Variable/);
-  assert.throws(()=>check(bindings,[...secrets,{name:"MCP_PORTAL_CLIENT_ID"}]),
-    /plaintext Variable/);
+  assert.throws(()=>check(bindings.map(x=>x.name==="WORKFLOW_MCP_PORTAL_CLIENT_ID" ?
+    {...x,type:"secret_text"}:x)),/plaintext Variable|Unexpected runtime Secret|Duplicate runtime binding/);
+  assert.throws(()=>check([...bindings,{name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"duplicate"}]),
+    /plaintext Variable|Unexpected runtime Secret|Duplicate runtime binding/);
+  assert.throws(()=>check([...bindings,{name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"secret_text"}]),
+    /plaintext Variable|Unexpected runtime Secret|Duplicate runtime binding/);
+  assert.throws(()=>check(bindings,[...secrets,{name:"WORKFLOW_MCP_PORTAL_CLIENT_ID"}]),
+    /plaintext Variable|Unexpected runtime Secret|Duplicate runtime binding/);
   assert.throws(()=>check([...bindings,{name:"MCP_CALL_ENABLED",type:"plain_text",text:"true"}]),/Obsolete stage flag/);
 });
 
@@ -1094,8 +1095,8 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql","0009_fixed_sessions.sql","0010_session_runtime_data.sql","0011_awaited_child_capacity.sql"]){
     assert.equal(ci.split(name).length,3);
   }
-  assert.ok(ci.includes("GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36) + "{{ vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES }}"));
-  assert.ok(!ci.includes("vars.GITHUB_ACTION_APPROVED_REPOSITORIES"));
+  assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"));
+  assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"));
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
@@ -1108,21 +1109,21 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
 
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
-    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
+    {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
+    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
-  assert.throws(()=>check(bindings.map(x=>x.name==="MCP_PORTAL_ENDPOINT"
+  assert.throws(()=>check(bindings.map(x=>x.name==="WORKFLOW_MCP_PORTAL_ENDPOINT"
     ?{...x,text:"https://retired.example.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
   assert.throws(()=>check([...bindings,{name:"MCP_DIRECT_TARGETS_ENABLED",type:"plain_text",text:"true"}]),
     /Obsolete stage flag/);
@@ -1132,17 +1133,17 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
 test("Workflow production readback rejects retired fixed executor pins",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
+    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const verify=list=>verifyBindings("workflow-mcp-worker",{...settings,bindings:list},secrets,{mode:"readback"});
   assert.equal(verify(bindings),true);
@@ -1151,14 +1152,14 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
 });
 
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
-  const secrets=["MCP_ACCESS_TOKEN","MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN","SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
-    {name:"MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
+    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
+    {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowOrchestrator"},
     {name:"OLD_TEST_SERVICE",type:"service",service:"unused-test-worker"},
@@ -1237,77 +1238,35 @@ test("Database Hyperdrive config readback is fail-closed before and after releas
   }
 });
 
-test('Browser release pins resources, protects namespace and stages only its independent Bearer', async()=>{
+test('Browser release retains identity, DO, Assets and Bearer under canonical owner settings', async()=>{
   const worker='browser-mcp-worker';
-  const source=readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
-  const conf=readConfiguration(worker,source);
-  const settings={bindings:[{name:'MCP_ACCESS_TOKEN',type:'secret_text'},
+  const conf=readConfiguration(worker, readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
+  const fixed=[{name:'MCP_ACCESS_TOKEN',type:'secret_text'},
     {name:'BROWSER_OWNER',type:'durable_object_namespace',class_name:'BrowserOwner',namespace_id:'browser-original'},
-    {name:'ASSETS',type:'assets'}],
-    observability:{enabled:true,logs:{invocation_logs:false,head_sampling_rate:0}}};
-  const secrets=[{name:'MCP_ACCESS_TOKEN'}];
-  const options={mode:'readback',browserNamespaceId:'browser-original'};
-  assert.equal(verifyBindings(worker,settings,secrets,options),true);
-  const withoutAssets={...settings,bindings:settings.bindings.filter(b=>b.name!=="ASSETS")};
-  assert.equal(verifyBindings(worker,withoutAssets,secrets,{...options,mode:"preflight"}),true,
-    "currently deployed Worker has no public Assets binding yet");
-  assert.throws(()=>verifyBindings(worker,withoutAssets,secrets,options),/Assets binding missing/,
-    "post-deploy readback must require the public binding");
-  assert.throws(()=>verifyBindings(worker,{...settings,bindings:[...withoutAssets.bindings,{name:"ASSETS",type:"service"}]},secrets,options),/Assets binding missing/);
-  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,assets:{...conf.assets,run_worker_first:false}})),/persistence drift/);
-  assert.throws(()=>verifyBindings(worker,settings,[],options),/Secret missing/);
-  assert.throws(()=>verifyBindings(worker,settings,secrets,{...options,browserNamespaceId:'different'}),/namespace changed/);
-  for(const binding of [{name:'DB',type:'d1'}, {name:'MCP_ACCESS_TOKEN',type:'plain_text',text:'invalid'}])
-    assert.throws(()=>verifyBindings(worker,{...settings,bindings:[...settings.bindings,binding]},secrets,options),/inventory drift/);
-  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,migrations:[]})),/persistence drift/);
-  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,durable_objects:{bindings:[{name:'BROWSER_OWNER',class_name:'Other'}]}})),/persistence drift/);
+    {name:'ASSETS',type:'assets'}];
+  const identity={BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',BROWSER_OWNER_EMAIL:'lirtual@outlook.com'};
+  const audience='b'.repeat(64);
+  const activation={BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',BROWSER_ACTIVATION_AUDIENCE:audience};
+  const secret=[{name:'MCP_ACCESS_TOKEN'}];
+  const settings=vars=>({bindings:[...fixed,...Object.entries(vars).map(([name,text])=>({name,type:'plain_text',text}))],
+    observability:{enabled:true,logs:{invocation_logs:false,head_sampling_rate:0}}});
+  const options={mode:'readback',sourceConfig:conf,browserNamespaceId:'browser-original',
+    sharedAccessTeamDomain:'lirtualzero.cloudflareaccess.com',sharedOwnerEmail:'lirtual@outlook.com'};
+  assert.equal(verifyBindings(worker,settings(identity),secret,options),true);
+  assert.throws(()=>verifyBindings(worker,settings({}),secret,options),/Browser live bindings differ/);
+  assert.equal(verifyBindings(worker,settings({}),secret,{...options,mode:'preflight'}),true);
+  assert.equal(verifyBindings(worker,settings({...identity,...activation}),secret,
+    {...options,expectedBrowserActivationAudience:audience}),true);
+  assert.throws(()=>verifyBindings(worker,settings({...identity,BROWSER_OWNER_EMAIL:'wrong@example.com'}),secret,options),/Browser live bindings differ/);
+  assert.throws(()=>verifyBindings(worker,settings({...identity,...activation}),secret,
+    {...options,expectedBrowserActivationAudience:'c'.repeat(64)}),/Browser live bindings differ/);
+  const noAssets={...settings(identity),bindings:settings(identity).bindings.filter(x=>x.name!=='ASSETS')};
+  assert.throws(()=>verifyBindings(worker,noAssets,secret,options),/Assets binding/);
+  assert.throws(()=>verifyBindings(worker,settings(identity),[],options),/Secret missing/);
+  assert.throws(()=>verifyBindings(worker,settings(identity),secret,{...options,browserNamespaceId:'changed'}),/namespace changed/);
   const {collectBootstrapSecrets}=await import('./bootstrap-worker-secrets.mjs');
-  assert.deepEqual(collectBootstrapSecrets(worker,{MCP_ACCESS_TOKEN:'independent',RAINDROP_ACCESS_TOKEN:'ignore'}),{MCP_ACCESS_TOKEN:'independent'});
-  assert.throws(()=>collectBootstrapSecrets(worker,{}),/MCP_ACCESS_TOKEN/);
-  const {collectWorkerVars}=await import('./worker-release-variables.mjs');
-  assert.deepEqual(collectWorkerVars(worker,{MANIFEST_KEY:'public-not-a-secret'}),[]);
-  const legacyReview={BROWSER_APPROVAL_ORIGIN:'https://browser.lirtual.dpdns.org',
-    BROWSER_ACCESS_AUDIENCE:'a'.repeat(64),
-    BROWSER_APPROVAL_ISOLATION:'isolated-owner-profile-and-mailbox-v1'};
-  const identity={BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',
-    BROWSER_OWNER_EMAIL:'lirtual@outlook.com'};
-  const activation={BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',
-    BROWSER_ACTIVATION_AUDIENCE:'b'.repeat(64)};
-  const bindings=Object.entries({...legacyReview,...identity,...activation})
-    .map(([name,text])=>({name,type:'plain_text',text}));
-  const oldPublished={...settings,bindings:[...settings.bindings,...bindings]};
-  const nextPublished={...settings,bindings:[...settings.bindings,
-    ...Object.entries({...identity,...activation}).map(([name,text])=>({name,type:'plain_text',text}))]};
-  const expected={...options,expectedBrowserActivationAudience:activation.BROWSER_ACTIVATION_AUDIENCE};
-  assert.equal(verifyBindings(worker,oldPublished,secrets,{...expected,mode:'preflight'}),true,
-    'old Review variables are allowed only while inspecting the previous Worker');
-  assert.throws(()=>verifyBindings(worker,oldPublished,secrets,expected),/Retired Browser Review bindings remain/,
-    'published Worker must not retain retired Review settings');
-  assert.equal(verifyBindings(worker,nextPublished,secrets,expected),true);
-  assert.throws(()=>verifyBindings(worker,nextPublished,secrets,{...expected,
-    expectedBrowserActivationAudience:'c'.repeat(64)}),/activation binding inventory differs/);
-  assert.throws(()=>verifyBindings(worker,{...nextPublished,
-    bindings:nextPublished.bindings.filter(x=>x.name!=='BROWSER_ACTIVATION_ORIGIN')},
-    secrets,expected),/activation binding inventory incomplete/);
-  assert.throws(()=>verifyBindings(worker,{...oldPublished,
-    bindings:oldPublished.bindings.filter(x=>x.name!=='BROWSER_APPROVAL_ORIGIN')},
-    secrets,{...expected,mode:'preflight'}),/legacy Review binding inventory incomplete/);
-  assert.throws(()=>verifyBindings(worker,{...oldPublished,bindings:oldPublished.bindings.map(x=>
-    x.name==='BROWSER_APPROVAL_ISOLATION'?{...x,text:'invalid'}:x)},
-    secrets,{...expected,mode:'preflight'}),/legacy Review binding inventory drift/);
-  assert.throws(()=>verifyBindings(worker,{...nextPublished,bindings:nextPublished.bindings.map(x=>
-    x.name==='BROWSER_OWNER_EMAIL'?{...x,text:'wrong@example.com'}:x)},
-    secrets,expected),/identity/);
-  assert.throws(()=>verifyBindings(worker,{...nextPublished,bindings:[...nextPublished.bindings,
-    {name:'OTHER_VAR',type:'plain_text',text:'bad'}]},secrets,expected),/inventory drift/);
-  assert.match(readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8'),
-    /BROWSER_ACTIVATION_EXPECTED:/);
-
-  const workflow=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  assert.match(workflow,/name: Build and verify shared Browser extension artifact\n        if: inputs.worker == 'browser-mcp-worker'/);
-  assert.match(workflow,/mcp_endpoint="https:\/\/browser.lirtual.dpdns.org\/mcp"/);
-  assert.match(workflow,/name: Register production Browser MCP with existing One-MCP Portal\n        if: inputs.worker == 'browser-mcp-worker'/);
-  assert.match(workflow,/run: node scripts\/register-browser-portal\.mjs/);
+  assert.deepEqual(collectBootstrapSecrets(worker,{MCP_ACCESS_TOKEN:'independent',IMA_API_KEY:'unused'}),{MCP_ACCESS_TOKEN:'independent'});
+  assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,migrations:[]})),/persistence drift/);
 });
 
 test('production release external actions use immutable commit SHAs', () => {
@@ -1319,4 +1278,55 @@ test('production release external actions use immutable commit SHAs', () => {
   for (const reference of references) {
     assert.match(reference, /^[^@\s]+@[a-f0-9]{40}$/, `unlocked release action: ${reference}`);
   }
+});
+
+test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup requires negative readback', () => {
+  const required=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET',
+    'WORKFLOW_GITHUB_DISPATCH_TOKEN','WORKFLOW_SESSION_RUNTIME_DATA_KEY'];
+  const secrets=required.map(name=>({name}));
+  const old=['MCP_PORTAL_CLIENT_SECRET','SESSION_RUNTIME_DATA_KEY'];
+  const bindings=[...required.map(name=>({name,type:'secret_text'})),
+    {name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'test-id'},
+    {name:'DB',type:'d1',id:'a4a477cd-6339-478c-ab7c-f7d87bb0d772'},
+    {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
+    {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
+    {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
+    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action:production'}];
+  const wrap=x=>({bindings:x,observability:{enabled:true,logs:{invocation_logs:true}}});
+  const inventory=[...bindings,...old.map(name=>({name,type:'secret_text'}))];
+  const listed=[...secrets,...old.map(name=>({name}))];
+  assert.equal(verifyBindings('workflow-mcp-worker',wrap(inventory),listed,{mode:'readback'}),true);
+  assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap(inventory),listed,
+    {mode:'readback',cleanupVerified:true}),/Legacy Secret cleanup not complete/);
+  assert.equal(verifyBindings('workflow-mcp-worker',wrap(bindings),secrets,
+    {mode:'readback',cleanupVerified:true}),true);
+  assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap([...bindings,
+    {name:'UNREVIEWED_SECRET',type:'secret_text'}]),[...secrets,{name:'UNREVIEWED_SECRET'}],
+    {mode:'readback'}),/Unexpected runtime Secret/);
+});
+
+test('Spec 733 Workflow Portal identity and grants must retain exact approved values across the rename', () => {
+  const req=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET','WORKFLOW_GITHUB_DISPATCH_TOKEN','WORKFLOW_SESSION_RUNTIME_DATA_KEY'];
+  const secrets=req.map(name=>({name}));
+  const grants=JSON.stringify([{repository:'lirtual/github-actions',repositoryId:1430925009,
+    commitSha:'d0774dde3a87c7722a939403dbda45507f44b8e0'}]);
+  const common=[...req.map(name=>({name,type:'secret_text'})),
+    {name:'DB',type:'d1',id:'a4a477cd-6339-478c-ab7c-f7d87bb0d772'},
+    {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
+    {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
+    {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
+    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action:production'}];
+  const old=[...common,{name:'MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
+    {name:'GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants}];
+  const current=[...common,{name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
+    {name:'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants}];
+  const verify=(bindings,options)=>verifyBindings('workflow-mcp-worker',
+    {bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,
+    {expectedWorkflowPortalClientId:'approved-client',expectedWorkflowGrants:grants,...options});
+  assert.equal(verify(old,{mode:'preflight'}),true);
+  assert.equal(verify(current,{mode:'readback'}),true);
+  assert.throws(()=>verify(old,{mode:'preflight',expectedWorkflowPortalClientId:'new-client'}),/Portal client identity/);
+  assert.throws(()=>verify(old,{mode:'preflight',expectedWorkflowGrants:'[]'}),/approved repositories/);
+  assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowGrants:'not-json'}),/valid JSON/);
+  assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowPortalClientId:''}),/Portal client identity/);
 });

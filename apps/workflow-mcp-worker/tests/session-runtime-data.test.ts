@@ -60,8 +60,8 @@ function fixture(){
    },
   }),
  } as unknown as D1Database;
- const env={DB:d1,GITHUB_ACTION_OIDC_AUDIENCE:audience,
-  SESSION_RUNTIME_DATA_KEY:Buffer.alloc(32,7).toString('base64'),
+ const env={DB:d1,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
+  WORKFLOW_SESSION_RUNTIME_DATA_KEY:Buffer.alloc(32,7).toString('base64'),
   WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-physical-inspection-token'} as Env;
  const stored=()=>db.prepare('SELECT * FROM session_runtime_data').get() as
   Record<string,unknown>|undefined;
@@ -171,15 +171,15 @@ test('physical ambiguity, TTL, key rotation, tampering and cancellation fail clo
   {status:'unavailable',reason:'physical_unverified'});
  assert.deepEqual(await getSessionRuntimeData(env,runId,stepId,key,physicalRunning,
   ()=>Date.now()+91_000),{status:'unavailable',reason:'expired'});
- const secret=env.SESSION_RUNTIME_DATA_KEY;
- env.SESSION_RUNTIME_DATA_KEY=Buffer.alloc(32,8).toString('base64');
+ const secret=env.WORKFLOW_SESSION_RUNTIME_DATA_KEY;
+ env.WORKFLOW_SESSION_RUNTIME_DATA_KEY=Buffer.alloc(32,8).toString('base64');
  assert.deepEqual(await getSessionRuntimeData(env,runId,stepId,key,physicalRunning),
   {status:'unavailable',reason:'unavailable'});
  assert.equal((await send(env,2,'ready')).status,200);
- env.SESSION_RUNTIME_DATA_KEY=secret;
+ env.WORKFLOW_SESSION_RUNTIME_DATA_KEY=secret;
  assert.deepEqual(await getSessionRuntimeData(env,runId,stepId,key,physicalRunning),
   {status:'unavailable',reason:'unavailable'});
- env.SESSION_RUNTIME_DATA_KEY=Buffer.alloc(32,8).toString('base64');
+ env.WORKFLOW_SESSION_RUNTIME_DATA_KEY=Buffer.alloc(32,8).toString('base64');
  assert.equal((await send(env,3,'ready')).status,200);
  db.exec("UPDATE session_runtime_data SET ciphertext='AAAA' WHERE run_id='"+runId+"'");
  assert.deepEqual(await getSessionRuntimeData(env,runId,stepId,key,physicalRunning),

@@ -51,7 +51,7 @@ function parseReport(raw:unknown):Report|null{
  return value as Report;
 }
 function secretKey(env:Env):string{
- const value=env.SESSION_RUNTIME_DATA_KEY;
+ const value=env.WORKFLOW_SESSION_RUNTIME_DATA_KEY;
  // One 256-bit key, canonical base64. No fallback key or plaintext storage.
  if(typeof value!=='string'||!/^[A-Za-z0-9+/]{43}=$/.test(value))throw Error('key_missing');
  const decoded=unbase64(value);
@@ -156,7 +156,7 @@ const httpResult=(status:number,code:string)=>Response.json({result:code},
 export async function handleSignedSessionDataReport(request:Request,env:Env,
  keys?:GithubActionKeys):Promise<Response>{
  if(request.method!=='POST')return httpResult(405,'method_not_allowed');
- if(!env.DB||!env.GITHUB_ACTION_OIDC_AUDIENCE)return httpResult(503,'unavailable');
+ if(!env.DB||!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE)return httpResult(503,'unavailable');
  const auth=request.headers.get('authorization')||'';
  if(!auth.startsWith('Bearer ')||auth.length>8300)return httpResult(401,'unauthorized');
  const jwt=auth.slice(7);
@@ -185,7 +185,7 @@ export async function handleSignedSessionDataReport(request:Request,env:Env,
  if(!report)return httpResult(400,'invalid_request');
  try{
   const verified=await verifyPinnedGitHubActionIdentity(env.DB,report.attemptId,jwt,
-   env.GITHUB_ACTION_OIDC_AUDIENCE,keys, true);
+   env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,keys, true);
   if(!verified||verified.action.type!=='session'||
      verified.action.repository!==ACTION_REPO||
      verified.action.workflowPath!==ACTION_PATH||

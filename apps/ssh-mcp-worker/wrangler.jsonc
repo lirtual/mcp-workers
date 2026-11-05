@@ -32,7 +32,7 @@
   "secrets": {
     "required": [
       "MCP_ACCESS_TOKEN",
-      "ENCRYPTION_KEY"
+      "SSH_ENCRYPTION_KEY"
     ]
   },
   "d1_databases": [

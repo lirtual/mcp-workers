@@ -60,7 +60,7 @@ class SyntheticD1 implements D1Database {
 
 function environment(db = new SyntheticD1(), key = fixture.key, onDoCall: () => void = () => { throw new Error('unexpected DO call'); }): Env & { EDGE_SSH_DB: SyntheticD1 } {
   return {
-    MCP_ACCESS_TOKEN: 'synthetic-mcp-token', ENCRYPTION_KEY: key, EDGE_SSH_DB: db,
+    MCP_ACCESS_TOKEN: 'synthetic-mcp-token', SSH_ENCRYPTION_KEY: key, EDGE_SSH_DB: db,
     SSH_OPERATIONS: { getByName: () => { onDoCall(); throw new Error('unexpected DO call'); } } as unknown as Env['SSH_OPERATIONS'],
   };
 }
@@ -73,7 +73,7 @@ test('reads the pinned upstream-generated AES-GCM v1 fixture and projects only h
     id: fixture.hostId, name: 'Synthetic fixture', group: 'Tests', host: 'fixture.example.test',
     port: 2222, username: 'fixture-user', authMethod: 'password', trustReady: true, readinessReason: 'ready',
   });
-  assert.doesNotMatch(JSON.stringify(result), /synthetic-password|synthetic-initial-command|encryptedPayload|ENCRYPTION_KEY|privateKey/);
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-password|synthetic-initial-command|encryptedPayload|SSH_ENCRYPTION_KEY|privateKey/);
 });
 
 async function encryptedFixture(value: unknown, recordId: string): Promise<string> {

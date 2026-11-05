@@ -8,7 +8,7 @@ function writableConnection(id: string, writeUrl: string) {
   const env: Env = {
     RATE_LIMITER: { async limit() { return { success: true }; } },
 
-    MAX_WRITE_AFFECTED_ROWS: '1'
+    DATABASE_MAX_WRITE_AFFECTED_ROWS: '1'
   };
   const catalog = parseDatabaseConfig(JSON.stringify({ [id]: writeUrl }));
   return {

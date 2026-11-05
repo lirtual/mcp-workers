@@ -52,7 +52,7 @@ describe('isolated catalog fixtures', () => {
   });
 
   it('preserves global limits and affected-row caps', () => {
-    const env = baseEnv({ MAX_ROWS: '25', MAX_WRITE_AFFECTED_ROWS: '3' });
+    const env = baseEnv({ DATABASE_MAX_ROWS: '25', DATABASE_MAX_WRITE_AFFECTED_ROWS: '3' });
     const catalog = parseDatabaseConfig(JSON.stringify({ primary: 'mysql://u:p@h/db' }));
     expect(resolveConnection(env, catalog).limits.maxRows).toBe(25);
     expect(resolveWriteConnection(env, catalog).maxAffectedRows).toBe(3);

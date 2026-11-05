@@ -27,7 +27,7 @@ function setup(t:test.TestContext){
   for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
     db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   let dispatches=0;
-  const env={GITHUB_ACTION_OIDC_AUDIENCE:aud,
+  const env={WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:aud,
     DB:{prepare(sql:string){
       let args:any[]=[];
       return {
@@ -69,9 +69,9 @@ test('GitHub event compiler enforces one exact repository, branch, relay and dec
   ])await assert.rejects(()=>compilePlan(wf(change)),PlanError);
   await assert.rejects(()=>compilePlan({...wf(),inputs:{other:null}}),PlanError);
   const capability=await workflowCapabilities({
-    GITHUB_ACTION_OIDC_AUDIENCE:aud,
-    MCP_PORTAL_ENDPOINT:undefined,MCP_PORTAL_CLIENT_ID:undefined,
-    MCP_PORTAL_CLIENT_SECRET:undefined,GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,
+    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:aud,
+    WORKFLOW_MCP_PORTAL_ENDPOINT:undefined,WORKFLOW_MCP_PORTAL_CLIENT_ID:undefined,
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:undefined,WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,
     WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
   },'trigger.github_event');
   assert.equal(capability.availability,'supported_with_relay');

@@ -4,7 +4,7 @@ import { reviewedGitHubAction } from './github-action-review.ts';
 
 export type ActionCatalogEnv = {
   WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
-  GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
+  WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
 };
 export type ApprovedRepository = {
   repository: string;
@@ -92,7 +92,7 @@ async function describeSource(source:GitHubActionSource,ref?:string) {
  * dispatch independently re-verify exact ref, commit and contract identities.
  */
 export async function listAvailableGitHubActions(env:ActionCatalogEnv,http:Http=fetch){
-  const grants=approvedActionRepositories(env.GITHUB_ACTION_APPROVED_REPOSITORIES);
+  const grants=approvedActionRepositories(env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES);
   if(!grants.length)return {actions:[]};
   const token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   if(!token)throw Error('github_action_catalog_token_missing');

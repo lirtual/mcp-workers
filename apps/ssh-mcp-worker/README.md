@@ -7,7 +7,7 @@ It supports EdgeSSH hosts with inline passwords/keys and upstream keychain refer
 ## Production cutover requirements
 
 - Do not replace EdgeSSH's existing ENCRYPTION_KEY while encrypted host, snippet or keychain rows still use the old key. Cloudflare does not return existing Worker Secret values. When the original key cannot be recovered, migrate **all** encrypted record families atomically using both old and new keys in a controlled process, and verify rollback before updating either Worker.
-- Save the same canonical 32-byte Base64 ENCRYPTION_KEY securely as the GitHub Actions Secret for EdgeSSH and as the ssh-mcp-worker GitHub Environment Secret in mcp-workers. Do not commit or log its value.
+- Save the same canonical 32-byte Base64 ENCRYPTION_KEY securely as the GitHub Actions Secret for EdgeSSH and as the `SSH_ENCRYPTION_KEY` ssh-mcp-worker GitHub Environment Secret in mcp-workers. Do not commit or log its value.
 - Preserve EdgeSSH's existing D1 and SSH MCP's existing SSH_OPERATIONS Durable Object namespace. The SSH Worker release verifies the expected live D1 ID and disallows the retired Broker Service Binding and Secret.
 - Only after authenticated EdgeSSH and actual SSH/SFTP checks pass should the EdgeSSH fork be reset to an upstream commit and its normal automatic upstream synchronization resumed.
 
@@ -59,3 +59,5 @@ The deployment manifest pins the production EdgeSSH D1 identifier (not a credent
 The public MCP names are `file_list`, `file_read_text`, `file_write_text`, `file_move`, `file_delete`, `file_mkdir`, `ssh_session_send`, and `ssh_session_read`, replacing the corresponding six former `sftp_*` names and `ssh_session_input` / `ssh_session_output`. Existing `list_hosts`, `get_host`, `ssh_exec`, `get_operation_status`, `ssh_session_start`, `ssh_session_status`, and `ssh_session_stop` do not change. `file_move` uses SFTP rename for both same-filesystem moves and renames and retains the `old_path` / `new_path` request arguments. The transport remains SFTP, and text files are still limited to UTF-8 and the existing byte budgets; no binary-transfer, cross-filesystem move, or other behavior change is implied.
 
 Persisted DO operation intent identifiers intentionally retain their previous internal digest strings (`sftp_write`, `sftp_rename`, `sftp_delete`, `sftp_mkdir`, `ssh_session_input`) to preserve existing `operation_id` no-replay behavior across this public tool rename. The legacy externally visible tool names are removed rather than exposed as duplicate aliases. Consumers must update their tool-name references before rollout.
+
+Spec #733: the SSH MCP binding is named `SSH_ENCRYPTION_KEY`, while upstream EdgeSSH keeps `ENCRYPTION_KEY`. The **same existing bytes**, D1 data and DO state must be retained. The old MCP secret may persist until separately approved deletion and negative inventory readback.

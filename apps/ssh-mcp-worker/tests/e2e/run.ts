@@ -88,7 +88,7 @@ const stop = (child: typeof fixture) => { if (child.exitCode === null) child.kil
 let wrangler: ReturnType<typeof spawn> | undefined;
 const startWorker = () => {
   const child = spawn('pnpm', ['exec', 'wrangler', 'dev', '--local', '--config', config, '--port', String(workerPort),
-    '--persist-to', state, '--var', `MCP_ACCESS_TOKEN:${activeToken}`, '--var', `ENCRYPTION_KEY:${encryptionKey}`], {
+    '--persist-to', state, '--var', `MCP_ACCESS_TOKEN:${activeToken}`, '--var', `SSH_ENCRYPTION_KEY:${encryptionKey}`], {
     cwd: app, stdio: ['ignore', 'pipe', 'pipe'],
   });
   wrangler = child;
@@ -1073,7 +1073,7 @@ try {
   assert.equal(missingFile.value.error, 'host_unreachable');
   assert.equal(missingFile.value.text, undefined);
   const sftpResults = [blockedList, privateTarget, wrongPin, missingCredential, sftpListed, readText, many, binary, oversized, envelope, missingFile];
-  assert.doesNotMatch(JSON.stringify(sftpResults), /synthetic-password|synthetic-initial-command|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(sftpResults), /synthetic-password|synthetic-initial-command|privateKey|SSH_ENCRYPTION_KEY/);
   assert.equal((await readFile(authLog, 'utf8')).match(/exec-command:/g)?.length ?? 0, sftpCallsBefore.exec, 'SFTP must not run initialCommand or another exec');
   assert.equal(await shellOpens(), sftpCallsBefore.shells, 'SFTP must not open a managed shell');
   const operationsAfter = await fixtureRequest<{ count: number }>('operation-count', {});
@@ -1085,7 +1085,7 @@ try {
   });
   assert.equal(privateRename.value.error, 'invalid_target');
   assert.equal((await readFile(authLog, 'utf8')).match(/sftp-subsystem/g)?.length ?? 0, subsystemsBeforePrivateRename, 'a private rename target must not open SFTP');
-  assert.doesNotMatch(JSON.stringify(privateRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(privateRename), /synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const leasesAfterReads = await fixtureRequest<{ total: number; perHost: Record<string, number> }>('lease-count', {});
   assert.equal(leasesAfterReads?.perHost[secondHostId] ?? 0, 0, 'a finished SFTP call releases its connection lease');
 
@@ -1133,11 +1133,11 @@ try {
   assert.equal(created.value.bytes, Buffer.byteLength(writeTextBody));
   assert.equal(created.value.text, undefined);
   assert.equal(created.value.partial_write, undefined);
-  assert.doesNotMatch(JSON.stringify(created), /héllo write|synthetic-password|synthetic-initial-command|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(created), /héllo write|synthetic-password|synthetic-initial-command|privateKey|SSH_ENCRYPTION_KEY/);
   const writeReceipt = await fixtureRequest('read-receipt', { operationId: writeOperationId });
   assert.ok(writeReceipt);
   assert.equal(writeReceipt.status, 'completed');
-  assert.doesNotMatch(JSON.stringify(writeReceipt), /héllo write|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(writeReceipt), /héllo write|synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const expectedWriteDigest = await digestVector({
     tool: 'sftp_write', hostId: secondHostId, sessionId: null, normalizedArgs: [writePath, writeTextBody, false],
   });
@@ -1196,7 +1196,7 @@ try {
     path: writePath, text: 'x', overwrite: true,
   });
   assert.equal(wrongPinWrite.value.error, 'host_untrusted');
-  assert.doesNotMatch(JSON.stringify(wrongPinWrite), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(wrongPinWrite), /synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const missingCredentialWrite = await call(232, 'file_write_text', {
     host_id: missingCredentialHostId, operation_id: 'c7c7c7c7-c7c7-47c7-87c7-c7c7c7c7c7c7',
     path: writePath, text: 'x', overwrite: true,
@@ -1283,7 +1283,7 @@ try {
   });
   assert.equal(renamedFile.value.status, 'completed', JSON.stringify(renamedFile));
   assert.equal(renamedFile.value.partial_write, undefined);
-  assert.doesNotMatch(JSON.stringify(renamedFile), /rename-body-93|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(renamedFile), /rename-body-93|synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const renameReceipt = await fixtureRequest('read-receipt', { operationId: renameOperationId });
   assert.ok(renameReceipt);
   assert.equal(renameReceipt.status, 'completed');
@@ -1291,7 +1291,7 @@ try {
     tool: 'sftp_rename', hostId: secondHostId, sessionId: null, normalizedArgs: [renameSource, renameDestination, false],
   });
   assert.equal(renameReceipt.digest, expectedRenameDigest.digest);
-  assert.doesNotMatch(renameReceipt.result_json ?? '', /rename-body-93|synthetic-password|privateKey|ENCRYPTION_KEY|rename-src-93/);
+  assert.doesNotMatch(renameReceipt.result_json ?? '', /rename-body-93|synthetic-password|privateKey|SSH_ENCRYPTION_KEY|rename-src-93/);
   const readRenamed = await call(262, 'file_read_text', { host_id: secondHostId, path: renameDestination });
   assert.equal(readRenamed.value.text, renameBody);
   const readOld = await call(263, 'file_read_text', { host_id: secondHostId, path: renameSource });
@@ -1344,7 +1344,7 @@ try {
     tool: 'sftp_mkdir', hostId: secondHostId, sessionId: null, normalizedArgs: ['/fixture/tree-93'],
   });
   assert.equal(mkdirReceipt?.digest, expectedMkdirDigest.digest);
-  assert.doesNotMatch(mkdirReceipt?.result_json ?? '', /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(mkdirReceipt?.result_json ?? '', /synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const madeChild = await call(273, 'file_mkdir', {
     host_id: secondHostId, operation_id: 'eaeaeaea-eaea-4aea-8aea-eaeaeaeaeaea', path: '/fixture/tree-93/child',
   });
@@ -1419,14 +1419,14 @@ try {
   });
   assert.equal(deletedNote.value.status, 'completed', JSON.stringify(deletedNote));
   assert.equal(deletedNote.value.partial_write, undefined);
-  assert.doesNotMatch(JSON.stringify(deletedNote), /kept|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(deletedNote), /kept|synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const noteReceipt = await fixtureRequest('read-receipt', { operationId: deleteNoteId });
   const expectedDeleteDigest = await digestVector({
     tool: 'sftp_delete', hostId: secondHostId, sessionId: null,
     normalizedArgs: ['/fixture/tree-93/child/note.txt', 'file', true],
   });
   assert.equal(noteReceipt?.digest, expectedDeleteDigest.digest);
-  assert.doesNotMatch(noteReceipt?.result_json ?? '', /kept|note\.txt|synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(noteReceipt?.result_json ?? '', /kept|note\.txt|synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const replayDelete = await call(288, 'file_delete', {
     host_id: secondHostId, operation_id: deleteNoteId,
     path: '/fixture/tree-93/child/note.txt', kind: 'file', confirm: true,
@@ -1451,7 +1451,7 @@ try {
     old_path: renameDestination, new_path: '/fixture/nope-93.txt', overwrite: false,
   });
   assert.equal(wrongPinRename.value.error, 'host_untrusted');
-  assert.doesNotMatch(JSON.stringify(wrongPinRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(wrongPinRename), /synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
 
   const stallRenameId = 'f4f4f4f4-f4f4-44f4-84f4-f4f4f4f4f4f4';
   const stalledRename = call(293, 'file_move', {
@@ -1504,7 +1504,7 @@ try {
   });
   assert.equal(commitRename.value.status, 'unknown', JSON.stringify(commitRename));
   assert.equal(commitRename.value.partial_write, undefined);
-  assert.doesNotMatch(JSON.stringify(commitRename), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify(commitRename), /synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   await control('DELETE', 'terminal-update-failure');
   const commitRenameReplay = await call(298, 'file_move', {
     host_id: secondHostId, operation_id: commitRenameId,
@@ -1602,7 +1602,7 @@ try {
   assert.equal(hostMetadata.isError, false);
   assert.equal(mixedStatus.value.status, 'live');
   assert.equal(mixedReceipt.value.status, 'completed');
-  assert.doesNotMatch(JSON.stringify([metadata, hostMetadata, mixedStatus, mixedReceipt]), /synthetic-password|privateKey|ENCRYPTION_KEY/);
+  assert.doesNotMatch(JSON.stringify([metadata, hostMetadata, mixedStatus, mixedReceipt]), /synthetic-password|privateKey|SSH_ENCRYPTION_KEY/);
   const leasesDuringMetadata = await fixtureRequest<{ perHost: Record<string, number> }>('lease-count', {});
   assert.equal(leasesDuringMetadata?.perHost[secondHostId], 2, 'metadata and status do not take a connection slot');
   assert.equal(leasesDuringMetadata?.perHost[thirdHostId], 2);

@@ -4,10 +4,10 @@ import {compilePlan,PlanError,SUPPORTED_STEP_USES,PLAN_LIMITS} from '../src/plan
 import {workflowCapabilities,WORKFLOW_DEFINITION_SCHEMA,reviewedPortalTools,WORKFLOW_ACTION_WITH_SCHEMAS} from '../src/capabilities.ts';
 import {PRODUCTION_PORTAL_ENDPOINT} from '../src/mcp-public-fetch.ts';
 
-const env={GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
-  MCP_PORTAL_ENDPOINT:undefined,MCP_PORTAL_CLIENT_ID:undefined,MCP_PORTAL_CLIENT_SECRET:undefined};
-const portalEnv={...env,MCP_PORTAL_ENDPOINT:PRODUCTION_PORTAL_ENDPOINT,
-  MCP_PORTAL_CLIENT_ID:'test-only-id',MCP_PORTAL_CLIENT_SECRET:'test-only-secret'};
+const env={WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
+  WORKFLOW_MCP_PORTAL_ENDPOINT:undefined,WORKFLOW_MCP_PORTAL_CLIENT_ID:undefined,WORKFLOW_MCP_PORTAL_CLIENT_SECRET:undefined};
+const portalEnv={...env,WORKFLOW_MCP_PORTAL_ENDPOINT:PRODUCTION_PORTAL_ENDPOINT,
+  WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-only-id',WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-only-secret'};
 
 test('overview matches the compiler, exposes only truthful ingress and needs no D1',async()=>{
   const overview=await workflowCapabilities(env);

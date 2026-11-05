@@ -26,23 +26,23 @@
 
 | Environment 名称 | Environment Secrets（不含继承的 `MCP_ACCESS_TOKEN`） | Environment Variables |
 | --- | --- | --- |
-| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（必填）**，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`MAX_ROWS`、`MAX_RESULT_BYTES`、`MAX_SCHEMA_BYTES`、`QUERY_TIMEOUT_MS`、`MAX_WRITE_AFFECTED_ROWS` |
+| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`DATABASE_ACCESS_AUD`（Environment 必填）**；`ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL` 仅在 Repository Variables 中配置，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`DATABASE_MAX_ROWS`、`DATABASE_MAX_RESULT_BYTES`、`DATABASE_MAX_SCHEMA_BYTES`、`DATABASE_QUERY_TIMEOUT_MS`、`DATABASE_MAX_WRITE_AFFECTED_ROWS` |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
-| `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
-| `browser-mcp-worker` | 既有设计要求独立 `MCP_ACCESS_TOKEN` 同名 Environment 覆盖；实际配置尚待核实 | `BROWSER_ACCESS_ISSUER`、`BROWSER_OWNER_EMAIL`、`BROWSER_ACTIVATION_ORIGIN`、`BROWSER_ACTIVATION_AUDIENCE`；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
+| `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY` | 无 |
+| `browser-mcp-worker` | 既有设计要求独立 `MCP_ACCESS_TOKEN` 同名 Environment 覆盖；实际配置尚待核实 | `ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository）、`BROWSER_ACTIVATION_AUDIENCE`（Environment）；其余运行时 Browser Access 值从共享源及 Wrangler Custom Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
-| `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
+| `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`WORKFLOW_SESSION_RUNTIME_DATA_KEY` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` |
 
-表中 Database Owner 的三个 Access Variables、`DATABASE_KEY_ID`、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
+表中 Database Owner 的两个 Repository Variables 和独立的 `DATABASE_ACCESS_AUD` Environment Variable、`DATABASE_KEY_ID`、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
 **Database MCP Spec #344 已切换生产。** 唯一连接目录是 `database-mcp-registry` D1；`DATABASE_CONFIG` 旧格式不再参与发布或运行。现有 GitHub Actions 只读验证数据库绑定、加密记录与 Owner Access，随后发布当前 D1 架构 Worker。旧 D1/Secret 的云端删除属于独立资源清理，不应随普通代码发布自动执行。参见 [Database 生产发布与恢复](./database-cutover-344.md)。
 
 
-当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
+当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `SSH_ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
 
 GitHub 的 Environment 如果配置了所需审批/分支保护，请为每个 Worker 的 Environment **重新设置同等保护**；原 `production` 的保护规则不会继承。Repository 级密钥对拥有工作流修改/运行权限的人仍可见于任务运行上下文，请限制主分支修改权限与发布权限。
 
@@ -52,9 +52,9 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 
 - Raindrop：`RAINDROP_RATE_LIMIT_MAX_RETRIES`（0–10）。
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
-- Database：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（Owner Access 必填）；`DATABASE_KEY_ID`（Environment Variable，必填）；`MAX_ROWS`（1–5000）、`MAX_RESULT_BYTES`（1–8388608）、`MAX_SCHEMA_BYTES`（1–4194304）、`QUERY_TIMEOUT_MS`（1–60000）、`MAX_WRITE_AFFECTED_ROWS`（1–100）。
-- Browser：`BROWSER_ACCESS_ISSUER`、`BROWSER_OWNER_EMAIL` 为审核过的 Owner 身份值；激活需要成对配置 `BROWSER_ACTIVATION_ORIGIN` 与 `BROWSER_ACTIVATION_AUDIENCE`；`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置。旧 Review 的 `BROWSER_APPROVAL_*` / `BROWSER_ACCESS_AUDIENCE` 不再由发布流程传入。
-- Workflow：`MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `GITHUB_ACTION_APPROVED_REPOSITORIES`）。
+- Database：`DATABASE_ACCESS_AUD`（Environment 独立配置）；`ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository 唯一源）；`DATABASE_KEY_ID`（Environment Variable，必填）；`DATABASE_MAX_ROWS`（1–5000）、`DATABASE_MAX_RESULT_BYTES`（1–8388608）、`DATABASE_MAX_SCHEMA_BYTES`（1–4194304）、`DATABASE_QUERY_TIMEOUT_MS`（1–60000）、`DATABASE_MAX_WRITE_AFFECTED_ROWS`（1–100）。
+- Browser：`ACCESS_TEAM_DOMAIN` 和 `OWNER_EMAIL` 仅使用 Repository Variables；运行时 Browser issuer、owner 和激活 origin 从共享身份与 Custom Domain 派生；只单独设置 `BROWSER_ACTIVATION_AUDIENCE`；`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置。旧 Review 的 `BROWSER_APPROVAL_*` / `BROWSER_ACCESS_AUDIENCE` 不再由发布流程传入。
+- Workflow：`WORKFLOW_MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`）。
 - SSH、GitHub Actions：无额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导，`RCA_PERMANENT_IDLE_DAYS` 为可选变量。
 
 未填写可选 Variable 时仍采用 `wrangler.jsonc` 中的默认值；GitHub 中填写时会由 `wrangler deploy --var` 传入**当前选中的 Worker**，并在发布前进行类型/范围验证。受管 Worker 使用 `keep_vars: false`，所以旧 Cloudflare Dashboard 中**没有在源码或当前 GitHub Variables 明确声明的普通 Variable 会在下次手动部署后被清理**。不要把数据库密码或访问 Token 当作 Variable；Durable Object、Service Binding 和 Secret 不属于这些可选纯文本 Variable。
@@ -68,7 +68,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 5. 若 Worker 已存在，GitHub 的必需 Secret 值会覆盖 Cloudflare 对应值。Remote Control 也使用同一套密钥同步规则，但其 `DEVICE_COORDINATOR` Durable Object、配对、Agent 身份及回执均不应因 Secret 同步被重置或迁移。
 6. 部署后核对 Cloudflare 100% 活跃版本、所需绑定与安全设置。最后通过原 Portal 做一次认证读取验收。不得误将未认证 401/403 当作已通过端到端验收。
 
-**每次发布前的凭据核对**：GitHub Secret 是本次发布的值来源；Cloudflare API 无法读回 Secret 明文，因而不能证明 GitHub 当前值与既有运行时值相同。发布会覆盖同名 Secret，尤其要先核对 IMA API Key、SSH 加密密钥等与现网一致。IMA 的 `IMA_CLIENT_ID` 和 Workflow 的 `MCP_PORTAL_CLIENT_ID` 必须为 GitHub Environment Variables，发布后由 Cloudflare 绑定读回验证为唯一的 `plain_text`。对确实仍保留旧 `CLIENT_ID` 或旧同名 Secret 的**遗留部署**，先按历史迁移记录核对并受控迁移；不要把已完成的一次性迁移当作每次日常发布的必经操作。
+**每次发布前的凭据核对**：GitHub Secret 是本次发布的值来源；Cloudflare API 无法读回 Secret 明文，因而不能证明 GitHub 当前值与既有运行时值相同。发布会覆盖同名 Secret，尤其要先核对 IMA API Key、SSH 加密密钥等与现网一致。IMA 的 `IMA_CLIENT_ID` 和 Workflow 的 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 必须为 GitHub Environment Variables，发布后由 Cloudflare 绑定读回验证为唯一的 `plain_text`。对确实仍保留旧 `CLIENT_ID` 或旧同名 Secret 的**遗留部署**，先按历史迁移记录核对并受控迁移；不要把已完成的一次性迁移当作每次日常发布的必经操作。
 
 如果一次部署因缺少密钥/变量而失败，仅修复选中 GitHub Environment，然后重新手动发起任务；不要在失败后自动清空 DO 或重建其他 Worker。修改 GitHub 本身不会在后台自动同步：只有手动触发该 Worker 发布时才执行。
 
@@ -77,7 +77,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 1. 若 Cloudflare 仍存在旧名 `CLIENT_ID` Variable，先在 `ima-mcp-worker` GitHub Environment Variables 中配置相同值的 `IMA_CLIENT_ID`；`IMA_API_KEY` 始终是 Secret。已完成更名的现网不要重复执行。
 2. 核验 GitHub 中 `IMA_API_KEY`、`MCP_ACCESS_TOKEN` 的有效来源。发布需走受控的单 Worker GitHub Actions；仅修改配置不自动发布。
 3. 发布前确认新变量非空，发布后回读 `IMA_CLIENT_ID` 是唯一 `plain_text` 绑定，旧 `CLIENT_ID` Variable 已消失；完成 IMA 功能验收后精确清理 GitHub 的旧 `CLIENT_ID` Variable。
-4. Workflow 的 `MCP_PORTAL_CLIENT_ID` 是另一种**同名 Secret → Variable**历史迁移，与 IMA 的不同名字更名不是同一操作。只有旧绑定确实存在时才参考历史 #199 隔离验证记录评估迁移；日常发布直接要求唯一 `plain_text` 绑定和有效 Portal 客户端身份。
+4. Workflow 的 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 是另一种**同名 Secret → Variable**历史迁移，与 IMA 的不同名字更名不是同一操作。只有旧绑定确实存在时才参考历史 #199 隔离验证记录评估迁移；日常发布直接要求唯一 `plain_text` 绑定和有效 Portal 客户端身份。
 
 以上更名不改变 Client ID 值、IMA API 协议或其他 Worker 的权限。
 

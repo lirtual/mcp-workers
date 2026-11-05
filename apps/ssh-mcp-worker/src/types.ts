@@ -14,7 +14,7 @@ export interface D1Database {
 
 export interface Env {
   MCP_ACCESS_TOKEN?: string;
-  ENCRYPTION_KEY?: string;
+  SSH_ENCRYPTION_KEY?: string;
   EDGE_SSH_DB?: D1Database;
   SSH_OPERATIONS: DurableObjectNamespace<import('./operations.ts').SshOperationsDO>;
 }

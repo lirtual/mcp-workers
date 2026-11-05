@@ -5,7 +5,7 @@ import { handleSetup } from '../../src/setup/handler.js';
 import type { Env } from '../../src/types.js';
 
 const base = { DATABASE_SETUP_HOST: 'db-owner.example.org', ACCESS_TEAM_DOMAIN: 'testing.cloudflareaccess.com',
-  ACCESS_AUD: 'test-aud', OWNER_EMAIL: 'owner@example.org' } as Env;
+  DATABASE_ACCESS_AUD: 'test-aud', OWNER_EMAIL: 'owner@example.org' } as Env;
 const url = 'https://db-owner.example.org/setup';
 
 describe('Database Owner setup authorization', () => {

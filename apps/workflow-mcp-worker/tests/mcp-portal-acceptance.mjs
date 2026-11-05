@@ -8,8 +8,8 @@ import { toolSchemaDigest } from '../src/plan.ts';
 
 const endpoint=PRODUCTION_PORTAL_ENDPOINT;
 console.log('PORTAL_PROBE_TARGET production');
-const clientId=process.env.MCP_PORTAL_CLIENT_ID;
-const clientSecret=process.env.MCP_PORTAL_CLIENT_SECRET;
+const clientId=process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID;
+const clientSecret=process.env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET;
 if(!clientId||!clientSecret) {
   console.error('PORTAL_ACCEPTANCE_FAIL: secret_missing');
   process.exit(1);

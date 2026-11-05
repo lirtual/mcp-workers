@@ -78,7 +78,7 @@ async function request(ingress,path,jwt,body,expected){
   const response=await ingress(new Request('https://isolated.invalid'+path,{
     method:'POST',headers:{authorization:'Bearer '+jwt,'content-type':'application/json'},
     body:JSON.stringify(body),
-  }),{DB:adapter(),GITHUB_ACTION_OIDC_AUDIENCE:audience});
+  }),{DB:adapter(),WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience});
   assert.equal(response.status,expected.status,'HTTP '+path);
   const value=await response.json();
   assert.equal(value.result,expected.code,'result '+path);

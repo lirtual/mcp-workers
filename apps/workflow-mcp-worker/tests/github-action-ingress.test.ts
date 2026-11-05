@@ -28,7 +28,7 @@ function setup(state=row){
   first:async()=>{calls++;return state;},
   run:async()=>{writes++;return {meta:{changes:1}};},
  })})} as unknown as D1Database;
- return {env:{DB:database,GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env,
+ return {env:{DB:database,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env,
   calls:()=>calls,writes:()=>writes};
 }
 const request=(token:string,body:string=JSON.stringify({attemptId}))=>
@@ -38,7 +38,7 @@ test('isolated Action route requires configured server audience and strict reque
  const fixture=setup();
  assert.equal((await handleGithubActionClaimRequest(new Request(url,{method:'GET'}),fixture.env)).status,405);
  assert.equal((await handleGithubActionClaimRequest(new Request(url,{method:'POST'}),{
-  ...fixture.env,GITHUB_ACTION_OIDC_AUDIENCE:undefined,
+  ...fixture.env,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:undefined,
  })).status,503);
  assert.equal((await handleGithubActionClaimRequest(new Request(url,{method:'POST'}),fixture.env)).status,401);
  assert.equal((await handleGithubActionClaimRequest(request('x',JSON.stringify({

@@ -91,7 +91,7 @@ const goodServices={
 };
 const env=(row:unknown)=>({DB:fakeDb(row),
   WORKFLOW_GITHUB_DISPATCH_TOKEN:'server-token',
-  GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-abcde'} as any);
+  WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-abcde'} as any);
 test('current approved ready Session may admit, with a deadline fixed to the physical job start',async()=>{
   const decision=await decideSessionAdmission(env(baseRow),{attempt_id:attemptId,oidc_jwt:'signed'},goodServices);
   assert.equal(decision.allowed,true);

@@ -214,8 +214,8 @@ async function readAccount(env: Env): Promise<string> {
 }
 
 function requiredSecret(env: Env): string {
-  if (!env.ENCRYPTION_KEY) throw new Error('host_catalog_unavailable');
-  return env.ENCRYPTION_KEY;
+  if (!env.SSH_ENCRYPTION_KEY) throw new Error('host_catalog_unavailable');
+  return env.SSH_ENCRYPTION_KEY;
 }
 
 async function decodeRow(row: HostRow, accountId: string, secret: string): Promise<HostView> {

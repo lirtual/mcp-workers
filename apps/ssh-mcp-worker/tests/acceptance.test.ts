@@ -11,7 +11,7 @@ const fixture = JSON.parse(await readFile(new URL('./fixtures/edge-ssh-host-v1.j
   key: string; accountId: string; hostId: string; encryptedPayload: string;
   changedEncryptedPayload: string; host: Record<string, unknown>; changedHost: { fingerprint: string };
 };
-const secretCanary = /synthetic-password-do-not-use|synthetic-initial-command-do-not-run|privateKey|ENCRYPTION_KEY|AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=/;
+const secretCanary = /synthetic-password-do-not-use|synthetic-initial-command-do-not-run|privateKey|SSH_ENCRYPTION_KEY|AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=/;
 const toolNames = [
   'list_hosts', 'get_host', 'ssh_exec', 'file_list', 'file_read_text', 'file_write_text', 'file_move', 'file_delete', 'file_mkdir',
   'get_operation_status', 'ssh_session_start', 'ssh_session_send', 'ssh_session_stop', 'ssh_session_read', 'ssh_session_status',
@@ -63,7 +63,7 @@ class SyntheticD1 implements D1Database {
 function environment(db: SyntheticD1 | undefined, key: string | undefined, onDoCall: () => void): Env {
   return {
     MCP_ACCESS_TOKEN: 'synthetic-mcp-token',
-    ...(key === undefined ? {} : { ENCRYPTION_KEY: key }),
+    ...(key === undefined ? {} : { SSH_ENCRYPTION_KEY: key }),
     ...(db === undefined ? {} : { EDGE_SSH_DB: db }),
     SSH_OPERATIONS: { getByName: () => { onDoCall(); throw new Error('unexpected DO call'); } } as unknown as Env['SSH_OPERATIONS'],
   };
@@ -135,7 +135,7 @@ test('a real MCP client discovers all 15 tools and their SPEC parameters', async
         assert.equal('recursive' in (schema.properties ?? {}), false);
       }
       for (const field of Object.keys(schema.properties ?? {})) {
-        assert.equal(['password', 'privateKey', 'private_key', 'ENCRYPTION_KEY', 'initialCommand'].includes(field), false, field);
+        assert.equal(['password', 'privateKey', 'private_key', 'SSH_ENCRYPTION_KEY', 'initialCommand'].includes(field), false, field);
       }
       assert.doesNotMatch(JSON.stringify(tool), secretCanary);
     }
@@ -363,5 +363,5 @@ test('D1 stays SELECT-only, quotas stay at the spec defaults, and secrets are no
   }]);
   assert.equal(config.vars?.MCP_BROKER_FULL_ACCESS, undefined);
   assert.equal(config.services, undefined);
-  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'ENCRYPTION_KEY']);
+  assert.deepEqual(config.secrets.required, ['MCP_ACCESS_TOKEN', 'SSH_ENCRYPTION_KEY']);
 });

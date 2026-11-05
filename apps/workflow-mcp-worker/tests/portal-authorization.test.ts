@@ -34,7 +34,7 @@ function fixture(){
    sqlite.exec('COMMIT');return out;
   }catch(e){sqlite.exec('ROLLBACK');throw e;}
  }} as unknown as Env['DB'];
- const env={DB:db,MCP_PORTAL_ENDPOINT:portal} as Env;
+ const env={DB:db,WORKFLOW_MCP_PORTAL_ENDPOINT:portal} as Env;
  const service=new WorkflowService(env);
  return {sqlite,db,service};
 }
@@ -104,8 +104,8 @@ test('public discovery reports revoked and does not advertise reviewed tools aft
  const {sqlite,db}=fixture();try{
   await changePortalAuthorization(db,'revoke');
   let lookups=0;
-  const env={DB:db,MCP_PORTAL_ENDPOINT:portal,
-   MCP_PORTAL_CLIENT_ID:'test-client',MCP_PORTAL_CLIENT_SECRET:'test-secret'} as Env;
+  const env={DB:db,WORKFLOW_MCP_PORTAL_ENDPOINT:portal,
+   WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-client',WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret'} as Env;
   const discover=async()=>{lookups++;throw Error('portal_discovery_should_not_run');};
   const overview=await workflowCapabilities(env,undefined,discover) as unknown as {
    connections:{portal:{availability:string;generation:number}};

@@ -7,10 +7,10 @@ const fixtures = {
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1", DATABASE_GITHUB_ACTIONS_TOKEN: "github_pat_synthetic_database_owner_token" },
-  "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
+  "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", SSH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
-  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24), SESSION_RUNTIME_DATA_KEY: Buffer.alloc(32, 9).toString("base64") },
+  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", WORKFLOW_MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24), WORKFLOW_SESSION_RUNTIME_DATA_KEY: Buffer.alloc(32, 9).toString("base64") },
 };
 
 test("bootstrap supports all selected Workers, including isolated Remote Control", () => {
@@ -76,7 +76,7 @@ test("Database release stages new D1 encryption keys, never legacy DATABASE_CONF
 
 test("SSH catalog key must be a canonical 32-byte Base64 key", () => {
   const input = fixtures["ssh-mcp-worker"];
-  assert.throws(() => collectBootstrapSecrets("ssh-mcp-worker", { ...input, ENCRYPTION_KEY: "short" }), /32-byte key/);
+  assert.throws(() => collectBootstrapSecrets("ssh-mcp-worker", { ...input, SSH_ENCRYPTION_KEY: "short" }), /32-byte key/);
   assert.deepEqual(collectBootstrapSecrets("ssh-mcp-worker",
     { ...input, SSH_BROKER_TOKEN: "retired", EDGE_SSH_DB: "binding-is-not-secret" }), input);
 });
@@ -118,7 +118,7 @@ test("Workflow registered GitHub token must be nonblank, bounded and not multili
 test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>{
   for (const invalid of ["bad", Buffer.alloc(31).toString("base64"), Buffer.alloc(32).toString("base64").slice(0,-1)]) {
     assert.throws(() => collectBootstrapSecrets("workflow-mcp-worker",
-      {...fixtures["workflow-mcp-worker"],SESSION_RUNTIME_DATA_KEY: invalid}),/SESSION_RUNTIME_DATA_KEY/);
+      {...fixtures["workflow-mcp-worker"],WORKFLOW_SESSION_RUNTIME_DATA_KEY: invalid}),/WORKFLOW_SESSION_RUNTIME_DATA_KEY/);
   }
   const names=BOOTSTRAP_SECRETS["workflow-mcp-worker"];
   assert.ok(names.includes("WORKFLOW_GITHUB_DISPATCH_TOKEN"));

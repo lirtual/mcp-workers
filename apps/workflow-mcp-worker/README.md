@@ -270,11 +270,11 @@ Environment bindings and credentials:
 
 - `DB` (`workflow-mcp-db`) and `WORKFLOW` (`workflow-mcp-orchestrator`).
 - `MCP_ACCESS_TOKEN` for owner API ingress.
-- `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
+- `WORKFLOW_MCP_PORTAL_CLIENT_ID` / `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
-- `SESSION_RUNTIME_DATA_KEY` as a canonical Base64-encoded 32-byte random AES-GCM key, staged as a GitHub Environment Secret for `workflow-mcp-worker`. Key replacement intentionally invalidates previously stored ciphertext; active Runner observations must refresh it.
+- `WORKFLOW_SESSION_RUNTIME_DATA_KEY` as a canonical Base64-encoded 32-byte random AES-GCM key, staged as a GitHub Environment Secret for `workflow-mcp-worker`. Key replacement intentionally invalidates previously stored ciphertext; active Runner observations must refresh it.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
-- `GITHUB_ACTION_APPROVED_REPOSITORIES` is the runtime Worker binding populated during the protected release from GitHub **Environment `workflow-mcp-worker` Variable** `WORKFLOW_ACTION_APPROVED_REPOSITORIES` (not a repository-level Variable). The current `scripts/worker-release-variables.mjs` validator requires each JSON entry to contain exactly `{repository,repositoryId,commitSha}`, where `commitSha` is a 40-character Git SHA. The Workflow runtime ignores that legacy `commitSha` for discovery and verifies the current default-branch revision and YAML by SHA; each execution still requires its exact reviewed Published Plan pin. After Spec #607, the approved identity is `lirtual/github-actions` / Repository ID `1430925009`. Change the source Environment Variable only through the owner-approved configuration path, then use the existing protected GitHub Actions release to propagate it; do not patch Cloudflare Worker settings directly.
+- `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` is the runtime Worker binding populated during the protected release from identically named GitHub **Environment `workflow-mcp-worker` Variable** (not a repository-level Variable). The current `scripts/worker-release-variables.mjs` validator requires each JSON entry to contain exactly `{repository,repositoryId,commitSha}`, where `commitSha` is a 40-character Git SHA. The Workflow runtime ignores that legacy `commitSha` for discovery and verifies the current default-branch revision and YAML by SHA; each execution still requires its exact reviewed Published Plan pin. After Spec #607, the approved identity is `lirtual/github-actions` / Repository ID `1430925009`. Change the source Environment Variable only through the owner-approved configuration path, then use the existing protected GitHub Actions release to propagate it; do not patch Cloudflare Worker settings directly.
 
 There are **no independent capability enable flags**. The documented per-operation Publish approvals and runtime authorization checks remain mandatory.
 
@@ -602,7 +602,7 @@ logs, Summary, and Artifacts never include the codes.
 
 The `0010_session_runtime_data.sql` migration uses only the existing D1; values
 are AES-256-GCM ciphertext with unique IV and Run/Step/Attempt/key/sequence AEAD
-binding. Supply `SESSION_RUNTIME_DATA_KEY` as a canonical Base64 32-byte Secret,
+binding. Supply `WORKFLOW_SESSION_RUNTIME_DATA_KEY` as a canonical Base64 32-byte Secret,
 not a Variable. Never commit this key, and never use a shared permanent password
 as its replacement. The existing GitHub Actions manual production release blocks
 on this Secret, migration readiness, no active physical Session during schema
@@ -753,3 +753,5 @@ This is an observed expiry, not proof of an exact deletion time or source
 provenance. The dedicated test Workflow is paused. See
 [the accepted file boundary](../../docs/spec35-litterbox-file-upload.md)
 and [Spec #35 evidence](https://github.com/lirtual/cloudflare-actions/issues/35).
+
+Spec #733 renames only the Workflow configuration bindings; retain original Portal credentials, session AES key, OIDC audience and GitHub grant identities. The existing full protected release must precede any `workflow_code_only` run. Old omitted Secrets require separately authorized cleanup, never assumed deleted.

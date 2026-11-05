@@ -114,7 +114,7 @@ export function safeDatabaseOwnerAccessDiagnostic(error) {
 
 export async function verifyDatabaseOwnerAccessCloudflare(config, environment, transport = fetch) {
   const host = config?.vars?.DATABASE_SETUP_HOST;
-  const audience = environment.ACCESS_AUD;
+  const audience = environment.DATABASE_ACCESS_AUD;
   const ownerEmail = environment.OWNER_EMAIL;
   const account = environment.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = environment.CLOUDFLARE_API_TOKEN;

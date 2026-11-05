@@ -25,8 +25,8 @@ export async function handleGithubActionClaimRequest(
  if(route!=='/github/action/claim'&&route!=='/github/action/ready'&&
     route!=='/github/action/result')return result(404,'not_found');
  if(request.method!=='POST')return result(405,'method_not_allowed');
- if(!env.DB||!env.GITHUB_ACTION_OIDC_AUDIENCE||
-    !/^workflow-github-[a-z0-9:-]{4,120}$/.test(env.GITHUB_ACTION_OIDC_AUDIENCE))
+ if(!env.DB||!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE||
+    !/^workflow-github-[a-z0-9:-]{4,120}$/.test(env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE))
    return result(503,'action_claim_unavailable');
  const authorization=request.headers.get('authorization')||'';
  if(!authorization.startsWith('Bearer ')||authorization.length>8300)
@@ -96,36 +96,36 @@ export async function handleGithubActionClaimRequest(
  try{
   if(route==='/github/action/result'){
    const recorded=await recordSignedGitHubActionTaskResult(env.DB,attemptId,credential,
-     env.GITHUB_ACTION_OIDC_AUDIENCE,taskResult!,keys);
+     env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,taskResult!,keys);
    return recorded==='denied'?result(403,'result_denied'):result(200,recorded);
   }
   if(route==='/github/action/claim'){
    const verified=keys
-    ?await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
-    :await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.GITHUB_ACTION_OIDC_AUDIENCE);
+    ?await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,keys)
+    :await verifyAndClaimPinnedGitHubAction(env.DB,attemptId,credential,env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE);
    if(verified)return result(200,'claimed');
    // A lost HTTP 200 must not strand a physical job whose exact signed
    // identity already owns this Attempt. Cancellation and terminal fences
    // still apply; this does not grant or change ownership.
    const replay=keys
     ?await verifyAlreadyClaimedPinnedGitHubAction(env.DB,attemptId,credential,
-      env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
+      env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,keys)
     :await verifyAlreadyClaimedPinnedGitHubAction(env.DB,attemptId,credential,
-      env.GITHUB_ACTION_OIDC_AUDIENCE);
+      env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE);
    if(replay)return result(200,'already_claimed');
    // GitHub may schedule the newly dispatched Job before its HTTP dispatch
    // ACK was persisted. A valid signed, reviewed pending candidate gets a
    // transient 503; unknown/invalid/cancelled identity remains denied.
    const pending=keys
     ?await verifySignedPendingGitHubActionClaim(env.DB,attemptId,credential,
-      env.GITHUB_ACTION_OIDC_AUDIENCE,keys)
+      env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,keys)
     :await verifySignedPendingGitHubActionClaim(env.DB,attemptId,credential,
-      env.GITHUB_ACTION_OIDC_AUDIENCE);
+      env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE);
    return pending?result(503,'claim_pending'):result(403,'claim_denied');
   }
   if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return result(503,'ready_unavailable');
   const ready=await recordSignedSessionReady(env.DB,attemptId,credential,
-    env.GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_GITHUB_DISPATCH_TOKEN,keys,inspect,
+    env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE,env.WORKFLOW_GITHUB_DISPATCH_TOKEN,keys,inspect,
     sessionUrl,sessionDurationMinutes);
   if(ready==='physical_unconfirmed')return result(503,'physical_unconfirmed');
   if(ready==='denied')return result(403,'ready_denied');

@@ -2,6 +2,7 @@
 // After the production cutover, only the exact Cloudflare account-member SSO + OTP
 // configuration is accepted; OTP-only rollback or incomplete inventories fail closed. No API writes.
 import { pathToFileURL } from "node:url";
+import { readFileSync } from "node:fs";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
 
 const ACTIVATION_APP_ID = "77945f97-e1ea-4b2b-b89a-ec71c0472afa";
@@ -49,10 +50,12 @@ export function verifyBrowserActivationAccess(app,policies,providers,env) {
   return true;
 }
 export async function verifyBrowserActivationAccessCloudflare(env,transport=fetch) {
-  const enabled=["BROWSER_ACTIVATION_ORIGIN","BROWSER_ACTIVATION_AUDIENCE"]
-    .some(k=>env[k]!=null&&env[k]!=="");
+  const enabled=env.BROWSER_ACTIVATION_AUDIENCE!=null&&env.BROWSER_ACTIVATION_AUDIENCE!=="";
   fail(enabled,"activation_config_required");
-  collectWorkerVars("browser-mcp-worker",env);
+  const config=JSON.parse(readFileSync(new URL("../apps/browser-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
+  const staged=collectWorkerVars("browser-mcp-worker",env,{config});
+  const actual=Object.fromEntries(staged.map(pair=>[pair.slice(0,pair.indexOf(":")),pair.slice(pair.indexOf(":")+1)]));
+  const effective={...env,...actual};
   fail(/^[a-f0-9]{32}$/.test(env.CLOUDFLARE_ACCOUNT_ID??"") &&
     typeof env.CLOUDFLARE_API_TOKEN==="string" && env.CLOUDFLARE_API_TOKEN.length>0,
     "cloudflare_credentials");
@@ -75,7 +78,7 @@ export async function verifyBrowserActivationAccessCloudflare(env,transport=fetc
   ]);
   return verifyBrowserActivationAccess(app.result,
     responseList(policies,"policies_inventory"),
-    responseList(providers,"providers_inventory"),env);
+    responseList(providers,"providers_inventory"),effective);
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href){
   verifyBrowserActivationAccessCloudflare(process.env).then(()=>{

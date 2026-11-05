@@ -82,8 +82,8 @@ jobs:
       WORKFLOW_SESSION_DATA_RUN_ID: ${{ inputs.session_run_id }}
       WORKFLOW_SESSION_DATA_EXPECTED_STATUS: ${{ inputs.expected_session_state }}
       WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-      MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
-      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+      WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+      WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -115,8 +115,8 @@ jobs:
     environment:
       name: workflow-mcp-worker
     env:
-      MCP_PORTAL_CLIENT_ID: ${{ vars.MCP_PORTAL_CLIENT_ID }}
-      MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+      WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+      WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

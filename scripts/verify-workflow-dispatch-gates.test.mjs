@@ -192,7 +192,7 @@ test('existing CI candidate dispatch retains Owner/repo/provenance gates and no 
 test('candidate guards preserve reusable CI under manual release and acceptance caller events',()=>{
   const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
   const job=ci.match(/    if: \$\{\{ (.+) \}\}/)[1];
-  const provenance=ci.match(/        if: (github.event_name == 'workflow_dispatch'.+)/)[1];
+  const provenance=ci.match(/- name: Verify candidate provenance\n        if: (github.event_name == 'workflow_dispatch'.+)/)[1];
   const reusable=ci.match(/REUSABLE_WORKER: \$\{\{ (.+) \}\}/)[1];
   const evaluate=(expr,github,inputs)=>Function('github','inputs','contains','startsWith','return '+expr)(
     github,inputs,(value,part)=>value.includes(part),(value,part)=>value.startsWith(part));

@@ -67,7 +67,7 @@ test("Release checks real OTP, Access app and app policies without logging crede
   const visited = [];
   const config = { vars: { DATABASE_SETUP_HOST: host } };
   const env = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "fake-token",
-    ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
+    DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
   const transport = async (url, opts) => {
     visited.push({ url, authorization: opts.headers.Authorization });
     return Response.json(url.includes("/identity_providers") ?
@@ -90,7 +90,7 @@ test("Release checks real OTP, Access app and app policies without logging crede
 test("Owner Access HTTP errors expose only the request stage and status", async () => {
   const config = { vars: { DATABASE_SETUP_HOST: host } };
   const e = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "secret-should-not-leak",
-    ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
+    DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
   for (const [target, expected] of [
     ["identity_providers", "idps"], ["/apps?", "apps"], ["/policies?", "policies"]
   ]) {
@@ -129,7 +129,7 @@ test("Safe Owner Access diagnostics classify validation failures without exposin
 test("Owner Access transport and JSON errors expose only fixed stage and kind", async () => {
   const config = { vars: { DATABASE_SETUP_HOST: host } };
   const env = { CLOUDFLARE_ACCOUNT_ID: "f".repeat(32), CLOUDFLARE_API_TOKEN: "secret-token",
-    ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
+    DATABASE_ACCESS_AUD: audience, OWNER_EMAIL: ownerEmail };
   for (const [transport, kind] of [
     [async () => { throw new Error("secret-transport-details"); }, "transport"],
     [async () => new Response("secret-invalid-json", { status: 200 }), "json"]

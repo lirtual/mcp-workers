@@ -536,3 +536,4 @@ Unit tests and dry-run are not deployed Workers acceptance. MySQL Direct and MyS
 ## License
 
 MIT; upstream provenance retained in `LICENSE` and `SOURCE.md`.
+Spec #733: `ACCESS_TEAM_DOMAIN` / `OWNER_EMAIL` come from Repository Variables, `DATABASE_ACCESS_AUD` and optional `DATABASE_MAX_ROWS`, `DATABASE_MAX_RESULT_BYTES`, `DATABASE_MAX_SCHEMA_BYTES`, `DATABASE_QUERY_TIMEOUT_MS`, `DATABASE_MAX_WRITE_AFFECTED_ROWS` come from Database Environment. `DATABASE_KEY_ID` remains a Variable staged as `secret_text`, not a plaintext runtime binding. Do not change encrypted D1 records or encryption key values.

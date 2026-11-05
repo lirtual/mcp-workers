@@ -26,7 +26,7 @@ function fixture() {
   const env = {
     DB: { prepare }, DATABASE_ENCRYPTION_KEY: btoa('q'.repeat(32)), DATABASE_KEY_ID: 'key-one',
     DATABASE_SETUP_HOST: 'db-owner.example.net', ACCESS_TEAM_DOMAIN: 'testing.cloudflareaccess.com',
-    ACCESS_AUD: 'test-aud', OWNER_EMAIL: 'owner@example.net',
+    DATABASE_ACCESS_AUD: 'test-aud', OWNER_EMAIL: 'owner@example.net',
     RATE_LIMITER: { async limit() { return { success: true }; } },
     SETUP_RATE_LIMITER: { async limit() { return { success: true }; } }
   } as unknown as Env;

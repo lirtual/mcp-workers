@@ -18,7 +18,7 @@ export interface Env {
   DB?: D1Database;
   DATABASE_SETUP_HOST?: string;
   ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
+  DATABASE_ACCESS_AUD?: string;
   OWNER_EMAIL?: string;
   SETUP_RATE_LIMITER?: RateLimitBinding;
   DATABASE_ENCRYPTION_KEY?: string;
@@ -27,11 +27,11 @@ export interface Env {
   DATABASE_PREVIOUS_KEY_ID?: string;
   MCP_ACCESS_TOKEN?: string;
   DATABASE_GITHUB_ACTIONS_TOKEN?: string;
-  MAX_ROWS?: string;
-  MAX_RESULT_BYTES?: string;
-  MAX_SCHEMA_BYTES?: string;
-  QUERY_TIMEOUT_MS?: string;
-  MAX_WRITE_AFFECTED_ROWS?: string;
+  DATABASE_MAX_ROWS?: string;
+  DATABASE_MAX_RESULT_BYTES?: string;
+  DATABASE_MAX_SCHEMA_BYTES?: string;
+  DATABASE_QUERY_TIMEOUT_MS?: string;
+  DATABASE_MAX_WRITE_AFFECTED_ROWS?: string;
   RATE_LIMITER: RateLimitBinding;
   [key: string]: unknown;
 }

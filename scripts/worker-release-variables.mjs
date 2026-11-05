@@ -6,11 +6,11 @@ import { pathToFileURL } from "node:url";
 
 const INTEGER_LIMITS = Object.freeze({
   RAINDROP_RATE_LIMIT_MAX_RETRIES: [0, 10],
-  MAX_ROWS: [1, 5000],
-  MAX_RESULT_BYTES: [1, 8388608],
-  MAX_SCHEMA_BYTES: [1, 4194304],
-  QUERY_TIMEOUT_MS: [1, 60000],
-  MAX_WRITE_AFFECTED_ROWS: [1, 100],
+  DATABASE_MAX_ROWS: [1, 5000],
+  DATABASE_MAX_RESULT_BYTES: [1, 8388608],
+  DATABASE_MAX_SCHEMA_BYTES: [1, 4194304],
+  DATABASE_QUERY_TIMEOUT_MS: [1, 60000],
+  DATABASE_MAX_WRITE_AFFECTED_ROWS: [1, 100],
 });
 
 export const BROWSER_ACCESS_VARIABLES = Object.freeze([
@@ -19,17 +19,17 @@ export const BROWSER_ACCESS_VARIABLES = Object.freeze([
 ]);
 
 export const WORKER_VARIABLES = Object.freeze({
-  "browser-mcp-worker": [...BROWSER_ACCESS_VARIABLES, "BROWSER_REMEMBERED_IDLE_DAYS"],
+  "browser-mcp-worker": ["BROWSER_ACTIVATION_AUDIENCE", "BROWSER_REMEMBERED_IDLE_DAYS"],
   "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
-    "MAX_ROWS", "MAX_RESULT_BYTES", "MAX_SCHEMA_BYTES", "QUERY_TIMEOUT_MS",
-    "MAX_WRITE_AFFECTED_ROWS", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL",
+    "DATABASE_MAX_ROWS", "DATABASE_MAX_RESULT_BYTES", "DATABASE_MAX_SCHEMA_BYTES", "DATABASE_QUERY_TIMEOUT_MS",
+    "DATABASE_MAX_WRITE_AFFECTED_ROWS", "ACCESS_TEAM_DOMAIN", "DATABASE_ACCESS_AUD", "OWNER_EMAIL",
   ],
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": ["RCA_PERMANENT_IDLE_DAYS"],
   "github-actions-mcp-worker": [],
-  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_ID"],
+  "workflow-mcp-worker": ["WORKFLOW_MCP_PORTAL_CLIENT_ID"],
 });
 
 // The Wrangler Custom Domain is the one authoritative installation origin.
@@ -49,25 +49,37 @@ export function remoteControlInstallOrigin(config) {
   return "https://" + host;
 }
 
+export function browserActivationOrigin(config) {
+  const routes = config?.routes;
+  if (!Array.isArray(routes) || routes.length !== 1 ||
+      routes[0]?.custom_domain !== true || typeof routes[0]?.pattern !== "string")
+    throw Error("Browser requires exactly one reviewed Custom Domain");
+  const host = routes[0].pattern;
+  if (host.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host))
+    throw Error("Invalid Browser Custom Domain hostname");
+  return "https://" + host;
+}
+
 export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
   if (worker === "browser-mcp-worker") {
-    const identity=["BROWSER_ACCESS_ISSUER","BROWSER_OWNER_EMAIL"];
-    const activation=["BROWSER_ACTIVATION_ORIGIN","BROWSER_ACTIVATION_AUDIENCE"];
-    const populated=group=>group.filter(name=>env[name]!=null&&env[name]!=="");
-    const activeActivation=populated(activation),activeIdentity=populated(identity);
-    if(activeActivation.length!==0&&activeActivation.length!==activation.length)
-      throw Error("Browser activation requires both Access variables or none");
-    if((activeActivation.length||activeIdentity.length)&&activeIdentity.length!==identity.length)
-      throw Error("Browser Access issuer and owner identity must be configured together");
-    if(activeIdentity.length && (env.BROWSER_ACCESS_ISSUER!=="https://lirtualzero.cloudflareaccess.com"||
-       env.BROWSER_OWNER_EMAIL!=="lirtual@outlook.com"))
-      throw Error("Browser Access identity issuer or owner mailbox invalid");
-    if(activeActivation.length && (env.BROWSER_ACTIVATION_ORIGIN!=="https://browser.lirtual.dpdns.org"||
-       !/^[a-f0-9]{64}$/.test(env.BROWSER_ACTIVATION_AUDIENCE)))
-      throw Error("Browser activation Access origin or audience invalid");
+    if (["BROWSER_ACCESS_ISSUER", "BROWSER_OWNER_EMAIL", "BROWSER_ACTIVATION_ORIGIN"]
+      .some(name => env[name] != null && env[name] !== ""))
+      throw Error("Browser independent identity or origin configuration is obsolete");
+    const domain = env.ACCESS_TEAM_DOMAIN;
+    const owner = env.OWNER_EMAIL;
+    if (typeof domain !== "string" || !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(domain) ||
+        typeof owner !== "string" || owner.length > 256 ||
+        !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(owner))
+      throw Error("Browser shared Access identity missing or invalid");
+    variables.push("BROWSER_ACCESS_ISSUER:https://" + domain, "BROWSER_OWNER_EMAIL:" + owner);
+    if (env.BROWSER_ACTIVATION_AUDIENCE != null && env.BROWSER_ACTIVATION_AUDIENCE !== "") {
+      if (!/^[a-f0-9]{64}$/i.test(env.BROWSER_ACTIVATION_AUDIENCE))
+        throw Error("Browser activation Access audience invalid");
+      variables.push("BROWSER_ACTIVATION_ORIGIN:" + browserActivationOrigin(options.config));
+    }
   }
   if (worker === "browser-mcp-worker" && env.BROWSER_REMEMBERED_IDLE_DAYS !== undefined && env.BROWSER_REMEMBERED_IDLE_DAYS !== "") {
     const days=env.BROWSER_REMEMBERED_IDLE_DAYS;
@@ -81,20 +93,20 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   if (worker === "workflow-mcp-worker") {
     variables.push(
-      "MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-      "GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production"
+      "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+      "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production"
     );
     // Repository onboarding is an explicit GitHub Environment Variable.
     // The owner must approve a repository ID and its immutable commit SHA;
     // ordinary workflow inputs cannot add execution/discovery grants.
-    const grants = env.GITHUB_ACTION_APPROVED_REPOSITORIES;
+    const grants = env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES;
     if (grants != null && grants !== "") {
       if (typeof grants !== "string" || grants.length > 8192) {
-        throw new Error("Invalid GITHUB_ACTION_APPROVED_REPOSITORIES");
+        throw new Error("Invalid WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES");
       }
       let parsed;
       try { parsed = JSON.parse(grants); }
-      catch { throw new Error("Invalid GITHUB_ACTION_APPROVED_REPOSITORIES"); }
+      catch { throw new Error("Invalid WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"); }
       const seen = new Set();
       if (!Array.isArray(parsed) || parsed.length > 16 ||
           parsed.some(entry => {
@@ -111,8 +123,8 @@ export function collectWorkerVars(worker, env, options = {}) {
                 seen.has(name.toLowerCase())) return true;
             seen.add(name.toLowerCase());
             return false;
-          })) throw new Error("Invalid GITHUB_ACTION_APPROVED_REPOSITORIES");
-      variables.push("GITHUB_ACTION_APPROVED_REPOSITORIES:" + JSON.stringify(parsed));
+          })) throw new Error("Invalid WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES");
+      variables.push("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:" + JSON.stringify(parsed));
     }
   }
   if (worker === "remote-control-mcp-worker") {
@@ -122,20 +134,20 @@ export function collectWorkerVars(worker, env, options = {}) {
   for (const name of allowed) {
     const value = env[name];
     if (worker === "database-mcp-worker" &&
-        ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "OWNER_EMAIL"].includes(name)) {
+        ["ACCESS_TEAM_DOMAIN", "DATABASE_ACCESS_AUD", "OWNER_EMAIL"].includes(name)) {
       if (typeof value !== "string" || value.length > 256 ||
           (name === "ACCESS_TEAM_DOMAIN" && !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(value)) ||
-          (name === "ACCESS_AUD" && !/^[a-f0-9]{64}$/i.test(value)) ||
+          (name === "DATABASE_ACCESS_AUD" && !/^[a-f0-9]{64}$/i.test(value)) ||
           (name === "OWNER_EMAIL" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)))
         throw new Error("Invalid or missing Database Owner Access Variable: " + name);
     }
-    if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
+    if ((name === "IMA_CLIENT_ID" || name === "WORKFLOW_MCP_PORTAL_CLIENT_ID") &&
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: " + name);
     }
     if (value == null || value === "") continue;
     if (typeof value !== "string") throw new Error("Invalid Worker Variable: " + name);
-    if ((name === "IMA_CLIENT_ID" || name === "MCP_PORTAL_CLIENT_ID") &&
+    if ((name === "IMA_CLIENT_ID" || name === "WORKFLOW_MCP_PORTAL_CLIENT_ID") &&
         (value.length > 512 || value.trim() !== value ||
           /[\u0000-\u001f\u007f\s]/.test(value))) {
       throw new Error("Invalid Worker Variable: " + name);
@@ -167,7 +179,7 @@ async function main() {
     throw new Error("Worker vars must be staged inside runner temporary directory");
   }
   // Source config drives the single trusted origin; no extra GitHub Variable is required.
-  const config = worker === "remote-control-mcp-worker"
+  const config = ["remote-control-mcp-worker", "browser-mcp-worker"].includes(worker)
     ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, "")) : undefined;
   // The Provider is verified at runtime and release; no persistent
