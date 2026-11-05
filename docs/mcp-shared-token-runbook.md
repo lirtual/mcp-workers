@@ -1,10 +1,11 @@
 # MCP entry token rotation: operator runbook
 
-Every maintained MCP Worker in this repository uses runtime Secret **name** `MCP_ACCESS_TOKEN` for MCP/Portal calls. The shared GitHub Repository Secret is the release-time default; any same-name Worker Environment Secret overrides it. Identical names do **not** prove the deployed values are equal or that Portal clients are synchronized. Business credentials remain independent.
+All eight maintained MCP Workers use runtime Secret **name** `MCP_ACCESS_TOKEN` for MCP/Portal calls. The GitHub Repository Secret is the release-time default; any same-name Worker Environment Secret overrides it. Names and deployed Secret bindings do **not** prove token values are equal or that Portal clients are synchronized. Releasing a Worker without an Environment override stages the Repository default; shared Bearer values can broaden credential compromise. The shared-default mechanism remains in place, without waiving existing Browser or Remote Control independent-credential requirements. Business credentials stay separate.
 
 | Worker | MCP entry Secret | Other Environment Secrets |
 | --- | --- | --- |
-| `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID` |
+| `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_ENCRYPTION_KEY`, `DATABASE_GITHUB_ACTIONS_TOKEN` |
+| `browser-mcp-worker` | `MCP_ACCESS_TOKEN` (independent Environment override required by prior design, current source unverified) | 无 |
 | `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |
 | `ssh-mcp-worker` | `MCP_ACCESS_TOKEN` | `ENCRYPTION_KEY` |
@@ -12,7 +13,7 @@ Every maintained MCP Worker in this repository uses runtime Secret **name** `MCP
 | `github-actions-mcp-worker` | `MCP_ACCESS_TOKEN` | `ACTIONS_GITHUB_DISPATCH_TOKENS` |
 | `workflow-mcp-worker` | `MCP_ACCESS_TOKEN` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` |
 
-Additional required **non-secret** Variables are Email's `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`; IMA's `IMA_CLIENT_ID`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
+Additional required **non-secret** Variables include Database's `DATABASE_KEY_ID`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`; Browser's Owner Access / activation variables; IMA's `IMA_CLIENT_ID`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
 
 ## Rotation and verification
 
@@ -25,4 +26,4 @@ Additional required **non-secret** Variables are Email's `ACCESS_TEAM_DOMAIN`, `
 
 Source deletion does not retire a Cloudflare Worker, remove a Portal client or expire a deployed token; retirement is separately authorized.
 
-Browser T8：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret，不沿用共享值），无额外 Variable。Manifest Key 是公开安装标识，不是 Secret。当前 `workers_dev: false`、`preview_urls: false` 且没有生产路由；现有手动 Release 的 Browser 预检将阻断发布。不得以本次接线创建资源、写 Portal/Access 或切换凭据；参见 [T8 发布与验收边界](../apps/browser-mcp-worker/docs/t8-release.md)。
+Browser now has a production custom domain and Owner Access activation Variables; the historical T8 no-route/no-variable note is obsolete. The actual Browser Environment token override and Portal credential alignment remain unverified. See [runtime configuration](./runtime-configuration.md) for the current contract and separately authorized historical GitHub configuration cleanup candidates. No credential rotation or deployment is authorized by this runbook update.
