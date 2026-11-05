@@ -1,6 +1,6 @@
 # 手动发布 MCP Workers：全局配置 + Worker 独立配置空间
 
-**Spec #392 退役说明**：微信源码与发布流程已迁至独立 [cloudflare-actions](https://github.com/lirtual/cloudflare-actions)；本仓库不再部署、注册或测试旧微信 MCP。原生产 D1、密文和 Owner Access 由独立 Provider 维护，不能从本仓库恢复旧 MCP。
+**Spec #392 与后续 Bark-only 退役**：本仓库已移除旧微信 MCP 的源码与发布入口；独立的 [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) 现仅保留非微信的可执行 Action。历史 D1、密文与验收回执由各自系统管理；不能从本仓库恢复旧微信发送能力。
 
 本项目没有 staging/production 等多环境运行模式。每个 Worker 使用一个**同名 GitHub Environment**，只作为 Secrets / Variables 的独立配置空间；部署目标仍是唯一的 Cloudflare Worker，入口为 GitHub Actions → Release Worker → Run workflow（必须选 `main`）。
 
@@ -30,12 +30,12 @@
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `ENCRYPTION_KEY` | 无 |
-| `browser-mcp-worker` | 无；必须用独立 `MCP_ACCESS_TOKEN` 同名 Environment Secret 覆盖全局默认值 | 无；生产路由未配置，预检阻断 |
+| `browser-mcp-worker` | 既有设计要求独立 `MCP_ACCESS_TOKEN` 同名 Environment 覆盖；实际配置尚待核实 | `BROWSER_ACCESS_ISSUER`、`BROWSER_OWNER_EMAIL`、`BROWSER_ACTIVATION_ORIGIN`、`BROWSER_ACTIVATION_AUDIENCE`；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` | `MCP_PORTAL_CLIENT_ID`、`WORKFLOW_ACTION_APPROVED_REPOSITORIES` |
 
-表中 Email 的三个 Access Variables、Database Owner 的三个 Access Variables、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
+表中 Database Owner 的三个 Access Variables、`DATABASE_KEY_ID`、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
@@ -53,9 +53,9 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 - Raindrop：`RAINDROP_RATE_LIMIT_MAX_RETRIES`（0–10）。
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
 - Database：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（Owner Access 必填）；`DATABASE_KEY_ID`（Environment Variable，必填）；`MAX_ROWS`（1–5000）、`MAX_RESULT_BYTES`（1–8388608）、`MAX_SCHEMA_BYTES`（1–4194304）、`QUERY_TIMEOUT_MS`（1–60000）、`MAX_WRITE_AFFECTED_ROWS`（1–100）。
-- Email：`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`、`OWNER_EMAIL`（三者必填，必须是已批准的 Access 生产身份值）。
+- Browser：`BROWSER_ACCESS_ISSUER`、`BROWSER_OWNER_EMAIL` 为审核过的 Owner 身份值；激活需要成对配置 `BROWSER_ACTIVATION_ORIGIN` 与 `BROWSER_ACTIVATION_AUDIENCE`；`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置。旧 Review 的 `BROWSER_APPROVAL_*` / `BROWSER_ACCESS_AUDIENCE` 不再由发布流程传入。
 - Workflow：`MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `GITHUB_ACTION_APPROVED_REPOSITORIES`）。
-- SSH、Remote Control、GitHub Actions、HTTP：没有额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导。
+- SSH、GitHub Actions：无额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导，`RCA_PERMANENT_IDLE_DAYS` 为可选变量。
 
 未填写可选 Variable 时仍采用 `wrangler.jsonc` 中的默认值；GitHub 中填写时会由 `wrangler deploy --var` 传入**当前选中的 Worker**，并在发布前进行类型/范围验证。受管 Worker 使用 `keep_vars: false`，所以旧 Cloudflare Dashboard 中**没有在源码或当前 GitHub Variables 明确声明的普通 Variable 会在下次手动部署后被清理**。不要把数据库密码或访问 Token 当作 Variable；Durable Object、Service Binding 和 Secret 不属于这些可选纯文本 Variable。
 
@@ -85,4 +85,4 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 
 只有在完成 Repository 全局凭据迁移、**所有需要使用的 Worker** 创建独立 Environment、确认旧 `production` 里的密钥/变量及保护规则均已妥善迁移后，才自行删除旧 `production`。本次改动不会自动删除该 Environment 或 Cloudflare 上的任何东西。
 
-Browser T8 仅接入既有选定 Worker 发布契约。`browser-mcp-worker` 当前未配置生产路由，预检会拒绝部署；独立凭据、资源、路由、Access/Portal 及实机验收需另行授权。工件与安装说明见 [Browser T8](../apps/browser-mcp-worker/docs/t8-release.md)。
+Browser 目前已有正式 Custom Domain 和 Owner Access 激活机制，旧独立 Unknown Review 已退役。历史 T8 “无生产路由/无额外变量” 说明不再代表当前状态。清理候选与认证边界见 [当前运行配置](./runtime-configuration.md)；本指南修改不授权 GitHub Secret/Variable 删除、Portal 变更或 Worker 发布。
