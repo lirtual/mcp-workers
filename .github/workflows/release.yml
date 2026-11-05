@@ -632,10 +632,12 @@ jobs:
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           DATABASE_ACCESS_AUD: ${{ vars.DATABASE_ACCESS_AUD }}
           BROWSER_ACTIVATION_EXPECTED: ${{ vars.BROWSER_ACTIVATION_AUDIENCE }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID) || '' }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
+      # Workflow full releases map only the two approved old Environment
+      # Secret names into canonical Worker binding names (no Settings writes).
       # Existing Workflow code-only releases use deployed Secrets (verified by
       # read-only inventory), never stage or re-upload their values.
       - name: Compare selected Worker effective Owner identity to Repository source
@@ -663,9 +665,9 @@ jobs:
           DATABASE_PREVIOUS_KEY_ID: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_PREVIOUS_KEY_ID || '' }}
           SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
-          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && (secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || secrets.MCP_PORTAL_CLIENT_SECRET) || '' }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY || '' }}
+          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && (secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY || secrets.SESSION_RUNTIME_DATA_KEY) || '' }}
         run: |
           set -euo pipefail
           umask 077
@@ -683,7 +685,7 @@ jobs:
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID) || '' }}
           # The Provider pin is resolved read-only after the existing environment approval,
           # not copied from a potentially stale GitHub Environment variable.
           DATABASE_MAX_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_ROWS || '' }}
@@ -693,7 +695,7 @@ jobs:
           DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
           # GitHub reserves GITHUB_* variable names; translate our reviewed
           # GitHub Environment variable into the Worker's runtime binding.
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
         run: |
           set -euo pipefail
           umask 077
@@ -1393,8 +1395,8 @@ jobs:
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           DATABASE_ACCESS_AUD: ${{ vars.DATABASE_ACCESS_AUD }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID) || '' }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
 
       - name: Verify Workflow pin matches deployed Actions Worker (read-only)
