@@ -98,6 +98,8 @@ function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,
     if(request.method==='POST'&&tail==='/servers'){
       const value=JSON.parse(await request.text());
       assert.equal(value.auth_credentials,expectedToken);
+      assert.equal(value.description,
+        'Persistent workflow orchestration with versioned plans, scheduled and event-driven execution, approved MCP/GitHub/Cloudflare Actions, and run monitoring.');
       upstream={...originalServer,tools:toolNames.map(name=>({name}))};
       return res(200,upstream);
     }
