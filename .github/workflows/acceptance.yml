@@ -17,7 +17,6 @@ on:
           - production-webhook
           - production-session-data
           - portal-readonly
-          - browser-upstream-schema-readonly
           - github-action-result-cloud
           - portal-register
       session_run_id:
@@ -206,37 +205,4 @@ jobs:
         run: node scripts/register-workflow-portal.mjs
 
   browser-upstream-schema-readonly:
-    name: Browser MCP upstream tools/list Schema (one-time read-only)
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.repository == 'lirtual/mcp-workers' &&
-          github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' &&
-          inputs.test_type == 'browser-upstream-schema-readonly' &&
-          inputs.confirm_portal_write != true }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    environment:
-      name: browser-mcp-worker
-    permissions:
-      contents: read
-    concurrency:
-      group: browser-schema-readonly-probe
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Verify pinned main before any protected Secret is used
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - name: One authenticated upstream tools/list request; print Schema verdict only
-        env:
-          MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
-        run: node scripts/browser-upstream-schema-readonly.mjs
+    name
