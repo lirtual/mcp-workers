@@ -78,6 +78,9 @@ export async function attachFixedPortalServer(env, target, transport = fetch) {
   assert.equal(detail.auth_type, 'bearer', 'portal_' + id + '_auth_drift');
   assert.deepEqual((detail.tools ?? []).map(x => x.name).sort(), [...tools].sort(),
     'portal_' + id + '_tool_inventory_drift');
+  // A ready sync and matching tool names do not establish schema freshness.
+  // Target-specific readback guards must run before reporting Portal success.
+  if (typeof target.verifyTools === 'function') target.verifyTools(detail.tools);
   // Access policies are a separate Cloudflare resource from MCP server tools.
   // Never attach a new server to MCP Portal when its Access application lacks
   // the same reusable service-token and owner policies as MCP Portal itself.
