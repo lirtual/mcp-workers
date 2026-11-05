@@ -35,7 +35,7 @@ export function buildMcpServer(env: Env, requestFetch: typeof fetch = fetch): Mc
   const server = new McpServer(
     { name: 'github-actions-mcp-worker', version: '0.1.0' },
     { capabilities: { tools: {} },
-      instructions: 'Operate GitHub Actions only in repositories surfaced through the configured fine-grained PATs. Never retry GitHub writes with a second credential if the assigned token fails. Dispatch, cancellation, and rerun are effectful. Use run_get before canceling. run_cancel and run_force_cancel only acknowledge cancellation requests, never confirm a run stopped; check run_get for status=completed and conclusion=cancelled. Use run_force_cancel only when normal cancellation fails to stop a run; force cancellation can bypass cleanup. Use workflow_dispatch with an explicit ref. Workflows such as tsrv and tsvc are regular Actions workflows, not special session APIs.' },
+      instructions: 'Operate GitHub Actions only in repositories surfaced through the configured fine-grained PATs. Never retry GitHub writes with a second credential if the assigned token fails. Dispatch, cancellation, and rerun are effectful. Before dispatch or rerun, inspect the target workflow and ref for production deployment, secrets, destructive effects and required authorization; acceptance is not completion and an unknown result is not permission to replay. Use run_get before canceling. run_cancel and run_force_cancel only acknowledge cancellation requests, never confirm a run stopped; check run_get for status=completed and conclusion=cancelled. Use run_force_cancel only when normal cancellation fails to stop a run; force cancellation can bypass cleanup. Use workflow_dispatch with an explicit ref. Workflows such as tsrv and tsvc are regular Actions workflows, not special session APIs.' },
   );
   const api = new GitHubActionsClient(env, requestFetch);
 
@@ -74,7 +74,7 @@ export function buildMcpServer(env: Env, requestFetch: typeof fetch = fetch): Mc
   }, async ({ repo, run_id }) => safe(() => api.listArtifacts(repo, run_id)));
 
   server.registerTool('workflow_dispatch', {
-    description: 'Trigger a workflow_dispatch workflow by file name or numeric ID on an explicit branch or tag; this starts a real GitHub Actions run.',
+    description: 'Trigger a workflow_dispatch workflow by file name or numeric ID on an explicit ref. Inspect target workflow, inputs and ref before triggering: it may deploy production, access secrets or have destructive effects; obtain authorization for the actual effects. Dispatch acceptance is not completion; reconcile uncertain results before retrying.',
     inputSchema: z.object({
       repo, workflow, ref: z.string().min(1).max(200), inputs: inputValues.optional(),
     }).strict(),
@@ -82,7 +82,7 @@ export function buildMcpServer(env: Env, requestFetch: typeof fetch = fetch): Mc
   }, async ({ repo, workflow, ref, inputs }) => safe(() => api.dispatchWorkflow(repo, workflow, ref, inputs ?? {})));
 
   server.registerTool('repository_dispatch', {
-    description: 'Emit a repository_dispatch event in an allowed repository. Only workflows subscribed to the event run; the event uses the default branch.',
+    description: 'Emit a repository_dispatch event on the repository default branch. Subscribed workflows may deploy production or have other external effects; inspect them and obtain authorization before sending. Acceptance is not execution success; reconcile unknown results without blindly replaying.',
     inputSchema: z.object({
       repo, event_type: z.string().min(1).max(100),
       client_payload: z.record(z.string(), z.unknown()).optional(),
@@ -107,7 +107,7 @@ export function buildMcpServer(env: Env, requestFetch: typeof fetch = fetch): Mc
   }, async ({ repo, run_id }) => safe(() => api.forceCancelRun(repo, run_id)));
 
   server.registerTool('run_rerun', {
-    description: 'Retry a workflow run, either all jobs or only failed jobs. Starts execution and may incur GitHub Actions usage.',
+    description: 'Rerun all jobs or only failed jobs from an existing run. This starts real execution and may repeat production deployment, destructive effects or GitHub Actions usage. Inspect the workflow and obtain authorization first; reconcile uncertain results before retrying.',
     inputSchema: z.object({ repo, run_id: runId, mode: z.enum(['all', 'failed']) }).strict(),
     annotations: annotationsWrite,
   }, async ({ repo, run_id, mode }) => safe(() => api.rerunRun(repo, run_id, mode === 'failed')));
