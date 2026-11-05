@@ -18,7 +18,7 @@
 ## 手动入口
 
 - `CI`：Push / PR 自动检查，不接受手动发布参数；`Release Worker`：选择 Worker 并明确勾选 `deploy_to_production`，在 `main` 上复用 CI 检查后发布。
-- `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 只读检查正式 Portal；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
+- `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 只读检查正式 Portal，并在 GitHub Environment 尚未更名时从现有 `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` 安全映射至客户端输入（不修改 Settings、不可当作解密 E2E）；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
 
 ## Workflow 当前生产资源
 
