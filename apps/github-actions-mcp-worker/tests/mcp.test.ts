@@ -48,6 +48,13 @@ test('real MCP protocol advertises eleven tools and rejects unauthorized reposit
       'repository_dispatch', 'run_cancel', 'run_force_cancel', 'run_rerun']) {
       assert.ok(tools.some(x => x.name === name), name);
     }
+    // Unknown agents rely on MCP metadata before selecting an effectful tool.
+    for (const name of ['workflow_dispatch', 'repository_dispatch', 'run_rerun']) {
+      const description = tools.find(tool => tool.name === name)?.description ?? '';
+      assert.match(description, /deploy production|production deploy/i, `${name}: production side effects`);
+      assert.match(description, /authoriz/i, `${name}: authorization`);
+      assert.match(description, /uncertain|unknown/i, `${name}: uncertain result`);
+    }
     const force = tools.find(tool => tool.name === 'run_force_cancel');
     assert.ok(force?.inputSchema.required?.includes('confirm'));
     const refused = await client.callTool({
