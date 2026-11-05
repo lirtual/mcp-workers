@@ -24,6 +24,31 @@ export const MIGRATION_LEGACY_SECRETS = Object.freeze({
   "ssh-mcp-worker": ["ENCRYPTION_KEY"],
   "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_SECRET", "SESSION_RUNTIME_DATA_KEY"],
 });
+// The pre-migration Database runtime defaults are part of the original-value
+// contract. A missing legacy Variable means its deployed value was this default.
+const DATABASE_LIMIT_MIGRATION = Object.freeze({
+  MAX_ROWS: ["DATABASE_MAX_ROWS", 500, 5000],
+  MAX_RESULT_BYTES: ["DATABASE_MAX_RESULT_BYTES", 1048576, 8388608],
+  MAX_SCHEMA_BYTES: ["DATABASE_MAX_SCHEMA_BYTES", 524288, 4194304],
+  QUERY_TIMEOUT_MS: ["DATABASE_QUERY_TIMEOUT_MS", 15000, 60000],
+  MAX_WRITE_AFFECTED_ROWS: ["DATABASE_MAX_WRITE_AFFECTED_ROWS", 20, 100],
+});
+
+function validDatabaseLimit(value, max) {
+  return typeof value === "string" && /^[1-9][0-9]*$/.test(value) &&
+    Number.isSafeInteger(Number(value)) && Number(value) <= max;
+}
+
+// Only the effective selected-Worker variable inputs, never secret bytes.
+export function expectedDatabaseLimits(sourceConfig, env) {
+  return Object.fromEntries(Object.values(DATABASE_LIMIT_MIGRATION).map(([name, , max]) => {
+    const override = env[name];
+    const raw = override == null || override === "" ? String(sourceConfig?.vars?.[name] ?? "") : override;
+    invariant(validDatabaseLimit(raw, max), "Invalid Database limit release input: " + name);
+    return [name, raw];
+  }));
+}
+
 const WORKER_ENTRIES = {
   "browser-mcp-worker": "src/worker.ts",
   "raindrop-mcp-worker": "src/worker.ts",
@@ -226,25 +251,35 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     // These two nonsecret identities must not change across a pure rename.
     // The GitHub source is read inside the approved selected-Worker release.
     if (typeof options.expectedWorkflowPortalClientId === "string") {
-      const live = options.mode === "preflight"
-        ? (find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") || find("MCP_PORTAL_CLIENT_ID", "plain_text"))
-        : find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text");
-      invariant(options.expectedWorkflowPortalClientId.length > 0 &&
-        live?.text === options.expectedWorkflowPortalClientId,
+      const names = options.mode === "preflight"
+        ? ["MCP_PORTAL_CLIENT_ID", "WORKFLOW_MCP_PORTAL_CLIENT_ID"]
+        : ["WORKFLOW_MCP_PORTAL_CLIENT_ID"];
+      invariant(!bindings.some(b => names.includes(b.name) && b.type !== "plain_text"),
+        "Workflow Portal client identity binding type changed");
+      const present = names.map(name => find(name, "plain_text")).filter(Boolean);
+      invariant(options.expectedWorkflowPortalClientId.length > 0 && present.length > 0 &&
+        present.every(binding => binding.text === options.expectedWorkflowPortalClientId),
         "Workflow Portal client identity differs from existing reviewed value");
     }
     if (typeof options.expectedWorkflowGrants === "string") {
-      const live = options.mode === "preflight"
-        ? (find("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES", "plain_text") ||
-           find("GITHUB_ACTION_APPROVED_REPOSITORIES", "plain_text"))
-        : find("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES", "plain_text");
-      let expected, actual;
-      try {
-        expected = options.expectedWorkflowGrants ? JSON.parse(options.expectedWorkflowGrants) : [];
-        actual = live?.text ? JSON.parse(live.text) : [];
-      } catch { throw Error("Workflow repository grants are not valid JSON"); }
-      invariant(JSON.stringify(expected) === JSON.stringify(actual),
-        "Workflow approved repositories differ from existing reviewed grants");
+      const names = options.mode === "preflight"
+        ? ["GITHUB_ACTION_APPROVED_REPOSITORIES", "WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"]
+        : ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"];
+      let expected;
+      try { expected = options.expectedWorkflowGrants ? JSON.parse(options.expectedWorkflowGrants) : []; }
+      catch { throw Error("Workflow repository grants are not valid JSON"); }
+      invariant(!bindings.some(b => names.includes(b.name) && b.type !== "plain_text"),
+        "Workflow repository approvals binding type changed");
+      const present = names.map(name => find(name, "plain_text")).filter(Boolean);
+      for (const binding of present) {
+        let actual;
+        try { actual = JSON.parse(binding.text); }
+        catch { throw Error("Workflow repository grants are not valid JSON"); }
+        invariant(JSON.stringify(expected) === JSON.stringify(actual),
+          "Workflow approved repositories differ from existing reviewed grants");
+      }
+      invariant(present.length > 0 || JSON.stringify(expected) === "[]",
+        "Workflow approved repositories missing from existing runtime");
     }
     if (options.mode === "preflight" && options.requireExistingSecrets) {
       invariant(!!find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") &&
@@ -372,6 +407,27 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(limiter && String(limiter.namespace_id) === "1001" &&
       Number(limiter.simple?.limit) === 120 && Number(limiter.simple?.period) === 60,
       "Database RATE_LIMITER binding/policy drift");
+  }
+  if (worker === "database-mcp-worker" && options.expectedDatabaseLimits) {
+    for (const [legacy, [currentName, originalDefault, max]] of Object.entries(DATABASE_LIMIT_MIGRATION)) {
+      const expected = options.expectedDatabaseLimits[currentName];
+      invariant(validDatabaseLimit(expected, max), "Database limit release input missing: " + currentName);
+      for (const name of [legacy, currentName]) {
+        invariant(!bindings.some(b => b.name === name && b.type !== "plain_text"),
+          "Database limit binding type drift: " + name);
+      }
+      const oldBinding = find(legacy, "plain_text");
+      const newBinding = find(currentName, "plain_text");
+      const same = binding => validDatabaseLimit(binding.text, max) && Number(binding.text) === Number(expected);
+      if (options.mode === "preflight") {
+        invariant((!oldBinding || same(oldBinding)) && (!newBinding || same(newBinding)) &&
+          (oldBinding || newBinding || Number(expected) === originalDefault),
+          "Database limit migration changes original value: " + currentName);
+      } else if (options.mode === "readback") {
+        invariant(!!newBinding && same(newBinding),
+          "Database limit readback differs from reviewed input: " + currentName);
+      }
+    }
   }
   if (worker === "remote-control-mcp-worker") {
     const coordinator = find("DEVICE_COORDINATOR", "durable_object_namespace");
@@ -514,7 +570,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         invariant(allowed.has(item.name), "Unexpected production resource binding: " + item.name);
     }
   }
-  if (options.mode === "readback") {
+  if (options.mode === "readback" && ["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker)) {
     const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...oldSecrets,
       ...(worker === "database-mcp-worker" ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
@@ -1080,7 +1136,7 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check", "database-d1-sql", "database-d1-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "cleanup-readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check", "database-d1-sql", "database-d1-check"].includes(mode), "Unknown release validation mode");
   if (mode === "database-d1-sql") {
     invariant(worker === "database-mcp-worker", "Database SQL readiness target mismatch");
     console.log(databaseD1ReadinessSql(REQUIRED_LEGACY_IDS));
@@ -1158,6 +1214,29 @@ async function main() {
       sourceConfig.routes[0].pattern === "browser.lirtual.dpdns.org",
       "Browser release blocked: reviewed dedicated Custom Domain is not configured");
   }
+  if (mode === "cleanup-readback") {
+    invariant(["ssh-mcp-worker", "workflow-mcp-worker"].includes(worker),
+      "Legacy cleanup readback only supports SSH or Workflow");
+    invariant(account && token && sourceSha && process.env.EXPECTED_VERSION_ID &&
+      process.env.GITHUB_REPOSITORY === "lirtual/mcp-workers" &&
+      process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_ACTOR === "lirtual",
+      "Required cleanup readback environment missing");
+    if (worker === "workflow-mcp-worker") invariant(
+      process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID &&
+      process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES !== undefined,
+      "Required Workflow cleanup readback identity inputs missing");
+    // Cloudflare GET inventory only. No Wrangler, write endpoint, or release-state mutation.
+    const observed = await current(account, worker, token, {
+      mode: "readback", cleanupVerified: true, sourceConfig,
+      expectedWorkflowPortalClientId: process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
+      expectedWorkflowGrants: process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES,
+    });
+    invariant(observed.version_id === process.env.EXPECTED_VERSION_ID,
+      "Legacy cleanup active Worker version differs from reviewed version");
+    console.log("Legacy Secret cleanup readback PASS: " + worker +
+      "; version=" + observed.version_id + "; no old Secrets remain");
+    return;
+  }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
   const previous = mode === "readback"
     ? JSON.parse(await readFile(statePath, "utf8")) : null;
@@ -1177,6 +1256,8 @@ async function main() {
       sharedOwnerEmail: ["browser-mcp-worker", "database-mcp-worker"].includes(worker)
         ? process.env.OWNER_EMAIL : undefined,
       databaseAudience: worker === "database-mcp-worker" ? process.env.DATABASE_ACCESS_AUD : undefined,
+      expectedDatabaseLimits: worker === "database-mcp-worker"
+        ? expectedDatabaseLimits(sourceConfig, process.env) : undefined,
       expectedBrowserRememberedDays: worker === "browser-mcp-worker"
         ? process.env.BROWSER_REMEMBERED_IDLE_DAYS : undefined,
       expectedWorkflowPortalClientId: worker === "workflow-mcp-worker"
