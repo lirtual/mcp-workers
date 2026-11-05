@@ -26,6 +26,7 @@ function setup(){
  db.exec(readFileSync(new URL('../migrations/0005_github_workflow_check.sql',import.meta.url),'utf8'));
  db.exec('BEGIN');
  db.exec(readFileSync(new URL('../migrations/0006_action_attempt_capabilities.sql',import.meta.url),'utf8'));
+ db.exec(readFileSync(new URL('../migrations/0020_github_action_main_sha.sql',import.meta.url),'utf8'));
  db.exec('COMMIT');
  db.exec(`INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at)
  VALUES('wf','wf','{}',1,'active',1,1);

@@ -27,7 +27,7 @@ function fixture(onRead?: (readCount:number)=>void){
   for(const name of ['0006_action_attempt_capabilities.sql',
       '0007_session_executions.sql','0008_session_locator.sql',
       '0009_fixed_sessions.sql','0011_awaited_child_capacity.sql',
-      '0019_session_rca_duration.sql']){
+      '0019_session_rca_duration.sql','0020_github_action_main_sha.sql']){
     db.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   }
   db.exec('COMMIT');

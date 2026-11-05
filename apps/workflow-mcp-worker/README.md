@@ -74,7 +74,7 @@ new Draft/Publish/Run actions.
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
 - **MCP tool calls (`mcp.call`):** the existing read-only operations plus two source-reviewed write operations, IMA `ima_create_note` and `ima_append_note`. Both require the exact pinned Portal endpoint, tool, scope and schema digest plus `accept_target_risks: true`; write additionally requires `approve_mcp_write_execution: true`. Reviewed writes accept at most one top-level Step per Plan: create with literal `content` (1–2048 chars), or append with a literal existing numeric `note_id` (8–24 digits) and literal `content` (1–2048 chars). No folder, dynamic input or Foreach writes. Runtime verifies the live schema and explicitly reviewed tool before a single D1 dispatch reservation. Upstream `readOnlyHint` never authorizes a write; an unknown call result remains `indeterminate` without an automatic resend.
 - **HTTP Action (`http.request`):** one literal, canonical public HTTPS URL and GET/HEAD/POST operation approved verbatim at Publish. No dynamic URL, query, credentials, caller headers or redirect following. A durable D1 fence prevents blind retries, and the independently revocable HTTP Connection prevents older Plans being revived.
-- **GitHub Actions (`github.run`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed SHA, tag, workflow, input contract and `approve_heavy_execution: true`; automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
+- **GitHub Actions (`github.run`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed initial SHA, workflow, input contract and `approve_heavy_execution: true`; ordinary Actions remain Tag-pinned, while only the five named `lirtual/github-actions` business Workflows may opt into `refs/heads/main` with per-Run CI and exact-SHA verification. Automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
 - **Result emission (`result.emit`)** for Workflow results.
 
 No arbitrary shell input or unreviewed repository dispatch is allowed. Workflow cancellation of approved GitHub Actions is separate from stopping admission; native GitHub Run state is reconciled before a physical termination is declared.
@@ -242,6 +242,42 @@ has to declare `duration_minutes` (default 300) and `duration_mode`
 The identifiers above are illustrative, not publishable values. Use
 `workflow_action_list` to obtain **all** the real, exact reviewed fields and
 retain the existing Publish approvals (and any downstream notifications).
+
+#### Optional moving-main Action source (five Owner Workflows only)
+
+For `lirtual/github-actions` (repository ID `1430925009`) only, a one-time
+Owner-approved Plan may set `ref: "refs/heads/main"` for **windows**, **ubuntu**,
+**chrome**, **code-server**, or **download**. The existing reviewed SHA, Workflow
+ID/path/type, contract digest, inputs and explicit Publish approvals are
+required at the initial Plan publication; other repositories, names and refs
+still require immutable Tags. `openlist`, experimental Spec62 Plans and legacy
+Tag-pinned Plans are not changed automatically.
+
+At each new admission the server rereads main HEAD, verifies the unchanged
+reviewed input contract and a **completed successful main-push CI** for that
+exact commit, and confirms main still points to the SHA before its one-shot
+GitHub dispatch. The chosen SHA is frozen once in the existing D1 Attempt via
+`resolved_sha`. The physical Run ID, branch, commit SHA and signed GitHub OIDC
+Claim must then match that frozen Attempt; a branch movement, missing CI,
+contract change, wrong SHA or identity mismatch **fails closed**, with no
+older-commit fallback and no blind dispatch retries. A last-moment branch
+move between verification and GitHub scheduling can still create a job, but
+its signed Claim is rejected before private services/credentials are configured.
+
+This optional mode does **not** auto-admit new Runs, auto-republish Plans,
+change Bark Provider grants, or grant more GitHub execution authority. After
+one separately authorized Worker deployment and Plan cutover, future normal
+`main` updates passing CI will be used by the next manually authorized Run
+without new Tags or Plan publications. Reverting to an older main commit
+remains ordinary source control, not a recovery replay of an Unknown Attempt.
+
+**Release prerequisite:** apply existing additive D1 migration
+`0020_github_action_main_sha.sql` *before* deploying compatible Worker code,
+using the protected release workflow and a separate production authorization.
+The migration adds only a nullable per-Attempt SHA field, preserving all
+historical Tag-pinned records and receipts. Do not apply or test this against
+production as part of the non-production implementation PR.
+
 
 After this one-time Publish, `workflow_run({workflow_id})` defaults to **300**
 minutes; `workflow_run({workflow_id,inputs:{duration_minutes:10}})` runs for
