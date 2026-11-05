@@ -344,13 +344,13 @@ const collectionManageTool = defineTool({
   },
 });
 
-const deletionDescription =
-  "Preview-first; confirm requires the exact preview total, ascending collectionIds and digest. Digest is not authorization or a lock; concurrent changes remain possible. Writes are never automatically replayed.";
+const deletionDescription = (rootField: "id" | "rootId") =>
+  `First call with {${rootField}: positiveId} to preview without writing. After explicit approval, confirm with {${rootField}: positiveId, confirm: true, expectedTotal: preview.total, collectionIds: preview.collectionIds, digest: preview.digest}. The digest is not authorization or a lock; concurrent changes remain possible. Never automatically retry an unknown write.`;
 const collectionDeleteTool = defineTool({
   name: "collection_delete",
   description:
     "Delete one explicit positive collection and its complete descendant subtree, moving bookmarks to Trash. " +
-    deletionDescription,
+    deletionDescription("id"),
   inputSchema: CollectionDeleteInputSchema,
   outputSchema: CollectionDeletionOutputSchema,
   annotations: {
@@ -370,7 +370,7 @@ const collectionRemoveEmptyTool = defineTool({
   name: "collection_remove_empty",
   description:
     "Remove only verified empty leaves within an explicit positive rootId scope (including the root if it is an empty leaf). Newly emptied parents are excluded. " +
-    deletionDescription,
+    deletionDescription("rootId"),
   inputSchema: CollectionRemoveEmptyInputSchema,
   outputSchema: CollectionDeletionOutputSchema,
   annotations: {
