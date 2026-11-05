@@ -174,7 +174,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Read-only MCP discovery and one IMA list call
+      - name: Workflow-only Portal MCP authentication, tools/list, and workflow_list
         run: node --experimental-strip-types apps/workflow-mcp-worker/tests/mcp-portal-acceptance.mjs
 
   workflow-github-action-result-cloud:

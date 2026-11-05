@@ -181,3 +181,22 @@ test('Workflow Portal readonly acceptance keeps legacy Environment source until 
   assert.match(job, /node --experimental-strip-types apps\/workflow-mcp-worker\/tests\/mcp-portal-acceptance\.mjs/);
   assert.doesNotMatch(job, /wrangler deploy|secret delete|portal-register|deploy_to_production|workflow_create|workflow_run/);
 });
+
+
+test('Workflow-only Portal probe reads exclusively workflow_list after authenticated MCP discovery', async () => {
+  const {readFileSync}=await import('node:fs');
+  const acceptance=readFileSync('.github/workflows/acceptance.yml','utf8');
+  const job=acceptance.split('  workflow-mcp-portal-probe:\n')[1]?.split('\n  workflow-github-action-result-cloud:')[0];
+  assert.ok(job);
+  assert.match(job, /Workflow-only Portal MCP authentication, tools\/list, and workflow_list/);
+  const source=readFileSync('apps/workflow-mcp-worker/tests/mcp-portal-acceptance.mjs','utf8');
+  assert.match(source, /await client\.connect\(transport\)/);
+  assert.match(source, /await client\.listTools\(\)/);
+  assert.match(source, /\/\(\^\|\[\._-\]\)workflow_list\$\//);
+  assert.match(source, /t\.annotations\?\.readOnlyHint===true/);
+  assert.match(source, /t\.annotations\?\.destructiveHint!==true/);
+  assert.equal(source.match(/client\.callTool\(/g)?.length,1,'only one Portal tool may be called');
+  assert.match(source, /client\.callTool\(\{name:workflow\.name,arguments:\{\}\}\)/);
+  assert.match(source, /if\(result\.isError\) throw new Error\('workflow_readonly_tool_error'\)/);
+  assert.doesNotMatch(source,/list_notebooks|IMA_READONLY|APPROVABLE_IMA|toolSchemaDigest|workflow_run|workflow_publish/);
+});

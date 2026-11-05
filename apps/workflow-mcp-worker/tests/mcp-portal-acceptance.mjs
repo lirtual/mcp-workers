@@ -1,10 +1,9 @@
 /**
- * Manual, non-deploying MCP candidate acceptance from the trusted GitHub
- * Environment. Never log a bearer, service token, request headers or tool data.
+ * Manual Workflow-only Portal authentication and read-only listing probe from
+ * the trusted GitHub Environment. Never log credentials, headers or tool data.
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
-import { toolSchemaDigest } from '../src/plan.ts';
 
 const endpoint=PRODUCTION_PORTAL_ENDPOINT;
 console.log('PORTAL_PROBE_TARGET production');
@@ -27,17 +26,7 @@ try {
   console.log('MCP_INITIALIZE_OK');
   const listing=await client.listTools();
   console.log('MCP_TOOLS_LIST_OK',listing.tools.length);
-  // Avoid logging the full production Portal catalog; only the selected read-only tools matter.
-  const candidate=listing.tools.find(t=>
-    /(^|[._-])list_notebooks$/.test(t.name)&&
-    t.annotations?.readOnlyHint===true&&
-    t.annotations?.destructiveHint!==true);
-  if(!candidate) throw new Error('ima_readonly_tool_unavailable');
-  console.log('APPROVABLE_IMA_TOOL',candidate.name);
-  console.log('TOOL_SCHEMA_SHA256',await toolSchemaDigest(candidate.inputSchema,candidate.outputSchema));
-  const output=await client.callTool({name:candidate.name,arguments:{limit:1}});
-  if(output.isError) throw new Error('ima_readonly_tool_error');
-  console.log('IMA_READONLY_CALL_OK');
+  // Workflow-only: do not access unrelated Portal tools or business data.
   // Verify client → production Portal → Workflow read-only path; no D1 writes.
   const workflow=listing.tools.find(t=>
     /(^|[._-])workflow_list$/.test(t.name)&&
