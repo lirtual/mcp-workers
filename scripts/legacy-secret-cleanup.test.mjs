@@ -27,6 +27,29 @@ test('Database Prepare pins Wrangler with non-deploying bulk null deletion suppo
     'Installed Wrangler must support deleting Secret bindings via JSON null');
 });
 
+test('Spec 733 SSH and Workflow Prepare pin a CLI supporting versioned bulk null deletion', () => {
+  const lock = readFileSync('pnpm-lock.yaml', 'utf8');
+  for (const worker of ['ssh-mcp-worker', 'workflow-mcp-worker']) {
+    const pkg = JSON.parse(readFileSync('apps/' + worker + '/package.json', 'utf8'));
+    const version = pkg.devDependencies.wrangler;
+    assert.match(version, /^\d+\.\d+\.\d+$/, 'Wrangler must be exact, not a range');
+    const [major, minor] = version.split('.').map(Number);
+    assert.ok(major > 4 || (major === 4 && minor >= 148),
+      worker + ' cannot delete versioned Secret bindings using JSON null with older Wrangler');
+    const importer = lock.split('  apps/' + worker + ':\n')[1]
+      ?.split('\n  apps/')[0];
+    assert.ok(importer?.includes('specifier: ' + version) &&
+      importer.includes('version: ' + version + '('),
+      worker + ' Wrangler manifest and lockfile do not match');
+    const help = spawnSync('pnpm',
+      ['--filter', worker, 'exec', 'wrangler', 'versions', 'secret', 'bulk', '--help'],
+      { encoding: 'utf8', timeout: 30000 });
+    assert.equal(help.status, 0, worker + ' installed Wrangler CLI help is unavailable');
+    assert.match(help.stdout, /Set a key to null in the JSON file to delete it/,
+      worker + ' CLI must explicitly support deleting a Secret with JSON null');
+  }
+});
+
 const SSH = 'ssh-mcp-worker';
 const WORKFLOW = 'workflow-mcp-worker';
 const DATABASE = 'database-mcp-worker';
