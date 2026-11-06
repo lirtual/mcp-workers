@@ -799,3 +799,36 @@ provenance. The dedicated test Workflow is paused. See
 and [Spec #35 evidence](https://github.com/lirtual/cloudflare-actions/issues/35).
 
 Spec #733 amended 2026-11-06: the existing GitHub Environment Secrets `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` are **permanent single-source naming exceptions**. The existing protected full release stages these values only as runtime `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` and `WORKFLOW_SESSION_RUNTIME_DATA_KEY`. There is no new canonical GitHub Secret, precedence rule, copy operation or parallel Secret fallback. The separately scoped Variables may retain their reviewed compatibility mapping. Runtime bindings, original Portal credentials, session AES key, OIDC audience, grants, published Plans and historic ciphertext must remain unchanged until specifically approved production cutover and real decryption acceptance. The first migration must use a fully approved protected release, not `workflow_code_only`; old Cloudflare bindings require separately authorized cleanup after real verification. No credential rotation, production deploy or GitHub Settings mutation is authorized by this documentation.
+
+### Spec #774：UU 历史表和专属密钥的独立清理准备（非生产）
+
+本分支仅准备 0021_retire_uu_session_data.sql、额外的只读准入门禁
+和纯函数级 Secret 候选版本检查。严禁将 PR 合并视为生产授权。
+保留已应用的 0010_session_runtime_data.sql 与历史 Version/Run/Attempt。
+
+- 清理的唯一计划入口是原受保护 Release Worker：选择 workflow-mcp-worker，
+  设置 workflow_code_only=false、legacy_secret_cleanup_mode=none、
+  uu_cleanup_approved=true，并分别提供新审核的 main 完整 SHA 和 100%
+  活动 Worker Version UUID。现有 Owner、CI、Release 锁和 Environment
+  保护均保持不变。
+- 一旦新 0021 文件进入 Release 源码，普通 Workflow 完整发布必须拒绝
+  自动应用迁移；旧 Actions migration-prepare 也必须拒绝。
+- 发布前须保证旧表零记录、正式 Windows Workflow 为 Paused、旧 UU
+  RCA Plan 已墓碑退役、历史 Version 保留、零活动物理 Session 及未决
+  Windows Attempt、准确的 Worker 绑定/版本。最重要的是原有严格通用
+  verifyWorkflowMigrationReadiness 必须整体 Pass，不能靠本专项检查例外处理
+  历史 indeterminate 状态。
+- 当前实际生产仍有 12 个历史 indeterminate Run、12 个未终态 Step、
+  1 个未终态 Attempt。现有通用 Migration 门禁应拒绝这次 DROP。
+  禁止改写回执、调低强制门禁或通过 D1 API 等别的路径绕过。
+- 仅在真实生产 21 项 Migration 和删除原表的独立回读均 Pass 后，才能
+  另行审查当前 Worker 的 WORKFLOW_SESSION_RUNTIME_DATA_KEY 绑定。
+  单键 Secret 候选版本必须保持原代码 etag、Handler 和其他 10 个绑定
+  精确一致。该准备代码不会调用 Secret 删除、版本 Prepare 或 Publish；
+  上述高风险操作须另行授权及实现受保护发布步骤。
+- 最后才可通过官方 GitHub 管理流程删除 Environment 来源密钥
+  SESSION_RUNTIME_DATA_KEY；不能删除仍在使用的 MCP_PORTAL_CLIENT_SECRET，
+  不能把依赖已删除资源的旧 Worker 版本当成可用的回滚目标。
+
+当前结果：非生产准备可以验证；生产 D1/Secret 持久清理仍为
+Blocked / Not performed。维护期间不得自动合并此破坏性 Migration PR。

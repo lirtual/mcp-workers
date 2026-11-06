@@ -581,6 +581,17 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.throws(()=>verifyWorkflowD1Readiness(result(sessionComplete),false,true),/schema migrations/);
   const mainComplete={...sessionComplete,migration_count:20,migration_v20:1,resolved_sha_column:1};
   assert.equal(verifyWorkflowD1Readiness(result(mainComplete),false,true),true);
+  const uuRetired={...mainComplete,migration_count:21,migration_v21:1,runtime_table:0};
+  assert.equal(verifyWorkflowD1Readiness(result(uuRetired),false,true,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(result(mainComplete),false,true,true),
+    /UU retirement post-migration/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,runtime_table:1}),false,true,true),
+    /UU retirement/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,migration_v21:0}),false,true,true),
+    /UU retirement/);
+  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,active_sessions:1}),false,true,true),
+    /active physical Sessions/);
+
   for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},
     {migration_v17:0},{http_auth_table:0},{migration_v18:0},{cloudflare_gate_table:0},
     {migration_v19:0},{rca_duration_column:0},{migration_v20:0},
@@ -671,11 +682,11 @@ test("Workflow migration preflight requires all independent physical states sett
     nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
   };
   const response = row => [{success: true, results: [row]}];
-  for (const count of [18,19,20]) assert.deepEqual(
+  for (const count of [18,19,20,21]) assert.deepEqual(
     verifyWorkflowMigrationReadiness(response({...ready,migration_count:count,expected_migrations:count})),
     {workflows:7,runs:58,sessions:49,attempts:31,callbacks:4,cancellations:31});
   for (const wrong of [
-    {migration_count:21,expected_migrations:21},
+    {migration_count:22,expected_migrations:22},
     {migration_count:19,expected_migrations:18},
   ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response({...ready,...wrong})),/exact reviewed/);
   assert.deepEqual(verifyWorkflowMigrationReadiness(response(ready)), {
@@ -731,7 +742,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.equal((release.match(/AS migration_v19/g)??[]).length,2);
   assert.equal((release.match(/AS migration_v20/g)??[]).length,2);
   assert.equal((release.match(/AS resolved_sha_column/g)??[]).length,2);
-  assert.match(release,/migrations\[@\].*eq 20/);
+  assert.match(release,/migrations\[@\].*eq 21/);
   assert.equal((release.match(/AS rca_duration_column/g)??[]).length,2);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/reviewed_terminal_artifact_attempts/);

@@ -51,6 +51,21 @@ on:
         required: false
         type: boolean
         default: false
+      uu_cleanup_approved:
+        description: 'Spec 774: separate approval for exact UU empty-table Migration, only after all normal Migration gates pass'
+        required: false
+        type: boolean
+        default: false
+      uu_cleanup_expected_sha:
+        description: 'Spec 774: separately reviewed exact main SHA'
+        required: false
+        type: string
+        default: ''
+      uu_cleanup_expected_active_version:
+        description: 'Spec 774: separately reviewed currently active 100% Worker version UUID'
+        required: false
+        type: string
+        default: ''
       legacy_secret_cleanup_mode:
         description: 'Spec 733: none, prepare un-deployed version, or publish reviewed SSH/Workflow/Database candidate'
         required: true
@@ -130,6 +145,15 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs preflight
+      - name: Block legacy Actions migration prepare once destructive UU migration is staged
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]] || {
+            echo 'Former Actions migration prepare cannot apply Spec 774 DROP' >&2
+            exit 1
+          }
+
       - name: Apply existing Workflow D1 migrations and freeze only 0018 admission gate (no release)
         shell: bash
         env:
@@ -765,13 +789,14 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           migrations=(apps/workflow-mcp-worker/migrations/*.sql)
-          [[ "${#migrations[@]}" -eq 20 ]] || { echo 'Code-only release requires unchanged reviewed migration inventory' >&2; exit 1; }
+          [[ "${#migrations[@]}" -eq 21 ]] || { echo 'Code-only release requires post-retirement migration inventory' >&2; exit 1; }
 
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: ${{ inputs.workflow_code_only && 'true' || '' }}
+          UU_REQUIRE_CLEANUP_COMPLETE: ${{ inputs.workflow_code_only }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
@@ -814,6 +839,7 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
               (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
+              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
               (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
@@ -847,6 +873,29 @@ jobs:
              (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
+      # Spec 774: the new DROP migration is NEVER automatically eligible for
+      # a generic release. Check the exact approved SHA/version and the full
+      # historical migration gate without changing any historical receipts.
+      - name: Fence Spec 774 UU table retirement before any migration
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
+        shell: bash
+        env:
+          UU_CLEANUP_APPROVED: ${{ inputs.uu_cleanup_approved }}
+          UU_CLEANUP_EXPECTED_SHA: ${{ inputs.uu_cleanup_expected_sha }}
+          UU_CLEANUP_EXPECTED_ACTIVE_VERSION: ${{ inputs.uu_cleanup_expected_active_version }}
+          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]]
+          [[ "$UU_CLEANUP_APPROVED" == "true" ]] || {
+            echo 'Spec 774 DROP requires separate explicit approval; refusing generic Workflow release' >&2
+            exit 1
+          }
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          node scripts/workflow-uu-cleanup-gate.mjs
+
       # Only the existing production release lock and GitHub Environment can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
@@ -857,6 +906,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'
+          UU_REQUIRE_CLEANUP_COMPLETE: 'true'
           WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
           WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
           WORKFLOW_THIRD_TERMINAL_RUN_ID: ${{ steps.terminal_third.outputs.third_terminal_run_id }}
@@ -898,6 +948,7 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
               (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
+              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
               (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,

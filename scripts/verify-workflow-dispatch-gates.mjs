@@ -113,8 +113,20 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 13,
-  'Release workflow_dispatch must have exactly thirteen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 16,
+  'Release workflow_dispatch must have exactly sixteen reviewed inputs');
+// An extra destructive D1 migration must never run on a generic release.
+for (const part of [
+  'uu_cleanup_approved:', 'uu_cleanup_expected_sha:',
+  'uu_cleanup_expected_active_version:',
+  'Fence Spec 774 UU table retirement before any migration',
+  'node scripts/workflow-uu-cleanup-gate.mjs',
+  'Spec 774 DROP requires separate explicit approval',
+  'UU_REQUIRE_CLEANUP_COMPLETE:',
+])assert.ok(release.includes(part),'Missing Spec774 protected cleanup gate: '+part);
+const explicitGate=release.indexOf('Fence Spec 774 UU table retirement before any migration');
+const d1Apply=release.indexOf('Apply complete Workflow D1 migrations');
+assert.ok(explicitGate>0&&d1Apply>explicitGate,'UU migration gate must precede D1 writes');
 const cleanup = job(release, 'legacy-secret-cleanup');
 assert.ok(deploy.gate.includes("inputs.legacy_secret_cleanup_mode == 'none'"),
   'Normal Worker release must exclude the legacy cleanup operation');
@@ -143,6 +155,10 @@ assert.ok(prepare.gate.includes("inputs.actions_migration_prepare == true")&&
   prepare.gate.includes("inputs.deploy_to_production == false")&&
   prepare.gate.includes("github.actor == 'lirtual'"),'Migration-only release gate missing');
 assert.ok(!prepare.content.includes('wrangler deploy'),'Migration preparation must never deploy');
+assert.ok(prepare.content.includes('Former Actions migration prepare cannot apply Spec 774 DROP')&&
+  prepare.content.indexOf('Block legacy Actions migration prepare')<
+  prepare.content.indexOf('d1 migrations apply workflow-mcp-db'),
+  'Legacy prepare must block destructive UU migration before D1 writes');
 assert.ok(deploy.gate.includes('inputs.actions_migration_prepare != true'),
   'Production release must not overlap migration-only mode');
 assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');

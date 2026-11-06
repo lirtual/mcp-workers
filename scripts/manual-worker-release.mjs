@@ -542,11 +542,13 @@ function reviewedTerminalRunSql(sql) {
   );
 }
 
-export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false) {
+export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false, requireUuRetired = false) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow remote D1 readback unavailable");
   const row = response[0].results[0];
+  // #774: v21 is a distinct verified schema state, NOT a synthetic v20 row.
+  // Keep the v20 structural predicates unchanged for all historical versions.
   // Production already has migration 0005. A failed two-file deployment may
   // leave 0006 committed; permit a controlled resume but never publish the
   // upgraded Worker until both new migrations and tables are confirmed.
@@ -585,8 +587,8 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
     row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
     row?.session_table === 1 && row?.cancellation_table === 1;
-  const fullV11Schema = row?.migration_v10 === 1 &&
-    row?.migration_v11 === 1 && row?.runtime_table === 1 &&
+  const v11Structure = row?.migration_v10 === 1 &&
+    row?.migration_v11 === 1 &&
     row?.capacity_column === 1 && row?.parent_column === 1 &&
     row?.parent_step_column === 1 && row?.child_index === 1 &&
     row?.child_cancel_table === 1 && row?.child_terminate_fence_column === 1 &&
@@ -595,6 +597,7 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
     row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
     row?.session_table === 1 && row?.cancellation_table === 1;
+  const fullV11Schema=v11Structure && row?.runtime_table === 1;
   // Accept the reviewed v11 schema ONLY before a v12 migration. Deployment
   // requires the exact v12 receipt table + migration record.
   const completeV11 = row?.migration_count === 11 &&
@@ -642,13 +645,14 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   // #62: migration 0019 adds a signed, nonrenewable Session duration snapshot.
   // Release may start on a fully reviewed v18 baseline, but code publication
   // must follow exact v19 migration/column confirmation; no v18 fallback.
-  const reviewedV19Shape = row?.migration_v19 === 1 &&
+  const reviewedV19Structure = row?.migration_v19 === 1 &&
     row?.rca_duration_column === 1 && row?.migration_v18 === 1 &&
     row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
     row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
     row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
     row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
+    row?.approvals_table === 1 && row?.deleted_column === 1 && v11Structure;
+  const reviewedV19Shape=reviewedV19Structure && row?.runtime_table === 1;
   // 0020 freezes the CI-verified main SHA per GitHub Attempt. Preserve a
   // strict v19 pre-migration gate and require BOTH migration and column after.
   const completeV19 = row?.migration_count === 19 &&
@@ -657,14 +661,19 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   const completeV20 = row?.migration_count === 20 &&
     row?.migration_v20 === 1 && row?.resolved_sha_column === 1 &&
     reviewedV19Shape;
-  invariant(base && (requireCompleteSchema ? completeV20 : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || completeV18 || completeV19 || completeV20)),
+  const completeV21=row?.migration_count===21 && row?.migration_v21===1 &&
+    row?.runtime_table===0 && row?.migration_v20===1 &&
+    row?.resolved_sha_column===1 && reviewedV19Structure;
+  invariant(row?.migration_v21!==1 || completeV21,"UU retirement migration/schema drift");
+  if(requireUuRetired)invariant(completeV21,"UU retirement post-migration D1 readback missing");
+  invariant(base && (requireCompleteSchema ? (completeV20 || completeV21) : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || completeV18 || completeV19 || completeV20 || completeV21)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
   // D1 migration may change Session reservations even after the parent Run
   // succeeded at Ready. Require a physically quiescent Tailnet before schema
   // changes; completed-schema code-only releases use their separate gate.
-  if(!completeV20) invariant(Number.isSafeInteger(row?.active_sessions) &&
+  if(!completeV20 || requireUuRetired) invariant(Number.isSafeInteger(row?.active_sessions) &&
     row.active_sessions===0, "Workflow D1 migration blocked by active physical Sessions");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
     "Workflow first deployment requires empty production Run and Workflow state");
@@ -688,7 +697,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
     '0014_workflow_deletion.sql','0015_runtime_approval.sql',
     '0016_portal_connection_revocation.sql',
     '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql',
-    '0019_session_rca_duration.sql','0020_github_action_main_sha.sql')) AS expected_migrations,
+    '0019_session_rca_duration.sql','0020_github_action_main_sha.sql',
+   '0021_retire_uu_session_data.sql')) AS expected_migrations,
  (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
@@ -752,7 +762,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15,16,17,18,19,20].includes(row.migration_count) &&
+  invariant([12,13,14,15,16,17,18,19,20,21].includes(row.migration_count) &&
     row.expected_migrations === row.migration_count,
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
@@ -788,7 +798,8 @@ export function verifyWorkflowCodeReleaseReadiness(response, approvedTerminalArt
     "verified_terminal_saga_receipts","reviewed_terminal_artifact_attempts",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===20 && row.expected_migrations===20 &&
+  invariant([20,21].includes(row.migration_count) &&
+    row.expected_migrations===row.migration_count &&
     row.resolved_sha_column===1,
     "Workflow code-only release blocked by D1 migration drift");
   for (const key of [
@@ -1064,7 +1075,8 @@ async function main() {
     const raw = await readFile("/dev/stdin", "utf8");
     verifyWorkflowD1Readiness(JSON.parse(raw),
       process.env.WORKFLOW_FIRST_DEPLOY === "true",
-      process.env.WORKFLOW_REQUIRE_COMPLETE_SCHEMA === "true");
+      process.env.WORKFLOW_REQUIRE_COMPLETE_SCHEMA === "true",
+      process.env.UU_REQUIRE_CLEANUP_COMPLETE === "true");
     console.log("Workflow production D1 migrations and Run-state gate verified");
     return;
   }
