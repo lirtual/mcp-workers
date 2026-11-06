@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {attachBrowserPortal,BROWSER_TOOLS,BROWSER_UUIDV7_PATTERN,verifyBrowserToolSchemas} from './register-browser-portal.mjs';
+import {summarizeSchemaDiscovery} from './browser-upstream-schema-readonly.mjs';
 const ids=['workflow','database','ima','raindrop','sentry','ssh','remote-control','github-actions','git-guardian','kdocs','apifox'];
 const newPortal=()=>({id:'mcp',name:'MCP',hostname:'mcp.lirtual.dpdns.org',code_mode:'opt_in',secure_web_gateway:true,servers:ids.map(server_id=>({server_id,default_disabled:false}))});
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-fixture',MCP_ACCESS_TOKEN:'shared-fixture'};
@@ -123,4 +124,50 @@ test('ready sync with stale Browser tool schemas fails before Portal attachment'
     assert.equal(updated,0,'schema drift must not be reported as successful Portal registration');
     assert.equal(portal.servers.some(s=>s.server_id==='browser'),false);
   }
+});
+
+test('temporary upstream-only tools/list probe summarizes schemas without invoking tools',()=>{
+  const good={jsonrpc:'2.0',id:1,result:{tools:freshTools()}};
+  assert.deepEqual(summarizeSchemaDiscovery(good),{
+    tool_count:15,uuidv7_pattern:true,operation_status_schema:true,
+  });
+  const missingPattern=structuredClone(good);
+  missingPattern.result.tools.find(t=>t.name==='browser_tab_open').inputSchema.properties.intent_key.pattern=undefined;
+  assert.deepEqual(summarizeSchemaDiscovery(missingPattern),{
+    tool_count:15,uuidv7_pattern:false,operation_status_schema:true,
+  });
+  const oldOneOf=structuredClone(good);
+  oldOneOf.result.tools.find(t=>t.name==='browser_operation_status').inputSchema.oneOf=[{required:['intent_key']}];
+  assert.deepEqual(summarizeSchemaDiscovery(oldOneOf),{
+    tool_count:15,uuidv7_pattern:true,operation_status_schema:false,
+  });
+  assert.throws(()=>summarizeSchemaDiscovery({jsonrpc:'2.0',id:1,result:{}}),/invalid_discovery/);
+  const source=readFileSync(new URL('./browser-upstream-schema-readonly.mjs',import.meta.url),'utf8');
+  assert.match(source,/method:'tools\/list'/);
+  assert.doesNotMatch(source,/tools\/call|method:\s*['"](?:PUT|PATCH|DELETE)['"]/);
+  assert.match(source,/redirect:\s*'manual'/);
+  assert.match(source,/MCP_ACCESS_TOKEN/);
+});
+
+
+test('temporary Browser Acceptance entry stays owner-only, main-only and secrets are step scoped',()=>{
+  const workflow=readFileSync(new URL('../.github/workflows/acceptance.yml',import.meta.url),'utf8');
+  assert.match(workflow,/          - browser-upstream-schema-readonly/);
+  const job=workflow.split('  browser-upstream-schema-readonly:')[1];
+  assert.ok(job);
+  for(const fragment of [
+    "github.repository == 'lirtual/mcp-workers'",
+    "github.ref == 'refs/heads/main'",
+    "github.actor == 'lirtual'",
+    "inputs.test_type == 'browser-upstream-schema-readonly'",
+    "inputs.confirm_portal_write == false",
+    'name: browser-mcp-worker',
+    'permissions:',
+    'contents: read',
+    'persist-credentials: false',
+    'node scripts/browser-upstream-schema-readonly.mjs',
+    'MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}',
+  ])assert.ok(job.includes(fragment),fragment);
+  assert.equal((job.match(/MCP_ACCESS_TOKEN: /g)||[]).length,1);
+  assert.ok(!/wrangler deploy|tools\/call|portal-register|workflow_dispatch:/.test(job));
 });
