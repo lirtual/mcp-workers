@@ -56,13 +56,15 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   if(downloadId!==undefined){
    const upstream=plan.steps.find(x=>x.id===downloadId);
    const template=upstream?.with.template as {id?:unknown;uses?:unknown;with?:{action?:unknown}}|undefined;
-   const pinned=template?.with?.action as {repository?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   const pinned=template?.with?.action as {repository?:unknown;repositoryId?:unknown;workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   const dynamicMain=typeof pinned?.ref==='string'&&
+     isDynamicMainAction(pinned as Parameters<typeof isDynamicMainAction>[0],pinned.ref,plan.name);
    if(typeof downloadId!=='string'||!action.needs.includes(downloadId)||
       ctx?.steps[downloadId]?.status!=='succeeded'||upstream?.uses!=='flow.foreach'||
       upstream.with.max_items!==1||template?.uses!=='github.run'||typeof template.id!=='string'||
       pinned?.repository!=='lirtual/github-actions'||pinned.workflowPath!=='.github/workflows/download.yml'||
       pinned.type!=='task'||typeof pinned.ref!=='string'||
-      !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)||
+      (!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)&&!dynamicMain)||
       typeof pinned.commitSha!=='string'||!/^[a-f0-9]{40}$/.test(pinned.commitSha))
     return deny('untrusted_download_reference');
    const childId=downloadId+'_0_'+template.id;
@@ -73,10 +75,15 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
      WHERE a.run_id=? AND a.step_id=? AND a.capability_id='github.action'
       AND a.state='succeeded' AND child.status='succeeded' AND parent.status='succeeded'
       AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+      AND a.repository_id=? AND a.ref=?
+      AND ((?=1 AND length(a.resolved_sha)=40
+            AND a.resolved_sha NOT GLOB '*[^0-9a-f]*')
+        OR (?=0 AND a.resolved_sha IS NULL))
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt
       AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id)`)
-      .bind(downloadId,runId,childId,workflowRef).first<{attempt_id:string}>();
+      .bind(downloadId,runId,childId,workflowRef,String(pinned.repositoryId),
+        pinned.ref,dynamicMain?1:0,dynamicMain?1:0).first<{attempt_id:string}>();
    if(!proof)return deny('download_completion_unverified');
    download={attempt_id:proof.attempt_id,workflow_ref:workflowRef,child_id:childId};
   }
