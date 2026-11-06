@@ -1,7 +1,7 @@
 // Spec #733: read-only guards for separately authorized Worker Secret cleanup.
 // No Secret values, uploads, version creation or deployment occur in this file.
 import { readFile, readdir } from 'node:fs/promises';
-import { MIGRATION_LEGACY_SECRETS, REQUIRED_SECRETS, readConfiguration, verifyBindings } from './manual-worker-release.mjs';
+import { REQUIRED_SECRETS, readConfiguration, verifyBindings } from './manual-worker-release.mjs';
 import {
   TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID,
   FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID,
@@ -16,15 +16,23 @@ const historical = [
   FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, EIGHTH_MCP_RUN_ID,
   NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID,
 ];
+export const CLEANUP_LEGACY_SECRETS = Object.freeze({
+  'database-mcp-worker': ['DATABASE_ENCRYPTION_KEY', 'DATABASE_GITHUB_ACTIONS_TOKEN', 'DATABASE_KEY_ID'],
+  'ssh-mcp-worker': ['ENCRYPTION_KEY'],
+  'workflow-mcp-worker': ['MCP_PORTAL_CLIENT_SECRET', 'SESSION_RUNTIME_DATA_KEY'],
+});
 const assert = (truth, message) => { if (!truth) throw new Error(message); };
 const names = bindings => (bindings ?? []).map(b => b.name).sort();
 const stable = value => JSON.stringify(value, (_key, v) => v && !Array.isArray(v) && typeof v === 'object'
   ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
+const cleanupNames = worker => CLEANUP_LEGACY_SECRETS[worker];
 const expectedNames = (worker, withLegacy) => [
-  ...REQUIRED_SECRETS[worker], ...(withLegacy ? MIGRATION_LEGACY_SECRETS[worker] : []),
+  ...REQUIRED_SECRETS[worker],
+  ...(worker === 'database-mcp-worker' ? ['DATABASE_B2B_PASSWORD', 'DATABASE_SCRAPE_RELAY_PASSWORD'] : []),
+  ...(withLegacy ? cleanupNames(worker) : []),
 ].sort();
 const ensureUuid = value => assert(UUID.test(value ?? ''), 'Reviewed Worker version ID required');
-const ensureWorker = worker => assert(['ssh-mcp-worker', 'workflow-mcp-worker'].includes(worker), 'Cleanup is SSH/Workflow only');
+const ensureWorker = worker => assert(Object.hasOwn(CLEANUP_LEGACY_SECRETS, worker), 'Cleanup Worker is not enabled');
 const safeBinding = b => b.type === 'secret_text' ? { name: b.name, type: b.type } : b;
 
 export function verifyCleanupRequest({ worker, phase, expectedSha, actualSha, currentVersion, candidateVersion }) {
@@ -49,7 +57,7 @@ export function verifyCandidateVersion(worker, baseline, candidate) {
     stable(base.script.named_handlers) === stable(next.script.named_handlers) &&
     stable(base.script_runtime) === stable(next.script_runtime),
     'Candidate Worker runtime or entrypoints differ');
-  const oldNames = MIGRATION_LEGACY_SECRETS[worker];
+  const oldNames = cleanupNames(worker);
   const before = base.bindings, after = next.bindings;
   assert(Array.isArray(before) && Array.isArray(after), 'Candidate binding inventory missing');
   assert(new Set(names(before)).size === before.length && new Set(names(after)).size === after.length,
@@ -141,8 +149,8 @@ async function main() {
     expectedSha: process.env.EXPECTED_SOURCE_SHA, actualSha: process.env.GITHUB_SHA,
     currentVersion: expected, candidateVersion: phase === 'publish' ? candidateId : '',
   });
-  if (mode === 'candidate') assert(phase === 'prepare' && UUID.test(candidateId),
-    'Candidate verification requires newly created version ID');
+  if (mode === 'candidate') assert(UUID.test(candidateId),
+    'Candidate verification requires reviewed version ID');
   const path = '/workers/scripts/' + encodeURIComponent(worker);
   const [deploy, current, settings, secretInventory] = await Promise.all([
     cloudflare(path + '/deployments?per_page=1'),
@@ -162,9 +170,15 @@ async function main() {
   assert(stable(secrets.map(s => s.name).sort()) === stable(expectedNames(worker, true)),
     'Live Secret inventory not the exact reviewed baseline');
   const config = readConfiguration(worker, await readFile('apps/' + worker + '/wrangler.jsonc', 'utf8'));
+  // Current baseline must still contain the reviewed legacy Secrets.
+  // Absence is asserted only by the separate post-publish cleanup-readback.
   verifyBindings(worker, settings.result, secrets, {
     mode: 'readback',
     sourceConfig: config,
+    ...(worker === 'database-mcp-worker' ? {
+      databaseConnections: process.env.DATABASE_CONNECTIONS,
+      databaseVariables: { DB_HOST: process.env.DB_HOST },
+    } : {}),
     ...(worker === 'workflow-mcp-worker' ? {
       expectedWorkflowPortalClientId: process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
       expectedWorkflowGrants: process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES,

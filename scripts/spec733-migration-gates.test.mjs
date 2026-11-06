@@ -93,7 +93,7 @@ test('Database source defaults and environment overrides resolve before prefligh
     assert.throws(()=>expectedDatabaseLimits(source,{DATABASE_MAX_ROWS:invalid}),/Invalid Database limit/);
 });
 
-test('only SSH/Workflow readback requires exact legacy Secret removal',()=>{
+test('cleanup readback requires exact legacy Secret removal without changing ordinary SSH/Workflow behavior',()=>{
   const req=['MCP_ACCESS_TOKEN','SSH_ENCRYPTION_KEY'];
   const base=[...req.map(secret),
     {name:'EDGE_SSH_DB',type:'d1',id:'bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94'},
@@ -115,7 +115,7 @@ test('cleanup read-only CLI rejects unsupported Worker even with no Cloudflare c
   const result=spawnSync(process.execPath,['scripts/manual-worker-release.mjs','cleanup-readback','ima-mcp-worker'],
     {cwd:process.cwd(),env:{PATH:process.env.PATH},encoding:'utf8',timeout:5000});
   assert.notEqual(result.status,0);
-  assert.match(result.stderr,/only supports SSH or Workflow/);
+  assert.match(result.stderr,/Worker is not enabled/);
 });
 
 test('protected read-only cleanup selection cannot execute a release or portal-write path', async () => {

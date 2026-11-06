@@ -57,8 +57,8 @@ GitHub Environment's original `ENCRYPTION_KEY`, `MCP_PORTAL_CLIENT_SECRET`, and
 `SESSION_RUNTIME_DATA_KEY` are deliberately **retained release inputs**, not cleanup targets.
 
 The existing Release Worker has a disabled-by-default `legacy_secret_cleanup_mode` input:
-`none` (normal release), `prepare`, and `publish`. The latter two are only for SSH and
-Workflow, require `deploy_to_production=true`, an exact reviewed `main` SHA and active
+`none` (normal release), `prepare`, and `publish`. The latter two are enabled only for SSH,
+Workflow, and Database; they require `deploy_to_production=true`, an exact reviewed `main` SHA and active
 Worker version UUID, successful existing CI, Owner dispatch, the selected Worker Environment,
 and the normal per-Worker release lock. Each Worker and phase requires **separate production
 authorization**; enabling the mode is not itself authorization.
@@ -80,6 +80,15 @@ authorization**; enabling the mode is not itself authorization.
   `legacy-cleanup-readonly-ssh` or `legacy-cleanup-readonly-workflow` for an
   independently authorized GET-only verification. Business/SSH decryption checks need
   their own scope and evidence.
+
+For Database, the live Secret inventory must be exactly `MCP_ACCESS_TOKEN`,
+`DATABASE_B2B_PASSWORD`, `DATABASE_SCRAPE_RELAY_PASSWORD`, and the three old runtime
+Secrets. Prepare removes only `DATABASE_ENCRYPTION_KEY`,
+`DATABASE_GITHUB_ACTIONS_TOKEN`, and `DATABASE_KEY_ID`. The candidate preserves
+`DATABASE_CONNECTIONS`, Variables, `RATE_LIMITER`, Hyperdrive/resource bindings, script
+ETag and runtime. Ordinary release readback retains its six-name migration allowance;
+the cleanup path enforces only these exact three deletion names. GitHub Environment
+configuration, D1, and older Worker versions are outside this cleanup.
 
 Never invoke `wrangler secret delete` (immediate publish), raw Cloudflare writes, or a
 normal `wrangler deploy` as a shortcut. No Secret plaintext, GitHub Settings changes,
