@@ -94,7 +94,7 @@ test('protected release fences both migration callers before applying 0021 and r
   assert.match(release,/UU_CLEANUP_EXPECTED_SHA/);
   assert.match(release,/UU_CLEANUP_EXPECTED_ACTIVE_VERSION/);
   assert.match(release,/UU_REQUIRE_CLEANUP_COMPLETE: 'true'/);
-  assert.match(release,/UU_REQUIRE_CLEANUP_COMPLETE: \$\{\{ inputs.workflow_code_only \}\}/);
+  assert.equal((release.match(/UU_REQUIRE_CLEANUP_COMPLETE:/g)??[]).length,1);
   assert.doesNotMatch(release,/^\s*(?:pnpm exec wrangler secret delete|gh secret delete)/m);
   assert.match(source,/verifyWorkflowMigrationReadiness/);
   assert.match(source,/Workflow migration blocked by/);
@@ -126,4 +126,18 @@ test('production UU DROP preflight refuses native Workflow activity or incomplet
     {result:{instances:[],next_cursor:'next'}},
     {result:null},
   ])assert.throws(()=>verifyUuNativeQuiet(unsafe,'running'),/UU cleanup/);
+});
+
+test('code-only maintenance remains permitted by v20 strict Schema checks before 0021',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const codeOnly=release.split('      - name: Require complete Workflow code-only migration inventory')[1]
+   ?.split('      - name: Fence Spec 774 UU table retirement before any migration')[0];
+ assert.ok(codeOnly);
+ assert.doesNotMatch(codeOnly,/UU_REQUIRE_CLEANUP_COMPLETE:/);
+ assert.match(codeOnly,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA:/);
+ const drop=release.split('      - name: Apply complete Workflow D1 migrations')[1]
+   ?.split('      - name: Verify code-only Workflow D1 gate')[0];
+ assert.ok(drop);
+ assert.match(drop,/UU_REQUIRE_CLEANUP_COMPLETE: 'true'/);
 });

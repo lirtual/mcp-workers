@@ -796,7 +796,6 @@ jobs:
         shell: bash
         env:
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: ${{ inputs.workflow_code_only && 'true' || '' }}
-          UU_REQUIRE_CLEANUP_COMPLETE: ${{ inputs.workflow_code_only }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}

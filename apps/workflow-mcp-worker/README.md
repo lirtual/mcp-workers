@@ -837,3 +837,7 @@ Spec #733 amended 2026-11-06: the existing GitHub Environment Secrets `MCP_PORTA
 
 当前结果：非生产准备可以验证；生产 D1/Secret 持久清理仍为
 Blocked / Not performed。维护期间不得自动合并此破坏性 Migration PR。
+
+- 在仍使用已核验 v20 Schema 时，code-only 发布继续严格检查 v20
+  的结构，不要求先应用 0021。普通完整发布仍默认禁止执行新 DROP。
+  只有得到独立清理授权、执行 0021 的发布才要求 v21 和旧表不存在。
