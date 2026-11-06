@@ -71,41 +71,28 @@ test("Workflow release always stages the dedicated Portal and GitHub credentials
 });
 
 
-test("Workflow full release requires canonical Secrets and rejects real-byte drift", () => {
+test("Workflow bootstrap stages only canonical runtime keys; missing mapped inputs fail closed", () => {
   const worker = "workflow-mcp-worker";
   const canonical = fixtures[worker];
-  const pairs = [
-    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "MCP_PORTAL_CLIENT_SECRET"],
-    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY", "SESSION_RUNTIME_DATA_KEY"],
-  ];
-  const withLegacy = { ...canonical,
+  const legacyOnly = {
+    MCP_ACCESS_TOKEN: canonical.MCP_ACCESS_TOKEN,
     MCP_PORTAL_CLIENT_SECRET: canonical.WORKFLOW_MCP_PORTAL_CLIENT_SECRET,
     SESSION_RUNTIME_DATA_KEY: canonical.WORKFLOW_SESSION_RUNTIME_DATA_KEY,
+    WORKFLOW_GITHUB_DISPATCH_TOKEN: canonical.WORKFLOW_GITHUB_DISPATCH_TOKEN,
   };
-  // The old names are comparison inputs only, never published as new bindings.
-  assert.deepEqual(collectBootstrapSecrets(worker, withLegacy), canonical);
-  // After independently authorized legacy retirement, canonical-only still works.
-  assert.deepEqual(collectBootstrapSecrets(worker, canonical), canonical);
-  for (const [name, legacy] of pairs) {
-    const missing = { ...withLegacy };
-    delete missing[name];
-    assert.throws(() => collectBootstrapSecrets(worker, missing), new RegExp(name));
-    assert.throws(() => collectBootstrapSecrets(worker, { ...withLegacy, [name]: "" }), new RegExp(name));
-
-    const drift = { ...withLegacy, [legacy]: canonical[legacy] + "\n" };
-    assert.throws(() => collectBootstrapSecrets(worker, drift), /original-byte mismatch/);
-    assert.deepEqual(collectBootstrapSecrets(worker, { ...withLegacy, [legacy]: "" }), canonical);
+  // Legacy GitHub names are translated at the release.yml env boundary;
+  // the staging helper never silently falls back to another GitHub source.
+  assert.throws(() => collectBootstrapSecrets(worker, legacyOnly), /WORKFLOW_MCP_PORTAL_CLIENT_SECRET/);
+  for (const runtimeName of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"]) {
+    const missing = {...canonical};
+    delete missing[runtimeName];
+    assert.throws(() => collectBootstrapSecrets(worker, missing), new RegExp(runtimeName));
+    assert.throws(() => collectBootstrapSecrets(worker, {...canonical,[runtimeName]:""}), new RegExp(runtimeName));
   }
-  // Different UTF-8 strings with the same character count cannot pass parity.
-  const unicode = { ...withLegacy,
-    WORKFLOW_MCP_PORTAL_CLIENT_SECRET: "é",
-    MCP_PORTAL_CLIENT_SECRET: "ê",
-  };
-  assert.throws(() => collectBootstrapSecrets(worker, unicode), /original-byte mismatch/);
-  const secretCanary = "synthetic-test-canary-value";
-  assert.throws(() => collectBootstrapSecrets(worker, {
-    ...withLegacy, MCP_PORTAL_CLIENT_SECRET: secretCanary,
-  }), error => /original-byte mismatch/.test(error.message) && !error.message.includes(secretCanary));
+  assert.deepEqual(collectBootstrapSecrets(worker, {
+    ...canonical, MCP_PORTAL_CLIENT_SECRET:"ignored-secondary-value",
+    SESSION_RUNTIME_DATA_KEY:"ignored-secondary-value",
+  }),canonical);
 });
 
 test("Workflow registered GitHub token must be nonblank, bounded and not multiline",()=>{

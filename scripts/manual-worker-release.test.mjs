@@ -365,9 +365,15 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   assert.match(secretStep, /if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/,
     "only explicitly selected Workflow code-only release may omit Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_B2B_PASSWORD", "DATABASE_SCRAPE_RELAY_PASSWORD", "SSH_ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_B2B_PASSWORD", "DATABASE_SCRAPE_RELAY_PASSWORD", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
+  assert.ok(secretStep.includes("SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.ENCRYPTION_KEY || '' }}"),
+    "historical SSH Environment Secret must map to the canonical runtime binding");
+  assert.ok(secretStep.includes("WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}"),
+    "historical Workflow Portal Secret must map to the canonical runtime binding");
+  assert.ok(secretStep.includes("WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.SESSION_RUNTIME_DATA_KEY || '' }}"),
+    "historical Workflow session Secret must map to the canonical runtime binding");
   assert.equal(secretStep.includes('DATABASE_KEY_ID'),false,'retired D1 key is not staged');
   assert.equal(secretStep.includes("secrets.DATABASE_CONFIG"), false,
     "releases must never restage the retired whole-catalog Secret");
@@ -906,7 +912,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
 });
 
-test("Spec 733: Workflow Variable fallbacks remain; Secret names require parity, not fallback",()=> {
+test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bindings",()=> {
   const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
   const lines=release.split(/\r?\n/);
   // The two approved nonsecret Variables retain compatibility during cleanup.
@@ -922,21 +928,22 @@ test("Spec 733: Workflow Variable fallbacks remain; Secret names require parity,
     assert.equal(release.split(legacy).length-1,3,
       legacy+" must not be referenced from unrelated Worker steps");
   }
-  // Both new GitHub Secret names are mandatory in a full release; the old
-  // values are passed only into the protected staging step for byte comparison.
-  for(const [canonical,legacy] of [
-    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","MCP_PORTAL_CLIENT_SECRET"],
-    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY","SESSION_RUNTIME_DATA_KEY"],
+  // One historical GitHub Environment Secret is the only source for each
+  // canonical Worker runtime binding. No canonical GitHub Secret or fallback.
+  for(const [canonical,legacy,worker] of [
+    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","MCP_PORTAL_CLIENT_SECRET","workflow-mcp-worker"],
+    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY","SESSION_RUNTIME_DATA_KEY","workflow-mcp-worker"],
+    ["SSH_ENCRYPTION_KEY","ENCRYPTION_KEY","ssh-mcp-worker"],
   ]) {
     const selected=lines.filter(line=>line.trimStart().startsWith(canonical+": "));
-    assert.equal(selected.length,1);
-    assert.equal(selected[0].trim(),canonical+": "+String.fromCharCode(36)+
-      "{{ inputs.worker == 'workflow-mcp-worker' && secrets."+canonical+" || '' }}");
-    const original=lines.filter(line=>line.trimStart().startsWith(legacy+": "));
-    assert.equal(original.length,1);
-    assert.equal(original[0].trim(),legacy+": "+String.fromCharCode(36)+
-      "{{ inputs.worker == 'workflow-mcp-worker' && secrets."+legacy+" || '' }}");
-    assert.ok(!release.includes("secrets."+canonical+" || secrets."+legacy));
+    assert.equal(selected.length,1,canonical);
+    const expected=canonical+": "+String.fromCharCode(36)+
+      "{{ inputs.worker == '"+worker+"' && secrets."+legacy+" || '' }}";
+    assert.equal(selected[0].trim(),expected);
+    assert.equal(lines.filter(line=>line.trimStart().startsWith(legacy+": ")).length,0,
+      "Do not stage an independent legacy-named runtime entry: "+legacy);
+    assert.ok(!release.includes("secrets."+canonical),
+      "Canonical runtime key must not become a parallel GitHub Secret source: "+canonical);
   }
   assert.match(release,/if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/);
   assert.match(release,/node scripts\/bootstrap-worker-secrets\.mjs/);
@@ -1032,8 +1039,17 @@ test("worker release documentation stays aligned with the selected-Worker contra
   for (const [worker, secrets] of Object.entries(BOOTSTRAP_SECRETS)) {
     const row = bootstrap.split("\n").find(line => line.startsWith("| `" + worker + "` |"));
     assert.ok(row, "missing Worker Environment row for " + worker);
-    for (const secret of secrets.filter(x => x !== "MCP_ACCESS_TOKEN"))
-      assert.ok(row.includes("`" + secret + "`"), worker + " docs omit " + secret);
+    for (const secret of secrets.filter(x => x !== "MCP_ACCESS_TOKEN")) {
+      const githubName={
+        SSH_ENCRYPTION_KEY:"ENCRYPTION_KEY",
+        WORKFLOW_MCP_PORTAL_CLIENT_SECRET:"MCP_PORTAL_CLIENT_SECRET",
+        WORKFLOW_SESSION_RUNTIME_DATA_KEY:"SESSION_RUNTIME_DATA_KEY",
+      }[secret] ?? secret;
+      assert.ok(row.includes("`" + githubName + "`"),
+        worker + " docs omit GitHub Secret input " + githubName);
+      assert.ok(row.includes("`" + secret + "`"),
+        worker + " docs omit runtime binding " + secret);
+    }
   }
   const actions = readFileSync(new URL("../apps/github-actions-mcp-worker/README.md", import.meta.url), "utf8");
   assert.match(actions, /"worker":"github-actions-mcp-worker","deploy_to_production":"true"/);

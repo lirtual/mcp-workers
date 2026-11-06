@@ -325,10 +325,10 @@ jobs:
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      # Workflow full releases require canonical GitHub Secrets and compare
-      # original bytes against any retained legacy names (no Settings writes).
-      # Existing Workflow code-only releases use deployed Secrets (verified by
-      # read-only inventory), never stage or re-upload their values.
+      # GitHub SSH/Workflow Environment Secrets retain their historical names.
+      # Only the selected Worker stages them under canonical runtime keys.
+      # Workflow code-only releases use deployed Secrets (read-only inventory),
+      # never stage or re-upload their values.
       - name: Compare selected Worker effective Owner identity to Repository source
         if: inputs.worker == 'browser-mcp-worker'
         env:
@@ -347,13 +347,11 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
-          SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}
+          SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.ENCRYPTION_KEY || '' }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
-          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || '' }}
-          MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY || '' }}
-          SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.SESSION_RUNTIME_DATA_KEY || '' }}
+          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.SESSION_RUNTIME_DATA_KEY || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
           DATABASE_B2B_PASSWORD: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_B2B_PASSWORD || '' }}

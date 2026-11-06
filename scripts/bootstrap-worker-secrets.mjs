@@ -3,7 +3,6 @@ import {databaseCatalogStage} from './database-catalog-stage.mjs';
 // Used for EVERY authorized manual release, not only for first deployment.
 // GitHub resolves an Environment secret over a same-name repository secret.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
-import { timingSafeEqual } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -33,23 +32,6 @@ export function collectBootstrapSecrets(worker, env) {
   }
   if (worker === "database-mcp-worker") {
     Object.assign(payload,databaseCatalogStage(env).secrets);
-  }
-  if (worker === "workflow-mcp-worker") {
-    // A full release requires canonical GitHub Secrets. While an old name is
-    // retained for recovery, reject any byte drift before staging/deployment.
-    // Once the old GitHub Secret is separately retired, the new name suffices.
-    for (const [canonical, legacy] of [
-      ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "MCP_PORTAL_CLIENT_SECRET"],
-      ["WORKFLOW_SESSION_RUNTIME_DATA_KEY", "SESSION_RUNTIME_DATA_KEY"],
-    ]) {
-      const oldValue = env[legacy];
-      if (oldValue === undefined || oldValue === "") continue;
-      if (typeof oldValue !== "string") throw new Error("Invalid legacy Workflow Secret: " + legacy);
-      const original = Buffer.from(oldValue, "utf8");
-      const renamed = Buffer.from(payload[canonical], "utf8");
-      if (original.length !== renamed.length || !timingSafeEqual(original, renamed))
-        throw new Error("Workflow GitHub Secret original-byte mismatch: " + canonical);
-    }
   }
   if (worker === "workflow-mcp-worker" && (payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length < 20 ||
       payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
