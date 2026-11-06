@@ -32,6 +32,14 @@ D1 durable in-flight/Unknown accounting has been **removed**, without replacemen
 
 Applied `migrations/` remain historical. Preserve external D1 ciphertext, old encryption keys, eligible Worker versions and Hyperdrive/CA resources for recovery. Code rollback alone cannot restore deleted bindings or keys. Physical Cloudflare/GitHub cleanup, Portal changes and production publication each require separate authorization. See [historical recovery evidence](../../docs/database-cutover-344.md).
 
+## Local development
+
+The pinned Wrangler filters `.dev.vars` to declared Secrets when `secrets.required` is present. Production intentionally requires only `MCP_ACCESS_TOKEN`; `deploy --secrets-file` can upload additional referenced passwords. A password placed in `.dev.vars` alone is therefore insufficient for local `wrangler dev`.
+
+For local Direct connections, copy `wrangler.jsonc` to the ignored `wrangler.local.jsonc` in this app directory. Set its synthetic/development `vars.DATABASE_CONNECTIONS` and referenced nonsecret Variables. In **that local file only**, extend `secrets.required` with exactly the approved password names referenced by your local catalog, for example `["MCP_ACCESS_TOKEN", "DATABASE_B2B_PASSWORD"]`. Put the corresponding values in ignored `.dev.vars`, then run `pnpm exec wrangler dev --local --config wrangler.local.jsonc`. Keep password values out of the config and CLI arguments. Do not change production's required list or require unused connection passwords. Default `pnpm dev` retains the empty source catalog. Public-endpoint admission remains enforced in local development.
+
+The runtime regression derives its fixture from the actual source config: it first proves that an undeclared optional `.dev.vars` password is rejected, then verifies this local-only declaration. Its production dry-run separately verifies extra Secrets in `--secrets-file`. The real database MCP integration exercises the new catalog/admission/tool path with actual PostgreSQL/MySQL SQL; only synthetic public-address TCP destinations are mapped to isolated loopback fixtures at the driver boundary. This does not prove public networking or deployed Workers database connectivity.
+
 ## Verification
 
 `pnpm typecheck`, `pnpm test`, `pnpm test:integration`, `pnpm lint` and `pnpm deploy:dry-run`. Integration tests use isolated local MySQL/PostgreSQL services. CI also exercises protected release contracts and the local Workers runtime. Local checks do not establish production readiness.

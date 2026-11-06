@@ -933,8 +933,8 @@ jobs:
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
             node scripts/manual-worker-release.mjs code-release-check workflow-mcp-worker
 
-      # Strictly read-only. A selected Database release cannot proceed if the
-      # approved D1 schema is missing; migration/import are separate actions.
+      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS
+      # and disabled query caching. Database has no runtime D1 dependency.
       - name: Verify Database Hyperdrive TLS, CA, origin and cache before publication
         if: inputs.worker == 'database-mcp-worker'
         env:
@@ -942,8 +942,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/verify-database-hyperdrive.mjs
 
-      # Read-only Access inventory. Do not publish an Owner configuration page
-      # unless Cloudflare already enforces the exact-domain, exact-email policy.
+      # Browser activation retains its independent exact-domain Owner Access policy.
       - name: Verify Browser Profile Activation Access (read-only)
         if: inputs.worker == 'browser-mcp-worker'
         env:
