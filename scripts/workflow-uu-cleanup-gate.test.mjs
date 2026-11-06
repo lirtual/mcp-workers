@@ -116,13 +116,16 @@ test('Secret candidate rejects unrelated Worker resource mutations, not only bin
 });
 
 test('production UU DROP preflight refuses native Workflow activity or incomplete Cloudflare instance pagination',()=>{
-  const empty={result:[],result_info:{total_count:0}};
-  for(const status of ['queued','running','paused','waiting','rollingBack'])
+  const empty={result:[],result_info:{count:0,total_count:0,per_page:100}};
+  for(const status of ['queued','running','paused','waiting','waitingForPause','rollingBack'])
     assert.equal(verifyUuNativeQuiet(empty,status),true);
   for(const unsafe of [
     {result:[{id:'physical-running'}],result_info:{total_count:1}},
-    {result:[],result_info:{total_count:1}},
-    {result:[],result_info:{total_count:0,cursor:'next'}},
+    {result:[],result_info:{count:0,total_count:1,per_page:100}},
+    {result:[],result_info:{count:1,total_count:0,per_page:100}},
+    {result:[],result_info:{count:0,total_count:0,per_page:99}},
+    {result:[],result_info:{count:0,total_count:0,per_page:100,cursor:'next'}},
+    {result:[],result_info:{}},
     {result:{instances:[],next_cursor:'next'}},
     {result:null},
   ])assert.throws(()=>verifyUuNativeQuiet(unsafe,'running'),/UU cleanup/);

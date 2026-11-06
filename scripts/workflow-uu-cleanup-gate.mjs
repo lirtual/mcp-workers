@@ -85,15 +85,15 @@ export function verifyUuSecretCandidate(baseline,candidate){
 // Cloudflare native instances have a separate lifecycle from D1 outcomes.
 // Any live instance or incomplete pagination blocks the destructive migration.
 export function verifyUuNativeQuiet(payload,status){
- assert(['queued','running','paused','waiting','rollingBack'].includes(status),
+ assert(['queued','running','paused','waiting','waitingForPause','rollingBack'].includes(status),
    'unexpected native Workflow status');
  const result=payload?.result;
  const instances=Array.isArray(result)?result:result?.instances;
  const page=payload?.result_info;
  assert(Array.isArray(instances)&&instances.length===0&&
-   (page?.total_count==null||page.total_count===0)&&
+   page?.per_page===100&&page?.count===0&&page?.total_count===0&&
    !page?.cursor&&!page?.next_cursor&&!result?.cursor&&!result?.next_cursor,
-   'native Workflow status is not fully drained: '+status);
+   'native Workflow status or complete pagination not proven: '+status);
  return true;
 }
 
@@ -131,7 +131,7 @@ async function main(){
  const version=await api(worker+'/versions/'+expectedVersion);
  verifyUuCleanupGuard({expectedSha,sourceSha:env.GITHUB_SHA,expectedVersion,
    deployment,version,cleanupRow:rows[0].results[0],migrationResponse});
- for(const status of ['queued','running','paused','waiting','rollingBack']){
+ for(const status of ['queued','running','paused','waiting','waitingForPause','rollingBack']){
    const raw=await api('/workflows/workflow-mcp-orchestrator/instances?status='+
      encodeURIComponent(status)+'&per_page=100',undefined,true);
    verifyUuNativeQuiet(raw,status);
