@@ -52,7 +52,7 @@ on:
         type: boolean
         default: false
       legacy_secret_cleanup_mode:
-        description: 'Spec 733 SSH/Workflow only: none, prepare un-deployed version, or publish reviewed candidate'
+        description: 'Spec 733: none, prepare un-deployed version, or publish reviewed SSH/Workflow/Database candidate'
         required: true
         type: choice
         options:
@@ -1220,7 +1220,7 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.deploy_to_production == true &&
           needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
-          (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker') &&
+          (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'database-mcp-worker') &&
           (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish') &&
           inputs.workflow_code_only != true && inputs.actions_old_ingress_quiesced != true &&
           inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
@@ -1254,7 +1254,7 @@ jobs:
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
           [[ "$EXPECTED_ACTIVE_VERSION" =~ ^[a-f0-9-]{36}$ ]]
           case "$SELECTED_WORKER:$LEGACY_CLEANUP_MODE" in
-            ssh-mcp-worker:prepare|ssh-mcp-worker:publish|workflow-mcp-worker:prepare|workflow-mcp-worker:publish) ;;
+            ssh-mcp-worker:prepare|ssh-mcp-worker:publish|workflow-mcp-worker:prepare|workflow-mcp-worker:publish|database-mcp-worker:prepare|database-mcp-worker:publish) ;;
             *) exit 1 ;;
           esac
           if [[ "$LEGACY_CLEANUP_MODE" == 'prepare' ]]; then
@@ -1281,6 +1281,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
+          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
 
       - name: Create one unpublished version removing only reviewed legacy Secrets
@@ -1299,8 +1301,10 @@ jobs:
           trap 'rm -f "$file" "$log"' EXIT
           if [[ "$SELECTED_WORKER" == 'ssh-mcp-worker' ]]; then
             printf '%s\n' '{"ENCRYPTION_KEY":null}' > "$file"
-          else
+          elif [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' ]]; then
             printf '%s\n' '{"MCP_PORTAL_CLIENT_SECRET":null,"SESSION_RUNTIME_DATA_KEY":null}' > "$file"
+          else
+            printf '%s\n' '{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null}' > "$file"
           fi
           # Unlike wrangler secret delete, versions secret bulk never deploys the candidate.
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions secret bulk "$file" \
@@ -1319,20 +1323,26 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
+          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
 
       - name: Revalidate reviewed candidate immediately before production promotion
         if: inputs.legacy_secret_cleanup_mode == 'publish'
         env:
+          CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
+          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
           node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
+          node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
 
       - name: Deploy only the independently approved candidate to 100 percent
         if: inputs.legacy_secret_cleanup_mode == 'publish'
@@ -1360,4 +1370,11 @@ jobs:
           EXPECTED_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
+          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
+          DATABASE_MAX_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_ROWS || '' }}
+          DATABASE_MAX_RESULT_BYTES: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_RESULT_BYTES || '' }}
+          DATABASE_MAX_SCHEMA_BYTES: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_SCHEMA_BYTES || '' }}
+          DATABASE_QUERY_TIMEOUT_MS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_QUERY_TIMEOUT_MS || '' }}
+          DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
         run: node scripts/manual-worker-release.mjs cleanup-readback "$SELECTED_WORKER"

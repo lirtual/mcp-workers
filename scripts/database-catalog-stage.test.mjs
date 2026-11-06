@@ -39,7 +39,8 @@ test('postflight requires exact catalog, referenced Secret types and native bind
 });
 test('retired lifecycle jobs, inputs and runtime binding requirements stay absent',()=>{
   const source=readFileSync('.github/workflows/release.yml','utf8');
-  assert.doesNotMatch(source,/database_hyperdrive_|database-hyperdrive-|DATABASE_ENCRYPTION_KEY|DATABASE_GITHUB_ACTIONS_TOKEN|database-d1-/);
+  assert.doesNotMatch(source,/database_hyperdrive_|database-hyperdrive-|database-d1-/);
+  assert.match(source,/\{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null\}/);
   assert.match(source,/DATABASE_EXPECTED_RELEASE_SHA/);
 });
 

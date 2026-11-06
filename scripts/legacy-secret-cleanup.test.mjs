@@ -2,16 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  verifyCleanupRequest, verifyCandidateVersion, verifyLiveVersion,
+  CLEANUP_LEGACY_SECRETS, verifyCleanupRequest, verifyCandidateVersion, verifyLiveVersion,
 } from './legacy-secret-cleanup.mjs';
 
 const SSH = 'ssh-mcp-worker';
 const WORKFLOW = 'workflow-mcp-worker';
+const DATABASE = 'database-mcp-worker';
 const oldSecretNames = {
+  [DATABASE]: CLEANUP_LEGACY_SECRETS[DATABASE],
   [SSH]: ['ENCRYPTION_KEY'],
   [WORKFLOW]: ['MCP_PORTAL_CLIENT_SECRET', 'SESSION_RUNTIME_DATA_KEY'],
 };
 const required = {
+  [DATABASE]: ['MCP_ACCESS_TOKEN','DATABASE_B2B_PASSWORD','DATABASE_SCRAPE_RELAY_PASSWORD'],
   [SSH]: ['MCP_ACCESS_TOKEN', 'SSH_ENCRYPTION_KEY'],
   [WORKFLOW]: [
     'MCP_ACCESS_TOKEN', 'WORKFLOW_MCP_PORTAL_CLIENT_SECRET',
@@ -44,11 +47,37 @@ test('only Owner-reviewed SHA, exact worker and version inputs can select cleanu
   assert.equal(verifyCleanupRequest(o), true);
   assert.equal(verifyCleanupRequest({...o, phase: 'publish', candidateVersion: sample(SSH)[1].id}), true);
   for(const mutation of [
-    {worker: 'database-mcp-worker'}, {phase: 'delete'}, {actualSha: 'b'.repeat(40)},
+    {worker: 'other-worker'}, {phase: 'delete'}, {actualSha: 'b'.repeat(40)},
     {expectedSha: 'x'.repeat(40)}, {currentVersion: 'not-uuid'},
     {candidateVersion: sample(SSH)[1].id},
     {phase:'publish',candidateVersion:''}, {phase:'publish',candidateVersion:sample(SSH)[0].id},
   ]) assert.throws(() => verifyCleanupRequest({...o,...mutation}));
+});
+
+test('Database cleanup removes exactly three runtime Secrets and preserves all other metadata', () => {
+  const [before, after] = sample(DATABASE);
+  for (const version of [before, after]) {
+    version.resources.bindings = version.resources.bindings.filter(binding=>binding.name!=='DB');
+    version.resources.bindings.push(
+    variable('DATABASE_CONNECTIONS','{}'), variable('DB_HOST','db.example.invalid'),
+    {name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}},
+    );
+  }
+  assert.equal(verifyCandidateVersion(DATABASE,before,after),true);
+  for (const mutate of [
+    b => ({...b,resources:{...b.resources,bindings:b.resources.bindings.filter(x=>x.name!=='DATABASE_B2B_PASSWORD')}}),
+    b => ({...b,resources:{...b.resources,bindings:[...b.resources.bindings,secret('DATABASE_ENCRYPTION_PREVIOUS_KEY')]}}),
+    b => ({...b,resources:{...b.resources,bindings:b.resources.bindings.map(x=>x.name==='DATABASE_CONNECTIONS'?variable(x.name,'changed'):x)}}),
+    b => ({...b,resources:{...b.resources,bindings:b.resources.bindings.map(x=>x.name==='RATE_LIMITER'?{...x,simple:{limit:1,period:60}}:x)}}),
+    b => ({...b,resources:{...b.resources,bindings:b.resources.bindings.map(x=>x.name==='RATE_LIMITER'?{...x,namespace_id:'different'}:x)}}),
+    b => ({...b,resources:{...b.resources,bindings:[...b.resources.bindings,{name:'DB',type:'d1',id:'unexpected'}]}}),
+    b => ({...b,resources:{...b.resources,script:{...b.resources.script,etag:'changed'}}}),
+    b => ({...b,resources:{...b.resources,script_runtime:{compatibility_date:'2026-11-06'}}}),
+  ]) assert.throws(()=>verifyCandidateVersion(DATABASE,before,mutate(after)));
+  for (const omitted of oldSecretNames[DATABASE]) {
+    const wrong={...before,resources:{...before.resources,bindings:before.resources.bindings.filter(x=>x.name!==omitted)}};
+    assert.throws(()=>verifyCandidateVersion(DATABASE,wrong,after),/inventory/);
+  }
 });
 
 test('single SSH and grouped Workflow removal preserve all other bindings and source', () => {
@@ -109,6 +138,8 @@ test('Spec 733 cleanup mode is isolated from ordinary selected Worker release an
   assert.match(cleanup,/inputs\.actions_old_ingress_quiesced != true/);
   assert.match(cleanup,/if: inputs\.legacy_secret_cleanup_mode == 'prepare'/);
   assert.match(cleanup,/if: inputs\.legacy_secret_cleanup_mode == 'publish'/);
+  assert.match(cleanup,/inputs\.worker == 'database-mcp-worker'/);
+  assert.match(cleanup,/\{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null\}/);
   assert.doesNotMatch(cleanup, /pnpm exec wrangler secret delete|wrangler deploy --secrets-file|gh secret|portal-register|workflow_run/);
   assert.match(yml,/default: none/);
 });
@@ -122,4 +153,22 @@ test('cleanup read-only helper has no mutation path and no GitHub Secret name mi
   assert.doesNotMatch(source,/method:\s*['"](?:PUT|PATCH|DELETE)['"]/);
   assert.doesNotMatch(source,/pnpm exec wrangler|wrangler deploy|wrangler secret delete|versions deploy/);
   assert.doesNotMatch(source,/writeFile|spawnSync|execSync|gh secret/);
+});
+
+test('cleanup baseline retains old Secrets, while post-publish readback requires their absence', () => {
+  const baseline = readFileSync('scripts/legacy-secret-cleanup.mjs','utf8');
+  const check = baseline.split('verifyBindings(worker, settings.result, secrets, {')[1]?.split('\n  });')[0];
+  assert.ok(check?.includes("mode: 'readback'"));
+  assert.doesNotMatch(check, /cleanupVerified:\s*true/);
+  const readback = readFileSync('scripts/manual-worker-release.mjs','utf8')
+    .split('if (mode === "cleanup-readback")')[1]?.split('return;')[0];
+  assert.ok(readback);
+  assert.match(readback, /cleanupVerified:\s*true/);
+  const release = readFileSync('.github/workflows/release.yml','utf8');
+  const publish = release.split('- name: Revalidate reviewed candidate immediately before production promotion')[1]
+    ?.split('- name: Deploy only the independently approved candidate to 100 percent')[0];
+  assert.ok(publish);
+  assert.match(publish, /CANDIDATE_VERSION_ID:/);
+  assert.match(publish, /legacy-secret-cleanup\.mjs preflight/);
+  assert.match(publish, /legacy-secret-cleanup\.mjs candidate/);
 });

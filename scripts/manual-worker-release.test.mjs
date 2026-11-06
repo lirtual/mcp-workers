@@ -1163,6 +1163,37 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
     {mode:'readback'}),/Unexpected runtime Secret/);
 });
 
+test('Spec 733 Database cleanup readback is exact and does not narrow normal migration readback', () => {
+  const worker='database-mcp-worker';
+  const config=readConfiguration(worker,readFileSync('apps/database-mcp-worker/wrangler.jsonc','utf8'));
+  const catalog=JSON.stringify({
+    b2b:'mysql://u:${DATABASE_B2B_PASSWORD}@#{DB_HOST}:3306/b2b',
+    scrape:'mysql://u:${DATABASE_SCRAPE_RELAY_PASSWORD}@#{DB_HOST}:3306/scrape',
+  });
+  const secretNames=['MCP_ACCESS_TOKEN','DATABASE_B2B_PASSWORD','DATABASE_SCRAPE_RELAY_PASSWORD'];
+  const limits={DATABASE_MAX_ROWS:'500',DATABASE_MAX_RESULT_BYTES:'1048576',DATABASE_MAX_SCHEMA_BYTES:'524288',DATABASE_QUERY_TIMEOUT_MS:'15000',DATABASE_MAX_WRITE_AFFECTED_ROWS:'20'};
+  const bindings=[...secretNames.map(name=>({name,type:'secret_text'})),
+    {name:'DATABASE_CONNECTIONS',type:'plain_text',text:catalog},{name:'DB_HOST',type:'plain_text',text:'db.example.invalid'},
+    ...Object.entries(limits).map(([name,text])=>({name,type:'plain_text',text})),
+    {name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}}];
+  const wrap=items=>({bindings:items,observability:{enabled:true,logs:{invocation_logs:true}}});
+  const listed=secretNames.map(name=>({name}));
+  const options={mode:'readback',cleanupVerified:true,sourceConfig:config,databaseConnections:catalog,
+    databaseVariables:{DB_HOST:'db.example.invalid'},expectedDatabaseLimits:limits};
+  assert.equal(verifyBindings(worker,wrap(bindings),listed,options),true);
+  assert.throws(()=>verifyBindings(worker,wrap([...bindings,{name:'DATABASE_ENCRYPTION_KEY',type:'secret_text'}]),
+    [...listed,{name:'DATABASE_ENCRYPTION_KEY'}],options),/Legacy Secret cleanup/);
+  assert.throws(()=>verifyBindings(worker,wrap([...bindings,{name:'DATABASE_CONFIG',type:'secret_text'}]),
+    [...listed,{name:'DATABASE_CONFIG'}],options),/Unexpected runtime Secret/);
+  assert.throws(()=>verifyBindings(worker,wrap(bindings.map(binding=>binding.name==='DB_HOST'?{...binding,text:'changed'}:binding)),listed,options),/reference Variable/);
+  assert.throws(()=>verifyBindings(worker,wrap(bindings.map(binding=>binding.name==='RATE_LIMITER'?{...binding,simple:{limit:1,period:60}}:binding)),listed,options),/RATE_LIMITER/);
+  assert.throws(()=>verifyBindings(worker,wrap(bindings.filter(binding=>binding.name!=='DATABASE_B2B_PASSWORD')),
+    listed.filter(secret=>secret.name!=='DATABASE_B2B_PASSWORD'),options),/named Secret is missing/);
+  const ordinary=[...listed,{name:'DATABASE_CONFIG'}];
+  const ordinaryBindings=[...bindings,{name:'DATABASE_CONFIG',type:'secret_text'}];
+  assert.equal(verifyBindings(worker,wrap(ordinaryBindings),ordinary,{...options,cleanupVerified:false}),true);
+});
+
 test('Spec 733 Workflow Portal identity and grants must retain exact approved values across the rename', () => {
   const req=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET','WORKFLOW_GITHUB_DISPATCH_TOKEN','WORKFLOW_SESSION_RUNTIME_DATA_KEY'];
   const secrets=req.map(name=>({name}));

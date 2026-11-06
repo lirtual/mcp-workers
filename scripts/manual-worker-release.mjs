@@ -453,13 +453,15 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   if (options.mode === "readback" && ["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker)) {
-    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...oldSecrets,
+    const cleanupLegacy = worker === "database-mcp-worker"
+      ? ["DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "DATABASE_KEY_ID"] : oldSecrets;
+    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...(options.cleanupVerified ? cleanupLegacy : oldSecrets),
       ...(worker === "database-mcp-worker" ? references.secrets : []),
-      ...(worker === "database-mcp-worker" ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
+      ...(worker === "database-mcp-worker" && !options.cleanupVerified ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
       bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),
       "Unexpected runtime Secret name or type after publication");
-    if (options.cleanupVerified) invariant(!oldSecrets.some(name => secretNames.has(name) ||
+    if (options.cleanupVerified) invariant(!cleanupLegacy.some(name => secretNames.has(name) ||
       !!find(name, "secret_text")), "Legacy Secret cleanup not complete");
   }
   return true;
@@ -1092,8 +1094,8 @@ async function main() {
       "Browser release blocked: reviewed dedicated Custom Domain is not configured");
   }
   if (mode === "cleanup-readback") {
-    invariant(["ssh-mcp-worker", "workflow-mcp-worker"].includes(worker),
-      "Legacy cleanup readback only supports SSH or Workflow");
+    invariant(["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker),
+      "Legacy cleanup readback Worker is not enabled");
     invariant(account && token && sourceSha && process.env.EXPECTED_VERSION_ID &&
       process.env.GITHUB_REPOSITORY === "lirtual/mcp-workers" &&
       process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_ACTOR === "lirtual",
@@ -1102,11 +1104,19 @@ async function main() {
       process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID &&
       process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES !== undefined,
       "Required Workflow cleanup readback identity inputs missing");
+    if (worker === "database-mcp-worker") invariant(
+      process.env.DATABASE_CONNECTIONS && process.env.DB_HOST !== undefined,
+      "Required Database cleanup readback catalog inputs missing");
     // Cloudflare GET inventory only. No Wrangler, write endpoint, or release-state mutation.
     const observed = await current(account, worker, token, {
       mode: "readback", cleanupVerified: true, sourceConfig,
       expectedWorkflowPortalClientId: process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
       expectedWorkflowGrants: process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES,
+      ...(worker === "database-mcp-worker" ? {
+        databaseConnections: process.env.DATABASE_CONNECTIONS,
+        databaseVariables: { DB_HOST: process.env.DB_HOST },
+        expectedDatabaseLimits: expectedDatabaseLimits(sourceConfig, process.env),
+      } : {}),
     });
     invariant(observed.version_id === process.env.EXPECTED_VERSION_ID,
       "Legacy cleanup active Worker version differs from reviewed version");
