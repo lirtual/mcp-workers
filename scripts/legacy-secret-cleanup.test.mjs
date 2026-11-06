@@ -1,9 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import {
   CLEANUP_LEGACY_SECRETS, verifyCleanupRequest, verifyCandidateVersion, verifyLiveVersion,
 } from './legacy-secret-cleanup.mjs';
+
+test('Database Prepare pins Wrangler with non-deploying bulk null deletion support', () => {
+  const pkg = JSON.parse(readFileSync('apps/database-mcp-worker/package.json', 'utf8'));
+  const version = pkg.devDependencies.wrangler;
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  const [major, minor] = version.split('.').map(Number);
+  assert.ok(major > 4 || (major === 4 && minor >= 148),
+    'Wrangler versions secret bulk null deletion requires Wrangler 4.148.0+');
+  const lock = readFileSync('pnpm-lock.yaml', 'utf8');
+  const importer = lock.split('  apps/database-mcp-worker:\n')[1]
+    ?.split('\n  apps/github-actions-mcp-worker:')[0];
+  assert.ok(importer?.includes('specifier: ' + version) &&
+    importer.includes('version: ' + version + '('),
+    'Database Wrangler manifest and lockfile must agree on exact version');
+  const help = spawnSync('pnpm',
+    ['--filter', 'database-mcp-worker', 'exec', 'wrangler', 'versions', 'secret', 'bulk', '--help'],
+    { encoding: 'utf8', timeout: 30000 });
+  assert.equal(help.status, 0, 'Installed Wrangler CLI help is unavailable');
+  assert.match(help.stdout, /Set a key to null in the JSON file to delete it/,
+    'Installed Wrangler must support deleting Secret bindings via JSON null');
+});
 
 const SSH = 'ssh-mcp-worker';
 const WORKFLOW = 'workflow-mcp-worker';
