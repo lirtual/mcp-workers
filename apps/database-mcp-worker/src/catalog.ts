@@ -12,6 +12,7 @@ export interface CatalogEntry {id:string; dialect:Dialect; transport:'direct'|'h
 /** Flat JSON grammar also detects duplicate (including escaped) logical IDs. */
 export function connectionInventory(raw: unknown): Record<string,string> {
   if (typeof raw !== 'string' || raw.length > 90_000) invalid();
+  try { JSON.parse(raw); } catch { invalid(); }
   const source = raw.trim();
   if (!source.startsWith('{') || !source.endsWith('}')) invalid();
   const body = source.slice(1,-1);
@@ -39,7 +40,7 @@ export function connectionInventory(raw: unknown): Record<string,string> {
 
 /** Resolve tokens once within their allowed URI component, never as URI syntax. */
 function directUrl(template:string, env:Env):string {
-  const parts=/^(mysql|postgresql):\/\/([^:@/?#]+):([^@/?]+)@([^/?]+)(\/[^?]*)?$/.exec(template);
+  const parts=/^(mysql|postgresql):\/\/((?:#\{[A-Z][A-Z0-9_]{0,63}\}|[^:@/?#])+):([^@/?]+)@([^/?]+)(\/[^?]*)?$/.exec(template);
   if (!parts) invalid();
   const password=parts[3]!;
   const secret=/^\$\{([A-Z][A-Z0-9_]{0,63})\}$/.exec(password);

@@ -89,8 +89,7 @@ export function verifyDatabaseHyperdriveSource(conf, manifest) {
   return true;
 }
 
-/** #344: checked from reviewed source *before* any production publish step.
- * An unbound D1 Worker would return 503 and drop every existing connection. */
+/** #760: verify the D1-free source and reviewed native bindings before publication. */
 export function verifyDatabaseCutoverSource(conf, reviewedManifest) {
   invariant(conf?.name === "database-mcp-worker" &&
     conf.main === "src/index.ts", "Database source identity drift");
@@ -455,7 +454,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (options.mode === "readback" && ["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker)) {
     const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...oldSecrets,
-      ...(worker === "database-mcp-worker" ? databaseSecretNames(options.databaseConnections) : []),
+      ...(worker === "database-mcp-worker" ? references.secrets : []),
       ...(worker === "database-mcp-worker" ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
       bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),

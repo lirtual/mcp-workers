@@ -4,7 +4,7 @@ All eight maintained MCP Workers use runtime Secret **name** `MCP_ACCESS_TOKEN` 
 
 | Worker | MCP entry Secret | Other Environment Secrets |
 | --- | --- | --- |
-| `database-mcp-worker` | `MCP_ACCESS_TOKEN` | `DATABASE_ENCRYPTION_KEY`, `DATABASE_GITHUB_ACTIONS_TOKEN` |
+| `database-mcp-worker` | `MCP_ACCESS_TOKEN` | Independent Secrets referenced by `DATABASE_CONNECTIONS` (see Database README) |
 | `browser-mcp-worker` | `MCP_ACCESS_TOKEN` (independent Environment override required by prior design, current source unverified) | 无 |
 | `ima-mcp-worker` | `MCP_ACCESS_TOKEN` | `IMA_API_KEY` |
 | `raindrop-mcp-worker` | `MCP_ACCESS_TOKEN` | `RAINDROP_ACCESS_TOKEN` |
@@ -13,7 +13,7 @@ All eight maintained MCP Workers use runtime Secret **name** `MCP_ACCESS_TOKEN` 
 | `github-actions-mcp-worker` | `MCP_ACCESS_TOKEN` | `ACTIONS_GITHUB_DISPATCH_TOKENS` |
 | `workflow-mcp-worker` | `MCP_ACCESS_TOKEN` | `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` |
 
-Additional required **non-secret** Variables include Database's `DATABASE_KEY_ID`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL`; Browser's Owner Access / activation variables; IMA's `IMA_CLIENT_ID`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
+Additional required **non-secret** Variables include Database's `DATABASE_CONNECTIONS` and referenced `DB_HOST`; Browser's Owner Access / activation variables; IMA's `IMA_CLIENT_ID`; and Workflow's `MCP_PORTAL_CLIENT_ID`. See [runtime configuration](./runtime-configuration.md) and [bootstrap guide](./MANUAL-WORKER-BOOTSTRAP.md).
 
 ## Rotation and verification
 

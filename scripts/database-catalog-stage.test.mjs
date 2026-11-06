@@ -52,3 +52,29 @@ test('reusable CI retains its independent fail-closed application/database relea
   assert.match(gate,/release_ready: \$\{\{ steps.gate.outputs.release_ready \}\}/);
   assert.match(gate,/true:success\|false:skipped/);
 });
+
+test('removing a logical ID preserves omitted approved Secrets for separately authorized cleanup',()=>{
+  const source=readConfiguration('database-mcp-worker',readFileSync('apps/database-mcp-worker/wrangler.jsonc','utf8'));
+  const bindings=[{name:'MCP_ACCESS_TOKEN',type:'secret_text'},{name:'DATABASE_B2B_PASSWORD',type:'secret_text'},
+    {name:'DATABASE_CONNECTIONS',type:'plain_text',text:'{}'},
+    {name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}}];
+  assert.equal(verifyBindings('database-mcp-worker',{bindings,observability:{enabled:true,logs:{invocation_logs:true}}},
+    [{name:'MCP_ACCESS_TOKEN'},{name:'DATABASE_B2B_PASSWORD'}],{mode:'readback',sourceConfig:source,databaseConnections:'{}'}),true);
+});
+
+test('strict JSON, catalog bounds and component token placement fail closed',()=>{
+  const uri='mysql://user:${DATABASE_B2B_PASSWORD}@8.8.8.8/db';
+  for (const value of ['[]','null','{"one":2}',JSON.stringify({'bad id':uri}),
+    '{"one":'+JSON.stringify(uri)+',"one":'+JSON.stringify(uri)+'}',
+    '{\u00a0"one":'+JSON.stringify(uri)+'}',
+    JSON.stringify(Object.fromEntries(Array.from({length:11},(_,i)=>['db'+i,uri]))),
+    JSON.stringify({one:uri+'#fragment'}),JSON.stringify({one:uri+'?ssl=false'}),
+    JSON.stringify({one:uri.replace('mysql:','postgres:')}),
+    JSON.stringify({one:uri.replace('user','${DATABASE_B2B_PASSWORD}')}),
+  ]) assert.throws(()=>collectBootstrapSecrets('database-mcp-worker',{...env,DATABASE_CONNECTIONS:value}));
+});
+test('encodes nonsecret user references within the component without treating # as a fragment',()=>{
+  assert.deepEqual(collectWorkerVars('database-mcp-worker',{...env,DB_HOST:'reviewed_user',
+    DATABASE_CONNECTIONS:'{"one":"postgresql://#{DB_HOST}:${DATABASE_B2B_PASSWORD}@8.8.8.8/db"}'}),
+    ['DATABASE_CONNECTIONS:{"one":"postgresql://#{DB_HOST}:${DATABASE_B2B_PASSWORD}@8.8.8.8/db"}','DB_HOST:reviewed_user']);
+});
