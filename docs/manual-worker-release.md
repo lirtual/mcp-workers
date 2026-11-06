@@ -46,3 +46,45 @@ The protected release now fails closed if both old and renamed Workflow identity
 ## Database Spec #760
 
 Database now uses the [flat URI/Secret configuration and cutover contract](../apps/database-mcp-worker/README.md). Setup, D1/encryption checks and Hyperdrive lifecycle dispatch inputs/jobs are retired. Only `database_expected_release_sha` remains as a Database-specific release input. Production requires independent authorization and fresh old-registry/Unknown-operation/recovery inspection; source merge does not perform this inspection or the cutover. Old D1, keys, Secrets, Hyperdrive resources and rollback versions are preserved until separately approved cleanup.
+
+### Spec #733 — optional legacy runtime Secret cleanup (separately authorized)
+
+The real SSH and Workflow canonical runtime Secret cutovers passed under
+[SSH Release #42185081301](https://github.com/lirtual/mcp-workers/actions/runs/42185081301)
+and [Workflow Release #42186878537](https://github.com/lirtual/mcp-workers/actions/runs/42186878537).
+Their former **Cloudflare runtime** Secret names still coexist with canonical names.
+GitHub Environment's original `ENCRYPTION_KEY`, `MCP_PORTAL_CLIENT_SECRET`, and
+`SESSION_RUNTIME_DATA_KEY` are deliberately **retained release inputs**, not cleanup targets.
+
+The existing Release Worker has a disabled-by-default `legacy_secret_cleanup_mode` input:
+`none` (normal release), `prepare`, and `publish`. The latter two are only for SSH and
+Workflow, require `deploy_to_production=true`, an exact reviewed `main` SHA and active
+Worker version UUID, successful existing CI, Owner dispatch, the selected Worker Environment,
+and the normal per-Worker release lock. Each Worker and phase requires **separate production
+authorization**; enabling the mode is not itself authorization.
+
+- **Prepare:** set `legacy_cleanup_expected_sha` and
+  `legacy_cleanup_expected_active_version`, leave `legacy_cleanup_candidate_version`
+  empty. A single `wrangler versions secret bulk` operation creates a **nondeployed**
+  version removing only `ENCRYPTION_KEY` (SSH), or the two legacy Workflow runtime names
+  together. Read-only checks then confirm the original active version remains at 100%,
+  candidate code etag and resource metadata are unchanged, and canonical Secrets remain.
+  Record the candidate version UUID from the protected Run. Preparation changes a
+  production-version resource but **does not route traffic**.
+- **Publish:** separately authorize the exact prepared UUID. Use `legacy_secret_cleanup_mode=publish`
+  with the same reviewed source SHA and active baseline plus
+  `legacy_cleanup_candidate_version=<approved UUID>`. Re-check everything under the
+  existing Worker lock, then use `wrangler versions deploy` to promote that version
+  to 100%. The existing `manual-worker-release.mjs cleanup-readback` confirms the
+  exact live version and Secret removal; subsequently use Workflow Acceptance
+  `legacy-cleanup-readonly-ssh` or `legacy-cleanup-readonly-workflow` for an
+  independently authorized GET-only verification. Business/SSH decryption checks need
+  their own scope and evidence.
+
+Never invoke `wrangler secret delete` (immediate publish), raw Cloudflare writes, or a
+normal `wrangler deploy` as a shortcut. No Secret plaintext, GitHub Settings changes,
+new D1 migrations, key rotation, or alternate release system are required. A failure
+or Unknown result must be reconciled through read-only state inspection, without
+automatic retry or rollback. The last independently verified live Worker version
+is the recovery target until replaced by a freshly inspected baseline, but restoring
+an older version is itself another production change requiring authorization.

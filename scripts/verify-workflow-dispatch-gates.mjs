@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -113,8 +113,31 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 9,
-  'Release workflow_dispatch must have exactly nine reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 13,
+  'Release workflow_dispatch must have exactly thirteen reviewed inputs');
+const cleanup = job(release, 'legacy-secret-cleanup');
+assert.ok(deploy.gate.includes("inputs.legacy_secret_cleanup_mode == 'none'"),
+  'Normal Worker release must exclude the legacy cleanup operation');
+for (const clause of [
+  "github.event_name == 'workflow_dispatch'",
+  "github.ref == 'refs/heads/main'",
+  "github.actor == 'lirtual'",
+  'inputs.deploy_to_production == true',
+  "needs.checks.result == 'success'",
+  "needs.checks.outputs.release_ready == 'true'",
+  "inputs.legacy_secret_cleanup_mode == 'prepare'",
+  "inputs.legacy_secret_cleanup_mode == 'publish'",
+  'inputs.workflow_code_only != true',
+]) assert.ok(cleanup.gate.includes(clause), 'Unsafe legacy cleanup gate: ' + clause);
+for (const item of [
+  'group: worker-release-', 'cancel-in-progress: false',
+  'legacy_cleanup_expected_sha', 'legacy_cleanup_expected_active_version',
+  'legacy_cleanup_candidate_version', 'wrangler versions secret bulk',
+  'wrangler versions deploy', 'legacy-secret-cleanup.mjs preflight',
+  'legacy-secret-cleanup.mjs candidate', 'manual-worker-release.mjs cleanup-readback',
+]) assert.ok(cleanup.content.includes(item), 'Missing legacy cleanup safeguard: ' + item);
+assert.doesNotMatch(cleanup.content,/pnpm exec wrangler secret delete|pnpm exec wrangler deploy .*--secrets-file|gh secret (?:set|delete)/,
+  'Legacy cleanup must not bypass the protected two-phase release path');
 const prepare = job(release, 'workflow-actions-migration-prepare');
 assert.ok(prepare.gate.includes("inputs.actions_migration_prepare == true")&&
   prepare.gate.includes("inputs.deploy_to_production == false")&&

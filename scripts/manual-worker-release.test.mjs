@@ -914,7 +914,10 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
 
 test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bindings",()=> {
   const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
-  const lines=release.split(/\r?\n/);
+  // The separate cleanup job reads approved identity Variables for read-only checks;
+  // normal release stages them at the original three protected steps only.
+  const normalRelease=release.split('  legacy-secret-cleanup:\n')[0];
+  const lines=normalRelease.split(/\r?\n/);
   // The two approved nonsecret Variables retain compatibility during cleanup.
   for(const [binding,canonical,legacy] of [
     ["WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.MCP_PORTAL_CLIENT_ID"],
@@ -925,7 +928,7 @@ test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bi
     const expected=binding+": "+String.fromCharCode(36)+"{{ inputs.worker == 'workflow-mcp-worker' && ("+
       canonical+" || "+legacy+") || '' }}";
     for(const line of matched)assert.equal(line.trim(),expected);
-    assert.equal(release.split(legacy).length-1,3,
+    assert.equal(normalRelease.split(legacy).length-1,3,
       legacy+" must not be referenced from unrelated Worker steps");
   }
   // One historical GitHub Environment Secret is the only source for each

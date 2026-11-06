@@ -91,3 +91,17 @@ The existing CI's pre-release job (which has **no** Worker GitHub Environment) c
 Before the separately authorized first SSH or Workflow cutover, both old and new Workflow Portal Client IDs and repository-approval lists (when present) must exactly match the original reviewed values. Database preflight compares each of the five legacy numeric limits and any already-present renamed binding against the GitHub input (falling back to the source Wrangler default). An absent legacy limit is treated as the existing original runtime default, **not** permission to change it. Wrong types, invalid values or mismatches fail before Secret staging and deployment. Database postflight additionally verifies all renamed limits and absence of unprefixed bindings. This is a code-level guard; the GitHub Settings source-value migration is not done by merging this code.
 
 For an independently authorized *post-deletion* negative-inventory acceptance, use the existing **Workflow Acceptance** manual workflow on `main`, selecting `legacy-cleanup-readonly-ssh` or `legacy-cleanup-readonly-workflow`, with `confirm_portal_write=false` and `cleanup_expected_version` equal to the exact approved live Worker version UUID. Its separate environment-scoped job checks GitHub main SHA, performs **only Cloudflare GET** for the selected Worker's settings, Secret inventory, deployments and script settings, verifies current required bindings and forbids the old Secret names, and compares the exact active version. It never removes a Secret, updates a GitHub setting, publishes a Worker or mutates the release state file. A failed or Unknown readback must be investigated without retrying deletion. Deletion itself requires a separate approval under the existing protected release mechanism. Until successful negative-inventory evidence exists, cleanup remains **Not performed**.
+
+**Spec #733 verified SSH/Workflow production cutovers (2026-11-06, superseding older audit snapshots below):**
+[SSH Release #42185081301](https://github.com/lirtual/mcp-workers/actions/runs/42185081301)
+published canonical runtime `SSH_ENCRYPTION_KEY` with version
+`15dc85d3-0b0f-4af1-91b7-bbaebb583af1` at 100%; a bounded post-release
+`ssh_list_hosts(limit=2)` returned both historical hosts as trust-ready.
+[Workflow Release #42186878537](https://github.com/lirtual/mcp-workers/actions/runs/42186878537)
+published canonical runtime Portal/Session Secrets with version
+`e674d5c0-4da7-44a4-b1a9-b346409b40b3` at 100%; independent D1 20/20 migrations,
+14 Published Plan states, 0 active Sessions, Portal/HTTP connections, and binding names
+passed. Both Workers retained their old Cloudflare runtime Secret names. The three original
+GitHub Environment Secret names remain authoritative and unchanged. Actual old binding
+retirement is **not performed** and is a separately authorized production version change,
+not ordinary Secret re-staging. See [manual release guide](./manual-worker-release.md).
