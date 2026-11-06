@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { validatePublicEndpoint } from '../../src/registry/endpoint.js';
+import { validatePublicEndpoint } from '../../src/public-endpoint.js';
 
 function resolver(address: string): typeof fetch {
   return vi.fn(async (url: RequestInfo | URL) => Response.json({

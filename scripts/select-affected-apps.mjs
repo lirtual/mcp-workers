@@ -63,13 +63,7 @@ function changedFilesForCurrentEvent(env) {
 export function selectionForEvent(env) {
   let selected;
   let changedFiles;
-  if (env.EVENT_NAME === 'workflow_dispatch' &&
-      env.MANUAL_WORKER === 'database-mcp-worker' &&
-      /^refs\/heads\/db476-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(env.MANUAL_REF ?? '') &&
-      env.GITHUB_REPOSITORY === 'lirtual/mcp-workers' && env.GITHUB_ACTOR === 'lirtual') {
-    selected = ['database-mcp-worker'];
-    changedFiles = [];
-  } else if (env.REUSABLE_WORKER) {
+  if (env.REUSABLE_WORKER) {
     if (!RELEASE_WORKERS.includes(env.REUSABLE_WORKER)) {
       throw new Error(`Unsupported reusable Worker selection: ${env.REUSABLE_WORKER}`);
     }

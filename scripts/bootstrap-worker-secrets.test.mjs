@@ -6,7 +6,7 @@ const fixtures = {
   "browser-mcp-worker": { MCP_ACCESS_TOKEN: "independent-browser-token" },
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
-  "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"), DATABASE_KEY_ID: "v1", DATABASE_GITHUB_ACTIONS_TOKEN: "github_pat_synthetic_database_owner_token" },
+  "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONNECTIONS: "{}" },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", SSH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
@@ -23,55 +23,20 @@ test("selected Worker receives only required named secrets (no JSON wrappers)", 
   for (const [worker, selected] of Object.entries(fixtures)) {
     const env = { ...selected, OTHER_WORKER_KEY: "do-not-copy", RAINDROP_MCP_SECRETS_JSON: "obsolete" };
     const parsed = collectBootstrapSecrets(worker, env);
-    assert.deepEqual(parsed, selected);
+    assert.deepEqual(parsed, worker === "database-mcp-worker" ? {MCP_ACCESS_TOKEN:"portal"} : selected);
     assert.equal(Object.hasOwn(parsed, "OTHER_WORKER_KEY"), false);
   }
 });
 
 test("missing or empty Secrets fail before any deploy, including shared portal bearer", () => {
   for (const [worker, values] of Object.entries(fixtures)) {
-    for (const name of Object.keys(values)) {
+    for (const name of Object.keys(values).filter(name=>name!=="DATABASE_CONNECTIONS")) {
       const missing = { ...values };
       delete missing[name];
       assert.throws(() => collectBootstrapSecrets(worker, missing), new RegExp(name));
       assert.throws(() => collectBootstrapSecrets(worker, { ...values, [name]: " " }), new RegExp(name));
     }
   }
-});
-
-test("Database release stages new D1 encryption keys, never legacy DATABASE_CONFIG", () => {
-  const input = fixtures["database-mcp-worker"];
-  const obsolete = { ...input, DATABASE_CONFIG: '{"a":"mysql://old"}' };
-  assert.deepEqual(collectBootstrapSecrets("database-mcp-worker", obsolete), input);
-  for (const invalid of ["bad", Buffer.alloc(31).toString("base64"), ""]) {
-    assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
-      ...input, DATABASE_ENCRYPTION_KEY: invalid
-    }), /DATABASE_ENCRYPTION_KEY/);
-  }
-  assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
-    ...input, DATABASE_KEY_ID: "invalid key"
-  }), /DATABASE_KEY_ID/);
-  for (const invalid of ["short", "x".repeat(513), "foo\nbar", " foo", "foo "]) {
-    assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
-      ...input, DATABASE_GITHUB_ACTIONS_TOKEN: invalid
-    }), /DATABASE_GITHUB_ACTIONS_TOKEN/);
-  }
-  const previous = { ...obsolete,
-    DATABASE_ENCRYPTION_PREVIOUS_KEY: Buffer.alloc(32, 7).toString("base64"),
-    DATABASE_PREVIOUS_KEY_ID: "v0"
-  };
-  assert.deepEqual(collectBootstrapSecrets("database-mcp-worker", previous), {
-    ...input,
-    DATABASE_ENCRYPTION_PREVIOUS_KEY: previous.DATABASE_ENCRYPTION_PREVIOUS_KEY,
-    DATABASE_PREVIOUS_KEY_ID: "v0"
-  });
-  assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
-    ...input, DATABASE_ENCRYPTION_PREVIOUS_KEY: previous.DATABASE_ENCRYPTION_PREVIOUS_KEY
-  }), /required together/);
-  assert.throws(() => collectBootstrapSecrets("database-mcp-worker", {
-    ...input, DATABASE_ENCRYPTION_PREVIOUS_KEY: previous.DATABASE_ENCRYPTION_PREVIOUS_KEY,
-    DATABASE_PREVIOUS_KEY_ID: "v1"
-  }), /must differ/);
 });
 
 test("SSH catalog key must be a canonical 32-byte Base64 key", () => {

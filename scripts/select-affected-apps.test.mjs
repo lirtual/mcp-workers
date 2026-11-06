@@ -95,18 +95,6 @@ test('retired Weixin Worker is neither test-selected nor deployable',async()=>{
 });
 
 
-test('candidate CI selects full Database checks only for Owner/repo and exact db476 UUID branch',()=>{
-  const env={EVENT_NAME:'workflow_dispatch',MANUAL_WORKER:'database-mcp-worker',
-    MANUAL_REF:'refs/heads/db476-12345678-1234-1234-1234-123456789abc',
-    GITHUB_REPOSITORY:'lirtual/mcp-workers',GITHUB_ACTOR:'lirtual'};
-  const result=selectionForEvent(env);
-  assert.deepEqual(result.selected,['database-mcp-worker']);
-  assert.equal(selectionDetails(['apps/database-mcp-worker/wrangler.jsonc']).databaseChanged,true);
-  for(const [key,value] of [['GITHUB_ACTOR','attacker'],['GITHUB_REPOSITORY','lirtual/fork'],
-    ['MANUAL_REF','refs/heads/db476-invalid'],['MANUAL_WORKER','retired-worker']])
-    assert.throws(()=>selectionForEvent({...env,[key]:value}),/Unsupported manual Worker selection/);
-});
-
 
 test('main push validates every active Worker regardless of diff history', () => {
   const result = selectionForEvent({EVENT_NAME: 'push', MANUAL_REF: 'refs/heads/main',

@@ -1,3 +1,4 @@
+import {databaseCatalogStage} from './database-catalog-stage.mjs';
 // Stage only the selected Worker's GitHub Environment + repository secrets.
 // Used for EVERY authorized manual release, not only for first deployment.
 // GitHub resolves an Environment secret over a same-name repository secret.
@@ -11,7 +12,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
-  "database-mcp-worker": ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"],
+  "database-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
@@ -31,38 +32,7 @@ export function collectBootstrapSecrets(worker, env) {
     payload[name] = value;
   }
   if (worker === "database-mcp-worker") {
-    const canonicalKey = (key, name) => {
-      if (typeof key !== "string" || !/^[A-Za-z0-9+/]{43}=$/.test(key) ||
-          Buffer.from(key, "base64").length !== 32 ||
-          Buffer.from(key, "base64").toString("base64") !== key)
-        throw new Error("Invalid " + name + ": require canonical 32-byte Base64");
-      return key;
-    };
-    const keyId = (id, name) => {
-      if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(id))
-        throw new Error("Invalid " + name);
-      return id;
-    };
-    canonicalKey(payload.DATABASE_ENCRYPTION_KEY, "DATABASE_ENCRYPTION_KEY");
-    keyId(payload.DATABASE_KEY_ID, "DATABASE_KEY_ID");
-    if (payload.DATABASE_GITHUB_ACTIONS_TOKEN.length < 20 ||
-        payload.DATABASE_GITHUB_ACTIONS_TOKEN.length > 512 ||
-        /\s/.test(payload.DATABASE_GITHUB_ACTIONS_TOKEN))
-      throw new Error("Invalid DATABASE_GITHUB_ACTIONS_TOKEN");
-    const previous = env.DATABASE_ENCRYPTION_PREVIOUS_KEY;
-    const previousId = env.DATABASE_PREVIOUS_KEY_ID;
-    if ((previous !== undefined && previous !== "") !==
-        (previousId !== undefined && previousId !== ""))
-      throw new Error("Both Database previous-key recovery values are required together");
-    if (previous) {
-      canonicalKey(previous, "DATABASE_ENCRYPTION_PREVIOUS_KEY");
-      keyId(previousId, "DATABASE_PREVIOUS_KEY_ID");
-      if (previousId === payload.DATABASE_KEY_ID)
-        throw new Error("Database recovery key ID must differ from active key ID");
-      payload.DATABASE_ENCRYPTION_PREVIOUS_KEY = previous;
-      payload.DATABASE_PREVIOUS_KEY_ID = previousId;
-    }
-    // The legacy DATABASE_CONFIG must never be restaged into the D1-only Worker.
+    Object.assign(payload,databaseCatalogStage(env).secrets);
   }
   if (worker === "workflow-mcp-worker") {
     // A full release requires canonical GitHub Secrets. While an old name is

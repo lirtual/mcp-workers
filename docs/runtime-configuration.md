@@ -9,7 +9,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 ## Source of truth
 
 - Wrangler defines non-secret settings, Cloudflare bindings and required Secret names; never commit secret values.
-- The Repository is the canonical owner for `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL`; Browser and Database Environments must not override them. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
+- The Repository is the canonical owner for `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL`; Browser Environments must not override them. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
 - Every selected Worker has its own same-name GitHub Environment for app Secrets and whitelisted Variables. Only a separately approved, `main`-only, manual **Release Worker** run publishes it. Editing a GitHub Secret alone does not rotate live credentials.
 - All Workers require `MCP_ACCESS_TOKEN`. `IMA_CLIENT_ID` and `WORKFLOW_MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
 
@@ -17,7 +17,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 
 | Worker | Additional Environment Secrets | Environment Variables |
 | --- | --- | --- |
-| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN`（轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | `DATABASE_KEY_ID`、`DATABASE_ACCESS_AUD`（Environment 必填）；`ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository 必填，无同名 Environment 覆盖）；可选 `DATABASE_PREVIOUS_KEY_ID` 和 SQL 限额 |
+| `database-mcp-worker` | Referenced independent `DATABASE_B2B_PASSWORD` / `DATABASE_SCRAPE_RELAY_PASSWORD` Secrets | `DATABASE_CONNECTIONS`, referenced `DB_HOST`, optional `DATABASE_*` SQL limits |
 | `browser-mcp-worker` | 无同名 `MCP_ACCESS_TOKEN` Environment Secret 覆盖；2026-11-06 已从 Repository Secret 重新提交并完成生产发布、现有 Portal 同步及独立只读验收 | `ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository）、`BROWSER_ACTIVATION_AUDIENCE`（Environment）；其余运行时 Browser Access 值从共享源及 Wrangler Custom Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
@@ -26,7 +26,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`WORKFLOW_SESSION_RUNTIME_DATA_KEY` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` |
 
-Database MCP Spec #344 runs in production with encrypted, Owner-managed connections in D1 `database-mcp-registry`. The current release contract requires `DATABASE_ENCRYPTION_KEY`, `DATABASE_KEY_ID`, Owner Access Variables and `DB`; it neither consumes `DATABASE_CONFIG` nor imports historical records. Old database resources are retired only by a separately reviewed cleanup after deployment verification. See [Database production and recovery runbook](./database-cutover-344.md).
+Database source follows Spec #760: flat `DATABASE_CONNECTIONS`, named Direct Secrets and native Hyperdrive bindings, with no runtime D1/Setup dependency. The Owner explicitly chose #760 over conflicting Database requirements in #733. Existing production/rollback resources remain until separate authorization. See the [Database configuration and cutover contract](../apps/database-mcp-worker/README.md).
 
 Notes: `IMA_BASE_URL`, Raindrop retry count, Browser remembered-idle override, Database limits and Workflow's `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` are optional Variables. IMA's `IMA_CLIENT_ID` and Workflow's `WORKFLOW_MCP_PORTAL_CLIENT_ID` are **required**. Workflow's approved-repositories GitHub Variable is translated to the `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` runtime binding.
 
@@ -82,7 +82,7 @@ Wrangler can preserve omitted old `secret_text` names after the initial SSH/Work
 
 ### Repository identity provenance check
 
-The existing CI's pre-release job (which has **no** Worker GitHub Environment) captures `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` as Repository-resolved values. The selected release job compares its effective values to these CI outputs and fails closed on mismatch. This comparison does **not** prove absence of a same-value Environment shadow. Before the separately authorized first Browser/Database production switch, inspect the actual GitHub Settings read-only, remove any same-name Environment variable with its own authorization, and verify that absence independently. The built-in `GITHUB_TOKEN` has no assumed Variables/Environments inventory permission and is not used to claim proof.
+The existing CI's pre-release job (which has **no** Worker GitHub Environment) captures `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` as Repository-resolved values. The selected release job compares its effective values to these CI outputs and fails closed on mismatch. This comparison does **not** prove absence of a same-value Environment shadow. Before the separately authorized first Browser production switch, inspect the actual GitHub Settings read-only, remove any same-name Environment variable with its own authorization, and verify that absence independently. The built-in `GITHUB_TOKEN` has no assumed Variables/Environments inventory permission and is not used to claim proof.
 
 ### Spec #733: migration-original-value gates and cleanup readback
 

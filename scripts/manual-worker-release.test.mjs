@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, parseDatabaseCutoverIds, databaseD1ReadinessSql, verifyDatabaseD1Readiness, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -144,210 +144,6 @@ test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable 
   assert.throws(() => verifyBindings(worker, { ...settings, observability: {
     enabled: true, logs: { invocation_logs: true },
   } }, secrets), /tracing drift/);
-});
-
-test("Database production release verifies D1 before the first Wrangler deploy", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const a = workflow.indexOf("Verify Database D1 schema and fresh registry before publication (read-only)");
-  const b = workflow.indexOf("Publish exactly selected Worker", a);
-  assert.ok(a > 0 && b > a, "Database D1 guard must run before publish");
-  const step = workflow.slice(a, b);
-  assert.match(step, /if: inputs\.worker == 'database-mcp-worker'/);
-  assert.match(step, /database-d1-sql database-mcp-worker/);
-  assert.match(step, /database-d1-check database-mcp-worker/);
-  assert.doesNotMatch(step, /DATABASE_CUTOVER_EXPECTED_IDS/, 'fixed original IDs require no extra Variable');
-  assert.match(step, /wrangler d1 execute database-mcp-registry --remote --json/);
-  assert.doesNotMatch(step, /\bmigrations apply\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b/i);
-});
-
-test("Database release must inspect an exact-email Cloudflare Access policy before publish", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const d1 = workflow.indexOf("Verify Database D1 schema and fresh registry before publication");
-  const access = workflow.indexOf("Verify Database Owner Access policy before publication");
-  const publish = workflow.indexOf("Publish exactly selected Worker");
-  assert.ok(d1 > 0 && access > d1 && publish > access);
-  const block = workflow.slice(access, publish);
-  assert.match(block, /if: inputs\.worker == 'database-mcp-worker'/);
-  assert.match(block, /run: node scripts\/database-owner-access\.mjs/);
-  assert.match(block, /vars\.DATABASE_ACCESS_AUD/);
-  assert.match(block, /vars\.OWNER_EMAIL/);
-  assert.doesNotMatch(block, /\bPOST\b|\bPUT\b|\bPATCH\b|\bDELETE\b/);
-});
-
-test("Database D1 cutover rejects missing reviewed IDs without querying upstream", () => {
-  const legacy = ["old_mysql", "old_pg"];
-  assert.deepEqual(parseDatabaseCutoverIds(JSON.stringify(legacy)), legacy);
-  const sql = databaseD1ReadinessSql(legacy);
-  assert.match(sql, /d1_migrations/);
-  assert.match(sql, /preserved_count/);
-  assert.match(sql, /active_count/);
-  assert.match(sql, /id IN \('old_mysql','old_pg'\)/);
-  assert.doesNotMatch(sql, /SELECT\s+\*|\bpassword\b|\bplaintext\b|\burl\b/i);
-  for (const invalid of [undefined, "", "[]", "{}", '["a","a"]',
-    JSON.stringify(["ok", "bad' OR 1=1"]), JSON.stringify(["ok", null])]) {
-    assert.throws(() => parseDatabaseCutoverIds(invalid), /expected IDs|JSON invalid/);
-  }
-  const result = counts => [{ success: true, results: [counts] }];
-  const valid = { migration_count: 3, resource_claim_column: 1, apply_receipt_column: 1, inflight_column: 1, inflight_delete_trigger: 1, inflight_rebind_trigger: 1, reviewed_rebind_trigger: 1, retired_config_column: 1, retired_binding_column: 1, retired_resource_trigger: 1, reserved_count: 0, record_count: 2, preserved_count: 2, active_count: 2, retired_count: 0, reused_count: 0, malformed_count: 0 };
-  assert.deepEqual(verifyDatabaseD1Readiness(result(valid), 2),
-    { record_count: 2, preserved_count: 2, active_count: 2 });
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 0, preserved_count: 0 }), 2),
-    /missing reviewed legacy/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, preserved_count: 1 }), 2),
-    /missing reviewed legacy/);
-  for (const active_count of [0, 1, 3]) {
-    assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, active_count }), 2),
-      /release blocked: reviewed legacy connections are disabled/);
-  }
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, migration_count: 0 }), 2),
-    /migration not applied/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, record_count: 11 }), 2),
-    /inventory invalid/);
-  assert.throws(() => verifyDatabaseD1Readiness(result({ ...valid, malformed_count: 1 }), 2),
-    /inventory invalid/);
-  assert.throws(() => verifyDatabaseD1Readiness([{ success: false, results: [valid] }], 2),
-    /unavailable/);
-  assert.throws(() => verifyDatabaseD1Readiness(result(valid), 0), /expected ID count missing/);
-});
-
-
-test('Database release fails closed without complete persisted drain-fence schema', () => {
-  const sql=databaseD1ReadinessSql(['source_mysql']);
-  for(const name of ['inflight_column','inflight_delete_trigger','inflight_rebind_trigger','reviewed_rebind_trigger','retired_config_column','retired_binding_column','retired_resource_trigger']) {
-    assert.ok(sql.includes(' AS '+name),'Release query must prove '+name);
-  }
-  const base={migration_count:3,resource_claim_column:1,apply_receipt_column:1,
-    inflight_column:1,inflight_delete_trigger:1,inflight_rebind_trigger:1,reviewed_rebind_trigger:1,retired_config_column:1,retired_binding_column:1,retired_resource_trigger:1,
-    reserved_count:0,record_count:1,preserved_count:1,active_count:1,
-    retired_count:0,reused_count:0,malformed_count:0};
-  const wrap=row=>[{success:true,results:[row]}];
-  assert.doesNotThrow(()=>verifyDatabaseD1Readiness(wrap(base),1,'registry'));
-  for(const bad of [{inflight_column:0},{inflight_delete_trigger:0},{inflight_rebind_trigger:0},
-    {inflight_column:2},{inflight_rebind_trigger:2}, {reviewed_rebind_trigger:0}, {inflight_delete_trigger:null},{retired_config_column:0},{retired_binding_column:0},{retired_resource_trigger:0}]){
-    assert.throws(()=>verifyDatabaseD1Readiness(wrap({...base,...bad}),1,'registry'));
-  }
-});
-
-test("subsequent Database releases allow updated 0–10 connection inventory while retaining schema/retirement checks", () => {
-  const base = { migration_count: 3, resource_claim_column: 1, apply_receipt_column: 1, inflight_column: 1, inflight_delete_trigger: 1, inflight_rebind_trigger: 1, reviewed_rebind_trigger: 1, retired_config_column: 1, retired_binding_column: 1, retired_resource_trigger: 1, reserved_count: 0, record_count: 0, preserved_count: 0,
-    active_count: 0, retired_count: 2, reused_count: 0, malformed_count: 0 };
-  const result = row => [{ success: true, results: [row] }];
-  assert.deepEqual(verifyDatabaseD1Readiness(result(base), 2, 'registry'),
-    { record_count: 0, preserved_count: 0, active_count: 0 });
-  assert.deepEqual(verifyDatabaseD1Readiness(result({ ...base, record_count: 10,
-    preserved_count: 1, active_count: 0 }), 2, 'registry'),
-    { record_count: 10, preserved_count: 1, active_count: 0 });
-  assert.throws(() => verifyDatabaseD1Readiness(result(base), 2, 'cutover'),
-    /missing reviewed legacy/);
-  for (const bad of [
-    { record_count: 11 }, { reused_count: 1 }, { malformed_count: 1 },
-    { migration_count: 1 }, { active_count: 1 }, { preserved_count: 3 },
-    { retired_count: -1 }, { resource_claim_column: 0 }, { apply_receipt_column: 0 }, { reserved_count: 11 }
-  ]) assert.throws(() => verifyDatabaseD1Readiness(result({ ...base, ...bad }), 2, 'registry'));
-  assert.throws(() => verifyDatabaseD1Readiness(result(base), 2, 'invalid'), /phase invalid/);
-});
-
-test("generated Database D1 release SQL executes against actual SQLite schema", () => {
-  const sql = new DatabaseSync(":memory:");
-  try {
-    sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0001_connections.sql",
-      import.meta.url), "utf8"));
-    sql.exec(readFileSync(new URL("../apps/database-mcp-worker/migrations/0002_transport_and_retired_ids.sql", import.meta.url), "utf8"));
-    for (const name of ['0003_hyperdrive_operations.sql']) {
-      sql.exec(readFileSync(new URL('../apps/database-mcp-worker/migrations/' + name,import.meta.url),'utf8'));
-    }
-    sql.exec("CREATE TABLE d1_migrations (name TEXT NOT NULL)");
-    sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0001_connections.sql");
-    sql.prepare("INSERT INTO d1_migrations(name) VALUES (?)").run("0002_transport_and_retired_ids.sql");
-    for(const name of ['0003_hyperdrive_operations.sql']) {
-      sql.prepare('INSERT INTO d1_migrations(name) VALUES (?)').run(name);
-    }
-    const add = sql.prepare("INSERT INTO database_connections(id,dialect,transport,status,ciphertext,key_id,revision,created_at,updated_at) VALUES (?, ?, 'direct', ?, ?, ?, 1,1,1)");
-    add.run("source_mysql", "mysql", "active", "x".repeat(48), "key_v1");
-    add.run("source_pg", "postgres", "disabled", "y".repeat(48), "key_v1");
-    const query = databaseD1ReadinessSql(["source_mysql", "source_pg"]);
-    const execute = () => [{ success: true, results: [sql.prepare(query).get()] }];
-    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2),
-      /release blocked: reviewed legacy connections are disabled/);
-    sql.prepare("UPDATE database_connections SET status='active' WHERE id=?").run("source_pg");
-    assert.deepEqual(verifyDatabaseD1Readiness(execute(), 2),
-      { record_count: 2, preserved_count: 2, active_count: 2 });
-    sql.prepare("UPDATE database_connections SET ciphertext='invalid' WHERE id=?").run("source_mysql");
-    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /inventory invalid/);
-    sql.prepare("DELETE FROM database_connections WHERE id=?").run("source_mysql");
-    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2), /missing reviewed legacy/);
-    verifyDatabaseD1Readiness(execute(), 2, 'registry');
-    // Simulate the pre-apply schema; the new handoff trigger depends on this column.
-    sql.exec('DROP TRIGGER database_connection_respects_reservation');
-    sql.exec('ALTER TABLE hyperdrive_operations DROP COLUMN apply_run_id');
-    assert.throws(() => verifyDatabaseD1Readiness(execute(), 2, 'registry'), /lifecycle migration not applied/);
-  } finally {
-    sql.close();
-  }
-});
-
-test("Database transition validates reviewed D1, Owner route and two throttles before release", () => {
-  const reviewedBindings = JSON.parse(readFileSync(new URL('../apps/database-mcp-worker/hyperdrive-bindings.json', import.meta.url), 'utf8'));
-  const source = {
-    name: "database-mcp-worker", main: "src/index.ts",
-    secrets: { required: ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"] },
-    workers_dev: true, preview_urls: false,
-    hyperdrive: reviewedBindings.map(x => ({ binding: x.binding, id: x.id })),
-    d1_databases: [{ binding: "DB", database_name: "database-mcp-registry",
-      database_id: "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a", migrations_dir: "migrations" }],
-    vars: { DATABASE_SETUP_HOST: "database-owner.example.com" },
-    routes: [{ pattern: "database-owner.example.com", custom_domain: true }],
-    ratelimits: [
-      { name: "RATE_LIMITER", namespace_id: "1001", simple: { limit: 120, period: 60 } },
-      { name: "SETUP_RATE_LIMITER", namespace_id: "1002", simple: { limit: 20, period: 60 } }
-    ]
-  };
-  assert.equal(verifyDatabaseCutoverSource(source), true);
-  const broken = (change, message) => {
-    const candidate = structuredClone(source);
-    change(candidate);
-    assert.throws(() => verifyDatabaseCutoverSource(candidate), message);
-  };
-  broken(x => { x.d1_databases = undefined; }, /dedicated production D1/);
-  broken(x => { x.d1_databases[0].database_id = "FILL_ME_IN"; }, /dedicated production D1/);
-  broken(x => { x.secrets.required.push("DATABASE_CONFIG"); }, /never legacy DATABASE_CONFIG/);
-  broken(x => { x.hyperdrive = [{ binding: 'HYPERDRIVE_UNREVIEWED', id: '00000000000000000000000000000000' }]; }, /Hyperdrive manifest\/source mismatch/);
-  broken(x => { x.routes = []; }, /dedicated HTTPS hostname/);
-  broken(x => { x.routes[0].pattern = "other.example.com"; }, /dedicated HTTPS hostname/);
-  broken(x => { x.ratelimits[1].simple.limit = 100; }, /rate-limit policies/);
-  const names = ["MCP_ACCESS_TOKEN", "DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN"];
-  const limiter = source.ratelimits[0];
-  const setup = source.ratelimits[1];
-  const list = names.map(name => ({ name }));
-  const identity={ sharedAccessTeamDomain:"approved-owner", sharedOwnerEmail:"approved-owner", databaseAudience:"approved-owner" };
-  const settings = {
-    bindings: [...names.map(name => ({ name, type: "secret_text" })),
-      { name: "DB", type: "d1", id: source.d1_databases[0].database_id },
-      ...source.hyperdrive.map(x => ({ name: x.binding, type: "hyperdrive", id: x.id })),
-      { name: "DATABASE_SETUP_HOST", type: "plain_text", text: source.vars.DATABASE_SETUP_HOST },
-      ...["ACCESS_TEAM_DOMAIN", "DATABASE_ACCESS_AUD", "OWNER_EMAIL"].map(name =>
-        ({ name, type: "plain_text", text: "approved-owner" })),
-      { ...limiter, type: "ratelimit" }, { ...setup, type: "ratelimit" }],
-    observability: { enabled: true, logs: { invocation_logs: true } }
-  };
-  assert.equal(verifyBindings("database-mcp-worker", settings, list, {
-    mode: "readback", sourceConfig: source, ...identity
-  }), true);
-  const check = (bindingName, regex) => assert.throws(() => verifyBindings("database-mcp-worker",
-    { ...settings, bindings: settings.bindings.filter(x => x.name !== bindingName) },
-    list, { mode: "readback", sourceConfig: source, ...identity }), regex);
-  check("DB", /D1 binding mismatch/);
-  check("SETUP_RATE_LIMITER", /SETUP_RATE_LIMITER/);
-  check("DATABASE_ACCESS_AUD", /Access binding differs from reviewed source/);
-  assert.throws(() => verifyBindings("database-mcp-worker", { ...settings,
-    bindings: [...settings.bindings, { name: "HYPERDRIVE_UNREVIEWED", type: "hyperdrive", id: "11111111-1111-4111-8111-111111111111" }] },
-    list, { mode: "readback", sourceConfig: source, ...identity }), /Hyperdrive binding IDs/);
-  assert.throws(() => verifyBindings("database-mcp-worker", settings,
-    list.filter(x => x.name !== "DATABASE_ENCRYPTION_KEY"),
-    { mode: "readback", sourceConfig: source, ...identity }), /DATABASE_ENCRYPTION_KEY/);
-  assert.equal(verifyBindings("database-mcp-worker", settings, list, {
-    mode: "preflight", sourceConfig: source, ...identity
-  }), true);
 });
 
 test("Remote production requires its own DO and rejects Preview namespace reuse", () => {
@@ -538,10 +334,7 @@ test("Workflow code-only release never stages secrets or runs migrations, preser
   assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
   assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
   assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
-  for (const job of ["database-hyperdrive-prepare","database-hyperdrive-apply",
-    "database-hyperdrive-enable","database-hyperdrive-credentials",
-    "database-hyperdrive-rotation-check","database-hyperdrive-retire",
-    "workflow-actions-migration-prepare","workflow-actions-gate-reopen"]) {
+  for (const job of ["workflow-actions-migration-prepare","workflow-actions-gate-reopen"]) {
     const block = workflow.slice(workflow.indexOf("  "+job+":"));
     assert.match(block.slice(0,550), /inputs.workflow_code_only != true/,
       "code-only selection must not enter maintenance job "+job);
@@ -572,13 +365,10 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   assert.match(secretStep, /if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/,
     "only explicitly selected Workflow code-only release may omit Secret staging");
   for (const name of ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN", "IMA_API_KEY",
-    "DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "SSH_ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
+    "DATABASE_B2B_PASSWORD", "DATABASE_SCRAPE_RELAY_PASSWORD", "SSH_ENCRYPTION_KEY", "ACTIONS_GITHUB_DISPATCH_TOKENS"]) {
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
-  assert.ok(secretStep.includes("vars.DATABASE_KEY_ID"),
-    "Database key identifier must come from a GitHub Environment Variable");
-  assert.equal(secretStep.includes("secrets.DATABASE_KEY_ID"), false,
-    "Database key identifier is public metadata, not a GitHub Secret");
+  assert.equal(secretStep.includes('DATABASE_KEY_ID'),false,'retired D1 key is not staged');
   assert.equal(secretStep.includes("secrets.DATABASE_CONFIG"), false,
     "releases must never restage the retired whole-catalog Secret");
   assert.equal(secretStep.includes("secrets.IMA_CLIENT_ID"), false,

@@ -1,3 +1,5 @@
+> Historical Spec #344 delivery and recovery evidence. Spec #760 replaces the current source/release contract; use [Database README](../apps/database-mcp-worker/README.md) for new releases. Do not execute retired commands below. Preserve old resources and credentials until separately authorized recovery/cleanup decisions.
+
 > **Current #476 checkpoint (2026-10-31 UTC):** [PR #490](https://github.com/lirtual/mcp-workers/pull/490)
 > and [PR #601](https://github.com/lirtual/mcp-workers/pull/601) are merged.
 > Protected Database Worker production release [#41166142234](https://github.com/lirtual/mcp-workers/actions/runs/41166142234)
