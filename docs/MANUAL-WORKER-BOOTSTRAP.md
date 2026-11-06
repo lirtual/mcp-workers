@@ -29,11 +29,13 @@
 | `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`DATABASE_ACCESS_AUD`（Environment 必填）**；`ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL` 仅在 Repository Variables 中配置，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`DATABASE_MAX_ROWS`、`DATABASE_MAX_RESULT_BYTES`、`DATABASE_MAX_SCHEMA_BYTES`、`DATABASE_QUERY_TIMEOUT_MS`、`DATABASE_MAX_WRITE_AFFECTED_ROWS` |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
-| `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY` | 无 |
+| `ssh-mcp-worker` | `ENCRYPTION_KEY`（原名不变；Worker 运行时为 `SSH_ENCRYPTION_KEY`） | 无 |
 | `browser-mcp-worker` | 既有设计要求独立 `MCP_ACCESS_TOKEN` 同名 Environment 覆盖；实际配置尚待核实 | `ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository）、`BROWSER_ACTIVATION_AUDIENCE`（Environment）；其余运行时 Browser Access 值从共享源及 Wrangler Custom Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
-| `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`WORKFLOW_SESSION_RUNTIME_DATA_KEY` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` |
+| `workflow-mcp-worker` | `MCP_PORTAL_CLIENT_SECRET` → 运行时 `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`SESSION_RUNTIME_DATA_KEY` → 运行时 `WORKFLOW_SESSION_RUNTIME_DATA_KEY` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` |
+
+**Spec #733 命名例外：** SSH 的 GitHub Secret `ENCRYPTION_KEY` 与 Workflow 的 `MCP_PORTAL_CLIENT_SECRET`、`SESSION_RUNTIME_DATA_KEY` 保留原名；Release Worker 直接将各自原值作为规范 Worker 运行时绑定的输入，不在 GitHub 中复制密钥，不采用新旧名称回退，也不修改运行时 `secrets.required`。没有获得生产发布授权前只允许非生产测试；即使后续发布前的格式检查通过，也不等于历史 SSH/Session 密文已通过真实解密验收。
 
 表中 Database Owner 的两个 Repository Variables 和独立的 `DATABASE_ACCESS_AUD` Environment Variable、`DATABASE_KEY_ID`、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
 
@@ -42,7 +44,7 @@
 **Database MCP Spec #344 已切换生产。** 唯一连接目录是 `database-mcp-registry` D1；`DATABASE_CONFIG` 旧格式不再参与发布或运行。现有 GitHub Actions 只读验证数据库绑定、加密记录与 Owner Access，随后发布当前 D1 架构 Worker。旧 D1/Secret 的云端删除属于独立资源清理，不应随普通代码发布自动执行。参见 [Database 生产发布与恢复](./database-cutover-344.md)。
 
 
-当前 SSH Worker 使用与 EdgeSSH 已加密 D1 记录一致的 `SSH_ENCRYPTION_KEY`（规范 32 字节 Base64）作为 `ssh-mcp-worker` Environment Secret。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
+当前 SSH Worker 运行时使用 `SSH_ENCRYPTION_KEY`（规范 32 字节 Base64），GitHub `ssh-mcp-worker` Environment 保留现有 `ENCRYPTION_KEY` Secret，Release Worker 仅在受保护的单 Worker staging 步骤中映射名称；密钥应与 EdgeSSH 加密历史 D1 记录的原值一致，真实生产读取尚需单独验收。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
 
 GitHub 的 Environment 如果配置了所需审批/分支保护，请为每个 Worker 的 Environment **重新设置同等保护**；原 `production` 的保护规则不会继承。Repository 级密钥对拥有工作流修改/运行权限的人仍可见于任务运行上下文，请限制主分支修改权限与发布权限。
 
