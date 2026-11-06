@@ -86,6 +86,30 @@ on:
         required: false
         type: boolean
         default: false
+      legacy_secret_cleanup_mode:
+        description: 'Spec 733 SSH/Workflow only: none, prepare un-deployed version, or publish reviewed candidate'
+        required: true
+        type: choice
+        options:
+          - none
+          - prepare
+          - publish
+        default: none
+      legacy_cleanup_expected_sha:
+        description: 'Spec 733: exact Owner-reviewed main SHA for cleanup'
+        required: false
+        type: string
+        default: ''
+      legacy_cleanup_expected_active_version:
+        description: 'Spec 733: exact active Worker baseline version UUID'
+        required: false
+        type: string
+        default: ''
+      legacy_cleanup_candidate_version:
+        description: 'Spec 733 publish only: exact separately approved prepared candidate UUID'
+        required: false
+        type: string
+        default: ''
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -527,6 +551,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
+          inputs.legacy_secret_cleanup_mode == 'none' &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && inputs.database_hyperdrive_rotation_mode == '' &&
           (inputs.worker == 'raindrop-mcp-worker' ||
@@ -1540,6 +1565,158 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-browser-portal.mjs
+
+  legacy-secret-cleanup:
+    name: Spec 733 protected old runtime Secret cleanup
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.deploy_to_production == true &&
+          needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
+          (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker') &&
+          (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish') &&
+          inputs.workflow_code_only != true && inputs.actions_old_ingress_quiesced != true &&
+          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
+          inputs.database_hyperdrive_prepare_id == '' && inputs.database_hyperdrive_apply_id == '' &&
+          inputs.database_hyperdrive_enable_approved != true && inputs.database_hyperdrive_retire_approved != true &&
+          inputs.database_hyperdrive_rotation_mode == '' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.worker }}
+    concurrency:
+      group: worker-release-${{ inputs.worker }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      SELECTED_WORKER: ${{ inputs.worker }}
+      LEGACY_CLEANUP_MODE: ${{ inputs.legacy_secret_cleanup_mode }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.legacy_cleanup_expected_sha }}
+      EXPECTED_ACTIVE_VERSION: ${{ inputs.legacy_cleanup_expected_active_version }}
+      CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Owner-approved exact main, mode and Worker before credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$GITHUB_SHA" == "$EXPECTED_SOURCE_SHA" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          [[ "$EXPECTED_ACTIVE_VERSION" =~ ^[a-f0-9-]{36}$ ]]
+          case "$SELECTED_WORKER:$LEGACY_CLEANUP_MODE" in
+            ssh-mcp-worker:prepare|ssh-mcp-worker:publish|workflow-mcp-worker:prepare|workflow-mcp-worker:publish) ;;
+            *) exit 1 ;;
+          esac
+          if [[ "$LEGACY_CLEANUP_MODE" == 'prepare' ]]; then
+            [[ -z "$CANDIDATE_VERSION_ID" ]]
+          else
+            [[ "$CANDIDATE_VERSION_ID" =~ ^[a-f0-9-]{36}$ && "$CANDIDATE_VERSION_ID" != "$EXPECTED_ACTIVE_VERSION" ]]
+          fi
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate active version, exact Secret inventory and Workflow quiescence (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+        run: node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
+
+      - name: Create one unpublished version removing only reviewed legacy Secrets
+        if: inputs.legacy_secret_cleanup_mode == 'prepare'
+        id: prepare
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          file="$(mktemp --suffix=.json)"
+          log="$(mktemp)"
+          chmod 600 "$file" "$log"
+          trap 'rm -f "$file" "$log"' EXIT
+          if [[ "$SELECTED_WORKER" == 'ssh-mcp-worker' ]]; then
+            printf '%s\n' '{"ENCRYPTION_KEY":null}' > "$file"
+          else
+            printf '%s\n' '{"MCP_PORTAL_CLIENT_SECRET":null,"SESSION_RUNTIME_DATA_KEY":null}' > "$file"
+          fi
+          # Unlike wrangler secret delete, versions secret bulk never deploys the candidate.
+          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions secret bulk "$file" \
+              --name "$SELECTED_WORKER" --message 'Spec 733 reviewed legacy runtime Secret cleanup; candidate only') >"$log" 2>&1; then
+            echo "Candidate creation failed/unknown; do not retry; inspect Worker version inventory read-only" >&2
+            exit 1
+          fi
+          candidate="$(node scripts/manual-worker-release.mjs version "$log")"
+          echo "candidate_version_id=$candidate" >> "$GITHUB_OUTPUT"
+
+      - name: Verify unpublished candidate and unchanged 100% active version
+        if: inputs.legacy_secret_cleanup_mode == 'prepare'
+        env:
+          CANDIDATE_VERSION_ID: ${{ steps.prepare.outputs.candidate_version_id }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+        run: node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
+
+      - name: Revalidate reviewed candidate immediately before production promotion
+        if: inputs.legacy_secret_cleanup_mode == 'publish'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
+
+      - name: Deploy only the independently approved candidate to 100 percent
+        if: inputs.legacy_secret_cleanup_mode == 'publish'
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          log="$(mktemp)"
+          chmod 600 "$log"
+          trap 'rm -f "$log"' EXIT
+          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions deploy \
+            "$CANDIDATE_VERSION_ID@100" --yes --strict) >"$log" 2>&1; then
+            echo "Candidate promotion failed/unknown; read active deployment before any action" >&2
+            exit 1
+          fi
+
+      - name: Verify exact live version, retained canonical bindings and old Secret absence
+        if: inputs.legacy_secret_cleanup_mode == 'publish'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXPECTED_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+        run: node scripts/manual-worker-release.mjs cleanup-readback "$SELECTED_WORKER"
 
   database-hyperdrive-finalize:
     name: Verify published Hyperdrive and hand off disabled D1 reference

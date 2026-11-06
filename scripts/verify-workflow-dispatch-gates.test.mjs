@@ -145,10 +145,10 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
 
-test('Database lifecycle and Actions ingress dispatch preserve all sixteen reviewed inputs',()=>{
+test('Database lifecycle, Actions ingress and SSH/Workflow cleanup preserve all twenty reviewed inputs',()=>{
   const inputs=release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
   const names=[...inputs.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(m=>m[1]);
-  assert.ok(names.length===16,'release workflow_dispatch must have exactly sixteen reviewed inputs');
+  assert.ok(names.length===20,'release workflow_dispatch must have exactly twenty reviewed inputs');
   assert.equal(new Set(names).size,names.length);
   assert.ok(names.includes('database_expected_release_sha'));
   assert.ok(names.includes('actions_old_ingress_quiesced'));
@@ -157,6 +157,9 @@ test('Database lifecycle and Actions ingress dispatch preserve all sixteen revie
   assert.ok(names.includes('workflow_code_only'));
   assert.ok(names.includes('actions_expected_provider_version'));
   assert.ok(names.includes('actions_expected_consumer_version'));
+  for(const name of ['legacy_secret_cleanup_mode','legacy_cleanup_expected_sha',
+    'legacy_cleanup_expected_active_version','legacy_cleanup_candidate_version'])
+    assert.ok(names.includes(name),'missing protected cleanup input '+name);
   const deploy=release.slice(release.indexOf('\n  deploy:\n'));
   assert.match(deploy,/github.actor == 'lirtual'/);
   assert.match(deploy,/GITHUB_ACTOR.*lirtual/);
