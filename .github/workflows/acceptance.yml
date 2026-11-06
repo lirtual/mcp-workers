@@ -21,6 +21,7 @@ on:
           - portal-register
           - legacy-cleanup-readonly-ssh
           - legacy-cleanup-readonly-workflow
+          - ssh-secret-synthetic-relay
       session_run_id:
         description: Existing temporary Spec 288 Windows Run ID; never contains sensitive values
         type: string
@@ -38,6 +39,16 @@ on:
         required: true
         type: boolean
         default: false
+      ssh_synthetic_public_key:
+        description: Synthetic-only test - exact current SSH Environment public key, no private key
+        type: string
+        required: false
+        default: ''
+      ssh_synthetic_public_key_id:
+        description: Synthetic-only test - exact current SSH Environment public key ID
+        type: string
+        required: false
+        default: ''
       cleanup_expected_version:
         description: Cleanup readback only - exact reviewed active Worker version UUID
         type: string
@@ -52,6 +63,74 @@ env:
   HUSKY: "0"
 
 jobs:
+  # Spec 733 temporary one-shot validation; REMOVE the two jobs and dispatch
+  # inputs after the synthetic run and evidence have been independently accepted.
+  # No ENCRYPTION_KEY/SSH_ENCRYPTION_KEY Secret is ever resolved in these jobs.
+  ssh-secret-synthetic-seal:
+    name: Spec 733 synthetic SSH sealed-box only (no Secret write)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.confirm_portal_write == false &&
+          inputs.test_type == 'ssh-secret-synthetic-relay' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ssh-mcp-worker
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Confirm exact active main and no release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Encrypt synthetic-only fixture under the reviewed GitHub Environment public key
+        env:
+          SPEC733_PUBLIC_KEY: ${{ inputs.ssh_synthetic_public_key }}
+          SPEC733_PUBLIC_KEY_ID: ${{ inputs.ssh_synthetic_public_key_id }}
+        run: python3 scripts/ssh-secret-synthetic-relay.py seal "$RUNNER_TEMP/spec733-ssh-synthetic-sealed.json"
+      - name: Upload only synthetic sealed-box ciphertext (1-day retention)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spec733-ssh-synthetic-ciphertext-${{ github.run_id }}
+          path: ${{ runner.temp }}/spec733-ssh-synthetic-sealed.json
+          if-no-files-found: error
+          retention-days: 1
+
+  ssh-secret-synthetic-check:
+    name: Spec 733 independent synthetic SSH ciphertext and byte test
+    needs: ssh-secret-synthetic-seal
+    if: ${{ inputs.test_type == 'ssh-secret-synthetic-relay' && github.actor == 'lirtual' && github.ref == 'refs/heads/main' && inputs.confirm_portal_write == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ssh-mcp-worker
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Confirm unchanged main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Retrieve encrypted-only synthetic artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: spec733-ssh-synthetic-ciphertext-${{ github.run_id }}
+          path: ${{ runner.temp }}/spec733-ssh-synthetic-download
+      - name: Independently inspect ciphertext and positive/negative byte-equality fixtures
+        env:
+          SPEC733_PUBLIC_KEY_ID: ${{ inputs.ssh_synthetic_public_key_id }}
+        run: python3 scripts/ssh-secret-synthetic-relay.py verify "$RUNNER_TEMP/spec733-ssh-synthetic-download/spec733-ssh-synthetic-sealed.json"
+
   legacy-secret-cleanup-readback:
     name: Spec 733 legacy Secret cleanup inventory (GET only)
     if: >-
