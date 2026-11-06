@@ -26,7 +26,7 @@
 
 | Environment 名称 | Environment Secrets（不含继承的 `MCP_ACCESS_TOKEN`） | Environment Variables |
 | --- | --- | --- |
-| `database-mcp-worker` | `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN`（密钥轮换时可选 `DATABASE_ENCRYPTION_PREVIOUS_KEY`） | **`DATABASE_KEY_ID`、`DATABASE_ACCESS_AUD`（Environment 必填）**；`ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL` 仅在 Repository Variables 中配置，以及可选的 `DATABASE_PREVIOUS_KEY_ID`、`DATABASE_MAX_ROWS`、`DATABASE_MAX_RESULT_BYTES`、`DATABASE_MAX_SCHEMA_BYTES`、`DATABASE_QUERY_TIMEOUT_MS`、`DATABASE_MAX_WRITE_AFFECTED_ROWS` |
+| `database-mcp-worker` | 被 `DATABASE_CONNECTIONS` 引用的独立 `DATABASE_B2B_PASSWORD` / `DATABASE_SCRAPE_RELAY_PASSWORD` | 必填 `DATABASE_CONNECTIONS`；引用时必填 `DB_HOST`；可选 `DATABASE_*` SQL 限额 |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `ENCRYPTION_KEY`（原名不变；Worker 运行时为 `SSH_ENCRYPTION_KEY`） | 无 |
@@ -37,11 +37,11 @@
 
 **Spec #733 命名例外：** SSH 的 GitHub Secret `ENCRYPTION_KEY` 与 Workflow 的 `MCP_PORTAL_CLIENT_SECRET`、`SESSION_RUNTIME_DATA_KEY` 保留原名；Release Worker 直接将各自原值作为规范 Worker 运行时绑定的输入，不在 GitHub 中复制密钥，不采用新旧名称回退，也不修改运行时 `secrets.required`。没有获得生产发布授权前只允许非生产测试；即使后续发布前的格式检查通过，也不等于历史 SSH/Session 密文已通过真实解密验收。
 
-表中 Database Owner 的两个 Repository Variables 和独立的 `DATABASE_ACCESS_AUD` Environment Variable、`DATABASE_KEY_ID`、IMA 的 `IMA_CLIENT_ID`、Workflow 的 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 均为必填；Database 的 `DATABASE_KEY_ID` 是非敏感 Environment Variable，连接 ID 由 Owner 在 D1 增量维护，不再由发布门禁固定名单；不需要 `DATABASE_CUTOVER_EXPECTED_IDS`。其余列出的 Variables 为可选。
+Database 的逻辑清单 `DATABASE_CONNECTIONS` 和被引用的独立 Secret/Variable 必填；IMA 的 `IMA_CLIENT_ID`、Workflow 的 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 必填。其余 Variables 按各 Worker 契约配置。
 
 所有 Worker 可继承 Repository Secret `MCP_ACCESS_TOKEN`；单个 Worker 如需例外，可配置同名 Environment Secret 覆盖。配置特殊保密数据只能使用 **Secret**，不能使用 **Variable**。
 
-**Database MCP Spec #344 已切换生产。** 唯一连接目录是 `database-mcp-registry` D1；`DATABASE_CONFIG` 旧格式不再参与发布或运行。现有 GitHub Actions 只读验证数据库绑定、加密记录与 Owner Access，随后发布当前 D1 架构 Worker。旧 D1/Secret 的云端删除属于独立资源清理，不应随普通代码发布自动执行。参见 [Database 生产发布与恢复](./database-cutover-344.md)。
+**Database 当前源码遵循 Spec #760。** 唯一逻辑清单是 `DATABASE_CONNECTIONS`，Direct 使用独立命名 Secrets，Hyperdrive 由 Cloudflare 原生管理。Setup、D1/加密/dispatch 发布依赖已移除。生产切换仍须独立授权和检查旧 Registry、Unknown 操作及恢复条件；旧 D1/Secrets/Hyperdrive 资源不得随源码删除。参见 [Database 配置与恢复契约](../apps/database-mcp-worker/README.md)。
 
 
 当前 SSH Worker 运行时使用 `SSH_ENCRYPTION_KEY`（规范 32 字节 Base64），GitHub `ssh-mcp-worker` Environment 保留现有 `ENCRYPTION_KEY` Secret，Release Worker 仅在受保护的单 Worker staging 步骤中映射名称；密钥应与 EdgeSSH 加密历史 D1 记录的原值一致，真实生产读取尚需单独验收。退役的 `SSH_BROKER_TOKEN`、`MCP_BROKER_TOKEN` 与 `EDGE_SSH_BROKER` Service Binding 不再属于正式 SSH Worker 发布要求。不得为文档修正重建 D1、重置 Operations DO 或擅自轮换 EdgeSSH 密钥；遗留资源须独立审查后退役。
@@ -54,7 +54,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 
 - Raindrop：`RAINDROP_RATE_LIMIT_MAX_RETRIES`（0–10）。
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
-- Database：`DATABASE_ACCESS_AUD`（Environment 独立配置）；`ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository 唯一源）；`DATABASE_KEY_ID`（Environment Variable，必填）；`DATABASE_MAX_ROWS`（1–5000）、`DATABASE_MAX_RESULT_BYTES`（1–8388608）、`DATABASE_MAX_SCHEMA_BYTES`（1–4194304）、`DATABASE_QUERY_TIMEOUT_MS`（1–60000）、`DATABASE_MAX_WRITE_AFFECTED_ROWS`（1–100）。
+- Database：`DATABASE_CONNECTIONS`、被引用的独立 Secrets 和 `DB_HOST`；可选 `DATABASE_MAX_ROWS`（1–5000）、`DATABASE_MAX_RESULT_BYTES`（1–8388608）、`DATABASE_MAX_SCHEMA_BYTES`（1–4194304）、`DATABASE_QUERY_TIMEOUT_MS`（1–60000）、`DATABASE_MAX_WRITE_AFFECTED_ROWS`（1–100）。
 - Browser：`ACCESS_TEAM_DOMAIN` 和 `OWNER_EMAIL` 仅使用 Repository Variables；运行时 Browser issuer、owner 和激活 origin 从共享身份与 Custom Domain 派生；只单独设置 `BROWSER_ACTIVATION_AUDIENCE`；`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置。旧 Review 的 `BROWSER_APPROVAL_*` / `BROWSER_ACCESS_AUDIENCE` 不再由发布流程传入。
 - Workflow：`WORKFLOW_MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`）。
 - SSH、GitHub Actions：无额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导，`RCA_PERMANENT_IDLE_DAYS` 为可选变量。

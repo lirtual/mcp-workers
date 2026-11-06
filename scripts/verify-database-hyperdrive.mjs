@@ -18,35 +18,18 @@ function isPublicDnsName(host) {
 }
 /** All fields are nonsecret; password and CA PEM are intentionally absent. */
 export function verifyCloudflareHyperdriveConfig(expected, observed) {
-  requireVerified(expected && typeof expected === 'object' &&
-    /^[A-Z0-9_]{1,54}$/.test(expected.binding?.replace(/^HYPERDRIVE_/, '') ?? '') &&
-    /^[a-zA-Z0-9-]{8,64}$/.test(expected.id ?? '') &&
-    ['mysql', 'postgres'].includes(expected.dialect) &&
-    isPublicDnsName(expected.origin_host) &&
-    Number.isSafeInteger(expected.origin_port) &&
-    expected.origin_port > 0 && expected.origin_port <= 65535 &&
-    typeof expected.origin_database === 'string' &&
-    expected.origin_database.length > 0 && expected.origin_database.length <= 128 &&
-    typeof expected.origin_user === 'string' &&
-    expected.origin_user.length > 0 && expected.origin_user.length <= 128 &&
-    typeof expected.ca_certificate_id === 'string' &&
-    /^[a-zA-Z0-9-]{8,128}$/.test(expected.ca_certificate_id),
-    'invalid approved source metadata');
-  requireVerified(observed && typeof observed === 'object' &&
-    observed.id === expected.id, 'config ID differs from reviewed source');
-  requireVerified(observed.caching?.disabled === true, 'SQL response caching is not disabled');
-  const mode = expected.dialect === 'postgres' ? 'verify-full' : 'VERIFY_IDENTITY';
-  requireVerified(observed.mtls?.sslmode === mode &&
-    observed.mtls?.ca_certificate_id === expected.ca_certificate_id,
-    'CA/hostname verification is not strict or does not match reviewed CA');
-  const origin = observed.origin;
-  const scheme = expected.dialect === 'postgres' ? ['postgres', 'postgresql'] : ['mysql'];
-  requireVerified(origin && scheme.includes(origin.scheme) &&
-    origin.host === expected.origin_host &&
-    origin.port === expected.origin_port &&
-    origin.database === expected.origin_database &&
-    origin.user === expected.origin_user &&
-    !origin.service_id && !origin.access_client_id, 'origin identity differs from reviewed source');
+  requireVerified(expected && /^HYPERDRIVE_[A-Z0-9_]{1,54}$/.test(expected.binding??'') &&
+    /^[a-zA-Z0-9-]{8,64}$/.test(expected.id??'') && ['mysql','postgres'].includes(expected.dialect), 'invalid approved binding metadata');
+  requireVerified(observed?.id===expected.id, 'config ID differs from reviewed source');
+  requireVerified(observed.caching?.disabled===true,'SQL response caching is not disabled');
+  const mode=expected.dialect==='postgres'?'verify-full':'VERIFY_IDENTITY';
+  requireVerified(observed.mtls?.sslmode===mode && typeof observed.mtls?.ca_certificate_id==='string' &&
+    observed.mtls.ca_certificate_id.length>0,'strict origin TLS required');
+  const origin=observed.origin;
+  requireVerified(origin && (expected.dialect==='mysql'?origin.scheme==='mysql':['postgres','postgresql'].includes(origin.scheme)) &&
+    isPublicDnsName(origin.host) && typeof origin.user==='string' && origin.user.length>0 && Number.isSafeInteger(origin.port) && origin.port>0 && origin.port<=65535 &&
+    !origin.service_id && !origin.access_client_id &&
+    (expected.dialect!=='mysql' || origin.database===expected.origin_database), 'origin dialect/schema or public endpoint is invalid');
   return true;
 }
 export async function verifyDatabaseHyperdriveCloudReadback({ source, manifest, accountId, token, request = fetch }) {

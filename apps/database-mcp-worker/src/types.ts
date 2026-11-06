@@ -15,18 +15,8 @@ export interface RateLimitBinding {
 }
 
 export interface Env {
-  DB?: D1Database;
-  DATABASE_SETUP_HOST?: string;
-  ACCESS_TEAM_DOMAIN?: string;
-  DATABASE_ACCESS_AUD?: string;
-  OWNER_EMAIL?: string;
-  SETUP_RATE_LIMITER?: RateLimitBinding;
-  DATABASE_ENCRYPTION_KEY?: string;
-  DATABASE_KEY_ID?: string;
-  DATABASE_ENCRYPTION_PREVIOUS_KEY?: string;
-  DATABASE_PREVIOUS_KEY_ID?: string;
+  DATABASE_CONNECTIONS?: string;
   MCP_ACCESS_TOKEN?: string;
-  DATABASE_GITHUB_ACTIONS_TOKEN?: string;
   DATABASE_MAX_ROWS?: string;
   DATABASE_MAX_RESULT_BYTES?: string;
   DATABASE_MAX_SCHEMA_BYTES?: string;

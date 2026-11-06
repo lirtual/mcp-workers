@@ -1,7 +1,6 @@
 import manifest from '../../hyperdrive-bindings.json';
 import { PublicError } from '../errors.js';
 import type { Env, Dialect, EffectiveConnection, HyperdriveBinding } from '../types.js';
-import type { HyperdriveRegistryRow } from '../registry/store.js';
 import { getRuntimeLimits } from '../config.js';
 
 interface BindingManifestEntry { binding: string; id: string; dialect: Dialect; origin_database: string }
@@ -12,26 +11,16 @@ const entries = manifest as BindingManifestEntry[];
 export function isHyperdriveBound(bindingName: string): boolean {
   return entries.some(item => item.binding === bindingName);
 }
-export function resolveHyperdriveConnection(env: Env, row: HyperdriveRegistryRow): EffectiveConnection {
-  const declared = entries.find(item => item.binding === row.binding_name);
-  if (!declared || declared.id !== row.config_id ||
-      entries.filter(item => item.id === row.config_id || item.binding === row.binding_name).length !== 1) {
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'The required Hyperdrive release binding is not available.');
+export function resolveHyperdriveConnection(env: Env, id:string, bindingName:string): EffectiveConnection {
+  const declared=entries.find(item=>item.binding===bindingName);
+  if (!declared || entries.filter(item=>item.id===declared.id || item.binding===bindingName).length!==1 ||
+      !['mysql','postgres'].includes(declared.dialect)) {
+    throw new PublicError('CONFIGURATION_UNAVAILABLE','The required Hyperdrive release binding is not available.');
   }
-  if (declared.dialect !== row.dialect) {
-    throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive dialect differs from approved release metadata.');
-  }
-  const parsed = hyperdriveProxyFields(env[row.binding_name]);
-  const mysqlOrigin = row.dialect === 'mysql'
-    ? mysqlHyperdriveSchema(parsed.database, declared.origin_database)
-    : {};
-  // Proxy credentials and proxy database are used only to connect to
-  // Cloudflare. Never use the proxy database as the origin SQL schema.
-  return {
-    config: { id: row.id, transport: 'hyperdrive', configId: row.config_id, bindingName: row.binding_name },
-    transport: 'hyperdrive', dialect: row.dialect, ...parsed, ...mysqlOrigin,
-    limits: getRuntimeLimits(env)
-  };
+  const parsed=hyperdriveProxyFields(env[bindingName]);
+  const origin=declared.dialect==='mysql'?mysqlHyperdriveSchema(parsed.database,declared.origin_database):{};
+  return {config:{id,transport:'hyperdrive',configId:declared.id,bindingName},
+    transport:'hyperdrive',dialect:declared.dialect,...parsed,...origin,limits:getRuntimeLimits(env)};
 }
 
 /** A reviewed origin schema, separate from Cloudflare's opaque proxy DB. */
