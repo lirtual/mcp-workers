@@ -41,7 +41,7 @@ Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 O
 
 ### Spec #733 first migration and post-cleanup
 
-The protected release now fails closed if both old and renamed Workflow identity/grants variables exist with different values, or if any Database numeric limit would change from its previously deployed binding or default. Perform separately authorized original-value GitHub Settings migration before production release; do not rotate secrets to satisfy a name change. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
+The protected release now fails closed if both old and renamed Workflow identity/grants variables exist with different values, or if any Database numeric limit would change from its previously deployed binding or default. The Workflow identity/grants GitHub Variables were migrated with exact-value proof. Under the approved Spec #733 naming exception, SSH/Workflow old-name GitHub Environment Secrets remain the sole release inputs mapped to canonical runtime names; do not copy, replace or rotate them merely to rename a binding. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
 
 ## Database Spec #760
 
@@ -49,12 +49,23 @@ Database now uses the [flat URI/Secret configuration and cutover contract](../ap
 
 ### Spec #733 — optional legacy runtime Secret cleanup (separately authorized)
 
-The real SSH and Workflow canonical runtime Secret cutovers passed under
+The first canonical runtime Secret cutovers passed under
 [SSH Release #42185081301](https://github.com/lirtual/mcp-workers/actions/runs/42185081301)
 and [Workflow Release #42186878537](https://github.com/lirtual/mcp-workers/actions/runs/42186878537).
-Their former **Cloudflare runtime** Secret names still coexist with canonical names.
-GitHub Environment's original `ENCRYPTION_KEY`, `MCP_PORTAL_CLIENT_SECRET`, and
-`SESSION_RUNTIME_DATA_KEY` are deliberately **retained release inputs**, not cleanup targets.
+Their **later separately authorized cleanup is complete**:
+
+| Worker | Cleanup production receipt | Active version | Removed **Cloudflare runtime** binding(s) |
+| --- | --- | --- | --- |
+| SSH | [Publish #42222417701](https://github.com/lirtual/mcp-workers/actions/runs/42222417701) | Version 11 `0cf2a9f5-078d-4811-8f92-813037deea54` (100%) | `ENCRYPTION_KEY` |
+| Workflow | [Prepare #42225112645](https://github.com/lirtual/mcp-workers/actions/runs/42225112645), [Publish #42226359925](https://github.com/lirtual/mcp-workers/actions/runs/42226359925) | Version 141 `3883c6bf-0581-4e3a-8b58-ed8e5ec9f1ba` (100%) | `MCP_PORTAL_CLIENT_SECRET`, `SESSION_RUNTIME_DATA_KEY` |
+
+Independent Cloudflare version/settings/Secret-name inventories confirmed the old names absent and all other bindings preserved. SSH's RackNerd/CloudCone authenticated directory reads and Workflow's authenticated `workflow_list`/`workflow_get` read paths passed. Previous active versions remain retained; reverting to one is another production change requiring separate authorization.
+
+The **GitHub Environment** Secrets `ENCRYPTION_KEY`, `MCP_PORTAL_CLIENT_SECRET`, and
+`SESSION_RUNTIME_DATA_KEY` are deliberately **retained authoritative release inputs**,
+not cleanup targets. Workflow's `session_runtime_data` had zero records: historical
+AES-GCM decrypt on Version 141 is **Not performed**, not Pass. No production business
+Action/Session was invoked. [Detailed receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6686213244).
 
 The existing Release Worker has a disabled-by-default `legacy_secret_cleanup_mode` input:
 `none` (normal release), `prepare`, and `publish`. The latter two are enabled only for SSH,
@@ -81,12 +92,12 @@ authorization**; enabling the mode is not itself authorization.
   independently authorized GET-only verification. Business/SSH decryption checks need
   their own scope and evidence.
 
-For Database, the live Secret inventory must be exactly `MCP_ACCESS_TOKEN`,
+For Database **before its cleanup Prepare**, the live Secret inventory must be exactly `MCP_ACCESS_TOKEN`,
 `DATABASE_B2B_PASSWORD`, `DATABASE_SCRAPE_RELAY_PASSWORD`, and the three old runtime
 Secrets. Prepare removes only `DATABASE_ENCRYPTION_KEY`,
 `DATABASE_GITHUB_ACTIONS_TOKEN`, and `DATABASE_KEY_ID`. The candidate preserves
 `DATABASE_CONNECTIONS`, Variables, `RATE_LIMITER`, Hyperdrive/resource bindings, script
-ETag and runtime. Ordinary release readback retains its six-name migration allowance;
+ETag and runtime. The current Database Version 46 `c28c0af8-e773-4400-9106-425779932fcf` is 100% live with those three legacy bindings absent; a fresh Version 46 business query/decrypt E2E remains **Not performed** ([readback evidence](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6685620405)). Ordinary release readback retains its six-name migration allowance;
 the cleanup path enforces only these exact three deletion names. GitHub Environment
 configuration, D1, and older Worker versions are outside this cleanup.
 
