@@ -15,7 +15,6 @@ test('Spec #733 keeps exactly one scoped GitHub Secret source per SSH/Workflow r
   for(const [oldSource,newSource] of [
     ['secrets.ENCRYPTION_KEY','secrets.SSH_ENCRYPTION_KEY'],
     ['secrets.MCP_PORTAL_CLIENT_SECRET','secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET'],
-    ['secrets.SESSION_RUNTIME_DATA_KEY','secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY'],
     ["inputs.worker == 'ssh-mcp-worker' && secrets.ENCRYPTION_KEY",
      "inputs.worker == 'workflow-mcp-worker' && secrets.ENCRYPTION_KEY"],
   ]) {

@@ -130,7 +130,7 @@ async function cloudflare(path, sql) {
   return payload;
 }
 
-async function verifyWorkflowQuiet() {
+export async function verifyWorkflowQuiet() {
   const migrations = (await readdir('apps/workflow-mcp-worker/migrations'))
     .filter(name => /^\d{4}_[a-z0-9_]+\.sql$/.test(name)).sort();
   assert(migrations.length === 20, 'Workflow source migration inventory differs');

@@ -799,3 +799,36 @@ provenance. The dedicated test Workflow is paused. See
 and [Spec #35 evidence](https://github.com/lirtual/cloudflare-actions/issues/35).
 
 Spec #733 amended 2026-11-06: the existing GitHub Environment Secrets `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` are **permanent single-source naming exceptions**. The existing protected full release stages these values only as runtime `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` and `WORKFLOW_SESSION_RUNTIME_DATA_KEY`. There is no new canonical GitHub Secret, precedence rule, copy operation or parallel Secret fallback. The separately scoped Variables may retain their reviewed compatibility mapping. Runtime bindings, original Portal credentials, session AES key, OIDC audience, grants, published Plans and historic ciphertext must remain unchanged until specifically approved production cutover and real decryption acceptance. The first migration must use a fully approved protected release, not `workflow_code_only`; old Cloudflare bindings require separately authorized cleanup after real verification. No credential rotation, production deploy or GitHub Settings mutation is authorized by this documentation.
+
+
+### Spec #774：UU 专属 Secret 的独立退役（仅非生产，未发布）
+
+当前运行时 UU 读写入口已退役。新源码不再要求或装载
+WORKFLOW_SESSION_RUNTIME_DATA_KEY；其余 MCP_ACCESS_TOKEN、
+WORKFLOW_MCP_PORTAL_CLIENT_SECRET、WORKFLOW_GITHUB_DISPATCH_TOKEN
+仍为必需 Secret。GitHub Environment 的来源 SESSION_RUNTIME_DATA_KEY、
+当前活动 Worker 的旧绑定、D1 空表、20 项已应用 Migration 与全部
+历史 Run/Step/Attempt 依然保留；本非生产 PR 不执行删除。
+
+复用既有受保护 Release Worker 的 Version Prepare/Publish。
+需独立生产授权：worker=workflow-mcp-worker、
+uu_session_secret_cleanup=true、legacy_secret_cleanup_mode=prepare 或
+publish、workflow_code_only=false、deploy_to_production=true，
+同时固定 legacy_cleanup_expected_sha、legacy_cleanup_expected_active_version；
+Publish 还必须单独审核 legacy_cleanup_candidate_version。
+
+Prepare 仅创建未部署候选（一个 null 删除目标），核验原 20 项 D1
+Migration、空旧表、正式 Windows Paused、旧 RCA Plan Tombstone、
+历史 12 条 indeterminate 原样存在、全量 D1 Session/Native Workflow
+实例及分页完全清零，精确 100% Worker 版本。候选必须保持另外 10
+个绑定、代码、运行时及全部元数据一致；Publish 需再核验并独立授权，
+发布后实测新活动 Version 的目标 Secret 缺席、其他资源完整。
+未知版本写入结果必须只读消歧，不能盲目重试。
+
+注意：本 PR 与 #777 的 D1 DROP 无任何依赖，不执行 Migration、
+不豁免原全局 Migration 门禁。PR 未合并期间不会修改生产。
+过渡期从合并新源码到版本切换期间，普通 code-only/完整发布
+可能因严格绑定检查而阻断；应在受保护 Release 锁和已批准维护窗口
+内串行完成，禁止其他发布插入。旧 Version 142 留作审计，
+重新启用可能依赖旧密钥/旧表，不能当作自动安全回滚。
+GitHub 来源 Secret 只能在完成新版本与运行验收后另外授权删除。

@@ -52,8 +52,6 @@ export type Env = {
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?: string;
-  // Canonical 256-bit AES-GCM key for short-lived Session data.
-  WORKFLOW_SESSION_RUNTIME_DATA_KEY?: string;
   // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {

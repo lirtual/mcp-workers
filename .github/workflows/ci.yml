@@ -131,7 +131,7 @@ jobs:
 
       - name: Check manual release safeguards offline
         if: steps.scope.outputs.apps != ''
-        run: node --test scripts/database-catalog-stage.test.mjs scripts/database-runtime.test.mjs scripts/reviewed-weixin-provider-pin.test.mjs scripts/reviewed-actions-provider-pin.test.mjs scripts/actions-consumer-cutover-gate.test.mjs scripts/actions-cutover-prepare.test.mjs scripts/manual-worker-release.test.mjs scripts/spec733-migration-gates.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-database-hyperdrive.test.mjs
+        run: node --test scripts/database-catalog-stage.test.mjs scripts/database-runtime.test.mjs scripts/reviewed-weixin-provider-pin.test.mjs scripts/reviewed-actions-provider-pin.test.mjs scripts/actions-consumer-cutover-gate.test.mjs scripts/actions-cutover-prepare.test.mjs scripts/manual-worker-release.test.mjs scripts/workflow-uu-secret-cleanup.test.mjs scripts/spec733-migration-gates.test.mjs scripts/workflow-terminal-run-exception.test.mjs scripts/bootstrap-worker-secrets.test.mjs scripts/worker-release-variables.test.mjs scripts/verify-database-hyperdrive.test.mjs
 
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'

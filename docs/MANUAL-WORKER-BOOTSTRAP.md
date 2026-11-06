@@ -88,3 +88,11 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 只有在完成 Repository 全局凭据迁移、**所有需要使用的 Worker** 创建独立 Environment、确认旧 `production` 里的密钥/变量及保护规则均已妥善迁移后，才自行删除旧 `production`。本次改动不会自动删除该 Environment 或 Cloudflare 上的任何东西。
 
 Browser 目前已有正式 Custom Domain 和 Owner Access 激活机制，旧独立 Unknown Review 已退役。历史 T8 “无生产路由/无额外变量” 说明不再代表当前状态。清理候选与认证边界见 [当前运行配置](./runtime-configuration.md)；本指南修改不授权 GitHub Secret/Variable 删除、Portal 变更或 Worker 发布。
+
+
+Spec #774 补充（非生产，尚未执行切换）：原表格记录 Spec #733
+历史映射；新 Worker 源码将 UU 来源 SESSION_RUNTIME_DATA_KEY
+退役，不再装载运行时 WORKFLOW_SESSION_RUNTIME_DATA_KEY。
+Production 原绑定和 GitHub 来源 Secret 仍存在并受保护，
+仅在单独授权的 Version Prepare/Publish 及回读验收后
+才可通过独立授权删除 GitHub 来源值。
