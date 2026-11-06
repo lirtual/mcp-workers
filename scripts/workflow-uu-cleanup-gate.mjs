@@ -62,26 +62,41 @@ export function verifyUuSecretCandidate(baseline,candidate){
    candidate.number>baseline.number,'UU Secret candidate identity drift');
  assert(baseline.resources?.script?.etag&&candidate.resources?.script?.etag===
    baseline.resources.script.etag,'UU Secret candidate code drift');
- const stableValue=value=>JSON.stringify(value??null);
- for(const key of ['script_runtime']){
-   assert(stableValue(candidate.resources?.[key])===stableValue(baseline.resources?.[key]),
-     'UU Secret candidate runtime drift: '+key);
- }
- for(const key of ['handlers','named_handlers']){
-   assert(stableValue(candidate.resources?.script?.[key])===stableValue(baseline.resources?.script?.[key]),
-     'UU Secret candidate handler drift: '+key);
- }
  const before=indexed(baseline.resources.bindings),after=indexed(candidate.resources.bindings);
  assert(before.size===NAMES.size&&after.size===before.size-1&&!after.has(SECRET),
    'UU Secret candidate deletion set drift');
  for(const [name,type] of NAMES)assert(before.get(name)?.type===type,'UU Secret candidate baseline drift');
- const normal=b=>JSON.stringify(Object.fromEntries(Object.entries(b)
-   .filter(([key])=>!(key==='text'&&b.type==='secret_text')).sort(([a],[b])=>a.localeCompare(b))));
- for(const [name,b] of before)if(name!==SECRET)
-   assert(after.get(name)&&normal(after.get(name))===normal(b),
-     'UU Secret candidate changed retained binding: '+name);
+ // Compare all immutable resources, not just a hand-picked list of fields.
+ // Do not inspect or print Secret bytes; Cloudflare secret_text is identity-only.
+ const projected=(resources,excludeRetired)=>{
+   const bindings=resources.bindings
+     .filter(b=>!excludeRetired||b.name!==SECRET)
+     .map(b=>b.type==='secret_text'?{name:b.name,type:b.type}:b)
+     .sort((a,b)=>a.name.localeCompare(b.name));
+   return {...resources,bindings};
+ };
+ const stable=value=>JSON.stringify(value,(_key,v)=>
+   v&&typeof v==='object'&&!Array.isArray(v)
+     ?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
+ assert(stable(projected(baseline.resources,true))===stable(projected(candidate.resources,false)),
+   'UU Secret candidate alters non-UU Worker resources');
  return true;
 }
+// Cloudflare native instances have a separate lifecycle from D1 outcomes.
+// Any live instance or incomplete pagination blocks the destructive migration.
+export function verifyUuNativeQuiet(payload,status){
+ assert(['queued','running','paused','waiting','rollingBack'].includes(status),
+   'unexpected native Workflow status');
+ const result=payload?.result;
+ const instances=Array.isArray(result)?result:result?.instances;
+ const page=payload?.result_info;
+ assert(Array.isArray(instances)&&instances.length===0&&
+   (page?.total_count==null||page.total_count===0)&&
+   !page?.cursor&&!page?.next_cursor&&!result?.cursor&&!result?.next_cursor,
+   'native Workflow status is not fully drained: '+status);
+ return true;
+}
+
 async function main(){
  const env=process.env;
  assert(env.GITHUB_REPOSITORY==='lirtual/mcp-workers'&&env.GITHUB_REF==='refs/heads/main'&&
@@ -95,7 +110,7 @@ async function main(){
    files.includes('0021_retire_uu_session_data.sql'),'exact source migration inventory required');
  const account=env.CLOUDFLARE_ACCOUNT_ID,token=env.CLOUDFLARE_API_TOKEN;
  assert(/^[a-f0-9]{32}$/.test(account??'')&&token?.length,'Cloudflare auth missing');
- const api=async(tail,sql)=>{
+ const api=async(tail,sql,keepEnvelope=false)=>{
    const res=await fetch('https://api.cloudflare.com/client/v4/accounts/'+account+tail,{
      method:sql?'POST':'GET',redirect:'manual',signal:AbortSignal.timeout(15000),
      headers:{Authorization:'Bearer '+token,...(sql?{'Content-Type':'application/json'}:{})},
@@ -104,7 +119,7 @@ async function main(){
    const data=await res.json();
    assert(data?.success===true&&Array.isArray(data.errors)&&data.errors.length===0,
      'Cloudflare read-only inventory unavailable');
-   return data.result;
+   return keepEnvelope?data:data.result;
  };
  const d1='/d1/database/a4a477cd-6339-478c-ab7c-f7d87bb0d772/query';
  const migrationResponse=await api(d1,WORKFLOW_MIGRATION_READINESS_SQL);
@@ -116,6 +131,11 @@ async function main(){
  const version=await api(worker+'/versions/'+expectedVersion);
  verifyUuCleanupGuard({expectedSha,sourceSha:env.GITHUB_SHA,expectedVersion,
    deployment,version,cleanupRow:rows[0].results[0],migrationResponse});
+ for(const status of ['queued','running','paused','waiting','rollingBack']){
+   const raw=await api('/workflows/workflow-mcp-orchestrator/instances?status='+
+     encodeURIComponent(status)+'&per_page=100',undefined,true);
+   verifyUuNativeQuiet(raw,status);
+ }
  console.log('UU cleanup strict read-only gate PASS; existing migration gate unchanged');
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)

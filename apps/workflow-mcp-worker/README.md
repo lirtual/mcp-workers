@@ -815,7 +815,9 @@ Spec #733 amended 2026-11-06: the existing GitHub Environment Secrets `MCP_PORTA
   自动应用迁移；旧 Actions migration-prepare 也必须拒绝。
 - 发布前须保证旧表零记录、正式 Windows Workflow 为 Paused、旧 UU
   RCA Plan 已墓碑退役、历史 Version 保留、零活动物理 Session 及未决
-  Windows Attempt、准确的 Worker 绑定/版本。最重要的是原有严格通用
+  Windows Attempt、准确的 Worker 绑定/版本；同时检查 Cloudflare 原生
+  Workflow 的 queued/running/paused/waiting/rollingBack 实例全部清零，
+  分页结果完整且无未知下一页。最重要的是原有严格通用
   verifyWorkflowMigrationReadiness 必须整体 Pass，不能靠本专项检查例外处理
   历史 indeterminate 状态。
 - 当前实际生产仍有 12 个历史 indeterminate Run、12 个未终态 Step、
@@ -824,7 +826,10 @@ Spec #733 amended 2026-11-06: the existing GitHub Environment Secrets `MCP_PORTA
 - 仅在真实生产 21 项 Migration 和删除原表的独立回读均 Pass 后，才能
   另行审查当前 Worker 的 WORKFLOW_SESSION_RUNTIME_DATA_KEY 绑定。
   单键 Secret 候选版本必须保持原代码 etag、Handler 和其他 10 个绑定
-  精确一致。该准备代码不会调用 Secret 删除、版本 Prepare 或 Publish；
+  精确一致，并比较全部未删除的资源元数据（不读取 Secret 原值）。
+  该候选检查目前是离线纯函数保护验证，尚未接入受保护的实际
+  Secret Prepare/Publish 发布路径。准备代码不会执行 Secret 删除、
+  版本 Prepare 或 Publish；
   上述高风险操作须另行授权及实现受保护发布步骤。
 - 最后才可通过官方 GitHub 管理流程删除 Environment 来源密钥
   SESSION_RUNTIME_DATA_KEY；不能删除仍在使用的 MCP_PORTAL_CLIENT_SECRET，

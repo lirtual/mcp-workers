@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {verifyUuCleanupGuard,verifyUuSecretCandidate} from './workflow-uu-cleanup-gate.mjs';
+import {verifyUuCleanupGuard,verifyUuSecretCandidate,verifyUuNativeQuiet} from './workflow-uu-cleanup-gate.mjs';
 
 const sha='a'.repeat(40);
 const oldVersion='3883c6bf-0581-4e3a-8b58-ed8e5ec9f1ba';
@@ -99,4 +99,31 @@ test('protected release fences both migration callers before applying 0021 and r
   assert.match(source,/verifyWorkflowMigrationReadiness/);
   assert.match(source,/Workflow migration blocked by/);
   assert.match(source,/const completeV21=/);
+});
+
+test('Secret candidate rejects unrelated Worker resource mutations, not only binding changes',()=>{
+  const base={id:oldVersion,number:141,resources:{script:{etag:'same'},bindings,compatibility_date:'2026-09-10',
+    unsafe:{capabilities:['reviewed']}}};
+  const candidate={id:'414da2d7-a16f-4ce6-9350-013ad4f7166a',number:142,resources:{
+    ...structuredClone(base.resources),bindings:bindings.filter(b=>b.name!=='WORKFLOW_SESSION_RUNTIME_DATA_KEY')}};
+  assert.equal(verifyUuSecretCandidate(base,candidate),true);
+  const altered=structuredClone(candidate);
+  altered.resources.unsafe.capabilities=['unreviewed'];
+  assert.throws(()=>verifyUuSecretCandidate(base,altered),/UU Secret candidate/);
+  const added=structuredClone(candidate);
+  added.resources.extra_release_flag=true;
+  assert.throws(()=>verifyUuSecretCandidate(base,added),/UU Secret candidate/);
+});
+
+test('production UU DROP preflight refuses native Workflow activity or incomplete Cloudflare instance pagination',()=>{
+  const empty={result:[],result_info:{total_count:0}};
+  for(const status of ['queued','running','paused','waiting','rollingBack'])
+    assert.equal(verifyUuNativeQuiet(empty,status),true);
+  for(const unsafe of [
+    {result:[{id:'physical-running'}],result_info:{total_count:1}},
+    {result:[],result_info:{total_count:1}},
+    {result:[],result_info:{total_count:0,cursor:'next'}},
+    {result:{instances:[],next_cursor:'next'}},
+    {result:null},
+  ])assert.throws(()=>verifyUuNativeQuiet(unsafe,'running'),/UU cleanup/);
 });
