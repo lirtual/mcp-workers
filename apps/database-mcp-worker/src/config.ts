@@ -1,4 +1,4 @@
-import { PublicError } from './errors.js';
+import { PublicError } from './errors.ts';
 import type {
   ConnectionConfig,
   Dialect,
@@ -144,13 +144,13 @@ function selectConnection(catalog: ConnectionConfig[], id?: string): ConnectionC
 }
 
 export function resolveConnectionDialect(_env: Env, config: ConnectionConfig): Dialect {
-  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through D1 admission.');
+  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through configuration admission.');
   return parseDirectDatabaseUrl(config.url, config.id).dialect;
 }
 
 export function resolveConnection(env: Env, catalog: ConnectionConfig[], id?: string): EffectiveConnection {
   const config = selectConnection(catalog, id);
-  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through D1 admission.');
+  if (config.transport !== 'direct') throw new PublicError('CONFIGURATION_UNAVAILABLE', 'Hyperdrive connections are resolved through configuration admission.');
   return { config, transport: 'direct', ...parseDirectDatabaseUrl(config.url, config.id),
     limits: getRuntimeLimits(env) };
 }

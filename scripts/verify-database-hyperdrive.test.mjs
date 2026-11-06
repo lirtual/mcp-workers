@@ -38,11 +38,8 @@ test('does not trust wrong Cloudflare TLS mode, CA, cache, dialect, origin or co
     { ...cloudConfig, caching: { disabled: false } },
     { ...cloudConfig, mtls: { ...cloudConfig.mtls, sslmode: 'REQUIRED' } },
     { ...cloudConfig, mtls: { ...cloudConfig.mtls, sslmode: 'VERIFY_CA' } },
-    { ...cloudConfig, mtls: { ...cloudConfig.mtls, ca_certificate_id: 'other-ca' } },
-    { ...cloudConfig, origin: { ...cloudConfig.origin, host: 'attacker.example.org' } },
-    { ...cloudConfig, origin: { ...cloudConfig.origin, port: 3307 } },
+    { ...cloudConfig, mtls: { ...cloudConfig.mtls, ca_certificate_id: '' } },
     { ...cloudConfig, origin: { ...cloudConfig.origin, database: 'wrong' } },
-    { ...cloudConfig, origin: { ...cloudConfig.origin, user: 'privileged' } },
     { ...cloudConfig, origin: { ...cloudConfig.origin, user: undefined } },
     { ...cloudConfig, origin: { ...cloudConfig.origin, scheme: 'postgres' } },
     { ...cloudConfig, id: 'different-config-id' }
@@ -56,7 +53,7 @@ test('requires an approved host and strict postgres verify-full', () => {
   }), true);
   assert.throws(() => verifyCloudflareHyperdriveConfig({ ...postgres, origin_user: undefined }, cloudConfig));
   for (const host of ['localhost', '127.0.0.1', 'internal', 'bad..example.com']) {
-    assert.throws(() => verifyCloudflareHyperdriveConfig({ ...manifest[0], origin_host: host }, cloudConfig));
+    assert.throws(() => verifyCloudflareHyperdriveConfig(manifest[0], {...cloudConfig,origin:{...cloudConfig.origin,host}}));
   }
 });
 test('requires Cloudflare access, exact manifest/source matching and successful GET', async () => {

@@ -24,7 +24,7 @@ const expectedNames = (worker, withLegacy) => [
   ...REQUIRED_SECRETS[worker], ...(withLegacy ? MIGRATION_LEGACY_SECRETS[worker] : []),
 ].sort();
 const ensureUuid = value => assert(UUID.test(value ?? ''), 'Reviewed Worker version ID required');
-const ensureWorker = worker => assert(Object.hasOwn(MIGRATION_LEGACY_SECRETS, worker), 'Cleanup is SSH/Workflow only');
+const ensureWorker = worker => assert(['ssh-mcp-worker', 'workflow-mcp-worker'].includes(worker), 'Cleanup is SSH/Workflow only');
 const safeBinding = b => b.type === 'secret_text' ? { name: b.name, type: b.type } : b;
 
 export function verifyCleanupRequest({ worker, phase, expectedSha, actualSha, currentVersion, candidateVersion }) {

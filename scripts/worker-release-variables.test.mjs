@@ -3,8 +3,8 @@ import test from "node:test";
 import { collectWorkerVars, remoteControlInstallOrigin, WORKER_VARIABLES } from "./worker-release-variables.mjs";
 
 const dbOwner = { ACCESS_TEAM_DOMAIN: "owner.cloudflareaccess.com", DATABASE_ACCESS_AUD: "a".repeat(64), OWNER_EMAIL: "owner@example.com" };
-const dbVars = (overrides = {}) => ({ ...dbOwner, ...overrides });
-const dbOutput = Object.entries(dbOwner).map(([key, value]) => key + ":" + value);
+const dbVars = (overrides = {}) => ({ DATABASE_CONNECTIONS:"{}", ...dbOwner, ...overrides });
+const dbOutput = ['DATABASE_CONNECTIONS:{}'];
 
 const remoteConfig = { routes: [
   { pattern: "rca.lirtual.dpdns.org", custom_domain: true },
@@ -42,26 +42,15 @@ test("select only Worker-specific overrides; empty means source default", () => 
   assert.deepEqual(collectWorkerVars("raindrop-mcp-worker",
     { DATABASE_MAX_ROWS: "400", RAINDROP_RATE_LIMIT_MAX_RETRIES: "2" }), ["RAINDROP_RATE_LIMIT_MAX_RETRIES:2"]);
   assert.deepEqual(collectWorkerVars("database-mcp-worker",
-    dbVars({ DATABASE_MAX_ROWS: "500", DATABASE_MAX_RESULT_BYTES: "", IMA_BASE_URL: "https://other.example" })), ["DATABASE_MAX_ROWS:500", ...dbOutput]);
+    dbVars({ DATABASE_MAX_ROWS: "500", DATABASE_MAX_RESULT_BYTES: "", IMA_BASE_URL: "https://other.example" })), [...dbOutput,"DATABASE_MAX_ROWS:500"]);
   assert.deepEqual(collectWorkerVars("database-mcp-worker", dbVars()), dbOutput);
-});
-
-test("Database Owner Access variables must be explicitly configured", () => {
-  assert.deepEqual(collectWorkerVars("database-mcp-worker", dbOwner), dbOutput);
-  for (const name of Object.keys(dbOwner)) {
-    const missing = dbVars();
-    delete missing[name];
-    assert.throws(() => collectWorkerVars("database-mcp-worker", missing), /Database Owner Access Variable/);
-  }
-  assert.throws(() => collectWorkerVars("database-mcp-worker",
-    dbVars({ ACCESS_TEAM_DOMAIN: "https://owner.cloudflareaccess.com" })), /Database Owner Access Variable/);
 });
 
 test("reject multiline, excessive, or negative numeric configuration before Wrangler", () => {
   for (const value of ["-1", "5001", "1\nSECRET=oops", "NaN", "01", "0.5", "9999999999999999"]) {
     assert.throws(() => collectWorkerVars("database-mcp-worker", dbVars({ DATABASE_MAX_ROWS: value })), /DATABASE_MAX_ROWS/);
   }
-  assert.deepEqual(collectWorkerVars("database-mcp-worker", dbVars({ DATABASE_QUERY_TIMEOUT_MS: "60000" })), ["DATABASE_QUERY_TIMEOUT_MS:60000", ...dbOutput]);
+  assert.deepEqual(collectWorkerVars("database-mcp-worker", dbVars({ DATABASE_QUERY_TIMEOUT_MS: "60000" })), [...dbOutput,"DATABASE_QUERY_TIMEOUT_MS:60000"]);
   assert.throws(() => collectWorkerVars("database-mcp-worker", dbVars({ DATABASE_QUERY_TIMEOUT_MS: "60001" })), /DATABASE_QUERY_TIMEOUT_MS/);
 });
 
@@ -244,13 +233,7 @@ test('Spec 733: Browser derives Access identity and activation origin from share
   }, {config:browser}), /independent|obsolete|source/i);
 });
 
-test('Spec 733: Database stages only service-prefixed limits and Audience', () => {
-  const scoped = {
-    ACCESS_TEAM_DOMAIN:'owner.cloudflareaccess.com', OWNER_EMAIL:'owner@example.com',
-    DATABASE_ACCESS_AUD:'a'.repeat(64), DATABASE_MAX_ROWS:'35'
-  };
-  assert.deepEqual(collectWorkerVars('database-mcp-worker', scoped), [
-    'DATABASE_MAX_ROWS:35', 'ACCESS_TEAM_DOMAIN:owner.cloudflareaccess.com',
-    'DATABASE_ACCESS_AUD:'+'a'.repeat(64), 'OWNER_EMAIL:owner@example.com'
-  ]);
+test('Database retains prefixed limits while removing Setup Access variables', () => {
+  assert.deepEqual(collectWorkerVars('database-mcp-worker',dbVars({DATABASE_MAX_ROWS:'35'})),
+    ['DATABASE_CONNECTIONS:{}','DATABASE_MAX_ROWS:35']);
 });

@@ -10,3 +10,5 @@ worker-configuration.d.ts
 .verify/
 .verify-dist/
 .verify-full/
+
+wrangler.local.jsonc

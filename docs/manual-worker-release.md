@@ -43,6 +43,10 @@ Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 O
 
 The protected release now fails closed if both old and renamed Workflow identity/grants variables exist with different values, or if any Database numeric limit would change from its previously deployed binding or default. Perform separately authorized original-value GitHub Settings migration before production release; do not rotate secrets to satisfy a name change. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
 
+## Database Spec #760
+
+Database now uses the [flat URI/Secret configuration and cutover contract](../apps/database-mcp-worker/README.md). Setup, D1/encryption checks and Hyperdrive lifecycle dispatch inputs/jobs are retired. Only `database_expected_release_sha` remains as a Database-specific release input. Production requires independent authorization and fresh old-registry/Unknown-operation/recovery inspection; source merge does not perform this inspection or the cutover. Old D1, keys, Secrets, Hyperdrive resources and rollback versions are preserved until separately approved cleanup.
+
 ### Spec #733 — optional legacy runtime Secret cleanup (separately authorized)
 
 The real SSH and Workflow canonical runtime Secret cutovers passed under

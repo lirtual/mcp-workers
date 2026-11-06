@@ -1,0 +1,4 @@
+{
+  "secrets": ["DATABASE_B2B_PASSWORD", "DATABASE_SCRAPE_RELAY_PASSWORD"],
+  "variables": ["DB_HOST"]
+}

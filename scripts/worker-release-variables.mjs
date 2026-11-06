@@ -1,3 +1,4 @@
+import {databaseCatalogStage} from './database-catalog-stage.mjs';
 // Only explicitly supported GitHub Variables may override non-secret Worker vars.
 // The selected Worker is the sole target. Never forward the whole GitHub vars context.
 import { readFile, writeFile } from "node:fs/promises";
@@ -24,7 +25,7 @@ export const WORKER_VARIABLES = Object.freeze({
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "DATABASE_MAX_ROWS", "DATABASE_MAX_RESULT_BYTES", "DATABASE_MAX_SCHEMA_BYTES", "DATABASE_QUERY_TIMEOUT_MS",
-    "DATABASE_MAX_WRITE_AFFECTED_ROWS", "ACCESS_TEAM_DOMAIN", "DATABASE_ACCESS_AUD", "OWNER_EMAIL",
+    "DATABASE_MAX_WRITE_AFFECTED_ROWS",
   ],
   "ssh-mcp-worker": [],
   "remote-control-mcp-worker": ["RCA_PERMANENT_IDLE_DAYS"],
@@ -131,16 +132,16 @@ export function collectWorkerVars(worker, env, options = {}) {
     const origin=remoteControlInstallOrigin(options.config);
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin);
   }
+  if (worker === 'database-mcp-worker') {
+    // Validate with only reviewed named inputs; output retains unresolved Secret tokens.
+    const staged=databaseCatalogStage(env);
+    for (const [name,value] of Object.entries(staged.variables)) {
+      if (/[\r\n]/.test(value)) throw Error('Database Variable contains line breaks');
+      variables.push(name+':'+value);
+    }
+  }
   for (const name of allowed) {
     const value = env[name];
-    if (worker === "database-mcp-worker" &&
-        ["ACCESS_TEAM_DOMAIN", "DATABASE_ACCESS_AUD", "OWNER_EMAIL"].includes(name)) {
-      if (typeof value !== "string" || value.length > 256 ||
-          (name === "ACCESS_TEAM_DOMAIN" && !/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(value)) ||
-          (name === "DATABASE_ACCESS_AUD" && !/^[a-f0-9]{64}$/i.test(value)) ||
-          (name === "OWNER_EMAIL" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)))
-        throw new Error("Invalid or missing Database Owner Access Variable: " + name);
-    }
     if ((name === "IMA_CLIENT_ID" || name === "WORKFLOW_MCP_PORTAL_CLIENT_ID") &&
         (typeof value !== "string" || value.trim().length === 0)) {
       throw new Error("Missing or empty required Worker Variable: " + name);
