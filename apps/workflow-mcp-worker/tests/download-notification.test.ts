@@ -163,3 +163,70 @@ test('Download Task revoked after proof but before D1 reservation never sends Ba
  assert.equal(sends,0);
  assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get()?.n,0);
 });
+
+async function dynamicMainBarkDownload(t:test.TestContext){
+ const f=await fixture(t);
+ const m=await cloudflareActionManifest('bark');
+ const upstream=structuredClone(source);
+ f.plan.steps[0]=upstream;
+ Object.assign((upstream.with.template as any).with.action,{
+  repositoryId:1430925009,workflowId:401335372,ref:'refs/heads/main',
+ });
+ f.sql.prepare(`UPDATE step_attempts SET repository_id=?,workflow_ref=?,ref=?,resolved_sha=?`)
+   .run('1430925009','lirtual/github-actions/.github/workflows/download.yml@refs/heads/main',
+     'refs/heads/main','c'.repeat(40));
+ f.notify.with={executor:'cloudflare',provider:'bark',action:'bark.send_notification',
+  contract_digest:m.contract_digest,input:{download_step_id:sourceId,
+   notification:{body:DOWNLOAD_COMPLETED_TEXT}}};
+ f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'bark',
+  action:'bark.send_notification',contract_digest:m.contract_digest,deployment_id:version}];
+ let sends=0;
+ (f.env as any).ACTIONS={
+  getContract:async()=>({deployment_id:version,contract_digest:m.contract_digest}),
+  execute:async(_action:string,input:any)=>{
+   sends++;
+   assert.equal(input.notification.body,DOWNLOAD_COMPLETED_TEXT);
+   return {status:'accepted',input_digest:input.input_digest};
+  },
+ };
+ return {...f,sends:()=>sends,sourceAction:(upstream.with.template as any).with.action};
+}
+
+test('Bark Download admits approved main only with a frozen verified SHA and one send',async t=>{
+ const f=await dynamicMainBarkDownload(t);
+ assert.equal((await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx)).status,'succeeded');
+ assert.equal(f.sends(),1);
+ assert.equal(f.sql.prepare('SELECT source_attempt_id FROM cloudflare_action_invocations').get()?.source_attempt_id,attempt);
+ assert.equal((await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx)).status,'indeterminate');
+ assert.equal(f.sends(),1);
+});
+
+test('Bark Download main rejects invalid identity and missing physical SHA before any send',async t=>{
+ const cases:[string,(f:Awaited<ReturnType<typeof dynamicMainBarkDownload>>)=>void][]=[
+  ['missing frozen SHA',f=>{f.sql.exec('UPDATE step_attempts SET resolved_sha=NULL');}],
+  ['invalid frozen SHA',f=>{f.sql.prepare('UPDATE step_attempts SET resolved_sha=?').run('g'.repeat(40));}],
+  ['different repository ID',f=>{f.sql.exec("UPDATE step_attempts SET repository_id='999'");}],
+  ['different attempt ref',f=>{f.sql.exec("UPDATE step_attempts SET ref='refs/tags/v1'");}],
+  ['unapproved repository ID',f=>{f.sourceAction.repositoryId=10;}],
+  ['unapproved workflow ID',f=>{f.sourceAction.workflowId=999;}],
+  ['different Plan name',f=>{f.plan.name='other';}],
+  ['arbitrary branch',f=>{f.sourceAction.ref='refs/heads/feature';}],
+ ];
+ for(const [name,mutate] of cases){
+  await t.test(name,async sub=>{
+   const f=await dynamicMainBarkDownload(sub);
+   mutate(f);
+   assert.equal((await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx)).status,'failed');
+   assert.equal(f.sends(),0);
+   assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
+  });
+ }
+});
+
+test('legacy Tag Download still requires no dynamic-main frozen SHA',async t=>{
+ const f=await dynamicMainBarkDownload(t);
+ f.sourceAction.ref='refs/tags/v1';
+ f.sql.exec("UPDATE step_attempts SET repository_id='1430925009',workflow_ref='lirtual/github-actions/.github/workflows/download.yml@refs/tags/v1',ref='refs/tags/v1',resolved_sha=NULL");
+ assert.equal((await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx)).status,'succeeded');
+ assert.equal(f.sends(),1);
+});
