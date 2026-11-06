@@ -7,7 +7,7 @@ It supports EdgeSSH hosts with inline passwords/keys and upstream keychain refer
 ## Production cutover requirements
 
 - Do not replace EdgeSSH's existing ENCRYPTION_KEY while encrypted host, snippet or keychain rows still use the old key. Cloudflare does not return existing Worker Secret values. When the original key cannot be recovered, migrate **all** encrypted record families atomically using both old and new keys in a controlled process, and verify rollback before updating either Worker.
-- Save the same canonical 32-byte Base64 ENCRYPTION_KEY securely as the GitHub Actions Secret for EdgeSSH and as the `SSH_ENCRYPTION_KEY` ssh-mcp-worker GitHub Environment Secret in mcp-workers. Do not commit or log its value.
+- Keep the existing canonical 32-byte Base64 `ENCRYPTION_KEY` unchanged in the `ssh-mcp-worker` GitHub Environment. The protected Release Worker maps this sole GitHub Secret source to runtime `SSH_ENCRYPTION_KEY`; do not create a duplicate GitHub Secret, commit/log values or rotate the EdgeSSH key.
 - Preserve EdgeSSH's existing D1 and SSH MCP's existing SSH_OPERATIONS Durable Object namespace. The SSH Worker release verifies the expected live D1 ID and disallows the retired Broker Service Binding and Secret.
 - Only after authenticated EdgeSSH and actual SSH/SFTP checks pass should the EdgeSSH fork be reset to an upstream commit and its normal automatic upstream synchronization resumed.
 
@@ -60,4 +60,4 @@ The public MCP names are `file_list`, `file_read_text`, `file_write_text`, `file
 
 Persisted DO operation intent identifiers intentionally retain their previous internal digest strings (`sftp_write`, `sftp_rename`, `sftp_delete`, `sftp_mkdir`, `ssh_session_input`) to preserve existing `operation_id` no-replay behavior across this public tool rename. The legacy externally visible tool names are removed rather than exposed as duplicate aliases. Consumers must update their tool-name references before rollout.
 
-Spec #733: the SSH MCP binding is named `SSH_ENCRYPTION_KEY`, while upstream EdgeSSH keeps `ENCRYPTION_KEY`. The **same existing bytes**, D1 data and DO state must be retained. The old MCP secret may persist until separately approved deletion and negative inventory readback.
+Spec #733 amended 2026-11-06: the GitHub Environment **retains** `ENCRYPTION_KEY`, while the SSH MCP runtime binding remains `SSH_ENCRYPTION_KEY`. The protected release staging step translates the name using the existing bytes; it does not retrieve them outside the selected Runner or prove deployed decryption. Preserve D1 data, DO state, existing production bindings and the old Cloudflare Secret until separately approved real E2E and negative cleanup readback.

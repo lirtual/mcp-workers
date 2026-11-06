@@ -29,6 +29,27 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
   const allowed = [...list.matchAll(/inputs\.worker == '([^']+)'/g)].map(match => match[1]);
   sameMembers(allowed, expectedWorkers, 'release allowlist');
+
+  // Spec #733: GitHub keeps exactly three historical Environment Secret names
+  // while the selected Worker stages only canonical runtime binding keys.
+  const stageStart=source.indexOf('      - name: Stage selected Worker Secrets for every release');
+  const stageEnd=source.indexOf('      - name: Stage approved Worker variables',stageStart);
+  assert.ok(stageStart>0 && stageEnd>stageStart, 'Missing selected Worker Secret staging boundary');
+  const secretStage=source.slice(stageStart,stageEnd);
+  for(const [runtime,github,worker] of [
+    ['SSH_ENCRYPTION_KEY','ENCRYPTION_KEY','ssh-mcp-worker'],
+    ['WORKFLOW_MCP_PORTAL_CLIENT_SECRET','MCP_PORTAL_CLIENT_SECRET','workflow-mcp-worker'],
+    ['WORKFLOW_SESSION_RUNTIME_DATA_KEY','SESSION_RUNTIME_DATA_KEY','workflow-mcp-worker'],
+  ]) {
+    const line=runtime+': '+String.fromCharCode(36)+
+      "{{ inputs.worker == '"+worker+"' && secrets."+github+" || '' }}";
+    assert.equal(secretStage.split('          '+runtime+': ').length-1,1,'Duplicate or missing scoped input '+runtime);
+    assert.ok(secretStage.includes('          '+line),'Wrong GitHub Secret source for '+runtime);
+    assert.ok(!source.includes('secrets.'+runtime),
+      'Parallel canonical GitHub Secret source forbidden: '+runtime);
+    assert.ok(!secretStage.includes('          '+github+': '),
+      'Old GitHub name may not be added as a runtime binding: '+github);
+  }
 }
 
 /** The superseded historical D1 activation job must never be reachable. */
@@ -290,10 +311,7 @@ for (const marker of [
   'Verify exact active version and required production bindings',
   'Check unauthenticated MCP surface without credentials',
 ]) assert.ok(deploy.content.includes(marker), 'Missing release safeguard: ' + marker);
-for (const key of ['WORKFLOW_MCP_PORTAL_CLIENT_SECRET', 'WORKFLOW_GITHUB_DISPATCH_TOKEN'])
-  assert.ok(deploy.content.includes(key + ': ' + dollar) && deploy.content.includes('secrets.' + key), 'Missing scoped Secret ' + key);
-
-for (const key of ['IMA_API_KEY', 'SSH_ENCRYPTION_KEY', 'ACTIONS_GITHUB_DISPATCH_TOKENS']) {
+for (const key of ['WORKFLOW_GITHUB_DISPATCH_TOKEN','IMA_API_KEY','ACTIONS_GITHUB_DISPATCH_TOKENS']) {
   assert.ok(deploy.content.includes(key + ': ' + dollar) && deploy.content.includes('secrets.' + key),
     'Missing selected release Secret ' + key);
 }
