@@ -166,14 +166,15 @@ test('Workflow old binding present as wrong type rejects even if new binding mat
 });
 
 
-test('Workflow Portal readonly acceptance keeps legacy Environment source until GitHub migration', async () => {
+test('Workflow Portal readonly acceptance uses only canonical GitHub Variable while retaining original Secret', async () => {
   const {readFileSync} = await import('node:fs');
   const file = readFileSync('.github/workflows/acceptance.yml','utf8');
   const job = file.split('  workflow-mcp-portal-probe:\n')[1]?.split('\n  workflow-github-action-result-cloud:')[0];
   assert.ok(job, 'existing read-only acceptance job is present');
   assert.match(job, /inputs\.test_type == 'portal-readonly'/);
   assert.match(job, /github\.ref == 'refs\/heads\/main'/);
-  assert.ok(job.includes('WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID }}'));
+  assert.ok(job.includes('WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}'));
+  assert.doesNotMatch(job, /vars\.MCP_PORTAL_CLIENT_ID/);
   assert.ok(job.includes('WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}'));
   assert.match(job, /node --experimental-strip-types apps\/workflow-mcp-worker\/tests\/mcp-portal-acceptance\.mjs/);
   assert.doesNotMatch(job, /wrangler deploy|secret delete|portal-register|deploy_to_production|workflow_create|workflow_run/);

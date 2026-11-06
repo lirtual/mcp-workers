@@ -938,7 +938,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
     assert.equal(ci.split(name).length,3);
   }
   assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"));
-  assert.ok(ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"), "Legacy grants are allowed only through reviewed release fallback");
+  assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"), "Legacy grants must not shadow canonical release inputs");
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
   assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
@@ -955,18 +955,18 @@ test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bi
   // normal release stages them at the original three protected steps only.
   const normalRelease=release.split('  legacy-secret-cleanup:\n')[0];
   const lines=normalRelease.split(/\r?\n/);
-  // The two approved nonsecret Variables retain compatibility during cleanup.
+  // Canonical nonsecret Variables are the only supported release inputs.
   for(const [binding,canonical,legacy] of [
     ["WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.MCP_PORTAL_CLIENT_ID"],
     ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"],
   ]) {
     const matched=lines.filter(line=>line.trimStart().startsWith(binding+": "));
     assert.equal(matched.length,3,binding+" must be staged only at reviewed release gates");
-    const expected=binding+": "+String.fromCharCode(36)+"{{ inputs.worker == 'workflow-mcp-worker' && ("+
-      canonical+" || "+legacy+") || '' }}";
+    const expected=binding+": "+String.fromCharCode(36)+"{{ inputs.worker == 'workflow-mcp-worker' && "+
+      canonical+" || '' }}";
     for(const line of matched)assert.equal(line.trim(),expected);
-    assert.equal(normalRelease.split(legacy).length-1,3,
-      legacy+" must not be referenced from unrelated Worker steps");
+    assert.equal(normalRelease.split(legacy).length-1,0,
+      legacy+" must not be referenced in release expressions");
   }
   // One historical GitHub Environment Secret is the only source for each
   // canonical Worker runtime binding. No canonical GitHub Secret or fallback.

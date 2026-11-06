@@ -344,8 +344,8 @@ jobs:
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           BROWSER_ACTIVATION_EXPECTED: ${{ vars.BROWSER_ACTIVATION_AUDIENCE }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID) || '' }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
@@ -397,7 +397,7 @@ jobs:
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID) || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
           # The Provider pin is resolved read-only after the existing environment approval,
           # not copied from a potentially stale GitHub Environment variable.
           DATABASE_MAX_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_ROWS || '' }}
@@ -407,7 +407,7 @@ jobs:
           DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
           # GitHub reserves GITHUB_* variable names; translate our reviewed
           # GitHub Environment variable into the Worker's runtime binding.
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
           DATABASE_B2B_PASSWORD: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_B2B_PASSWORD || '' }}
@@ -1069,8 +1069,8 @@ jobs:
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || vars.MCP_PORTAL_CLIENT_ID) || '' }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
+          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"

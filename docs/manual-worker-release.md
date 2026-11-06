@@ -41,7 +41,7 @@ Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 O
 
 ### Spec #733 first migration and post-cleanup
 
-The protected release now fails closed if both old and renamed Workflow identity/grants variables exist with different values, or if any Database numeric limit would change from its previously deployed binding or default. The Workflow identity/grants GitHub Variables were migrated with exact-value proof. Under the approved Spec #733 naming exception, SSH/Workflow old-name GitHub Environment Secrets remain the sole release inputs mapped to canonical runtime names; do not copy, replace or rotate them merely to rename a binding. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
+The protected release now fails closed if both old and renamed Workflow identity/grants variables exist with different values, or if any Database numeric limit would change from its previously deployed binding or default. The Workflow identity/grants GitHub Variables were migrated with exact-value proof. Regular Release Worker and Portal read-only Acceptance now use only canonical names; the two old Environment Variable names are retained pending a separately authorized Settings deletion. Under the approved Spec #733 naming exception, SSH/Workflow old-name GitHub Environment Secrets remain the sole release inputs mapped to canonical runtime names; do not copy, replace or rotate them merely to rename a binding. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
 
 ## Database Spec #760
 
@@ -64,7 +64,7 @@ Independent Cloudflare version/settings/Secret-name inventories confirmed the ol
 The **GitHub Environment** Secrets `ENCRYPTION_KEY`, `MCP_PORTAL_CLIENT_SECRET`, and
 `SESSION_RUNTIME_DATA_KEY` are deliberately **retained authoritative release inputs**,
 not cleanup targets. Workflow's `session_runtime_data` had zero records: historical
-AES-GCM decrypt on Version 141 is **Not performed**, not Pass. No production business
+AES-GCM decrypt on Version 141 is **Waived by explicit Owner approval, not Pass** ([decision](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6687070101)). No production business
 Action/Session was invoked. [Detailed receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6686213244).
 
 The existing Release Worker has a disabled-by-default `legacy_secret_cleanup_mode` input:
@@ -97,7 +97,7 @@ For Database **before its cleanup Prepare**, the live Secret inventory must be e
 Secrets. Prepare removes only `DATABASE_ENCRYPTION_KEY`,
 `DATABASE_GITHUB_ACTIONS_TOKEN`, and `DATABASE_KEY_ID`. The candidate preserves
 `DATABASE_CONNECTIONS`, Variables, `RATE_LIMITER`, Hyperdrive/resource bindings, script
-ETag and runtime. The current Database Version 46 `c28c0af8-e773-4400-9106-425779932fcf` is 100% live with those three legacy bindings absent; a fresh Version 46 business query/decrypt E2E remains **Not performed** ([readback evidence](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6685620405)). Ordinary release readback retains its six-name migration allowance;
+ETag and runtime. The current Database Version 46 `c28c0af8-e773-4400-9106-425779932fcf` is 100% live with those three legacy bindings absent; Version 46 authenticated `b2b` and `scrape_relay` health and bounded `SELECT 1` are **Pass** ([live E2E](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6686760458)); the retired Database D1/AES-GCM connection-registry decrypt is not applicable to the current Spec #760 runtime. Ordinary release readback retains its six-name migration allowance;
 the cleanup path enforces only these exact three deletion names. GitHub Environment
 configuration, D1, and older Worker versions are outside this cleanup.
 
