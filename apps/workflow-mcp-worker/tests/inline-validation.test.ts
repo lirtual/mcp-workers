@@ -224,3 +224,18 @@ test('static output reference failures never echo arbitrary user object keys',as
  assert.equal(result.issues[0].path,'/steps/1/with/data/ref');
  assert.equal(JSON.stringify(result).includes(key),false);
 });
+
+test('Create and Update reject retired public github.run syntax before any D1 write',async()=>{
+ let touched=0;
+ const service=new WorkflowService({DB:{prepare(){touched++;throw Error('unexpected_d1_access');}}} as unknown as Env);
+ const id='11111111-1111-4111-8111-111111111111';
+ for(const definition of [
+  JSON.stringify({version:1,name:'legacy',steps:[{id:'old',uses:'github.run',with:{capability:'github.action'}}]}),
+  'version: 1\nname: legacy\nsteps:\n  - id: batch\n    flow: foreach\n    template:\n      steps:\n        - id: old\n          uses: github.run\n',
+  'version: 1\nname: legacy\nsteps:\n  - id: retry\n    flow: repeat\n    template:\n      uses: github.run\n',
+ ]){
+  await assert.rejects(service.create(definition),/github_run_retired_use_action_run/);
+  await assert.rejects(service.update(id,1,definition),/github_run_retired_use_action_run/);
+ }
+ assert.equal(touched,0);
+});

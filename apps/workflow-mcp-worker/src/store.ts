@@ -12,7 +12,7 @@ import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSess
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
-import { compilePlan, PlanError, canonicalJsonString } from './plan.ts';
+import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
@@ -182,6 +182,7 @@ export class WorkflowService {
   async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=? AND deleted_at IS NULL').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
+    assertPublicActionSyntax(definition);
     const name=draftName(definition);
     const id=crypto.randomUUID(),time=now();
     await this.db.prepare('INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at) VALUES(?,?,?,1,\'draft\',?,?)').bind(id,name,definition,time,time).run();
@@ -189,6 +190,7 @@ export class WorkflowService {
   }
   async update(workflow_id:string,expected_revision:number,definition:string){
     assertId(workflow_id);if(!Number.isSafeInteger(expected_revision)||expected_revision<1)throw new StateError('invalid_revision');
+    assertPublicActionSyntax(definition);
     const name=draftName(definition);
     const x=await this.db.prepare('UPDATE workflows SET draft=?,name=?,draft_revision=draft_revision+1,updated_at=? WHERE id=? AND draft_revision=? AND deleted_at IS NULL').bind(definition,name,now(),workflow_id,expected_revision).run();
     if(!x.meta.changes) {await this.row(workflow_id);throw new StateError('revision_conflict');}
@@ -284,7 +286,7 @@ export class WorkflowService {
    * the exact compiler and reviewed GitHub Action contract. */
   async validateDefinition(definition:string){
     try {
-      const {digest,plan}=await compilePlan(definition);
+      const {digest,plan}=await compilePublicPlan(definition);
       const reviewed_actions=await this.checkedGitHubActions(plan);
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
@@ -383,7 +385,7 @@ export class WorkflowService {
     approve_mcp_write_execution=false,approve_saga_compensation=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
-    const {plan,digest:plan_digest}=await compilePlan(row.draft);
+    const {plan,digest:plan_digest}=await compilePublicPlan(row.draft);
     const reviewedActions=await this.checkedGitHubActions(plan);
     const children=await this.checkedChildWorkflows(plan,workflow_id);
     if(JSON.stringify(children)!==JSON.stringify(approved_children))

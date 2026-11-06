@@ -1,4 +1,4 @@
-import {compilePlan, PLAN_LIMITS, SUPPORTED_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
+import {compilePublicPlan, PLAN_LIMITS, PUBLIC_STEP_USES, GITHUB_EVENT_PATTERNS} from './plan.ts';
 import {cloudflareActionManifest} from './cloudflare-action-contract.ts';
 import {portalAuthorization} from './portal-authorization.ts';
 import {httpAuthorization} from './http-authorization.ts';
@@ -200,7 +200,7 @@ const foreachGithubTask=(action:{
  type:'task'|'session';contractDigest:string;ref:string;inputs:Record<string,{default?:string|boolean|number;required:boolean}>;
 })=>({version:1,name:'Bounded reviewed GitHub Task',inputs:{items:['first','second']},
  steps:[{id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
-  template:{steps:[{id:'task',uses:'github.run',with:{capability:'github.action',
+  template:{steps:[{id:'task',uses:'action.run',with:{executor:'github',capability:'github.action',
    action:{repository:action.repository,repositoryId:action.repositoryId,
     workflowId:action.workflowId,workflowPath:action.workflowPath,commitSha:action.commitSha,
     type:'task',contractDigest:action.contractDigest,ref:action.ref,
@@ -402,7 +402,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
       ],
       properties:{
         id:{type:'string',pattern:'^[A-Za-z][A-Za-z0-9_-]{0,63}$'},
-        uses:{enum:[...SUPPORTED_STEP_USES]},
+        uses:{enum:[...PUBLIC_STEP_USES]},
         compensate:{type:'object',additionalProperties:false,required:['kind'],
           properties:{kind:{const:'github.session.cancel',
             description:'Only an explicitly approved temporary lirtual/github-actions Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
@@ -422,13 +422,13 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         times:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
         template:{oneOf:[
           {type:'object',additionalProperties:false,required:['uses','with'],
-            properties:{uses:{enum:SUPPORTED_STEP_USES.filter(x=>x!=='http.request')},with:{type:'object'},
+            properties:{uses:{enum:PUBLIC_STEP_USES.filter(x=>x!=='http.request')},with:{type:'object'},
               if:{anyOf:[{type:'boolean'},{type:'object'}]}}},
           {type:'object',additionalProperties:false,required:['steps'],
             properties:{steps:{type:'array',minItems:1,maxItems:PLAN_LIMITS.maxForeachTemplateSteps,
                description:'One reviewed Action per item, or 2-4 ordered emit/read-only MCP children with at most one owner-approved literal-input GitHub Task. Only earlier children in the same item can be referenced.',items:{
               type:'object',additionalProperties:false,required:['id','uses','with'],
-              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','github.run','action.run']},
+              properties:{id:{type:'string'},uses:{enum:['result.emit','mcp.call','action.run']},
                 with:{type:'object'},
                 if:{anyOf:[{type:'boolean'},{type:'object'}]}},
               allOf:[
@@ -436,14 +436,12 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                   then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
                 {if:{required:['uses'],properties:{uses:{const:'mcp.call'}}},
                   then:{properties:{with:REVIEWED_READ_MCP_WITH_SCHEMA}}},
-                {if:{required:['uses'],properties:{uses:{const:'github.run'}}},
-                  then:{properties:{with:FOREACH_TASK_WITH_SCHEMA}}},
-                {if:{required:['uses'],properties:{uses:{const:'action.run'}}},
+                                {if:{required:['uses'],properties:{uses:{const:'action.run'}}},
                   then:{properties:{with:FOREACH_TASK_ACTION_RUN_WITH_SCHEMA}}},
               ]},allOf:[{if:{minItems:2},then:{anyOf:[
                 {items:{type:'object',properties:{uses:{enum:['result.emit','mcp.call']}}}},
                 {contains:{type:'object',required:['uses'],
-                  properties:{uses:{enum:['github.run','action.run']}}},minContains:1,maxContains:1},
+                  properties:{uses:{const:'action.run'}}},minContains:1,maxContains:1},
               ]}}]}}},
         ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 ordered emit/read-only MCP children with at most one reviewed literal-input GitHub Task; Sessions, multiple Tasks and nesting are unsupported.'},
         approval:{type:'object',additionalProperties:false,required:['required'],
@@ -457,7 +455,6 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         {if:{properties:{uses:{const:'result.emit'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}}},
         {if:{properties:{uses:{const:'mcp.call'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}}},
         {if:{properties:{uses:{const:'http.request'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['http.request']}}},
-        {if:{properties:{uses:{const:'github.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}}},
         {if:{properties:{uses:{const:'action.run'}}},then:{properties:{with:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}}},
       ],
     }},
@@ -485,8 +482,6 @@ const entries=[
    description:'New reviewed GitHub Action source spelling: uses=action.run, with.executor=github; existing exact-source Publish grants and OIDC/Session rules remain mandatory. Cloudflare has a separate explicit Provider/Deployment grant and Session Ready verification gate; discovery never grants either executor.'},
   {id:'action.run.cloudflare',kind:'action',availability:'supported_with_grant',
    description:'Explicitly approved, version-pinned Bark Owner notification, anonymous Dub short link, EnvShare ciphertext-only share, or manual public Litterbox file upload; exact Provider/Action support comes from the reviewed manifest. EnvShare requires an unrecoverable delivery_key in the first workflow_run reply and workflow_result combination, never stored in D1. Exact contract and Worker deployment grants at Publish; no arbitrary URL/recipient or automatic send retry.'},
-  {id:'action.github.run',kind:'action',availability:'supported_with_grant',
-   description:'Dispatch reviewed github.action Task/Session. Discover allowed repositories with workflow_action_list, then pin exact immutable commit, approved ref, contract digest and inputs.'},
   {id:'flow.static_dag',kind:'flow',availability:'supported',
    description:'Acyclic needs dependencies, bounded steps and parallel admission. Steps run under one Cloudflare Workflow instance.'},
   {id:'flow.condition',kind:'flow',availability:'supported',
@@ -535,7 +530,7 @@ async function compilingExample(definition:unknown){
   // Each published sample is checked against the exact active compiler.
   // This is compile-only: tool availability and Publish authorization are
   // separate gates, especially for the illustrative MCP tool identifier.
-  const {digest}=await compilePlan(definition);
+  const {digest}=await compilePublicPlan(definition);
   return {definition,digest,validation:'compiler_valid_only' as const};
 }
 
@@ -561,15 +556,15 @@ export async function workflowCapabilities(env:Pick<Env,
     entry.id==='action.http'&&httpState?.state==='revoked'?'revoked':
     (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&portalRevoked?'revoked':
     (['action.mcp.call','action.mcp.write','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read'].includes(entry.id))&&!portalReady?'unavailable':
-    (entry.id==='action.run.github'||entry.id==='action.github.run'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
+    (entry.id==='action.run.github'||entry.id==='flow.foreach_github_task'||entry.id==='flow.foreach_emit_task_emit'||entry.id==='flow.foreach_mixed_task')&&!githubReady?'unavailable':
     entry.id==='action.run.cloudflare'&&!cloudflareReady?'unavailable':
     entry.id==='flow.foreach_mixed_task'&&portalRevoked?'revoked':
     entry.id==='flow.foreach_mixed_task'&&!portalReady?'unavailable':
     entry.id==='trigger.github_event'&&!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?'unavailable':
-    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','action.github.run','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
+    ['action.run.cloudflare','action.mcp.call','action.mcp.write','action.run.github','flow.foreach_mcp_read','flow.foreach_multi_mcp_read','flow.loop_mcp_read','flow.foreach_github_task','flow.foreach_emit_task_emit','flow.foreach_mixed_task'].includes(entry.id)?'configured_unverified':entry.availability;
   if(id===undefined)return {
     definition_schema:WORKFLOW_DEFINITION_SCHEMA,
-    action_with_schemas:WORKFLOW_ACTION_WITH_SCHEMAS,
+    action_with_schemas:Object.fromEntries(Object.entries(WORKFLOW_ACTION_WITH_SCHEMAS).filter(([use])=>use!=='github.run')),
     expression_rules:WORKFLOW_EXPRESSION_RULES,
     limits:PLAN_LIMITS,
     capability_ids:entries.map(entry=>({
@@ -597,16 +592,21 @@ export async function workflowCapabilities(env:Pick<Env,
     ...(id==='action.result.emit'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['result.emit']}:{}),
     ...(id==='action.mcp.call'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call']}:{}),
     ...(id==='action.http'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['http.request']}:{}),
-    ...(id==='action.github.run'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['github.run']}:{}),
     ...(id==='action.run.github'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run']}:{}),
     ...(id==='action.run.cloudflare'?{with_schema:WORKFLOW_ACTION_WITH_SCHEMAS['action.run'],
       reviewed_manifest:await cloudflareActionManifest('bark'),
       reviewed_manifests:[await cloudflareActionManifest('bark'),await cloudflareActionManifest('dub'),await cloudflareActionManifest('envshare'),await cloudflareActionManifest('litterbox')],
-      deployment_id:null,identity_verification:'live_at_publish_and_dispatch'}:{}),
+      deployment_id:null,identity_verification:'live_at_publish_and_dispatch',
+      transport_permissions:{default:'bounded_json',
+        chatgpt_file:{action:'litterbox.upload_file',parameter:'workflow_run.file',
+          restriction:'manual_single_step_with_explicit_approval_and_no_unknown_retry'},
+        one_time_result_proof:{action:'envshare.share_text',parameter:'workflow_result.delivery_key',
+          restriction:'never_persisted_to_d1_status_or_log'}},
+      note:'Transport permissions describe existing reviewed Action gates; no generic file or secret transport is available.'}:{}),
   };
   // Design-only contracts make unsupported features discoverable without
   // advertising a second compiler or presenting a publishable DSL example.
-  if(id==='action.github.run'||id==='action.run.github'){
+  if(id==='action.run.github'){
     detail.artifact_reference_policy={
       surface:'workflow_result.artifact_references',provider:'github_actions',
       eligibility:'Exactly approved, pinned GitHub Task with a physically succeeded Attempt and Step',
@@ -804,7 +804,7 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.availability=task?'publishable_after_owner_approval':'no_verified_published_task';
     if(task&&'ref' in task&&typeof task.ref==='string')
       detail.example=await compilingExample(foreachEmitTaskEmit({...task,ref:task.ref}));
-    detail.template_policy={stages:['result.emit','github.run','result.emit'],
+    detail.template_policy={stages:['result.emit','action.run','result.emit'],
       github_task_count:1,github_inputs:'literal_only',task_type:'task',
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
       required_publish_grants:['approved_actions','approve_heavy_execution'],
@@ -823,7 +823,7 @@ export async function workflowCapabilities(env:Pick<Env,
       !task?'no_verified_published_task':portal.availability;
     if(task&&'ref' in task&&typeof task.ref==='string'&&portal.tools.length)
       detail.example=await compilingExample(foreachMixedMcpTask({...task,ref:task.ref},portal.tools[0]!));
-    detail.template_policy={allowed_actions:['result.emit','mcp.call','github.run'],
+    detail.template_policy={allowed_actions:['result.emit','mcp.call','action.run'],
       github_task_count:1,github_inputs:'literal_only',task_type:'task',mcp_scope:'read',
       min_steps:2,max_steps:PLAN_LIMITS.maxForeachTemplateSteps,
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
@@ -854,7 +854,7 @@ export async function workflowCapabilities(env:Pick<Env,
         detail.dynamic_example=await compilingExample(dynamic);
       }
     }
-    detail.template_policy={allowed_action:'github.run',type:'task',
+    detail.template_policy={allowed_action:'action.run',type:'task',
       inputs:'literal or exact {ref:"item.value[.<field>]"} / {ref:"item.index"} only; typed by reviewed Action',
       input_snapshot:'All selected values validated against pinned provider types and choices before first dispatch; each input map SHA-256 pinned to D1 before Attempt',
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
@@ -877,7 +877,7 @@ export async function workflowCapabilities(env:Pick<Env,
       args_snapshot:'Native checkpoint for each child, with references to earlier child outputs in the same item',
       replay:'D1 child dispatch fence before tools/call; lost checkpoints stay indeterminate, never re-dispatched',
       required_publish_grants:['approved_operations','accept_target_risks'],
-      unsupported:['github.run','nested templates','write-scope tools']};
+      unsupported:['GitHub Action','nested templates','write-scope tools']};
   }
   if(id==='flow.loop_mcp_read'){
     const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
@@ -914,7 +914,7 @@ export async function workflowCapabilities(env:Pick<Env,
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
       replay:'D1 child dispatch fence, no blind retries; ambiguous results are indeterminate',
       required_publish_grants:['approved_operations','accept_target_risks'],
-      unsupported:['github.run','nested templates','write-scope tools']};
+      unsupported:['GitHub Action','nested templates','write-scope tools']};
   }
   if(id==='action.mcp.call'){
     const discovered=portalRevoked?{availability:'revoked' as const,tools:[],reason:'portal_connection_revoked'}:
@@ -932,7 +932,7 @@ export async function workflowCapabilities(env:Pick<Env,
       required:['approved_operations','accept_target_risks'],
       warning:'Only source-reviewed, live-advertised read tools; exact schema is rechecked at execution. Discovery is not an execution or permission grant.'};
   }
-  if(id==='action.github.run'){
+  if(id==='action.run.github'){
     const approved=githubReady?await listAvailableGitHubActions(env):{actions:[]};
     detail.discovered_actions=approved.actions;
     if(githubReady)detail.availability=approved.actions.some(x=>x.can_publish)?

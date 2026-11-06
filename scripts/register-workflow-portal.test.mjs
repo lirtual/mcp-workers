@@ -27,7 +27,7 @@ const publishedTools=[
   'workflow_list','workflow_get','workflow_create','workflow_update',
   'workflow_validate','workflow_publish','workflow_approval','workflow_pause',
   'workflow_delete','workflow_resume','workflow_run','workflow_cancel',
-  'workflow_status','workflow_result','workflow_session_data_get',
+  'workflow_status','workflow_result',
 ].sort();
 const originalServer={id:'workflow',name:'Workflow',hostname:host,
   auth_type:'bearer',status:'ready',
