@@ -18,10 +18,7 @@
   },
   "secrets": {
     "required": [
-      "MCP_ACCESS_TOKEN",
-      "DATABASE_ENCRYPTION_KEY",
-      "DATABASE_KEY_ID",
-      "DATABASE_GITHUB_ACTIONS_TOKEN"
+      "MCP_ACCESS_TOKEN"
     ]
   },
   "vars": {
@@ -30,17 +27,9 @@
     "DATABASE_MAX_SCHEMA_BYTES": "524288",
     "DATABASE_QUERY_TIMEOUT_MS": "15000",
     "DATABASE_MAX_WRITE_AFFECTED_ROWS": "20",
-    "DATABASE_SETUP_HOST": "database.lirtual.dpdns.org"
+    "DATABASE_CONNECTIONS": "{}"
   },
   "ratelimits": [
-    {
-      "name": "SETUP_RATE_LIMITER",
-      "namespace_id": "1002",
-      "simple": {
-        "limit": 20,
-        "period": 60
-      }
-    },
     {
       "name": "RATE_LIMITER",
       "namespace_id": "1001",
@@ -55,14 +44,6 @@
     {
       "pattern": "database.lirtual.dpdns.org",
       "custom_domain": true
-    }
-  ],
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "database-mcp-registry",
-      "database_id": "cbfe6a05-4979-4e6a-9cc2-4f6468586e4a",
-      "migrations_dir": "migrations"
     }
   ]
 }

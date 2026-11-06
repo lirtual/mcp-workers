@@ -1,4 +1,4 @@
-// Offline integration fixture only. Live D1 admission uses registry/admission.ts.
+// Offline integration fixture only. Live configuration admission uses connection-admission.ts.
 import { resolveConnection } from './config.js';
 import type { ConnectionConfig, EffectiveAdminConnection, Env } from './types.js';
 

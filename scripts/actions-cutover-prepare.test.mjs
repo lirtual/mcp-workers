@@ -149,7 +149,6 @@ test('protected gate-only recovery is mutually exclusive with freeze and Worker 
  for(const guard of ["github.actor == 'lirtual'","inputs.worker == 'workflow-mcp-worker'",
   'inputs.actions_gate_reopen == true','inputs.deploy_to_production == false',
   'inputs.actions_migration_prepare != true','inputs.actions_old_ingress_quiesced == true',
-  "inputs.database_hyperdrive_prepare_id == ''","inputs.database_hyperdrive_rotation_mode == ''",
   'name: workflow-mcp-worker','group: worker-release-workflow-mcp-worker',
   'actions-cutover-prepare.mjs activate-preflight','actions-cutover-prepare.mjs activate-postflight',
 'inspectGateRecovery',

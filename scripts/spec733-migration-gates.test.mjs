@@ -143,14 +143,11 @@ test('protected read-only cleanup selection cannot execute a release or portal-w
 test('Database postflight proves exact numeric bindings and missing old names',()=>{
   const values=Object.fromEntries(Object.values(limits));
   const secrets=['MCP_ACCESS_TOKEN','DATABASE_ENCRYPTION_KEY','DATABASE_KEY_ID','DATABASE_GITHUB_ACTIONS_TOKEN'];
-  const sourceConfig={d1_databases:[{database_id:'cbfe6a05-4979-4e6a-9cc2-4f6468586e4a'}],
-    vars:{DATABASE_SETUP_HOST:'database.lirtual.dpdns.org'},hyperdrive:[]};
-  const base=[...dbBase.filter(b=>b.name!=='ACCESS_AUD'),plain('DATABASE_ACCESS_AUD','a'.repeat(64)),
-    plain('DATABASE_SETUP_HOST','database.lirtual.dpdns.org'),
-    {name:'DB',type:'d1',id:sourceConfig.d1_databases[0].database_id},
-    ...secrets.map(secret)];
+  const sourceConfig={hyperdrive:[]};
+  const base=[{name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}},
+    plain('DATABASE_CONNECTIONS','{}'),...secrets.map(secret)];
   const settings=extra=>({bindings:[...base,...extra],observability:obs});
-  const options={...dbOptions,mode:'readback',sourceConfig,expectedDatabaseLimits:values};
+  const options={mode:'readback',sourceConfig,databaseConnections:'{}',expectedDatabaseLimits:values};
   const good=Object.entries(values).map(([name,value])=>plain(name,value));
   const listed=secrets.map(name=>({name}));
   assert.equal(verifyBindings('database-mcp-worker',settings(good),listed,options),true);

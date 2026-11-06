@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
-import { parseDirectDatabaseUrl } from '../config.js';
-import { PublicError } from '../errors.js';
+import { parseDirectDatabaseUrl } from './config.js';
+import { PublicError } from './errors.js';
 
 type InvalidEndpointReason = 'nonpublic_address' | 'invalid_hostname';
 function invalid(reason: InvalidEndpointReason): never {
