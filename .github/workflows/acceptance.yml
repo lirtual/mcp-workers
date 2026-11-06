@@ -21,8 +21,6 @@ on:
           - portal-register
           - legacy-cleanup-readonly-ssh
           - legacy-cleanup-readonly-workflow
-          - workflow-secret-real-seal
-          - workflow-secret-real-verify
       session_run_id:
         description: Existing temporary Spec 288 Windows Run ID; never contains sensitive values
         type: string
@@ -40,23 +38,6 @@ on:
         required: true
         type: boolean
         default: false
-      workflow_secret_kind:
-        description: Spec 733 one-shot Workflow original-value Secret rename (portal or session)
-        type: choice
-        options:
-          - portal
-          - session
-        required: false
-      workflow_secret_public_key:
-        description: Target GitHub Environment public key, never a credential
-        type: string
-        required: false
-        default: ''
-      workflow_secret_public_key_id:
-        description: Reviewed target GitHub Environment public key ID
-        type: string
-        required: false
-        default: ''
       cleanup_expected_version:
         description: Cleanup readback only - exact reviewed active Worker version UUID
         type: string
@@ -71,99 +52,6 @@ env:
   HUSKY: "0"
 
 jobs:
-  # Spec #733: temporary, owner-only, one-shot Workflow Secret migration.
-  # Remove this pair of jobs and inputs after completion or a blocked write.
-  workflow-secret-real-seal:
-    name: Spec 733 seal selected original Workflow Secret (no writes)
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.confirm_portal_write == false &&
-          inputs.test_type == 'workflow-secret-real-seal' &&
-          contains(fromJSON('["portal","session"]'), inputs.workflow_secret_kind) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    environment:
-      name: workflow-mcp-worker
-    concurrency:
-      group: worker-release-workflow-mcp-worker
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Verify trusted main
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - name: Seal original Portal Secret (encrypted-only)
-        if: inputs.workflow_secret_kind == 'portal'
-        env:
-          SPEC733_WORKFLOW_SECRET_KIND: portal
-          SPEC733_OLD_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-          SPEC733_PUBLIC_KEY: ${{ inputs.workflow_secret_public_key }}
-          SPEC733_PUBLIC_KEY_ID: ${{ inputs.workflow_secret_public_key_id }}
-        run: python3 scripts/workflow-secret-real-migration.py seal "$RUNNER_TEMP/spec733-workflow-real-sealed.json"
-      - name: Seal original Session key (encrypted-only)
-        if: inputs.workflow_secret_kind == 'session'
-        env:
-          SPEC733_WORKFLOW_SECRET_KIND: session
-          SPEC733_OLD_SECRET: ${{ secrets.SESSION_RUNTIME_DATA_KEY }}
-          SPEC733_PUBLIC_KEY: ${{ inputs.workflow_secret_public_key }}
-          SPEC733_PUBLIC_KEY_ID: ${{ inputs.workflow_secret_public_key_id }}
-        run: python3 scripts/workflow-secret-real-migration.py seal "$RUNNER_TEMP/spec733-workflow-real-sealed.json"
-      - name: Upload encrypted-only artifact with one-day retention
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: spec733-workflow-real-${{ inputs.workflow_secret_kind }}-sealed-${{ github.run_id }}
-          path: ${{ runner.temp }}/spec733-workflow-real-sealed.json
-          if-no-files-found: error
-          retention-days: 1
-
-  workflow-secret-real-verify:
-    name: Spec 733 independent original/new Workflow Secret byte parity
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.confirm_portal_write == false &&
-          inputs.test_type == 'workflow-secret-real-verify' &&
-          contains(fromJSON('["portal","session"]'), inputs.workflow_secret_kind) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    environment:
-      name: workflow-mcp-worker
-    concurrency:
-      group: worker-release-workflow-mcp-worker
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Verify trusted main
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - name: Compare original/new Portal Secret bytes (no content or digest)
-        if: inputs.workflow_secret_kind == 'portal'
-        env:
-          SPEC733_WORKFLOW_SECRET_KIND: portal
-          SPEC733_OLD_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
-          SPEC733_NEW_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET }}
-        run: python3 scripts/workflow-secret-real-migration.py verify -
-      - name: Compare original/new Session key bytes (no content or digest)
-        if: inputs.workflow_secret_kind == 'session'
-        env:
-          SPEC733_WORKFLOW_SECRET_KIND: session
-          SPEC733_OLD_SECRET: ${{ secrets.SESSION_RUNTIME_DATA_KEY }}
-          SPEC733_NEW_SECRET: ${{ secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY }}
-        run: python3 scripts/workflow-secret-real-migration.py verify -
-
   legacy-secret-cleanup-readback:
     name: Spec 733 legacy Secret cleanup inventory (GET only)
     if: >-
