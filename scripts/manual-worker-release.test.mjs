@@ -1116,25 +1116,37 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
 });
 
-test("Spec 733: Workflow-only release fallbacks map old GitHub Environment names into new bindings",()=> {
+test("Spec 733: Workflow Variable fallbacks remain; Secret names require parity, not fallback",()=> {
   const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
   const lines=release.split(/\r?\n/);
-  // The old Settings names are only source lookups inside the protected
-  // Workflow release; Worker bindings and bootstrap names remain canonical.
-  const mappings=[
-    ["WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.MCP_PORTAL_CLIENT_ID",3],
-    ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES",3],
-    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET","secrets.MCP_PORTAL_CLIENT_SECRET",1],
-    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY","secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY","secrets.SESSION_RUNTIME_DATA_KEY",1],
-  ];
-  for(const [binding,canonical,legacy,count] of mappings){
+  // The two approved nonsecret Variables retain compatibility during cleanup.
+  for(const [binding,canonical,legacy] of [
+    ["WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.MCP_PORTAL_CLIENT_ID"],
+    ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"],
+  ]) {
     const matched=lines.filter(line=>line.trimStart().startsWith(binding+": "));
-    assert.equal(matched.length,count,binding+" must be staged only at reviewed release gates");
+    assert.equal(matched.length,3,binding+" must be staged only at reviewed release gates");
     const expected=binding+": "+String.fromCharCode(36)+"{{ inputs.worker == 'workflow-mcp-worker' && ("+
       canonical+" || "+legacy+") || '' }}";
     for(const line of matched)assert.equal(line.trim(),expected);
-    assert.equal(release.split(legacy).length-1,count,
+    assert.equal(release.split(legacy).length-1,3,
       legacy+" must not be referenced from unrelated Worker steps");
+  }
+  // Both new GitHub Secret names are mandatory in a full release; the old
+  // values are passed only into the protected staging step for byte comparison.
+  for(const [canonical,legacy] of [
+    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","MCP_PORTAL_CLIENT_SECRET"],
+    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY","SESSION_RUNTIME_DATA_KEY"],
+  ]) {
+    const selected=lines.filter(line=>line.trimStart().startsWith(canonical+": "));
+    assert.equal(selected.length,1);
+    assert.equal(selected[0].trim(),canonical+": "+String.fromCharCode(36)+
+      "{{ inputs.worker == 'workflow-mcp-worker' && secrets."+canonical+" || '' }}");
+    const original=lines.filter(line=>line.trimStart().startsWith(legacy+": "));
+    assert.equal(original.length,1);
+    assert.equal(original[0].trim(),legacy+": "+String.fromCharCode(36)+
+      "{{ inputs.worker == 'workflow-mcp-worker' && secrets."+legacy+" || '' }}");
+    assert.ok(!release.includes("secrets."+canonical+" || secrets."+legacy));
   }
   assert.match(release,/if: inputs.worker != 'workflow-mcp-worker' \|\| inputs.workflow_code_only != true/);
   assert.match(release,/node scripts\/bootstrap-worker-secrets\.mjs/);

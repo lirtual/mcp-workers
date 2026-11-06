@@ -106,6 +106,43 @@ test("Workflow release always stages the dedicated Portal and GitHub credentials
 });
 
 
+test("Workflow full release requires canonical Secrets and rejects real-byte drift", () => {
+  const worker = "workflow-mcp-worker";
+  const canonical = fixtures[worker];
+  const pairs = [
+    ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "MCP_PORTAL_CLIENT_SECRET"],
+    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY", "SESSION_RUNTIME_DATA_KEY"],
+  ];
+  const withLegacy = { ...canonical,
+    MCP_PORTAL_CLIENT_SECRET: canonical.WORKFLOW_MCP_PORTAL_CLIENT_SECRET,
+    SESSION_RUNTIME_DATA_KEY: canonical.WORKFLOW_SESSION_RUNTIME_DATA_KEY,
+  };
+  // The old names are comparison inputs only, never published as new bindings.
+  assert.deepEqual(collectBootstrapSecrets(worker, withLegacy), canonical);
+  // After independently authorized legacy retirement, canonical-only still works.
+  assert.deepEqual(collectBootstrapSecrets(worker, canonical), canonical);
+  for (const [name, legacy] of pairs) {
+    const missing = { ...withLegacy };
+    delete missing[name];
+    assert.throws(() => collectBootstrapSecrets(worker, missing), new RegExp(name));
+    assert.throws(() => collectBootstrapSecrets(worker, { ...withLegacy, [name]: "" }), new RegExp(name));
+
+    const drift = { ...withLegacy, [legacy]: canonical[legacy] + "\n" };
+    assert.throws(() => collectBootstrapSecrets(worker, drift), /original-byte mismatch/);
+    assert.deepEqual(collectBootstrapSecrets(worker, { ...withLegacy, [legacy]: "" }), canonical);
+  }
+  // Different UTF-8 strings with the same character count cannot pass parity.
+  const unicode = { ...withLegacy,
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET: "é",
+    MCP_PORTAL_CLIENT_SECRET: "ê",
+  };
+  assert.throws(() => collectBootstrapSecrets(worker, unicode), /original-byte mismatch/);
+  const secretCanary = "synthetic-test-canary-value";
+  assert.throws(() => collectBootstrapSecrets(worker, {
+    ...withLegacy, MCP_PORTAL_CLIENT_SECRET: secretCanary,
+  }), error => /original-byte mismatch/.test(error.message) && !error.message.includes(secretCanary));
+});
+
 test("Workflow registered GitHub token must be nonblank, bounded and not multiline",()=>{
   const valid=fixtures["workflow-mcp-worker"];
   for(const invalid of ["short","x".repeat(513),"foo\nbar"]){

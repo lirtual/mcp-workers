@@ -636,8 +636,8 @@ jobs:
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && (vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES) || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      # Workflow full releases map only the two approved old Environment
-      # Secret names into canonical Worker binding names (no Settings writes).
+      # Workflow full releases require canonical GitHub Secrets and compare
+      # original bytes against any retained legacy names (no Settings writes).
       # Existing Workflow code-only releases use deployed Secrets (verified by
       # read-only inventory), never stage or re-upload their values.
       - name: Compare selected Worker effective Owner identity to Repository source
@@ -665,9 +665,11 @@ jobs:
           DATABASE_PREVIOUS_KEY_ID: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_PREVIOUS_KEY_ID || '' }}
           SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
-          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && (secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || secrets.MCP_PORTAL_CLIENT_SECRET) || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || '' }}
+          MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && (secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY || secrets.SESSION_RUNTIME_DATA_KEY) || '' }}
+          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_SESSION_RUNTIME_DATA_KEY || '' }}
+          SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.SESSION_RUNTIME_DATA_KEY || '' }}
         run: |
           set -euo pipefail
           umask 077
