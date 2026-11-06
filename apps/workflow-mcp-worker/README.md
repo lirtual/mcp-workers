@@ -113,6 +113,10 @@ URL into the encrypted Bark notification's `url` field. The Draft must not
 supply a `notification.url` alongside this reference. The runtime verifies
 the exact source workflow/ref and claimed Attempt and atomically rechecks
 Ready before its single dispatch; URL plaintext is never stored in receipts.
+For Chrome, the source may use an immutable reviewed Tag or the existing
+strictly allowlisted `refs/heads/main` Action identity, which separately
+requires per-Run verified SHA/CI, signed Claim, and physical Run checks.
+Other branches or unrelated Session Actions gain no Bark URL authority.
 The production Provider and Workflow are deployed independently. A signed OpenList Ready URL at the exact Quick Tunnel root may arrive with or without a trailing slash; Workflow normalizes only this equivalent root URL before hashing and invoking the Provider, while keeping the original signed D1 value for its dispatch fence. Arbitrary paths, query strings, credentials, redirects and other domains remain forbidden.
 
 ### Non-executable nested Flow composition design (Spec #176 / #186)
