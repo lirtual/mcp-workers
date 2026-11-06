@@ -223,6 +223,15 @@ test('Spec 733 cleanup mode is isolated from ordinary selected Worker release an
   assert.match(cleanup,/node scripts\/legacy-secret-cleanup\.mjs candidate/);
   assert.match(cleanup,/wrangler versions secret bulk/);
   assert.match(cleanup,/wrangler versions deploy/);
+  // Wrangler 4.151.0 does not support --strict for versions deploy.
+  const promotion=cleanup.split('- name: Deploy only the independently approved candidate to 100 percent')[1]
+    ?.split('- name: Verify exact live version')[0];
+  assert.ok(promotion);
+  assert.match(promotion,/\$CANDIDATE_VERSION_ID@100" --yes\)/);
+  assert.doesNotMatch(promotion,/--strict/);
+  assert.match(promotion,/manual-worker-release\.mjs diagnostic "\$log" deploy \|\| true/);
+  assert.match(promotion,/Candidate promotion failed\/unknown; read active deployment/);
+  assert.doesNotMatch(promotion,/cat "\$log"|tee "\$log"/);
   assert.match(cleanup,/node scripts\/manual-worker-release\.mjs cleanup-readback/);
   assert.match(cleanup,/manual-worker-release\.mjs diagnostic "\$log" prepare \|\| true/);
   assert.match(cleanup,/Candidate creation failed\/unknown; do not retry/);
@@ -235,6 +244,16 @@ test('Spec 733 cleanup mode is isolated from ordinary selected Worker release an
   assert.match(cleanup,/\{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null\}/);
   assert.doesNotMatch(cleanup, /pnpm exec wrangler secret delete|wrangler deploy --secrets-file|gh secret|portal-register|workflow_run/);
   assert.match(yml,/default: none/);
+});
+
+test('installed Wrangler CLI supports approved version deploy flags without --strict', () => {
+  for (const worker of [DATABASE, SSH, WORKFLOW]) {
+    const help = spawnSync('pnpm', ['--filter', worker, 'exec', 'wrangler',
+      'versions', 'deploy', '--help'], {encoding:'utf8', timeout:30000});
+    assert.equal(help.status, 0, worker + ' version deploy help unavailable');
+    assert.match(help.stdout, /--yes/, worker + ' version deploy must accept --yes');
+    assert.doesNotMatch(help.stdout, /--strict/, worker + ' unsupported --strict flag');
+  }
 });
 
 test('cleanup read-only helper has no mutation path and no GitHub Secret name migration',()=>{

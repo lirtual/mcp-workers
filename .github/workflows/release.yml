@@ -1359,7 +1359,8 @@ jobs:
           chmod 600 "$log"
           trap 'rm -f "$log"' EXIT
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions deploy \
-            "$CANDIDATE_VERSION_ID@100" --yes --strict) >"$log" 2>&1; then
+            "$CANDIDATE_VERSION_ID@100" --yes) >"$log" 2>&1; then
+            node scripts/manual-worker-release.mjs diagnostic "$log" deploy || true
             echo "Candidate promotion failed/unknown; read active deployment before any action" >&2
             exit 1
           fi
