@@ -18,7 +18,7 @@
 ## 手动入口
 
 - `CI`：Push / PR 自动检查，不接受手动发布参数；`Release Worker`：选择 Worker 并明确勾选 `deploy_to_production`，在 `main` 上复用 CI 检查后发布。
-- `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 仅执行正式 Portal MCP 认证、`tools/list` 和只读 `workflow_list`，不读取 IMA 笔记及其他业务数据；在 GitHub Environment 尚未更名时从现有 `MCP_PORTAL_CLIENT_ID` / `MCP_PORTAL_CLIENT_SECRET` 安全映射至客户端输入（不修改 Settings、不可当作解密 E2E）；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
+- `Workflow Acceptance`：手动选择唯一的 `test_type`。`portal-readonly` 仅执行正式 Portal MCP 认证、`tools/list` 和只读 `workflow_list`，不读取 IMA 笔记及其他业务数据；使用规范 Variable `WORKFLOW_MCP_PORTAL_CLIENT_ID`，并将保留原名的 GitHub Secret `MCP_PORTAL_CLIENT_SECRET` 安全映射至客户端输入（不修改 Settings、不可当作解密 E2E）；`production-*` 会创建并清理随机测试记录，其中 GitHub 类型还会触发真实 GitHub Job；`github-action-result-cloud` 使用隔离 D1；`portal-register` **会修改正式 Portal 配置**，与 Worker 部署相互独立，必须额外勾选 `confirm_portal_write`；普通验收保持此选项关闭。
 
 ## Workflow 当前生产资源
 
@@ -41,13 +41,13 @@ Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 O
 
 ### Spec #733 first migration and post-cleanup
 
-The protected release now fails closed if both old and renamed Workflow identity/grants variables exist with different values, or if any Database numeric limit would change from its previously deployed binding or default. The Workflow identity/grants GitHub Variables were migrated with exact-value proof. Regular Release Worker and Portal read-only Acceptance now use only canonical names; the two old Environment Variable names are retained pending a separately authorized Settings deletion. Under the approved Spec #733 naming exception, SSH/Workflow old-name GitHub Environment Secrets remain the sole release inputs mapped to canonical runtime names; do not copy, replace or rotate them merely to rename a binding. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
+The protected release now uses only canonical Workflow identity/grants Variables and still fails closed if any Database numeric limit would change from its previously deployed binding or default. The Workflow identity/grants GitHub Variables were migrated with exact-value proof. Regular Release Worker and Portal read-only Acceptance now use only canonical names; the two old Environment Variable names were deleted after separately authorized exact-value checks and independent negative-inventory readback ([final receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6687671219)). Under the approved Spec #733 naming exception, SSH/Workflow old-name GitHub Environment Secrets remain the sole release inputs mapped to canonical runtime names; do not copy, replace or rotate them merely to rename a binding. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.
 
 ## Database Spec #760
 
-Database now uses the [flat URI/Secret configuration and cutover contract](../apps/database-mcp-worker/README.md). Setup, D1/encryption checks and Hyperdrive lifecycle dispatch inputs/jobs are retired. Only `database_expected_release_sha` remains as a Database-specific release input. Production requires independent authorization and fresh old-registry/Unknown-operation/recovery inspection; source merge does not perform this inspection or the cutover. Old D1, keys, Secrets, Hyperdrive resources and rollback versions are preserved until separately approved cleanup.
+Database now uses the [flat URI/Secret configuration and cutover contract](../apps/database-mcp-worker/README.md). Setup, D1/encryption checks and Hyperdrive lifecycle dispatch inputs/jobs are retired. Only `database_expected_release_sha` remains as a Database-specific release input. The documented production cutover and Version 46 legacy Secret cleanup are complete; future production releases still require separate authorization, fresh Unknown-operation/recovery inspection and independent runtime readback. A source merge alone does not publish. Old D1, keys, Secrets, Hyperdrive resources and rollback versions are preserved until separately approved cleanup.
 
-### Spec #733 — optional legacy runtime Secret cleanup (separately authorized)
+### Spec #733 — completed legacy runtime Secret cleanup (separately authorized)
 
 The first canonical runtime Secret cutovers passed under
 [SSH Release #42185081301](https://github.com/lirtual/mcp-workers/actions/runs/42185081301)
