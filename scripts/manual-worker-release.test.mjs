@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
@@ -238,6 +238,28 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
       ? { ...x, script_name: "unknown-worker" } : x),
   }, secrets, { mode: "preflight" }), /DeviceCoordinator/,
     "legacy preflight requires the known old Preview source");
+});
+
+test("Wrangler Prepare failure diagnostic reports only stage and error code", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spec733-safe-diagnostic-"));
+  const log = join(dir, "wrangler.log");
+  try {
+    writeFileSync(log, "Secret=confidential-sample\nCloudflare error code: 10000\n");
+    const result = spawnSync(process.execPath,
+      ["scripts/manual-worker-release.mjs", "diagnostic", log, "prepare"],
+      { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    assert.match(result.stderr, /Wrangler diagnostic: stage=prepare; code=10000/);
+    assert.doesNotMatch(result.stderr, /confidential-sample|Secret=/);
+    assert.equal(result.stdout, "");
+    const legacy = spawnSync(process.execPath,
+      ["scripts/manual-worker-release.mjs", "diagnostic", log],
+      { encoding: "utf8" });
+    assert.equal(legacy.status, 0);
+    assert.match(legacy.stderr, /stage=deploy; code=10000/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Wrangler output requires a parseable release id, not upload-only success", () => {

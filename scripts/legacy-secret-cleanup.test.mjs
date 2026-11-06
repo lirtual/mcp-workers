@@ -179,6 +179,9 @@ test('Spec 733 cleanup mode is isolated from ordinary selected Worker release an
   assert.match(cleanup,/wrangler versions secret bulk/);
   assert.match(cleanup,/wrangler versions deploy/);
   assert.match(cleanup,/node scripts\/manual-worker-release\.mjs cleanup-readback/);
+  assert.match(cleanup,/manual-worker-release\.mjs diagnostic "\$log" prepare \|\| true/);
+  assert.match(cleanup,/Candidate creation failed\/unknown; do not retry/);
+  assert.doesNotMatch(cleanup,/cat "\$log"|tee "\$log"/);
   assert.match(cleanup,/inputs\.workflow_code_only != true/);
   assert.match(cleanup,/inputs\.actions_old_ingress_quiesced != true/);
   assert.match(cleanup,/if: inputs\.legacy_secret_cleanup_mode == 'prepare'/);

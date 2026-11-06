@@ -1069,7 +1069,8 @@ async function main() {
     const log = await readFile(worker, "utf8");
     const codes = [...log.matchAll(/\b(?:error\s+code|code)\s*[:=]?\s*(\d{4,6})\b/gi)]
       .map((match) => match[1]).slice(0, 3);
-    console.error("Wrangler diagnostic: stage=deploy; code=" +
+    const stage = process.argv[4] === "prepare" ? "prepare" : "deploy";
+    console.error("Wrangler diagnostic: stage=" + stage + "; code=" +
       (codes.length ? [...new Set(codes)].join(",") : "unavailable") +
       "; summary=Wrangler CLI exited unsuccessfully (details withheld)");
     return;
