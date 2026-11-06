@@ -809,9 +809,13 @@ export function verifyWorkflowCodeReleaseReadiness(response, approvedTerminalArt
 }
 
 export function parseWranglerVersion(output) {
-  const match = output.match(/(?:Current )?Version ID:\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
-  invariant(!!match, "Wrangler did not report a release Version ID");
-  return match[1].toLowerCase();
+  const uuid = '([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})';
+  const patterns = [new RegExp('(?:Current )?Version ID:\\s*' + uuid, 'gi'),
+    new RegExp('Success! Created version\\s+' + uuid + '\\s+with\\s+\\d+\\s+secrets?', 'gi')];
+  const ids = patterns.flatMap(pattern => [...output.matchAll(pattern)].map(match => match[1].toLowerCase()));
+  invariant(ids.length > 0 && ids.every(id => id === ids[0]),
+    "Wrangler did not report a unique release Version ID");
+  return ids[0];
 }
 
 export function activeVersion(deployments) {

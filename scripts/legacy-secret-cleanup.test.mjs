@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import {
   CLEANUP_LEGACY_SECRETS, verifyCleanupRequest, verifyCandidateVersion, verifyLiveVersion,
+  verifyScopedCleanupInventory,
 } from './legacy-secret-cleanup.mjs';
 
 test('Database Prepare pins Wrangler with non-deploying bulk null deletion support', () => {
@@ -125,6 +126,50 @@ test('Database cleanup removes exactly three runtime Secrets and preserves all o
   }
 });
 
+test('version-scoped cleanup uses deployed baseline when latest Settings are an approved candidate', () => {
+  for (const worker of [DATABASE, SSH, WORKFLOW]) {
+    const [before, after] = sample(worker);
+    const settings = { bindings: after.resources.bindings.map(binding => ({ ...binding })) };
+    const inventory = after.resources.bindings.filter(b => b.type === 'secret_text')
+      .map(b => ({ name: b.name }));
+    const result = verifyScopedCleanupInventory(worker, before, after, settings, inventory);
+    assert.deepEqual(result.bindings, before.resources.bindings);
+    assert.deepEqual(result.secrets.map(s => s.name).sort(),
+      [...required[worker], ...oldSecretNames[worker]].sort());
+    assert.equal(verifyScopedCleanupInventory(worker, before, null,
+      {bindings:before.resources.bindings}, before.resources.bindings
+        .filter(b => b.type === 'secret_text').map(b => ({ name:b.name }))).bindings.length,
+      before.resources.bindings.length);
+    // Without an approved candidate, latest Settings that are no longer
+    // equivalent to the deployed version must be rejected.
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, null, settings, inventory),
+      /Latest Worker Settings/);
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, after,
+      {bindings:settings.bindings.filter(b => b.name !== 'MCP_ACCESS_TOKEN')}, inventory),
+      /Latest Worker Settings/);
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, after, settings,
+      [...inventory, {name:'UNREVIEWED_SECRET'}]), /Latest Worker Settings/);
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, after, settings,
+      [...inventory, inventory[0]]), /Latest Worker Settings/);
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, after,
+      {bindings:settings.bindings.map(b => b.name === 'MCP_ACCESS_TOKEN'
+        ? {...b, type:'plain_text'} : b)}, inventory), /Latest Worker Settings/);
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, after,
+      {...settings}, inventory.filter(s => s.name !== 'MCP_ACCESS_TOKEN')),
+      /Latest Worker Settings/);
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, after,
+      settings, inventory.map(s=>({name: s.name === 'MCP_ACCESS_TOKEN'
+        ? 'WRONG_TOKEN' : s.name}))), /Latest Worker Settings/);
+    const broken = {...after, resources:{...after.resources, script:{...after.resources.script,etag:'changed'}}};
+    assert.throws(() => verifyScopedCleanupInventory(worker, before, broken, settings, inventory),
+      /etag/);
+    const unsafeBaseline = {...before, resources:{...before.resources,
+      bindings:before.resources.bindings.filter(b=>b.name!==oldSecretNames[worker][0])}};
+    assert.throws(() => verifyScopedCleanupInventory(worker, unsafeBaseline, after, settings, inventory),
+      /Deployed version Secret inventory/);
+  }
+});
+
 test('single SSH and grouped Workflow removal preserve all other bindings and source', () => {
   for(const worker of [SSH, WORKFLOW]) {
     const [before, after] = sample(worker);
@@ -205,9 +250,12 @@ test('cleanup read-only helper has no mutation path and no GitHub Secret name mi
 
 test('cleanup baseline retains old Secrets, while post-publish readback requires their absence', () => {
   const baseline = readFileSync('scripts/legacy-secret-cleanup.mjs','utf8');
-  const check = baseline.split('verifyBindings(worker, settings.result, secrets, {')[1]?.split('\n  });')[0];
+  const check = baseline.split('verifyBindings(worker, { ...settings.result, bindings: deployed.bindings }, deployed.secrets, {')[1]
+    ?.split('\n  });')[0];
   assert.ok(check?.includes("mode: 'readback'"));
   assert.doesNotMatch(check, /cleanupVerified:\s*true/);
+  assert.match(baseline, /verifyScopedCleanupInventory\(worker, current.result, candidate,/);
+  assert.match(baseline, /candidate\?\.id === candidateId/);
   const readback = readFileSync('scripts/manual-worker-release.mjs','utf8')
     .split('if (mode === "cleanup-readback")')[1]?.split('return;')[0];
   assert.ok(readback);

@@ -268,6 +268,21 @@ test("Wrangler output requires a parseable release id, not upload-only success",
   assert.throws(() => parseWranglerVersion("Uploaded script"), /release Version ID/);
 });
 
+test("Wrangler 4.151 versioned bulk Secret cleanup parses exactly one candidate UUID", () => {
+  const id = 'c28c0af8-e773-4400-9106-425779932fcf';
+  const other = '6e6bdc39-dce9-4549-be78-c853c98e6853';
+  assert.equal(parseWranglerVersion('✨ Success! Created version ' + id +
+    ' with 0 secrets created and 3 secrets deleted.\n' +
+    '➡️ To deploy this version use wrangler versions deploy.'), id);
+  assert.equal(parseWranglerVersion('Current Version ID: '+id+'\n' +
+    '✨ Success! Created version '+id+' with 0 secrets created and 3 secrets deleted.'), id);
+  for (const invalid of [
+    'Uploaded script '+id, 'Created version '+id,
+    'Success! Created version '+id, 'Success! Created version abc with 0 secrets created',
+    'Current Version ID: '+id+'\nSuccess! Created version '+other+' with 0 secrets created',
+  ]) assert.throws(() => parseWranglerVersion(invalid), /unique release Version ID/);
+});
+
 test("readback must match exact newly published Wrangler version", () => {
   const old = { version_id: "00000000-0000-4000-8000-000000000000", deployment_id: "old" };
   const id = "12345678-1234-4234-8234-123456789abc";

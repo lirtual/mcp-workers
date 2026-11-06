@@ -74,6 +74,32 @@ export function verifyCandidateVersion(worker, baseline, candidate) {
   return true;
 }
 
+// The /settings and /secrets endpoints describe the latest uploaded version,
+// which may be an *undeployed* cleanup candidate. The deployed version is the
+// authoritative production baseline; only a separately reviewed candidate
+// may explain the latest configuration after Prepare.
+export function verifyScopedCleanupInventory(worker, baseline, candidate, settings, inventory) {
+  ensureWorker(worker);
+  const deployed = baseline?.resources?.bindings;
+  const latest = candidate ? candidate?.resources?.bindings : deployed;
+  assert(Array.isArray(deployed) && Array.isArray(latest) &&
+    Array.isArray(settings?.bindings) && Array.isArray(inventory),
+    'Version-scoped cleanup inventory unavailable');
+  const actualSecrets = bindings => bindings.filter(b => b.type === 'secret_text').map(b => b.name).sort();
+  assert(new Set(names(deployed)).size === deployed.length &&
+    new Set(names(latest)).size === latest.length &&
+    stable(actualSecrets(deployed)) === stable(expectedNames(worker, true)),
+    'Deployed version Secret inventory differs from reviewed baseline');
+  if (candidate) verifyCandidateVersion(worker, baseline, candidate);
+  const signature = bindings => bindings.map(b => [b.name, b.type]).sort((a, b) => a[0].localeCompare(b[0]));
+  assert(stable(signature(settings.bindings)) === stable(signature(latest)) &&
+    stable(inventory.map(s => s.name).sort()) === stable(actualSecrets(latest)) &&
+    new Set(inventory.map(s => s.name)).size === inventory.length,
+    'Latest Worker Settings/Secrets do not match the reviewed version');
+  return { bindings: deployed, secrets: deployed.filter(b => b.type === 'secret_text')
+    .map(b => ({ name: b.name, type: b.type })) };
+}
+
 export function verifyLiveVersion(deployments, expectedVersion) {
   ensureUuid(expectedVersion);
   const rows = deployments?.deployments;
@@ -160,19 +186,16 @@ async function main() {
   ]);
   assert(current.result?.id === expected, 'Reviewed Worker version does not exist');
   verifyLiveVersion(deploy.result, expected);
-  const bindings = settings.result?.bindings;
-  const secrets = secretInventory.result;
-  assert(Array.isArray(bindings) && Array.isArray(secrets), 'Worker binding inventory unavailable');
-  const sourceBindings = current.result?.resources?.bindings;
-  assert(Array.isArray(sourceBindings) &&
-    stable(sourceBindings.map(b => [b.name, b.type]).sort()) ===
-    stable(bindings.map(b => [b.name, b.type]).sort()), 'Active version/settings binding drift');
-  assert(stable(secrets.map(s => s.name).sort()) === stable(expectedNames(worker, true)),
-    'Live Secret inventory not the exact reviewed baseline');
+  const candidate = candidateId
+    ? (await cloudflare(path + '/versions/' + candidateId)).result : null;
+  if (candidateId) assert(candidate?.id === candidateId,
+    'Cloudflare candidate identity differs from reviewed UUID');
+  const deployed = verifyScopedCleanupInventory(worker, current.result, candidate,
+    settings.result, secretInventory.result);
   const config = readConfiguration(worker, await readFile('apps/' + worker + '/wrangler.jsonc', 'utf8'));
-  // Current baseline must still contain the reviewed legacy Secrets.
-  // Absence is asserted only by the separate post-publish cleanup-readback.
-  verifyBindings(worker, settings.result, secrets, {
+  // Validate the deployed baseline, not latest Settings (which reflect an
+  // undeployed candidate). Post-publish cleanup-readback enforces absence.
+  verifyBindings(worker, { ...settings.result, bindings: deployed.bindings }, deployed.secrets, {
     mode: 'readback',
     sourceConfig: config,
     ...(worker === 'database-mcp-worker' ? {
@@ -185,10 +208,6 @@ async function main() {
     } : {}),
   });
   if (worker === 'workflow-mcp-worker') await verifyWorkflowQuiet();
-  if (candidateId) {
-    const candidate = await cloudflare(path + '/versions/' + candidateId);
-    verifyCandidateVersion(worker, current.result, candidate.result);
-  }
   console.log('Spec 733 cleanup ' + mode + ' PASS; Worker=' + worker +
     '; baseline=' + expected + (candidateId ? '; candidate=' + candidateId : '') +
     '; 100% active baseline unchanged; no Secret values read');
