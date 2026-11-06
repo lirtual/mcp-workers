@@ -3,6 +3,7 @@ import type {Plan,Step} from './plan.ts';
 import {reviewedActionDeployment,canonical,cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
+import {isDynamicMainAction} from './github-action-main.ts';
 import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 
 /** Stateless Bark: the existing D1 reservation is the only send admission.
@@ -83,11 +84,20 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   let trustedWorkflowRef:string|undefined;
   if(sourceId!==undefined){
    const source=plan.steps.find(x=>x.id===sourceId);
-   const pinned=source?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown}|undefined;
+   const pinned=source?.with.action as {repository?:unknown;repositoryId?:unknown;
+     workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   // Keep immutable Tag grants, and allow only the five existing reviewed
+   // main-branch identities. Bark's trusted path list further limits this to
+   // Chrome; the physical Attempt inspector verifies the frozen main SHA.
+   const trustedRef=typeof pinned?.ref==='string'&&
+     (/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)||
+      (typeof pinned.workflowPath==='string'&&
+       isDynamicMainAction(pinned as Parameters<typeof isDynamicMainAction>[0],pinned.ref,plan.name)&&
+       typeof pinned.commitSha==='string'&&/^[a-f0-9]{40}$/.test(pinned.commitSha)));
    if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
       source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
       (typeof pinned.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath))||pinned.type!=='session'||
-      typeof pinned.ref!=='string'||!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref))
+      !trustedRef)
     return deny('untrusted_session_reference');
    trustedWorkflowRef='lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref;
    const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref

@@ -21,7 +21,7 @@ const sourceAction={repository:'lirtual/github-actions',repositoryId:123,
 async function fixture(t:test.TestContext){
  const manifest=await cloudflareActionManifest('bark');
  const chrome:Step={id:'chrome_session',uses:'github.run',needs:[],
-  with:{capability:'github.action',action:sourceAction}};
+  with:{capability:'github.action',action:structuredClone(sourceAction)}};
  const bark:Step={id:'notify_bark',uses:'action.run',needs:['chrome_session'],
   with:{executor:'cloudflare',provider:'bark',action:'bark.send_notification',
    contract_digest:manifest.contract_digest,
@@ -63,6 +63,60 @@ async function fixture(t:test.TestContext){
  const inspect=async()=>({state:'running' as const});
  return {sql,plan,bark,manifest,env,ctx,inspect,sends:()=>sends};
 }
+function useReviewedChromeMain(f:Awaited<ReturnType<typeof fixture>>){
+ f.plan.name='chrome';
+ Object.assign(f.plan.steps[0]!.with.action as object,{
+  repositoryId:1430925009,workflowId:394689653,
+  commitSha:'c'.repeat(40),ref:'refs/heads/main',
+ });
+ f.sql.prepare('UPDATE step_attempts SET workflow_ref=?').run(
+  'lirtual/github-actions/.github/workflows/chrome.yml@refs/heads/main');
+}
+
+test('Bark delivers the signed Chrome main Session URL only once under the existing D1 fence',async t=>{
+ const f=await fixture(t);
+ useReviewedChromeMain(f);
+ assert.deepEqual(await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect),
+  {status:'succeeded',output:{status:'accepted'}});
+ assert.equal(f.sends(),1);
+ const row=f.sql.prepare('SELECT * FROM cloudflare_action_invocations').get() as any;
+ assert.equal(row.source_attempt_id,attemptId);
+ assert(!JSON.stringify(row).includes(rawUrl));
+ assert.equal((await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect)).status,'indeterminate');
+ assert.equal(f.sends(),1,'no duplicate Bark notification');
+});
+
+test('Bark never trusts unrelated branches, SHA, repo/workflow IDs or plan names as Chrome main',async t=>{
+ for(const [name,change] of [
+  ['different branch',(f:any)=>(f.plan.steps[0].with.action.ref='refs/heads/feature')],
+  ['wrong repository ID',(f:any)=>(f.plan.steps[0].with.action.repositoryId=123)],
+  ['wrong workflow ID',(f:any)=>(f.plan.steps[0].with.action.workflowId=394689654)],
+  ['wrong plan name',(f:any)=>(f.plan.name='other')],
+  ['invalid reviewed SHA',(f:any)=>(f.plan.steps[0].with.action.commitSha='not-a-sha')],
+  ['openlist dynamic main',(f:any)=>(f.plan.steps[0].with.action.workflowPath='.github/workflows/openlist.yml')],
+  ['code-server dynamic main',(f:any)=>(f.plan.steps[0].with.action.workflowPath='.github/workflows/code-server.yml')],
+ ] as const){
+  const f=await fixture(t);useReviewedChromeMain(f);change(f);
+  const result=await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect);
+  assert.deepEqual(result,{status:'failed',error_code:'untrusted_session_reference'},name);
+  assert.equal(f.sends(),0,name);
+  assert.equal((f.sql.prepare('SELECT COUNT(*) AS c FROM cloudflare_action_invocations').get() as any).c,0,name);
+ }
+});
+
+test('Bark blocks Chrome main without exact claimed ref or confirmed live physical Run',async t=>{
+ const f=await fixture(t);useReviewedChromeMain(f);
+ f.sql.exec("UPDATE step_attempts SET workflow_ref='lirtual/github-actions/.github/workflows/chrome.yml@refs/tags/v1'");
+ assert.deepEqual(await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect),
+  {status:'failed',error_code:'session_ready_not_trusted'});
+ assert.equal(f.sends(),0);
+ const other=await fixture(t);useReviewedChromeMain(other);
+ assert.deepEqual(await runBarkAction(other.env,other.plan,other.bark,runId,other.ctx,
+   async()=>({state:'unknown' as const})),
+  {status:'failed',error_code:'session_physical_unconfirmed'});
+ assert.equal(other.sends(),0);
+});
+
 test('compiler accepts reviewed Chrome Ready to Bark and rejects unreviewed sources and URL injection',async t=>{
  const f=await fixture(t);
  const reviewed=structuredClone(f.plan);
