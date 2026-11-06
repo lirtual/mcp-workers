@@ -110,16 +110,6 @@ export async function releaseVerifiedSessionSlot(
  const prior=await db.prepare(`SELECT state FROM session_executions
    WHERE run_id=? AND step_id=?`).bind(runId,stepId)
   .first<{state:string}>();
- if(prior?.state==='terminated'){
-  // Verified termination is the only deletion gate. A failed cleanup is
-  // retryable on the next reconciliation, without reviving any data.
-  try{
-   await db.prepare(`DELETE FROM session_runtime_data WHERE run_id=? AND step_id=?
-     AND EXISTS (SELECT 1 FROM session_executions s
-       WHERE s.run_id=? AND s.step_id=? AND s.state='terminated')`)
-    .bind(runId,stepId,runId,stepId).run();
-  }catch{ /* Migration not yet present or transient D1 failure. */ }
- }
  return changed.meta.changes===1?'released':prior?.state==='terminated'?'already_released':'held';
 }
 

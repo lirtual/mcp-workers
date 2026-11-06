@@ -11,6 +11,8 @@ import {isDynamicMainAction} from './github-action-main.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run','http.request'] as const;
+/** New Draft definitions advertise only the public syntax; internal Plans retain github.run. */
+export const PUBLIC_STEP_USES = SUPPORTED_STEP_USES.filter(use=>use!=='github.run');
 export const PLAN_LIMITS = Object.freeze({definitionBytes:32768,maxSteps:32,maxInputs:32,maxParallel:8,maxRepeat:8,maxForeachItems:8,maxForeachTemplateSteps:4,maxWaitSeconds:300,maxEventWaitSeconds:3600});
 export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STEP_USES)[number]{
   return typeof value==='string' && (SUPPORTED_STEP_USES as readonly string[]).includes(value);
@@ -21,6 +23,45 @@ export class PlanError extends Error {
   path: string;
   constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
 }
+/** Narrow source-syntax check used by Draft writes without requiring a valid Plan. */
+function rejectRetiredPublicActions(steps:unknown[]){
+  // A published Plan is immutable and executed directly. Only new source
+  // definitions pass this gate; nested Foreach/repeat templates are included.
+  for(const [i,entry] of steps.entries()){
+    if(!entry||typeof entry!=='object'||Array.isArray(entry))continue;
+    const step=entry as Record<string,unknown>;
+    if(step.uses==='github.run')
+      throw new PlanError('github_run_retired_use_action_run','/steps/'+i+'/uses');
+    const template=step.template;
+    if(!template||typeof template!=='object'||Array.isArray(template))continue;
+    const body=template as Record<string,unknown>;
+    if(body.uses==='github.run')
+      throw new PlanError('github_run_retired_use_action_run','/steps/'+i+'/template/uses');
+    if(Array.isArray(body.steps))for(const [j,child] of body.steps.entries()){
+      if(child&&typeof child==='object'&&!Array.isArray(child)&&
+         (child as {uses?:unknown}).uses==='github.run')
+        throw new PlanError('github_run_retired_use_action_run',
+          '/steps/'+i+'/template/steps/'+j+'/uses');
+    }
+  }
+
+}
+
+export function assertPublicActionSyntax(source:string){
+  // Drafts may be incomplete or invalid while editing. Validation still owns
+  // full compilation; only obsolete executable syntax is rejected on write.
+  if(new TextEncoder().encode(source).byteLength>PLAN_LIMITS.definitionBytes)return;
+  let raw:unknown;
+  try{
+    const doc=YAML.parseDocument(source,{uniqueKeys:true,strict:true});
+    if(doc.errors.length)return;
+    raw=doc.toJS({maxAliasCount:16});
+  }catch{return;}
+  if(raw&&typeof raw==='object'&&!Array.isArray(raw)&&
+     Array.isArray((raw as {steps?:unknown}).steps))
+    rejectRetiredPublicActions((raw as {steps:unknown[]}).steps);
+}
+
 export type Step = {
   id: string; uses: 'result.emit' | 'mcp.call' | 'github.run' | 'action.run' | 'http.request' | 'flow.foreach' | 'flow.child' | 'flow.wait' | 'flow.wait_event' | 'flow.loop'; needs: string[];
   needs_policy?: 'allow_skipped';
@@ -316,7 +357,7 @@ function assertLiteralHttpBody(value:unknown,path:string,depth=0):void{
   for(const [,part] of entries)assertLiteralHttpBody(part,path,depth+1);
 }
 
-export async function compilePlan(source: string|unknown): Promise<{plan:Plan; digest:string}>{
+export async function compilePlan(source: string|unknown, publicDefinition=false): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
     if(new TextEncoder().encode(source).byteLength>PLAN_LIMITS.definitionBytes)throw new PlanError('definition_too_large');
@@ -338,6 +379,8 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   if(o.version!==1)throw new PlanError('invalid_version');
   if(typeof o.name!=='string'||!o.name.trim()||o.name.length>120)throw new PlanError('invalid_name');
   if(!Array.isArray(o.steps)||o.steps.length<1||o.steps.length>PLAN_LIMITS.maxSteps)throw new PlanError('invalid_step_count');
+  if(publicDefinition)rejectRetiredPublicActions(o.steps);
+
   if(o.inputs!==undefined) {const inp=object(o.inputs,'invalid_inputs');if(Object.keys(inp).length>PLAN_LIMITS.maxInputs)throw new PlanError('too_many_inputs');}
   let triggers:WorkflowTrigger[]|undefined;
   if(o.triggers!==undefined){
@@ -1078,3 +1121,6 @@ export async function compilePlan(source: string|unknown): Promise<{plan:Plan; d
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');
   return {plan,digest};
 }
+
+/** Gate public Draft syntax while preserving historical internal Plan compilation. */
+export const compilePublicPlan=(source:string|unknown)=>compilePlan(source,true);

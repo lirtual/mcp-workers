@@ -74,7 +74,7 @@ new Draft/Publish/Run actions.
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
 - **MCP tool calls (`mcp.call`):** the existing read-only operations plus two source-reviewed write operations, IMA `ima_create_note` and `ima_append_note`. Both require the exact pinned Portal endpoint, tool, scope and schema digest plus `accept_target_risks: true`; write additionally requires `approve_mcp_write_execution: true`. Reviewed writes accept at most one top-level Step per Plan: create with literal `content` (1–2048 chars), or append with a literal existing numeric `note_id` (8–24 digits) and literal `content` (1–2048 chars). No folder, dynamic input or Foreach writes. Runtime verifies the live schema and explicitly reviewed tool before a single D1 dispatch reservation. Upstream `readOnlyHint` never authorizes a write; an unknown call result remains `indeterminate` without an automatic resend.
 - **HTTP Action (`http.request`):** one literal, canonical public HTTPS URL and GET/HEAD/POST operation approved verbatim at Publish. No dynamic URL, query, credentials, caller headers or redirect following. A durable D1 fence prevents blind retries, and the independently revocable HTTP Connection prevents older Plans being revived.
-- **GitHub Actions (`github.run`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed initial SHA, workflow, input contract and `approve_heavy_execution: true`; ordinary Actions remain Tag-pinned, while only the five named `lirtual/github-actions` business Workflows may opt into `refs/heads/main` with per-Run CI and exact-SHA verification. Automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
+- **GitHub Actions (`action.run`, `executor: github`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed initial SHA, workflow, input contract and `approve_heavy_execution: true`; ordinary Actions remain Tag-pinned, while only the five named `lirtual/github-actions` business Workflows may opt into `refs/heads/main` with per-Run CI and exact-SHA verification. Automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
 - **Result emission (`result.emit`)** for Workflow results.
 
 No arbitrary shell input or unreviewed repository dispatch is allowed. Workflow cancellation of approved GitHub Actions is separate from stopping admission; native GitHub Run state is reconciled before a physical termination is declared.
@@ -88,6 +88,11 @@ compiler deliberately normalizes this to the **unchanged internal** GitHub
 execution shape; the old `github.run` Published Plan, digest, OIDC, Attempt,
 Ready and physical Session lifecycle remain unchanged. The new spelling does
 **not** grant execution or make a discovered Action runnable automatically.
+The reviewed `action.run.cloudflare` discovery returns `transport_permissions`:
+ordinary bounded JSON is the default; only Litterbox accepts a manually
+selected top-level `workflow_run.file`, and only EnvShare uses a transient
+`workflow_result.delivery_key`. These flags document the existing audited
+authorization/validation gates, not a new file-transport or Secret protocol.
 
 The `workflow_publish.approved_cloudflare_actions` MCP input uses bounded
 provider/action identifier strings, not a fixed client-side enum. This is
@@ -168,7 +173,7 @@ dynamic iteration limits remain unsupported.
 
 ### Optional runtime approval before GitHub dispatch (Spec #176)
 
-A top-level, reviewed `github.run` or `action.run` with `executor: github`
+A top-level, reviewed `action.run` with `executor: github`
 may additionally declare `"approval":{"required":true}`. Only **one** runtime
 gate is supported per Plan; approval is rejected for read-only MCP calls,
 Cloudflare notifications, foreach/repeat templates and unsupported operations.
@@ -379,7 +384,7 @@ arbitrary write tools, a generic Provider registry or cross-Provider revocation.
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_session_data_get`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
+`workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
 
 **GitHub Artifact References (bounded Task metadata):** After a GitHub Task has
 physically succeeded, `workflow_result` may include `artifact_references`
@@ -497,7 +502,7 @@ cancellation are separate status checks; no compensation is promised.
 
 ### Bounded dynamic foreach (pure pipelines and reviewed single Actions)
 
-A `flow: foreach` entry reads a JSON array from declared `inputs` or a completed dependency Step output. The declared `max_items` must be a literal integer from **1 to 8**. Its `template.steps` accepts **one** `result.emit`, read-scoped `mcp.call` or approved `github.run` Task Action, **or 2–4 ordered `result.emit` and reviewed read-only `mcp.call` Steps**. Each child may have safe `if`. Multi-step GitHub Tasks, Session Actions, arbitrary Task input expressions and nested templates remain rejected. The template may reference `item.value`, `item.value.<field>`, `item.index`, normal declared inputs and its controller's dependencies. For example:
+A `flow: foreach` entry reads a JSON array from declared `inputs` or a completed dependency Step output. The declared `max_items` must be a literal integer from **1 to 8**. Its `template.steps` accepts **one** `result.emit`, read-scoped `mcp.call` or approved `action.run` GitHub Task Action, **or 2–4 ordered `result.emit` and reviewed read-only `mcp.call` Steps**. Each child may have safe `if`. Multi-step GitHub Tasks, Session Actions, arbitrary Task input expressions and nested templates remain rejected. The template may reference `item.value`, `item.value.<field>`, `item.index`, normal declared inputs and its controller's dependencies. For example:
 
 ```json
 {
@@ -519,7 +524,7 @@ A bounded template can instead call an **explicitly approved read-only MCP tool*
 
 `flow.foreach_emit`, `flow.foreach_multi_emit`, `flow.foreach_mcp_read`, `flow.foreach_multi_mcp_read` and `flow.foreach_github_task` distinguish these limited modes. A reviewed GitHub Task template uses the existing pinned repository, release SHA/Tag, exact input contract and owner `approve_heavy_execution` with matching `approved_actions`; every item's `if` condition may use `item.value` or `item.index`, but GitHub Task inputs may be static literals **or exact current-item references** such as `{\"ref\":\"item.value\"}` / `{\"ref\":\"item.index\"}`. At Publish the immutable Action contract is re-read and pinned; before the first Task dispatch the complete bounded array is checked for type, choice, required fields and byte limits inside one native snapshot. Each selected Task's normalized input map receives a SHA-256 D1 marker before the unique Attempt, and the registration gate compares this marker before GitHub POST. Only the digest—not raw inputs—is recorded in the marker. Each selected Task has a stable <controller>_<index>_<template-id> identity: existing D1 UNIQUE Attempt registration occurs before the GitHub POST and the original GitHub-issued OIDC, Claim and physical terminal proof determine its final result. A missing native checkpoint cannot dispatch a second physical Task for the same child, and uncertain outcomes remain `indeterminate`; no exactly-once claim is made. One Foreach controller executes its selected Tasks sequentially to stay bounded.
 
-Multi-step GitHub support permits **one reviewed, literal-input `github.run` Task among 2–4 ordered `result.emit` and reviewed read-only `mcp.call` children** per item. The previously shipped `result.emit → github.run → result.emit` path retains its checkpoint semantics. New mixed sequences require every earlier stage to succeed before running another stage; skipped, failed or indeterminate stages never authorize another external effect. Later children can use `steps.<Task-id>.output` only after a signed OIDC receipt and independently verified physical GitHub success. MCP children still use their own frozen arguments and one-shot D1 fences. No dynamic Task inputs, second GitHub Task, Session, write-scope tool or nested flow is supported in this multi-step path.
+Multi-step GitHub support permits **one reviewed, literal-input `action.run` GitHub Task among 2–4 ordered `result.emit` and reviewed read-only `mcp.call` children** per item. The previously shipped `result.emit → github.run → result.emit` path retains its checkpoint semantics. New mixed sequences require every earlier stage to succeed before running another stage; skipped, failed or indeterminate stages never authorize another external effect. Later children can use `steps.<Task-id>.output` only after a signed OIDC receipt and independently verified physical GitHub success. MCP children still use their own frozen arguments and one-shot D1 fences. No dynamic Task inputs, second GitHub Task, Session, write-scope tool or nested flow is supported in this multi-step path.
 
 GitHub **Session** children, arbitrary expression-based Task inputs (exact current-item refs only in the existing *single-Action* template), **multiple GitHub Tasks in one per-item template or write-scope external Actions**, nested loops, write-scope/external-effect while/until loops beyond reviewed MCP reads, child workflows, general arbitrary HTTP Actions and general-purpose Saga compensation remain unsupported. Existing 32-Step budgeting applies to the maximum possible child count; this adds no Worker, D1 migration, external scheduler, service or second orchestration engine.
 
@@ -620,40 +625,36 @@ The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScri
 
 Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.
 
-### Short-lived Session Runtime Data (Spec #288)
+### UU Session Data retirement (Spec #774, non-production source)
 
-Windows UU Lite is the first and only admitted producer. The reviewed
-`lirtual/github-actions/.github/workflows/windows.yml` GitHub-hosted physical
-Session posts a bounded JSON observation to `POST /github/action/session-data`
-with a fresh GitHub OIDC token, its claimed `attemptId`, the explicitly
-allowlisted `uu.credentials` key and a strictly increasing per-Attempt sequence.
-The signed physical Action, immutable Published Plan and owned Ready Session
-must all agree. A successful UI observation is refreshed about every 30 seconds
-(including unchanged values). An observed failure reports a no-ciphertext
-`unavailable` tombstone; network failure cannot instantly revoke an observation
-but can never extend the 90-second server-side TTL.
+New Windows Session revisions no longer install or launch UU Lite, collect its
+connection details, or send signed Session Data. Workflow MCP no longer exposes
+`workflow_session_data_get` or accepts `POST /github/action/session-data`.
+New Drafts, including Foreach templates, use `action.run` with the reviewed
+`executor: github` or `executor: cloudflare`; `github.run` remains only an
+internal representation for compiled and immutable historical Plans. Existing
+`workflow_status` and `workflow_result` expose only ordinary status and safe
+results; they cannot read arbitrary Session credentials.
 
-Use `workflow_session_data_get({run_id,step_id,key:'uu.credentials'})` **only when
-the owner explicitly asks for UU connection details**. It returns `ready` with
-`{device_id,verification_code,share_url?}` and `expires_at`, otherwise `unavailable`
-with a safe reason code. Every successful read confirms a running GitHub physical
-Run and rechecks the current sequence and cancellation fence before returning.
-The existing MCP Portal Bearer remains a **single-owner shared credential**;
-Run/Step IDs are locators, not independent ACLs. These codes enter conversation
-history on an explicit read. Normal `workflow_status`, `workflow_result`, GitHub
-logs, Summary, and Artifacts never include the codes.
+**Production transition is separately authorized.** In this initial non-production
+implementation, the already-applied D1 migration
+`0010_session_runtime_data.sql`, its table, the existing Runtime Secret and
+release preflight/schema checks are intentionally retained. Removing the table
+now would cause the current non-code-only release path to apply the deletion
+migration before old Writers, published UU Tags, paused/resumable Windows Plans
+and rollback dependencies are independently fenced. The later dedicated cleanup
+must append a new migration (never rewrite `0010`), adjust the release/schema
+checks and Secret mappings together, and preserve immutable historical
+Version/Run/Attempt and audit receipts. A previous Worker version depending on
+those resources is not a valid post-cleanup rollback target.
 
-The `0010_session_runtime_data.sql` migration uses only the existing D1; values
-are AES-256-GCM ciphertext with unique IV and Run/Step/Attempt/key/sequence AEAD
-binding. Supply `WORKFLOW_SESSION_RUNTIME_DATA_KEY` as a canonical Base64 32-byte Secret,
-not a Variable. Never commit this key, and never use a shared permanent password
-as its replacement. The existing GitHub Actions manual production release blocks
-on this Secret, migration readiness, no active physical Session during schema
-change, and ordinary approval gates. Worker CI and local D1 tests are necessary
-but **not production acceptance**: only a real, approved temporary Windows Session
-can prove UI collection, renewal, rotation, invalidation and normal cleanup. Keep
-the implementation PR Draft and leave the Spec open until that end-to-end evidence
-is collected. No extra Worker, cleanup Cron, queue, or auth service is introduced.
+Before a separately approved production cutover, enumerate active and paused
+Windows Published Plans, including old Tags that Resume could admit, and
+reconcile live/Unknown GitHub Sessions. Explicitly migrate/revoke old UU
+admission without rewriting historical Plans; only then deploy new Action and
+Consumer versions and verify live Portal tools/list, physical SSH/RDP/Tailscale,
+optional RCA and historical readback. Real Session and cleanup E2E remain
+**Not performed** at source-implementation time.
 
 ### Cloudflare Provider candidate (Spec #392; not deployed)
 

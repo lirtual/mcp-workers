@@ -16,7 +16,7 @@ export const EXPECTED_TOOLS=[
   'workflow_list','workflow_get','workflow_create','workflow_update',
   'workflow_validate','workflow_publish','workflow_approval','workflow_pause',
   'workflow_delete','workflow_resume','workflow_run','workflow_cancel',
-  'workflow_status','workflow_result','workflow_session_data_get',
+  'workflow_status','workflow_result',
 ].sort();
 
 export function portalServerMapping(entry){

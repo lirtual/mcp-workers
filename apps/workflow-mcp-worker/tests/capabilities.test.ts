@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {compilePlan,PlanError,SUPPORTED_STEP_USES,PLAN_LIMITS} from '../src/plan.ts';
+import {compilePlan,PlanError,PUBLIC_STEP_USES,PLAN_LIMITS} from '../src/plan.ts';
 import {workflowCapabilities,WORKFLOW_DEFINITION_SCHEMA,reviewedPortalTools,WORKFLOW_ACTION_WITH_SCHEMAS} from '../src/capabilities.ts';
 import {PRODUCTION_PORTAL_ENDPOINT} from '../src/mcp-public-fetch.ts';
 
@@ -13,7 +13,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   const overview=await workflowCapabilities(env);
   assert.deepEqual(overview.definition_schema,WORKFLOW_DEFINITION_SCHEMA);
   assert.deepEqual(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.uses.enum,
-    [...SUPPORTED_STEP_USES]);
+    [...PUBLIC_STEP_USES]);
   assert.deepEqual(overview.limits,PLAN_LIMITS);
   const catalog=new Map((overview.capability_ids as Array<{id:string;availability:string;description?:string}>).map(x=>[x.id,x]));
   assert.equal(catalog.get('trigger.manual')?.availability,'supported');
@@ -56,7 +56,7 @@ test('overview matches the compiler, exposes only truthful ingress and needs no 
   assert.equal(catalog.get('flow.foreach_github_task')?.availability,'unavailable');
    assert.equal(catalog.get('flow.foreach_emit_task_emit')?.availability,'unavailable');
   assert.equal(PLAN_LIMITS.maxRepeat,8);
-  assert.equal(catalog.get('action.github.run')?.availability,'unavailable');
+  assert.equal(catalog.get('action.run.github')?.availability,'unavailable');
   assert.equal(catalog.get('action.mcp.call')?.availability,'unavailable');
   assert.equal(JSON.stringify(overview).includes('test-only-secret'),false);
   assert.equal((overview.tools as Record<string,string>).validate,'workflow_validate');
@@ -86,7 +86,7 @@ test('nested Flow proposal is discoverable but cannot be published as an executa
 });
 
 test('GitHub Task artifact references are discovered without claiming download authority',async()=>{
-  for(const id of ['action.github.run','action.run.github']){
+  for(const id of ['action.run.github']){
     const detail=await workflowCapabilities(env,id);
     const policy=detail.artifact_reference_policy as {surface:string;result_states:string[];
       authorization:string;restrictions:string[]};
@@ -194,7 +194,7 @@ test('read-only dynamic foreach discovery uses the exact compiler and Portal gra
   assert.equal(plan.steps[0].uses,'flow.foreach');
   assert.equal((detail.template_policy as {scope:string}).scope,'read');
   assert.deepEqual((detail.template_policy as {unsupported:string[]}).unsupported,
-    ['github.run','nested templates','write-scope tools']);
+    ['GitHub Action','nested templates','write-scope tools']);
 });
 
 test('multi-step read-only MCP capability is compiler-backed and requires exact grant',async()=>{
@@ -223,7 +223,7 @@ test('multi-step read-only MCP capability is compiler-backed and requires exact 
 test('GitHub Task dynamic template schema and capability remain scoped',async()=>{
  const detail=await workflowCapabilities(env,'flow.foreach_github_task');
  assert.equal(detail.availability,'no_verified_published_task');
- assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'github.run');
+ assert.equal((detail.template_policy as {allowed_action:string}).allowed_action,'action.run');
  assert.ok((detail.template_policy as {inputs:string}).inputs.includes('item.value'));
  const schema=WORKFLOW_DEFINITION_SCHEMA.properties.steps.items.properties.template as
    {oneOf:Array<{properties?:{steps?:{items?:{
@@ -231,8 +231,10 @@ test('GitHub Task dynamic template schema and capability remain scoped',async()=
    }}}}>};
  const items=schema.oneOf[1]?.properties?.steps?.items;
  assert.ok(items,'Foreach schema must have exactly one child template branch');
- assert.ok(items.properties?.uses?.enum?.includes('github.run'));
- assert.ok(items.allOf?.some(x=>x.if?.properties?.uses?.const==='github.run'));
+ assert.ok(items.properties?.uses?.enum?.includes('action.run'));
+ assert.ok(!items.properties?.uses?.enum?.includes('github.run'));
+ assert.ok(items.allOf?.some(x=>x.if?.properties?.uses?.const==='action.run'));
+ assert.ok(!items.allOf?.some(x=>x.if?.properties?.uses?.const==='github.run'));
 });
 
 test('Agent-readable Action schemas document required executable parameters',()=>{
@@ -282,7 +284,7 @@ test('unsupported features are rejected by the same production compiler',async()
 });
 
 test('GitHub detail reuses existing allowlist and does not need token for empty list',async()=>{
-  const detail=await workflowCapabilities(env,'action.github.run');
+  const detail=await workflowCapabilities(env,'action.run.github');
   assert.deepEqual(detail.discovered_actions,[]);
   assert.equal(detail.availability,'unavailable');
   assert.equal((await workflowCapabilities(env,'action.mcp.call')).availability,'unavailable');
@@ -311,7 +313,7 @@ test('staged Task Foreach self-description reflects only one literal approved Ta
  const detail=await workflowCapabilities(env,'flow.foreach_emit_task_emit');
  assert.equal(detail.availability,'no_verified_published_task');
  const policy=detail.template_policy as {stages:string[];github_task_count:number;github_inputs:string};
- assert.deepEqual(policy.stages,['result.emit','github.run','result.emit']);
+ assert.deepEqual(policy.stages,['result.emit','action.run','result.emit']);
  assert.equal(policy.github_task_count,1);
  assert.equal(policy.github_inputs,'literal_only');
 });
@@ -346,7 +348,6 @@ test('Foreach discovery matches compiler: read-only MCP and GitHub Tasks only',a
    return rule.then.properties.with;
  };
  assert.deepEqual(withFor('mcp.call').properties.scope,{const:'read'});
- assert.deepEqual(withFor('github.run').properties.action.properties.type,{const:'task'});
  assert.deepEqual(withFor('action.run').properties.executor,{const:'github'});
  assert.deepEqual(withFor('action.run').properties.action.properties.type,{const:'task'});
  // These restrictions must not narrow independent top-level Action contracts.
@@ -461,4 +462,17 @@ test('reviewed read-only bounded loop is discoverable but never grants execution
  }]};
  assert.equal((await compilePlan(source)).plan.steps[0].uses,'flow.loop');
  assert.ok(WORKFLOW_DEFINITION_SCHEMA.properties.steps.items);
+});
+
+test('reviewed Cloudflare Action discovery identifies only existing special transports',async()=>{
+ const detail=await workflowCapabilities(env,'action.run.cloudflare');
+ const policy=detail.transport_permissions as {default:string;
+   chatgpt_file:{action:string;parameter:string};
+   one_time_result_proof:{action:string;parameter:string}};
+ assert.equal(policy.default,'bounded_json');
+ assert.deepEqual([policy.chatgpt_file.action,policy.chatgpt_file.parameter],
+  ['litterbox.upload_file','workflow_run.file']);
+ assert.deepEqual([policy.one_time_result_proof.action,policy.one_time_result_proof.parameter],
+  ['envshare.share_text','workflow_result.delivery_key']);
+ assert.ok(!JSON.stringify(policy).includes('arbitrary'));
 });

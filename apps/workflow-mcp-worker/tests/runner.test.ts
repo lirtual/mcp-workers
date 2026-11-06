@@ -666,7 +666,8 @@ test('MCP stateful MCP DELETE cannot delay an already successful tools/call resu
 test('retired fixed GitHub executor is neither publishable nor runnable',async t=>{
   const {service,env,sqlite}=setup(t);
   const retired={id:'old',uses:'github.run',needs:[],with:{capability:'github.workflow.check'}};
-  const draft=await service.create(JSON.stringify({version:1,name:'Unsupported',steps:[retired]}));
+  const retiredPublic={...retired,uses:'action.run',with:{executor:'github',...retired.with}};
+  const draft=await service.create(JSON.stringify({version:1,name:'Unsupported',steps:[retiredPublic]}));
   const validity=await service.validate(draft.workflow_id,1);
   assert.equal(validity.valid,false);
   await assert.rejects(()=>service.publish(draft.workflow_id,1,[],false,true),/unsupported_github_capability/);
@@ -786,8 +787,8 @@ jobs:
       contract:parseGitHubAction(yaml),
     });
     const definition=JSON.stringify({version:1,name:'Pinned Action review',
-      steps:[{id:'check',uses:'github.run',with:{
-        capability:'github.action',action:{...action,ref:'refs/tags/approved-v1',inputs:{}},
+      steps:[{id:'check',uses:'action.run',with:{
+        executor:'github',capability:'github.action',action:{...action,ref:'refs/tags/approved-v1',inputs:{}},
       }}]});
     const created=await service.create(definition);
     const marker=requests.length;
