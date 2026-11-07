@@ -1338,7 +1338,7 @@ jobs:
           fi
           # Unlike wrangler secret delete, versions secret bulk never deploys the candidate.
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions secret bulk "$file" \
-              --name "$SELECTED_WORKER" --message 'Reviewed version-only Secret cleanup candidate; not deployed' >"$log" 2>&1; then
+              --name "$SELECTED_WORKER" --message 'Reviewed version-only Secret cleanup candidate; not deployed' >"$log" 2>&1); then
             # Emit only a bounded error-code classification, never the raw Wrangler log.
             node scripts/manual-worker-release.mjs diagnostic "$log" prepare || true
             echo "Candidate creation failed/unknown; do not retry; inspect Worker version inventory read-only" >&2

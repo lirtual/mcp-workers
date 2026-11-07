@@ -128,3 +128,35 @@ test('Publish preflight verifies the reviewed candidate against latest Settings'
    inventory:bindings.filter(x=>x.type==='secret_text').map(x=>({name:x.name})),
    phase:'publish'}),/UU Secret/);
 });
+
+// Validate the actual YAML block scripts with Bash, rather than only matching
+// their command strings. This caught the failed Spec #774 Prepare Run.
+test('versioned Secret Prepare/Publish YAML run blocks pass bash -n (no execution)',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const {spawnSync}=await import('node:child_process');
+ const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ for(const name of [
+   'Create one unpublished version removing only reviewed legacy Secrets',
+   'Revalidate reviewed candidate immediately before production promotion',
+   'Deploy only the independently approved candidate to 100 percent',
+ ]){
+   const header='      - name: '+name+'\n';
+   assert.equal(release.split(header).length,2,'Expected exactly one reviewed step: '+name);
+   const remaining=release.split(header)[1];
+   const next=remaining.indexOf('\n      - ');
+   const step=remaining.slice(0,next<0?undefined:next);
+   const marker='        run: |\n';
+   assert.equal(step.split(marker).length,2,'Expected one YAML run block: '+name);
+   const body=step.split(marker)[1];
+   const scriptLines=[];
+   for(const line of body.split('\n')){
+     if(!line.trim()){scriptLines.push('');continue;}
+     assert.ok(line.startsWith('          '),'Unexpected YAML indentation in '+name);
+     scriptLines.push(line.slice(10));
+   }
+   const script=scriptLines.join('\n');
+   assert.match(script,/set -euo pipefail/,'Must check the actual Bash script: '+name);
+   const checked=spawnSync('bash',['-n'],{input:script,encoding:'utf8',timeout:5000});
+   assert.equal(checked.status,0,name+': '+(checked.stderr||checked.error?.message||'bash syntax failed'));
+ }
+});
