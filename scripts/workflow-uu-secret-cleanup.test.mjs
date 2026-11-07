@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {verifyUuSecretRequest,verifyUuSecretCandidate,verifyUuSecretInventory,
-  verifyUuSecretD1,verifyUuSecretNative,verifyUuSecretPostflight} from './workflow-uu-secret-cleanup.mjs';
+  verifyUuSecretD1,verifyUuSecretNative,verifyUuSecretPostflight,
+  verifyUuSecretRestoreRequest,verifyUuSecretRestoreInventory} from './workflow-uu-secret-cleanup.mjs';
 const old='414da2d7-a16f-4ce6-9350-013ad4f7166a', next='22222222-2222-4222-8222-222222222222';
 const sha='a'.repeat(40);
 const bindings=[
@@ -159,4 +160,75 @@ test('versioned Secret Prepare/Publish YAML run blocks pass bash -n (no executio
    const checked=spawnSync('bash',['-n'],{input:script,encoding:'utf8',timeout:5000});
    assert.equal(checked.status,0,name+': '+(checked.stderr||checked.error?.message||'bash syntax failed'));
  }
+});
+
+test('restore is restricted to the exact 143 -> 142 IDs and reviewed SHA',()=>{
+ const pair={phase:'restore',sourceSha:sha,expectedSha:sha,
+   activeVersion:'3f27e9ca-790c-4ec9-914e-cb4204a736e6',candidateVersion:old};
+ assert.equal(verifyUuSecretRestoreRequest(pair),true);
+ for(const changes of [
+   {phase:'publish'},{phase:'prepare'},{sourceSha:'b'.repeat(40)},
+   {expectedSha:'b'.repeat(40)},{activeVersion:old},
+   {candidateVersion:next},{candidateVersion:pair.activeVersion},
+ ]){
+   assert.throws(()=>verifyUuSecretRestoreRequest({...pair,...changes}),/UU Secret/);
+ }
+});
+test('restore must have exclusive 143 live, preserve 142 secret and all code/bindings',()=>{
+ const target=baseline(),current=candidate();
+ current.id='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
+ const inventory=bs=>bs.filter(b=>b.type==='secret_text').map(b=>({name:b.name}));
+ const deployed=id=>({deployments:[{versions:[{version_id:id,percentage:100}]}]});
+ const args={current,target,deployment:deployed(current.id),
+   settings:{bindings:current.resources.bindings},
+   inventory:inventory(current.resources.bindings),after:false};
+ assert.equal(verifyUuSecretRestoreInventory(args),true);
+ assert.throws(()=>verifyUuSecretRestoreInventory({...args,after:true}),/UU Secret/);
+ const restored={...args,deployment:deployed(old),after:true};
+ assert.equal(verifyUuSecretRestoreInventory(restored),true);
+ // The Cloudflare latest-created Settings may remain Version 143 after restoring 142.
+ assert.equal(verifyUuSecretRestoreInventory({...restored,
+   settings:{bindings:target.resources.bindings},
+   inventory:inventory(target.resources.bindings)}),true);
+ for(const wrong of [
+   {deployment:deployed(old)}, {current:{...current,id:next}},
+   {target:{...target,id:next}}, {current:{...current,number:144}},
+   {deployment:{deployments:[{versions:[{version_id:current.id,percentage:99}]}]}},
+   {settings:{bindings:target.resources.bindings}},
+   {inventory:inventory(target.resources.bindings)},
+ ]){
+   assert.throws(()=>verifyUuSecretRestoreInventory({...args,...wrong}),/UU Secret/);
+ }
+ for(const change of [
+   c=>c.resources.script.etag='drift',
+   c=>c.resources.bindings.find(b=>b.name==='ACTIONS').service='other',
+   c=>c.resources.bindings.push({name:'UNEXPECTED',type:'secret_text'}),
+ ]){
+   const c=structuredClone(current);change(c);
+   assert.throws(()=>verifyUuSecretRestoreInventory({...args,current:c}),/UU Secret/);
+ }
+ const noKey=structuredClone(target);
+ noKey.resources.bindings=noKey.resources.bindings.filter(x=>x.name!=='WORKFLOW_SESSION_RUNTIME_DATA_KEY');
+ assert.throws(()=>verifyUuSecretRestoreInventory({...args,target:noKey}),/UU Secret/);
+ assert.throws(()=>verifyUuSecretRestoreInventory({...restored,
+   deployment:{deployments:[{versions:[{version_id:old,percentage:50},{version_id:current.id,percentage:50}]}]}}),/UU Secret/);
+});
+test('restore release entry is separate and cannot dispatch D1 or general Worker release',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const y=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+ const release=y.split('  legacy-secret-cleanup:')[1];
+ assert.match(y,/          - restore/);
+ assert.match(release,/inputs.legacy_secret_cleanup_mode == 'restore' && inputs.worker == 'workflow-mcp-worker'/);
+ assert.match(release,/inputs.uu_session_secret_cleanup == true/);
+ assert.match(release,/workflow-mcp-worker:restore/);
+ assert.match(release,/3f27e9ca-790c-4ec9-914e-cb4204a736e6/);
+ assert.match(release,/414da2d7-a16f-4ce6-9350-013ad4f7166a/);
+ assert.match(release,/workflow-uu-secret-cleanup.mjs restore-preflight/);
+ assert.match(release,/workflow-uu-secret-cleanup.mjs restore-readback/);
+ assert.match(release,/group: worker-release-/);
+ assert.match(release,/cancel-in-progress: false/);
+ const deploy=y.slice(y.indexOf('  deploy:'),y.indexOf('  legacy-secret-cleanup:'));
+ assert.match(deploy,/inputs.legacy_secret_cleanup_mode == 'none'/);
+ assert.match(deploy,/inputs.uu_session_secret_cleanup != true/);
+ assert.doesNotMatch(release,/pnpm exec wrangler d1 migrations apply|gh secret delete/);
 });
