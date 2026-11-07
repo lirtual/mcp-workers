@@ -52,28 +52,34 @@ on:
         type: boolean
         default: false
       uu_cleanup_approved:
-        description: 'Spec 774: separate approval for exact UU empty-table Migration, only after all normal Migration gates pass'
+        description: 'Spec774: authorize destructive empty UU table only, no Worker publish'
+        type: boolean
+        required: false
+        default: false
+      uu_cleanup_expected_sha:
+        description: 'Spec774: exact independently reviewed main SHA'
+        type: string
+        required: false
+        default: ''
+      uu_cleanup_expected_active_version:
+        description: 'Spec774: exact active Version 143 UUID'
+        type: string
+        required: false
+        default: ''
+      uu_session_secret_cleanup:
+        description: 'Spec 774: separately authorized one-key UU runtime Secret retirement via existing versioned Prepare/Publish'
         required: false
         type: boolean
         default: false
-      uu_cleanup_expected_sha:
-        description: 'Spec 774: separately reviewed exact main SHA'
-        required: false
-        type: string
-        default: ''
-      uu_cleanup_expected_active_version:
-        description: 'Spec 774: separately reviewed currently active 100% Worker version UUID'
-        required: false
-        type: string
-        default: ''
       legacy_secret_cleanup_mode:
-        description: 'Spec 733: none, prepare un-deployed version, or publish reviewed SSH/Workflow/Database candidate'
+        description: 'Spec 733/774: none, Prepare, reviewed candidate Publish, or exact Workflow 143 to 142 restore'
         required: true
         type: choice
         options:
           - none
           - prepare
           - publish
+          - restore
         default: none
       legacy_cleanup_expected_sha:
         description: 'Spec 733: exact Owner-reviewed main SHA for cleanup'
@@ -110,7 +116,8 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
-          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true }}
+          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: workflow-mcp-worker
@@ -145,14 +152,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs preflight
-      - name: Block legacy Actions migration prepare once destructive UU migration is staged
-        shell: bash
+      - name: Block legacy Actions migration preparation with staged destructive 0021
         run: |
           set -euo pipefail
-          [[ ! -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]] || {
-            echo 'Former Actions migration prepare cannot apply Spec 774 DROP' >&2
-            exit 1
-          }
+          [[ ! -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]] ||
+            { echo 'Spec774 UU DROP requires its isolated job' >&2; exit 1; }
 
       - name: Apply existing Workflow D1 migrations and freeze only 0018 admission gate (no release)
         shell: bash
@@ -178,6 +182,7 @@ jobs:
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
           inputs.database_expected_release_sha == '' }}
     runs-on: ubuntu-latest
@@ -248,7 +253,10 @@ jobs:
 
   checks:
     name: Pre-release checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_to_production == true && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      (inputs.deploy_to_production == true ||
+       (inputs.uu_cleanup_approved == true && inputs.deploy_to_production == false)) &&
+      inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -264,6 +272,8 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           inputs.legacy_secret_cleanup_mode == 'none' &&
+          inputs.uu_session_secret_cleanup != true &&
+          inputs.uu_cleanup_approved != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
@@ -400,7 +410,6 @@ jobs:
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
           WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.SESSION_RUNTIME_DATA_KEY || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
           DATABASE_B2B_PASSWORD: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_B2B_PASSWORD || '' }}
@@ -789,7 +798,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           migrations=(apps/workflow-mcp-worker/migrations/*.sql)
-          [[ "${#migrations[@]}" -eq 21 ]] || { echo 'Code-only release requires post-retirement migration inventory' >&2; exit 1; }
+          [[ "${#migrations[@]}" -eq 21 ]] || { echo 'Code-only release requires exact reviewed migration inventory' >&2; exit 1; }
 
       - name: Verify Workflow release configuration and remote D1 readiness
         if: inputs.worker == 'workflow-mcp-worker'
@@ -838,7 +847,6 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
               (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
-              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
               (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
@@ -872,32 +880,41 @@ jobs:
              (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
-      # Spec 774: the new DROP migration is NEVER automatically eligible for
-      # a generic release. Check the exact approved SHA/version and the full
-      # historical migration gate without changing any historical receipts.
-      - name: Fence Spec 774 UU table retirement before any migration
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
-        shell: bash
-        env:
-          UU_CLEANUP_APPROVED: ${{ inputs.uu_cleanup_approved }}
-          UU_CLEANUP_EXPECTED_SHA: ${{ inputs.uu_cleanup_expected_sha }}
-          UU_CLEANUP_EXPECTED_ACTIVE_VERSION: ${{ inputs.uu_cleanup_expected_active_version }}
-          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          [[ -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]]
-          [[ "$UU_CLEANUP_APPROVED" == "true" ]] || {
-            echo 'Spec 774 DROP requires separate explicit approval; refusing generic Workflow release' >&2
-            exit 1
-          }
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          node scripts/workflow-uu-cleanup-gate.mjs
-
       # Only the existing production release lock and GitHub Environment can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
+      - name: Enforce original all-Workflow migration gate before any ordinary D1 writes
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
+            node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
+
+      - name: Prevent normal Workflow release from applying pending UU DROP
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
+              "SELECT count(*) AS v21_applied FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql'") |
+            node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{
+              const j=JSON.parse(s);
+              if(!Array.isArray(j)||j.length!==1||j[0]?.success!==true||
+                j[0]?.results?.length!==1||j[0].results[0]?.v21_applied!==1)
+                process.exit(1);
+              console.log("Only the isolated retirement job may first apply 0021");
+            })'
+
       - name: Apply complete Workflow D1 migrations
         if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
         shell: bash
@@ -905,7 +922,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'
-          UU_REQUIRE_CLEANUP_COMPLETE: 'true'
           WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
           WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
           WORKFLOW_THIRD_TERMINAL_RUN_ID: ${{ steps.terminal_third.outputs.third_terminal_run_id }}
@@ -947,7 +963,6 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
               (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
-              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
               (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
@@ -1263,17 +1278,92 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-browser-portal.mjs
 
+  workflow-uu-table-retirement:
+    name: Spec #774 single-table UU retirement (no Worker deployment)
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' && github.actor == 'lirtual' &&
+          inputs.worker == 'workflow-mcp-worker' &&
+          inputs.uu_cleanup_approved == true &&
+          inputs.deploy_to_production == false &&
+          inputs.workflow_code_only != true &&
+          inputs.uu_session_secret_cleanup != true &&
+          inputs.legacy_secret_cleanup_mode == 'none' &&
+          inputs.actions_migration_prepare != true &&
+          inputs.actions_gate_reopen != true &&
+          inputs.actions_old_ingress_quiesced != true &&
+          needs.checks.result == 'success' &&
+          needs.checks.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-mcp-worker
+    concurrency:
+      group: worker-release-workflow-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      UU_CLEANUP_APPROVED: ${{ inputs.uu_cleanup_approved }}
+      UU_CLEANUP_EXPECTED_SHA: ${{ inputs.uu_cleanup_expected_sha }}
+      UU_CLEANUP_EXPECTED_ACTIVE_VERSION: ${{ inputs.uu_cleanup_expected_active_version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact Owner-reviewed source before credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$UU_CLEANUP_EXPECTED_SHA" ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Prove isolated empty UU table and unchanged history (read-only)
+        id: preflight
+        run: node scripts/workflow-uu-cleanup-gate.mjs before
+      - name: Apply exactly pending 0021 via normal Wrangler D1 migration registry
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          node scripts/workflow-uu-cleanup-gate.mjs before
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
+      - name: Independently verify UU table absent and historical data unchanged
+        if: ${{ always() && steps.preflight.outcome == 'success' &&
+                 (steps.apply.outcome == 'success' || steps.apply.outcome == 'failure') }}
+        run: node scripts/workflow-uu-cleanup-gate.mjs after
+
   legacy-secret-cleanup:
-    name: Spec 733 protected old runtime Secret cleanup
+    name: Spec 733/774 protected versioned Secret cleanup
     needs: checks
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.deploy_to_production == true &&
           needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
           (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'database-mcp-worker') &&
-          (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish') &&
+          (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish' ||
+           (inputs.legacy_secret_cleanup_mode == 'restore' && inputs.worker == 'workflow-mcp-worker' &&
+            inputs.uu_session_secret_cleanup == true)) &&
           inputs.workflow_code_only != true && inputs.actions_old_ingress_quiesced != true &&
-          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
+          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
+          inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.worker }}
@@ -1285,6 +1375,8 @@ jobs:
     env:
       SELECTED_WORKER: ${{ inputs.worker }}
       LEGACY_CLEANUP_MODE: ${{ inputs.legacy_secret_cleanup_mode }}
+      UU_SESSION_SECRET_CLEANUP: ${{ inputs.uu_session_secret_cleanup }}
+      WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
       EXPECTED_SOURCE_SHA: ${{ inputs.legacy_cleanup_expected_sha }}
       EXPECTED_ACTIVE_VERSION: ${{ inputs.legacy_cleanup_expected_active_version }}
       CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
@@ -1304,9 +1396,25 @@ jobs:
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
           [[ "$EXPECTED_ACTIVE_VERSION" =~ ^[a-f0-9-]{36}$ ]]
           case "$SELECTED_WORKER:$LEGACY_CLEANUP_MODE" in
-            ssh-mcp-worker:prepare|ssh-mcp-worker:publish|workflow-mcp-worker:prepare|workflow-mcp-worker:publish|database-mcp-worker:prepare|database-mcp-worker:publish) ;;
+            ssh-mcp-worker:prepare|ssh-mcp-worker:publish|workflow-mcp-worker:prepare|workflow-mcp-worker:publish|workflow-mcp-worker:restore|database-mcp-worker:prepare|database-mcp-worker:publish) ;;
             *) exit 1 ;;
           esac
+          if [[ "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
+            [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
+               "${{ inputs.workflow_code_only }}" != 'true' &&
+               "${{ inputs.actions_migration_prepare }}" != 'true' &&
+               "${{ inputs.actions_gate_reopen }}" != 'true' &&
+               "${{ inputs.actions_old_ingress_quiesced }}" != 'true' ]] || {
+              echo 'UU Secret cleanup is limited to the existing protected Workflow Worker release' >&2
+              exit 1
+            }
+          fi
+          if [[ "$LEGACY_CLEANUP_MODE" == 'restore' ]]; then
+            [[ "$UU_SESSION_SECRET_CLEANUP" == 'true' &&
+               "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
+               "$EXPECTED_ACTIVE_VERSION" == '3f27e9ca-790c-4ec9-914e-cb4204a736e6' &&
+               "$CANDIDATE_VERSION_ID" == '414da2d7-a16f-4ce6-9350-013ad4f7166a' ]]
+          fi
           if [[ "$LEGACY_CLEANUP_MODE" == 'prepare' ]]; then
             [[ -z "$CANDIDATE_VERSION_ID" ]]
           else
@@ -1326,6 +1434,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Validate active version, exact Secret inventory and Workflow quiescence (read-only)
+        if: inputs.uu_session_secret_cleanup != true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1334,6 +1443,13 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
+
+      - name: Verify scoped UU Secret retirement and original historical proof (read-only)
+        if: inputs.uu_session_secret_cleanup == true && inputs.legacy_secret_cleanup_mode != 'restore'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/workflow-uu-secret-cleanup.mjs preflight "$SELECTED_WORKER"
 
       - name: Create one unpublished version removing only reviewed legacy Secrets
         if: inputs.legacy_secret_cleanup_mode == 'prepare'
@@ -1351,6 +1467,9 @@ jobs:
           trap 'rm -f "$file" "$log"' EXIT
           if [[ "$SELECTED_WORKER" == 'ssh-mcp-worker' ]]; then
             printf '%s\n' '{"ENCRYPTION_KEY":null}' > "$file"
+          elif [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
+               "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
+            printf '%s\n' '{"WORKFLOW_SESSION_RUNTIME_DATA_KEY":null}' > "$file"
           elif [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' ]]; then
             printf '%s\n' '{"MCP_PORTAL_CLIENT_SECRET":null,"SESSION_RUNTIME_DATA_KEY":null}' > "$file"
           else
@@ -1358,7 +1477,7 @@ jobs:
           fi
           # Unlike wrangler secret delete, versions secret bulk never deploys the candidate.
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions secret bulk "$file" \
-              --name "$SELECTED_WORKER" --message 'Spec 733 reviewed legacy runtime Secret cleanup; candidate only') >"$log" 2>&1; then
+              --name "$SELECTED_WORKER" --message 'Reviewed version-only Secret cleanup candidate; not deployed' >"$log" 2>&1); then
             # Emit only a bounded error-code classification, never the raw Wrangler log.
             node scripts/manual-worker-release.mjs diagnostic "$log" prepare || true
             echo "Candidate creation failed/unknown; do not retry; inspect Worker version inventory read-only" >&2
@@ -1368,7 +1487,7 @@ jobs:
           echo "candidate_version_id=$candidate" >> "$GITHUB_OUTPUT"
 
       - name: Verify unpublished candidate and unchanged 100% active version
-        if: inputs.legacy_secret_cleanup_mode == 'prepare'
+        if: inputs.legacy_secret_cleanup_mode == 'prepare' && inputs.uu_session_secret_cleanup != true
         env:
           CANDIDATE_VERSION_ID: ${{ steps.prepare.outputs.candidate_version_id }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -1378,6 +1497,14 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
+
+      - name: Verify scoped unpublished UU Secret candidate and unchanged active version
+        if: inputs.legacy_secret_cleanup_mode == 'prepare' && inputs.uu_session_secret_cleanup == true
+        env:
+          CANDIDATE_VERSION_ID: ${{ steps.prepare.outputs.candidate_version_id }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/workflow-uu-secret-cleanup.mjs candidate "$SELECTED_WORKER"
 
       - name: Revalidate reviewed candidate immediately before production promotion
         if: inputs.legacy_secret_cleanup_mode == 'publish'
@@ -1393,11 +1520,22 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
-          node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
+          if [[ "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
+            node scripts/workflow-uu-secret-cleanup.mjs preflight "$SELECTED_WORKER"
+          else
+            node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
+            node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
+          fi
+
+      - name: Verify exact Version 143 to 142 restore conditions (read-only)
+        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/workflow-uu-secret-cleanup.mjs restore-preflight "$SELECTED_WORKER"
 
       - name: Deploy only the independently approved candidate to 100 percent
-        if: inputs.legacy_secret_cleanup_mode == 'publish'
+        if: inputs.legacy_secret_cleanup_mode == 'publish' || inputs.legacy_secret_cleanup_mode == 'restore'
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -1416,7 +1554,7 @@ jobs:
           fi
 
       - name: Verify exact live version, retained canonical bindings and old Secret absence
-        if: inputs.legacy_secret_cleanup_mode == 'publish'
+        if: inputs.legacy_secret_cleanup_mode == 'publish' && inputs.uu_session_secret_cleanup != true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1431,3 +1569,18 @@ jobs:
           DATABASE_QUERY_TIMEOUT_MS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_QUERY_TIMEOUT_MS || '' }}
           DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
         run: node scripts/manual-worker-release.mjs cleanup-readback "$SELECTED_WORKER"
+
+      - name: Verify UU Secret removed from the exact 100 percent active version
+        if: inputs.legacy_secret_cleanup_mode == 'publish' && inputs.uu_session_secret_cleanup == true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
+        run: node scripts/workflow-uu-secret-cleanup.mjs readback "$SELECTED_WORKER"
+
+      - name: Verify exact Version 142 restored to 100 percent (read-only)
+        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/workflow-uu-secret-cleanup.mjs restore-readback "$SELECTED_WORKER"

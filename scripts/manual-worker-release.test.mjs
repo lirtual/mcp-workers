@@ -409,8 +409,9 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
     "historical SSH Environment Secret must map to the canonical runtime binding");
   assert.ok(secretStep.includes("WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}"),
     "historical Workflow Portal Secret must map to the canonical runtime binding");
-  assert.ok(secretStep.includes("WORKFLOW_SESSION_RUNTIME_DATA_KEY: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.SESSION_RUNTIME_DATA_KEY || '' }}"),
-    "historical Workflow session Secret must map to the canonical runtime binding");
+  assert.ok(!secretStep.includes("WORKFLOW_SESSION_RUNTIME_DATA_KEY:") &&
+    !secretStep.includes("secrets.SESSION_RUNTIME_DATA_KEY"),
+    "retired UU GitHub source must not be restored during normal Worker releases");
   assert.equal(secretStep.includes('DATABASE_KEY_ID'),false,'retired D1 key is not staged');
   assert.equal(secretStep.includes("secrets.DATABASE_CONFIG"), false,
     "releases must never restage the retired whole-catalog Secret");
@@ -882,7 +883,6 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
@@ -891,10 +891,12 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  assert.throws(()=>check([...bindings,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"}],
+    [...secrets,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY"}]),/Unexpected runtime Secret/);
   assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),
     /Service Binding/);
   assert.throws(()=>check(bindings.map(x=>x.name==="ACTIONS"?{...x,entrypoint:"UnexpectedEntrypoint"}:x)),
@@ -913,7 +915,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   for(const name of ["DB","WORKFLOW"]){
     assert.throws(()=>check(bindings.filter(x=>x.name!==name)),/binding drift/);
   }
-  for(const name of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"]){
+  for(const name of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]){
     assert.throws(()=>check(bindings,secrets.filter(x=>x.name!==name)),/Secret missing/);
   }
   assert.throws(()=>check(bindings.map(x=>x.name==="WORKFLOW_MCP_PORTAL_CLIENT_ID" ?
@@ -983,7 +985,6 @@ test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bi
   // canonical Worker runtime binding. No canonical GitHub Secret or fallback.
   for(const [canonical,legacy,worker] of [
     ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","MCP_PORTAL_CLIENT_SECRET","workflow-mcp-worker"],
-    ["WORKFLOW_SESSION_RUNTIME_DATA_KEY","SESSION_RUNTIME_DATA_KEY","workflow-mcp-worker"],
     ["SSH_ENCRYPTION_KEY","ENCRYPTION_KEY","ssh-mcp-worker"],
   ]) {
     const selected=lines.filter(line=>line.trimStart().startsWith(canonical+": "));
@@ -1008,7 +1009,6 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
@@ -1017,7 +1017,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="WORKFLOW_MCP_PORTAL_ENDPOINT"
@@ -1033,14 +1033,13 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
     {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
   ];
-  const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+  const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const verify=list=>verifyBindings("workflow-mcp-worker",{...settings,bindings:list},secrets,{mode:"readback"});
   assert.equal(verify(bindings),true);
@@ -1050,12 +1049,11 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
 
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
-    "WORKFLOW_GITHUB_DISPATCH_TOKEN","WORKFLOW_SESSION_RUNTIME_DATA_KEY"].map(name=>({name}));
+    "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const bindings=[
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
-    {name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-s1",class_name:"WorkflowOrchestrator"},
@@ -1094,8 +1092,7 @@ test("worker release documentation stays aligned with the selected-Worker contra
       const githubName={
         SSH_ENCRYPTION_KEY:"ENCRYPTION_KEY",
         WORKFLOW_MCP_PORTAL_CLIENT_SECRET:"MCP_PORTAL_CLIENT_SECRET",
-        WORKFLOW_SESSION_RUNTIME_DATA_KEY:"SESSION_RUNTIME_DATA_KEY",
-      }[secret] ?? secret;
+              }[secret] ?? secret;
       assert.ok(row.includes("`" + githubName + "`"),
         worker + " docs omit GitHub Secret input " + githubName);
       assert.ok(row.includes("`" + secret + "`"),
@@ -1188,7 +1185,7 @@ test('production release external actions use immutable commit SHAs', () => {
 
 test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup requires negative readback', () => {
   const required=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET',
-    'WORKFLOW_GITHUB_DISPATCH_TOKEN','WORKFLOW_SESSION_RUNTIME_DATA_KEY'];
+    'WORKFLOW_GITHUB_DISPATCH_TOKEN'];
   const secrets=required.map(name=>({name}));
   const old=['MCP_PORTAL_CLIENT_SECRET','SESSION_RUNTIME_DATA_KEY'];
   const bindings=[...required.map(name=>({name,type:'secret_text'})),
@@ -1243,7 +1240,7 @@ test('Spec 733 Database cleanup readback is exact and does not narrow normal mig
 });
 
 test('Spec 733 Workflow Portal identity and grants must retain exact approved values across the rename', () => {
-  const req=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET','WORKFLOW_GITHUB_DISPATCH_TOKEN','WORKFLOW_SESSION_RUNTIME_DATA_KEY'];
+  const req=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET','WORKFLOW_GITHUB_DISPATCH_TOKEN'];
   const secrets=req.map(name=>({name}));
   const grants=JSON.stringify([{repository:'lirtual/github-actions',repositoryId:1430925009,
     commitSha:'d0774dde3a87c7722a939403dbda45507f44b8e0'}]);

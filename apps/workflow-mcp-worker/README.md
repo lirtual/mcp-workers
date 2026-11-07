@@ -320,7 +320,7 @@ Environment bindings and credentials:
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `WORKFLOW_MCP_PORTAL_CLIENT_ID` / `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
-- `WORKFLOW_SESSION_RUNTIME_DATA_KEY` as a canonical Base64-encoded 32-byte AES-GCM runtime key, sourced from the existing `SESSION_RUNTIME_DATA_KEY` GitHub Environment Secret by the protected Release Worker. Do not replace the key: changing it would invalidate previously stored ciphertext. Historic decryption remains a separate production acceptance gate.
+- Historical UU-only `WORKFLOW_SESSION_RUNTIME_DATA_KEY`: Version 142 still retains the canonical AES-GCM key binding from GitHub Environment `SESSION_RUNTIME_DATA_KEY` for the existing production/recovery baseline. New #774 source no longer requires or uploads it; Version 143 is an undeployed candidate without this binding. Do not rotate/delete the old source while recovery dependencies remain.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
 - `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` is the runtime Worker binding populated during the protected release from identically named GitHub **Environment `workflow-mcp-worker` Variable** (not a repository-level Variable). The current `scripts/worker-release-variables.mjs` validator requires each JSON entry to contain exactly `{repository,repositoryId,commitSha}`, where `commitSha` is a 40-character Git SHA. The Workflow runtime ignores that legacy `commitSha` for discovery and verifies the current default-branch revision and YAML by SHA; each execution still requires its exact reviewed Published Plan pin. After Spec #607, the approved identity is `lirtual/github-actions` / Repository ID `1430925009`. Change the source Environment Variable only through the owner-approved configuration path, then use the existing protected GitHub Actions release to propagate it; do not patch Cloudflare Worker settings directly.
 
@@ -625,7 +625,7 @@ The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScri
 
 Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.
 
-### UU Session Data retirement (Spec #774, non-production source)
+### UU Session Data retirement (Spec #774; runtime live, persistent cleanup pending)
 
 New Windows Session revisions no longer install or launch UU Lite, collect its
 connection details, or send signed Session Data. Workflow MCP no longer exposes
@@ -636,25 +636,26 @@ internal representation for compiled and immutable historical Plans. Existing
 `workflow_status` and `workflow_result` expose only ordinary status and safe
 results; they cannot read arbitrary Session credentials.
 
-**Production transition is separately authorized.** In this initial non-production
-implementation, the already-applied D1 migration
-`0010_session_runtime_data.sql`, its table, the existing Runtime Secret and
-release preflight/schema checks are intentionally retained. Removing the table
-now would cause the current non-code-only release path to apply the deletion
-migration before old Writers, published UU Tags, paused/resumable Windows Plans
-and rollback dependencies are independently fenced. The later dedicated cleanup
-must append a new migration (never rewrite `0010`), adjust the release/schema
-checks and Secret mappings together, and preserve immutable historical
-Version/Run/Attempt and audit receipts. A previous Worker version depending on
-those resources is not a valid post-cleanup rollback target.
+**Production runtime cutover completed under separate approval.** The
+[Workflow release #42276441963](https://github.com/lirtual/mcp-workers/actions/runs/42276441963)
+deployed Version 142; [MCP Acceptance #42277128931](https://github.com/lirtual/mcp-workers/actions/runs/42277128931)
+and Portal readback verified 19 tools, old Session Data HTTP 404, and absence
+of `workflow_session_data_get`. Old UU-tagged Windows RCA Published Plan was
+tombstoned, preserving immutable versions and history. The formal Windows
+Workflow is Active; [one 10-minute real Session](https://github.com/lirtual/github-actions/actions/runs/42277981514)
+completed with SSH/RDP/Tailscale setup, Signed Ready and physical cleanup.
+Interactive external SSH/RDP client logins were Not performed; optional RCA
+client E2E was Waived.
 
-Before a separately approved production cutover, enumerate active and paused
-Windows Published Plans, including old Tags that Resume could admit, and
-reconcile live/Unknown GitHub Sessions. Explicitly migrate/revoke old UU
-admission without rewriting historical Plans; only then deploy new Action and
-Consumer versions and verify live Portal tools/list, physical SSH/RDP/Tailscale,
-optional RCA and historical readback. Real Session and cleanup E2E remain
-**Not performed** at source-implementation time.
+Persistent cleanup is a separate stage: applied
+`0010_session_runtime_data.sql` and existing D1 table (0 rows), historical
+Published Version/Run/Attempt receipts, and the old GitHub/Cloudflare Secret
+remain. D1 has 12 historical indeterminate Runs, 12 unfinished Steps and one
+claimed Attempt; the unmodified global Migration gate blocks the destructive
+[Draft PR #777](https://github.com/lirtual/mcp-workers/pull/777).
+Neither code-only deployment nor Secret version promotion authorizes DROP.
+Old versions requiring the removed resources must not be treated as post-cleanup
+rollback targets.
 
 ### Cloudflare Provider candidate (Spec #392; not deployed)
 
@@ -798,46 +799,81 @@ provenance. The dedicated test Workflow is paused. See
 [the accepted file boundary](../../docs/spec35-litterbox-file-upload.md)
 and [Spec #35 evidence](https://github.com/lirtual/cloudflare-actions/issues/35).
 
-Spec #733 amended 2026-11-06: the existing GitHub Environment Secrets `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` are **permanent single-source naming exceptions**. The existing protected full release stages these values only as runtime `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` and `WORKFLOW_SESSION_RUNTIME_DATA_KEY`. There is no new canonical GitHub Secret, precedence rule, copy operation or parallel Secret fallback. The separately scoped Variables may retain their reviewed compatibility mapping. Runtime bindings, original Portal credentials, session AES key, OIDC audience, grants, published Plans and historic ciphertext must remain unchanged until specifically approved production cutover and real decryption acceptance. The first migration must use a fully approved protected release, not `workflow_code_only`; old Cloudflare bindings require separately authorized cleanup after real verification. No credential rotation, production deploy or GitHub Settings mutation is authorized by this documentation.
+Historical Spec #733 mapping decision (2026-11-06; now superseded for the UU-only key by #774): the existing GitHub Environment Secrets `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` are **permanent single-source naming exceptions**. The existing protected full release stages these values only as runtime `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` and `WORKFLOW_SESSION_RUNTIME_DATA_KEY`. There is no new canonical GitHub Secret, precedence rule, copy operation or parallel Secret fallback. The separately scoped Variables may retain their reviewed compatibility mapping. Runtime bindings, original Portal credentials, session AES key, OIDC audience, grants, published Plans and historic ciphertext must remain unchanged until specifically approved production cutover and real decryption acceptance. The first migration must use a fully approved protected release, not `workflow_code_only`; old Cloudflare bindings require separately authorized cleanup after real verification. No credential rotation, production deploy or GitHub Settings mutation is authorized by this documentation.
 
-### Spec #774：UU 历史表和专属密钥的独立清理准备（非生产）
 
-本分支仅准备 0021_retire_uu_session_data.sql、额外的只读准入门禁
-和纯函数级 Secret 候选版本检查。严禁将 PR 合并视为生产授权。
-保留已应用的 0010_session_runtime_data.sql 与历史 Version/Run/Attempt。
+### Spec #774：UU 专属 Secret 当前状态（Prepare Pass，Publish Blocked）
 
-- 清理的唯一计划入口是原受保护 Release Worker：选择 workflow-mcp-worker，
-  设置 workflow_code_only=false、legacy_secret_cleanup_mode=none、
-  uu_cleanup_approved=true，并分别提供新审核的 main 完整 SHA 和 100%
-  活动 Worker Version UUID。现有 Owner、CI、Release 锁和 Environment
-  保护均保持不变。
-- 一旦新 0021 文件进入 Release 源码，普通 Workflow 完整发布必须拒绝
-  自动应用迁移；旧 Actions migration-prepare 也必须拒绝。
-- 发布前须保证旧表零记录、正式 Windows Workflow 为 Paused、旧 UU
-  RCA Plan 已墓碑退役、历史 Version 保留、零活动物理 Session 及未决
-  Windows Attempt、准确的 Worker 绑定/版本；同时检查 Cloudflare 原生
-  Workflow 的 queued/running/paused/waiting/rollingBack 实例全部清零，
-  分页结果完整且无未知下一页。最重要的是原有严格通用
-  verifyWorkflowMigrationReadiness 必须整体 Pass，不能靠本专项检查例外处理
-  历史 indeterminate 状态。
-- 当前实际生产仍有 12 个历史 indeterminate Run、12 个未终态 Step、
-  1 个未终态 Attempt。现有通用 Migration 门禁应拒绝这次 DROP。
-  禁止改写回执、调低强制门禁或通过 D1 API 等别的路径绕过。
-- 仅在真实生产 21 项 Migration 和删除原表的独立回读均 Pass 后，才能
-  另行审查当前 Worker 的 WORKFLOW_SESSION_RUNTIME_DATA_KEY 绑定。
-  单键 Secret 候选版本必须保持原代码 etag、Handler 和其他 10 个绑定
-  精确一致，并比较全部未删除的资源元数据（不读取 Secret 原值）。
-  该候选检查目前是离线纯函数保护验证，尚未接入受保护的实际
-  Secret Prepare/Publish 发布路径。准备代码不会执行 Secret 删除、
-  版本 Prepare 或 Publish；
-  上述高风险操作须另行授权及实现受保护发布步骤。
-- 最后才可通过官方 GitHub 管理流程删除 Environment 来源密钥
-  SESSION_RUNTIME_DATA_KEY；不能删除仍在使用的 MCP_PORTAL_CLIENT_SECRET，
-  不能把依赖已删除资源的旧 Worker 版本当成可用的回滚目标。
+当前运行时 UU 读写入口已退役。新源码不再要求或装载
+WORKFLOW_SESSION_RUNTIME_DATA_KEY；其余 MCP_ACCESS_TOKEN、
+WORKFLOW_MCP_PORTAL_CLIENT_SECRET、WORKFLOW_GITHUB_DISPATCH_TOKEN
+仍为必需 Secret。GitHub Environment 的来源 SESSION_RUNTIME_DATA_KEY、
+当前活动 Version 142 的旧绑定、D1 空表、20 项已应用 Migration 与全部
+历史 Run/Step/Attempt 依然保留；[Prepare #42341187538](https://github.com/lirtual/mcp-workers/actions/runs/42341187538)
+已创建未部署 Version 143，仅移除 UU 专属绑定，生产仍为 Version 142 100%。
 
-当前结果：非生产准备可以验证；生产 D1/Secret 持久清理仍为
-Blocked / Not performed。维护期间不得自动合并此破坏性 Migration PR。
+复用既有受保护 Release Worker 的 Version Prepare/Publish。
+需独立生产授权：worker=workflow-mcp-worker、
+uu_session_secret_cleanup=true、legacy_secret_cleanup_mode=prepare 或
+publish、workflow_code_only=false、deploy_to_production=true，
+同时固定 legacy_cleanup_expected_sha、legacy_cleanup_expected_active_version；
+Publish 还必须单独审核 legacy_cleanup_candidate_version。
 
-- 在仍使用已核验 v20 Schema 时，code-only 发布继续严格检查 v20
-  的结构，不要求先应用 0021。普通完整发布仍默认禁止执行新 DROP。
-  只有得到独立清理授权、执行 0021 的发布才要求 v21 和旧表不存在。
+已完成的 Prepare 仅创建未部署候选（一个 null 删除目标），核验原 20 项 D1
+Migration、空旧表、正式 Windows Paused、旧 RCA Plan Tombstone、
+历史 12 条 indeterminate 原样存在、全量 D1 Session/Native Workflow
+实例及分页完全清零，精确 100% Worker 版本。候选必须保持另外 10
+个绑定、代码、运行时及全部元数据一致；Publish 需再核验并独立授权，
+发布后实测新活动 Version 的目标 Secret 缺席、其他资源完整。
+未知版本写入结果必须只读消歧，不能盲目重试。
+
+注意：此 Secret 路径与 #777 的 D1 DROP 无任何依赖，不执行 Migration、
+不豁免原全局 Migration 门禁。#777 仍为 Draft，禁止合并。
+当前生产 Version 142 仍保留旧绑定，普通新源码维护发布需要遵守
+严格绑定门禁；任何以后获批的版本变更须在既有受保护 Release 锁
+和独立维护窗口中完成。旧 Version 142 留作审计，
+重新启用可能依赖旧密钥/旧表，不能当作自动安全回滚。
+GitHub 来源 Secret 只能在完成新版本与运行验收后另外授权删除。
+
+[Publish 安全阻断审计](https://github.com/lirtual/mcp-workers/issues/774#issuecomment-6703911930)：
+受控 Version 143 Publish 在工具入口被平台安全检查拒绝；设备端
+operation status 为 not_found，GitHub 无新 Release Run。不得重派发、
+更换工具/设备/执行路径规避阻断；Windows 已恢复 Active。真实
+此次 Secret 清理版本的 Publish/Restore/发布后 E2E 均 Not performed，不能把此前已通过的 Windows Session E2E 或候选 CI 当作此阶段的生产 Pass。
+
+Spec #774 精确恢复说明（非生产代码）：只有已核验的 Version 143
+3f27e9ca-790c-4ec9-914e-cb4204a736e6 成为唯一 100% 活动版本、
+正式 Windows 暂停且 D1/原生实例门禁全部通过，才允许在另行授权下通过
+现有 Release Worker 的 legacy_secret_cleanup_mode=restore 恢复到保留
+旧密钥的 Version 142 414da2d7-a16f-4ce6-9350-013ad4f7166a。
+此模式不执行 Migration、Prepare、GitHub Secret 删除或自动回滚；恢复
+结果必须以实际部署版本、历史保护和运行时只读回读验收。
+
+### Spec #774 / PR #777：独立 UU 空表退役（最新方案，覆盖上方历史状态）
+
+2026-11-07 已由 [Release #42364599988](https://github.com/lirtual/mcp-workers/actions/runs/42364599988)
+完成 Version 143（`3f27e9ca-790c-4ec9-914e-cb4204a736e6`）100% 生产发布；
+正式 Windows 已恢复 Active；运行时已不存在 `WORKFLOW_SESSION_RUNTIME_DATA_KEY`。
+上方 Version 142／「未发布」和安全阻断说明保留为历史审计，不代表当前生产状态。
+
+本 PR **仅非生产实现**，默认拒绝部署及 Schema 写入；含 `DROP TABLE`
+的 `0021_retire_uu_session_data.sql` 尚未应用，未经独立授权禁止 Merge 或 Publish。
+生产清理仅可由现有 GitHub Release Worker 的
+`workflow-uu-table-retirement` 独立 Job，在 Owner/main/CI/Environment/互斥锁
+及单独精确 SHA、Version 143 审核后执行。普通 Worker 发布、code-only 发布、
+历史 Actions D1 Prepare 和 Secret Prepare/Publish 均不是 UU 表清理入口。
+独立 Job 不部署 Worker，只应用恰好一个未应用的 v21 Migration，再独立回读。
+
+专项安全门禁必须确认：源 21 个 Migration 精确、生产既有 20 个名称一致、
+目标 UU 表存在且 0 行、Version 143 唯一 100% 活动且 10 个绑定完全一致、
+Windows Paused、无 Active Session/未终态 Windows Attempt、旧 RCA Plan 已退役、
+原生六类实例和分页完全排空；12 条已审核历史 Unknown Run、12 条 Step 和 1
+条 claimed Attempt 必须精确保持原有集合及状态，清理前后比较只读快照，
+不删除、不改写、不重试它们。任何 drift/Unknown 中止受影响操作。
+**普通 Schema Migration 的原有全局严格门禁不变**；唯一例外是按此
+单表限定且独立获批的清理路径，绝不扩展为通用豁免。
+
+用户选择不再要求 Version 142 旧 UU 兼容；一旦 v21 完成，不得再通过
+旧 `143→142` Restore 路径恢复依赖旧表的版本。必须以不依赖 UU 资源的
+已核验版本作为恢复目标。GitHub Environment 来源 `SESSION_RUNTIME_DATA_KEY`
+必须在另外的具体授权下清理并回读，本 Job 不修改任何 Secret。
