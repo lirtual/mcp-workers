@@ -10,6 +10,10 @@ const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const SHA=/^[a-f0-9]{40}$/;
 const TARGET='WORKFLOW_SESSION_RUNTIME_DATA_KEY';
 const D1_ID='a4a477cd-6339-478c-ab7c-f7d87bb0d772';
+// Spec #774 recovery is intentionally limited to the single reviewed pair.
+const RESTORE_FROM='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
+const RESTORE_TO='414da2d7-a16f-4ce6-9350-013ad4f7166a';
+
 const expected=new Map([
   ['ACTIONS','service'],['DB','d1'],['WORKFLOW','workflow'],
   ['MCP_ACCESS_TOKEN','secret_text'],['WORKFLOW_GITHUB_DISPATCH_TOKEN','secret_text'],
@@ -76,6 +80,38 @@ export function verifyUuSecretInventory({baseline,candidate,deployment,settings,
     'latest Worker Secret names differ from version');
   return true;
 }
+export function verifyUuSecretRestoreRequest({phase,sourceSha,expectedSha,activeVersion,candidateVersion}){
+  check(phase==='restore'&&SHA.test(expectedSha??'')&&sourceSha===expectedSha,
+    'restore requires independently reviewed current main SHA');
+  check(activeVersion===RESTORE_FROM&&candidateVersion===RESTORE_TO,
+    'restore is limited to Version 143 -> Version 142');
+  return true;
+}
+export function verifyUuSecretRestoreInventory({current,target,deployment,settings,inventory:secrets,after}){
+  check(current?.id===RESTORE_FROM&&current.number===143&&
+    target?.id===RESTORE_TO&&target.number===142,
+    'restore version identifiers or numbers drifted');
+  // Validate the *entire* pair, including script and all retained bindings.
+  verifyUuSecretCandidate(target,current);
+  const live=after?RESTORE_TO:RESTORE_FROM;
+  const rows=deployment?.deployments;
+  check(Array.isArray(rows)&&rows.length===1&&rows[0]?.versions?.length===1&&
+    rows[0].versions[0].percentage===100&&rows[0].versions[0].version_id===live,
+    'restore requires the exact unique 100% active version');
+  // Cloudflare Settings/Secret inventory can describe the latest *created*
+  // version (143) even after redeploying older Version 142. Never use it
+  // as evidence of the active version's Secret inventory.
+  const actual=index(settings?.bindings);
+  check(Array.isArray(secrets)&&new Set(secrets.map(x=>x.name)).size===secrets.length,
+    'restore latest Secret inventory missing or duplicated');
+  const choices=after?[current,target]:[current];
+  check(choices.some(version=>
+    stable(signature([...actual.values()]))===stable(signature(version.resources.bindings))&&
+    stable(secrets.map(x=>x.name).sort())===stable(inventory(version.resources.bindings))),
+  'restore latest Settings or Secret names differ from both reviewed versions');
+  return true;
+}
+
 export function verifyUuSecretD1(row){
   const required={migration_count:20,uu_table:1,uu_rows:0,active_sessions:0,
     unfinished_windows_attempts:0,windows_state:'paused',old_rca_deleted:1,old_version_count:1};
@@ -122,22 +158,27 @@ const SQL=`SELECT
 
 async function main(){
  const [stage,worker]=process.argv.slice(2);
- check(['preflight','candidate','readback'].includes(stage)&&worker==='workflow-mcp-worker',
-   'unsupported exact worker or phase');
+ check(['preflight','candidate','readback','restore-preflight','restore-readback'].includes(stage)&&
+   worker==='workflow-mcp-worker','unsupported exact worker or phase');
  const e=process.env;
  check(e.UU_SESSION_SECRET_CLEANUP==='true'&&
    e.GITHUB_ACTOR==='lirtual'&&e.GITHUB_REPOSITORY==='lirtual/mcp-workers'&&
    e.GITHUB_REF==='refs/heads/main'&&e.WORKFLOW_CODE_ONLY!=='true',
    'protected Owner main workflow required');
  const phase=e.LEGACY_CLEANUP_MODE;
- check((stage==='readback')===(phase==='publish')||stage==='preflight',
+ const restoring=phase==='restore';
+ check(restoring?['restore-preflight','restore-readback'].includes(stage):
+   ['preflight','candidate','readback'].includes(stage)&&
+   ((stage==='readback')===(phase==='publish')||stage==='preflight'),
    'unexpected stage/phase combination');
  const active=e.EXPECTED_ACTIVE_VERSION,candidateId=e.CANDIDATE_VERSION_ID||'';
- verifyUuSecretRequest({phase,sourceSha:e.GITHUB_SHA,expectedSha:e.EXPECTED_SOURCE_SHA,
-   activeVersion:active,candidateVersion:phase==='publish'?candidateId:''});
+ const request={phase,sourceSha:e.GITHUB_SHA,expectedSha:e.EXPECTED_SOURCE_SHA,
+   activeVersion:active,candidateVersion:candidateId};
+ if(restoring)verifyUuSecretRestoreRequest(request);
+ else verifyUuSecretRequest({...request,candidateVersion:phase==='publish'?candidateId:''});
  // Prepare preflight has no candidate yet; Prepare verification has the new
  // unpublished candidate; Publish preflight/readback REQUIRE its reviewed ID.
- const stageReady=stage==='preflight'
+ const stageReady=restoring?true:stage==='preflight'
    ?(phase==='prepare'?!candidateId:UUID.test(candidateId))
    :stage==='candidate'
    ?phase==='prepare'&&UUID.test(candidateId)
@@ -178,7 +219,10 @@ async function main(){
  const prepared= candidateId?(await api(workerPath+'/versions/'+candidateId)).result:null;
  const [settings,secrets]=await Promise.all([
    api(workerPath+'/settings'),api(workerPath+'/secrets')]);
- if(stage==='readback'){
+ if(restoring){
+   verifyUuSecretRestoreInventory({current:baseline,target:prepared,deployment:deploy.result,
+     settings:settings.result,inventory:secrets.result,after:stage==='restore-readback'});
+ } else if(stage==='readback'){
    check(prepared?.id===candidateId,'published candidate not found');
    verifyUuSecretPostflight({baseline,candidate:prepared,deployment:deploy.result,
      settings:settings.result,inventory:secrets.result});

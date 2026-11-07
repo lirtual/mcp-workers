@@ -832,3 +832,12 @@ Migration、空旧表、正式 Windows Paused、旧 RCA Plan Tombstone、
 内串行完成，禁止其他发布插入。旧 Version 142 留作审计，
 重新启用可能依赖旧密钥/旧表，不能当作自动安全回滚。
 GitHub 来源 Secret 只能在完成新版本与运行验收后另外授权删除。
+
+
+Spec #774 精确恢复说明（非生产代码）：只有已核验的 Version 143
+3f27e9ca-790c-4ec9-914e-cb4204a736e6 成为唯一 100% 活动版本、
+正式 Windows 暂停且 D1/原生实例门禁全部通过，才允许在另行授权下通过
+现有 Release Worker 的 legacy_secret_cleanup_mode=restore 恢复到保留
+旧密钥的 Version 142 414da2d7-a16f-4ce6-9350-013ad4f7166a。
+此模式不执行 Migration、Prepare、GitHub Secret 删除或自动回滚；恢复
+结果必须以实际部署版本、历史保护和运行时只读回读验收。

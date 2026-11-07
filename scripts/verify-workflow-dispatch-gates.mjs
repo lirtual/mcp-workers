@@ -138,6 +138,9 @@ for (const clause of [
   "inputs.legacy_secret_cleanup_mode == 'prepare'",
   "inputs.legacy_secret_cleanup_mode == 'publish'",
   'inputs.workflow_code_only != true',
+  "inputs.legacy_secret_cleanup_mode == 'restore'",
+  "inputs.worker == 'workflow-mcp-worker'",
+  'inputs.uu_session_secret_cleanup == true',
 ]) assert.ok(cleanup.gate.includes(clause), 'Unsafe legacy cleanup gate: ' + clause);
 for (const item of [
   'group: worker-release-', 'cancel-in-progress: false',
@@ -154,6 +157,8 @@ for (const required of [
   'scripts/workflow-uu-secret-cleanup.mjs preflight',
   'scripts/workflow-uu-secret-cleanup.mjs candidate',
   'scripts/workflow-uu-secret-cleanup.mjs readback',
+  'scripts/workflow-uu-secret-cleanup.mjs restore-preflight',
+  'scripts/workflow-uu-secret-cleanup.mjs restore-readback',
   'WORKFLOW_SESSION_RUNTIME_DATA_KEY\":null',
 ]) assert.ok(release.includes(required),'Missing scoped UU Secret retirement: '+required);
 assert.ok(!release.slice(release.indexOf('      - name: Stage selected Worker Secrets for every release'),

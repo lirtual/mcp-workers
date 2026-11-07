@@ -110,18 +110,33 @@ is the recovery target until replaced by a freshly inspected baseline, but resto
 an older version is itself another production change requiring authorization.
 
 
-### Spec #774 单键 UU Secret 退役（非生产候选，未执行）
+### Spec #774 UU Secret 退役与精确版本恢复
 
-本轮不修改上文 Spec #733 已发生的历史事实。现生产 Worker
-Version 142 仍持有 WORKFLOW_SESSION_RUNTIME_DATA_KEY；GitHub
-Environment 仍有其来源 SESSION_RUNTIME_DATA_KEY。
-新源码收敛为其余三项规范 Secret，保护路径重用既有 Release Worker
-Owner/main、成功 CI、Environment、Worker 互斥锁以及严格版本校验。
-一次独立生产授权仅覆盖该审批中的具体 Prepare 或 Publish；
-版本 Prepare 创建未部署候选，不能视为生产切换成功。正式 Windows
-应先 Paused，所有原生/D1 Session 终止，历史 Unknown 保持原样。
-Publish 前重审精确 SHA、100% 活动基线、独立候选及可恢复性，
-发布后验证真实 Worker 100% 和目标 Secret 负面读回。
-过渡期禁止普通发布插队；结果 Unknown 必须只读消歧。
-PR #777 D1 DROP 不属于此路径，也不能绕过 D1 Migration 门禁。
-GitHub 来源 Secret 删除仍须另一项独立授权。
+已授权的 [Prepare #42341187538](https://github.com/lirtual/mcp-workers/actions/runs/42341187538)
+仅创建未部署 Version 143 3f27e9ca-790c-4ec9-914e-cb4204a736e6，
+候选相对活动 Version 142 414da2d7-a16f-4ce6-9350-013ad4f7166a
+仅移除运行时 WORKFLOW_SESSION_RUNTIME_DATA_KEY；其余资源一致。
+本段新恢复入口仅为非生产代码，**没有执行 Publish 或恢复**。
+
+复用同一个受保护 Release Worker、Owner/main 精确 SHA、成功 CI、
+workflow-mcp-worker Environment 和 Worker 互斥锁。在单独生产恢复授权下，
+选择 worker=workflow-mcp-worker、
+legacy_secret_cleanup_mode=restore、uu_session_secret_cleanup=true、
+workflow_code_only=false、deploy_to_production=true；
+legacy_cleanup_expected_sha 必须为当时重新核准的精确 main SHA，
+legacy_cleanup_expected_active_version 必须为 Version 143 上述 UUID，
+legacy_cleanup_candidate_version 必须为 Version 142 上述 UUID。
+所有无关 Actions 迁移/门禁/Secret Prepare 参数保持关闭。
+
+恢复前必须实际确认 **Version 143 唯一 100% 活动**、Version 142 保留
+原 11 个绑定和旧密钥、两个版本的全部其他资源完全一致、Windows 已 Paused、
+D1 20 项已应用迁移与空旧表及 12 条历史 Unknown 不变、Sessions 和原生实例
+已排空。脚本仅通过已有 wrangler versions deploy <Version142>@100 路径恢复；
+事后再独立证明 Version 142 唯一 100% 活动及原旧密钥绑定仍随该版本存在。
+Cloudflare 最新版本 Settings 可能仍反映 Version 143 的三个 Secret，不可
+据此判断活动 Version 142 是否有四个 Secret。
+
+恢复必须在真实 Publish 结果消歧、用户单独明确批准且全部门禁通过后执行，
+**不自动回滚、不对 Unknown 重试**。保留 GitHub Environment 来源
+SESSION_RUNTIME_DATA_KEY、旧 D1 表及历史版本；未完成回滚验收前不得
+把 Version 142 称作已验证恢复。PR #777 的 D1 DROP 门禁不受影响。
