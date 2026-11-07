@@ -68,6 +68,13 @@ test('versioned release is fail-closed and cannot alias general Secret or D1 cle
  const wrangler=readFileSync(new URL('../apps/workflow-mcp-worker/wrangler.jsonc',import.meta.url),'utf8');
  const cleanup=release.split('  legacy-secret-cleanup:')[1];
  assert.ok(cleanup);
+ for(const job of ['workflow-actions-migration-prepare','workflow-actions-gate-reopen','deploy']){
+   const begin=release.indexOf('  '+job+':');
+   const next=release.indexOf('\n    runs-on:',begin);
+   const section=release.slice(begin,next>begin?next:begin+1800);
+   assert.match(section,/inputs.uu_session_secret_cleanup != true/,
+     'UU retirement must be excluded from '+job);
+ }
  assert.match(cleanup,/github.actor == 'lirtual'/);
  assert.match(cleanup,/group: worker-release-/);
  assert.match(cleanup,/cancel-in-progress: false/);
@@ -103,4 +110,21 @@ test('post Publish independently proves exact 100% candidate, no UU Secret and u
    bindings:[...newB.resources.bindings,{name:'WORKFLOW_SESSION_RUNTIME_DATA_KEY',type:'secret_text'}]}}),/UU Secret/);
  assert.throws(()=>verifyUuSecretPostflight({...data,candidate:{...newB,resources:{
    ...newB.resources,script:{etag:'unreviewed-code'}}}}),/UU Secret/);
+});
+
+
+test('Publish preflight verifies the reviewed candidate against latest Settings',()=>{
+ const oldB=baseline(),nextB=candidate();
+ const deployment={deployments:[{versions:[{version_id:old,percentage:100}]}]};
+ const latest=nextB.resources.bindings;
+ assert.equal(verifyUuSecretRequest({phase:'publish',sourceSha:sha,expectedSha:sha,
+   activeVersion:old,candidateVersion:next}),true);
+ assert.equal(verifyUuSecretInventory({baseline:oldB,candidate:nextB,deployment,
+   settings:{bindings:latest},
+   inventory:latest.filter(x=>x.type==='secret_text').map(x=>({name:x.name})),
+   phase:'publish'}),true);
+ assert.throws(()=>verifyUuSecretInventory({baseline:oldB,candidate:nextB,deployment,
+   settings:{bindings:bindings},
+   inventory:bindings.filter(x=>x.type==='secret_text').map(x=>({name:x.name})),
+   phase:'publish'}),/UU Secret/);
 });

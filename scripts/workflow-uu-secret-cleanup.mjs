@@ -135,7 +135,14 @@ async function main(){
  const active=e.EXPECTED_ACTIVE_VERSION,candidateId=e.CANDIDATE_VERSION_ID||'';
  verifyUuSecretRequest({phase,sourceSha:e.GITHUB_SHA,expectedSha:e.EXPECTED_SOURCE_SHA,
    activeVersion:active,candidateVersion:phase==='publish'?candidateId:''});
- if(stage==='candidate')check(UUID.test(candidateId),'prepared version ID required');
+ // Prepare preflight has no candidate yet; Prepare verification has the new
+ // unpublished candidate; Publish preflight/readback REQUIRE its reviewed ID.
+ const stageReady=stage==='preflight'
+   ?(phase==='prepare'?!candidateId:UUID.test(candidateId))
+   :stage==='candidate'
+   ?phase==='prepare'&&UUID.test(candidateId)
+   :phase==='publish'&&UUID.test(candidateId);
+ check(stageReady,'phase or reviewed candidate mismatches read-only stage');
  const account=e.CLOUDFLARE_ACCOUNT_ID,token=e.CLOUDFLARE_API_TOKEN;
  check(/^[a-f0-9]{32}$/.test(account??'')&&token?.length>0,'Cloudflare read credentials missing');
  const api=async(path,sql)=>{
@@ -176,10 +183,9 @@ async function main(){
    verifyUuSecretPostflight({baseline,candidate:prepared,deployment:deploy.result,
      settings:settings.result,inventory:secrets.result});
  } else {
-   check((stage==='candidate')===(!!candidateId),'candidate stage requires exact version');
    verifyUuSecretInventory({baseline,candidate:prepared,deployment:deploy.result,
      settings:settings.result,inventory:secrets.result,
-     phase:stage==='candidate'||phase==='publish'?'publish':'prepare'});
+     phase:candidateId?'publish':'prepare'});
  }
  console.log('Spec 774 scoped UU Secret '+stage+' PASS; no Secret values read; all 12 historical Unknown preserved');
 }

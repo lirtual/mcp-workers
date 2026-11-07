@@ -100,7 +100,8 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
-          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true }}
+          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.uu_session_secret_cleanup != true }}
     runs-on: ubuntu-latest
     environment:
       name: workflow-mcp-worker
@@ -159,6 +160,7 @@ jobs:
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.uu_session_secret_cleanup != true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
           inputs.database_expected_release_sha == '' }}
     runs-on: ubuntu-latest
@@ -245,6 +247,7 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           inputs.legacy_secret_cleanup_mode == 'none' &&
+          inputs.uu_session_secret_cleanup != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'browser-mcp-worker' ||

@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -116,6 +116,15 @@ assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Relea
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
 assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 14,
   'Release workflow_dispatch must have exactly fourteen reviewed inputs');
+// A UU-retirement request may only reach the reviewed versioned Secret job,
+// never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
+assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
+  'UU Secret request must be fenced from ordinary production deploy');
+for(const name of ['workflow-actions-migration-prepare','workflow-actions-gate-reopen']){
+  const other=job(release,name);
+  assert.ok(other.gate.includes('inputs.uu_session_secret_cleanup != true'),
+    'UU Secret request must be fenced from '+name);
+}
 const cleanup = job(release, 'legacy-secret-cleanup');
 assert.ok(deploy.gate.includes("inputs.legacy_secret_cleanup_mode == 'none'"),
   'Normal Worker release must exclude the legacy cleanup operation');
