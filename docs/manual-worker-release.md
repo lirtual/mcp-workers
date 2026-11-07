@@ -108,3 +108,20 @@ or Unknown result must be reconciled through read-only state inspection, without
 automatic retry or rollback. The last independently verified live Worker version
 is the recovery target until replaced by a freshly inspected baseline, but restoring
 an older version is itself another production change requiring authorization.
+
+
+### Spec #774 单键 UU Secret 退役（非生产候选，未执行）
+
+本轮不修改上文 Spec #733 已发生的历史事实。现生产 Worker
+Version 142 仍持有 WORKFLOW_SESSION_RUNTIME_DATA_KEY；GitHub
+Environment 仍有其来源 SESSION_RUNTIME_DATA_KEY。
+新源码收敛为其余三项规范 Secret，保护路径重用既有 Release Worker
+Owner/main、成功 CI、Environment、Worker 互斥锁以及严格版本校验。
+一次独立生产授权仅覆盖该审批中的具体 Prepare 或 Publish；
+版本 Prepare 创建未部署候选，不能视为生产切换成功。正式 Windows
+应先 Paused，所有原生/D1 Session 终止，历史 Unknown 保持原样。
+Publish 前重审精确 SHA、100% 活动基线、独立候选及可恢复性，
+发布后验证真实 Worker 100% 和目标 Secret 负面读回。
+过渡期禁止普通发布插队；结果 Unknown 必须只读消歧。
+PR #777 D1 DROP 不属于此路径，也不能绕过 D1 Migration 门禁。
+GitHub 来源 Secret 删除仍须另一项独立授权。

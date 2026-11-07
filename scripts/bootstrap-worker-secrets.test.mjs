@@ -10,7 +10,7 @@ const fixtures = {
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", SSH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
   "remote-control-mcp-worker": { MCP_ACCESS_TOKEN: "portal" },
   "github-actions-mcp-worker": { MCP_ACCESS_TOKEN: "portal", ACTIONS_GITHUB_DISPATCH_TOKENS: "github-test-token" },
-  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", WORKFLOW_MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24), WORKFLOW_SESSION_RUNTIME_DATA_KEY: Buffer.alloc(32, 9).toString("base64") },
+  "workflow-mcp-worker": { MCP_ACCESS_TOKEN: "portal", WORKFLOW_MCP_PORTAL_CLIENT_SECRET: "test-secret", WORKFLOW_GITHUB_DISPATCH_TOKEN: "x".repeat(24) },
 };
 
 test("bootstrap supports all selected Workers, including isolated Remote Control", () => {
@@ -77,13 +77,13 @@ test("Workflow bootstrap stages only canonical runtime keys; missing mapped inpu
   const legacyOnly = {
     MCP_ACCESS_TOKEN: canonical.MCP_ACCESS_TOKEN,
     MCP_PORTAL_CLIENT_SECRET: canonical.WORKFLOW_MCP_PORTAL_CLIENT_SECRET,
-    SESSION_RUNTIME_DATA_KEY: canonical.WORKFLOW_SESSION_RUNTIME_DATA_KEY,
+    SESSION_RUNTIME_DATA_KEY: "retired-github-source",
     WORKFLOW_GITHUB_DISPATCH_TOKEN: canonical.WORKFLOW_GITHUB_DISPATCH_TOKEN,
   };
   // Legacy GitHub names are translated at the release.yml env boundary;
   // the staging helper never silently falls back to another GitHub source.
   assert.throws(() => collectBootstrapSecrets(worker, legacyOnly), /WORKFLOW_MCP_PORTAL_CLIENT_SECRET/);
-  for (const runtimeName of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"]) {
+  for (const runtimeName of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET"]) {
     const missing = {...canonical};
     delete missing[runtimeName];
     assert.throws(() => collectBootstrapSecrets(worker, missing), new RegExp(runtimeName));
@@ -105,10 +105,11 @@ test("Workflow registered GitHub token must be nonblank, bounded and not multili
 });
 
 test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>{
-  for (const invalid of ["bad", Buffer.alloc(31).toString("base64"), Buffer.alloc(32).toString("base64").slice(0,-1)]) {
-    assert.throws(() => collectBootstrapSecrets("workflow-mcp-worker",
-      {...fixtures["workflow-mcp-worker"],WORKFLOW_SESSION_RUNTIME_DATA_KEY: invalid}),/WORKFLOW_SESSION_RUNTIME_DATA_KEY/);
-  }
+  const actual=collectBootstrapSecrets("workflow-mcp-worker",{
+    ...fixtures["workflow-mcp-worker"],WORKFLOW_SESSION_RUNTIME_DATA_KEY:"retired-ignore",
+    SESSION_RUNTIME_DATA_KEY:"old-source-ignore",
+  });
+  assert.deepEqual(actual,fixtures["workflow-mcp-worker"]);
   const names=BOOTSTRAP_SECRETS["workflow-mcp-worker"];
   assert.ok(names.includes("WORKFLOW_GITHUB_DISPATCH_TOKEN"));
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);

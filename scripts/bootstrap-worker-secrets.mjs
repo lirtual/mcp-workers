@@ -15,7 +15,7 @@ export const BOOTSTRAP_SECRETS = Object.freeze({
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_ENCRYPTION_KEY"],
   "remote-control-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
-  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"],
+  "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 });
 
 export function collectBootstrapSecrets(worker, env) {
@@ -37,13 +37,6 @@ export function collectBootstrapSecrets(worker, env) {
       payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
       /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))
     throw new Error("Invalid WORKFLOW_GITHUB_DISPATCH_TOKEN");
-  if (worker === "workflow-mcp-worker") {
-    const key = payload.WORKFLOW_SESSION_RUNTIME_DATA_KEY;
-    if (!/^[A-Za-z0-9+/]{43}=$/.test(key) ||
-        Buffer.from(key, "base64").length !== 32 ||
-        Buffer.from(key, "base64").toString("base64") !== key)
-      throw new Error("WORKFLOW_SESSION_RUNTIME_DATA_KEY must be canonical Base64 for a 32-byte key");
-  }
   if (worker === "ssh-mcp-worker") {
     const key = payload.SSH_ENCRYPTION_KEY;
     if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, "base64").length !== 32 || Buffer.from(key, "base64").toString("base64") !== key) throw new Error("SSH_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");

@@ -19,5 +19,5 @@
   "workflows": [
     { "name": "workflow-mcp-orchestrator", "binding": "WORKFLOW", "class_name": "WorkflowOrchestrator" }
   ],
-  "secrets": { "required": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN", "WORKFLOW_SESSION_RUNTIME_DATA_KEY"] }
+  "secrets": { "required": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"] }
 }

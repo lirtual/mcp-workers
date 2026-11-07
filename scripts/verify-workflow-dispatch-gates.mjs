@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -39,7 +39,6 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   for(const [runtime,github,worker] of [
     ['SSH_ENCRYPTION_KEY','ENCRYPTION_KEY','ssh-mcp-worker'],
     ['WORKFLOW_MCP_PORTAL_CLIENT_SECRET','MCP_PORTAL_CLIENT_SECRET','workflow-mcp-worker'],
-    ['WORKFLOW_SESSION_RUNTIME_DATA_KEY','SESSION_RUNTIME_DATA_KEY','workflow-mcp-worker'],
   ]) {
     const line=runtime+': '+String.fromCharCode(36)+
       "{{ inputs.worker == '"+worker+"' && secrets."+github+" || '' }}";
@@ -50,6 +49,8 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
     assert.ok(!secretStage.includes('          '+github+': '),
       'Old GitHub name may not be added as a runtime binding: '+github);
   }
+  assert.doesNotMatch(secretStage,/WORKFLOW_SESSION_RUNTIME_DATA_KEY:|secrets\.SESSION_RUNTIME_DATA_KEY/,
+    'Retired UU Secret source must not be staged into new Worker versions');
 }
 
 /** The superseded historical D1 activation job must never be reachable. */
@@ -113,8 +114,17 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 13,
-  'Release workflow_dispatch must have exactly thirteen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 14,
+  'Release workflow_dispatch must have exactly fourteen reviewed inputs');
+// A UU-retirement request may only reach the reviewed versioned Secret job,
+// never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
+assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
+  'UU Secret request must be fenced from ordinary production deploy');
+for(const name of ['workflow-actions-migration-prepare','workflow-actions-gate-reopen']){
+  const other=job(release,name);
+  assert.ok(other.gate.includes('inputs.uu_session_secret_cleanup != true'),
+    'UU Secret request must be fenced from '+name);
+}
 const cleanup = job(release, 'legacy-secret-cleanup');
 assert.ok(deploy.gate.includes("inputs.legacy_secret_cleanup_mode == 'none'"),
   'Normal Worker release must exclude the legacy cleanup operation');
@@ -136,6 +146,20 @@ for (const item of [
   'wrangler versions deploy', 'legacy-secret-cleanup.mjs preflight',
   'legacy-secret-cleanup.mjs candidate', 'manual-worker-release.mjs cleanup-readback',
 ]) assert.ok(cleanup.content.includes(item), 'Missing legacy cleanup safeguard: ' + item);
+// Spec #774 reuses the same protected two-phase job. Only a flagged
+// workflow-mcp-worker Prepare may remove the one canonical runtime UU key.
+for (const required of [
+  'uu_session_secret_cleanup:', 'UU_SESSION_SECRET_CLEANUP:',
+  "if [[ \"$UU_SESSION_SECRET_CLEANUP\" == 'true' ]]",
+  'scripts/workflow-uu-secret-cleanup.mjs preflight',
+  'scripts/workflow-uu-secret-cleanup.mjs candidate',
+  'scripts/workflow-uu-secret-cleanup.mjs readback',
+  'WORKFLOW_SESSION_RUNTIME_DATA_KEY\":null',
+]) assert.ok(release.includes(required),'Missing scoped UU Secret retirement: '+required);
+assert.ok(!release.slice(release.indexOf('      - name: Stage selected Worker Secrets for every release'),
+  release.indexOf('      - name: Stage approved Worker variables'))
+  .includes('secrets.SESSION_RUNTIME_DATA_KEY'),
+  'ordinary Worker release may not re-upload the retired UU Secret');
 assert.doesNotMatch(cleanup.content,/pnpm exec wrangler secret delete|pnpm exec wrangler deploy .*--secrets-file|gh secret (?:set|delete)/,
   'Legacy cleanup must not bypass the protected two-phase release path');
 const prepare = job(release, 'workflow-actions-migration-prepare');

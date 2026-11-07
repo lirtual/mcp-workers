@@ -64,7 +64,7 @@ const required = {
   [SSH]: ['MCP_ACCESS_TOKEN', 'SSH_ENCRYPTION_KEY'],
   [WORKFLOW]: [
     'MCP_ACCESS_TOKEN', 'WORKFLOW_MCP_PORTAL_CLIENT_SECRET',
-    'WORKFLOW_GITHUB_DISPATCH_TOKEN', 'WORKFLOW_SESSION_RUNTIME_DATA_KEY',
+    'WORKFLOW_GITHUB_DISPATCH_TOKEN',
   ],
 };
 const secret = name => ({ name, type: 'secret_text' });

@@ -99,3 +99,14 @@ For an independently authorized *post-deletion* negative-inventory acceptance, u
 - **Database:** current Version 46 `c28c0af8-e773-4400-9106-425779932fcf` routes 100% and the three reviewed old runtime Secret bindings are absent. Version/binding readback and current authenticated `b2b`/`scrape_relay` Direct connection health plus bounded `SELECT 1` E2E passed. The prior legacy Database D1/AES-GCM registry decrypt is not part of the superseding Spec #760 connection path. [Current E2E receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6686760458).
 
 The three old-name **GitHub Environment Secrets** for SSH/Workflow are deliberately retained as the sole release inputs under the approved naming exception; do not remove or duplicate them. Workflow's production `session_runtime_data` held **zero** rows; the Owner explicitly accepted historical Session AES-GCM decryption on Version 141 as **Waived, not Pass** ([scope-limited waiver](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6687070101)). No external business Action/Session was dispatched to prove this. Older historical receipts and failed attempts remain evidence of their own point in time, not current production state. Releasing a previous version, testing with external side effects, or any further GitHub Settings mutation requires separate scope and authorization.
+
+
+### Spec #774 UU Secret 计划退役（此 PR 尚未生产切换）
+
+此前 Spec #733 命名例外和生产历史仍保留。本次非生产源码
+不再要求新 Worker 装载 WORKFLOW_SESSION_RUNTIME_DATA_KEY；
+在具体授权并完成受保护版本化 Prepare/Publish 之前，
+Version 142 运行时绑定与 GitHub 旧来源 SESSION_RUNTIME_DATA_KEY
+均维持原状。生产迁移与来源 Secret 删除分别验收，
+保留所有已应用 D1 Migration 和历史 indeterminate 回执，
+不得因 Secret 清理放宽 D1 强制 Migration 门禁。
