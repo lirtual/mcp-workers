@@ -149,3 +149,34 @@ SESSION_RUNTIME_DATA_KEY、旧 D1 表及历史版本；未完成回滚验收前�
 12 条历史 indeterminate Run、12 条未终态 Step 和 1 条 claimed Attempt；
 [Draft PR #777](https://github.com/lirtual/mcp-workers/pull/777) 的 D1 DROP
 受原全局 Migration 门禁阻断且不得合并，不能借 Secret 发布绕过它。
+
+### Spec #774 新的独立 D1 清理入口（覆盖上述历史 Prepare/Restore 状态）
+
+2026-11-07 GitHub [Run #42364599988](https://github.com/lirtual/mcp-workers/actions/runs/42364599988)
+已将 Version 143 UUID `3f27e9ca-790c-4ec9-914e-cb4204a736e6` 正式发布为
+唯一 100% 活动版本，旧 UU 运行时 Secret 已退出；Windows 已恢复 Active，
+详见 [#774 验收](https://github.com/lirtual/mcp-workers/issues/774#issuecomment-6705774013)。
+本节之前的「版本未发布」「恢复入口」描述是历史记录而非当前行动方案。
+
+PR #777 只准备隔离的 `workflow-uu-table-retirement` Job，**未授权执行**：
+`worker=workflow-mcp-worker`、`uu_cleanup_approved=true`、
+`uu_cleanup_expected_sha=<生产时单独审核的精确 main SHA>`、
+`uu_cleanup_expected_active_version=3f27e9ca-790c-4ec9-914e-cb4204a736e6`；
+`deploy_to_production=false`（该字段指 Worker Publish；此 Job 仍然是
+**生产 D1 破坏性写入**）、`workflow_code_only=false`、
+`legacy_secret_cleanup_mode=none`，其余 Actions/Secret 开关均保持 false。
+此参数集只是设计记录，不构成生产授权；如 main SHA 或运行事实漂移，
+必须重新预检并请求新的具体授权。未经此授权不得 Merge、派发或清理。
+
+此 Job 复用现有 CI、workflow-mcp-worker Environment 和互斥锁，
+先只读检查 D1 v20/空表、12 条历史 Unknown 原样存在、Version143/10
+绑定、Windows Paused、全部 Native 实例排空与分页、精确审核 SHA；
+仅由 Wrangler 正式 Migration Registry 执行 v21，随后确认仅此表消失、
+21 项 Migration 和历史回执不变。错误或 Unknown 先只读消歧，不重试。
+普通 D1 Migration 仍调用原 `verifyWorkflowMigrationReadiness`，
+历史 Unknown 不清除、不豁免；其他旧 D1 迁移入口必须拒绝 pending v21。
+
+选择不保持旧 Version142 兼容。v21 应用后，原 `143→142` Restore
+会要求旧空表而不再有效；不要以此作为恢复手段。
+不修改 Source Secret `SESSION_RUNTIME_DATA_KEY`；它需要另行
+批准、核实无生产/恢复引用后，经正常 GitHub 管理路径删除和回读。

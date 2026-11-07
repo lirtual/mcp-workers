@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -114,8 +114,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 14,
-  'Release workflow_dispatch must have exactly fourteen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 17,
+  'Release workflow_dispatch must have exactly seventeen reviewed inputs');
 // A UU-retirement request may only reach the reviewed versioned Secret job,
 // never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
 assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
@@ -125,6 +125,25 @@ for(const name of ['workflow-actions-migration-prepare','workflow-actions-gate-r
   assert.ok(other.gate.includes('inputs.uu_session_secret_cleanup != true'),
     'UU Secret request must be fenced from '+name);
 }
+// Spec #774: one-table D1 retirement is a distinct job; generic migration guards are not changed.
+const uu = job(release, 'workflow-uu-table-retirement');
+for (const rule of [
+  "github.actor == 'lirtual'", "github.ref == 'refs/heads/main'",
+  'inputs.uu_cleanup_approved == true', 'inputs.deploy_to_production == false',
+  'inputs.workflow_code_only != true', "inputs.legacy_secret_cleanup_mode == 'none'",
+  "needs.checks.result == 'success'", "needs.checks.outputs.release_ready == 'true'",
+]) assert.ok(uu.gate.includes(rule), 'Missing isolated table-cleanup gate: '+rule);
+for(const needle of [
+  'group: worker-release-workflow-mcp-worker', 'cancel-in-progress: false',
+  'workflow-uu-cleanup-gate.mjs before','workflow-uu-cleanup-gate.mjs after',
+  'wrangler d1 migrations apply workflow-mcp-db --remote',
+])assert.ok(uu.content.includes(needle),'UU table retirement missing: '+needle);
+assert.doesNotMatch(uu.content,/wrangler (?:deploy|versions deploy)|gh secret delete/);
+assert.ok(deploy.gate.includes('inputs.uu_cleanup_approved != true'),
+  'Generic Worker deployment could overlap with isolated UU cleanup');
+assert.ok(release.includes('Prevent normal Workflow release from applying pending UU DROP') &&
+  release.includes('Block legacy Actions migration preparation with staged destructive 0021'),
+  'Unapproved generic D1 migration caller could apply 0021');
 const cleanup = job(release, 'legacy-secret-cleanup');
 assert.ok(deploy.gate.includes("inputs.legacy_secret_cleanup_mode == 'none'"),
   'Normal Worker release must exclude the legacy cleanup operation');

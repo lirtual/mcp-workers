@@ -11,11 +11,12 @@ import { EIGHTH_MCP_RUN_ID } from './workflow-mcp-no-dispatch-proof.mjs';
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const SHA = /^[a-f0-9]{40}$/;
-const historical = [
+export const REVIEWED_HISTORICAL_RUN_IDS = Object.freeze([
   TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID,
   FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, EIGHTH_MCP_RUN_ID,
   NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID,
-];
+]);
+const historical = REVIEWED_HISTORICAL_RUN_IDS;
 export const CLEANUP_LEGACY_SECRETS = Object.freeze({
   'database-mcp-worker': ['DATABASE_ENCRYPTION_KEY', 'DATABASE_GITHUB_ACTIONS_TOKEN', 'DATABASE_KEY_ID'],
   'ssh-mcp-worker': ['ENCRYPTION_KEY'],

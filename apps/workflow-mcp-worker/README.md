@@ -848,3 +848,32 @@ Spec #774 精确恢复说明（非生产代码）：只有已核验的 Version 1
 旧密钥的 Version 142 414da2d7-a16f-4ce6-9350-013ad4f7166a。
 此模式不执行 Migration、Prepare、GitHub Secret 删除或自动回滚；恢复
 结果必须以实际部署版本、历史保护和运行时只读回读验收。
+
+### Spec #774 / PR #777：独立 UU 空表退役（最新方案，覆盖上方历史状态）
+
+2026-11-07 已由 [Release #42364599988](https://github.com/lirtual/mcp-workers/actions/runs/42364599988)
+完成 Version 143（`3f27e9ca-790c-4ec9-914e-cb4204a736e6`）100% 生产发布；
+正式 Windows 已恢复 Active；运行时已不存在 `WORKFLOW_SESSION_RUNTIME_DATA_KEY`。
+上方 Version 142／「未发布」和安全阻断说明保留为历史审计，不代表当前生产状态。
+
+本 PR **仅非生产实现**，默认拒绝部署及 Schema 写入；含 `DROP TABLE`
+的 `0021_retire_uu_session_data.sql` 尚未应用，未经独立授权禁止 Merge 或 Publish。
+生产清理仅可由现有 GitHub Release Worker 的
+`workflow-uu-table-retirement` 独立 Job，在 Owner/main/CI/Environment/互斥锁
+及单独精确 SHA、Version 143 审核后执行。普通 Worker 发布、code-only 发布、
+历史 Actions D1 Prepare 和 Secret Prepare/Publish 均不是 UU 表清理入口。
+独立 Job 不部署 Worker，只应用恰好一个未应用的 v21 Migration，再独立回读。
+
+专项安全门禁必须确认：源 21 个 Migration 精确、生产既有 20 个名称一致、
+目标 UU 表存在且 0 行、Version 143 唯一 100% 活动且 10 个绑定完全一致、
+Windows Paused、无 Active Session/未终态 Windows Attempt、旧 RCA Plan 已退役、
+原生六类实例和分页完全排空；12 条已审核历史 Unknown Run、12 条 Step 和 1
+条 claimed Attempt 必须精确保持原有集合及状态，清理前后比较只读快照，
+不删除、不改写、不重试它们。任何 drift/Unknown 中止受影响操作。
+**普通 Schema Migration 的原有全局严格门禁不变**；唯一例外是按此
+单表限定且独立获批的清理路径，绝不扩展为通用豁免。
+
+用户选择不再要求 Version 142 旧 UU 兼容；一旦 v21 完成，不得再通过
+旧 `143→142` Restore 路径恢复依赖旧表的版本。必须以不依赖 UU 资源的
+已核验版本作为恢复目标。GitHub Environment 来源 `SESSION_RUNTIME_DATA_KEY`
+必须在另外的具体授权下清理并回读，本 Job 不修改任何 Secret。
