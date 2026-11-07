@@ -57,18 +57,20 @@ Their **later separately authorized cleanup is complete**:
 | Worker | Cleanup production receipt | Active version | Removed **Cloudflare runtime** binding(s) |
 | --- | --- | --- | --- |
 | SSH | [Publish #42222417701](https://github.com/lirtual/mcp-workers/actions/runs/42222417701) | Version 11 `0cf2a9f5-078d-4811-8f92-813037deea54` (100%) | `ENCRYPTION_KEY` |
-| Workflow | [Prepare #42225112645](https://github.com/lirtual/mcp-workers/actions/runs/42225112645), [Publish #42226359925](https://github.com/lirtual/mcp-workers/actions/runs/42226359925) | Version 141 `3883c6bf-0581-4e3a-8b58-ed8e5ec9f1ba` (100%) | `MCP_PORTAL_CLIENT_SECRET`, `SESSION_RUNTIME_DATA_KEY` |
+| Workflow（Spec #733 历史状态） | [Prepare #42225112645](https://github.com/lirtual/mcp-workers/actions/runs/42225112645), [Publish #42226359925](https://github.com/lirtual/mcp-workers/actions/runs/42226359925) | 当时 Version 141 `3883c6bf-0581-4e3a-8b58-ed8e5ec9f1ba` (100%)；当前以 #774 Version 142 为准 | `MCP_PORTAL_CLIENT_SECRET`, `SESSION_RUNTIME_DATA_KEY` |
 
 Independent Cloudflare version/settings/Secret-name inventories confirmed the old names absent and all other bindings preserved. SSH's RackNerd/CloudCone authenticated directory reads and Workflow's authenticated `workflow_list`/`workflow_get` read paths passed. Previous active versions remain retained; reverting to one is another production change requiring separate authorization.
 
 The **GitHub Environment** Secrets `ENCRYPTION_KEY`, `MCP_PORTAL_CLIENT_SECRET`, and
-`SESSION_RUNTIME_DATA_KEY` are deliberately **retained authoritative release inputs**,
-not cleanup targets. Workflow's `session_runtime_data` had zero records: historical
+`SESSION_RUNTIME_DATA_KEY` were **retained authoritative release inputs under #733**.
+For Spec #774, `SESSION_RUNTIME_DATA_KEY` alone is now a pending cleanup target,
+but must remain until the active Worker and authorized recovery dependencies no longer need it. Workflow's `session_runtime_data` had zero records: historical
 AES-GCM decrypt on Version 141 is **Waived by explicit Owner approval, not Pass** ([decision](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6687070101)). No production business
 Action/Session was invoked. [Detailed receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6686213244).
 
 The existing Release Worker has a disabled-by-default `legacy_secret_cleanup_mode` input:
-`none` (normal release), `prepare`, and `publish`. The latter two are enabled only for SSH,
+`none` (normal release), `prepare`, `publish`, and the narrowly pinned Workflow #774 `restore`.
+Prepare/Publish are enabled only for SSH,
 Workflow, and Database; they require `deploy_to_production=true`, an exact reviewed `main` SHA and active
 Worker version UUID, successful existing CI, Owner dispatch, the selected Worker Environment,
 and the normal per-Worker release lock. Each Worker and phase requires **separate production
@@ -77,8 +79,9 @@ authorization**; enabling the mode is not itself authorization.
 - **Prepare:** set `legacy_cleanup_expected_sha` and
   `legacy_cleanup_expected_active_version`, leave `legacy_cleanup_candidate_version`
   empty. A single `wrangler versions secret bulk` operation creates a **nondeployed**
-  version removing only `ENCRYPTION_KEY` (SSH), or the two legacy Workflow runtime names
-  together. Read-only checks then confirm the original active version remains at 100%,
+  version removing only `ENCRYPTION_KEY` (SSH), or the two Spec #733 legacy Workflow runtime names
+  together. With Spec #774 `uu_session_secret_cleanup=true`, a separate Prepare removes only
+  `WORKFLOW_SESSION_RUNTIME_DATA_KEY`, never the Portal or GitHub dispatch Secret. Read-only checks then confirm the original active version remains at 100%,
   candidate code etag and resource metadata are unchanged, and canonical Secrets remain.
   Record the candidate version UUID from the protected Run. Preparation changes a
   production-version resource but **does not route traffic**.
@@ -112,11 +115,14 @@ an older version is itself another production change requiring authorization.
 
 ### Spec #774 UU Secret 退役与精确版本恢复
 
-已授权的 [Prepare #42341187538](https://github.com/lirtual/mcp-workers/actions/runs/42341187538)
+已完成的 [Prepare #42341187538](https://github.com/lirtual/mcp-workers/actions/runs/42341187538)
 仅创建未部署 Version 143 3f27e9ca-790c-4ec9-914e-cb4204a736e6，
 候选相对活动 Version 142 414da2d7-a16f-4ce6-9350-013ad4f7166a
 仅移除运行时 WORKFLOW_SESSION_RUNTIME_DATA_KEY；其余资源一致。
-本段新恢复入口仅为非生产代码，**没有执行 Publish 或恢复**。
+新恢复入口代码已合并，但 **Version 143 Publish 遭平台安全检查拒绝，Restore 未执行**；
+[阻断回执](https://github.com/lirtual/mcp-workers/issues/774#issuecomment-6703911930)
+证明没有被接受的设备端派发，GitHub 无新 Release Run。禁止重试、更换渠道或
+将其认定为发布成功。正式 Windows 已恢复 Active。
 
 复用同一个受保护 Release Worker、Owner/main 精确 SHA、成功 CI、
 workflow-mcp-worker Environment 和 Worker 互斥锁。在单独生产恢复授权下，
@@ -139,4 +145,7 @@ Cloudflare 最新版本 Settings 可能仍反映 Version 143 的三个 Secret，
 恢复必须在真实 Publish 结果消歧、用户单独明确批准且全部门禁通过后执行，
 **不自动回滚、不对 Unknown 重试**。保留 GitHub Environment 来源
 SESSION_RUNTIME_DATA_KEY、旧 D1 表及历史版本；未完成回滚验收前不得
-把 Version 142 称作已验证恢复。PR #777 的 D1 DROP 门禁不受影响。
+把 Version 142 称作已验证恢复。当前 D1 仍有 20 项 Migration、空表、
+12 条历史 indeterminate Run、12 条未终态 Step 和 1 条 claimed Attempt；
+[Draft PR #777](https://github.com/lirtual/mcp-workers/pull/777) 的 D1 DROP
+受原全局 Migration 门禁阻断且不得合并，不能借 Secret 发布绕过它。
