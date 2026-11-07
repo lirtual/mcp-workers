@@ -352,7 +352,9 @@ test('Foreach discovery matches compiler: read-only MCP and GitHub Tasks only',a
  assert.deepEqual(withFor('action.run').properties.action.properties.type,{const:'task'});
  // These restrictions must not narrow independent top-level Action contracts.
  assert.deepEqual(WORKFLOW_ACTION_WITH_SCHEMAS['mcp.call'].properties.scope,{enum:['read','write']});
- const standaloneCloudflare=WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[1] as {
+ const generic=WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0] as {properties:{action_id:{type:string}}};
+ assert.equal(generic.properties.action_id.type,'string');
+ const standaloneCloudflare=WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[2] as {
    properties:{executor:{const:string}};
  };
  assert.equal(standaloneCloudflare.properties.executor.const,'cloudflare');

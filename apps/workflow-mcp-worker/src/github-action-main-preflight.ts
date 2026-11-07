@@ -21,7 +21,7 @@ export async function resolveApprovedMainAction(
     repository:REPO,repositoryId:baseline.repositoryId,token,
   },http)).find(s=>s.workflowId===baseline.workflowId&&
      s.workflowPath===baseline.workflowPath);
-  if(!source||!SHA.test(source.commitSha))
+  if(!source||source.contract.publicMain!==true||!SHA.test(source.commitSha))
     throw Error('github_action_main_unverified');
   const current=await reviewedGitHubAction(source);
   if(current.repository!==baseline.repository||

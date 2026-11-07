@@ -1,3 +1,4 @@
+import {validateJsonActionInput} from './action-input-schema.ts';
 import YAML from 'yaml';
 import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 import {httpOperation,type HttpOperation} from './http-action.ts';
@@ -30,6 +31,8 @@ function rejectRetiredPublicActions(steps:unknown[]){
   for(const [i,entry] of steps.entries()){
     if(!entry||typeof entry!=='object'||Array.isArray(entry))continue;
     const step=entry as Record<string,unknown>;
+    if(step.approval!==undefined)
+      throw new PlanError('runtime_approval_retired','/steps/'+i+'/approval');
     if(step.uses==='github.run')
       throw new PlanError('github_run_retired_use_action_run','/steps/'+i+'/uses');
     const template=step.template;
@@ -77,7 +80,7 @@ export const GITHUB_EVENT_PATTERNS=Object.freeze({
   workflow_path:/^\.github\/workflows\/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/,
 });
 export type WorkflowTrigger = CronTrigger | WebhookTrigger | GithubEventTrigger;
-export type Plan = { version: 1; name: string; steps: Step[]; saga?:{on:('failure'|'cancel')[]}; saga_compensation_approved?:true; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}> };
+export type Plan = { version: 1; name: string; steps: Step[]; saga?:{on:('failure'|'cancel')[]}; saga_compensation_approved?:true; inputs?: Record<string, unknown>; triggers?: WorkflowTrigger[]; mcp_approvals?: ReadonlyOperation[]; mcp_target_risks_accepted?: true; mcp_write_execution_approved?:true; mcp_connection_generation?: number; http_approvals?:HttpOperation[]; http_execution_approved?:true; http_connection_generation?:number; github_execution_approved?: true; cloudflare_execution_approved?: true; cloudflare_action_approvals?:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>;  github_action_approvals?: Array<{repository:string;repositoryId:number;workflowId:number;workflowPath:string;commitSha:string;type:'task'|'session';contractDigest:string}>; github_dynamic_input_contracts?:Record<string,DiscoveredAction>; child_approvals?:Array<{workflow_id:string;version_id:string;digest:string}>; cloudflare_action_contracts?:Record<string,Record<string,unknown>> };
 const SAFE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_PROTOTYPE_KEYS = new Set(['constructor','toString','toLocaleString','valueOf','hasOwnProperty','isPrototypeOf','propertyIsEnumerable']);
@@ -172,18 +175,22 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
   }
   return unknownOutput;
 }
-async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
-  const manifests=new Map<string,Awaited<ReturnType<typeof cloudflareActionManifest>>>();
+async function validateStaticOutputReferences(steps:Step[],trustedManifests:Record<string,Record<string,unknown>>={}):Promise<void>{
+  const manifests=new Map<string,Record<string,unknown>>();
   for(const s of steps)if(s.uses==='action.run'){
     const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic';
-    manifests.set(s.id,await cloudflareActionManifest(kind));
+    manifests.set(s.id,trustedManifests[s.id]??await cloudflareActionManifest(kind));
   }
   const knownRef=(ref:string,path:string):KnownOutput=>{
     const parts=ref.split('.');
     if(parts[0]!=='steps'||parts[2]!=='output'||parts.length<3)return unknownOutput;
     const producer=steps.find(s=>s.id===parts[1]);
     if(producer?.uses==='result.emit')return literalOutputAt(producer.with.data,parts.slice(3),path);
-    if(producer?.uses==='action.run')return declaredOutputAt(manifests.get(producer.id)?.output_schema,parts.slice(3),path);
+    if(producer?.uses==='action.run'){
+      const schema=manifests.get(producer.id)?.output_schema;
+      if(schema===undefined)throw new PlanError('unknown_output_field',path);
+      return declaredOutputAt(schema,parts.slice(3),path);
+    }
     return unknownOutput;
   };
   const visit=(value:unknown,path:string,expectedNumeric=false):void=>{
@@ -211,7 +218,10 @@ async function validateStaticOutputReferences(steps:Step[]):Promise<void>{
     else if(s.uses==='github.run')visit((s.with.action as Record<string,unknown>).inputs,path+'/with/action/inputs');
     else if(s.uses==='flow.child')visit(s.with.inputs,path+'/with/inputs');
     else if(s.uses==='http.request'&&Object.hasOwn(s.with,'body'))visit(s.with.body,path+'/with/body');
-    else if(s.uses==='action.run'&&s.with.provider==='bark')visit((s.with.input as Record<string,unknown>).notification,path+'/with/input/notification');
+    else if(s.uses==='action.run'){
+      if(s.with.provider==='bark')visit((s.with.input as Record<string,unknown>).notification,path+'/with/input/notification');
+      else if(trustedManifests[s.id])visit(s.with.input,path+'/with/input');
+    }
     if(s.if!==undefined)visit(s.if,path+'/if');
   }
 }
@@ -357,7 +367,7 @@ function assertLiteralHttpBody(value:unknown,path:string,depth=0):void{
   for(const [,part] of entries)assertLiteralHttpBody(part,path,depth+1);
 }
 
-export async function compilePlan(source: string|unknown, publicDefinition=false): Promise<{plan:Plan; digest:string}>{
+export async function compilePlan(source: string|unknown, publicDefinition=false, trustedManifests:Record<string,Record<string,unknown>>={}): Promise<{plan:Plan; digest:string}>{
   let raw:unknown=source;
   if(typeof source==='string'){
     if(new TextEncoder().encode(source).byteLength>PLAN_LIMITS.definitionBytes)throw new PlanError('definition_too_large');
@@ -817,12 +827,14 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
       keys(withData,['executor','provider','action','contract_digest','input'],stepPath+'/with');
       if(isRetiredWeixinAction({uses:'action.run',with:withData}))
         throw new PlanError('weixin_action_retired',stepPath+'/with');
-      const manifest=await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':withData.action==='litterbox.upload_file'?'litterbox':'unified-generic');
+      const manifest=(trustedManifests[String(s.id)]??await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':withData.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
       if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
       const input=object(withData.input,'invalid_cloudflare_input');
-      if(manifest.provider==='dub'){
+      if(trustedManifests[String(s.id)] && !['dub','bark','litterbox','envshare'].includes(String(manifest.provider))){
+        validateJsonActionInput(manifest.input_schema,input,stepPath+'/with/input',true);
+      }else if(manifest.provider==='dub'){
         keys(input,['url','public_stats'],stepPath+'/with/input');
         const target=input.url;
         if(!target||typeof target!=='object'||Array.isArray(target)||
@@ -1100,7 +1112,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   // Dub is a single explicit manual Run; never Cron, Webhook, or GitHub-push fanout.
   if(triggers?.length&&steps.some(s=>s.uses==='action.run'&&s.with.action==='dub.shorten_url'))
     throw new PlanError('dub_manual_run_only','/triggers');
-  await validateStaticOutputReferences(steps);
+  await validateStaticOutputReferences(steps,trustedManifests);
   // Initial reviewed-write slice permits one static external write per Plan.
   // Do not turn a single owner grant into a multi-write fan-out.
   const writeSteps=steps.filter(s=>s.uses==='mcp.call'&&s.with.scope==='write');
@@ -1115,7 +1127,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   }
   if(saga&&!sorted.some(s=>s.compensate))
     throw new PlanError('saga_requires_compensation','/saga');
-  const plan:Plan={version:1,name:o.name,steps:sorted,...(saga?{saga}:{}),...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
+  const plan:Plan={version:1,name:o.name,steps:sorted,...(Object.keys(trustedManifests).length?{cloudflare_action_contracts:trustedManifests}:{}),...(saga?{saga}:{}),...(o.inputs===undefined?{}:{inputs:o.inputs as Record<string,unknown>}),...(triggers?{triggers}:{})};
   const serial=JSON.stringify(canonical(plan));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(serial));
   const digest=[...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('');
@@ -1123,4 +1135,4 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
 }
 
 /** Gate public Draft syntax while preserving historical internal Plan compilation. */
-export const compilePublicPlan=(source:string|unknown)=>compilePlan(source,true);
+export const compilePublicPlan=(source:string|unknown,manifests:Record<string,Record<string,unknown>>={})=>compilePlan(source,true,manifests);

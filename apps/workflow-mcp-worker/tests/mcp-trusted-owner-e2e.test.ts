@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { toolSchemaDigest } from '../src/plan.ts';
-import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
+import {cloudflareActionManifest,canonical} from '../src/cloudflare-action-contract.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
@@ -41,7 +41,8 @@ const DIGEST=await toolSchemaDigest(INPUT_SCHEMA);
 test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Result',async t=>{
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0017_http_connection_auth.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
+  for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0017_http_connection_auth.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql',
+     '0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -98,21 +99,14 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     await client.connect(transport);
     const listed=await client.listTools();
     assert.ok(listed.tools.some(x=>x.name==='workflow_publish'));
-    const approvalTool=listed.tools.find(x=>x.name==='workflow_approval');
-    assert.ok(approvalTool,'runtime decisions must be discoverable over public MCP');
-    const decisionSchema=(approvalTool.inputSchema as any).properties;
-    assert.deepEqual(decisionSchema.decision.enum,['approve','deny']);
-    for(const key of ['run_id','step_id','published_version_id'])assert.ok(decisionSchema[key]);
-    // The authenticated public MCP schema must not require a client refresh
-    // each time a reviewed Cloudflare Provider/Action is registered.
+    assert.equal(listed.tools.length,18,'#775 retires one of #774’s 19 owner tools');
+    assert.equal(listed.tools.some(x=>x.name==='workflow_approval'),false);
     const publisher=listed.tools.find(x=>x.name==='workflow_publish')!;
-    const approved=(publisher.inputSchema as any).properties.approved_cloudflare_actions.items.properties;
-    for(const key of ['provider','action']){
-      assert.equal(approved[key].type,'string');
-      assert.equal(approved[key].enum,undefined,`${key} must not be a fixed action catalog`);
-      assert.equal(typeof approved[key].pattern,'string');
-      assert.equal(typeof approved[key].maxLength,'number');
-    }
+    const publishSchema=(publisher.inputSchema as any).properties;
+    for(const retired of ['approved_actions','approved_cloudflare_actions',
+      'approved_children','approve_cloudflare_execution','approve_heavy_execution'])
+      assert.equal(Object.hasOwn(publishSchema,retired),false,retired);
+    assert.ok(publishSchema.approved_operations,'external MCP targets keep independent grants');
 
     async function call(name:string,args:Record<string,unknown>,error?:string):Promise<any>{
       const output=await client.callTool({name,arguments:args});
@@ -137,10 +131,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const capabilities=await call('workflow_capabilities',{});
     assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.manual'&&x.availability==='supported'));
     assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.cron'&&x.availability==='supported'));
-    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='flow.approval_gate'));
-    const gate=await call('workflow_capabilities',{id:'flow.approval_gate'});
-    assert.equal(gate.approval_gate.timeout_seconds,600);
-    assert.equal(gate.approval_gate.decision_tool,'workflow_approval');
+    assert.equal(capabilities.capability_ids.some((x:any)=>x.id==='flow.approval_gate'),false);
     const emitInfo=await call('workflow_capabilities',{id:'action.result.emit'});
     assert.equal(emitInfo.example.validation,'compiler_valid_only');
     assert.equal((await call('workflow_capabilities',{id:'legacy.tsrv'})).availability,'unknown');
@@ -257,25 +248,79 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const target={workflow_id:draft.workflow_id,expected_revision:1};
     const barkGrant={executor:'cloudflare',provider:'bark',action:'bark.send_notification',
       contract_digest:bark.contract_digest,deployment_id:deployment};
-    for(const grant of [
-      undefined,
-      {...barkGrant,provider:'unregistered'},
-      {...barkGrant,action:'other.send_notification'},
-      {...barkGrant,contract_digest:'0'.repeat(64)},
-      {...barkGrant,deployment_id:'55555555-5555-4555-8555-555555555555'},
-    ]){
-      await call('workflow_publish',{...target,approve_cloudflare_execution:true,
-        ...(grant?{approved_cloudflare_actions:[grant]}:{})},'cloudflare_action_approval_required');
-    }
-    await call('workflow_publish',{...target,approved_cloudflare_actions:[barkGrant]},
-      'cloudflare_action_approval_required');
+    // Caller cannot invent or widen Action grants by submitting the retired fields.
+    const forged=await client.callTool({name:'workflow_publish',arguments:{
+      ...target,approve_cloudflare_execution:true,approved_cloudflare_actions:[barkGrant],
+    }});
+    assert.equal(forged.isError,true,'retired manual-grant parameters are rejected');
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,1);
-    const barkPublished=await call('workflow_publish',{...target,
-      approved_cloudflare_actions:[barkGrant],approve_cloudflare_execution:true});
+    const barkPublished=await call('workflow_publish',target);
     const frozen=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
       .get(barkPublished.published_version_id) as {plan:string}).plan);
     assert.deepEqual(frozen.cloudflare_action_approvals,[barkGrant]);
     assert.equal(barkSends,0,'Publish must never send a notification');
+
+
+    // Spec #775: actual public MCP -> Action list -> Validate -> Publish -> Run
+    // -> Result with a NEW Cloudflare JSON Action, no Consumer-specific branch.
+    const jsonManifest={
+      executor:'cloudflare',provider:'json',action:'json.report',version:1,
+      source_repository:'lirtual/cloudflare-actions',service:'cloudflare-actions',
+      entrypoint:'ActionsEntrypoint',side_effect:'none',
+      input_schema:{type:'object',additionalProperties:false,
+        required:['message'],properties:{message:{type:'string',maxLength:100}}},
+      output_schema:{type:'object',additionalProperties:false,
+        required:['status','report_id'],properties:{
+          status:{enum:['accepted','rejected','unknown']},report_id:{type:'string',maxLength:64}}},
+    };
+    const jsonHash=await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(JSON.stringify(canonical(jsonManifest))));
+    const jsonDigest=Array.from(new Uint8Array(jsonHash),b=>b.toString(16).padStart(2,'0')).join('');
+    const jsonDeployment='55555555-5555-4555-8555-555555555555';
+    let jsonCalls=0;
+    env.ACTIONS={
+      listActions:async()=>[{action_id:'json.report'}],
+      getContract:async()=>({manifest:jsonManifest,contract_digest:jsonDigest,
+        deployment_id:jsonDeployment}),
+      execute:async(action_id:string,invocation:any)=>{
+        assert.equal(action_id,'json.report');
+        assert.equal(invocation.message,'report-body');
+        assert.equal(invocation.deployment_id,jsonDeployment);
+        jsonCalls++;
+        return {status:'accepted',input_digest:invocation.input_digest,report_id:'report-42'};
+      },
+    } as any;
+    const catalog=await call('workflow_action_list',{});
+    assert.deepEqual(catalog.actions.map((action:any)=>action.action_id),['json.report']);
+    const jsonDefinition={version:1,name:'new-json-action',steps:[
+      {id:'report',uses:'action.run',with:{action_id:'json.report',
+        input:{message:{ref:'inputs.message'}}}},
+      {id:'emit',uses:'result.emit',needs:['report'],
+        with:{data:{ref:'steps.report.output.report_id'}}},
+    ]};
+    const validated=await call('workflow_validate',{definition:JSON.stringify(jsonDefinition)});
+    assert.equal(validated.valid,true,JSON.stringify(validated));
+    const jsonDraft=await call('workflow_create',{definition:JSON.stringify(jsonDefinition)});
+    const jsonPublished=await call('workflow_publish',{
+      workflow_id:jsonDraft.workflow_id,expected_revision:1,
+    });
+    const bound=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .get(jsonPublished.published_version_id) as {plan:string}).plan);
+    assert.equal(bound.cloudflare_action_approvals[0].contract_digest,jsonDigest);
+    assert.equal(jsonCalls,0,'Publish never invokes Provider effects');
+    const jsonRun=await call('workflow_run',{workflow_id:jsonDraft.workflow_id,
+      inputs:{message:'report-body'}});
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({
+      payload:{run_id:jsonRun.run_id},
+    } as WorkflowEvent<{run_id:string}>, {
+      do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    } as unknown as WorkflowStep);
+    const jsonResult=await call('workflow_result',{run_id:jsonRun.run_id});
+    assert.equal(jsonResult.status,'succeeded',JSON.stringify(jsonResult));
+    assert.equal(jsonResult.result,'report-42');
+    assert.equal(jsonCalls,1);
+    assert.equal((sqlite.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations WHERE run_id=?')
+      .get(jsonRun.run_id) as {n:number}).n,1);
 
   }finally{
     await client.close();

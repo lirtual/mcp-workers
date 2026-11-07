@@ -11,6 +11,7 @@ export type DiscoveredAction = {
   name: string;
   type: 'task' | 'session';
   inputs: Record<string, ActionInput>;
+  publicMain?: boolean;
 };
 
 const RESERVED = new Set(['attempt_id', 'dispatch_id', 'capability_id']);
@@ -34,6 +35,8 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
   const env = root.env;
   if (!record(env) || !literal(env.WORKFLOW_ACTION_TYPE) ||
       !['task', 'session'].includes(env.WORKFLOW_ACTION_TYPE)) fail('invalid_type');
+  if (env.WORKFLOW_ACTION_PUBLIC !== undefined && env.WORKFLOW_ACTION_PUBLIC !== 'true')
+    fail('invalid_public_declaration');
   if (!record(root.on) || !record(root.on.workflow_dispatch)) fail('missing_dispatch');
   const triggers = Object.keys(root.on);
   if (triggers.length !== 1 || triggers[0] !== 'workflow_dispatch') fail('unsupported_trigger');
@@ -41,11 +44,13 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
   if (!record(root.jobs) || Object.keys(root.jobs).length === 0) fail('missing_jobs');
   for (const job of Object.values(root.jobs)) {
     if (!record(job)) fail('invalid_job');
-    if (own(job.env, 'WORKFLOW_ACTION_TYPE') !== undefined ||
+    if (own(job.env, 'WORKFLOW_ACTION_PUBLIC') !== undefined ||
+        own(job.env, 'WORKFLOW_ACTION_TYPE') !== undefined ||
         (record(job.steps) && own(job.steps, 'WORKFLOW_ACTION_TYPE') !== undefined)) fail('shadowed_type');
     if (Array.isArray(job.steps)) {
       for (const step of job.steps) {
-        if (own(own(step, 'env'), 'WORKFLOW_ACTION_TYPE') !== undefined) fail('shadowed_type');
+        if (own(own(step, 'env'), 'WORKFLOW_ACTION_TYPE') !== undefined ||
+            own(own(step, 'env'), 'WORKFLOW_ACTION_PUBLIC') !== undefined) fail('shadowed_type');
       }
     }
   }
@@ -108,5 +113,6 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
        (duration.default as number)<1 || (duration.default as number)>300)
       fail('invalid_session_duration');
   }
-  return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs };
+  return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs,
+    publicMain: env.WORKFLOW_ACTION_PUBLIC === 'true' };
 }

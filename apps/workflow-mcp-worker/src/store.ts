@@ -1,3 +1,4 @@
+import {resolvePublicActionDefinition} from './public-action-definition.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
 import {workflowGitHubArtifactReferences} from './github-action-artifacts.ts';
 import {compensateCancelledSessions} from './saga.ts';
@@ -56,7 +57,7 @@ export type Env = {
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
     listActions():Promise<Array<{action_id:string}>>;
-    getContract(action_id:string,contract_digest?:string):Promise<{deployment_id:string;contract_digest:string}>;
+    getContract(action_id:string,contract_digest?:string):Promise<{deployment_id:string;contract_digest:string;manifest?:unknown}>;
     execute(action_id:string,input:unknown):Promise<{status:string;input_digest:string}>;
     getReceipt(action_id:string,query:unknown):Promise<{status:string}>;
     getBinding(action_id:string):Promise<{generation:number;ready:boolean}>;
@@ -237,7 +238,10 @@ export class WorkflowService {
       }catch{throw new PlanError('github_action_contract_or_inputs_changed',path+'/inputs');}
       // A live branch is allowed only for the five named business Plans.
       // Publish still verifies the exact reviewed initial commit and contract.
-      if(raw.ref==='refs/heads/main'&&!isDynamicMainAction(expected,raw.ref,plan.name))
+      if(raw.ref!=='refs/heads/main')
+        throw new PlanError('github_action_requires_current_main',path+'/ref');
+      if(candidate.contract.publicMain!==true||
+         !isDynamicMainAction(expected,raw.ref,plan.name))
         throw new PlanError('github_action_main_not_allowed',path+'/ref');
       try{await verifyActionDispatchRef(expected,raw.ref as string,token);}
       catch(error){
@@ -284,12 +288,13 @@ export class WorkflowService {
    * the exact compiler and reviewed GitHub Action contract. */
   async validateDefinition(definition:string){
     try {
-      const {digest,plan}=await compilePublicPlan(definition);
+      const resolved=await resolvePublicActionDefinition(definition,this.env);
+      const {digest,plan}=await compilePublicPlan(resolved.definition,resolved.manifests);
       const reviewed_actions=await this.checkedGitHubActions(plan);
       const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
-          const manifest=await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
+          const manifest=(plan.cloudflare_action_contracts?.[s.id]??await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
           // Validation is read-only: display the actual bound Provider version
           // for approval, never a potentially stale Consumer deployment Pin.
           let live=null;
@@ -377,13 +382,38 @@ export class WorkflowService {
   async httpConnectionStatus(){return httpAuthorization(this.db);}
   async httpConnectionRevoke(){return changeHttpAuthorization(this.db,'revoke');}
   async httpConnectionEnable(){return changeHttpAuthorization(this.db,'enable');}
+  /** Public Publish resolves live reviewed Action grants internally.
+   * External MCP/HTTP and Saga side effects keep independent target approvals.
+   * A changed Provider/Action between review and CAS still fails closed. */
+  async publishReviewed(workflow_id:string,expected_revision:number,options:{
+    approved_operations?:ReadonlyOperation[];accept_target_risks?:boolean;
+    approved_http_operations?:HttpOperation[];approve_http_execution?:boolean;
+    approve_mcp_write_execution?:boolean;approve_saga_compensation?:boolean;
+  }={}){
+    const review=await this.validate(workflow_id,expected_revision);
+    if(!review.valid)throw new StateError('invalid_definition');
+    const github='reviewed_actions' in review?review.reviewed_actions??[]:[];
+    const cloudflare='reviewed_cloudflare_actions' in review?
+      review.reviewed_cloudflare_actions??[]:[];
+    if(cloudflare.some(c=>typeof c.deployment_id!=='string'))
+      throw new StateError('cloudflare_provider_identity_unconfirmed');
+    const children='required_children' in review?review.required_children??[]:[];
+    return this.publish(workflow_id,expected_revision,
+      options.approved_operations??[],options.accept_target_risks===true,
+      github.length>0,github,children,
+      cloudflare as Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>,
+      cloudflare.length>0,options.approved_http_operations??[],
+      options.approve_http_execution===true,options.approve_mcp_write_execution===true,
+      options.approve_saga_compensation===true);
+  }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
     approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false,
     approve_mcp_write_execution=false,approve_saga_compensation=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
-    const {plan,digest:plan_digest}=await compilePublicPlan(row.draft);
+    const resolved=await resolvePublicActionDefinition(row.draft,this.env);
+    const {plan,digest:plan_digest}=await compilePublicPlan(resolved.definition,resolved.manifests);
     const reviewedActions=await this.checkedGitHubActions(plan);
     const children=await this.checkedChildWorkflows(plan,workflow_id);
     if(JSON.stringify(children)!==JSON.stringify(approved_children))
@@ -423,7 +453,7 @@ export class WorkflowService {
       const bark=step.with.provider==='bark';
       const provider=this.env.ACTIONS;
       if(!provider)throw new StateError('cloudflare_provider_not_configured');
-      const contract=await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic');
+      const contract=(plan.cloudflare_action_contracts?.[step.id]??await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
       try{live=await provider.getContract(contract.action,contract.contract_digest);}
@@ -899,6 +929,8 @@ export class WorkflowService {
     catch{throw new StateError('published_plan_invalid');}
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
     if(hasRetiredWeixinAction(activePlan))throw new StateError('weixin_action_retired');
+    if(activePlan.steps.some(s=>s.approval?.required))
+      throw new StateError('runtime_approval_retired');
     // Reject invalid/unapproved runtime overrides before reserving a Run.
     // A legacy literal Session Plan remains immutable and must not pretend
     // that a supplied duration was honored.

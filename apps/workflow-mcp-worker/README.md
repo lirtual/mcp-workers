@@ -69,18 +69,26 @@ No source documentation or PR merge is production deletion authorization.
 Older Weixin examples below are historical only, not currently supported
 new Draft/Publish/Run actions.
 
+## 当前统一 Action 接口（Spec #775）
+
+新增 Workflow 使用 `action.run` 的 `with: {action_id, input}`：`workflow_action_list` 从可信 GitHub main 的显式公开声明与 Cloudflare 私有 Service Binding Manifest 汇总当前唯一候选。调用方不再选择 Tag、填写 Executor 特有身份字段或重复提交 Action 授权数组。
+
+`workflow_validate` 只读校验来源、输入和业务输出，`workflow_publish` 再次核对真实契约与 Provider 部署，内部保存最小必要授权快照。对 MCP/HTTP 外部目标、Saga 补偿和具有更高风险的生产写入仍需独立明确授权。运行时保留 GitHub OIDC/实际 SHA/Attempt 及 Cloudflare D1 一次性防重；未知副作用不重试，历史 Published Plan/Grant/Run/审批记录不改写。
+
+新公开 Definition 不支持 `approval.required`；`workflow_approval` 已从公开 MCP 删除，历史等待审批的 Plan 不允许重新 Run。特殊 Bark/EnvShare/Litterbox/Session 继续走原有受控路径。以下旧 Spec 的示例和旧版发布参数仅供历史审计，不代表当前公开 API。
+
 ## Capabilities
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
 - **MCP tool calls (`mcp.call`):** the existing read-only operations plus two source-reviewed write operations, IMA `ima_create_note` and `ima_append_note`. Both require the exact pinned Portal endpoint, tool, scope and schema digest plus `accept_target_risks: true`; write additionally requires `approve_mcp_write_execution: true`. Reviewed writes accept at most one top-level Step per Plan: create with literal `content` (1–2048 chars), or append with a literal existing numeric `note_id` (8–24 digits) and literal `content` (1–2048 chars). No folder, dynamic input or Foreach writes. Runtime verifies the live schema and explicitly reviewed tool before a single D1 dispatch reservation. Upstream `readOnlyHint` never authorizes a write; an unknown call result remains `indeterminate` without an automatic resend.
 - **HTTP Action (`http.request`):** one literal, canonical public HTTPS URL and GET/HEAD/POST operation approved verbatim at Publish. No dynamic URL, query, credentials, caller headers or redirect following. A durable D1 fence prevents blind retries, and the independently revocable HTTP Connection prevents older Plans being revived.
-- **GitHub Actions (`action.run`, `executor: github`):** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish still requires the exact reviewed initial SHA, workflow, input contract and `approve_heavy_execution: true`; ordinary Actions remain Tag-pinned, while only the five named `lirtual/github-actions` business Workflows may opt into `refs/heads/main` with per-Run CI and exact-SHA verification. Automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
+- **GitHub Actions（统一 `action_id`，内部 `executor: github`）：** explicitly reviewed, repository-scoped `github.action` Task/Session definitions. A new compatible Action can be discovered from an already approved repository without redeploying the Worker. Publish 从已验证的真实 main 合约生成最小内部 Grant；后续派发仍必须执行真实 Runner SHA、CI、OIDC 和 Attempt 核验。 Automatic discovery grants no execution. Task success follows the verified native GitHub terminal, not dispatch ACK or callback receipt. Optional signed Task JSON output (up to 4 KiB) is reported only after that native success. A Session completes its startup step at verified Ready, while the physical GitHub Run and cancellation/quota remain separate.
 - **Result emission (`result.emit`)** for Workflow results.
 
 No arbitrary shell input or unreviewed repository dispatch is allowed. Workflow cancellation of approved GitHub Actions is separate from stopping admission; native GitHub Run state is reconciled before a physical termination is declared.
 
 
-### Unified Action syntax (Spec #392)
+### 历史统一语法设计（Spec #392，已被 #775 公开接口取代）
 
 New GitHub Task/Session Drafts can use `action.run` with `with.executor: github` and
 all existing `github.action` identity fields and explicit Publish grants. The
@@ -94,7 +102,7 @@ selected top-level `workflow_run.file`, and only EnvShare uses a transient
 `workflow_result.delivery_key`. These flags document the existing audited
 authorization/validation gates, not a new file-transport or Secret protocol.
 
-The `workflow_publish.approved_cloudflare_actions` MCP input uses bounded
+The 历史 `workflow_publish.approved_cloudflare_actions` MCP input used bounded
 provider/action identifier strings, not a fixed client-side enum. This is
 **not** dynamic Provider registration: Validate/Publish/Run still require a
 source-reviewed Action, exact manifest digest, configured Service Binding
@@ -171,7 +179,7 @@ Worker, queue or scheduler is introduced. Nested loops, multiple body
 Actions, write-scope MCP, HTTP, GitHub and Cloudflare Action bodies and
 dynamic iteration limits remain unsupported.
 
-### Optional runtime approval before GitHub dispatch (Spec #176)
+### 历史可选运行时审批（Spec #176；#775 已退役）
 
 A top-level, reviewed `action.run` with `executor: github`
 may additionally declare `"approval":{"required":true}`. Only **one** runtime
@@ -384,7 +392,7 @@ arbitrary write tools, a generic Provider registry or cross-Provider revocation.
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_approval`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
+`workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
 
 **GitHub Artifact References (bounded Task metadata):** After a GitHub Task has
 physically succeeded, `workflow_result` may include `artifact_references`
@@ -401,8 +409,8 @@ bytes or new D1 storage. GitHub permission is separately required to fetch
 artifact content by ID. Signed Task business output and existing Result shapes
 are preserved when no verified Task is present.
 
-`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The existing `workflow_action_list` is the sole source of discovered approved-repository GitHub Actions; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP and one reviewed top-level IMA create/append note write, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
-Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. Explicit `workflow_approval` supports **one top-level reviewed GitHub Task/Session gate**.
+`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The `workflow_action_list` aggregates reviewed GitHub main and Cloudflare Provider Action catalogs; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP and one reviewed top-level IMA create/append note write, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
+Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. New Drafts reject runtime approval gates; historical Gate/decision receipts remain immutable, and those Plans cannot initiate new Runs.
 Nested loops, general Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. A bounded Saga exception supports only explicitly approved temporary `lirtual/github-actions` Ubuntu/Windows Session cancellation: source `saga.on` declares `failure` and/or `cancel`, each reversible Session step declares `compensate: {kind: github.session.cancel}`, and Publish separately requires `approve_saga_compensation` plus its exact GitHub grants. Native Cloudflare Workflows rolls back registered Steps in reverse start order; dependent Steps follow reverse dependency order, while independent branches have no required order. A GitHub cancellation ACK is only a requested operation, never physical Session termination; the existing GitHub Attempt/Session reconciliation and TTL retain terminal authority. Other side effects are disallowed in Saga definitions, and no ACID rollback is claimed. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
