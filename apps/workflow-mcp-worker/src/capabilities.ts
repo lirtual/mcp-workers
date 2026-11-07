@@ -254,6 +254,9 @@ export const WORKFLOW_ACTION_WITH_SCHEMAS=Object.freeze({
       input_schema:{type:'object'},output_schema:{type:'object'},
     }},
   'action.run':{oneOf:[
+    {type:'object',additionalProperties:false,required:['action_id','input'],
+     properties:{action_id:{type:'string',pattern:'^[a-z][a-z0-9_.-]{2,128}$'},
+       input:{type:'object',maxProperties:32}}},
     {type:'object',additionalProperties:false,required:['executor','capability','action'],
      properties:{executor:{const:'github'},capability:{const:'github.action'},action:{type:'object'}}},
     {type:'object',additionalProperties:false,
@@ -309,8 +312,8 @@ const FOREACH_TASK_WITH_SCHEMA=Object.freeze({
         type:{const:'task'}}}},
 });
 const FOREACH_TASK_ACTION_RUN_WITH_SCHEMA=Object.freeze({
-  ...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0],
-  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[0].properties,
+  ...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[1],
+  properties:{...WORKFLOW_ACTION_WITH_SCHEMAS['action.run'].oneOf[1].properties,
     action:FOREACH_TASK_WITH_SCHEMA.properties.action},
 });
 
@@ -444,9 +447,6 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
                   properties:{uses:{const:'action.run'}}},minContains:1,maxContains:1},
               ]}}]}}},
         ],description:'Literal repeat uses one Action. Bounded foreach permits one reviewed Action, or 2-4 ordered emit/read-only MCP children with at most one reviewed literal-input GitHub Task; Sessions, multiple Tasks and nesting are unsupported.'},
-        approval:{type:'object',additionalProperties:false,required:['required'],
-          properties:{required:{const:true}},
-          description:'Optional only on a top-level reviewed GitHub Task/Session, max one gate per Plan. Independent one-use decision is required before dispatch.'},
         needs_policy:{enum:['all_succeeded','allow_skipped'],description:'Default all_succeeded. allow_skipped requires nonempty needs; failed/indeterminate dependencies still block downstream effects.'},
         if:{anyOf:[{type:'boolean'},{type:'object'}],description:'Safe Boolean condition; see expression_rules and inline validation.'},
         with:{type:'object',description:'Must match the matching uses/action contract below.'},
@@ -506,8 +506,6 @@ const entries=[
    description:'Bounded reviewed GitHub Task per item; literal or exact current-item input refs with pinned provider types, complete native snapshot and D1 input SHA-256 proof before unique Attempt + OIDC Claim. Sessions and nested templates remain unsupported.'},
   {id:'flow.wait',kind:'flow',availability:'supported',
     description:'Durable relative time delay using Cloudflare step.sleep, 1–300 literal seconds per Step and at most 300 seconds total per Published Plan. Wait retains a Run capacity slot; downstream effects require completion. No external event receiver or Approval Gate.'},
-  {id:'flow.approval_gate',kind:'flow',availability:'supported_with_grant',
-   description:'Optional one-use owner API decision before a reviewed top-level GitHub Task/Session. Runs wait up to 600 seconds. Decision must match Run, Step, and Published Version; approval never substitutes for Publish grants.'},
   {id:'flow.wait_event',kind:'flow',availability:'supported',
     description:'One authenticated signal per existing Run/Step, independent per-Step bearer digest and stable event ID; native waitForEvent with a 1–3600 second timeout, existing Run quota and D1 one-shot receipt. No Approval Gate or new Run admission.'},
   {id:'flow.loop',kind:'flow',availability:'supported',
@@ -581,7 +579,7 @@ export async function workflowCapabilities(env:Pick<Env,
     tools:{discover_actions:'workflow_action_list',validate:'workflow_validate',
       create:'workflow_create',publish:'workflow_publish',start:'workflow_run',
       connection_status:'workflow_connection_status',connection_revoke:'workflow_connection_revoke',connection_enable:'workflow_connection_enable',
-      status:'workflow_status',result:'workflow_result',approval:'workflow_approval'},
+      status:'workflow_status',result:'workflow_result'},
     admission:'Manual, one UTC Cron, one authenticated Webhook or one signed GitHub push relay per Published Plan. GitHub Actions is ingress only, not a second business orchestrator.',
     note:'Discovery and inline validation never publish or grant execution.',
   };
@@ -674,7 +672,7 @@ export async function workflowCapabilities(env:Pick<Env,
   }
   if(id==='flow.saga'){
     detail.design_contract={executable:true,source_schema:'saga.on and step.compensate',
-      authorization:'Exact pinned GitHub Session grant, approve_heavy_execution and approve_saga_compensation at Publish',
+      authorization:'Reviewed GitHub Session grant is derived at Publish; approve_saga_compensation remains separately required',
       ordering:'Dependent Steps roll back in reverse dependency order; independent branches have no required order',
       trigger:'Only saga.on failure/cancel; compensate only confirmed successful temporary Ubuntu/Windows Sessions',
       revocation:'Check exact Published grant and current GitHub executor credential before cancellation; no independent GitHub Connection revoke exists',
@@ -709,13 +707,6 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.grant={scope:'write',tools:[...REVIEWED_WRITE_TOOLS],
       required:['approved_operations','approve_mcp_write_execution','accept_target_risks'],
       constraints:'One reviewed IMA note write per Plan. Create needs literal content (1–2048 chars); append needs literal existing numeric note_id (8–24 digits) plus content (1–2048 chars). No folder target, dynamic refs, foreach or automatic retries. Unknown effects remain indeterminate.'};
-  }
-  if(id==='flow.approval_gate'){
-    detail.approval_gate={when:'before_dispatch',binding:['run_id','step_id','published_version_id'],
-      high_impact:'reviewed_github_task_or_session',max_per_plan:1,timeout_seconds:600,
-      shape:{approval:{required:true}},decision_tool:'workflow_approval',
-      effect:'once',human_presence:'not_independently_verified',
-      denial_or_timeout:'no_dispatch',additional_publish_authority:false};
   }
   if(id==='trigger.webhook'){
     detail.trigger_schema=WORKFLOW_DEFINITION_SCHEMA.properties.triggers;
@@ -807,7 +798,7 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.template_policy={stages:['result.emit','action.run','result.emit'],
       github_task_count:1,github_inputs:'literal_only',task_type:'task',
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
-      required_publish_grants:['approved_actions','approve_heavy_execution'],
+      action_grants:'derived_from_reviewed_github_catalog_at_publish',
       outcome:'Next stage only after signed receipt and independently verified physical Task success',
       replay:'Native Task checkpoints plus UNIQUE D1 Attempt; no blind dispatch retries',
       unsupported:['session','multiple_github_tasks','dynamic_task_inputs','nesting']};
@@ -827,7 +818,7 @@ export async function workflowCapabilities(env:Pick<Env,
       github_task_count:1,github_inputs:'literal_only',task_type:'task',mcp_scope:'read',
       min_steps:2,max_steps:PLAN_LIMITS.maxForeachTemplateSteps,
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
-      required_publish_grants:['approved_operations','accept_target_risks','approved_actions','approve_heavy_execution'],
+      required_publish_grants:['approved_operations','accept_target_risks'],action_grants:'derived_from_reviewed_github_catalog_at_publish',
       dependency:'Each earlier child must succeed before subsequent stages execute',
       replay:'Native snapshots, D1 MCP fence and UNIQUE GitHub Attempt; unknown effects stop the pipeline',
       unsupported:['session','multiple_github_tasks','dynamic_task_inputs','write-scope_tools','nesting']};
@@ -860,7 +851,7 @@ export async function workflowCapabilities(env:Pick<Env,
       max_items:PLAN_LIMITS.maxForeachItems,maximum_flattened_steps:PLAN_LIMITS.maxSteps,
       replay:'D1 UNIQUE(run_id,step_id) Attempt before single GitHub POST; no blind retries',
       physical_state:'verified GitHub terminal plus signed OIDC Claim/receipt',
-      requires:['approved_actions','approve_heavy_execution'],
+      action_grants:'derived_from_reviewed_github_catalog_at_publish',
       unsupported:['session','arbitrary dynamic input expressions','nested templates']};
   }
   if(id==='flow.foreach_multi_mcp_read'){
@@ -937,8 +928,8 @@ export async function workflowCapabilities(env:Pick<Env,
     detail.discovered_actions=approved.actions;
     if(githubReady)detail.availability=approved.actions.some(x=>x.can_publish)?
       'publishable_after_owner_approval':'no_verified_published_action';
-    detail.grant={required:['approved_actions','approve_heavy_execution'],
-      note:'Discovery is not approval; review exact SHA, immutable tag/ref, workflow and contract digest before Publish.'};
+    detail.grant={mode:'derived_at_publish_from_reviewed_action',
+      note:'Discovery is not execution authority. Publish rechecks current main SHA, owner repository identity and exact Action contract; Runner OIDC and actual SHA must match before protected side effects.'};
   }
   return detail;
 }

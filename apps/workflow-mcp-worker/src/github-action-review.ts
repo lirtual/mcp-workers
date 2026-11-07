@@ -36,7 +36,10 @@ export async function reviewedGitHubAction(source: GitHubActionSource): Promise<
     workflowPath: source.workflowPath,
     commitSha: source.commitSha,
     type: source.contract.type,
-    contractDigest: await hash(JSON.stringify(canonical(source.contract))),
+    // A main visibility marker is not part of the business contract digest.
+    contractDigest: await hash(JSON.stringify(canonical({
+      name:source.contract.name,type:source.contract.type,inputs:source.contract.inputs,
+    }))),
   };
 }
 

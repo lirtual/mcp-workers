@@ -725,93 +725,19 @@ test('MCP pinned Portal refuses a different approved endpoint at Publish',async 
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
 });
 
-test('pinned Action review stays publishable after default branch advances',async t=>{
-  const {service,env,sqlite}=setup(t);
-  const repository='lirtual/github-actions',repositoryId=123,workflowId=456;
-  const workflowPath='.github/workflows/verify-action.yml';
-  const approvedSha='a'.repeat(40),newestSha='b'.repeat(40);
-  const yaml=`name: Verified task
-on:
-  workflow_dispatch:
-    inputs:
-      attempt_id:
-        type: string
-        required: true
-      dispatch_id:
-        type: string
-        required: true
-      capability_id:
-        type: string
-        required: true
-env:
-  WORKFLOW_ACTION_TYPE: task
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo verified
-`;
-  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
-  env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES=JSON.stringify([{repository,repositoryId}]);
-  const requests:string[]=[];
-  const previous=globalThis.fetch;
-  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
-    const req=new Request(input,init),url=new URL(req.url);
-    assert.equal(req.method,'GET');
-    assert.equal(url.origin,'https://api.github.com');
-    requests.push(url.pathname+url.search);
-    const root='/repos/'+repository;
-    if(url.pathname===root)return Response.json({id:repositoryId,full_name:repository,default_branch:'main'});
-    if(url.pathname===root+'/commits/main')return Response.json({sha:newestSha});
-    if(url.pathname===root+'/tags')return Response.json([]);
-    if(url.pathname===root+'/commits/'+approvedSha)return Response.json({sha:approvedSha});
-    if(url.pathname===root+'/actions/workflows')return Response.json({
-      workflows:[{id:workflowId,path:workflowPath,state:'active'}],
-    });
-    if(url.pathname===root+'/contents/'+workflowPath){
-      assert.ok(url.searchParams.get('ref')===approvedSha||
-        url.searchParams.get('ref')===newestSha);
-      return Response.json({path:workflowPath,encoding:'base64',content:btoa(yaml)});
-    }
-    if(url.pathname===root+'/git/ref/tags/approved-v1')return Response.json({
-      ref:'refs/tags/approved-v1',object:{type:'commit',sha:approvedSha},
-    });
-    return new Response('not found',{status:404});
-  }) as typeof fetch;
-  try{
-    // Moving-HEAD discovery remains fresh without any repository-config edit.
-    const listed=await listAvailableGitHubActions(env);
-    assert.deepEqual(listed.actions.map(x=>x.commitSha),[newestSha]);
-    const action=await reviewedGitHubAction({
-      repository,repositoryId,workflowId,workflowPath,commitSha:approvedSha,
-      contract:parseGitHubAction(yaml),
-    });
-    const definition=JSON.stringify({version:1,name:'Pinned Action review',
-      steps:[{id:'check',uses:'action.run',with:{
-        executor:'github',capability:'github.action',action:{...action,ref:'refs/tags/approved-v1',inputs:{}},
-      }}]});
-    const created=await service.create(definition);
-    const marker=requests.length;
-    const validated=await service.validate(created.workflow_id,1);
-    assert.equal(validated.valid,true);
-    assert.ok('reviewed_actions' in validated);
-    assert.deepEqual(validated.reviewed_actions,[action]);
-    const published=await service.publish(created.workflow_id,1,[],false,true,[action]);
-    const saved=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
-      .get(published.published_version_id) as {plan:string};
-    const final=JSON.parse(saved.plan);
-    assert.equal(final.github_execution_approved,true);
-    assert.deepEqual(final.github_action_approvals,[action]);
-    const duringApproval=requests.slice(marker);
-    const root='/repos/'+repository;
-    assert.ok(duringApproval.filter(p=>p===root+'/commits/'+approvedSha).length>=2);
-    assert.ok(duringApproval.some(p=>p.endsWith('?ref='+approvedSha)));
-    assert.ok(!duringApproval.some(p=>p===root+'/commits/main'));
-    assert.ok(!duringApproval.some(p=>p.endsWith('?ref='+newestSha)));
-    assert.ok(duringApproval.filter(p=>p===root+'/git/ref/tags/approved-v1').length>=2);
-  }finally{globalThis.fetch=previous;}
+test('new Tag publication is rejected without creating a Version; historical Plan remains immutable',async t=>{
+  const {service,sqlite}=setup(t);
+  const tagDefinition=JSON.stringify({version:1,name:'Historical',steps:[{
+    id:'task',uses:'action.run',with:{executor:'github',capability:'github.action',
+      action:{repository:'lirtual/github-actions',repositoryId:1430925009,
+        workflowId:401335372,workflowPath:'.github/workflows/download.yml',
+        commitSha:'a'.repeat(40),type:'task',contractDigest:'b'.repeat(64),
+        ref:'refs/tags/approved-v1',inputs:{}}}}]});
+  const created=await service.create(tagDefinition);
+  const result=await service.validate(created.workflow_id,1);
+  assert.equal(result.valid,false);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
 });
-
 
 test('explicit allow_skipped joins either conditional branch without changing ordinary skips',async t=>{
   const {service,admit,run}=setup(t);

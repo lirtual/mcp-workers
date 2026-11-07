@@ -9,6 +9,17 @@ import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 /** Stateless Bark: the existing D1 reservation is the only send admission.
  * A prior reservation can never trigger another RPC; without receipts it is unknown.
  */
+// Notification authority is narrower than general public Action discovery:
+// a changed Workflow ID cannot impersonate an existing signed Session/Download.
+const TRUSTED_NOTIFICATION_WORKFLOW_IDS:Record<string,number>={
+ '.github/workflows/chrome.yml':394689653,
+ '.github/workflows/openlist.yml':394689658,
+ '.github/workflows/download.yml':401335372,
+};
+const trustedNotificationIdentity=(pinned:{workflowPath?:unknown;workflowId?:unknown})=>
+ typeof pinned.workflowPath==='string'&&
+ Object.hasOwn(TRUSTED_NOTIFICATION_WORKFLOW_IDS,pinned.workflowPath)&&
+ pinned.workflowId===TRUSTED_NOTIFICATION_WORKFLOW_IDS[pinned.workflowPath];
 type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:{status:string}};
 const deny=(error_code:string):Result=>({status:'failed',error_code});
 const unknown=(error_code='bark_outcome_unknown'):Result=>({status:'indeterminate',error_code});
@@ -63,6 +74,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       ctx?.steps[downloadId]?.status!=='succeeded'||upstream?.uses!=='flow.foreach'||
       upstream.with.max_items!==1||template?.uses!=='github.run'||typeof template.id!=='string'||
       pinned?.repository!=='lirtual/github-actions'||pinned.workflowPath!=='.github/workflows/download.yml'||
+      (dynamicMain&&(!trustedNotificationIdentity(pinned)||plan.name!=='download'))||
       pinned.type!=='task'||typeof pinned.ref!=='string'||
       (!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)&&!dynamicMain)||
       typeof pinned.commitSha!=='string'||!/^[a-f0-9]{40}$/.test(pinned.commitSha))
@@ -103,6 +115,8 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
        typeof pinned.commitSha==='string'&&/^[a-f0-9]{40}$/.test(pinned.commitSha)));
    if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
       source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
+      (pinned?.ref==='refs/heads/main'&&(!trustedNotificationIdentity(pinned!)||
+       plan.name!==String(pinned.workflowPath).split('/').at(-1)?.replace(/\.ya?ml$/,'')))||
       (typeof pinned.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath))||pinned.type!=='session'||
       !trustedRef)
     return deny('untrusted_session_reference');

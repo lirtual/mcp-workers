@@ -24,7 +24,7 @@ const YAML=['name: ubuntu','on:','  workflow_dispatch:','    inputs:',
  '      dispatch_id: {type: string, required: true}',
  '      capability_id: {type: string, required: true}',
  '      duration_minutes: {type: number, default: 5}',
- 'env:','  WORKFLOW_ACTION_TYPE: session','jobs:','  session:',
+ 'env:','  WORKFLOW_ACTION_TYPE: session','  WORKFLOW_ACTION_PUBLIC: \"true\"','jobs:','  session:',
  '    runs-on: ubuntu-latest','    timeout-minutes: 360','    steps:',
  '      - run: echo synthetic',''].join('\n');
 const approved=await reviewedGitHubAction({repository:REPO,repositoryId:REPO_ID,
@@ -97,7 +97,7 @@ function setup(){
  return {db,adapter};
 }
 
-test('moving main is restricted to the five exact owner Workflow IDs',async()=>{
+test('moving main is restricted to one trusted owner repository and valid Workflow paths',async()=>{
  for(const [path,id,type] of [
   ['windows.yml',394689662,'session'],['ubuntu.yml',395929968,'session'],
   ['chrome.yml',394689653,'session'],['code-server.yml',394689654,'session'],
@@ -105,12 +105,13 @@ test('moving main is restricted to the five exact owner Workflow IDs',async()=>{
  ] as const){
   const action={...approved,workflowPath:'.github/workflows/'+path,workflowId:id,type};
   assert.equal(isDynamicMainAction(action,DYNAMIC_MAIN_REF,path.slice(0,-4)),true);
-  assert.equal(isDynamicMainAction(action,DYNAMIC_MAIN_REF,'other'),false);
-  assert.equal(isDynamicMainAction({...action,workflowId:999},DYNAMIC_MAIN_REF),false);
+  assert.equal(isDynamicMainAction(action,DYNAMIC_MAIN_REF,'other'),true);
+  assert.equal(isDynamicMainAction({...action,workflowId:999},DYNAMIC_MAIN_REF),true);
   assert.equal(isDynamicMainAction({...action,repository:'other/repo'},DYNAMIC_MAIN_REF),false);
   assert.equal(isDynamicMainAction(action,'refs/heads/dev'),false);
  }
- assert.equal(isDynamicMainAction({...approved,workflowPath:'.github/workflows/openlist.yml'},DYNAMIC_MAIN_REF),false);
+ assert.equal(isDynamicMainAction({...approved,workflowPath:'.github/workflows/openlist.yml'},DYNAMIC_MAIN_REF),true);
+ assert.equal(isDynamicMainAction({...approved,workflowPath:'.github/workflows/../release.yml'},DYNAMIC_MAIN_REF),false);
  assert.equal((await compilePlan({version:1,name:'ubuntu',steps:plan.steps})).plan.steps.length,1);
 });
 

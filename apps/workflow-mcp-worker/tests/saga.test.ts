@@ -49,7 +49,7 @@ test('Saga compiler requires declared policy, reviewed temporary Session compens
  const details=await workflowCapabilities({} as Env,'flow.saga');
  assert.equal(details.availability,'supported_with_grant');
  assert.equal((details.design_contract as {executable:boolean}).executable,true);
- assert.match((details.design_contract as {authorization:string}).authorization,/approve_heavy_execution/);
+ assert.match((details.design_contract as {authorization:string}).authorization,/approve_saga_compensation/);
 });
 
 test('Compensator persists exactly one reservation; a cancellation ACK remains only requested',async t=>{

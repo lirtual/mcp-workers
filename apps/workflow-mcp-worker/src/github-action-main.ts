@@ -3,28 +3,21 @@ import type {ReviewedGitHubAction} from './github-action-review.ts';
 export const DYNAMIC_MAIN_REF='refs/heads/main';
 const REPOSITORY='lirtual/github-actions';
 const REPOSITORY_ID=1430925009;
-// Narrow owner-approved capability: no other repository, workflow, or branch
-// can opt into moving-source execution.
-const WORKFLOWS:Record<string,{id:number;type:'session'|'task'}>={
-  '.github/workflows/windows.yml':{id:394689662,type:'session'},
-  '.github/workflows/ubuntu.yml':{id:395929968,type:'session'},
-  '.github/workflows/chrome.yml':{id:394689653,type:'session'},
-  '.github/workflows/code-server.yml':{id:394689654,type:'session'},
-  '.github/workflows/download.yml':{id:401335372,type:'task'},
-};
+// Moving main is restricted to this owner repository; Publish and preflight
+// additionally require an explicit public declaration in the audited YAML.
+const WORKFLOW=/^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/;
 const SHA=/^[0-9a-f]{40}$/;
 
-/** Only the five named owner Workflows may use the live main branch. */
+/** Fixed trusted repository, reviewed workflow identity and bounded path. */
 export function isDynamicMainAction(
   action:Pick<ReviewedGitHubAction,'repository'|'repositoryId'|'workflowId'|'workflowPath'|'type'>,
   ref:unknown,planName?:string,
 ):boolean {
-  const approved=WORKFLOWS[action.workflowPath];
-  const name=action.workflowPath.slice('.github/workflows/'.length,-'.yml'.length);
-  return ref===DYNAMIC_MAIN_REF&&action.repository===REPOSITORY&&
-    action.repositoryId===REPOSITORY_ID&&!!approved&&
-    action.workflowId===approved.id&&action.type===approved.type&&
-    (planName===undefined||planName===name);
+  if(ref!==DYNAMIC_MAIN_REF||action.repository!==REPOSITORY||
+    action.repositoryId!==REPOSITORY_ID||!WORKFLOW.test(action.workflowPath)||
+    !Number.isSafeInteger(action.workflowId)||action.workflowId<=0||
+    (action.type!=='task'&&action.type!=='session'))return false;
+  return true;
 }
 
 /** A mutable-branch Attempt must freeze a verified SHA in the existing D1 record. */

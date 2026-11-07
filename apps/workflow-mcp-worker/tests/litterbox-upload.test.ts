@@ -209,7 +209,7 @@ test('generic workflow_run carries optional fileParams and keeps ordinary calls 
  const listing=await client.listTools();
  assert(!listing.tools.some(tool=>tool.name==='workflow_litterbox_upload'));
  assert(!listing.tools.some(tool=>tool.name==='workflow_file_transport_probe'));
- assert.equal(listing.tools.length,19);
+ assert.equal(listing.tools.length,18);
  assert(!listing.tools.some(tool=>tool.name==='workflow_session_data_get'));
  const run=listing.tools.find(tool=>tool.name==='workflow_run');
  assert(run);

@@ -27,89 +27,54 @@ test('approved discovery requires a server-owned credential', async () => {
   }), /token_missing/);
 });
 
-const releaseSha='b'.repeat(40),headSha='c'.repeat(40);
-const actionYaml=`name: Verify Task
-on:
-  workflow_dispatch:
-    inputs:
-      attempt_id: {type: string, required: true}
-      dispatch_id: {type: string, required: true}
-      capability_id: {type: string, required: true}
-env:
-  WORKFLOW_ACTION_TYPE: task
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo success
-`;
-function githubMock(requests:string[],mode:'tagged'|'moved'|'head'|'no_tag'='tagged',actualName='lirtual/github-actions'){
+const headSha='c'.repeat(40);
+const actionYaml=`name: task\non:\n  workflow_dispatch:\n    inputs:\n      attempt_id: {type: string, required: true}\n      dispatch_id: {type: string, required: true}\n      capability_id: {type: string, required: true}\nenv:\n  WORKFLOW_ACTION_TYPE: task\n  WORKFLOW_ACTION_PUBLIC: "true"\njobs:\n  verify:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo success\n`;
+function githubMock(requests:string[],mode:'public'|'private'='public',actualName='lirtual/github-actions'){
  return async(req:Request):Promise<Response>=>{
    const u=new URL(req.url),route=u.pathname+u.search;
    requests.push(route);
-   if(u.pathname.endsWith('/tags'))
-     return Response.json(mode==='no_tag'?[]:[{name:'v0.1.21',commit:{sha:mode==='head'?headSha:releaseSha}}]);
-   if(u.pathname.endsWith('/git/ref/tags/v0.1.21'))
-     return Response.json({ref:'refs/tags/v0.1.21',
-       object:{type:'commit',sha:mode==='moved'?headSha:mode==='head'?headSha:releaseSha}});
    if(u.pathname.endsWith('/commits/main'))return Response.json({sha:headSha});
-   if(u.pathname.endsWith('/commits/'+releaseSha))return Response.json({sha:releaseSha});
    if(u.pathname.endsWith('/actions/workflows'))
      return Response.json({workflows:[{id:100,path:'.github/workflows/task.yml',state:'active'}]});
    if(u.pathname.endsWith('/contents/.github/workflows/task.yml'))
-     return Response.json({path:'.github/workflows/task.yml',encoding:'base64',content:btoa(actionYaml)});
-   return Response.json({id:123,full_name:actualName,default_branch:'main'});
+     return Response.json({path:'.github/workflows/task.yml',encoding:'base64',
+       content:btoa(mode==='public'?actionYaml:actionYaml.replace('  WORKFLOW_ACTION_PUBLIC: "true"\n',''))});
+   return Response.json({id:1430925009,full_name:actualName,default_branch:'main'});
  };
 }
-const discoveryEnv={WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
-  WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'};
-test('catalog emits a verified tag-bound runnable candidate plus unpublished HEAD',async()=>{
+const discoveryEnv={WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([{
+    repository:'lirtual/github-actions',repositoryId:1430925009,
+  }]),WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'};
+test('catalog exposes one current main candidate and never resolves a Tag',async()=>{
  const requests:string[]=[];
  const found=await listAvailableGitHubActions(discoveryEnv,githubMock(requests));
- assert.equal(found.actions.length,2);
- const released=found.actions.find(a=>a.can_publish);
- assert.ok(released);
- assert.equal(released!.commitSha,releaseSha);
- assert.equal(released!.ref,'refs/tags/v0.1.21');
- assert.match(released!.contractDigest,/^[0-9a-f]{64}$/);
- assert.equal(released!.workflowId,100);
- assert.equal(released!.type,'task');
- assert.equal(released!.availability,'publishable_after_owner_approval');
- const head=found.actions.find(a=>!a.can_publish);
- assert.equal(head?.commitSha,headSha);
- assert.equal(head?.reason,'no_verified_published_tag_for_revision');
- assert(requests.includes('/repos/lirtual/github-actions/git/ref/tags/v0.1.21'));
- assert(requests.some(x=>x.endsWith('?ref='+releaseSha)));
-});
-test('a GitHub redirect to the pre-rename name cannot satisfy the renamed repository grant',async()=>{
- await assert.rejects(
-  listAvailableGitHubActions(discoveryEnv,githubMock([],'tagged','lirtual/session-actions')),
-  /repository_mismatch/);
-});
-test('moved tag never becomes a publishable candidate',async()=>{
- const found=await listAvailableGitHubActions(discoveryEnv,githubMock([],'moved'));
  assert.equal(found.actions.length,1);
- assert.equal(found.actions[0].can_publish,false);
-});
-test('verified tag on current SHA yields one candidate without duplicate YAML fetch',async()=>{
- const requests:string[]=[];
- const found=await listAvailableGitHubActions(discoveryEnv,githubMock(requests,'head'));
- assert.equal(found.actions.length,1);
- assert.equal(found.actions[0].can_publish,true);
+ const action=found.actions[0];
+ assert.equal(action.commitSha,headSha);
+ assert.equal(action.ref,'refs/heads/main');
+ assert.match(action.contractDigest,/^[0-9a-f]{64}$/);
+ assert.equal(action.workflowId,100);
+ assert.equal(action.type,'task');
+ assert.equal(action.availability,'publishable_after_owner_approval');
+ assert.equal(action.output_schema_status,'not_declared');
+ assert.equal('output_schema' in action,false);
+ assert.equal(requests.some(s=>s.includes('/tags')),false);
  assert.equal(requests.filter(s=>s.includes('/contents/')).length,1);
 });
-test('no tag explicitly reports unavailable rather than inventing an immutable ref',async()=>{
- const found=await listAvailableGitHubActions(discoveryEnv,githubMock([],'no_tag'));
- assert.equal(found.actions[0].availability,'unavailable');
- assert.equal(found.actions[0].can_publish,false);
- assert.equal('ref' in found.actions[0],false);
-});
-
-
-test('GitHub discovery explicitly distinguishes unknown business output from Job completion',async()=>{
- const found=await listAvailableGitHubActions(discoveryEnv,githubMock([]));
- for(const action of found.actions){
-   assert.equal(action.output_schema_status,'not_declared');
-   assert.equal('output_schema' in action,false);
- }
+test('only explicitly declared trusted main Actions are visible',async()=>{
+ const privateActions=await listAvailableGitHubActions(discoveryEnv,githubMock([],'private'));
+ assert.equal(privateActions.actions.length,0);
+ await assert.rejects(()=>listAvailableGitHubActions(discoveryEnv,
+   githubMock([],'public','lirtual/session-actions')),/repository_mismatch/);
+ const differentRepo=await listAvailableGitHubActions({
+   WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([{
+     repository:'other/actions',repositoryId:1430925009,
+   }]),WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
+ },async req=>{const u=new URL(req.url);
+   if(u.pathname.endsWith('/commits/main'))return Response.json({sha:headSha});
+   if(u.pathname.endsWith('/actions/workflows'))return Response.json({workflows:[{id:100,path:'.github/workflows/task.yml',state:'active'}]});
+   if(u.pathname.endsWith('/contents/.github/workflows/task.yml'))return Response.json({path:'.github/workflows/task.yml',encoding:'base64',content:btoa(actionYaml)});
+   return Response.json({id:1430925009,full_name:'other/actions',default_branch:'main'});
+ });
+ assert.equal(differentRepo.actions.length,0);
 });
