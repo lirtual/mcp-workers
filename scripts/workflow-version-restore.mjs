@@ -7,6 +7,14 @@ const TARGET='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
 const D1='a4a477cd-6339-478c-ab7c-f7d87bb0d772';
 const OPENLIST='0015e2e9-431d-4465-9adf-03191cb382f9';
 const OLD_PLAN='88071284-b7f3-4553-afe4-1ed3fc47972e';
+// 仅允许从 Spec #775 代码切换恢复。其他五个活动业务 Plan 也必须保持原样。
+const OTHER_PLANS=[
+ ['7a65cec7-f543-4df6-953d-3ffd3ec6d140','737cda64-6001-49e3-8b63-eb7c0fd252f3'], // chrome
+ ['98f6ded3-796e-45cd-9ea4-dcc7e28fcaac','ab12fb0f-cc18-495b-948b-f1a096a74097'], // code-server
+ ['d98035d5-61fc-4da6-a573-80f4ba7a7e9c','465a8021-168a-4b4b-9b70-7cf2e06c8bbd'], // download
+ ['4c3b0ab3-e41e-442a-8a73-2364889a8058','ebe0fc88-35a7-46ca-83e3-1ef20c56a78c'], // ubuntu
+ ['00b1e052-f383-4d26-bef2-db49a97c72b9','b00861dc-b6ed-4be1-b203-e4c1b7e3a84c'], // windows
+];
 const expected=new Map([
  ['ACTIONS','service'],['DB','d1'],['WORKFLOW','workflow'],
  ['MCP_ACCESS_TOKEN','secret_text'],['WORKFLOW_GITHUB_DISPATCH_TOKEN','secret_text'],
@@ -77,7 +85,8 @@ export function verifyRestoreVersions({current,target,deployment,settings,secret
 }
 export function verifyRestoreD1(row){
  const fixed={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,
-   unknown_runs:12,active_sessions:0,openlist_state:'paused',openlist_version:OLD_PLAN,original_plan:1};
+   unknown_runs:12,active_sessions:0,openlist_state:'paused',openlist_version:OLD_PLAN,
+  original_plan:1,unchanged_other_plans:5,active_count:5,paused_count:8};
  for(const [name,v] of Object.entries(fixed))check(row?.[name]===v,'D1 or old Published Plan drift: '+name);
  return true;
 }
@@ -91,7 +100,9 @@ export function verifyRestoreNative(response,status){
   'native instances not drained: '+status);
  return true;
 }
-const SQL=`SELECT
+const otherPlansWhere=OTHER_PLANS.map(([id,plan])=>
+  `(id='${id}' AND active_version_id='${plan}' AND state='active')`).join(' OR ');
+export const restoreReadinessSql=`SELECT
  (SELECT COUNT(*) FROM d1_migrations) AS migration_count,
  (SELECT COUNT(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
  (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data') AS old_table,
@@ -100,7 +111,10 @@ const SQL=`SELECT
  (SELECT COUNT(*) FROM session_executions WHERE state!='terminated') AS active_sessions,
  (SELECT state FROM workflows WHERE id='${OPENLIST}' AND deleted_at IS NULL) AS openlist_state,
  (SELECT active_version_id FROM workflows WHERE id='${OPENLIST}' AND deleted_at IS NULL) AS openlist_version,
- (SELECT COUNT(*) FROM workflow_versions WHERE id='${OLD_PLAN}' AND workflow_id='${OPENLIST}') AS original_plan`;
+ (SELECT COUNT(*) FROM workflow_versions WHERE id='${OLD_PLAN}' AND workflow_id='${OPENLIST}') AS original_plan,
+ (SELECT COUNT(*) FROM workflows WHERE deleted_at IS NULL AND (${otherPlansWhere})) AS unchanged_other_plans,
+ (SELECT COUNT(*) FROM workflows WHERE deleted_at IS NULL AND state='active') AS active_count,
+ (SELECT COUNT(*) FROM workflows WHERE deleted_at IS NULL AND state='paused') AS paused_count`;
 async function main(){
  const [phase,worker]=process.argv.slice(2);
  check(['preflight','readback'].includes(phase),'unsupported readonly phase');
@@ -124,7 +138,7 @@ async function main(){
    'Cloudflare read-only API failed');
   return body;
  };
- const q=await api('/d1/database/'+D1+'/query',SQL);
+ const q=await api('/d1/database/'+D1+'/query',restoreReadinessSql);
  check(q.result?.length===1&&q.result[0]?.success===true&&
   q.result[0]?.meta?.changes===0&&q.result[0]?.results?.length===1,
   'D1 SELECT incomplete or changes not zero');
