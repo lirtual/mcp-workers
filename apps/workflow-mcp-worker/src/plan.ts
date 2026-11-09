@@ -20,9 +20,16 @@ export function isSupportedStepUse(value:unknown):value is (typeof SUPPORTED_STE
 }
 
 export class PlanError extends Error {
-  code = 'invalid_definition';
+  code: string;
   path: string;
-  constructor(message: string, path = '/') { super(message); this.name = 'PlanError'; this.path = path; }
+  constructor(message: string, path = '/') {
+    super(message);
+    this.name = 'PlanError';
+    this.path = path;
+    // Keep a known compiler code. Do not replace it with the generic label,
+    // or Publish hides the reason behind invalid_definition.
+    this.code = /^[a-z0-9_]{1,80}$/.test(message) ? message : 'invalid_definition';
+  }
 }
 /** Narrow source-syntax check used by Draft writes without requiring a valid Plan. */
 function rejectRetiredPublicActions(steps:unknown[]){
