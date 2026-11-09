@@ -24,7 +24,7 @@ jobs:
     name: Spec 775 business acceptance
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.actor == 'lirtual' &&
-          github.ref == 'refs/heads/spec775-business-acceptance' &&
+          github.ref == 'refs/heads/main' &&
           inputs.confirm_business_acceptance == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
