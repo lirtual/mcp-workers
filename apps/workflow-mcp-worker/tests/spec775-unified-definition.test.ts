@@ -23,6 +23,19 @@ test('single action_id compiles to reviewed Cloudflare JSON Action and persists 
  assert.equal(result.valid,true,JSON.stringify(result));
  assert.equal('reviewed_cloudflare_actions' in result ? result.reviewed_cloudflare_actions?.[0]?.action : undefined,'json.report');
 });
+test('a new side effect compiles from the Provider contract without a Consumer name',async()=>{
+ const marked={...manifest,action:'json.mark',side_effect:'record_audited_marker'};
+ const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(canonical(marked))));
+ const markedDigest=Array.from(new Uint8Array(bytes),x=>x.toString(16).padStart(2,'0')).join('');
+ const markedProvider={listActions:async()=>[{action_id:'json.mark'}],
+  getContract:async()=>({manifest:marked,contract_digest:markedDigest,deployment_id:deployment})};
+ const markedService=new WorkflowService({ACTIONS:markedProvider} as any);
+ const result=await markedService.validateDefinition(JSON.stringify({version:1,name:'mark',steps:[{
+  id:'mark',uses:'action.run',with:{action_id:'json.mark',input:{message:'hello'}},
+ }]}));
+ assert.equal(result.valid,true,JSON.stringify(result));
+ assert.equal('reviewed_cloudflare_actions' in result?result.reviewed_cloudflare_actions?.[0]?.action:undefined,'json.mark');
+});
 test('generic input rejects extra fields and missing required fields before Publish',async()=>{
  for(const input of [{message:'ok',secret:'unreviewed'},{wrong:'missing'},
   {message:'x'.repeat(101)}]){

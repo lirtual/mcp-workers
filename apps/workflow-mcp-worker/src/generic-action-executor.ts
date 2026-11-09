@@ -11,10 +11,14 @@ const unknown=(error_code='cloudflare_outcome_unknown'):Result=>({status:'indete
 export async function runGenericJsonAction(env:Env,plan:Plan,step:Step,runId:string,
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
  const manifest=plan.cloudflare_action_contracts?.[step.id];
+ const effect=String(manifest?.side_effect??'');
+ const {contract_digest:declared,...sealed}=manifest??{};
+ const sealedDigest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',
+   new TextEncoder().encode(JSON.stringify(canonical(sealed))))),b=>b.toString(16).padStart(2,'0')).join('');
  if(!manifest||manifest.source_repository!=='lirtual/cloudflare-actions'||
-   manifest.executor!=='cloudflare'||!['none','read_only'].includes(String(manifest.side_effect))||
+   manifest.executor!=='cloudflare'||!/^[a-z][a-z0-9_]{0,80}$/.test(effect)||
    manifest.action!==step.with.action||manifest.provider!==step.with.provider||
-   manifest.contract_digest!==step.with.contract_digest||
+   declared!==step.with.contract_digest||sealedDigest!==declared||
    plan.cloudflare_execution_approved!==true)return failed('cloudflare_action_not_reviewed');
  const grant=plan.cloudflare_action_approvals?.some(g=>g.executor==='cloudflare'&&
    g.action===step.with.action&&g.provider===step.with.provider&&
