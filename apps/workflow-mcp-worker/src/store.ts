@@ -217,7 +217,8 @@ export class WorkflowService {
       // Publish must re-read the exact SHA approved in this Draft. A newer
       // default-branch commit must not invalidate an immutable old review.
       let discovered:Awaited<ReturnType<typeof discoverGitHubActions>>;
-      try{discovered=await discoverGitHubActions({...grant,token,commitSha:expected.commitSha});}
+      try{discovered=await discoverGitHubActions({...grant,token,commitSha:expected.commitSha,
+        workflowId:expected.workflowId,workflowPath:expected.workflowPath});}
       catch{throw new PlanError('github_action_discovery_unavailable',path+'/commitSha');}
       const candidate=discovered.find(d=>d.workflowId===expected.workflowId&&d.workflowPath===expected.workflowPath);
       if(!candidate)throw new PlanError('github_action_not_found',path+'/workflowPath');
@@ -390,32 +391,32 @@ export class WorkflowService {
     approved_http_operations?:HttpOperation[];approve_http_execution?:boolean;
     approve_mcp_write_execution?:boolean;approve_saga_compensation?:boolean;
   }={}){
-    const review=await this.validate(workflow_id,expected_revision);
-    if(!review.valid)throw new StateError('invalid_definition');
-    const github='reviewed_actions' in review?review.reviewed_actions??[]:[];
-    const cloudflare='reviewed_cloudflare_actions' in review?
-      review.reviewed_cloudflare_actions??[]:[];
-    if(cloudflare.some(c=>typeof c.deployment_id!=='string'))
-      throw new StateError('cloudflare_provider_identity_unconfirmed');
-    const children='required_children' in review?review.required_children??[]:[];
+    assertId(workflow_id);
+    const row=await this.row(workflow_id);
+    if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
+    // One catalog read. Do not validate() first: that scans GitHub, and
+    // publish() would scan it again in the same request.
     return this.publish(workflow_id,expected_revision,
       options.approved_operations??[],options.accept_target_risks===true,
-      github.length>0,github,children,
-      cloudflare as Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>,
-      cloudflare.length>0,options.approved_http_operations??[],
+      false,[],[],[],false,options.approved_http_operations??[],
       options.approve_http_execution===true,options.approve_mcp_write_execution===true,
-      options.approve_saga_compensation===true);
+      options.approve_saga_compensation===true,true);
   }
   async publish(workflow_id:string,expected_revision:number,approved_operations:ReadonlyOperation[]=[],accept_target_risks=false,approve_heavy_execution=false,approved_actions:ReviewedGitHubAction[]=[],approved_children:Array<{workflow_id:string;version_id:string;digest:string}>=[],
     approved_cloudflare_actions:Array<{executor:'cloudflare';provider:string;action:string;contract_digest:string;deployment_id:string}>=[],
     approve_cloudflare_execution=false,approved_http_operations:HttpOperation[]=[],approve_http_execution=false,
-    approve_mcp_write_execution=false,approve_saga_compensation=false){
+    approve_mcp_write_execution=false,approve_saga_compensation=false,selfApproved=false){
     assertId(workflow_id);const row=await this.row(workflow_id);
     if(row.draft_revision!==expected_revision)throw new StateError('revision_conflict');
     const resolved=await resolvePublicActionDefinition(row.draft,this.env);
     const {plan,digest:plan_digest}=await compilePublicPlan(resolved.definition,resolved.manifests);
     const reviewedActions=await this.checkedGitHubActions(plan);
     const children=await this.checkedChildWorkflows(plan,workflow_id);
+    if(selfApproved){
+      approved_actions=reviewedActions;
+      approved_children=children;
+      approve_heavy_execution=reviewedActions.length>0;
+    }
     if(JSON.stringify(children)!==JSON.stringify(approved_children))
       throw new StateError('child_approval_required');
     const ordering=(items:ReviewedGitHubAction[])=>items.map(x=>JSON.stringify(x)).sort();
@@ -463,6 +464,10 @@ export class WorkflowService {
       cloudflareGrants=[{executor:'cloudflare',provider:contract.provider,
         action:contract.action,contract_digest:contract.contract_digest,
         deployment_id:deployment}];
+      if(selfApproved){
+        approve_cloudflare_execution=true;
+        approved_cloudflare_actions=cloudflareGrants;
+      }
       if(approve_cloudflare_execution!==true||
          JSON.stringify(approved_cloudflare_actions)!==JSON.stringify(cloudflareGrants))
         throw new StateError('cloudflare_action_approval_required');

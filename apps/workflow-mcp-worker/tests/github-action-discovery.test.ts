@@ -99,3 +99,55 @@ test('disabled GitHub workflow is excluded even if its YAML still parses',async(
  assert.deepEqual(found,[]);
  assert.equal(paths.some(p=>p.includes('/contents/')),false);
 });
+
+test('pinned recheck reads one workflow and does not list the repository', async () => {
+  const paths: string[] = [];
+  const http = async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    paths.push(url.pathname + url.search);
+    if (url.pathname.endsWith('/commits/' + sha)) return Response.json({ sha });
+    if (url.pathname.endsWith('/actions/workflows/5'))
+      return Response.json({ id: 5, path: '.github/workflows/linux.yml', state: 'active' });
+    if (url.pathname.endsWith('/linux.yml'))
+      return Response.json({ path: '.github/workflows/linux.yml', encoding: 'base64', content: btoa(yaml) });
+    if (url.pathname.includes('/actions/workflows'))
+      return Response.json({ workflows: [] });
+    return Response.json({ id: 123, full_name: grant.repository });
+  };
+  const actions = await discoverGitHubActions({
+    ...grant, workflowId: 5, workflowPath: '.github/workflows/linux.yml',
+  }, http);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].workflowId, 5);
+  assert.equal(paths.some(p => p.includes('/actions/workflows?')), false);
+  assert.equal(paths.filter(p => p.includes('/contents/')).length, 1);
+});
+
+test('a partial workflow pin is rejected before any request', async () => {
+  const paths: string[] = [];
+  await assert.rejects(
+    discoverGitHubActions({ ...grant, workflowId: 5 }, async () => {
+      paths.push('called');
+      return Response.json({});
+    }),
+    /invalid_grant/,
+  );
+  assert.equal(paths.length, 0);
+});
+
+test('pinned recheck returns nothing when the workflow is no longer active', async () => {
+  const paths: string[] = [];
+  const http = async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    paths.push(url.pathname + url.search);
+    if (url.pathname.endsWith('/commits/' + sha)) return Response.json({ sha });
+    if (url.pathname.endsWith('/actions/workflows/5'))
+      return Response.json({ id: 5, path: '.github/workflows/linux.yml', state: 'disabled_manually' });
+    return Response.json({ id: 123, full_name: grant.repository });
+  };
+  const actions = await discoverGitHubActions({
+    ...grant, workflowId: 5, workflowPath: '.github/workflows/linux.yml',
+  }, http);
+  assert.deepEqual(actions, []);
+  assert.equal(paths.some(p => p.includes('/contents/')), false);
+});

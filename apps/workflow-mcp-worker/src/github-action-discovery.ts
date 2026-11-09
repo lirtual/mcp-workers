@@ -14,6 +14,8 @@ type RepositoryGrant = {
   repositoryId: number;
   commitSha?: string;
   token: string;
+  workflowId?: number;
+  workflowPath?: string;
 };
 type Http = (request: Request) => Promise<Response>;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -43,6 +45,27 @@ async function get(path: string, token: string, http: Http): Promise<unknown> {
   const response = await http(new Request(api + path, { headers: headers(token), redirect: 'manual' }));
   return readJson(response);
 }
+async function readWorkflow(
+  prefix: string, path: string, id: number, commitSha: string, grant: RepositoryGrant, http: Http,
+): Promise<GitHubActionSource | undefined> {
+  const contents = await get(prefix + '/contents/' + path + '?ref=' + commitSha, grant.token, http);
+  if (required(contents, 'path') !== path ||
+      required(contents, 'encoding') !== 'base64' ||
+      typeof required(contents, 'content') !== 'string') reject('invalid_contents');
+  const encoded = (required(contents, 'content') as string).replace(/\s/g, '');
+  if (encoded.length > 90_000 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(encoded)) reject('invalid_contents');
+  let yaml: string;
+  try {
+    const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+    yaml = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch { reject('invalid_contents'); }
+  try {
+    return { repository: grant.repository, repositoryId: grant.repositoryId,
+      commitSha, workflowPath: path, workflowId: id, contract: parseGitHubAction(yaml!) };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The caller must supply a server-side, explicitly approved repository identity
@@ -54,10 +77,14 @@ export async function discoverGitHubActions(
   grant: RepositoryGrant,
   http: Http = fetch,
 ): Promise<GitHubActionSource[]> {
+  const pinned = grant.workflowId !== undefined || grant.workflowPath !== undefined;
   if (!REPO.test(grant.repository) || grant.repository.includes('..') ||
       !Number.isSafeInteger(grant.repositoryId) || grant.repositoryId <= 0 ||
       (grant.commitSha !== undefined && !SHA.test(grant.commitSha)) ||
-      !grant.token.trim()) reject('invalid_grant');
+      !grant.token.trim() ||
+      (pinned && (grant.commitSha === undefined || grant.workflowId === undefined ||
+        grant.workflowPath === undefined || !Number.isSafeInteger(grant.workflowId) ||
+        grant.workflowId <= 0 || !WORKFLOW.test(grant.workflowPath)))) reject('invalid_grant');
   const prefix = '/repos/' + grant.repository;
   const repository = await get(prefix, grant.token, http);
   if (required(repository, 'id') !== grant.repositoryId ||
@@ -78,6 +105,17 @@ export async function discoverGitHubActions(
       (grant.commitSha !== undefined && commitSha !== grant.commitSha))
     reject('revision_mismatch');
 
+  // A Publish recheck already knows the reviewed workflow. Read that file
+  // only; listing every workflow again trips GitHub after the catalog scan.
+  if (pinned) {
+    const workflow = await get(prefix + '/actions/workflows/' + grant.workflowId, grant.token, http);
+    if (required(workflow, 'id') !== grant.workflowId ||
+        required(workflow, 'path') !== grant.workflowPath ||
+        required(workflow, 'state') !== 'active') return [];
+    const source = await readWorkflow(prefix, grant.workflowPath!, grant.workflowId!, commitSha, grant, http);
+    return source ? [source] : [];
+  }
+
   const output: GitHubActionSource[] = [];
   let page = 1;
   // Bounded paging prevents unexpected API or repository growth from
@@ -92,25 +130,8 @@ export async function discoverGitHubActions(
       if (typeof path !== 'string' || !WORKFLOW.test(path)) continue;
       if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 ||
           required(workflow, 'state') !== 'active') continue;
-      const contents = await get(prefix + '/contents/' + path + '?ref=' + commitSha, grant.token, http);
-      if (required(contents, 'path') !== path ||
-          required(contents, 'encoding') !== 'base64' ||
-          typeof required(contents, 'content') !== 'string') reject('invalid_contents');
-      const encoded = (required(contents, 'content') as string).replace(/\s/g, '');
-      if (encoded.length > 90_000 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(encoded)) reject('invalid_contents');
-      // Workers support atob; UTF-8 decoding must reject malformed bytes.
-      let yaml: string;
-      try {
-        const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
-        yaml = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      } catch { reject('invalid_contents'); }
-      try {
-        output.push({ repository: grant.repository, repositoryId: grant.repositoryId,
-          commitSha, workflowPath: path, workflowId: id,
-          contract: parseGitHubAction(yaml!) });
-      } catch {
-        // Ordinary non-Action GitHub workflows must remain invisible.
-      }
+      const source = await readWorkflow(prefix, path, id, commitSha, grant, http);
+      if (source) output.push(source);
     }
     if (workflows.length < 100) return output;
     page += 1;
