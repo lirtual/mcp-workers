@@ -1,6 +1,8 @@
 // Spec #775：仅用于受保护 Release Worker 的只读 Version 143 恢复门禁。
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
+import {createHash} from 'node:crypto';
+import {REVIEWED_HISTORICAL_RUN_IDS} from './legacy-secret-cleanup.mjs';
 const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const SHA=/^[a-f0-9]{40}$/;
 const TARGET='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
@@ -15,6 +17,14 @@ const OTHER_PLANS=[
  ['4c3b0ab3-e41e-442a-8a73-2364889a8058','ebe0fc88-35a7-46ca-83e3-1ef20c56a78c'], // ubuntu
  ['00b1e052-f383-4d26-bef2-db49a97c72b9','b00861dc-b6ed-4be1-b203-e4c1b7e3a84c'], // windows
 ];
+// 2026-11-09 对生产 D1 的只读 SELECT 取证，固定历史异常的完整身份和状态。
+// 与 #774 相同的有序 proof 格式，额外固定历史 Run 的 start_state。
+const historicalProofs=Object.freeze({
+ run_proof:['685457d5d6fca2e6c9c182be892f0763d34f4f74eb8b7b78044e0bf0998c26ad',12],
+ step_proof:['500c988333fe8c195b2ba265e9f10d40865068b8f28558d765d9efca2e62275b',12],
+ attempt_proof:['aee1b525045acd0d55298ba5290bbb177ec0749557bfcf7ceafde0441cd2d2d1',1],
+});
+const historicalDigest=value=>createHash('sha256').update(value).digest('hex');
 const expected=new Map([
  ['ACTIONS','service'],['DB','d1'],['WORKFLOW','workflow'],
  ['MCP_ACCESS_TOKEN','secret_text'],['WORKFLOW_GITHUB_DISPATCH_TOKEN','secret_text'],
@@ -85,9 +95,14 @@ export function verifyRestoreVersions({current,target,deployment,settings,secret
 }
 export function verifyRestoreD1(row){
  const fixed={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,
-   unknown_runs:12,active_sessions:0,openlist_state:'paused',openlist_version:OLD_PLAN,
+   unknown_runs:12,reviewed_unknown_runs:12,unreviewed_runs:0,active_sessions:0,openlist_state:'paused',openlist_version:OLD_PLAN,
   original_plan:1,unchanged_other_plans:5,active_count:5,paused_count:8};
  for(const [name,v] of Object.entries(fixed))check(row?.[name]===v,'D1 or old Published Plan drift: '+name);
+ for(const [name,[digest,count]] of Object.entries(historicalProofs)){
+  const proof=row?.[name];
+  check(typeof proof==='string'&&proof.split('|').length===count&&
+   historicalDigest(proof)===digest,'historical Run/Step/Attempt drift: '+name);
+ }
  return true;
 }
 export function verifyRestoreNative(response,status){
@@ -102,12 +117,22 @@ export function verifyRestoreNative(response,status){
 }
 const otherPlansWhere=OTHER_PLANS.map(([id,plan])=>
   `(id='${id}' AND active_version_id='${plan}' AND state='active')`).join(' OR ');
+const historicalIds=REVIEWED_HISTORICAL_RUN_IDS.map(id=>{
+ check(UUID.test(id),'invalid reviewed historical Run ID');
+ return "'"+id+"'";
+}).join(',');
+check(new Set(REVIEWED_HISTORICAL_RUN_IDS).size===12,'expected twelve distinct historical Runs');
 export const restoreReadinessSql=`SELECT
  (SELECT COUNT(*) FROM d1_migrations) AS migration_count,
  (SELECT COUNT(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
  (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data') AS old_table,
- (SELECT COUNT(*) FROM runs WHERE outcome IS NULL) AS unresolved_runs,
+ (SELECT COUNT(*) FROM runs WHERE outcome IS NULL OR outcome NOT IN ('succeeded','failed','cancelled','indeterminate')) AS unresolved_runs,
  (SELECT COUNT(*) FROM runs WHERE outcome='indeterminate') AS unknown_runs,
+ (SELECT COUNT(*) FROM runs WHERE id IN (${historicalIds}) AND outcome='indeterminate') AS reviewed_unknown_runs,
+ (SELECT COUNT(*) FROM runs WHERE (outcome IS NULL OR outcome NOT IN ('succeeded','failed','cancelled')) AND id NOT IN (${historicalIds})) AS unreviewed_runs,
+ (SELECT group_concat(line,'|') FROM (SELECT id||':'||outcome||':'||start_state||':'||coalesce(error_code,'') line FROM runs WHERE outcome='indeterminate' ORDER BY id)) AS run_proof,
+ (SELECT group_concat(line,'|') FROM (SELECT run_id||':'||step_id||':'||status||':'||coalesce(error_code,'') line FROM run_steps WHERE status IS NULL OR status NOT IN ('succeeded','failed','skipped','cancelled') ORDER BY run_id,step_id)) AS step_proof,
+ (SELECT group_concat(line,'|') FROM (SELECT run_id||':'||step_id||':'||state||':'||coalesce(owner_run_id,'') line FROM step_attempts WHERE state IS NULL OR state NOT IN ('rejected','succeeded','failed','cancelled') ORDER BY run_id,step_id)) AS attempt_proof,
  (SELECT COUNT(*) FROM session_executions WHERE state!='terminated') AS active_sessions,
  (SELECT state FROM workflows WHERE id='${OPENLIST}' AND deleted_at IS NULL) AS openlist_state,
  (SELECT active_version_id FROM workflows WHERE id='${OPENLIST}' AND deleted_at IS NULL) AS openlist_version,

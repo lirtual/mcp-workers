@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
 import {DatabaseSync} from 'node:sqlite';
+import {REVIEWED_HISTORICAL_RUN_IDS} from './legacy-secret-cleanup.mjs';
 import {verifyRestoreRequest,verifyRestoreVersions,verifyRestoreD1,verifyRestoreNative,restoreReadinessSql} from './workflow-version-restore.mjs';
 
 const baseline='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
@@ -25,7 +27,29 @@ const current=()=>({id:candidate,number:144,resources:{script:{etag:'new'},scrip
 const inv=()=>bindings.filter(x=>x.type==='secret_text').map(x=>({name:x.name}));
 const deployment=(version)=>({deployments:[{versions:[{version_id:version,percentage:100}]}]});
 const versions=(after=false)=>({current:current(),target:target(),deployment:deployment(after?baseline:candidate),settings:{bindings:structuredClone(bindings)},secrets:inv(),after});
-const d1={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,unknown_runs:12,active_sessions:0,openlist_state:'paused',openlist_version:'88071284-b7f3-4553-afe4-1ed3fc47972e',original_plan:1,unchanged_other_plans:5,active_count:5,paused_count:8};
+// 仅包含历史受审状态代码，不包含 inputs、凭据或业务数据。
+const historicalAudit=[
+ ['0bb5f19e-627e-440d-9757-7dfd9a0af31d','cloudflare_dispatch_unconfirmed','notify_weixin','indeterminate'],
+ ['22625b58-e260-4988-81b6-04352a2d5f11','cloudflare_outcome_unknown','notify','indeterminate'],
+ ['29e121ab-de3e-43dd-b3bb-6e6d495fa2b1','github_session_no_ready','ubuntu','indeterminate'],
+ ['391e075f-3d5c-449e-ad88-fa13c6d4eb6d','execution_interrupted','create_note','running'],
+ ['3e312105-b40e-49ea-a037-c3359074be2b','cloudflare_outcome_unknown','notify','indeterminate'],
+ ['47739981-0534-4966-8034-1e79c1d17481','github_session_no_ready','openlist_session','indeterminate'],
+ ['5813140e-6559-469c-8e0a-d6800ff33331','cloudflare_outcome_unknown','notify','indeterminate'],
+ ['8e0a94a7-136f-41fd-b839-211c9a60ad49','cloudflare_outcome_unknown','notify','indeterminate'],
+ ['9da5816a-e7d9-481a-8203-3a2036534563','cloudflare_outcome_unknown','notify','indeterminate'],
+ ['a1970556-a529-46c2-9bb1-81980b51557e','cloudflare_outcome_unknown','notify','indeterminate'],
+ ['eab7b71f-b857-4569-afde-fd269cd1b2bb','github_dispatch_unknown','ubuntu','indeterminate'],
+ ['f99bb918-2909-46df-b196-d07faa64df27','github_dispatch_unknown','verify','indeterminate'],
+];
+assert.deepEqual(historicalAudit.map(x=>x[0]).sort(),[...REVIEWED_HISTORICAL_RUN_IDS].sort());
+const historicalEvidence={
+ run_proof:historicalAudit.map(([id,error])=>`${id}:indeterminate:started:${error}`).join('|'),
+ step_proof:historicalAudit.map(([id,error,step,status])=>
+  `${id}:${step}:${status}:${status==='running'?'':error}`).join('|'),
+ attempt_proof:'f99bb918-2909-46df-b196-d07faa64df27:verify:claimed:41182432750',
+};
+const d1={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,unknown_runs:12,reviewed_unknown_runs:12,unreviewed_runs:0,active_sessions:0,openlist_state:'paused',openlist_version:'88071284-b7f3-4553-afe4-1ed3fc47972e',original_plan:1,unchanged_other_plans:5,active_count:5,paused_count:8,...historicalEvidence};
 
 test('Version 143 recovery requires exact Owner SHA, Worker, flags and target',()=>{
   assert.equal(verifyRestoreRequest(request),true);
@@ -84,7 +108,9 @@ test('offline D1 SELECT proves five immutable business Plans and fails on one ch
   db.exec(`CREATE TABLE workflows(id TEXT,state TEXT,active_version_id TEXT,deleted_at INTEGER);
     CREATE TABLE workflow_versions(id TEXT,workflow_id TEXT);
     CREATE TABLE d1_migrations(name TEXT);
-    CREATE TABLE runs(outcome TEXT);
+    CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,start_state TEXT,error_code TEXT);
+    CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,error_code TEXT);
+    CREATE TABLE step_attempts(run_id TEXT,step_id TEXT,state TEXT,owner_run_id INTEGER);
     CREATE TABLE session_executions(state TEXT);`);
   const insert=db.prepare('INSERT INTO workflows VALUES (?,?,?,NULL)');
   const expected=[
@@ -101,13 +127,105 @@ test('offline D1 SELECT proves five immutable business Plans and fails on one ch
   const migration=db.prepare('INSERT INTO d1_migrations VALUES (?)');
   for(let i=0;i<20;i++)migration.run('migration-'+i);
   migration.run('0021_retire_uu_session_data.sql');
-  for(let i=0;i<12;i++)db.exec("INSERT INTO runs VALUES ('indeterminate')");
+  const historicalRun=db.prepare('INSERT INTO runs VALUES (?,?,?,?)');
+  const historicalStep=db.prepare('INSERT INTO run_steps VALUES (?,?,?,?)');
+  for(const [id,error,step,status] of historicalAudit){
+    historicalRun.run(id,'indeterminate','started',error);
+    historicalStep.run(id,step,status,status==='running'?null:error);
+  }
+  db.prepare('INSERT INTO step_attempts VALUES (?,?,?,?)')
+    .run('f99bb918-2909-46df-b196-d07faa64df27','verify','claimed',41182432750);
   const row=()=>Object.fromEntries(Object.entries(db.prepare(restoreReadinessSql).get()).map(([k,v])=>[k,Number.isInteger(v)?v:Number(v)||v]));
+  assert.equal(verifyRestoreD1(row()),true);
+  for(const [table,field,where,value] of [
+    ['runs','start_state',`id='${historicalAudit[0][0]}'`,'reserved'],
+    ['runs','error_code',`id='${historicalAudit[0][0]}'`,'different_error'],
+    ['run_steps','status',`run_id='${historicalAudit[0][0]}'`,'running'],
+    ['run_steps','error_code',`run_id='${historicalAudit[0][0]}'`,'changed'],
+    ['step_attempts','state',`run_id='${historicalAudit[11][0]}'`,'confirmed'],
+    ['step_attempts','owner_run_id',`run_id='${historicalAudit[11][0]}'`,123],
+  ]){
+    db.exec('SAVEPOINT proof_change');
+    db.prepare(`UPDATE ${table} SET ${field}=? WHERE ${where}`).run(value);
+    assert.throws(()=>verifyRestoreD1(row()),/restore blocked/i,`${table}.${field}`);
+    db.exec('ROLLBACK TO proof_change; RELEASE proof_change');
+  }
+  // 同样的 Unknown 总数不能掩盖新的活动 Run。
+  for(const outcome of ['queued','running',null,'unexpected']){
+    historicalRun.run('new-run',outcome,'reserved','test');
+    assert.throws(()=>verifyRestoreD1(row()),/restore blocked/i);
+    db.prepare('DELETE FROM runs WHERE id=?').run('new-run');
+  }
+  // 同数量替换 Unknown 的身份也必须失败。
+  const historicalId=REVIEWED_HISTORICAL_RUN_IDS[0];
+  db.prepare('UPDATE runs SET id=? WHERE id=?').run('replacement',historicalId);
+  assert.equal(row().unknown_runs,12);
+  assert.throws(()=>verifyRestoreD1(row()),/restore blocked/i);
+  db.prepare('UPDATE runs SET id=? WHERE id=?').run(historicalId,'replacement');
+  // 固定历史 Run 变成普通终态或活动状态均拒绝。
+  for(const outcome of ['succeeded','failed','cancelled','queued','running',null]){
+    db.prepare('UPDATE runs SET outcome=? WHERE id=?').run(outcome,historicalId);
+    assert.throws(()=>verifyRestoreD1(row()),/restore blocked/i);
+  }
+  db.prepare('UPDATE runs SET outcome=? WHERE id=?').run('indeterminate',historicalId);
   assert.equal(verifyRestoreD1(row()),true);
   db.prepare('UPDATE workflows SET active_version_id=? WHERE id=?').run('changed-plan',expected[0][0]);
   assert.equal(row().unchanged_other_plans,4);
   assert.throws(()=>verifyRestoreD1(row()),/restore blocked/i);
   db.close();
+});
+
+// 在实际 YAML 的条件上执行矩阵，避免仅靠字符串存在获得假阳性。
+const releaseJob=()=>readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8')
+  .split('  legacy-secret-cleanup:')[1];
+const restoreContext=(codeOnly,uuCleanup)=>({
+  github:{event_name:'workflow_dispatch',ref:'refs/heads/main',actor:'lirtual'},
+  needs:{checks:{result:'success',outputs:{release_ready:'true'}}},
+  inputs:{worker:'workflow-mcp-worker',deploy_to_production:true,
+    legacy_secret_cleanup_mode:'restore',workflow_code_only:codeOnly,
+    uu_session_secret_cleanup:uuCleanup,actions_old_ingress_quiesced:false,
+    actions_migration_prepare:false,actions_gate_reopen:false,uu_cleanup_approved:false},
+});
+const conditionResult=(expression,context)=>runInNewContext(
+  expression.replace(/^\s*\$\{\{/, '').replace(/\}\}\s*$/, '').trim(),context,{timeout:100});
+test('actual Release job admits exactly the two mutually exclusive Workflow restore modes',()=>{
+  const expression=releaseJob().match(/    if: >-\n([\s\S]*?)    runs-on:/)?.[1];
+  assert.ok(expression,'protected restore job condition missing');
+  for(const codeOnly of [false,true])for(const uuCleanup of [false,true]){
+    const context=restoreContext(codeOnly,uuCleanup);
+    assert.equal(conditionResult(expression,context),codeOnly!==uuCleanup,
+      JSON.stringify({codeOnly,uuCleanup}));
+    for(const worker of ['ssh-mcp-worker','database-mcp-worker','unknown-worker']){
+      context.inputs.worker=worker;
+      assert.equal(conditionResult(expression,context),false);
+    }
+  }
+});
+test('actual Release steps bind each preflight/readback to its restore mode and exclude legacy preflight',()=>{
+  const steps=releaseJob().split(/^      - /m).slice(1);
+  const select=command=>{
+    const matches=steps.filter(step=>step.includes('run: node scripts/'+command+' "$SELECTED_WORKER"'));
+    assert.equal(matches.length,1,'one exact step required: '+command);
+    return matches[0];
+  };
+  const guarded=(command,context)=>{
+    const expression=select(command).match(/^        if: (.+)$/m)?.[1];
+    assert.ok(expression,'explicit condition required: '+command);
+    return conditionResult(expression,context);
+  };
+  for(const codeOnly of [false,true])for(const uuCleanup of [false,true]){
+    const context=restoreContext(codeOnly,uuCleanup);
+    for(const phase of ['preflight','readback'])
+      assert.equal(guarded('workflow-version-restore.mjs '+phase,context),codeOnly&&!uuCleanup);
+    for(const phase of ['restore-preflight','restore-readback'])
+      assert.equal(guarded('workflow-uu-secret-cleanup.mjs '+phase,context),!codeOnly&&uuCleanup);
+    if(codeOnly&&!uuCleanup)
+      assert.equal(guarded('legacy-secret-cleanup.mjs preflight',context),false);
+  }
+  const position=command=>steps.indexOf(select(command));
+  const deploy=steps.findIndex(step=>step.includes('wrangler versions deploy'));
+  assert.ok(position('workflow-version-restore.mjs preflight')<deploy);
+  assert.ok(position('workflow-version-restore.mjs readback')>deploy);
 });
 
 test('Only historical Version143 and new code-only restore share existing Release Worker lock',()=>{
