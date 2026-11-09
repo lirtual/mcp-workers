@@ -328,7 +328,7 @@ Environment bindings and credentials:
 - `MCP_ACCESS_TOKEN` for owner API ingress.
 - `WORKFLOW_MCP_PORTAL_CLIENT_ID` / `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` for the pinned Portal.
 - `WORKFLOW_GITHUB_DISPATCH_TOKEN` for the registered GitHub executor.
-- Historical UU-only `WORKFLOW_SESSION_RUNTIME_DATA_KEY`: Version 142 still retains the canonical AES-GCM key binding from GitHub Environment `SESSION_RUNTIME_DATA_KEY` for the existing production/recovery baseline. New #774 source no longer requires or uploads it; Version 143 is an undeployed candidate without this binding. Do not rotate/delete the old source while recovery dependencies remain.
+- Historical UU-only `WORKFLOW_SESSION_RUNTIME_DATA_KEY`: Version 142 retained this versioned AES-GCM binding and Version 143 was initially an undeployed candidate without it. This is a pre-#774 Publish snapshot, **not** the current production/recovery baseline: the GitHub source `SESSION_RUNTIME_DATA_KEY` and the old UU table have since been retired. Do not restore Version 142 against the retired table; see the completed #774 evidence below.
 - Release-pinned non-secret variables `MCP_PORTAL_ENDPOINT`, `GITHUB_EXECUTOR_REPOSITORY`, `GITHUB_EXECUTOR_REPOSITORY_ID`, `GITHUB_EXECUTOR_REF` and `GITHUB_EXECUTOR_AUDIENCE`.
 - `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` is the runtime Worker binding populated during the protected release from identically named GitHub **Environment `workflow-mcp-worker` Variable** (not a repository-level Variable). The current `scripts/worker-release-variables.mjs` validator requires each JSON entry to contain exactly `{repository,repositoryId,commitSha}`, where `commitSha` is a 40-character Git SHA. The Workflow runtime ignores that legacy `commitSha` for discovery and verifies the current default-branch revision and YAML by SHA; each execution still requires its exact reviewed Published Plan pin. After Spec #607, the approved identity is `lirtual/github-actions` / Repository ID `1430925009`. Change the source Environment Variable only through the owner-approved configuration path, then use the existing protected GitHub Actions release to propagate it; do not patch Cloudflare Worker settings directly.
 
@@ -807,10 +807,10 @@ provenance. The dedicated test Workflow is paused. See
 [the accepted file boundary](../../docs/spec35-litterbox-file-upload.md)
 and [Spec #35 evidence](https://github.com/lirtual/cloudflare-actions/issues/35).
 
-Historical Spec #733 mapping decision (2026-11-06): GitHub originally retained `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` as release inputs mapped to canonical runtime names. The UU-only Session key was retired by #774. The subsequent GitHub source-name normalization requires the same original Portal Secret bytes under `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`, which Release and Acceptance consume exclusively. Delete the old GitHub Portal Secret only after parity and consumer checks; do not add fallback sources, rerun the historical runtime cutover or rotate credentials. This documentation does not itself authorize a production Worker release.
+Historical Spec #733 mapping decision (2026-11-06): GitHub originally retained `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` as release inputs mapped to canonical runtime names. The UU-only Session key was retired by #774. The subsequent GitHub source-name normalization requires the same original Portal Secret bytes under `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`, which Release and Acceptance consume exclusively. The old GitHub Portal Secret was deleted on 2026-11-09 after independent original-byte parity and consumer checks (see [Spec #733 receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6743276305)); do not add fallback sources, rerun the historical runtime cutover or rotate credentials. This documentation does not itself authorize a production Worker release.
 
 
-### Spec #774：UU 专属 Secret 当前状态（Prepare Pass，Publish Blocked）
+### Spec #774：UU 专属 Secret 历史快照（当时 Prepare Pass，Publish Blocked）
 
 当前运行时 UU 读写入口已退役。新源码不再要求或装载
 WORKFLOW_SESSION_RUNTIME_DATA_KEY；其余 MCP_ACCESS_TOKEN、
