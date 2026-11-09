@@ -466,3 +466,65 @@ test('detached start never confirms native create after concurrent timeout won t
   assert.equal(durable.outcome,'indeterminate');
   assert.equal(durable.error_code,'detached_child_start_unconfirmed');
 });
+
+test('Spec775 pause wins against a stale Active read at the actual top-level INSERT',t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent');
+  const source=readFileSync(new URL('../src/store.ts',import.meta.url),'utf8');
+  const tick=String.fromCharCode(96);
+  const body=source.split(tick+'INSERT OR IGNORE INTO runs(id,workflow_id,version_id,')[1]?.split(tick)[0];
+  assert.ok(body,'actual top-level admission SQL not found');
+  const sql=('INSERT OR IGNORE INTO runs(id,workflow_id,version_id,'+body)
+    .replace('$'+'{capacityAdmissionPredicate(weight as 1|2)}',capacityAdmissionPredicate(1));
+  assert.ok(!sql.includes('$'+'{'),'unhandled SQL interpolation');
+  const insert=(id:string)=>f.sqlite.prepare(sql).run(
+    id,'parent','v-parent',id,id,'digest','{}',2000,2000,1,'parent','v-parent');
+  assert.equal(insert('before-pause').changes,1,'positive control: Active admits');
+  f.sqlite.prepare("UPDATE workflows SET state='paused' WHERE id='parent'").run();
+  assert.equal(insert('after-pause').changes,0);
+  assert.equal(f.sqlite.prepare("SELECT count(*) AS n FROM runs WHERE id='after-pause'").get()?.n,0);
+});
+
+test('Spec775 paused targets reject fresh awaited and detached reservations at commit',async t=>{
+  for(const detached of [false,true]){
+    const f=fixture(t);
+    f.makeWorkflow('parent');f.makeWorkflow('child');
+    f.makeParent('p1','parent',detached?1:2);
+    f.sqlite.prepare("UPDATE workflows SET state='paused' WHERE id='child'").run();
+    const admit=detached?admitDetachedChild:transferAwaitedChildCapacity;
+    await assert.rejects(()=>admit(f.db as unknown as D1Database,request()),
+      /child_capacity_transfer_rejected|detached_child_admission_rejected/);
+    assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM runs WHERE parent_run_id IS NOT NULL').get()?.n,0);
+  }
+});
+
+test('Spec775 pause does not stop native creation for an already reserved child (known fence gap)',async t=>{
+  for(const detached of [false,true]){
+    const f=fixture(t);
+    f.makeWorkflow('parent');f.makeWorkflow('child');
+    f.makeParent('p1','parent',detached?1:2);
+    const admit=detached?admitDetachedChild:transferAwaitedChildCapacity;
+    await admit(f.db as unknown as D1Database,request());
+    f.sqlite.prepare("UPDATE workflows SET state='paused'").run();
+    const created:string[]=[];
+    const env={DB:f.db,WORKFLOW:{
+      async create(o:{id:string}){created.push(o.id);},
+      async get(){throw Error('instance.not_found');},
+    }};
+    const start=detached?startReservedDetachedChild:startReservedAwaitedChild;
+    const result=await start(env as never,startArgs());
+    assert.equal(result.start_state,'started');
+    assert.deepEqual(created,['c1'],'pause alone is not a physical dispatch fence');
+    assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM workflows WHERE state=?').get('active')?.n,0);
+  }
+});
+
+test('Spec775 actual Resume SQL can reopen a paused target without a release fence (known gap)',t=>{
+  const f=fixture(t);
+  f.makeWorkflow('parent','paused');
+  const source=readFileSync(new URL('../src/store.ts',import.meta.url),'utf8');
+  const sql=source.match(/"(UPDATE workflows SET state='active',updated_at=\? WHERE id=\? AND state='paused' AND active_version_id=\? AND deleted_at IS NULL)"/)?.[1];
+  assert.ok(sql,'actual Resume SQL not found');
+  assert.equal(f.sqlite.prepare(sql).run(2000,'parent','v-parent').changes,1);
+  assert.equal(f.sqlite.prepare('SELECT state FROM workflows WHERE id=?').get('parent')?.state,'active');
+});

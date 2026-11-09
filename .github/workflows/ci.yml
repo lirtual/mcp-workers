@@ -69,6 +69,8 @@ jobs:
         run: node scripts/verify-workflow-dispatch-gates.mjs
       - name: Spec #774 isolated UU table retirement regression
         run: node --test scripts/workflow-uu-cleanup-gate.test.mjs
+      - name: Spec #775 fixed Version143 recovery safety regression
+        run: node --test scripts/workflow-version-restore.test.mjs
 
       - name: Verify shared Owner configuration ownership (offline)
         run: node --test scripts/check-shared-owner-vars.test.mjs
