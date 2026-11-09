@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {discoverCloudflareActionCatalog} from '../src/action-catalog.ts';
 import {canonical} from '../src/cloudflare-action-contract.ts';
 const deployment='11111111-1111-4111-8111-111111111111';
@@ -38,4 +39,26 @@ test('unknown Provider, forged source, colliding ids and deployment split fail c
    contract_digest:await digest({...report,action:id})})};
  await assert.rejects(()=>discoverCloudflareActionCatalog({ACTIONS:split as any}));
  await assert.rejects(()=>discoverCloudflareActionCatalog({ACTIONS:undefined as any}));
+});
+test('a new reviewed side effect needs no Consumer action name',async()=>{
+ const source=readFileSync(new URL('../src/action-catalog.ts',import.meta.url),'utf8');
+ assert.equal(source.includes('json.mark'),false);
+ assert.equal(source.includes('record_audited_marker'),false);
+ const marked={...report,action:'json.mark',side_effect:'record_audited_marker'};
+ const found=await discoverCloudflareActionCatalog({ACTIONS:{
+  listActions:async()=>[{action_id:'json.mark'}],
+  getContract:async()=>({manifest:marked,deployment_id:deployment,contract_digest:await digest(marked)}),
+ } as any});
+ assert.equal(found.actions[0].action_id,'json.mark');
+ assert.equal(found.actions[0].manifest.side_effect,'record_audited_marker');
+ const borrowed={...marked,side_effect:'send_to_configured_owner_only'};
+ await assert.rejects(()=>discoverCloudflareActionCatalog({ACTIONS:{
+  listActions:async()=>[{action_id:'json.mark'}],
+  getContract:async()=>({manifest:borrowed,deployment_id:deployment,contract_digest:await digest(borrowed)}),
+ } as any}));
+ const relabeled={...report,action:'bark.send_notification',provider:'bark',side_effect:'none'};
+ await assert.rejects(()=>discoverCloudflareActionCatalog({ACTIONS:{
+  listActions:async()=>[{action_id:'bark.send_notification'}],
+  getContract:async()=>({manifest:relabeled,deployment_id:deployment,contract_digest:await digest(relabeled)}),
+ } as any}));
 });

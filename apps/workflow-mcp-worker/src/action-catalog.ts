@@ -10,6 +10,8 @@ const AUDITED_EFFECTS:Record<string,string>={
  'envshare.share_text':'store_encrypted_text_at_envshare',
  'litterbox.upload_file':'upload_plaintext_file_to_public_litterbox',
 };
+const EFFECT=/^[a-z][a-z0-9_]{0,80}$/;
+const RESERVED_EFFECTS=new Set(Object.values(AUDITED_EFFECTS));
 const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
 function reject():never{throw Error('cloudflare_action_catalog_untrusted');}
 function validSchema(s:unknown){
@@ -29,9 +31,9 @@ function inspectedManifest(actionId:string,raw:unknown){
     raw.action!==actionId||typeof raw.provider!=='string'||
     !ACTION.test(actionId)||!actionId.startsWith(raw.provider+'.')||
     !Number.isSafeInteger(raw.version)||Number(raw.version)<1||
-    typeof raw.side_effect!=='string'||raw.side_effect.length>128||
+    typeof raw.side_effect!=='string'||!EFFECT.test(raw.side_effect)||
     (Object.hasOwn(AUDITED_EFFECTS,actionId)?AUDITED_EFFECTS[actionId]!==raw.side_effect:
-     !['none','read_only'].includes(raw.side_effect)))reject();
+     RESERVED_EFFECTS.has(raw.side_effect)))reject();
  validSchema(raw.input_schema);
  if(raw.output_schema!==undefined)validSchema(raw.output_schema);
  if(new TextEncoder().encode(JSON.stringify(raw)).byteLength>16*1024)reject();

@@ -41,6 +41,29 @@ async function setup(t:test.TestContext){
  return {db,env,step,plan,posts:()=>posts,unknown:()=>{unknown=true;},leak:()=>{leak=true;},
  run:()=>runPublishedCloudflareAction(env,plan,step,runId)};
 }
+test('reviewed side effect runs once under its Grant and fails closed without it',async t=>{
+ const f=await setup(t);
+ const contracts=f.plan.cloudflare_action_contracts;
+ const approvals=f.plan.cloudflare_action_approvals;
+ const actions=f.env.ACTIONS;
+ if(!contracts||!approvals||!actions)throw Error('fixture');
+ contracts.report.side_effect='record_audited_marker';
+ const marked=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(canonical({
+  ...manifest,side_effect:'record_audited_marker'}))));
+ const markedDigest=Array.from(new Uint8Array(marked),x=>x.toString(16).padStart(2,'0')).join('');
+ contracts.report.contract_digest=markedDigest;
+ f.step.with.contract_digest=markedDigest;
+ approvals[0].contract_digest=markedDigest;
+ actions.getContract=async()=>({deployment_id:deployment,contract_digest:markedDigest});
+ assert.equal((await f.run()).status,'succeeded');
+ f.plan.cloudflare_action_approvals=[];
+ assert.equal((await f.run()).status,'failed');
+ f.plan.cloudflare_action_approvals=[{executor:'cloudflare',provider:'json',action:'json.report',
+  contract_digest:markedDigest,deployment_id:deployment}];
+ contracts.report.side_effect='exfiltrate_owner_data';
+ assert.equal((await f.run()).status,'failed');
+ assert.equal(f.posts(),1);
+});
 test('ordinary JSON Action dispatches exactly once with durable fence',async t=>{
  const f=await setup(t);
  assert.deepEqual(await f.run(),{status:'succeeded',output:{status:'accepted',report_id:'report-123'}});
