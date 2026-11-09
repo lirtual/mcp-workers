@@ -169,6 +169,10 @@ test('Workflow old binding present as wrong type rejects even if new binding mat
 test('Workflow Portal readonly acceptance uses only canonical GitHub Variable and Secret', async () => {
   const {readFileSync} = await import('node:fs');
   const file = readFileSync('.github/workflows/acceptance.yml','utf8');
+  assert.doesNotMatch(file, /secrets\.(?:ENCRYPTION_KEY|MCP_PORTAL_CLIENT_SECRET)\b/,
+    'Retired GitHub Secret source names must not be consumed by Acceptance');
+  assert.doesNotMatch(file, /secret-rename-(?:seal|verify)/,
+    'Temporary original-secret migration modes must not remain callable');
   const job = file.split('  workflow-mcp-portal-probe:\n')[1]?.split('\n  workflow-github-action-result-cloud:')[0];
   assert.ok(job, 'existing read-only acceptance job is present');
   assert.match(job, /inputs\.test_type == 'portal-readonly'/);
