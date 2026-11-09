@@ -1357,11 +1357,21 @@ jobs:
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.deploy_to_production == true &&
           needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
-          (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'database-mcp-worker') &&
-          (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish' ||
-           (inputs.legacy_secret_cleanup_mode == 'restore' && inputs.worker == 'workflow-mcp-worker' &&
-            inputs.uu_session_secret_cleanup == true)) &&
-          inputs.workflow_code_only != true && inputs.actions_old_ingress_quiesced != true &&
+          (
+            (
+              (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish') &&
+              inputs.workflow_code_only != true &&
+              (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'database-mcp-worker')
+            ) ||
+            (
+              inputs.legacy_secret_cleanup_mode == 'restore' && inputs.worker == 'workflow-mcp-worker' &&
+              (
+                (inputs.uu_session_secret_cleanup == true && inputs.workflow_code_only != true) ||
+                (inputs.workflow_code_only == true && inputs.uu_session_secret_cleanup != true)
+              )
+            )
+          ) &&
+          inputs.actions_old_ingress_quiesced != true &&
           inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
           inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
@@ -1409,11 +1419,17 @@ jobs:
               exit 1
             }
           fi
-          if [[ "$LEGACY_CLEANUP_MODE" == 'restore' ]]; then
-            [[ "$UU_SESSION_SECRET_CLEANUP" == 'true' &&
+          if [[ "$LEGACY_CLEANUP_MODE" == 'restore' && "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
+            [[ "$WORKFLOW_CODE_ONLY" != 'true' &&
                "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
                "$EXPECTED_ACTIVE_VERSION" == '3f27e9ca-790c-4ec9-914e-cb4204a736e6' &&
                "$CANDIDATE_VERSION_ID" == '414da2d7-a16f-4ce6-9350-013ad4f7166a' ]]
+          fi
+          if [[ "$LEGACY_CLEANUP_MODE" == 'restore' && "$WORKFLOW_CODE_ONLY" == 'true' ]]; then
+            [[ "$UU_SESSION_SECRET_CLEANUP" != 'true' &&
+               "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
+               "$CANDIDATE_VERSION_ID" == '3f27e9ca-790c-4ec9-914e-cb4204a736e6' &&
+               "$EXPECTED_ACTIVE_VERSION" != '3f27e9ca-790c-4ec9-914e-cb4204a736e6' ]]
           fi
           if [[ "$LEGACY_CLEANUP_MODE" == 'prepare' ]]; then
             [[ -z "$CANDIDATE_VERSION_ID" ]]
@@ -1434,7 +1450,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Validate active version, exact Secret inventory and Workflow quiescence (read-only)
-        if: inputs.uu_session_secret_cleanup != true
+        if: inputs.uu_session_secret_cleanup != true && inputs.workflow_code_only != true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1528,11 +1544,18 @@ jobs:
           fi
 
       - name: Verify exact Version 143 to 142 restore conditions (read-only)
-        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true
+        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true && inputs.workflow_code_only != true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/workflow-uu-secret-cleanup.mjs restore-preflight "$SELECTED_WORKER"
+
+      - name: Verify code-only Version 143 restore conditions (read-only)
+        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.workflow_code_only == true && inputs.uu_session_secret_cleanup != true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/workflow-version-restore.mjs preflight "$SELECTED_WORKER"
 
       - name: Deploy only the independently approved candidate to 100 percent
         if: inputs.legacy_secret_cleanup_mode == 'publish' || inputs.legacy_secret_cleanup_mode == 'restore'
@@ -1579,8 +1602,15 @@ jobs:
         run: node scripts/workflow-uu-secret-cleanup.mjs readback "$SELECTED_WORKER"
 
       - name: Verify exact Version 142 restored to 100 percent (read-only)
-        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true
+        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true && inputs.workflow_code_only != true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/workflow-uu-secret-cleanup.mjs restore-readback "$SELECTED_WORKER"
+
+      - name: Verify exact Version 143 restored to 100 percent (read-only)
+        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.workflow_code_only == true && inputs.uu_session_secret_cleanup != true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/workflow-version-restore.mjs readback "$SELECTED_WORKER"

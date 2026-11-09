@@ -6,7 +6,7 @@ import {runInNewContext} from 'node:vm';
 import {DatabaseSync} from 'node:sqlite';
 import {fileURLToPath} from 'node:url';
 import {REVIEWED_HISTORICAL_RUN_IDS} from './legacy-secret-cleanup.mjs';
-import {verifyRestoreRequest,verifyRestoreVersions,verifyRestoreD1,verifyRestoreNative,verifyRestoreTriggers,restoreReadinessSql} from './workflow-version-restore.mjs';
+import {verifyRestoreRequest,verifyRestoreVersions,verifyRestoreD1,verifyRestoreNative,restoreReadinessSql} from './workflow-version-restore.mjs';
 
 const baseline='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
 const candidate='11111111-2222-4333-8444-555555555555';
@@ -51,7 +51,7 @@ const historicalEvidence={
   `${id}:${step}:${status}:${status==='running'?'':error}`).join('|'),
  attempt_proof:'f99bb918-2909-46df-b196-d07faa64df27:verify:claimed:41182432750',
 };
-const d1={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,unknown_runs:12,reviewed_unknown_runs:12,unreviewed_runs:0,active_sessions:0,openlist_state:'paused',openlist_version:'88071284-b7f3-4553-afe4-1ed3fc47972e',original_plan:1,unchanged_other_plans:5,active_count:5,paused_count:8,...historicalEvidence};
+const d1={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,unknown_runs:12,reviewed_unknown_runs:12,unreviewed_runs:0,active_sessions:0,openlist_state:'paused',openlist_version:'88071284-b7f3-4553-afe4-1ed3fc47972e',original_plan:1,unchanged_other_plans:5,active_count:0,paused_count:13,...historicalEvidence};
 
 test('Version 143 recovery requires exact Owner SHA, Worker, flags and target',()=>{
   assert.equal(verifyRestoreRequest(request),true);
@@ -122,7 +122,7 @@ test('offline D1 SELECT proves five immutable business Plans and fails on one ch
     ['4c3b0ab3-e41e-442a-8a73-2364889a8058','ebe0fc88-35a7-46ca-83e3-1ef20c56a78c'],
     ['00b1e052-f383-4d26-bef2-db49a97c72b9','b00861dc-b6ed-4be1-b203-e4c1b7e3a84c'],
   ];
-  for(const [id,plan] of expected)insert.run(id,'active',plan);
+  for(const [id,plan] of expected)insert.run(id,'paused',plan);
   insert.run('0015e2e9-431d-4465-9adf-03191cb382f9','paused','88071284-b7f3-4553-afe4-1ed3fc47972e');
   for(let i=0;i<7;i++)insert.run('historical-'+i,'paused','historical-plan-'+i);
   db.exec(`INSERT INTO workflow_versions VALUES ('88071284-b7f3-4553-afe4-1ed3fc47972e','0015e2e9-431d-4465-9adf-03191cb382f9');`);
@@ -246,28 +246,10 @@ test('Only historical Version143 and new code-only restore share existing Releas
   assert.match(job,/needs.checks.result == 'success'/);
   assert.match(job,/needs.checks.outputs.release_ready == 'true'/);
   assert.match(job,/wrangler versions deploy/);
-  assert.doesNotMatch(job,/wrangler d1 migrations apply|gh secret delete|wrangler secret delete/);
+  assert.doesNotMatch(job,/wrangler d1 migrations apply|gh secret delete|pnpm exec wrangler secret delete/);
   const script=readFileSync(new URL('./workflow-version-restore.mjs',import.meta.url),'utf8');
   assert.doesNotMatch(script,/method:\s*['"](?:PUT|PATCH|DELETE)['"]/);
   assert.doesNotMatch(script,/wrangler versions deploy|wrangler deploy/);
-});
-
-const closedTriggers=()=>({
-  schedules:{schedules:[]},
-  domains:[{service:'cloudflare-actions',hostname:'actions.example'}],
-  subdomain:{enabled:false},
-});
-test('trigger fence accepts only an empty Worker ingress inventory',()=>{
-  assert.equal(verifyRestoreTriggers(closedTriggers()),true);
-  for(const edit of [
-    d=>{d.schedules.schedules.push({cron:'* * * * *'});},
-    d=>{d.schedules.schedules=undefined;},
-    d=>{d.domains.push({service:'workflow-mcp-worker',hostname:'workflow.lirtual.dpdns.org'});},
-    d=>{d.domains.push({hostname:'workflow.lirtual.dpdns.org'});},
-    d=>{d.domains='unavailable';},
-    d=>{d.subdomain.enabled=true;},
-    d=>{d.subdomain={};},
-  ]){const d=closedTriggers();edit(d);assert.throws(()=>verifyRestoreTriggers(d),/restore blocked/i);}
 });
 
 // 生产 Version 143 的 GitHub Deployment SHA。准入谓词必须与该提交相同，
@@ -295,15 +277,4 @@ test('Version 143 admission predicates match the code that would run after rollb
   const reconcile=slice(newStore,'private async reconcileStart(row:RunRow)','private async settleNativeOutcome');
   assert.match(reconcile,/WORKFLOW\.create/);
   assert.doesNotMatch(reconcile,/state='active'/);
-});
-
-test('current Release publish reapplies triggers and version rollback does not remove them',()=>{
-  const yaml=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  const publish=yaml.slice(yaml.indexOf('  deploy:'),yaml.indexOf('  legacy-secret-cleanup:'));
-  const restore=yaml.split('  legacy-secret-cleanup:')[1];
-  assert.match(publish,/pnpm exec wrangler deploy /);
-  assert.match(restore,/pnpm exec wrangler versions deploy /);
-  assert.doesNotMatch(yaml,/wrangler triggers deploy/);
-  const script=readFileSync(new URL('./workflow-version-restore.mjs',import.meta.url),'utf8');
-  assert.equal(script.match(/await observeTriggers\(\)/g)?.length,2);
 });

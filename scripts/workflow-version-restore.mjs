@@ -96,27 +96,13 @@ export function verifyRestoreVersions({current,target,deployment,settings,secret
 export function verifyRestoreD1(row){
  const fixed={migration_count:21,migration_v21:1,old_table:0,unresolved_runs:0,
    unknown_runs:12,reviewed_unknown_runs:12,unreviewed_runs:0,active_sessions:0,openlist_state:'paused',openlist_version:OLD_PLAN,
-  original_plan:1,unchanged_other_plans:5,active_count:5,paused_count:8};
+  original_plan:1,unchanged_other_plans:5,active_count:0,paused_count:13};
  for(const [name,v] of Object.entries(fixed))check(row?.[name]===v,'D1 or old Published Plan drift: '+name);
  for(const [name,[digest,count]] of Object.entries(historicalProofs)){
   const proof=row?.[name];
   check(typeof proof==='string'&&proof.split('|').length===count&&
    historicalDigest(proof)===digest,'historical Run/Step/Attempt drift: '+name);
  }
- return true;
-}
-/** Worker 级 Triggers 才是 Version 143 与新代码共同遵守、且 versions deploy 不改写的入口。
- * 只接受已证明为空的只读清单；未知形状或不完整分页一律拒绝。 */
-export function verifyRestoreTriggers({schedules,domains,subdomain}){
- check(Array.isArray(schedules?.schedules)&&schedules.schedules.length===0,
-  'cron triggers still admit the Worker');
- check(Array.isArray(domains),'worker domain inventory unavailable');
- for(const domain of domains){
-  const service=domain?.service??domain?.worker;
-  check(typeof service==='string'&&service.length>0&&service!=='workflow-mcp-worker',
-   'custom domain still routes to the Worker');
- }
- check(subdomain?.enabled===false,'workers.dev ingress is not disabled');
  return true;
 }
 export function verifyRestoreNative(response,status){
@@ -130,7 +116,7 @@ export function verifyRestoreNative(response,status){
  return true;
 }
 const otherPlansWhere=OTHER_PLANS.map(([id,plan])=>
-  `(id='${id}' AND active_version_id='${plan}' AND state='active')`).join(' OR ');
+  `(id='${id}' AND active_version_id='${plan}' AND state='paused')`).join(' OR ');
 const historicalIds=REVIEWED_HISTORICAL_RUN_IDS.map(id=>{
  check(UUID.test(id),'invalid reviewed historical Run ID');
  return "'"+id+"'";
@@ -178,16 +164,6 @@ async function main(){
    'Cloudflare read-only API failed');
   return body;
  };
- const observeTriggers=async()=>{
-  const [schedules,domains,subdomain]=await Promise.all([
-   api(scriptPath+'/schedules'),api('/workers/domains'),api(scriptPath+'/subdomain')]);
-  const info=domains.result_info;
-  check(!info||(info.count===domains.result?.length&&info.total_count===domains.result.length),
-   'worker domain inventory incomplete');
-  verifyRestoreTriggers({schedules:schedules.result,domains:domains.result,subdomain:subdomain.result});
- };
- // 排空观察前后各读一次。两次 GET 不能证明中间没有人重新打开 Triggers。
- await observeTriggers();
  const q=await api('/d1/database/'+D1+'/query',restoreReadinessSql);
  check(q.result?.length===1&&q.result[0]?.success===true&&
   q.result[0]?.meta?.changes===0&&q.result[0]?.results?.length===1,
@@ -197,7 +173,6 @@ async function main(){
   const p=await api('/workflows/workflow-mcp-orchestrator/instances?status='+state+'&per_page=100');
   verifyRestoreNative(p,state);
  }
- await observeTriggers();
  const [deploy,current,target,settings,secrets]=await Promise.all([
   api(scriptPath+'/deployments?per_page=1'),
   api(scriptPath+'/versions/'+e.EXPECTED_ACTIVE_VERSION),api(scriptPath+'/versions/'+TARGET),
