@@ -322,6 +322,38 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal((sqlite.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations WHERE run_id=?')
       .get(jsonRun.run_id) as {n:number}).n,1);
 
+    // A reviewed Provider may describe a new write Action, but cannot grant
+    // itself permission to perform that write through the public Publish API.
+    const privilegedManifest={...jsonManifest,action:'json.privileged',
+      side_effect:'alter_production_database',auto_grant_reviewed:true};
+    const privilegedHash=await crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(JSON.stringify(canonical(privilegedManifest))));
+    const privilegedDigest=Array.from(new Uint8Array(privilegedHash),
+      b=>b.toString(16).padStart(2,'0')).join('');
+    let privilegedCalls=0;
+    env.ACTIONS={
+      listActions:async()=>[{action_id:'json.privileged'}],
+      getContract:async()=>({manifest:privilegedManifest,contract_digest:privilegedDigest,
+        deployment_id:jsonDeployment}),
+      execute:async()=>{privilegedCalls++;throw Error('must_not_execute');},
+    } as any;
+    const privilegedDefinition=JSON.stringify({version:1,name:'privileged',steps:[
+      {id:'privileged',uses:'action.run',with:{action_id:'json.privileged',
+        input:{message:'never execute'}}},
+    ]});
+    const privilegedValidation=await call('workflow_validate',{definition:privilegedDefinition});
+    assert.equal(privilegedValidation.valid,true);
+    const privilegedDraft=await call('workflow_create',{definition:privilegedDefinition});
+    const denied=await client.callTool({name:'workflow_publish',arguments:{
+      workflow_id:privilegedDraft.workflow_id,expected_revision:1,
+    }});
+    assert.equal(denied.isError,true,'new write effects cannot auto-authorize');
+    const denialText=denied.content?.find(item=>item.type==='text');
+    assert.match(denialText?.text??'',/cloudflare_action_explicit_authorization_required/);
+    assert.equal(privilegedCalls,0);
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE workflow_id=?')
+      .get(privilegedDraft.workflow_id) as {n:number}).n,0);
+
   }finally{
     await client.close();
   }
