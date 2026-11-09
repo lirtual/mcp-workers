@@ -10,20 +10,24 @@ test('current production release choices, guarded allowlist and releasable Worke
   assert.doesNotThrow(() => verifyReleaseWorkers(release, RELEASE_WORKERS));
 });
 
-test('Spec #733 keeps exactly one scoped GitHub Secret source per SSH/Workflow runtime binding',()=>{
+test('canonical SSH and Workflow GitHub Secret inputs are scoped, single-source and reject legacy names',()=>{
   assert.doesNotThrow(()=>verifyReleaseWorkers(release,RELEASE_WORKERS));
-  for(const [oldSource,newSource] of [
-    ['secrets.ENCRYPTION_KEY','secrets.SSH_ENCRYPTION_KEY'],
-    ['secrets.MCP_PORTAL_CLIENT_SECRET','secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET'],
-    ["inputs.worker == 'ssh-mcp-worker' && secrets.ENCRYPTION_KEY",
-     "inputs.worker == 'workflow-mcp-worker' && secrets.ENCRYPTION_KEY"],
+  for(const [canonical,legacy,worker] of [
+    ['SSH_ENCRYPTION_KEY','ENCRYPTION_KEY','ssh-mcp-worker'],
+    ['WORKFLOW_MCP_PORTAL_CLIENT_SECRET','MCP_PORTAL_CLIENT_SECRET','workflow-mcp-worker'],
   ]) {
-    assert.throws(()=>verifyReleaseWorkers(release.replace(oldSource,newSource),RELEASE_WORKERS),
-      /GitHub Secret source|Wrong GitHub Secret source|Parallel canonical GitHub Secret source/);
+    assert.throws(()=>verifyReleaseWorkers(
+      release.replace('secrets.'+canonical, 'secrets.'+legacy),RELEASE_WORKERS),
+      /Wrong GitHub Secret source|Legacy GitHub Secret source forbidden/);
+    assert.throws(()=>verifyReleaseWorkers(
+      release.replace("inputs.worker == '"+worker+"' && secrets."+canonical,
+        "inputs.worker == 'raindrop-mcp-worker' && secrets."+canonical),RELEASE_WORKERS),
+      /Wrong GitHub Secret source/);
+    assert.throws(()=>verifyReleaseWorkers(
+      release.replace('          '+canonical+':',
+        '          '+legacy+': ${{ secrets.'+legacy+' }}\n          '+canonical+':'),RELEASE_WORKERS),
+      /Legacy GitHub Secret source forbidden|Legacy runtime binding forbidden/);
   }
-  assert.throws(()=>verifyReleaseWorkers(release.replace(
-    '          SSH_ENCRYPTION_KEY:',"          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}\n          SSH_ENCRYPTION_KEY:"),RELEASE_WORKERS),
-    /Old GitHub name may not be added as a runtime binding/);
 });
 
 test('retired Email encryption secret is not referenced by production release', () => {

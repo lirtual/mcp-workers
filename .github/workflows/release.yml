@@ -406,9 +406,9 @@ jobs:
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
-          SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.ENCRYPTION_KEY || '' }}
+          SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
-          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.MCP_PORTAL_CLIENT_SECRET || '' }}
+          WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || '' }}
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
