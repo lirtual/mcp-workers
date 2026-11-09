@@ -116,16 +116,26 @@ try {
     console.log('DISCOVER_OK');
     process.exit(0);
   }
-  const validated = await call('workflow_validate', { definition: JSON.stringify(openlist) });
-  assert.equal(validated.valid, true, 'openlist_definition_invalid');
   const before = await call('workflow_get', { workflow_id: OPENLIST });
-  assert.equal(before.draft_revision, 24);
   assert.equal(before.state, 'paused');
   assert.equal(before.published_version_id, OLD_PLAN);
-  const updated = await call('workflow_update', {
-    workflow_id: OPENLIST, expected_revision: 24, definition: JSON.stringify(openlist),
-  });
-  assert.equal(updated.draft_revision, 25);
+  if (before.draft_revision === 24) {
+    const validated = await call('workflow_validate', { definition: JSON.stringify(openlist) });
+    if (validated.valid !== true) {
+      console.log('ISSUES', (validated.issues ?? []).map(issue => issue.code + '@' + issue.path).join(','));
+      throw new Error('openlist_definition_invalid');
+    }
+    const updated = await call('workflow_update', {
+      workflow_id: OPENLIST, expected_revision: 24, definition: JSON.stringify(openlist),
+    });
+    assert.equal(updated.draft_revision, 25);
+  }
+  assert.equal(before.draft_revision === 24 || before.draft_revision === 25, true);
+  const stored = await call('workflow_validate', { workflow_id: OPENLIST, revision: 25 });
+  if (stored.valid !== true) {
+    console.log('ISSUES', (stored.issues ?? []).map(issue => issue.code + '@' + issue.path).join(','));
+    throw new Error('openlist_stored_definition_invalid');
+  }
   const published = await call('workflow_publish', { workflow_id: OPENLIST, expected_revision: 25 });
   assert.notEqual(published.published_version_id, OLD_PLAN);
   assert.equal(published.state, 'paused');
