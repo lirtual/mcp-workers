@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 const phase = process.env.SPEC775_PHASE;
-assert.ok(phase === 'discover' || phase === 'accept', 'phase');
+assert.ok(phase === 'discover' || phase === 'accept' || phase === 'download', 'phase');
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'token missing');
 const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -114,6 +114,29 @@ try {
     assert.equal(actions.some(action => action.action_id === id), true, id);
   if (phase === 'discover') {
     console.log('DISCOVER_OK');
+    process.exit(0);
+  }
+  if (phase === 'download') {
+    const prior = sql(`SELECT inputs FROM runs WHERE id='fb90ac23-f0ea-4ac9-b114-dc57877bfc0a' AND outcome='succeeded'`);
+    const inputs = JSON.parse(prior[0].inputs);
+    assert.equal(Array.isArray(inputs.download_batches) && inputs.download_batches.length, 1);
+    const batch = JSON.parse(inputs.download_batches[0]);
+    assert.equal(Array.isArray(batch.downloads) && batch.downloads.length, 1);
+    assert.equal(typeof batch.downloads[0].url, 'string');
+    batch.downloads[0].destination_dir = 'spec775-accept-20261109';
+    const encoded = JSON.stringify(batch);
+    assert.ok(Buffer.byteLength(encoded) <= 4096, 'batch_size');
+    inputs.download_batches = [encoded];
+    const row = await call('workflow_get', { workflow_id: DOWNLOAD });
+    assert.equal(row.state, 'active');
+    const started = await call('workflow_run', {
+      workflow_id: DOWNLOAD, inputs, idempotency_key: KEY + '-download-dest',
+    });
+    console.log('STARTED', 'download', started.run_id, started.published_version_id);
+    const done = await waitRun(started.run_id);
+    console.log('DONE', 'download', done.status);
+    if (done.status !== 'succeeded') throw new Error('download ' + done.status);
+    console.log('DOWNLOAD_OK');
     process.exit(0);
   }
   const before = await call('workflow_get', { workflow_id: OPENLIST });
