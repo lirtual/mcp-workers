@@ -47,22 +47,17 @@ function schemaKeys(schema) {
   const props = schema && typeof schema === 'object' ? schema.properties : undefined;
   return props && typeof props === 'object' ? Object.keys(props).sort() : [];
 }
-async function waitRun(runId, stepId, cancel) {
+async function waitRun(runId) {
   let last = '';
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < 100; i++) {
     const state = await call('workflow_status', { run_id: runId });
-    const step = (state.steps ?? []).find(item => item.step_id === stepId);
-    const line = state.status + '/' + (step?.status ?? 'missing');
+    const steps = (state.steps ?? []).map(item => item.step_id + '=' + item.status).join(',');
+    const line = state.status + ' ' + steps;
     if (line !== last) {
-      console.log('RUN', runId, stepId, line);
+      console.log('RUN', runId, line);
       last = line;
     }
     if (['succeeded', 'failed', 'cancelled', 'indeterminate'].includes(state.status)) return state;
-    if (cancel && step && ['running', 'succeeded', 'ready'].includes(step.status)) {
-      console.log('CANCEL', runId, stepId);
-      await call('workflow_cancel', { run_id: runId, step_id: stepId });
-      cancel = false;
-    }
     await new Promise(resolve => setTimeout(resolve, 10_000));
   }
   throw new Error('run_timeout ' + runId);
@@ -139,14 +134,14 @@ try {
   console.log('OPENLIST_PUBLISHED', published.published_version_id);
   const resumed = await call('workflow_resume', { workflow_id: OPENLIST });
   assert.equal(resumed.state, 'active');
-  for (const [name, id, step] of SESSIONS) {
+  for (const [name, id] of SESSIONS) {
     const started = await call('workflow_run', {
       workflow_id: id, inputs: { duration_minutes: 1 }, idempotency_key: KEY + '-' + name,
     });
     console.log('STARTED', name, started.run_id, started.published_version_id);
-    const done = await waitRun(started.run_id, step, true);
+    const done = await waitRun(started.run_id);
     console.log('DONE', name, done.status);
-    if (!['succeeded', 'cancelled'].includes(done.status)) throw new Error(name + ' ' + done.status);
+    if (done.status !== 'succeeded') throw new Error(name + ' ' + done.status);
   }
   const prior = sql(`SELECT inputs FROM runs WHERE id='fb90ac23-f0ea-4ac9-b114-dc57877bfc0a' AND outcome='succeeded'`);
   const inputs = JSON.parse(prior[0].inputs);
@@ -155,7 +150,7 @@ try {
     workflow_id: DOWNLOAD, inputs, idempotency_key: KEY + '-download',
   });
   console.log('STARTED', 'download', download.run_id, download.published_version_id);
-  const downloadDone = await waitRun(download.run_id, 'submit_download', false);
+  const downloadDone = await waitRun(download.run_id);
   console.log('DONE', 'download', downloadDone.status);
   if (downloadDone.status !== 'succeeded') throw new Error('download ' + downloadDone.status);
   console.log('ACCEPT_OK');
