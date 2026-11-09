@@ -55,15 +55,30 @@ test('unclassified side effects cannot inherit an automatic Publish grant',async
  assert.equal(approved.state,'active');
 });
 
-test('Provider-reviewed ordinary side effects use existing automatic Grant',async t=>{
- const f=await fixture(t,{auto_grant_reviewed:true});
- const result=await f.service.publishReviewed(workflowId,1);
- assert.equal(result.state,'active');
- const row=f.sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
-  .get(result.published_version_id) as {plan:string};
- const plan=JSON.parse(row.plan);
- assert.deepEqual(plan.cloudflare_action_approvals,[f.approval]);
- assert.equal(plan.cloudflare_action_contracts.mark.auto_grant_reviewed,true);
+test('Provider review marker alone never authorizes new write effects',async t=>{
+ for(const side_effect of ['record_audited_marker','alter_production_database','exfiltrate_owner_data']){
+  await t.test(side_effect,async t=>{
+   const f=await fixture(t,{side_effect,auto_grant_reviewed:true});
+   await assert.rejects(f.service.publishReviewed(workflowId,1),
+    /cloudflare_action_explicit_authorization_required/);
+   assert.equal((f.sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions')
+    .get() as {n:number}).n,0);
+  });
+ }
+});
+
+test('effect-free and read-only JSON Actions still receive bounded automatic Grants',async t=>{
+ for(const side_effect of ['none','read_only']){
+  await t.test(side_effect,async t=>{
+   const f=await fixture(t,{side_effect});
+   const result=await f.service.publishReviewed(workflowId,1);
+   assert.equal(result.state,'active');
+   const row=f.sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+    .get(result.published_version_id) as {plan:string};
+   const plan=JSON.parse(row.plan);
+   assert.deepEqual(plan.cloudflare_action_approvals,[f.approval]);
+  });
+ }
 });
 
 test('Provider review marker must be a real boolean, not a string',async t=>{

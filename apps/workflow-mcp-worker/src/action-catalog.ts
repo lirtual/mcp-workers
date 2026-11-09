@@ -12,15 +12,17 @@ const AUDITED_EFFECTS:Record<string,string>={
 };
 const EFFECT=/^[a-z][a-z0-9_]{0,80}$/;
 const RESERVED_EFFECTS=new Set(Object.values(AUDITED_EFFECTS));
-/** Only Provider-reviewed ordinary effects may inherit the public Publish grant.
- * Unclassified new effects require a separate exact grant through the existing
- * privileged Publish path; a Contract digest alone does not authorize them. */
+/** A Provider manifest cannot grant itself additional execution privileges.
+ * Auto-grants cover only the existing exact audited Action/effect pairs or
+ * declared effect-free/read-only actions. All new write effects require an
+ * independently approved exact grant through the existing privileged path.
+ * Existing Provider manifests may contain auto_grant_reviewed metadata;
+ * it cannot authorize a new write effect. */
 export function needsExplicitCloudflareEffectGrant(manifest:Record<string,unknown>):boolean{
  const action=String(manifest.action??'');
  if(Object.hasOwn(AUDITED_EFFECTS,action)&&AUDITED_EFFECTS[action]===manifest.side_effect)
    return false;
- return manifest.side_effect!=='none'&&manifest.side_effect!=='read_only'&&
-   manifest.auto_grant_reviewed!==true;
+ return manifest.side_effect!=='none'&&manifest.side_effect!=='read_only';
 }
 
 const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
