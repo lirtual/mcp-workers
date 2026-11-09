@@ -76,3 +76,49 @@ child 父子链路；目标旧版本兼容；失败/Unknown 时不提前开放�
   Step 的 `status`、`error_code`、Attempt 的 `state` 与 `owner_run_id` 漂移。
   这些检查只保证已固定的历史异常状态未变，不构成完整 Admission Fence。
 - Admission Fence、Release 集成、CI 与合并仍未完成。
+
+## 2026-11-09：暂停边界的可执行取证
+
+基线为 7ea92895。本轮仅非生产测试、依赖安装和文档变更，未查询 GitHub 或生产。
+通过 corepack 使用仓库固定 pnpm@10.17.1、frozen lockfile、ignore-scripts 安装依赖；
+首次 Cron/Webhook 测试因缺少 yaml 失败，依赖补齐后重新运行通过。
+
+在既有 child-capacity.test.ts 和 cron.test.ts 新增 7 项测试，不改变运行代码：
+
+| 路径 | 实际执行的验证 | 结果含义 |
+| --- | --- | --- |
+| 普通 Run INSERT | 从 store.ts 提取真实 SQL；Active 正控能插入；已读旧版本后先暂停，再 INSERT | 暂停在 D1 提交时阻止新 Run |
+| awaited/detached child | 调用实际 reservation 函数，对已暂停目标插入 | 两种新 child reservation 均拒绝 |
+| 已有 child reservation | 先调用实际 reservation，再暂停所有 Workflow，再调用实际 native start 函数 | 两种 child 均仍可启动；暂停不撤销已接受 reservation |
+| 手动服务入口 | 实际 create/publish/pause/start/resume/start 调用 | Paused 拒绝新 Run，Resume 之后立即重新准入 |
+| 新建 Workflow | 暂停初始 Active 集合后再实际 create/publish/start | 新 Workflow 能运行；只暂停快照集合不是全局 Fence |
+| 普通 Run 重放 | SQLite 构造已提交但尚未 create 的 reservation，暂停后调用实际 start 的同 key 重放 | 原 reservation 仍可触发 native create |
+
+child、Cron、Webhook、GitHub Event 相关测试共 42/42 Pass；
+随后 Workflow 应用完整测试 548/548 Pass（零跳过），TypeScript 检查和 git diff --check 通过；
+其中“已知缺口”的通过表示现有风险已被复现并固定，不能计作 Admission Fence Pass。
+完整恢复集成测试的三项失败仍保留。
+
+### 下一阶段最小实现必须满足的接口
+
+继续复用逐 Workflow 暂停，不改变暂停原有的“允许已接受 Run 继续”语义，
+也不将它冒充取消/回滚能力。在恢复编排层额外要求：
+
+- 关闭准入必须返回精确的原状态/Plan 快照与持续封锁的证据。
+  封锁期间拒绝 Resume、新 Draft 首次 Publish 导致 Active、以及任何未覆盖的 Run 入口。
+  Publish 已有 Paused Workflow 会保持 Paused，但仍会改变 Plan；
+  恢复窗口中同样需要封锁，以保留固定 Plan 身份。
+- 排空证据必须包括新 reservation/Run/child/Session 和 native 六状态。
+  历史固定指纹不能被当作允许其他新 Unknown 的例外。
+- 从排空通过至回读结束，封锁不得依赖“没有人同时操作”的约定；
+  并发 Resume/Create/Publish 必须有可执行的拒绝证据。
+- 封锁必须覆盖新版本和目标 Version 143。仅在新源码中加判断，
+  回退后旧代码不再执行该判断，不足以保持整个窗口安全。
+- 部署/回读失败或 Unknown 时保留封锁与回执；不得用 finally 自动 Resume。
+  解除封锁只能恢复原 Active 集合，并重新核对 Plan 身份。
+
+当前尚未发现上述持续封锁所需的既有控制接口，故不引入未经决定的新 D1
+状态、Migration、Cloudflare 配置或第二套锁服务。下一步应先证明现有独立入口控制
+能否同时覆盖管理请求、Cron/事件入口与目标旧版本；若不能，需对最小持久化
+Fence 的具体落点和旧版本兼容作明确设计决定，然后开展对应非生产并发测试。
+本轮的 7 项测试提供这些测试需要的真实调用切口，不解除任何合并门禁。

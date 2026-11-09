@@ -139,3 +139,51 @@ test('published-only scanning visits beyond the first 100 workflow IDs',async t=
   assert.equal(run.due,1);
   assert.equal(run.started,1);
 });
+
+test('Spec775 pause blocks fresh service admission but Resume can reopen it (known fence gap)',async t=>{
+  const s=setup(t);
+  const wf=await s.service.create(JSON.stringify(emission('Restore pause')));
+  await s.service.publish(wf.workflow_id,1);
+  await s.service.pause(wf.workflow_id);
+  await assert.rejects(()=>s.service.start(wf.workflow_id,{},'paused-new'),
+    (e:unknown)=>e instanceof StateError&&e.code==='workflow_not_active');
+  assert.equal(s.dispatches,0);
+  await s.service.resume(wf.workflow_id);
+  await s.service.start(wf.workflow_id,{},'resumed-new');
+  assert.equal(s.dispatches,1,'Resume is not sealed by a release-window fence');
+});
+
+test('Spec775 pausing the initial Active set does not seal creation/publication of another Workflow',async t=>{
+  const s=setup(t);
+  const initial=await s.service.create(JSON.stringify(emission('Initial')));
+  await s.service.publish(initial.workflow_id,1);
+  await s.service.pause(initial.workflow_id);
+  const newcomer=await s.service.create(JSON.stringify(emission('Created during restore')));
+  await s.service.publish(newcomer.workflow_id,1);
+  await s.service.start(newcomer.workflow_id,{},'new-workflow-run');
+  assert.equal(s.dispatches,1,'an initial pause snapshot is not a global admission fence');
+});
+
+test('Spec775 accepted top-level reservation can create native execution after pause',async t=>{
+  const s=setup(t);
+  const wf=await s.service.create(JSON.stringify(emission('Reserved before pause')));
+  const published=await s.service.publish(wf.workflow_id,1);
+  const id=crypto.randomUUID();
+  const digest=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('{}'))).toString('hex');
+  // Simulate a committed admission whose native create has not happened yet.
+  s.db.prepare('INSERT INTO runs(id,workflow_id,version_id,instance_id,admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES(?,?,?,?,?,?,?, ?,?,?,?)')
+    .run(id,wf.workflow_id,published.published_version_id,id,'accepted-before-pause',
+      digest,'{}','reserved','queued',Date.now(),Date.now());
+  await s.service.pause(wf.workflow_id);
+  let exists=false;
+  const create=s.env.WORKFLOW.create;
+  s.env.WORKFLOW.create=async options=>{await create(options);exists=true;};
+  s.env.WORKFLOW.get=async()=>{
+    if(!exists)throw Error('instance.not_found');
+    return {async status(){return {status:'running'};}};
+  };
+  const result=await s.service.start(wf.workflow_id,{},'accepted-before-pause');
+  assert.equal(result.run_id,id);
+  assert.equal(s.dispatches,1,'pause does not revoke an accepted reservation');
+  assert.equal(s.db.prepare('SELECT state FROM workflows WHERE id=?').get(wf.workflow_id)?.state,'paused');
+});
