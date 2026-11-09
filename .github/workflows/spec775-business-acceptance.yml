@@ -9,12 +9,13 @@ on:
         type: boolean
         default: false
       phase:
-        description: discover is read-only; accept publishes openlist and runs the six workflows
+        description: discover is read-only; accept publishes openlist and runs the six workflows; download reruns only download into a new directory
         required: true
         type: choice
         options:
           - discover
           - accept
+          - download
 
 permissions:
   contents: read
