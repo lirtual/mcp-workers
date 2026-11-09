@@ -1,4 +1,5 @@
 import {resolvePublicActionDefinition} from './public-action-definition.ts';
+import {needsExplicitCloudflareEffectGrant} from './action-catalog.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
 import {workflowGitHubArtifactReferences} from './github-action-artifacts.ts';
 import {compensateCancelledSessions} from './saga.ts';
@@ -455,6 +456,12 @@ export class WorkflowService {
       const provider=this.env.ACTIONS;
       if(!provider)throw new StateError('cloudflare_provider_not_configured');
       const contract=(plan.cloudflare_action_contracts?.[step.id]??await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
+      // Owner identity and a valid Provider Contract are not an independent
+      // grant for new high-risk effects. Normal public Publish only accepts
+      // source-reviewed auto-grantable effects; the existing exact manual
+      // Cloudflare grant path stays available for separately authorized work.
+      if(selfApproved&&needsExplicitCloudflareEffectGrant(contract))
+        throw new StateError('cloudflare_action_explicit_authorization_required');
       // A staged Version ID is not proof of the bound Worker's version.
       let live;
       try{live=await provider.getContract(contract.action,contract.contract_digest);}
