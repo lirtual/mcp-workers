@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 const phase = process.env.SPEC775_PHASE;
-assert.ok(phase === 'discover' || phase === 'accept' || phase === 'download', 'phase');
+assert.ok(phase === 'discover' || phase === 'accept' || phase === 'download' || phase === 'settle', 'phase');
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'token missing');
 const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -137,6 +137,25 @@ try {
     console.log('DONE', 'download', done.status);
     if (done.status !== 'succeeded') throw new Error('download ' + done.status);
     console.log('DOWNLOAD_OK');
+    process.exit(0);
+  }
+  if (phase === 'settle') {
+    const ready = [
+      ['ubuntu', 'e93dc7f3-a9f2-4e9d-a82b-9ea69db34d06'],
+      ['windows', '0b4611fb-2fca-4525-a77c-b61e3af4d6c2'],
+      ['code-server', 'ff2b29a6-a95a-4046-a730-e952572dea74'],
+      ['openlist', 'd4484890-d0a6-4721-8625-f75930c22bed'],
+    ];
+    for (const [name, runId] of ready) {
+      const state = await call('workflow_status', { run_id: runId });
+      console.log('STATUS', name, state.status);
+    }
+    const open = sql(`SELECT w.name AS name, s.state AS session_state
+      FROM session_executions s JOIN runs r ON r.id=s.run_id
+      JOIN workflows w ON w.id=r.workflow_id WHERE s.state!='terminated'`);
+    console.log('OPEN_SESSIONS', open.map(row => row.name + ':' + row.session_state).join(',') || 'none');
+    if (open.length) throw new Error('sessions_not_terminated');
+    console.log('SETTLE_OK');
     process.exit(0);
   }
   const before = await call('workflow_get', { workflow_id: OPENLIST });

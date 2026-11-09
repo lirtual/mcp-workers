@@ -9,13 +9,14 @@ on:
         type: boolean
         default: false
       phase:
-        description: discover is read-only; accept publishes openlist and runs the six workflows; download reruns only download into a new directory
+        description: discover is read-only; accept publishes openlist and runs the six workflows; download reruns only download into a new directory; settle reconciles the four finished acceptance Sessions
         required: true
         type: choice
         options:
           - discover
           - accept
           - download
+          - settle
 
 permissions:
   contents: read
