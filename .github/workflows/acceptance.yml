@@ -21,11 +21,25 @@ on:
           - portal-register
           - legacy-cleanup-readonly-ssh
           - legacy-cleanup-readonly-workflow
+          - secret-rename-seal-ssh
+          - secret-rename-verify-ssh
+          - secret-rename-seal-workflow
+          - secret-rename-verify-workflow
       confirm_portal_write:
         description: Explicitly authorize production Portal configuration changes (portal-register only)
         required: true
         type: boolean
         default: false
+      secret_rename_public_key:
+        description: Public key of the selected GitHub Environment, not a credential (seal only)
+        type: string
+        required: false
+        default: ''
+      secret_rename_public_key_id:
+        description: Public key ID of the selected GitHub Environment (seal only)
+        type: string
+        required: false
+        default: ''
       cleanup_expected_version:
         description: Cleanup readback only - exact reviewed active Worker version UUID
         type: string
@@ -40,6 +54,95 @@ env:
   HUSKY: "0"
 
 jobs:
+  # One-time controlled original-value transfer. These jobs never write GitHub Secrets.
+  # Remove after the encrypted admin handoff and independent parity check (or an abort).
+  secret-rename-seal:
+    name: Seal selected original Secret for GitHub Environment (no credential writes)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.confirm_portal_write == false &&
+          contains(fromJSON('["secret-rename-seal-ssh","secret-rename-seal-workflow"]'), inputs.test_type) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ${{ inputs.test_type == 'secret-rename-seal-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+    concurrency:
+      group: worker-release-${{ inputs.test_type == 'secret-rename-seal-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify trusted main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Seal original SSH key (ciphertext only)
+        if: inputs.test_type == 'secret-rename-seal-ssh'
+        env:
+          SPEC733_OLD_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          SPEC733_PUBLIC_KEY: ${{ inputs.secret_rename_public_key }}
+          SPEC733_PUBLIC_KEY_ID: ${{ inputs.secret_rename_public_key_id }}
+        run: python3 scripts/ssh-secret-real-migration.py seal "$RUNNER_TEMP/spec733-original-sealed.json"
+      - name: Seal original Workflow Portal Secret (ciphertext only)
+        if: inputs.test_type == 'secret-rename-seal-workflow'
+        env:
+          SPEC733_WORKFLOW_SECRET_KIND: portal
+          SPEC733_OLD_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+          SPEC733_PUBLIC_KEY: ${{ inputs.secret_rename_public_key }}
+          SPEC733_PUBLIC_KEY_ID: ${{ inputs.secret_rename_public_key_id }}
+        run: python3 scripts/workflow-secret-real-migration.py seal "$RUNNER_TEMP/spec733-original-sealed.json"
+      - name: Upload public-key encrypted-only artifact (one-day retention)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spec733-${{ inputs.test_type }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/spec733-original-sealed.json
+          if-no-files-found: error
+          retention-days: 1
+
+  secret-rename-verify:
+    name: Compare protected old/new original Secret bytes (no content or digest)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && inputs.confirm_portal_write == false &&
+          contains(fromJSON('["secret-rename-verify-ssh","secret-rename-verify-workflow"]'), inputs.test_type) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ${{ inputs.test_type == 'secret-rename-verify-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+    concurrency:
+      group: worker-release-${{ inputs.test_type == 'secret-rename-verify-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify trusted main
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - name: Compare original/new SSH key bytes (Pass/Fail only)
+        if: inputs.test_type == 'secret-rename-verify-ssh'
+        env:
+          SPEC733_OLD_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          SPEC733_NEW_KEY: ${{ secrets.SSH_ENCRYPTION_KEY }}
+        run: python3 scripts/ssh-secret-real-migration.py verify -
+      - name: Compare original/new Portal Secret bytes (Pass/Fail only)
+        if: inputs.test_type == 'secret-rename-verify-workflow'
+        env:
+          SPEC733_WORKFLOW_SECRET_KIND: portal
+          SPEC733_OLD_SECRET: ${{ secrets.MCP_PORTAL_CLIENT_SECRET }}
+          SPEC733_NEW_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET }}
+        run: python3 scripts/workflow-secret-real-migration.py verify -
+
   legacy-secret-cleanup-readback:
     name: Spec 733 legacy Secret cleanup inventory (GET only)
     if: >-
