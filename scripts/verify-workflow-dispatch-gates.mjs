@@ -30,24 +30,24 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   const allowed = [...list.matchAll(/inputs\.worker == '([^']+)'/g)].map(match => match[1]);
   sameMembers(allowed, expectedWorkers, 'release allowlist');
 
-  // Spec #733: GitHub keeps exactly three historical Environment Secret names
-  // while the selected Worker stages only canonical runtime binding keys.
+  // Canonical GitHub Environment Secret names must match the Worker runtime bindings.
+  // Old source names must not be accepted as aliases or fallback inputs.
   const stageStart=source.indexOf('      - name: Stage selected Worker Secrets for every release');
   const stageEnd=source.indexOf('      - name: Stage approved Worker variables',stageStart);
   assert.ok(stageStart>0 && stageEnd>stageStart, 'Missing selected Worker Secret staging boundary');
   const secretStage=source.slice(stageStart,stageEnd);
-  for(const [runtime,github,worker] of [
+  for(const [canonical,legacy,worker] of [
     ['SSH_ENCRYPTION_KEY','ENCRYPTION_KEY','ssh-mcp-worker'],
     ['WORKFLOW_MCP_PORTAL_CLIENT_SECRET','MCP_PORTAL_CLIENT_SECRET','workflow-mcp-worker'],
   ]) {
-    const line=runtime+': '+String.fromCharCode(36)+
-      "{{ inputs.worker == '"+worker+"' && secrets."+github+" || '' }}";
-    assert.equal(secretStage.split('          '+runtime+': ').length-1,1,'Duplicate or missing scoped input '+runtime);
-    assert.ok(secretStage.includes('          '+line),'Wrong GitHub Secret source for '+runtime);
-    assert.ok(!source.includes('secrets.'+runtime),
-      'Parallel canonical GitHub Secret source forbidden: '+runtime);
-    assert.ok(!secretStage.includes('          '+github+': '),
-      'Old GitHub name may not be added as a runtime binding: '+github);
+    const line=canonical+': '+String.fromCharCode(36)+
+      "{{ inputs.worker == '"+worker+"' && secrets."+canonical+" || '' }}";
+    assert.equal(secretStage.split('          '+canonical+': ').length-1,1,'Duplicate or missing scoped input '+canonical);
+    assert.ok(secretStage.includes('          '+line),'Wrong GitHub Secret source for '+canonical);
+    assert.ok(!secretStage.includes('secrets.'+legacy),
+      'Legacy GitHub Secret source forbidden: '+legacy);
+    assert.ok(!secretStage.includes('          '+legacy+': '),
+      'Legacy runtime binding forbidden: '+legacy);
   }
   assert.doesNotMatch(secretStage,/WORKFLOW_SESSION_RUNTIME_DATA_KEY:|secrets\.SESSION_RUNTIME_DATA_KEY/,
     'Retired UU Secret source must not be staged into new Worker versions');
