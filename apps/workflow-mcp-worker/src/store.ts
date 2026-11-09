@@ -12,7 +12,7 @@ import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSessionDurationInputRef} from './github-action-inputs.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { approvedActionRepositories } from './github-action-catalog.ts';
-import {isDynamicMainAction} from './github-action-main.ts';
+import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
 import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
@@ -804,6 +804,7 @@ export class WorkflowService {
     let plan:unknown;
     try{plan=JSON.parse(version?.plan??'');}catch{throw new StateError('published_plan_invalid');}
     if(hasRetiredWeixinAction(plan))throw new StateError('weixin_action_retired');
+    if(hasHistoricalTaggedGitHubAction(plan))throw new StateError('tagged_plan_admission_retired');
     const x=await this.db.prepare("UPDATE workflows SET state='active',updated_at=? WHERE id=? AND state='paused' AND active_version_id=? AND deleted_at IS NULL")
       .bind(now(),workflow_id,current.active_version_id).run();
     if(!x.meta.changes)throw new StateError('not_paused');
@@ -934,6 +935,7 @@ export class WorkflowService {
     catch{throw new StateError('published_plan_invalid');}
     if(!Array.isArray(activePlan.steps))throw new StateError('published_plan_invalid');
     if(hasRetiredWeixinAction(activePlan))throw new StateError('weixin_action_retired');
+    if(hasHistoricalTaggedGitHubAction(activePlan))throw new StateError('tagged_plan_admission_retired');
     if(activePlan.steps.some(s=>s.approval?.required))
       throw new StateError('runtime_approval_retired');
     // Reject invalid/unapproved runtime overrides before reserving a Run.

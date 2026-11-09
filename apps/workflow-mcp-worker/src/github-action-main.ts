@@ -20,6 +20,31 @@ export function isDynamicMainAction(
   return true;
 }
 
+/** A historical immutable Tag is not a new admission, including inside foreach. */
+export function hasHistoricalTaggedGitHubAction(plan:unknown):boolean {
+  if(!plan||typeof plan!=='object'||!Array.isArray((plan as {steps?:unknown}).steps))return false;
+  const tagged=(step:unknown):boolean=>{
+    if(!step||typeof step!=='object')return false;
+    const body=step as {with?:unknown};
+    const withData=body.with;
+    if(withData&&typeof withData==='object'){
+      const action=(withData as {action?:unknown}).action;
+      const ref=action&&typeof action==='object'?(action as {ref?:unknown}).ref:undefined;
+      if(typeof ref==='string'&&ref.startsWith('refs/tags/'))return true;
+      const template=(withData as {template?:unknown}).template;
+      if(template&&typeof template==='object'){
+        if(tagged(template))return true;
+        const nested=(template as {steps?:unknown}).steps;
+        if(Array.isArray(nested)&&nested.some(tagged))return true;
+      }
+      const templates=(withData as {templates?:unknown}).templates;
+      if(Array.isArray(templates)&&templates.some(tagged))return true;
+    }
+    return false;
+  };
+  return (plan as {steps:unknown[]}).steps.some(tagged);
+}
+
 /** A mutable-branch Attempt must freeze a verified SHA in the existing D1 record. */
 export function actionForAttempt(
   published:ReviewedGitHubAction,ref:string,planName:string,resolvedSha:unknown,
