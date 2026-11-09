@@ -16,6 +16,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest, PLAN_LIMITS } from './plan.ts';
 import type { Plan, Step } from './plan.ts';
+import {hasHistoricalTaggedGitHubAction} from './github-action-main.ts';
 import {hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import type { Env } from './store.ts';
 import { limitResult,WorkflowService } from './store.ts';
@@ -686,12 +687,20 @@ async function runAwaitedChild(
      return {status:'failed',error_code:'invalid_child_snapshot'};
  }catch{return {status:'failed',error_code:'invalid_child_inputs'};}
  try{
-   const published=await env.DB.prepare(`SELECT v.digest,w.state,w.active_version_id
+   const published=await env.DB.prepare(`SELECT v.digest,v.plan,w.state,w.active_version_id
      FROM workflow_versions v JOIN workflows w ON w.id=v.workflow_id
      WHERE v.id=? AND w.id=?`)
-     .bind(version,target).first<{digest:string;state:string;active_version_id:string|null}>();
-   if(published?.digest!==approval.digest)
+     .bind(version,target).first<{digest:string;plan:string;state:string;active_version_id:string|null}>();
+   if(!published||published.digest!==approval.digest)
      return {status:'failed',error_code:'child_approved_version_changed'};
+   let childPlan:unknown;
+   try{childPlan=JSON.parse(published.plan);}catch{return {status:'failed',error_code:'published_plan_invalid'};}
+   if(hasHistoricalTaggedGitHubAction(childPlan)){
+     const existing=await env.DB.prepare(
+       'SELECT id FROM runs WHERE parent_run_id=? AND parent_step_id=?')
+       .bind(runId,s.id).first<{id:string}>();
+     if(!existing)return {status:'failed',error_code:'tagged_plan_admission_retired'};
+   }
    // An explicitly paused (or republished) child is a known rejection,
    // not an ambiguous D1/native admission. Keep the atomic reservation
    // predicate as the final authority if this state races with a change.

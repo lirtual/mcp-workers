@@ -1068,7 +1068,7 @@ test('transient D1 outage does not permanently stop unattended Session reconcili
  }finally{globalThis.fetch=originalFetch;f.db.close();}
 });
 
-test('reviewed Session Run admission is allowed with server credentials and does not bypass physical slot gate',async()=>{
+test('historical tagged Session Plan cannot accept a new Run',async()=>{
  const f=fixture();
  try{
   f.db.prepare("UPDATE workflows SET active_version_id='v' WHERE id='wf'").run();
@@ -1079,15 +1079,13 @@ test('reviewed Session Run admission is allowed with server credentials and does
    WORKFLOW:{create:async()=>{created++;}}
   } as unknown as Env;
   const service=new WorkflowService(env);
-  const started=await service.start('wf',{},'reviewed-session-admission');
-  assert.equal(started.start_state,'started');
-  assert.equal(started.status,'queued');
-  assert.equal(created,1);
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,0);
-  // Replaying the same request never creates a second physical/session Run.
-  const repeated=await service.start('wf',{},'reviewed-session-admission');
-  assert.equal(repeated.run_id,started.run_id);
-  assert.equal(created,1);
+  const before=f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n;
+  const beforePlan=f.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').get('v')?.plan;
+  await assert.rejects(service.start('wf',{},'reviewed-session-admission'),
+    /tagged_plan_admission_retired/);
+  assert.equal(created,0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()?.n,before);
+  assert.equal(f.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').get('v')?.plan,beforePlan);
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM session_executions').get()?.n,0);
  }finally{f.db.close();}
 });
@@ -1095,6 +1093,9 @@ test('Session admission fails before Run reservation if the Action executor is n
  const f=fixture();
  try{
   f.db.prepare("UPDATE workflows SET active_version_id='v' WHERE id='wf'").run();
+  const current=JSON.parse(f.db.prepare('SELECT plan FROM workflow_versions WHERE id=?').get('v')?.plan as string);
+  current.steps[0].with.action.ref='refs/heads/main';
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(current),'v');
   let created=0;
   const env={DB:f.adapter,WORKFLOW:{create:async()=>{created++;}}} as unknown as Env;
   const service=new WorkflowService(env);
@@ -1250,9 +1251,11 @@ test('native Tailnet Sessions reject a Quick Tunnel URL even from their signed o
 test('Workflow admission only permits opted-in Session duration override within 1–300',async()=>{
  const f=fixture();
  try{
-  const bound={...plan,inputs:{duration_minutes:300},steps:[{
-   ...plan.steps[0],with:{...plan.steps[0].with,action:{
-    ...plan.steps[0].with.action,inputs:{
+  const currentAction={...plan.steps[0].with.action,ref:'refs/heads/main'};
+  const current={...plan,steps:[{...plan.steps[0],with:{...plan.steps[0].with,action:currentAction}}]};
+  const bound={...current,inputs:{duration_minutes:300},steps:[{
+   ...current.steps[0],with:{...current.steps[0].with,action:{
+    ...currentAction,inputs:{
      duration_minutes:{ref:'inputs.duration_minutes'},duration_mode:'explicit'},
    }},
   }]};
@@ -1268,7 +1271,7 @@ test('Workflow admission only permits opted-in Session duration override within 
     /github_action_invalid_duration/);
   }
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM runs').get()?.n,6);
-  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(plan),'v');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(current),'v');
   await assert.rejects(()=>service.start('wf',{duration_minutes:10}),
    /session_duration_override_not_enabled/);
  }finally{f.db.close();}
