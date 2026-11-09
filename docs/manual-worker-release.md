@@ -186,10 +186,10 @@ PR #777 只准备隔离的 `workflow-uu-table-retirement` Job，**未授权执�
 
 详细证据见 [配置清单与生产绑定回读](./runtime-configuration.md#2026-11-09-配置与生产绑定最新只读核对)。
 
-- Workflow Environment 当前仅有 `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` 两项 GitHub Secret；#774 已完成 `SESSION_RUNTIME_DATA_KEY` 删除和 v21 旧 UU 表退役。上述「待删除」「Version 142 当前 100%」「PR #777 Draft/Open」均仅属其当时快照。PR #777 已于 2026-11-07 合并，#774 已关闭；Cloudflare 当前活动版本 `7b74910d-03cb-4be8-bd34-9af4146371d9`（100%，10 个绑定）。
+- Workflow Environment 当前仅有 `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` 两项 GitHub Secret（旧 `MCP_PORTAL_CLIENT_SECRET` 于 2026-11-09 经原值一致性验收后删除）；#774 已完成 `SESSION_RUNTIME_DATA_KEY` 删除和 v21 旧 UU 表退役。上述「待删除」「Version 142 当前 100%」「PR #777 Draft/Open」均仅属其当时快照。PR #777 已于 2026-11-07 合并，#774 已关闭；Cloudflare 当前活动版本 `7b74910d-03cb-4be8-bd34-9af4146371d9`（100%，10 个绑定）。
 - 旧 Version 142 的版本化密钥绑定不等于 v21 后可执行的恢复入口，也不能用绑定名称证明原值；不得按本页历史 143→142 参数直接派发，任何恢复必须重新核对和授权。
 - Database 的四项旧 Environment 配置 `DATABASE_ACCESS_AUD`、`DATABASE_KEY_ID`、`DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN` 已于 2026-11-09 经单独授权逐项删除、独立回读；Environment 现为 0 Variables / 0 Secrets，当前 Version 46 正常保持 100%。旧 Cloudflare 版本仍可能有历史绑定，但不再维护旧发布/恢复兼容；不得将其作为现行回滚方案。Repository 正式发布来源、Secret 原值、生产 Worker 和 D1 未更改。
 
 ## GitHub Secret 来源命名统一（Spec #733 后续）
 
-SSH GitHub Environment 现行输入应为 `SSH_ENCRYPTION_KEY`，Workflow GitHub Environment 现行 Portal Secret 输入应为 `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`，与既有 Cloudflare Worker runtime 同名。旧 GitHub Secret 在受控复制和完整字节一致性独立验收、新消费者 CI 成功之后方可删除。不得通过 Secret 更名触发生产 Release、Portal 同步、秘钥轮换、历史数据改写；旧名的历史发布与失败回执仍保留。
+SSH GitHub Environment 现行输入为 `SSH_ENCRYPTION_KEY`，Workflow GitHub Environment 现行 Portal Secret 输入为 `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`，与既有 Cloudflare Worker runtime 同名。旧 GitHub `ENCRYPTION_KEY` 和 `MCP_PORTAL_CLIENT_SECRET` 已于 2026-11-09 在完整字节一致性独立验收及新消费者 CI 通过后逐项删除，并经 GitHub Environment 负清单回读确认；迁移回执见 [Spec #733 最终审计](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6743276305)。不得通过 Secret 更名触发生产 Release、Portal 同步、秘钥轮换、历史数据改写；旧名的历史发布与失败回执仍保留。

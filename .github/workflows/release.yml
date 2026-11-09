@@ -384,8 +384,8 @@ jobs:
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      # GitHub SSH/Workflow Environment Secrets retain their historical names.
-      # Only the selected Worker stages them under canonical runtime keys.
+      # SSH/Workflow GitHub Environment Secrets now use canonical runtime names.
+      # Only the selected Worker stages its canonical Secret, without legacy aliases.
       # Workflow code-only releases use deployed Secrets (read-only inventory),
       # never stage or re-upload their values.
       - name: Compare selected Worker effective Owner identity to Repository source

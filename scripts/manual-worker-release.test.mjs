@@ -1114,6 +1114,22 @@ test("worker release documentation stays aligned with the selected-Worker contra
   assert.match(ingress, /workers_dev: false/);
 });
 
+test("current MCP token runbook lists canonical SSH/Workflow Secret sources", () => {
+  const runbook = readFileSync(new URL("../docs/mcp-shared-token-runbook.md", import.meta.url), "utf8");
+  const rows = runbook.split("\n");
+  for (const [worker, expected, retired] of [
+    ["ssh-mcp-worker", "SSH_ENCRYPTION_KEY", "ENCRYPTION_KEY"],
+    ["workflow-mcp-worker", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "MCP_PORTAL_CLIENT_SECRET"],
+  ]) {
+    const row = rows.find(line => line.startsWith("| `" + worker + "` |"));
+    assert.ok(row?.includes("`" + expected + "`"), worker + " must document the current source");
+    assert.ok(!row.includes("`" + retired + "`"), worker + " must not document retired sources");
+  }
+  assert.match(runbook, /`WORKFLOW_MCP_PORTAL_CLIENT_ID`/);
+  assert.doesNotMatch(runbook, /`MCP_PORTAL_CLIENT_ID`/);
+  assert.match(runbook, /`DB_HOST` is optional/);
+});
+
 test("Database Hyperdrive mapping requires exactly matching unique Wrangler IDs", () => {
   const manifest = [{ binding: "HYPERDRIVE_APP", id: "11111111-2222-3333-4444-555555555555" }];
   assert.equal(verifyDatabaseHyperdriveSource({ hyperdrive: [...manifest] }, manifest), true);
