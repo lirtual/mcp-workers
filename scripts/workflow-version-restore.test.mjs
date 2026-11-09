@@ -271,9 +271,17 @@ test('Version 143 admission predicates match the code that would run after rollb
   const slice=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
   for(const [start,end] of [
     ["async pause(workflow_id:string)","async resume(workflow_id:string)"],
-    ["async resume(workflow_id:string)","/** Non-destructive tombstone"],
     ['private async reconcileStart(row:RunRow)','private async settleNativeOutcome'],
   ])assert.equal(slice(oldStore,start,end),slice(newStore,start,end),start);
+  // Version 143 has no tagged-plan gate. Rollback to that deployment would
+  // drop it; OpenList's new Plan already makes that rollback insufficient.
+  const resumeStart="async resume(workflow_id:string)",resumeEnd="/** Non-destructive tombstone";
+  const taggedGate="    if(hasHistoricalTaggedGitHubAction(plan))throw new StateError('tagged_plan_admission_retired');\n";
+  const oldResume=slice(oldStore,resumeStart,resumeEnd);
+  assert.equal(slice(newStore,resumeStart,resumeEnd),oldResume.replace(
+    "    if(hasRetiredWeixinAction(plan))throw new StateError('weixin_action_retired');\n",
+    "    if(hasRetiredWeixinAction(plan))throw new StateError('weixin_action_retired');\n"+taggedGate));
+  assert.equal(oldResume.includes(taggedGate),false);
   const reconcile=slice(newStore,'private async reconcileStart(row:RunRow)','private async settleNativeOutcome');
   assert.match(reconcile,/WORKFLOW\.create/);
   assert.doesNotMatch(reconcile,/state='active'/);
