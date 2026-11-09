@@ -742,6 +742,7 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
   assert.equal((release.match(/AS migration_v19/g)??[]).length,2);
   assert.equal((release.match(/AS migration_v20/g)??[]).length,2);
+  assert.equal((release.match(/AS migration_v21/g)??[]).length,2);
   assert.equal((release.match(/AS resolved_sha_column/g)??[]).length,2);
   assert.match(release,/migrations\[@\].*eq 21/);
   assert.equal((release.match(/AS rca_duration_column/g)??[]).length,2);
