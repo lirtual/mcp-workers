@@ -57,7 +57,7 @@ Their **later separately authorized cleanup is complete**:
 | Worker | Cleanup production receipt | Active version | Removed **Cloudflare runtime** binding(s) |
 | --- | --- | --- | --- |
 | SSH | [Publish #42222417701](https://github.com/lirtual/mcp-workers/actions/runs/42222417701) | Version 11 `0cf2a9f5-078d-4811-8f92-813037deea54` (100%) | `ENCRYPTION_KEY` |
-| Workflow（Spec #733 历史状态） | [Prepare #42225112645](https://github.com/lirtual/mcp-workers/actions/runs/42225112645), [Publish #42226359925](https://github.com/lirtual/mcp-workers/actions/runs/42226359925) | 当时 Version 141 `3883c6bf-0581-4e3a-8b58-ed8e5ec9f1ba` (100%)；当前以 #774 Version 142 为准 | `MCP_PORTAL_CLIENT_SECRET`, `SESSION_RUNTIME_DATA_KEY` |
+| Workflow（Spec #733 历史状态） | [Prepare #42225112645](https://github.com/lirtual/mcp-workers/actions/runs/42225112645), [Publish #42226359925](https://github.com/lirtual/mcp-workers/actions/runs/42226359925) | 当时 Version 141 `3883c6bf-0581-4e3a-8b58-ed8e5ec9f1ba` (100%)；Version 142 为后续历史快照，现行状态见文末 2026-11-09 回读 | `MCP_PORTAL_CLIENT_SECRET`, `SESSION_RUNTIME_DATA_KEY` |
 
 Independent Cloudflare version/settings/Secret-name inventories confirmed the old names absent and all other bindings preserved. SSH's RackNerd/CloudCone authenticated directory reads and Workflow's authenticated `workflow_list`/`workflow_get` read paths passed. Previous active versions remain retained; reverting to one is another production change requiring separate authorization.
 
@@ -180,3 +180,12 @@ PR #777 只准备隔离的 `workflow-uu-table-retirement` Job，**未授权执�
 会要求旧空表而不再有效；不要以此作为恢复手段。
 不修改 Source Secret `SESSION_RUNTIME_DATA_KEY`；它需要另行
 批准、核实无生产/恢复引用后，经正常 GitHub 管理路径删除和回读。
+
+
+### 2026-11-09 当前来源与恢复限制（覆盖上方历史阶段描述）
+
+详细证据见 [配置清单与生产绑定回读](./runtime-configuration.md#2026-11-09-配置与生产绑定最新只读核对)。
+
+- Workflow Environment 当前仅有 `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` 两项 GitHub Secret；#774 已完成 `SESSION_RUNTIME_DATA_KEY` 删除和 v21 旧 UU 表退役。上述「待删除」「Version 142 当前 100%」「PR #777 Draft/Open」均仅属其当时快照。PR #777 已于 2026-11-07 合并，#774 已关闭；Cloudflare 当前活动版本 `7b74910d-03cb-4be8-bd34-9af4146371d9`（100%，10 个绑定）。
+- 旧 Version 142 的版本化密钥绑定不等于 v21 后可执行的恢复入口，也不能用绑定名称证明原值；不得按本页历史 143→142 参数直接派发，任何恢复必须重新核对和授权。
+- Database 旧配置 `DATABASE_ACCESS_AUD`、`DATABASE_KEY_ID`、`DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN` 当前 Version 46 不使用，但旧 Cloudflare 版本仍有对应绑定，故暂保留作为旧源码恢复来源。本次不修改 GitHub 配置、Secret 原值或生产资源。
