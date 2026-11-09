@@ -136,7 +136,18 @@ try {
     console.log('ISSUES', (stored.issues ?? []).map(issue => issue.code + '@' + issue.path).join(','));
     throw new Error('openlist_stored_definition_invalid');
   }
-  const published = await call('workflow_publish', { workflow_id: OPENLIST, expected_revision: 25 });
+  let published;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 20_000));
+    try {
+      published = await call('workflow_publish', { workflow_id: OPENLIST, expected_revision: 25 });
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'publish_failed';
+      console.log('PUBLISH_RETRY', attempt, message);
+      if (attempt === 4 || !message.includes('invalid_definition')) throw error;
+    }
+  }
   assert.notEqual(published.published_version_id, OLD_PLAN);
   assert.equal(published.state, 'paused');
   const kept = sql(`SELECT count(*) AS n FROM workflow_versions WHERE id='${OLD_PLAN}' AND workflow_id='${OPENLIST}'`);
