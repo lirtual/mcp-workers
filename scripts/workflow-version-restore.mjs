@@ -105,6 +105,20 @@ export function verifyRestoreD1(row){
  }
  return true;
 }
+/** Worker 级 Triggers 才是 Version 143 与新代码共同遵守、且 versions deploy 不改写的入口。
+ * 只接受已证明为空的只读清单；未知形状或不完整分页一律拒绝。 */
+export function verifyRestoreTriggers({schedules,domains,subdomain}){
+ check(Array.isArray(schedules?.schedules)&&schedules.schedules.length===0,
+  'cron triggers still admit the Worker');
+ check(Array.isArray(domains),'worker domain inventory unavailable');
+ for(const domain of domains){
+  const service=domain?.service??domain?.worker;
+  check(typeof service==='string'&&service.length>0&&service!=='workflow-mcp-worker',
+   'custom domain still routes to the Worker');
+ }
+ check(subdomain?.enabled===false,'workers.dev ingress is not disabled');
+ return true;
+}
 export function verifyRestoreNative(response,status){
  check(['queued','running','paused','waiting','waitingForPause','rollingBack'].includes(status),'unknown native state');
  const rows=Array.isArray(response?.result)?response.result:response?.result?.instances;
@@ -152,6 +166,7 @@ async function main(){
   targetVersion:e.CANDIDATE_VERSION_ID});
  const account=e.CLOUDFLARE_ACCOUNT_ID,token=e.CLOUDFLARE_API_TOKEN;
  check(/^[a-f0-9]{32}$/.test(account??'')&&token?.length>0,'Cloudflare credentials missing');
+ const scriptPath='/workers/scripts/workflow-mcp-worker';
  const api=async(path,sql)=>{
   const response=await fetch('https://api.cloudflare.com/client/v4/accounts/'+account+path,{
    method:sql?'POST':'GET',headers:{Authorization:'Bearer '+token,
@@ -163,6 +178,16 @@ async function main(){
    'Cloudflare read-only API failed');
   return body;
  };
+ const observeTriggers=async()=>{
+  const [schedules,domains,subdomain]=await Promise.all([
+   api(scriptPath+'/schedules'),api('/workers/domains'),api(scriptPath+'/subdomain')]);
+  const info=domains.result_info;
+  check(!info||(info.count===domains.result?.length&&info.total_count===domains.result.length),
+   'worker domain inventory incomplete');
+  verifyRestoreTriggers({schedules:schedules.result,domains:domains.result,subdomain:subdomain.result});
+ };
+ // 排空观察前后各读一次。两次 GET 不能证明中间没有人重新打开 Triggers。
+ await observeTriggers();
  const q=await api('/d1/database/'+D1+'/query',restoreReadinessSql);
  check(q.result?.length===1&&q.result[0]?.success===true&&
   q.result[0]?.meta?.changes===0&&q.result[0]?.results?.length===1,
@@ -172,11 +197,11 @@ async function main(){
   const p=await api('/workflows/workflow-mcp-orchestrator/instances?status='+state+'&per_page=100');
   verifyRestoreNative(p,state);
  }
- const path='/workers/scripts/workflow-mcp-worker';
+ await observeTriggers();
  const [deploy,current,target,settings,secrets]=await Promise.all([
-  api(path+'/deployments?per_page=1'),
-  api(path+'/versions/'+e.EXPECTED_ACTIVE_VERSION),api(path+'/versions/'+TARGET),
-  api(path+'/settings'),api(path+'/secrets'),
+  api(scriptPath+'/deployments?per_page=1'),
+  api(scriptPath+'/versions/'+e.EXPECTED_ACTIVE_VERSION),api(scriptPath+'/versions/'+TARGET),
+  api(scriptPath+'/settings'),api(scriptPath+'/secrets'),
  ]);
  check(current.result?.id===e.EXPECTED_ACTIVE_VERSION,'reviewed active version changed');
  verifyRestoreVersions({current:current.result,target:target.result,

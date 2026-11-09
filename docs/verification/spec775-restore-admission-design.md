@@ -1,8 +1,8 @@
 # Spec #775：恢复准入设计与非生产验证
 
-状态：Blocked / 设计候选，不能据此执行生产恢复或合并 PR #783。
-依据：2026-11-09 本地工作树 HEAD 879fee9940fdd56bc3bf74d954e0fb80b33346b0。
-最初仅依赖用户确认的 GitHub/生产状态基线；2026-11-09 新增一次明确标记的 D1 只读历史指纹取证。Issue Open、PR Draft 仍待独立回读确认。
+状态：Blocked。已决定最小入口控制落点，仍不能执行生产恢复或合并 PR #783。
+依据：Version 143 的生产 Deployment SHA `3d033784fb56a409c741762c691b68935cf166fd`；本分支在该提交之后只改变了契约发布路径，没有改变准入谓词。
+Issue Open、PR Draft。Release YAML 修改仍未被允许。本文件不构成 Fence Pass。
 
 ## 独立门禁
 
@@ -117,8 +117,23 @@ child、Cron、Webhook、GitHub Event 相关测试共 42/42 Pass；
 - 部署/回读失败或 Unknown 时保留封锁与回执；不得用 finally 自动 Resume。
   解除封锁只能恢复原 Active 集合，并重新核对 Plan 身份。
 
-当前尚未发现上述持续封锁所需的既有控制接口，故不引入未经决定的新 D1
-状态、Migration、Cloudflare 配置或第二套锁服务。下一步应先证明现有独立入口控制
-能否同时覆盖管理请求、Cron/事件入口与目标旧版本；若不能，需对最小持久化
-Fence 的具体落点和旧版本兼容作明确设计决定，然后开展对应非生产并发测试。
-本轮的 7 项测试提供这些测试需要的真实调用切口，不解除任何合并门禁。
+## 2026-11-09 决定：入口控制落在 Worker 级 Triggers，不新增存储
+
+现有独立入口控制不能同时盖住管理请求、Cron/事件和 Version 143。
+
+- 生产 `workflow-mcp-worker` Version 143 对应 GitHub Deployment SHA `3d033784fb56a409c741762c691b68935cf166fd`。`child-capacity.ts`、`scheduled.ts`、`webhook.ts`、`github-event.ts`、`index.ts`、`wrangler.jsonc` 与该提交没有差异。
+- `pause`、`resume`、`reconcileStart` 与该提交相同。`reconcileStart` 不检查 `state='active'`，暂停后仍可能用原 instance ID 调用 `WORKFLOW.create`。此前 7 项测试复现的 Resume、新 Workflow Publish 和已有 reservation 启动，在回退后的 Version 143 上同样存在。
+- `portal_connection_auth`、`http_connection_auth` 和 `cloudflare_action_gate` 只约束各自的外部调用，不拦截 Run 创建、Resume 或 Publish。Release job 的 concurrency 只序列化发布。
+- 只在新源码增加判断，回退到 Version 143 后不再执行。因此不新增 D1 状态、Migration 或第二套锁。
+
+两个版本都会执行、且 `wrangler versions deploy` 不会改写的入口，是 Worker 级 Triggers。Cloudflare 文档规定：`wrangler deploy` 按配置替换 Cron；routes、自定义域名和 Cron 的变更要通过 `triggers deploy`。本仓库发布步骤使用 `wrangler deploy`，恢复步骤使用 `wrangler versions deploy`，两者都没有 `triggers deploy`。所以一次代码发布会按当前 `wrangler.jsonc` 重新装上 `* * * * *` 和 `workflow.lirtual.dpdns.org`，随后的版本回退不会把已移除的 Triggers 装回去，也不会在它们仍存在时移除它们。
+
+只读门禁因此在排空观察前后各读取一次：
+
+- `GET /workers/scripts/workflow-mcp-worker/schedules`：`schedules` 必须为数组且为空。
+- `GET /workers/domains`：单页完整，且没有任何 `service` 为本 Worker 的域名。
+- `GET /workers/scripts/workflow-mcp-worker/subdomain`：`enabled` 必须为 `false`。
+
+未知形状、不完整分页或任一入口仍打开，都拒绝。这是否定当前打开入口的证据，不是全程封锁证明：两次 GET 之间仍可能有人重新打开 Triggers；当前 Release 文件也没有移除 Triggers 的步骤，且该文件修改仍被拒绝。在该步骤以可审计方式存在，并证明 `versions deploy` 不会恢复 Triggers 之前，恢复不能通过。
+
+尚未覆盖、不能算作 Pass 的残余：账号内其他 zone route、边缘已经接受的请求，以及排空完成前 Native Workflow 对 Worker 的回调。`remote-control-mcp-worker` 的 `SessionAuthorization` 绑定不创建 Run。三项 Release 集成测试继续失败，不跳过。

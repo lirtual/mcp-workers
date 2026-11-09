@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {DatabaseSync} from 'node:sqlite';
+import {fileURLToPath} from 'node:url';
 import {REVIEWED_HISTORICAL_RUN_IDS} from './legacy-secret-cleanup.mjs';
-import {verifyRestoreRequest,verifyRestoreVersions,verifyRestoreD1,verifyRestoreNative,restoreReadinessSql} from './workflow-version-restore.mjs';
+import {verifyRestoreRequest,verifyRestoreVersions,verifyRestoreD1,verifyRestoreNative,verifyRestoreTriggers,restoreReadinessSql} from './workflow-version-restore.mjs';
 
 const baseline='3f27e9ca-790c-4ec9-914e-cb4204a736e6';
 const candidate='11111111-2222-4333-8444-555555555555';
@@ -248,4 +250,60 @@ test('Only historical Version143 and new code-only restore share existing Releas
   const script=readFileSync(new URL('./workflow-version-restore.mjs',import.meta.url),'utf8');
   assert.doesNotMatch(script,/method:\s*['"](?:PUT|PATCH|DELETE)['"]/);
   assert.doesNotMatch(script,/wrangler versions deploy|wrangler deploy/);
+});
+
+const closedTriggers=()=>({
+  schedules:{schedules:[]},
+  domains:[{service:'cloudflare-actions',hostname:'actions.example'}],
+  subdomain:{enabled:false},
+});
+test('trigger fence accepts only an empty Worker ingress inventory',()=>{
+  assert.equal(verifyRestoreTriggers(closedTriggers()),true);
+  for(const edit of [
+    d=>{d.schedules.schedules.push({cron:'* * * * *'});},
+    d=>{d.schedules.schedules=undefined;},
+    d=>{d.domains.push({service:'workflow-mcp-worker',hostname:'workflow.lirtual.dpdns.org'});},
+    d=>{d.domains.push({hostname:'workflow.lirtual.dpdns.org'});},
+    d=>{d.domains='unavailable';},
+    d=>{d.subdomain.enabled=true;},
+    d=>{d.subdomain={};},
+  ]){const d=closedTriggers();edit(d);assert.throws(()=>verifyRestoreTriggers(d),/restore blocked/i);}
+});
+
+// 生产 Version 143 的 GitHub Deployment SHA。准入谓词必须与该提交相同，
+// 新代码里的额外判断不能在回退后继续生效。
+const version143Sha='3d033784fb56a409c741762c691b68935cf166fd';
+const repoRoot=fileURLToPath(new URL('..',import.meta.url));
+const gitShow=file=>execFileSync('git',['show',version143Sha+':'+file],{cwd:repoRoot,encoding:'utf8'});
+test('Version 143 admission predicates match the code that would run after rollback',()=>{
+  for(const file of [
+    'apps/workflow-mcp-worker/src/child-capacity.ts',
+    'apps/workflow-mcp-worker/src/scheduled.ts',
+    'apps/workflow-mcp-worker/src/webhook.ts',
+    'apps/workflow-mcp-worker/src/github-event.ts',
+    'apps/workflow-mcp-worker/src/index.ts',
+    'apps/workflow-mcp-worker/wrangler.jsonc',
+  ])assert.equal(gitShow(file),readFileSync(new URL('../'+file,import.meta.url),'utf8'),file);
+  const oldStore=gitShow('apps/workflow-mcp-worker/src/store.ts');
+  const newStore=readFileSync(new URL('../apps/workflow-mcp-worker/src/store.ts',import.meta.url),'utf8');
+  const slice=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
+  for(const [start,end] of [
+    ["async pause(workflow_id:string)","async resume(workflow_id:string)"],
+    ["async resume(workflow_id:string)","/** Non-destructive tombstone"],
+    ['private async reconcileStart(row:RunRow)','private async settleNativeOutcome'],
+  ])assert.equal(slice(oldStore,start,end),slice(newStore,start,end),start);
+  const reconcile=slice(newStore,'private async reconcileStart(row:RunRow)','private async settleNativeOutcome');
+  assert.match(reconcile,/WORKFLOW\.create/);
+  assert.doesNotMatch(reconcile,/state='active'/);
+});
+
+test('current Release publish reapplies triggers and version rollback does not remove them',()=>{
+  const yaml=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  const publish=yaml.slice(yaml.indexOf('  deploy:'),yaml.indexOf('  legacy-secret-cleanup:'));
+  const restore=yaml.split('  legacy-secret-cleanup:')[1];
+  assert.match(publish,/pnpm exec wrangler deploy /);
+  assert.match(restore,/pnpm exec wrangler versions deploy /);
+  assert.doesNotMatch(yaml,/wrangler triggers deploy/);
+  const script=readFileSync(new URL('./workflow-version-restore.mjs',import.meta.url),'utf8');
+  assert.equal(script.match(/await observeTriggers\(\)/g)?.length,2);
 });
