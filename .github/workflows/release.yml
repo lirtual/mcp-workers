@@ -790,7 +790,7 @@ jobs:
           ") | node scripts/workflow-terminal-run-exception.mjs
 
       # A code-only deployment must have precisely the reviewed schema on disk;
-      # the following remote read-only gate checks all nineteen applied migrations.
+      # the following remote read-only gate checks all twenty-one applied migrations.
       - name: Require complete Workflow code-only migration inventory
         if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only == true
         shell: bash
@@ -847,6 +847,7 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
               (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
+              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
               (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
@@ -963,6 +964,7 @@ jobs:
               (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
               (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
               (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
+              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
               (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
