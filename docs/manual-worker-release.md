@@ -188,4 +188,4 @@ PR #777 只准备隔离的 `workflow-uu-table-retirement` Job，**未授权执�
 
 - Workflow Environment 当前仅有 `MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` 两项 GitHub Secret；#774 已完成 `SESSION_RUNTIME_DATA_KEY` 删除和 v21 旧 UU 表退役。上述「待删除」「Version 142 当前 100%」「PR #777 Draft/Open」均仅属其当时快照。PR #777 已于 2026-11-07 合并，#774 已关闭；Cloudflare 当前活动版本 `7b74910d-03cb-4be8-bd34-9af4146371d9`（100%，10 个绑定）。
 - 旧 Version 142 的版本化密钥绑定不等于 v21 后可执行的恢复入口，也不能用绑定名称证明原值；不得按本页历史 143→142 参数直接派发，任何恢复必须重新核对和授权。
-- Database 旧配置 `DATABASE_ACCESS_AUD`、`DATABASE_KEY_ID`、`DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN` 当前 Version 46 不使用，但旧 Cloudflare 版本仍有对应绑定，故暂保留作为旧源码恢复来源。本次不修改 GitHub 配置、Secret 原值或生产资源。
+- Database 的四项旧 Environment 配置 `DATABASE_ACCESS_AUD`、`DATABASE_KEY_ID`、`DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN` 已于 2026-11-09 经单独授权逐项删除、独立回读；Environment 现为 0 Variables / 0 Secrets，当前 Version 46 正常保持 100%。旧 Cloudflare 版本仍可能有历史绑定，但不再维护旧发布/恢复兼容；不得将其作为现行回滚方案。Repository 正式发布来源、Secret 原值、生产 Worker 和 D1 未更改。
