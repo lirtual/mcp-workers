@@ -187,6 +187,8 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         !!find("WORKFLOW_MCP_PORTAL_ENDPOINT", "plain_text") &&
         !!find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE", "plain_text"),
         "Workflow code-only release blocked until renamed binding cutover");
+      invariant(find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE", "plain_text")?.text ===
+        "workflow-github-action", "Workflow code-only Action OIDC audience drift");
     }
     const d1 = find("DB", "d1");
     const liveD1=d1?.id || d1?.database_id;
