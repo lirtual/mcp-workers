@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
+import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 import { registerPending, lookupPending, verifyRegistration, checkRevokedIdentity, type PendingDevice } from "../src/v2-pairing.ts";
 

@@ -35,19 +35,23 @@ function requiresAllApps(file) {
 export function selectAffectedApps(changedFiles) {
   if (changedFiles.some(requiresAllApps)) return [...APPLICATIONS];
   return APPLICATIONS.filter(app => changedFiles.some(file =>
-    file.startsWith(`apps/${app}/`) || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/'))) || (app === 'remote-control-mcp-worker' && file === 'scripts/stage-public-remote-control-agent.sh')));
+    file.startsWith(`apps/${app}/`) || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/')))));
 }
 
 export function selectionDetails(changedFiles) {
   const apps = selectAffectedApps(changedFiles);
   const checkAll = changedFiles.some(requiresAllApps);
   const remoteControlChanged = checkAll || changedFiles.some(file =>
-    file.startsWith('apps/remote-control-agent/') || file.startsWith('apps/remote-control-mcp-worker/') || file === 'scripts/stage-public-remote-control-agent.sh');
+    file.startsWith('apps/remote-control-mcp-worker/'));
+  // Five-platform native builds follow nested Agent source only, not every Worker edit.
+  const agentNativeChanged = changedFiles.some(file =>
+    file.startsWith('apps/remote-control-mcp-worker/agent/'));
   return {
     apps,
     databaseChanged: apps.includes('database-mcp-worker'),
     portalAuthChanged: changedFiles.some(file => file.startsWith('packages/portal-auth/')),
     remoteControlChanged,
+    agentNativeChanged,
   };
 }
 
@@ -109,6 +113,7 @@ function main(env = process.env) {
       `portal_auth_changed=${details.portalAuthChanged}`,
       `database_changed=${details.databaseChanged}`,
       `remote_control_changed=${details.remoteControlChanged}`,
+      `agent_native_changed=${details.agentNativeChanged}`,
     ].join('\n') + '\n');
   }
   process.stdout.write(selected.length ? `Selected applications: ${selected.join(' ')}\n` : 'No application checks are required for this change set.\n');

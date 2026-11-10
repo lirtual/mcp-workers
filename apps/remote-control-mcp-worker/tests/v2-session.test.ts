@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { newEnrollment } from "../../remote-control-agent/src/v2-enrollment.ts";
-import { signedSessionProof } from "../../remote-control-agent/src/v2-session-client.ts";
+import { newEnrollment } from "../agent/src/v2-enrollment.ts";
+import { signedSessionProof } from "../agent/src/v2-session-client.ts";
 import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof } from "../src/v2-session.ts";
 
 interface MockStore {

@@ -3,12 +3,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
-import { assertRemoteRevocation } from "../../remote-control-agent/src/v2-repair.ts";
-import { beginDeviceEnrollment, PendingIdentityConflictError } from "../../remote-control-agent/src/pair-device.ts";
-import { recoverDeviceId } from "../../remote-control-agent/src/v2-session-client.ts";
+import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
+import { assertRemoteRevocation } from "../agent/src/v2-repair.ts";
+import { beginDeviceEnrollment, PendingIdentityConflictError } from "../agent/src/pair-device.ts";
+import { recoverDeviceId } from "../agent/src/v2-session-client.ts";
 // @ts-expect-error JS installer intentionally exports a test helper without a TS declaration
-import { promoteRevokedIdentity } from "../../remote-control-agent/scripts/install-v2.mjs";
+import { promoteRevokedIdentity } from "../agent/scripts/install-v2.mjs";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 interface StorageFixture {
