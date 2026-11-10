@@ -211,6 +211,17 @@ test("#660 candidate provenance requires exact pinned source and no change of pr
 });
 
 const native=process.platform==="darwin"&&["arm64","x64"].includes(process.arch)&&!!bundle;
+function nextCandidateVersion(version){
+  const match=/^v(\d+)\.(\d+)\.(\d+)(?:-[a-z0-9.-]+)?$/.exec(version);
+  if(!match) throw new Error("Unrecognized packaged candidate version");
+  return `v${match[1]}.${match[2]}.${BigInt(match[3])+1n}`;
+}
+
+test("#803 synthetic macOS upgrade target stays one patch ahead of the packaged candidate",()=>{
+  assert.equal(nextCandidateVersion("v0.0.0-ci"),"v0.0.1");
+  assert.equal(nextCandidateVersion("v0.1.52"),"v0.1.53");
+});
+
 async function fixture(t){
   const root=await mkdtemp(path.join(os.tmpdir(),"rca660-test-"));
   const home=path.join(root,"home");
@@ -280,7 +291,8 @@ test("#660 native offline install → stopped state → upgrade without restart"
   await cp(bundle,alt,{recursive:true});
   const manifestFile=path.join(alt,"bundle.json");
   const manifest=JSON.parse(await readFile(manifestFile,"utf8"));
-  manifest.version="v0.0.1-ci";
+  const nextVersion=nextCandidateVersion(manifest.version);
+  manifest.version=nextVersion;
   await writeFile(manifestFile,JSON.stringify(manifest)+"\n",{mode:0o600});
   f.commands.length=0;
   const result=await localMacAction("upgrade",{...opts,bundle:alt,
@@ -288,7 +300,7 @@ test("#660 native offline install → stopped state → upgrade without restart"
       return {status:args[0]==="print"?1:0};}});
   assert.equal(result.status,"stopped_preserved");
   assert.equal(await readFile(cli,"utf8"),
-    ownerCliText(path.join(f.identity,"macos/programs","v0.0.1-ci-darwin-"+process.arch)));
+    ownerCliText(path.join(f.identity,"macos/programs",nextVersion+"-darwin-"+process.arch)));
   assert.deepEqual(f.commands,["print"],
     "intentionally stopped service may only be checked, never auto-launched");
   assert.equal((await localMacAction("status",{home:f.home,invoke:f.invoke})).local_service,
@@ -324,7 +336,7 @@ test("#660 native upgrade busy/activation failure retains identity and rolls bac
   await cp(bundle,alt,{recursive:true});
   const manifestFile=path.join(alt,"bundle.json");
   const m=JSON.parse(await readFile(manifestFile,"utf8"));
-  m.version="v0.0.1-ci";
+  m.version=nextCandidateVersion(m.version);
   await writeFile(manifestFile,JSON.stringify(m)+"\n",{mode:0o600});
   const opts={...base,bundle:alt,freezeAgent:async()=> "busy"};
   await assert.rejects(localMacAction("upgrade",opts),/Busy or uncertain/);
@@ -371,7 +383,7 @@ test("#660 native activation failure restores prior reviewed LaunchAgent and ide
   await cp(bundle,alt,{recursive:true});
   const manifestFile=path.join(alt,"bundle.json");
   const meta=JSON.parse(await readFile(manifestFile,"utf8"));
-  meta.version="v0.0.1-ci";
+  meta.version=nextCandidateVersion(meta.version);
   await writeFile(manifestFile,JSON.stringify(meta)+"\n",{mode:0o600});
   let onlineCalls=0;
   await assert.rejects(localMacAction("upgrade",{
@@ -411,7 +423,7 @@ test("#660 native stale bootout blocks upgrade and restores old LaunchAgent",{
   await cp(bundle,candidate,{recursive:true});
   const manifest=path.join(candidate,"bundle.json");
   const meta=JSON.parse(await readFile(manifest,"utf8"));
-  meta.version="v0.0.1-ci";
+  meta.version=nextCandidateVersion(meta.version);
   await writeFile(manifest,JSON.stringify(meta)+"\n",{mode:0o600});
   await assert.rejects(localMacAction("upgrade",{
     ...first,bundle:candidate,freezeAgent:async()=> "ready",
@@ -446,7 +458,7 @@ test("#660 native unreconciled new deregistration preserves switch journal",{
   await cp(bundle,candidate,{recursive:true});
   const manifest=path.join(candidate,"bundle.json");
   const meta=JSON.parse(await readFile(manifest,"utf8"));
-  meta.version="v0.0.1-ci";
+  meta.version=nextCandidateVersion(meta.version);
   await writeFile(manifest,JSON.stringify(meta)+"\n",{mode:0o600});
   await assert.rejects(localMacAction("upgrade",{
     ...first,bundle:candidate,freezeAgent:async()=> "ready",
