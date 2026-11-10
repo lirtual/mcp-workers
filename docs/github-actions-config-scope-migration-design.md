@@ -75,3 +75,29 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 ## Spec #849 实施阶段记录
 
 本次仅在隔离实施分支修改工作流、现有契约测试和当前运维文档；合并前必须完成 Secret 原值安全迁移及无 Environment 来源验证。暂未改变 GitHub Secrets/Variables/Environments、Cloudflare 或生产发布。后续验收须用独立真实回执更新此处，不能提前标记来源与删除为 Pass。
+
+
+## 2026-11-10 一次性 Secret 迁移链路可行性复核（只读）
+
+**结论：配置清单与代码预检 Pass；真实 Secret 的安全搬运、允许写入和独立原字节核验均为 Blocked/Not proven。不能开始 Repository Secret 写入或 Environment 删除。** 该结论不会因 PR #850 的 CI 通过而改变。
+
+### 核实过的前提
+
+- Repository 当前仍是 4 Variables / 4 Secrets / 10 Environments，新增目标为 2 Variables / 6 Secrets，全部旧来源存在且目标无同名冲突；另外五个 Environment 没有变量或密钥。
+- 2 个 Variable 可通过 GitHub API 获取原始 UTF-8 文本，分别有 32 和 39 个 UTF-8 字节；只读检查**未输出其值**，未来写入后仍需严格比较原值。
+- 6 个 GitHub Environment Secret 仅可获取名称和元数据，**无法通过 GitHub REST API 获取旧明文或密文**。Repository 公钥可以读取，说明可以生成供官方写入端点使用的加密载荷，**不证明**读取旧值、写入获准或写入结果原字节相同。
+- 当前 Actions 排队、运行、等待审批和 pending 均为 0。main 未启用分支保护/Ruleset；Repository 默认 GITHUB_TOKEN 为 read。现有 PR #850 仍是 Draft，CI 全部通过，且普通 Push 只触发 CI。远端当前共 497 个分支引用，非 main 496 个，删除之前仍需分类旧工作流可达性。
+- 先前 Spec #733 的同类受保护 Runner 加密移交曾在后续管理员 GitHub Secret 写入阶段遭平台安全拒绝，不能据此声称此路径已被允许；历史的一次性辅助入口也已退役。
+- 本轮尝试用**完全虚构的测试字符串**调用 GitHub CLI 仅生成加密输出（无 Settings 写入），执行请求仍遭平台安全检查拒绝。此检查记为 **Blocked，未执行**，绝不改用其他工具、账号、参数包装重试绕过。
+
+### 最小必要的候选方案（仅设计，未获可执行证据）
+
+1. **旧来源**：若平台正式允许，一次性受控 Runner 绑定原 Environment，在内存中读取指定的一个旧 Secret；不得输出明文、摘要、命令行参数、Runner job output、普通文件或可还原密钥材料。旧值仅可交给明确批准的安全加密/写入通道。原 Environment 及其 Secret 暂不修改。
+2. **写入目标**：官方 GitHub Repository Secret 写入端点使用 Repository 公钥密文与 Key ID，必须具有明确 Settings 写入授权和平台许可；写入结果 Unknown 时只读消歧，不能重复盲写。此前平台拒绝仍有效，不以换工具或执行身份处理。
+3. **独立验证**：旧 Env 来源和**不绑定任何 Environment** 的新 Repo 来源必须独立获取原值。可供审核的候选方式是将两个来源分别加密给同一受信任验证方的一次性公钥，由只在受信任验证方内存中保存私钥的进程解密、按长度及完整 UTF-8 字节精确比较，仅输出指定名称的 Pass/Fail。临时传递仅允许短保留的密文，绝不包含解密私钥、明文或哈希；验证后销毁临时材料。此双来源方案的凭据注入、密文来源真实性、工件权限和过期清理必须在真实运行前逐项评估。
+4. **逐项准入**：先验证最小模拟用例（多行、尾随换行、空格、不同字节失败的负向断言），再在获批情况下逐个迁移真实 6 项。只有经过真实旧值与真实新值独立比较的项才能记 **Byte equality: Pass**；元数据、加密成功、HTTP 响应或功能 Smoke 一律不替代。
+5. **最后清理**：6 项全部 Pass、2 Variables 原值 Pass、当前无 Environment 的生产消费者只读验证通过且历史分支再建风险处置完成后，另外授权删除 10 个 Environment；直到那时保留旧来源。禁止通过先删旧值来规避同名遮蔽。
+
+**未解决的实际阻断**：目前既没有确认可用的平台允许原 Secret 原值搬运/写入路径，也没有可运行的独立旧/新字节核验入口。为避免添加不能执行、长期留在 main 的敏感迁移 Workflow，本轮**不创建一次性 Workflow、不编写真实密钥迁移程序、不存储加密工件**。待可执行路径被平台明确允许后，采用最少的临时工作流和本地验证步骤；成功之后连同临时入口一起撤销。无法验证时保持现状，并向 Owner 交接具体阻断，而不是提前合并、删除或声称完成迁移。
+
+技术事实参考：GitHub [Secret 层级覆盖](https://docs.github.com/en/actions/reference/security/secrets)、[GitHub REST Secret API](https://docs.github.com/en/rest/actions/secrets) 以及 [Actions Secret 传递限制](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)。
