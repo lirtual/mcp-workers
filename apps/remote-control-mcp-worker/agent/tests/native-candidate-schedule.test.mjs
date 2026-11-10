@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -63,22 +65,63 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
     BEFORE_SHA: 'abc',
   });
   assert.equal(selectionDetails(placeholder.changedFiles).agentNativeChanged, false);
+  assert.ok(placeholder.selected.includes('ssh-mcp-worker'));
 
-  const workerOnlyPush = selectionForEvent({
-    EVENT_NAME: 'push',
-    MANUAL_REF: 'refs/heads/main',
-    BEFORE_SHA: '04dd234f4d8b59041f8a0c90a6e114dd3bb50eb7',
-    GITHUB_SHA: 'c61d6c1227582e74c0c55059b5a73c8c762adb03',
-  });
-  assert.equal(selectionDetails(workerOnlyPush.changedFiles).agentNativeChanged, false);
-  assert.ok(workerOnlyPush.changedFiles.includes('apps/remote-control-mcp-worker/src/worker.ts') === false);
-  assert.ok(workerOnlyPush.changedFiles.some((file) => file.startsWith('apps/remote-control-mcp-worker/')));
+  const history = temporaryPushHistory();
+  const previous = process.cwd();
+  try {
+    process.chdir(history.dir);
+    const workerOnlyPush = selectionForEvent({
+      EVENT_NAME: 'push',
+      MANUAL_REF: 'refs/heads/main',
+      BEFORE_SHA: history.base,
+      GITHUB_SHA: history.worker,
+    });
+    assert.deepEqual(workerOnlyPush.changedFiles, ['apps/remote-control-mcp-worker/src/worker.ts']);
+    assert.equal(selectionDetails(workerOnlyPush.changedFiles).agentNativeChanged, false);
+    assert.ok(workerOnlyPush.selected.includes('remote-control-mcp-worker'));
+    assert.ok(workerOnlyPush.selected.includes('ssh-mcp-worker'));
 
-  const agentPush = selectionForEvent({
-    EVENT_NAME: 'push',
-    MANUAL_REF: 'refs/heads/main',
-    BEFORE_SHA: '56faa70e4b9824c5f71d8d9835af63ec162de47e',
-    GITHUB_SHA: '04dd234f4d8b59041f8a0c90a6e114dd3bb50eb7',
-  });
-  assert.equal(selectionDetails(agentPush.changedFiles).agentNativeChanged, true);
+    const agentPush = selectionForEvent({
+      EVENT_NAME: 'push',
+      MANUAL_REF: 'refs/heads/main',
+      BEFORE_SHA: history.worker,
+      GITHUB_SHA: history.agent,
+    });
+    assert.deepEqual(agentPush.changedFiles, ['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+    assert.equal(selectionDetails(agentPush.changedFiles).agentNativeChanged, true);
+  } finally {
+    process.chdir(previous);
+    rmSync(history.dir, { recursive: true, force: true });
+  }
 });
+
+function temporaryPushHistory() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'rca-native-schedule-'));
+  const git = (args) => execFileSync('git', args, {
+    cwd: dir,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'rca-test',
+      GIT_AUTHOR_EMAIL: 'rca-test@example.com',
+      GIT_COMMITTER_NAME: 'rca-test',
+      GIT_COMMITTER_EMAIL: 'rca-test@example.com',
+    },
+  });
+  git(['init', '-q']);
+  writeFileSync(path.join(dir, 'README'), 'base\n');
+  git(['add', 'README']);
+  git(['commit', '-q', '-m', 'base']);
+  const base = git(['rev-parse', 'HEAD']).toString().trim();
+  mkdirSync(path.join(dir, 'apps/remote-control-mcp-worker/src'), { recursive: true });
+  writeFileSync(path.join(dir, 'apps/remote-control-mcp-worker/src/worker.ts'), 'export {}\n');
+  git(['add', 'apps/remote-control-mcp-worker/src/worker.ts']);
+  git(['commit', '-q', '-m', 'worker']);
+  const worker = git(['rev-parse', 'HEAD']).toString().trim();
+  mkdirSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/src'), { recursive: true });
+  writeFileSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/src/v2-main.ts'), 'export {}\n');
+  git(['add', 'apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  git(['commit', '-q', '-m', 'agent']);
+  const agent = git(['rev-parse', 'HEAD']).toString().trim();
+  return { dir, base, worker, agent };
+}
