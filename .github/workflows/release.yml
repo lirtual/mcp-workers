@@ -931,11 +931,26 @@ jobs:
              (SELECT count(*) FROM workflows) AS workflow_count") |
             node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
 
+      # Read only: an already-applied exact migration inventory needs no D1 write.
+      # Any pending migration retains the original strict all-Workflow fence.
+      - name: Classify Workflow schema migrations without changing D1
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
+        id: workflow_schema
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "SELECT name FROM d1_migrations ORDER BY name") |
+            node scripts/workflow-release-schema-selection.mjs
+
       # Only the existing production release lock and GitHub Environment can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
       - name: Enforce original all-Workflow migration gate before any ordinary D1 writes
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true && steps.workflow_schema.outputs.apply_required == 'true'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -967,7 +982,7 @@ jobs:
             })'
 
       - name: Apply complete Workflow D1 migrations
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true && steps.workflow_schema.outputs.apply_required == 'true'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
