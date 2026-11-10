@@ -1,38 +1,30 @@
-# Spec #849 — 一次性 Repository Secret 迁移入口（候选，未启用）
+# Spec #849 — 一次性 Secret 迁移审计归档
 
-本文件只描述临时过渡工具。实际 GitHub Actions Environment → Repository 迁移仍需独立 GitHub Settings/生产敏感配置授权；提交代码、CI 通过或用户提供的模拟加密结果 **均不构成生产授权**。
+> 状态：**6/6 Secret 已迁移、真实完整字节一致性验证 Pass**。本文件是历史回执，不是可执行迁移说明。临时 Workflow 与辅助程序在本次清理变更中退役；未修改 GitHub Secrets/Variables、旧 Environment 或 Cloudflare 生产运行时。
 
-## 已验证与未验证
+## 迁移证明
 
-- 用户在其 WSL 中运行纯模拟值的 GitHub CLI `--no-store` 测试，回执为 `DUMMY_ENCRYPTION_PASS`；这证明**本机 CLI 加密可用且不写入 GitHub Secret**，不验证真实密钥流。
-- 在当前实现分支，本地基于 Node.js 标准库的 7 项合成数据测试通过：多行、尾部换行、CRLF、空白、Unicode、随机密文、故障/篡改拒绝。**尚未在 GitHub Runner 实际执行，不能据此声明真实 Secret 迁移通过**。
-- 工作流 `.github/workflows/spec849-sealed-secret.yml` 必须先经安全审阅，按 GitHub 平台要求进入 `main` 才能 `workflow_dispatch`；仅在 PR 中无法直接验证其真实 Runner 执行。该工作流允许读取真正的旧 Environment Secret，因此**合入 main 也要事先批准该敏感能力**。
-- 本项目 `main` 没有 Branch Protection / Rulesets；Repo Secret 暴露面扩大属于 Spec #849 已接受的风险，但临时工具不会获得额外的持久访问权或写入权限。
+受控执行基线：`lirtual/mcp-workers` 的 `main=56cd7de33d7810e329f071c283a431144639aaa5`，临时迁移代码来自已合并 [PR #851](https://github.com/lirtual/mcp-workers/pull/851)，合并后 CI [#42857973028](https://github.com/lirtual/mcp-workers/actions/runs/42857973028) 成功。Owner 在独立的 Settings 写入授权后，使用本地受信任 WSL 环境对每项 Secret 进行旧 Environment 来源与**无 Environment 绑定**的 Repository 来源独立加密封装，随后在本地临时私钥进程内完成完整字节比较；全过程仅记录名称、Run ID 和 Pass/Fail，不在聊天、日志或文件中保存明文、密钥哈希或可还原原值。
 
-## 协议与隔离边界
+| Secret | 旧 Environment | 旧来源 Run | 新来源 Run | 独立字节验真 |
+| --- | --- | ---: | ---: | --- |
+| `IMA_API_KEY` | `ima-mcp-worker` | [42859872080](https://github.com/lirtual/mcp-workers/actions/runs/42859872080) | [42859958103](https://github.com/lirtual/mcp-workers/actions/runs/42859958103) | **Pass** |
+| `ACTIONS_GITHUB_DISPATCH_TOKENS` | `github-actions-mcp-worker` | [42860131760](https://github.com/lirtual/mcp-workers/actions/runs/42860131760) | [42860224194](https://github.com/lirtual/mcp-workers/actions/runs/42860224194) | **Pass** |
+| `RAINDROP_ACCESS_TOKEN` | `raindrop-mcp-worker` | [42860318899](https://github.com/lirtual/mcp-workers/actions/runs/42860318899) | [42860443985](https://github.com/lirtual/mcp-workers/actions/runs/42860443985) | **Pass** |
+| `SSH_ENCRYPTION_KEY` | `ssh-mcp-worker` | [42860548395](https://github.com/lirtual/mcp-workers/actions/runs/42860548395) | [42860646083](https://github.com/lirtual/mcp-workers/actions/runs/42860646083) | **Pass** |
+| `WORKFLOW_GITHUB_DISPATCH_TOKEN` | `workflow-mcp-worker` | [42860747509](https://github.com/lirtual/mcp-workers/actions/runs/42860747509) | [42860841061](https://github.com/lirtual/mcp-workers/actions/runs/42860841061) | **Pass** |
+| `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` | `workflow-mcp-worker` | [42860940951](https://github.com/lirtual/mcp-workers/actions/runs/42860940951) | [42861037954](https://github.com/lirtual/mcp-workers/actions/runs/42861037954) | **Pass** |
 
-`scripts/spec849-migrate-local.mjs` 由仓库 Owner 在受信任 WSL 环境**手动执行**。它生成仅保存在本地进程内存中的临时 RSA-3072 密钥对，向手动工作流分别触发两次只读密文封装：
+**异常及消歧**：`IMA_API_KEY` 首次写入后本地验证流程返回工具错误。首次旧/新来源 Run [42859331765](https://github.com/lirtual/mcp-workers/actions/runs/42859331765) / [42859433520](https://github.com/lirtual/mcp-workers/actions/runs/42859433520) 均成功、Repository 目标已存在；因此**没有重新写入**，仅通过新独立临时密钥运行 `verify`，得到上述两个新来源 Run 与 `BYTE_EQUALITY_PASS`。其他 5 项在写入后立即独立 Pass。没有发生密钥轮换或生成替代原值。
 
-1. `old` 运行：绑定选定的**旧 GitHub Environment**，从 `secrets[inputs.secret_name]` 获取原值，经 AES-256-GCM + RSA-OAEP 封装，只上传一天保留期的**密文 JSON**。工作流对环境名称与密钥名使用严格映射白名单，限制 Owner+main，仅有 `contents: read`。
-2. 本地进程下载旧密文，在内存里解密；先再次核对 main SHA、源 Environment ID/Secret 元数据及 Repository 目标不存在，然后将旧原值仅通过标准输入交给官方 `gh secret set`，不写到命令行、标准输出、日志或明文临时文件。**只有用户明确以 `--mode=apply` 启动才写 Repository Secret。**
-3. `repository` 运行：**不绑定任何 Environment**，仅从 Repository 来源读取相同名字的 Secret，再封装给同一个本地临时公钥。
-4. 本地独立解密、逐字节比较两者，输出 `BYTE_EQUALITY_PASS SecretName` 或停止。比较失败时绝不删除旧 Secret；所有密文临时下载文件在完成或失败时清理。一次迁移处理六项可使用 `--secret=all`，每项顺序校验，遇到 Unknown/失败停止余项、不盲重试。
+## 2026-11-10 17:05 UTC 最终只读回读
 
-工作流本身**无 Repository Secrets 写入权限**，但经明确授权执行时可能产生常规 GitHub Environment deployment 审计记录，不发布 Cloudflare Workers，不修改 D1/Portal。
+- Repository Secrets：**10**，包括六个新增密钥与原 4 个 Secret。GitHub API 元数据存在性与本地独立完整字节比较均通过。
+- Repository Variables：**4**；`IMA_CLIENT_ID` 与 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 仍在旧 Environment，**未迁移**。
+- GitHub Environments：**10**，所有旧 Secret 仍在、更新时间与执行前基线一致；原 Secret 未删除。
+- 最终独立验真所用 12 个 Run 均已 `completed/success`，同一 `main` SHA；GitHub Actions `queued / in_progress / waiting / pending` 均为 0。
+- Cloudflare Workers、GitHub Actions 生产发布、D1/DO、Portal、Access：本轮未修改或派发。当前生产消费者仍读取旧 Environment；[PR #850](https://github.com/lirtual/mcp-workers/pull/850) 尚为 Draft。
+- 所有工作流上传的工件仅含加密密文，GitHub retention-days 为 1；本地下载副本执行结束清理。**短期密文工件可能继续留存直至自动到期**，不能称为立即删除。
+- 本清理仅撤销临时 `spec849-sealed-secret.yml` 及相关脚本/测试/CI 入口；保留历史审计文档和 GitHub Run 回执供后续核验。切换 2 个 Variables、PR #850 与 10 个 Environment 删除均属于后续独立实施范围。
 
-## 后续授权与最少接管步骤
-
-1. 独立审查并批准临时工作流入口合并 main（它有读取真实 Environment Secrets 的能力）。本阶段不合并也不派发。
-2. 合并后重新只读核验 main SHA、CI、Owner、精确 6 个旧 Secret、目标 Repository Secret 不存在、无在途相关 Release/Acceptance、GitHub Settings 写权限与实际平台准入；**再独立授权**原值复制到 Repository。
-3. 授权后，由用户在登录的 WSL 上执行（用当时已经核对的 `<EXACT_MAIN_SHA>` 替换占位符）：
-
-   ```bash
-   cd /home/ray/workspaces/mcp-workers-spec849-secret-staging
-   git fetch origin main
-   node scripts/spec849-migrate-local.mjs --mode=apply --secret=all --expected-main=<EXACT_MAIN_SHA>
-   ```
-
-   不需要粘贴 Secret 原值，也不要将密文、令牌或回执以外的敏感内容发到聊天中。若出现 `SPEC849_STOP` 或任何 Unknown，**停止**，只提供非敏感 Run ID、Secret 名称和错误类别。不要重新运行 `apply`，而是先只读核验目标与来源，必要时用 `--mode=verify`（只读，不写 Secret）逐项恢复验证。
-4. 6 项均 `BYTE_EQUALITY_PASS` 后，另外处理 2 个 Variables 的精确 UTF-8 原值迁移；之后删除临时工作流与迁移程序（撤销临时入口），再推进 PR #850 的消费者切换/CI，最后另行批准 10 个 GitHub Environments 删除。**禁止提前删旧来源**。
-
-**准入状态：合成数据单测 Pass；真实 Runner Secret 读取/安全封装、GitHub Settings 写入及旧/新字节同一性均 Not run。**
+Spec 完成标准的分项状态：**6 Secrets migrated / original bytes Pass；2 Variables pending；consumer code Draft；10 Environments intact；production release Not run。**
