@@ -1342,7 +1342,7 @@ test('Spec #804 prepublication gate rejects Access and active Worker drift witho
       teamDomain:'owner.cloudflareaccess.com',ownerEmail:'owner@example.com',
       audience:'a'.repeat(64),origin:'https://browser.lirtual.dpdns.org',
       policyId:'a9ad0c55-9533-4391-ad59-60018b264401',
-      identityProviders:['sso-id','otp-id'].sort()
+      identityProviders:['otp-id']
     }};
   assert.equal(verifyBrowserPrepublicationCandidate(candidate,{
     version_id:candidate.version_id,deployment_id:candidate.deployment_id

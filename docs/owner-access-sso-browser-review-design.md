@@ -1,5 +1,11 @@
 # Owner Access SSO and Browser Unknown Review retirement — accepted design
 
+> Historical design and 2026-11-05 acceptance: on 2026-11-10 Browser Activation
+> alone was authorized to use `lirtual@qq.com` OTP-only. The current Browser
+> release gate follows that specific updated configuration; earlier SSO+OTP
+> acceptance records remain historical, not current Browser release instructions.
+> EdgeSSH and other Access applications were not changed by this update.
+
 Status: **Design accepted 2026-11-04; production rollout and Owner-reported real-login acceptance completed 2026-11-05.** Grill With Docs decisions: Q1=A (Cloudflare account login with OTP fallback), Q2=A (all active Owner OTP entrypoints), Q3=retire Browser Owner Review rather than adding login, Q4=A (7-day rolling Unknown capacity). At design time this plan **did not authorize** production changes; the later scoped approvals, releases, and independent readbacks are recorded below.
 
 ## Current applicability (2026-11-10)

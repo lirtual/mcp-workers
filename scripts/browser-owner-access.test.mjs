@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import {collectWorkerVars,BROWSER_ACCESS_VARIABLES} from './worker-release-variables.mjs';
 
 const env={ACCESS_TEAM_DOMAIN:'lirtualzero.cloudflareaccess.com',
-  OWNER_EMAIL:'lirtual@outlook.com',
+  OWNER_EMAIL:'lirtual@qq.com',
   BROWSER_ACTIVATION_AUDIENCE:'b'.repeat(64),
   CLOUDFLARE_ACCOUNT_ID:'c'.repeat(32),CLOUDFLARE_API_TOKEN:'test-only'};
 const domain='browser.lirtual.dpdns.org/activate/verify/*';
@@ -15,7 +15,7 @@ const cf={id:'26b88b6c-81e8-4f70-93ba-8af984bd5d63',type:'cloudflare',
 const providers=[otp,cf];
 const app={id:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',type:'self_hosted',
   domain,aud:env.BROWSER_ACTIVATION_AUDIENCE,self_hosted_domains:[domain],
-  destinations:[{type:'public',uri:domain}],allowed_idps:[otp.id,cf.id],
+  destinations:[{type:'public',uri:domain}],allowed_idps:[otp.id],
   auto_redirect_to_identity:false,session_duration:'15m'};
 const policy={id:'a9ad0c55-9533-4391-ad59-60018b264401',decision:'allow',include:[{email:{email:env.OWNER_EMAIL}}],
   require:[],exclude:[]};
@@ -24,7 +24,7 @@ test('Browser staging uses global identity and only reviewed Wrangler route',asy
   const cfg=JSON.parse(readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
   assert.deepEqual(collectWorkerVars('browser-mcp-worker',env,{config:cfg}),[
     'BROWSER_ACCESS_ISSUER:https://lirtualzero.cloudflareaccess.com',
-    'BROWSER_OWNER_EMAIL:lirtual@outlook.com',
+    'BROWSER_OWNER_EMAIL:lirtual@qq.com',
     'BROWSER_ACTIVATION_ORIGIN:https://browser.lirtual.dpdns.org',
     'BROWSER_ACTIVATION_AUDIENCE:'+'b'.repeat(64)
   ]);
@@ -38,31 +38,31 @@ test('Browser staging uses global identity and only reviewed Wrangler route',asy
   await assert.rejects(verifyBrowserActivationAccessCloudflare({},()=>{throw Error('unexpected request')}),
     /cloudflare_credentials/);
 });
-test('only exact Cloudflare account-member SSO plus OTP is accepted after cutover',()=>{
-  assert.equal(verifyBrowserActivationAccess(app,[policy],providers,{BROWSER_OWNER_EMAIL:env.OWNER_EMAIL,BROWSER_ACTIVATION_AUDIENCE:env.BROWSER_ACTIVATION_AUDIENCE}),true);
-  const dual=app;
-  assert.equal(verifyBrowserActivationAccess({...app,allowed_idps:[cf.id,otp.id]},[policy],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),true);
+test('only exact reviewed QQ Owner OTP provider is accepted after cutover',()=>{
+  const actual={BROWSER_OWNER_EMAIL:env.OWNER_EMAIL,BROWSER_ACTIVATION_AUDIENCE:env.BROWSER_ACTIVATION_AUDIENCE};
+  assert.equal(verifyBrowserActivationAccess(app,[policy],providers,actual),true);
+  assert.equal(verifyBrowserActivationAccess(app,[policy],
+    [otp,{...cf,config:{restrict_to_account_members:false}}],actual),true,
+    'unused organization identity providers cannot alter the app boundary');
   for(const bad of [
     {...app,allowed_idps:[]},{...app,allowed_idps:[cf.id]},
     {...app,allowed_idps:[otp.id],auto_redirect_to_identity:true},
-    {...app,allowed_idps:[otp.id],auto_redirect_to_identity:false},
-    {...app,allowed_idps:[otp.id,otp.id],auto_redirect_to_identity:false},
+    {...app,allowed_idps:[otp.id,otp.id]},
+    {...app,allowed_idps:[otp.id,cf.id]},
     {...app,allowed_idps:[otp.id,cf.id],auto_redirect_to_identity:true},
-    {...app,allowed_idps:[otp.id,cf.id,'a9ad0c55-9533-4391-ad59-60018b264401']},
+    {...app,allowed_idps:[otp.id,'00000000-0000-4000-8000-000000000000']},
     {...app,aud:'other'},
     {...app,domain:'browser.lirtual.dpdns.org/*'},
     {...app,session_duration:'24h'},
     {...app,destinations:[{type:'public',uri:domain,overrides:[{}]}]}
-  ])assert.throws(()=>verifyBrowserActivationAccess(bad,[policy],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}));
-  assert.throws(()=>verifyBrowserActivationAccess(dual,[policy],
-    [otp,{...cf,config:{restrict_to_account_members:false}}],{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/idp_scope/);
-  assert.throws(()=>verifyBrowserActivationAccess(dual,[policy],
-    [otp,{...cf,config:{}}],{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/idp_scope/);
-  assert.throws(()=>verifyBrowserActivationAccess(dual,[{
-    ...policy,include:[{email:{email:'other@example.com'}}]}],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/policy_identity/);
-  assert.throws(()=>verifyBrowserActivationAccess(dual,[{
-    ...policy,include:[{everyone:{}}]}],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/policy_identity/);
-  assert.throws(()=>verifyBrowserActivationAccess(dual,[policy,policy],providers,{...env,BROWSER_OWNER_EMAIL:env.OWNER_EMAIL}),/policy_count/);
+  ])assert.throws(()=>verifyBrowserActivationAccess(bad,[policy],providers,actual));
+  assert.throws(()=>verifyBrowserActivationAccess(app,[policy],
+    [otp,{...otp,id:'00000000-0000-4000-8000-000000000000'},cf],actual),/otp_provider/);
+  assert.throws(()=>verifyBrowserActivationAccess(app,[{...policy,
+    include:[{email:{email:'other@example.com'}}]}],providers,actual),/policy_identity/);
+  assert.throws(()=>verifyBrowserActivationAccess(app,[{...policy,
+    include:[{everyone:{}}]}],providers,actual),/policy_identity/);
+  assert.throws(()=>verifyBrowserActivationAccess(app,[policy,policy],providers,actual),/policy_count/);
 });
 const inventoryInfo=result=>({page:1,per_page:100,count:result.length,total_count:result.length,total_pages:1});
 const mockedResponse=(result,info=Array.isArray(result)?inventoryInfo(result):undefined)=>({
@@ -147,7 +147,7 @@ test('Spec #804 discovers Browser identity from the Zero Trust organization and 
     teamDomain:env.ACCESS_TEAM_DOMAIN,ownerEmail:env.OWNER_EMAIL,
     audience:app.aud,origin:'https://browser.lirtual.dpdns.org',
     policyId:'a9ad0c55-9533-4391-ad59-60018b264401',
-    identityProviders:[cf.id,otp.id].sort(),
+    identityProviders:[otp.id],
   });
   assert.equal(urls.filter(url=>url.endsWith('/access/organizations')).length,1);
   assert.ok(urls.every(url=>url.includes('/accounts/'+env.CLOUDFLARE_ACCOUNT_ID+'/access/')));
@@ -172,14 +172,14 @@ test('Spec #804 fails closed on Organization, Audience, policy, provider or cand
       {...initial,[key]:'changed'}),/identity_drift/);
   }
   await assert.rejects(async()=>verifyBrowserIdentityContinuity(initial,
-    {...initial,identityProviders:[otp.id]}),/identity_drift/);
+    {...initial,identityProviders:[cf.id]}),/identity_drift/);
   const rejects=[
     [url=>url.includes('/access/organizations'),{auth_domain:'other.cloudflareaccess.com'},/organization_identity|identity_drift/],
     [url=>url.includes('/access/organizations'),{auth_domain:'https://owner.cloudflareaccess.com'},/organization_identity/],
     [url=>url.includes('/access/apps/')&&!url.includes('/policies?'),{...app,aud:'wrong'},/app_audience/],
     [url=>url.includes('/access/apps/')&&!url.includes('/policies?'),{...app,domain:'browser.lirtual.dpdns.org/*'},/app_identity/],
     [url=>url.includes('/policies?'),[{...policy,id:'00000000-0000-4000-8000-000000000000'}],/policy_identity/],
-    [url=>url.includes('/identity_providers'),[otp,{...cf,config:{restrict_to_account_members:false}}],/idp_scope/],
+    [url=>url.includes('/identity_providers'),[{...otp,id:'00000000-0000-4000-8000-000000000000'},cf],/otp_provider/],
   ];
   for(const [match,replacement,code] of rejects){
     const overridden=async url=>match(url)?mockedResponse(replacement):valid(url);
