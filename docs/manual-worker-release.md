@@ -68,11 +68,12 @@ successfully published Browser Version `bd556e57-2c60-4fca-840c-e3091339abba`
 to 100%; its identity bindings and existing Portal were independently
 read back. Live physical Owner SSO/OTP and same-Profile activation remain
 **Not performed** while browser Profiles are offline, not silently Pass.
-The old GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment
-`BROWSER_ACTIVATION_AUDIENCE` still exist; current executable release
-workflows do not consume them. Their deletion requires **separate explicit
-authorization** and negative-inventory readback. Keep the active runtime
-bindings and Secrets; do not repurpose Access apps.
+The former GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment
+`BROWSER_ACTIVATION_AUDIENCE` were separately authorized for deletion
+on 2026-11-10; each is now absent under independently verified HTTP 404
+readback. Current release workflows derive the same runtime identity from
+Cloudflare. Preserve `OWNER_EMAIL`, the active runtime identity bindings,
+all Secrets and the reviewed Access Application; do not repurpose Access apps.
 
 ### Spec #733 first migration and post-cleanup
 

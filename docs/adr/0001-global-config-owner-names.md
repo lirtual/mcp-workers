@@ -21,8 +21,10 @@ This **narrowly supersedes** the opening #733 identity-source decision for
 Browser's executable release code only. It does not alter the historical
 #733 migration evidence or Database's independent #760 contract. The authorized [production Release #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
 completed on 2026-11-10, with independent 100% active-version and identity
-binding readback. The old GitHub source entries remain present pending their
-separately authorized deletion; they are not used by current release code.
+binding readback. The old Repository `ACCESS_TEAM_DOMAIN` and Browser Environment
+`BROWSER_ACTIVATION_AUDIENCE` sources were subsequently deleted under
+separate authorization on 2026-11-10, with independent HTTP 404 readbacks;
+current release code never consumes those old sources.
 Physical Owner same-Profile activation has not yet been retested.
 No new Access application, global policy, gateway or authentication method
 is introduced. SSH and MCP/Portal keep separate authentication boundaries.
