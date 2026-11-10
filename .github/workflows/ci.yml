@@ -43,6 +43,7 @@ jobs:
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
       remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
+      agent_native_changed: ${{ steps.scope.outputs.agent_native_changed }}
       canonical_access_team_domain: ${{ steps.canonical_owner.outputs.team }}
       canonical_owner_email: ${{ steps.canonical_owner.outputs.email }}
     steps:
@@ -125,6 +126,10 @@ jobs:
         if: steps.scope.outputs.apps != ''
         run: node --test scripts/select-affected-apps.test.mjs
 
+      - name: Verify five-platform native candidate schedule
+        if: steps.scope.outputs.apps != ''
+        run: node --test apps/remote-control-mcp-worker/agent/tests/native-candidate-schedule.test.mjs apps/remote-control-mcp-worker/agent/tests/release-publication-guard.test.mjs
+
       - name: Install workspace
         if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -149,6 +154,16 @@ jobs:
             pnpm --filter "$app" check
             echo "::endgroup::"
           done
+
+  agent-native-candidates:
+    name: Five-platform native candidates
+    needs: checks
+    if: needs.checks.outputs.agent_native_changed == 'true'
+    uses: ./.github/workflows/agent-native-candidates.yml
+    with:
+      candidate_tag: v0.0.0-ci
+    permissions:
+      contents: read
 
   database-integration:
     name: Database integration

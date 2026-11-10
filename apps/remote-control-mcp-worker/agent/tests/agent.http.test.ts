@@ -67,9 +67,9 @@ test("agent package does not depend on Desktop Commander or an MCP client", asyn
   assert.equal(dependencies["@wonderwhy-er/desktop-commander"], undefined);
   assert.equal(dependencies["@modelcontextprotocol/client"], undefined);
 
-  const lockfile = await readFile(new URL("../../../pnpm-lock.yaml", import.meta.url), "utf8");
+  const lockfile = await readFile(new URL("../../../../pnpm-lock.yaml", import.meta.url), "utf8");
   assert.equal(lockfile.includes("@wonderwhy-er/desktop-commander"), false);
-  const marker = "\n  apps/remote-control-agent:\n";
+  const marker = "\n  apps/remote-control-mcp-worker/agent:\n";
   const start = lockfile.indexOf(marker);
   assert.notEqual(start, -1);
   const rest = lockfile.slice(start + 1);

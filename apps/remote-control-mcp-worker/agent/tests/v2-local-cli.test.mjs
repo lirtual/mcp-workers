@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { installManagerLauncher, preflightManagerLauncher, assertRepeatInstallSameVersion, printPortableCliHint } from "../scripts/install-v2.mjs";
 
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const packageRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function fixture() {
   const home=await mkdtemp(path.join(os.tmpdir(),"rc-cli-lab-"));
@@ -133,7 +133,7 @@ test("untrusted user-local bin symlink blocks new launcher",async()=>{
 });
 
 test("#76 interrupted verified-download staging cleanup preserves identities and refuses hostile entries",()=>{
-  const bootstrap=path.join(root,"apps/remote-control-agent/scripts/bootstrap-v2.py");
+  const bootstrap=path.join(packageRoot,"scripts/bootstrap-v2.py");
   const source=String.raw`import importlib.util,pathlib,tempfile,stat,sys
 spec=importlib.util.spec_from_file_location("bootstrap_v2_recovery",sys.argv[1])
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -190,7 +190,7 @@ with tempfile.TemporaryDirectory(prefix="rc-recovery-isolated-") as tmp:
 test("rca status does not create __pycache__ inside its versioned program",async()=>{
   const f=await fixture();
   try {
-    const src=path.join(root,"apps/remote-control-agent/scripts");
+    const src=path.join(packageRoot,"scripts");
     for(const name of ["manage-v2.py","bootstrap-v2.py"])
       await writeFile(path.join(f.script,name),await readFile(path.join(src,name)),{mode:0o600});
     await chmod(path.join(f.script,"manage-v2.py"),0o700);
@@ -212,7 +212,7 @@ test("rca status does not create __pycache__ inside its versioned program",async
 });
 
 test("portable installer prints a single CLI path, without promising to open the manager",async()=>{
-  const source=await readFile(path.join(root,"apps/remote-control-agent/scripts/install-v2.mjs"),"utf8");
+  const source=await readFile(path.join(packageRoot,"scripts/install-v2.mjs"),"utf8");
   assert.doesNotMatch(source,/Open Agent manager now|Open the Agent manager now:/);
   assert.doesNotMatch(source,/New Bash terminals can use rca if/);
   assert.doesNotMatch(source,/Pending 10-minute pairing code|Choose 1 = Permanent/);
