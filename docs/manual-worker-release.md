@@ -44,8 +44,8 @@ Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 O
 The selected Browser Release Worker first reads Cloudflare Zero Trust
 Organization `auth_domain` and the known, fixed Browser Activation Access
 Application `aud` with its **existing** `CLOUDFLARE_API_TOKEN`. On the
-*actual protected Release Runner*, a token missing **Access: Organizations,
-Identity Providers, and Groups Read** (or an accepted equivalent) blocks
+*actual protected Release Runner*, a token missing **Access: Organizations Read** (or an accepted equivalent),
+or the existing application/policy/identity-provider GET permissions, blocks
 before staging or publishing; another connector's permission is not evidence
 of Runner access. App/policy/IdP inventories must be complete and match the
 reviewed Browser hostname/path, Owner-only email, SSO + OTP and 15m session.
