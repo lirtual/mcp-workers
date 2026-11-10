@@ -164,9 +164,13 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
     /Worker production release is not part of Agent publication/);
   assert.throws(() => reviewAgentPublication({ ...reviewed(), releaseTag: 'v0.0.0-ci' }),
     /unreviewed native candidate/);
+  assert.throws(() => reviewAgentPublication({ ...reviewed(), releaseTag: 'v0.1.53-rc.1' }),
+    /unreviewed native candidate/);
 });
 
 test('readback stops unless the release is a complete immutable stable Latest', () => {
+  assert.throws(() => acceptAgentReleaseReadback({ ...published(), releaseTag: 'v0.1.53-rc.1' }),
+    /Release is not an immutable stable Latest/);
   const otherLatest = published();
   otherLatest.latest = { ...otherLatest.latest, tag_name: 'v0.1.51' };
   assert.throws(() => acceptAgentReleaseReadback(otherLatest),

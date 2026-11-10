@@ -1,5 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { handleAgentInstallerRequest, renderLinuxLatestInstallShell, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderLinuxLatestInstallShell } from "./install-bootstrap.ts";
 import { readLatestAgentRelease, type LatestReleaseDecision } from "./github-latest-agent-release.ts";
 import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
@@ -1152,8 +1152,7 @@ export default {
         return handleLatestMacInstallRequest(request, origin, decision);
       }
       if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin, releaseFetch);
-      return handleAgentInstallerRequest(request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,
-        origin, REVIEWED_WINDOWS_INSTALL_PIN, null, "latest");
+      return handleAgentInstallerRequest(request, origin);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

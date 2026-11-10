@@ -1,6 +1,8 @@
 # Remote Control standalone Release packaging (#73) — local-only gate
 
-**Status:** Draft implementation; no independently verified published Agent asset, no clean-host ARM64 test, no one-command installation yet. **Do not advertise a download command.**
+**Current publication (2026-11-10):** Immutable stable Latest [v0.1.52](https://github.com/lirtual/mcp-workers/releases/tag/v0.1.52) is the five-platform Agent Release on `lirtual/mcp-workers` `/releases/latest`. Public installer source selects that channel. The sections below are the historical #73 local packaging gate. They are not the current publication procedure. Do not republish `v0.1.52` to refresh this note, and do not treat it as a Worker deploy or a device upgrade.
+
+**Status (historical #73 gate):** Draft implementation at the time of that gate; no independently verified published Agent asset, no clean-host ARM64 test, and no one-command installation had been recorded yet. The "never a generated latest URL" verifier note later in this file belongs to that historical pin bootstrap.
 
 ## Reviewed offline build
 
