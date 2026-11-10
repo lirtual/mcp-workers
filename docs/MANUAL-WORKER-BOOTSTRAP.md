@@ -110,6 +110,9 @@ Repository `ACCESS_TEAM_DOMAIN` 和 Browser Environment
 各自回读 HTTP 404；不得把已退役来源重新设置为发布必需项。
 
 本次简化不改变 Owner-only 15m SSO+OTP、JWT 验证或同 Profile
-一次性证明。物理 Owner 激活 E2E 尚未独立验收，不能把发布成功或
-Endpoint 在线等同于这项证明。Database/Weixin Access 应用保留，
-任何生产退役均需另行授权。
+一次性证明。已观察到真实 SSO 登录、Owner 确认 OFF→ON 激活及在线可控的
+Edge Endpoint；这些证据不等于新的单次 Proof 消费或 Replay 拒绝物理验收。
+Owner 明确接受沿用 #531 既有真实物理测试，将本次未重跑的 Proof/Replay/
+跨 Profile 测试记为 **Waived（非 Pass）**，Spec #804 已关闭（[Spec #804 final Owner acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590)）。
+历史 Weixin Access 应用已单独授权退役并回读不存在（[separately authorized Weixin retirement](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)）；
+Database Access 仍保护整个数据库域名，需继续保留。

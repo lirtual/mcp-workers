@@ -66,8 +66,13 @@ After a variable-stage wiring fix in PR #815, the separately authorized
 [Release Worker #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
 successfully published Browser Version `bd556e57-2c60-4fca-840c-e3091339abba`
 to 100%; its identity bindings and existing Portal were independently
-read back. Live physical Owner SSO/OTP and same-Profile activation remain
-**Not performed** while browser Profiles are offline, not silently Pass.
+read back. Post-release real SSO login, Owner-confirmed OFF→ON and an online,
+control-ready Edge Endpoint were observed. They do not attest a fresh one-use
+same-Profile proof commit or replay rejection. The Owner reused #531 native
+physical evidence and explicitly classified fresh post-#804 physical
+proof/replay/cross-Profile retests as **Waived, not Pass** ([Owner-approved final acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590));
+Spec #804 is closed/completed. The historical Weixin Access app was separately
+retired ([independent Weixin retirement receipt](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)); the Database Access app remains required.
 The former GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment
 `BROWSER_ACTIVATION_AUDIENCE` were separately authorized for deletion
 on 2026-11-10; each is now absent under independently verified HTTP 404
