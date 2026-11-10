@@ -114,6 +114,57 @@ export async function resolvePinnedRelease({tag,commit,target,send=fetch}) {
   return Object.freeze({tag,commit,target,releaseId:release.id,assetId:asset.id,
     name,bytes:asset.size,digest:asset.digest.slice(7)});
 }
+/** Resolve immutable stable Latest on the owner device's bundled Node runtime.
+ * Validate five assets before download; no Cloudflare API egress dependency. */
+const CURRENT_LATEST_API="https://api.github.com/repos/lirtual/mcp-workers/releases/latest";
+const CURRENT_RELEASE_TAG=/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const CURRENT_ASSETS=[
+  ["linux-x64-glibc","tar.gz"],["linux-arm64-glibc","tar.gz"],
+  ["windows-x64","zip"],["darwin-arm64","tar.gz"],["darwin-x64","tar.gz"],
+];
+const PLATFORM_ASSET=/^remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$/;
+
+export async function resolveLatestAgentRelease({send=fetch}={}){
+  const release=await fetchJson(CURRENT_LATEST_API,send);
+  if(!release||!CURRENT_RELEASE_TAG.test(release.tag_name)||
+      release.immutable!==true||release.draft!==false||
+      release.prerelease!==false||
+      release.html_url!=="https://github.com/lirtual/mcp-workers/releases/tag/"+release.tag_name||
+      !Array.isArray(release.assets)){
+    throw Error("No valid immutable stable latest Agent Release.");
+  }
+  const tag=release.tag_name;
+  const expected=new Map(CURRENT_ASSETS.map(([target,ext])=>[
+    "remote-control-agent-"+tag+"-"+target+"."+ext,target]));
+  const selected=new Map();
+  for(const asset of release.assets){
+    if(!asset||typeof asset.name!=="string")
+      throw Error("Malformed latest Release asset.");
+    const target=expected.get(asset.name);
+    if(!target){
+      if(PLATFORM_ASSET.test(asset.name))
+        throw Error("Release mixes incompatible platform assets.");
+      continue;
+    }
+    if(selected.has(target)||asset.state!=="uploaded"||
+        !Number.isSafeInteger(asset.size)||asset.size<1024||asset.size>180_000_000||
+        typeof asset.digest!=="string"||!/^sha256:[a-f0-9]{64}$/.test(asset.digest)||
+        asset.browser_download_url!==
+          "https://github.com/lirtual/mcp-workers/releases/download/"+tag+"/"+asset.name)
+      throw Error("Invalid or duplicate immutable latest Release asset.");
+    selected.set(target,Object.freeze({
+      url:asset.browser_download_url,
+      sha256:asset.digest.slice(7),
+      size:asset.size,
+    }));
+  }
+  if(selected.size!==CURRENT_ASSETS.length)
+    throw Error("Latest Agent Release is missing a platform.");
+  return Object.freeze({
+    tag,x64:selected.get("linux-x64-glibc"),arm64:selected.get("linux-arm64-glibc"),
+  });
+}
+
 function selectedLinuxAssetUrl(url) {
   let parsed;
   try { parsed=new URL(url); }

@@ -877,7 +877,23 @@ jobs:
             Write-Output 'PUBLIC_WINDOWS_FIRST_AND_REPEAT_NON_TTY=PASS; owner approval untouched'
           } finally {
             $env:LOCALAPPDATA = $originalProfile
-            if (Test-Path -LiteralPath $profile) { Remove-Item -LiteralPath $profile -Recurse -Force }
+            if (Test-Path -LiteralPath $profile) {
+              # Windows can briefly hold the verified fixture's node.exe after
+              # the child exits. Retry only disposable RUNNER_TEMP cleanup;
+              # any persistent access denial still fails this CI gate.
+              for ($cleanupAttempt = 1; $cleanupAttempt -le 8; $cleanupAttempt++) {
+                try {
+                  Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction Stop
+                  break
+                } catch {
+                  if ($cleanupAttempt -eq 8) { throw }
+                  Start-Sleep -Milliseconds 500
+                }
+              }
+              if (Test-Path -LiteralPath $profile) {
+                throw 'Synthetic public installer profile cleanup incomplete'
+              }
+            }
           }
       - name: Assemble verifiable Windows release candidate (never publish)
         if: github.event_name == 'workflow_dispatch'

@@ -8,7 +8,7 @@ import { readFileSync, lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  resolvePinnedRelease, downloadPinnedAsset, downloadSelectedReleaseAsset,
+  resolvePinnedRelease, downloadPinnedAsset, downloadSelectedReleaseAsset, resolveLatestAgentRelease,
 } from "./verify-v2-release.mjs";
 import { inspectPinnedArchiveBytes, stageOrVerifyPinnedProgram }
   from "./bootstrap-node.mjs";
@@ -17,64 +17,16 @@ const SHA=/^[a-f0-9]{40}$/;
 const VERSION=/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const APP="apps/remote-control-agent";
 
-const SNAPSHOT_PREFIX="#!/bin/sh\n# Worker-origin Agent installer: one immutable GitHub Release snapshot\nset -eu\n";
-const STABLE=/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
-function oneAssignment(script,name,pattern){
-  const found=[...script.matchAll(new RegExp("^"+name+"='("+pattern+")'$","gm"))];
-  if(found.length!==1)throw Error("Worker installer has no unambiguous immutable Release snapshot");
-  return found[0][1];
-}
-function snapshotAsset(script,prefix,tag,target){
-  const name="remote-control-agent-"+tag+"-"+target+".tar.gz";
-  const url=oneAssignment(script,prefix+"_url",
-    "https://github\\.com/lirtual/mcp-workers/releases/download/"+
-    tag.replaceAll(".","\\.")+"/"+name.replaceAll(".","\\."));
-  const sha256=oneAssignment(script,prefix+"_sha256","[a-f0-9]{64}");
-  const size=Number(oneAssignment(script,prefix+"_size","[1-9][0-9]{3,8}"));
-  if(!Number.isSafeInteger(size)||size>180_000_000)
-    throw Error("Worker installer has no unambiguous immutable Release snapshot");
-  return Object.freeze({url,sha256,size});
-}
-/**
- * Read the one Release snapshot embedded in this device's Worker installer.
- * The shell is DATA only. There is no remote commit pin and no old repository.
- */
+/** Keep the bound Worker endpoint as an ownership check; fetch GitHub
+ * Latest directly from this device's bundled Node, once per owner upgrade. */
 export async function resolveWorkerUpgradePin(endpoint,{request=fetch}={}){
   const origin=new URL(endpoint);
   if(origin.protocol!=="https:"||origin.username||origin.password||
      origin.port||origin.search||origin.hash||origin.pathname!=="/"||
      origin.origin+"/"!==endpoint)throw Error("Untrusted installed Worker endpoint");
-  const url=origin.origin+"/install.sh";
-  const response=await request(url,{
-    method:"GET",redirect:"error",cache:"no-store",signal:AbortSignal.timeout(12000),
-  });
-  if(response.status!==200||!response.ok||response.url!==url)
-    throw Error("Reviewed Worker installer is unavailable");
-  const length=Number(response.headers.get("content-length")??"0");
-  if(!Number.isFinite(length)||length<0||length>16384)
-    throw Error("Unexpected Worker installer size");
-  const script=await response.text();
-  if(Buffer.byteLength(script,"utf8")>16384||
-     !script.startsWith(SNAPSHOT_PREFIX)||
-     !script.includes("sha256sum -c -")||
-     !script.includes('case "$(uname -m)" in')||
-     script.includes("github.com/lirtual/remote-control-agent/")||
-     script.includes('--commit "'))
-    throw Error("Unrecognized reviewed Worker installer");
-  const tag=oneAssignment(script,"tag","v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)");
-  if(!STABLE.test(tag)||
-     !/ x86_64\) target=linux-x64-glibc; expected="\$x64_sha256"; bytes="\$x64_size"; download="\$x64_url" ;;/.test(script)||
-     !/ aarch64\) target=linux-arm64-glibc; expected="\$arm64_sha256"; bytes="\$arm64_size"; download="\$arm64_url" ;;/.test(script))
-    throw Error("Worker installer has no unambiguous immutable Release snapshot");
-  const endpoints=[...script.matchAll(/--endpoint "(https:\/\/[^"\s]+\/)"/g)];
-  if(endpoints.length!==1||endpoints[0][1]!==endpoint)
-    throw Error("Worker installer has no unambiguous immutable Release snapshot");
-  return Object.freeze({
-    tag,
-    x64:snapshotAsset(script,"x64",tag,"linux-x64-glibc"),
-    arm64:snapshotAsset(script,"arm64",tag,"linux-arm64-glibc"),
-  });
+  return resolveLatestAgentRelease({send:request});
 }
+
 function normalizeUpgradePins(state,pins){
   if(pins&&pins.commit===undefined&&pins.url===undefined&&pins.x64&&pins.arm64){
     const chosen=state?.info?.target==="linux-arm64-glibc"?pins.arm64:
