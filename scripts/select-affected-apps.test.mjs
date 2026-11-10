@@ -37,6 +37,19 @@ test('a nested Agent edit selects Remote Control compatibility checks, and a Wor
   assert.equal(ssh.apps.includes('remote-control-mcp-worker'), false);
 });
 
+test('shared dependency inputs schedule native Agent CI, unlike unrelated Worker edits', () => {
+  for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
+    const selection = selectionDetails([file]);
+    assert.ok(selection.apps.includes('remote-control-mcp-worker'), file);
+    assert.equal(selection.agentNativeChanged, true, file);
+  }
+  for (const file of ['apps/ssh-mcp-worker/src/hosts.ts',
+    'apps/remote-control-mcp-worker/src/worker.ts',
+    'packages/portal-auth/src/index.ts']) {
+    assert.equal(selectionDetails([file]).agentNativeChanged, false, file);
+  }
+});
+
 test('shared package and lockfile changes select every app, including ssh-mcp-worker', () => {
   for (const file of ['packages/portal-auth/src/index.ts', 'pnpm-lock.yaml', 'scripts/worker-release-variables.mjs', 'scripts/bootstrap-worker-secrets.mjs']) {
     const selection = selectionDetails([file]);

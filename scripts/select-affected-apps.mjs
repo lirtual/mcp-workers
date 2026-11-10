@@ -53,10 +53,12 @@ export function selectionDetails(changedFiles) {
   const apps = selectAffectedApps(changedFiles);
   const checkAll = changedFiles.some(requiresAllApps);
   const remoteControlChanged = checkAll || changedFiles.some(selectsRemoteControl);
-  // Five-platform native builds follow nested Agent source only, not every Worker edit.
+  // Shared workspace and dependency inputs can change nested Agent builds.
+  // Unrelated Worker-only edits still must not schedule five native platforms.
   const agentNativeChanged = changedFiles.some(file =>
     file.startsWith('apps/remote-control-mcp-worker/agent/')
-    || file === AGENT_NATIVE_WORKFLOW);
+    || file === AGENT_NATIVE_WORKFLOW
+    || ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'].includes(file));
   return {
     apps,
     databaseChanged: apps.includes('database-mcp-worker'),
