@@ -1,0 +1,9 @@
+# ADR-0002: One Cloudflare Access email allowlist for Owner entrypoints
+
+Status: Accepted design (Grill With Docs, 2026-11-10); **not implemented or deployed**.
+
+The existing Cloudflare Access reusable `Default Allow Rule` is the canonical source of authorized Owner email addresses, rather than a second GitHub `OWNER_EMAIL` list or per-service duplicated email policies. The already-shared policy remains in place for its current applications; Browser Profile Activation and EdgeSSH are to adopt that exact reusable email Allow policy after their respective safety checks. The Browser Worker must still independently verify signed JWT issuer, audience, expiration and membership in a **release-time, fail-closed snapshot** read from that policy. The Repository `OWNER_EMAIL` Variable is retired only after separately authorized production cutover and negative readback.
+
+We chose this over separate GitHub/Cloudflare configuration (drift) and per-request Cloudflare lookups (runtime credentials, network dependence). All approved addresses have equal Owner *identity eligibility*, not a new cross-service role or a bypass of each app's other authorization. Existing application domains, IdPs (SSO plus OTP where applicable), audiences, session durations, Portal/MCP service-token and OAuth boundaries, Browser same-Profile one-use proof and EdgeSSH connections stay separately enforced. An Access-email removal revokes that user's Access sessions but **does not automatically revoke already paired Browser Endpoints or terminate independent SSH sessions**; that is an explicit existing-grant boundary, not evidence of complete immediate shutdown. Targeted revocation requires an independently authorized incident response.
+
+See [the accepted design and rollout gates](../owner-access-multi-email-design.md). Historical [ADR-0001](0001-global-config-owner-names.md) and Spec #804 remain accurate for deployed versions until the separately authorized change is published.
