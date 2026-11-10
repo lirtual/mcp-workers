@@ -5,7 +5,7 @@ import {spawnSync} from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {acceptsOwnerConfirmation,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
+import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
   "../scripts/macos-local.mjs";
 import {parsePermanentMacArgs} from "../src/macos-permanent.ts";
 const ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -151,6 +151,52 @@ test("#660 LaunchAgent plist is strictly owned, deterministic and rejects foreig
   ])assert.throws(()=>parsePlist(other,programs,ENDPOINT,"arm64"));
 });
 
+test("#809 installed v0.1.51 source commit does not authorize the next macOS download",()=>{
+  const oldCommit="03a14fd4138ca8d77fa8aced78f7a53ccc51724e";
+  const newCommit="b".repeat(40);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.51-darwin-arm64",
+    installedSourceCommit:oldCommit,
+    candidateVersion:"v0.2.0-darwin-arm64",
+    candidateSourceCommit:newCommit,
+  }),true);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.51-darwin-x64",
+    installedSourceCommit:oldCommit,
+    candidateVersion:"v0.2.0-darwin-x64",
+    candidateSourceCommit:newCommit,
+  }),true);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.51-darwin-arm64",
+    installedSourceCommit:oldCommit,
+    candidateVersion:"v0.2.0-darwin-arm64",
+    candidateSourceCommit:oldCommit,
+  }),true);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.51-darwin-arm64",
+    installedSourceCommit:oldCommit,
+    candidateVersion:"v0.1.51-darwin-arm64",
+    candidateSourceCommit:newCommit,
+  }),false);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.52-darwin-arm64",
+    installedSourceCommit:newCommit,
+    candidateVersion:"v0.1.51-darwin-arm64",
+    candidateSourceCommit:oldCommit,
+  }),false);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.51-darwin-arm64",
+    installedSourceCommit:oldCommit,
+    candidateVersion:"v0.2.0-darwin-x64",
+    candidateSourceCommit:newCommit,
+  }),false);
+  assert.equal(admitsMacOwnerUpgrade({
+    installedVersion:"v0.1.51-darwin-arm64",
+    installedSourceCommit:"03a14fd",
+    candidateVersion:"v0.2.0-darwin-arm64",
+    candidateSourceCommit:newCommit,
+  }),false);
+});
 test("#660 candidate provenance requires exact pinned source and no change of protocol",()=>{
   const meta={version:"v0.0.0-ci",target:"darwin-arm64",source_commit:"a".repeat(40),
     artifact_schema:1,device_protocol:2,receipt_schema:1,

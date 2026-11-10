@@ -130,9 +130,9 @@ export type MacInstallPin = Readonly<{
   // Deliberate opt-in only after a separately reviewed immutable Agent Release.
   remoteUpgradeMode?: "detached-launchd-v1";
 }>;
-// Independently verified immutable v0.1.51 Agent Release for all three installer routes.
-// The detached launchd one-shot path is explicitly authorized by the Mac owner,
-// not an automatic upgrade or new pairing. This source change does not deploy Worker.
+// Historical immutable v0.1.51 macOS pin kept for evidence and pin-renderer tests.
+// The public /install-macos.sh route resolves one current-repository latest Release
+// instead of this commit. Linux and Windows routes still use their own pins.
 export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
   tag: "v0.1.51",
   commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
@@ -322,6 +322,7 @@ export function handleAgentInstallerRequest(
   trustedOrigin?: string,
   windowsPin: WindowsInstallPin | null = null,
   macosPin: MacInstallPin | null = null,
+  macosChannel: "pin" | "latest" = "pin",
 ): Response {
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
@@ -341,11 +342,13 @@ export function handleAgentInstallerRequest(
   if (u.pathname === "/") {
     return new Response(renderInstallHome({linux:!!release && validPin(release),
       windows:!!windowsPin && validWindowsPin(windowsPin),
-      macos:!!macosPin && validMacPin(macosPin)}), {status:200, headers:{...headers,
+      macos:macosChannel === "latest" || (!!macosPin && validMacPin(macosPin))}), {status:200, headers:{...headers,
       "content-type":"text/html; charset=utf-8", "x-frame-options":"DENY",
       "referrer-policy":"no-referrer", "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}});
   }
   if (u.pathname === "/install-macos.sh") {
+    if (macosChannel === "latest")
+      return new Response("Reviewed macOS Agent release is resolved per install attempt.\n",{status:503,headers});
     if (!macosPin || !validMacPin(macosPin))
       return new Response("Reviewed macOS Agent release is not published yet.\n",{status:503,headers});
     return new Response(renderAgentInstallMacShell(u.origin,macosPin),{

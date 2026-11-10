@@ -9,8 +9,9 @@ import {realpathSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {
   checked,checkCandidate,localMacAction,ownerCliText,parsePlist,
-  launchctlServiceState,verifiedEndpoint,freeze,
+  launchctlServiceState,verifiedEndpoint,freeze,forwardMacVersion,
 } from "./macos-local.mjs";
+export {forwardMacVersion};
 
 const ROOT=path.join(".local","share","mcp-workers","remote-control");
 const LABEL="org.mcp-workers.remote-control-agent";
@@ -60,32 +61,6 @@ export function verifiedLaunchdJob(id,uid,pid,invoke=run,parentPid=process.ppid)
   const r=invoke("/bin/launchctl",["print","gui/"+uid+"/"+remoteJobLabel(id)]);
   return !r.error && r.status===0 &&
     new RegExp("(?:^|\\n)\\s*pid = "+pid+"(?:\\n|$)").test(String(r.stdout??""));
-}
-// Explicit remote upgrades must move forward; the public Release pin is not
-// authority to downgrade a newer already-installed owner Agent.
-export function forwardMacVersion(current,next){
-  const re=/^v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([a-z0-9.-]+))?-darwin-(arm64|x64)$/;
-  const a=re.exec(current),b=re.exec(next);
-  if(!a||!b||a[5]!==b[5])return false;
-  for(let i=1;i<=3;i++){
-    const x=BigInt(a[i]),y=BigInt(b[i]);
-    if(x!==y)return y>x;
-  }
-  if(!a[4])return false; // A stable version cannot be replaced by an rc.
-  if(!b[4])return true;  // The official stable release supersedes the rc.
-  const old=a[4].split("."),fresh=b[4].split(".");
-  for(let i=0;i<Math.max(old.length,fresh.length);i++){
-    if(i>=old.length)return true;
-    if(i>=fresh.length)return false;
-    const n=/^[0-9]+$/;
-    const x=old[i],y=fresh[i];
-    if(x===y)continue;
-    if(n.test(x)&&n.test(y))return BigInt(y)>BigInt(x);
-    if(n.test(x))return true;  // SemVer numeric prerelease sorts lower.
-    if(n.test(y))return false;
-    return y>x;
-  }
-  return false;
 }
 async function trustedExisting(home,endpoint,bundle,sourceSha,invoke=run){
   if(!nativeOwner())throw Error("Native same-user macOS required.");
