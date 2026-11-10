@@ -63,7 +63,19 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/agent-release"
           mkdir -p "$work/candidates" "$work/publish"
-          immutable="$(gh api "repos/$GH_REPO/immutable-releases")"
+          set +e
+          immutable="$(gh api "repos/$GH_REPO/immutable-releases" 2>"$work/immutable.err")"
+          immutable_status=$?
+          set -e
+          if [[ "$immutable_status" -ne 0 ]]; then
+            # Administration is not a GITHUB_TOKEN permission. HTTP 403 is not
+            # proof that immutability is on; a later non-latest probe is.
+            if ! grep -q 'HTTP 403' "$work/immutable.err"; then
+              echo 'GitHub release conflict' >&2
+              exit 1
+            fi
+            immutable='{"enabled":false,"pendingProbe":true}'
+          fi
           run="$(gh api "repos/$GH_REPO/actions/runs/$CANDIDATE_RUN_ID")"
           existing_release=false
           set +e
@@ -155,6 +167,50 @@ jobs:
           while IFS= read -r archive; do
             cp -- "$archive" "$work/publish/$(basename "$archive")"
           done < "$work/archives.txt"
+          if [[ "$(jq -r '.immutableReleases.pendingProbe' "$work/preflight.json")" == true ]]; then
+            assets=(
+              "$work/publish/remote-control-agent-$RELEASE_TAG-linux-x64-glibc.tar.gz"
+              "$work/publish/remote-control-agent-$RELEASE_TAG-linux-arm64-glibc.tar.gz"
+              "$work/publish/remote-control-agent-$RELEASE_TAG-windows-x64.zip"
+              "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-arm64.tar.gz"
+              "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-x64.tar.gz"
+            )
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GH_REPO" \
+              --target "$SOURCE_SHA" \
+              --title "Remote Control Agent $RELEASE_TAG" \
+              --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
+              --draft
+            release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+              -F draft=false -F prerelease=false -F make_latest=false >/dev/null
+            published="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+            set +e
+            published_latest="$(gh api "repos/$GH_REPO/releases/latest" 2>"$work/latest.err")"
+            latest_status=$?
+            set -e
+            if [[ "$latest_status" -ne 0 ]]; then
+              if ! grep -q 'Not Found' "$work/latest.err"; then
+                echo 'GitHub release conflict' >&2
+                exit 1
+              fi
+              published_latest='null'
+            fi
+            jq -n \
+              --arg releaseTag "$RELEASE_TAG" \
+              --argjson release "$published" \
+              --argjson latest "$published_latest" \
+              '{releaseTag:$releaseTag,release:$release,latest:$latest}' \
+              > "$work/probe.json"
+            if ! node apps/remote-control-mcp-worker/agent/scripts/agent-release-guard.mjs probe < "$work/probe.json"; then
+              if [[ "$(jq -r '.release.immutable' "$work/probe.json")" != true ]]; then
+                gh release delete "$RELEASE_TAG" --repo "$GH_REPO" --yes --cleanup-tag
+              fi
+              echo 'immutable releases are not enabled' >&2
+              exit 1
+            fi
+            : > "$work/awaiting-latest"
+          fi
 
       - name: Publish the draft, then require an immutable stable Latest readback
         shell: bash
@@ -168,10 +224,6 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/agent-release"
           test -s "$work/preflight.json"
-          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo 'existing release may not be overwritten' >&2
-            exit 1
-          fi
           assets=(
             "$work/publish/remote-control-agent-$RELEASE_TAG-linux-x64-glibc.tar.gz"
             "$work/publish/remote-control-agent-$RELEASE_TAG-linux-arm64-glibc.tar.gz"
@@ -179,12 +231,20 @@ jobs:
             "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-arm64.tar.gz"
             "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-x64.tar.gz"
           )
-          gh release create "$RELEASE_TAG" "${assets[@]}" \
-            --repo "$GH_REPO" \
-            --target "$SOURCE_SHA" \
-            --title "Remote Control Agent $RELEASE_TAG" \
-            --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
-            --draft
+          if [[ -f "$work/awaiting-latest" ]]; then
+            :
+          else
+            if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+              echo 'existing release may not be overwritten' >&2
+              exit 1
+            fi
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GH_REPO" \
+              --target "$SOURCE_SHA" \
+              --title "Remote Control Agent $RELEASE_TAG" \
+              --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
+              --draft
+          fi
           release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
           gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
             -F draft=false -F prerelease=false -F make_latest=true >/dev/null

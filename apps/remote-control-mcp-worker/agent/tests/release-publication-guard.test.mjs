@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   acceptAgentReleaseReadback,
+  acceptImmutableBeforeLatest,
   requireReadbackAfterPromotion,
   reviewAgentPublication,
 } from '../scripts/agent-release-guard.mjs';
@@ -145,6 +146,20 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
     ...reviewed(),
     immutableReleases: { enabled: false },
   }), /immutable releases are not enabled/);
+  assert.deepEqual(reviewAgentPublication({
+    ...reviewed(),
+    immutableReleases: { enabled: false, pendingProbe: true },
+  }), { ok: true });
+  assert.throws(() => acceptImmutableBeforeLatest({
+    releaseTag: TAG,
+    release: { tag_name: TAG, draft: false, prerelease: false, immutable: false },
+    latest: null,
+  }), /immutable releases are not enabled/);
+  assert.deepEqual(acceptImmutableBeforeLatest({
+    releaseTag: TAG,
+    release: { tag_name: TAG, draft: false, prerelease: false, immutable: true },
+    latest: null,
+  }), { ok: true });
   assert.throws(() => reviewAgentPublication({ ...reviewed(), deployWorker: true }),
     /Worker production release is not part of Agent publication/);
   assert.throws(() => reviewAgentPublication({ ...reviewed(), releaseTag: 'v0.0.0-ci' }),
@@ -206,6 +221,15 @@ test('only the manual Agent workflow can publish, and it does not deploy the Wor
   assert.match(workflow, /node apps\/remote-control-mcp-worker\/agent\/scripts\/agent-release-guard\.mjs preflight/);
   assert.match(workflow, /node apps\/remote-control-mcp-worker\/agent\/scripts\/agent-release-guard\.mjs readback/);
   assert.match(workflow, /repos\/\$GH_REPO\/immutable-releases/);
+  const preflight = workflow.slice(0, workflow.indexOf('Publish the draft'));
+  const probeAt = preflight.indexOf('agent-release-guard.mjs probe');
+  assert.ok(preflight.includes('HTTP 403'));
+  assert.ok(preflight.indexOf('pendingProbe') < preflight.indexOf('make_latest=false'));
+  assert.ok(preflight.indexOf('make_latest=false') < probeAt);
+  assert.ok(probeAt < preflight.indexOf('awaiting-latest'));
+  assert.doesNotMatch(preflight, /make_latest=true/);
+  const promotion = workflow.slice(workflow.indexOf('Publish the draft'));
+  assert.ok(promotion.indexOf('awaiting-latest') < promotion.indexOf('make_latest=true'));
   assert.doesNotMatch(workflow, /-X (?:PUT|DELETE)|--method (?!GET|PATCH)\w+[^\n]*immutable-releases|immutable-releases[^\n]*-X PUT/);
   assert.match(workflow, /make_latest=true/);
   assert.match(workflow, /prerelease=false/);
