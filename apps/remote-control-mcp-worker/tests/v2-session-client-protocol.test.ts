@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { newEnrollment } from "../../remote-control-agent/src/v2-enrollment.ts";
-import { openAuthenticatedDeviceSocket } from "../../remote-control-agent/src/v2-session-client.ts";
+import { newEnrollment } from "../agent/src/v2-enrollment.ts";
+import { openAuthenticatedDeviceSocket } from "../agent/src/v2-session-client.ts";
 
 class FakeSocket extends EventTarget {
   protocol: string;

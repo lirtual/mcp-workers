@@ -125,10 +125,6 @@ jobs:
         if: steps.scope.outputs.apps != ''
         run: node --test scripts/select-affected-apps.test.mjs
 
-      - name: Stage pinned public Agent source (test-only)
-        if: steps.scope.outputs.remote_control_changed == 'true'
-        run: bash scripts/stage-public-remote-control-agent.sh
-
       - name: Install workspace
         if: steps.scope.outputs.apps != '' || steps.scope.outputs.remote_control_changed == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -140,15 +136,6 @@ jobs:
       - name: Check shared portal-auth package
         if: steps.scope.outputs.portal_auth_changed == 'true'
         run: pnpm --filter @mcp-workers/portal-auth check
-
-      - name: Verify pinned public Agent fixture for Worker
-        if: steps.scope.outputs.remote_control_changed == 'true'
-        run: |
-          set -euo pipefail
-          test "$(cat apps/remote-control-agent/.pinned-public-source)" = "0bcc22fcd84ab000d57c3978ffe93c14314b6f9e"
-          # Public Agent native tests belong to the upstream immutable release CI.
-          # Run private Worker compatibility checks exactly once in the
-          # existing affected-application `remote-control-mcp-worker check`.
 
       - name: Run affected application checks
         timeout-minutes: 12

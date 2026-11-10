@@ -4,9 +4,9 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { executeReadTool } from "../../remote-control-agent/src/read-execution.ts";
-import { monitorDeviceSocket } from "../../remote-control-agent/src/v2-connection-lifecycle.ts";
-import { SearchSessions } from "../../remote-control-agent/src/search.ts";
+import { executeReadTool } from "../agent/src/read-execution.ts";
+import { monitorDeviceSocket } from "../agent/src/v2-connection-lifecycle.ts";
+import { SearchSessions } from "../agent/src/search.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 import { TEMPORARY_GRANT_MS } from "../src/v2-session.ts";
 
