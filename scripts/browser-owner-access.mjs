@@ -7,6 +7,13 @@ import { collectWorkerVars } from "./worker-release-variables.mjs";
 
 const ACTIVATION_APP_ID = "77945f97-e1ea-4b2b-b89a-ec71c0472afa";
 const ACTIVATION_DOMAIN = "browser.lirtual.dpdns.org/activate/verify/*";
+// Current independently inspected Access policy and identity-provider identities.
+// Changing these trust boundaries requires reviewed code and a separate release.
+const REVIEWED_POLICY_ID = "a9ad0c55-9533-4391-ad59-60018b264401";
+const REVIEWED_IDPS = new Set([
+  "6a3456ba-dd71-47e9-a888-b53aaa5dc93b", // OTP
+  "26b88b6c-81e8-4f70-93ba-8af984bd5d63", // account-member SSO
+]);
 const fail = (ok,code) => {if(!ok)throw Error(code);};
 function responseList(body,code) {
   const info=body?.result_info;
@@ -38,10 +45,12 @@ export function verifyBrowserActivationAccess(app,policies,providers,env) {
   fail(app.allowed_idps.length===2 && app.auto_redirect_to_identity===false &&
     cloudflare.length===1 && app.allowed_idps.includes(cloudflare[0].id),
     "idp_scope");
-  fail(new Set(app.allowed_idps).size === app.allowed_idps.length,"idp_scope");
+  fail(new Set(app.allowed_idps).size === app.allowed_idps.length &&
+    app.allowed_idps.every(id=>REVIEWED_IDPS.has(id)),"idp_scope");
   fail(Array.isArray(policies) && policies.length===1,"policy_count");
   const policy=policies[0];
-  fail(policy.decision==="allow" && Array.isArray(policy.include) &&
+  fail(policy.id===REVIEWED_POLICY_ID && policy.decision==="allow" &&
+    Array.isArray(policy.include) &&
     policy.include.length===1 && Object.keys(policy.include[0]).join()==="email" &&
     policy.include[0].email?.email===env.BROWSER_OWNER_EMAIL &&
     (policy.require==null || Array.isArray(policy.require) && policy.require.length===0) &&
@@ -49,48 +58,73 @@ export function verifyBrowserActivationAccess(app,policies,providers,env) {
     "policy_identity");
   return true;
 }
-export async function verifyBrowserActivationAccessCloudflare(env,transport=fetch) {
-  const enabled=env.BROWSER_ACTIVATION_AUDIENCE!=null&&env.BROWSER_ACTIVATION_AUDIENCE!=="";
-  fail(enabled,"activation_config_required");
-  const config=JSON.parse(readFileSync(new URL("../apps/browser-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
-  const staged=collectWorkerVars("browser-mcp-worker",env,{config});
-  const actual=Object.fromEntries(staged.map(pair=>[pair.slice(0,pair.indexOf(":")),pair.slice(pair.indexOf(":")+1)]));
-  const effective={...env,...actual};
+// Read-only discovery: Cloudflare's Organization and the *fixed* reviewed App
+// are sources, not user-supplied Audience/Team Domain GitHub Variables.
+export async function discoverBrowserActivationIdentity(env,transport=fetch) {
   fail(/^[a-f0-9]{32}$/.test(env.CLOUDFLARE_ACCOUNT_ID??"") &&
     typeof env.CLOUDFLARE_API_TOKEN==="string" && env.CLOUDFLARE_API_TOKEN.length>0,
     "cloudflare_credentials");
+  fail(typeof env.OWNER_EMAIL==="string" && env.OWNER_EMAIL.length<=256 &&
+    /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(env.OWNER_EMAIL),"owner_email");
   const base="https://api.cloudflare.com/client/v4/accounts/"+env.CLOUDFLARE_ACCOUNT_ID;
   const get=async(path,code)=>{
     let response;
     try{response=await transport(base+path,{headers:{
       authorization:"Bearer "+env.CLOUDFLARE_API_TOKEN,accept:"application/json"
     },signal:AbortSignal.timeout(15000)});}catch{throw Error(code+"_transport");}
-    fail(response.ok,code+"_http");
+    fail(response?.ok===true,code+"_http");
     let body;
     try{body=await response.json();}catch{throw Error(code+"_json");}
-    fail(body?.success===true,code+"_api");
+    fail(body?.success===true && body.result!=null,code+"_api");
     return body;
   };
-  const [app,policies,providers]=await Promise.all([
+  const [org,app,policies,providers]=await Promise.all([
+    get("/access/organizations","organization"),
     get("/access/apps/"+ACTIVATION_APP_ID,"app"),
     get("/access/apps/"+ACTIVATION_APP_ID+"/policies?per_page=100","policies"),
     get("/access/identity_providers?per_page=100","providers")
   ]);
-  return verifyBrowserActivationAccess(app.result,
-    responseList(policies,"policies_inventory"),
-    responseList(providers,"providers_inventory"),effective);
+  const teamDomain=org.result?.auth_domain;
+  fail(typeof teamDomain==="string" &&
+    /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain) &&
+    teamDomain.length<=256,"organization_identity");
+  const audience=app.result?.aud;
+  fail(typeof audience==="string" && /^[a-f0-9]{64}$/.test(audience),
+    "app_audience");
+  const config=JSON.parse(readFileSync(new URL("../apps/browser-mcp-worker/wrangler.jsonc",import.meta.url),"utf8"));
+  const staged=collectWorkerVars("browser-mcp-worker",{
+    ACCESS_TEAM_DOMAIN:teamDomain,OWNER_EMAIL:env.OWNER_EMAIL,
+    BROWSER_ACTIVATION_AUDIENCE:audience
+  },{config});
+  const actual=Object.fromEntries(staged.map(pair=>[pair.slice(0,pair.indexOf(":")),pair.slice(pair.indexOf(":")+1)]));
+  const policyRows=responseList(policies,"policies_inventory");
+  const providerRows=responseList(providers,"providers_inventory");
+  verifyBrowserActivationAccess(app.result,policyRows,providerRows,actual);
+  const policyId=policyRows[0]?.id;
+  fail(typeof policyId==="string" && /^[a-f0-9-]{36}$/i.test(policyId),
+    "policy_identity");
+  return {
+    accountId:env.CLOUDFLARE_ACCOUNT_ID,appId:ACTIVATION_APP_ID,
+    teamDomain,ownerEmail:env.OWNER_EMAIL,audience,
+    origin:actual.BROWSER_ACTIVATION_ORIGIN,policyId,
+    identityProviders:[...app.result.allowed_idps].sort(),
+  };
+}
+export function verifyBrowserIdentityContinuity(candidate,actual) {
+  fail(candidate && actual && Object.keys(candidate).length===8 &&
+    JSON.stringify(candidate)===JSON.stringify(actual),"identity_drift");
+  return true;
+}
+export async function verifyBrowserActivationAccessCloudflare(env,transport=fetch) {
+  await discoverBrowserActivationIdentity(env,transport);
+  return true;
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href){
-  verifyBrowserActivationAccessCloudflare(process.env).then(()=>{
-    console.log("Browser Profile Activation Access prepublication gate: PASS");
+  discoverBrowserActivationIdentity(process.env).then(()=>{
+    console.log("Browser Profile Activation Access read-only gate: PASS");
   }).catch(error=>{
-    const codes=new Set(["activation_config_required","app_identity","app_session","otp_provider","otp_pin","idp_scope",
-      "policy_count","policy_identity","cloudflare_credentials","app_transport",
-      "app_http","app_json","app_api","policies_transport","policies_http",
-      "policies_json","policies_api","providers_transport","providers_http",
-      "providers_json","providers_api","policies_inventory","providers_inventory"]);
     console.error("Browser Profile Activation Access gate: BLOCKED ("+
-      (codes.has(error?.message)?error.message:"invalid_config")+")");
+      (/^[a-z_]+$/.test(error?.message??"")?error.message:"invalid_config")+")");
     process.exitCode=1;
   });
 }

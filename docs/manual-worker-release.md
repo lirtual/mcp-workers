@@ -39,6 +39,36 @@
 
 Browser 当前使用已审核的 Custom Domain `browser.lirtual.dpdns.org` 和 Owner Access 激活配置；旧独立 Unknown Review / `BROWSER_APPROVAL_*` 运行时配置已退役。既有 Browser 独立 `MCP_ACCESS_TOKEN` 要求不因仓库级默认 Token 机制而自动豁免。参见 [runtime configuration](./runtime-configuration.md) 的当前配置与历史候选清单；本文档修改不触发 Worker 发布或凭据更新。
 
+### Spec #804 Browser Owner Access identity discovery (release code)
+
+The selected Browser Release Worker first reads Cloudflare Zero Trust
+Organization `auth_domain` and the known, fixed Browser Activation Access
+Application `aud` with its **existing** `CLOUDFLARE_API_TOKEN`. On the
+*actual protected Release Runner*, a token missing **Access: Organizations Read** (or an accepted equivalent),
+or the existing application/policy/identity-provider GET permissions, blocks
+before staging or publishing; another connector's permission is not evidence
+of Runner access. App/policy/IdP inventories must be complete and match the
+reviewed Browser hostname/path, Owner-only email, SSO + OTP and 15m session.
+
+The existing Release Worker `browser_access_readonly=true` with `deploy_to_production=false` offers a GET-only protected Runner preflight without publishing; select Browser and keep all cleanup inputs at defaults. The preflight also compares the discovered identity against the independently
+read **currently active Browser Worker bindings**. Release staging and the
+post-release readback use the same candidate in the existing
+`RELEASE_STATE_FILE`; a fresh Access discovery recheck immediately precedes
+publication. Normal unrelated Worker binding changes remain subject to
+existing inventory gates. `OWNER_EMAIL` is the sole maintained GitHub Owner
+Variable, while `BROWSER_ACCESS_ISSUER`,
+`BROWSER_ACTIVATION_AUDIENCE`, `BROWSER_OWNER_EMAIL` and
+`BROWSER_ACTIVATION_ORIGIN` remain required runtime bindings.
+
+**Delivery state:** repository code/tests do not switch the active Worker.
+The first real protected Runner permission test, actual Browser release,
+same-Profile Owner activation and client compatibility acceptance are
+pending separate production authorization. Only after independent success
+and proof of no current executable consumer may the old GitHub
+`ACCESS_TEAM_DOMAIN` and Browser Environment
+`BROWSER_ACTIVATION_AUDIENCE` be deleted under *separate* authorization;
+do not rotate Secrets, repurpose Access apps or delete old source values early.
+
 ### Spec #733 first migration and post-cleanup
 
 The protected release now uses only canonical Workflow identity/grants Variables and still fails closed if any Database numeric limit would change from its previously deployed binding or default. The Workflow identity/grants GitHub Variables were migrated with exact-value proof. Regular Release Worker and Portal read-only Acceptance now use only canonical names; the two old Environment Variable names were deleted after separately authorized exact-value checks and independent negative-inventory readback ([final receipt](https://github.com/lirtual/mcp-workers/issues/733#issuecomment-6687671219)). Under the approved Spec #733 naming exception, SSH/Workflow old-name GitHub Environment Secrets remain the sole release inputs mapped to canonical runtime names; do not copy, replace or rotate them merely to rename a binding. The independent cleanup acceptance path is `Workflow Acceptance` → `legacy-cleanup-readonly-ssh` / `legacy-cleanup-readonly-workflow` with the reviewed active version. This check **only reads** Cloudflare resources after separately authorized old Secret deletion; do not confuse its PASS with approval to perform deletion or a new Worker release.

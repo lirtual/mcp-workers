@@ -101,6 +101,11 @@ on:
         required: false
         type: string
         default: ''
+      browser_access_readonly:
+        description: 'Spec804: Browser-only read-only release Runner permission and active identity preflight; never publishes'
+        required: false
+        type: boolean
+        default: false
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -120,7 +125,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare == true &&
           inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
@@ -185,7 +190,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
@@ -260,11 +265,62 @@ jobs:
     name: Pre-release checks
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
       (inputs.deploy_to_production == true ||
+       (inputs.browser_access_readonly == true && inputs.worker == 'browser-mcp-worker' && inputs.deploy_to_production == false) ||
        (inputs.uu_cleanup_approved == true && inputs.deploy_to_production == false)) &&
       inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
+
+  browser-access-readonly:
+    name: Browser Access protected Runner read-only permission proof
+    needs: checks
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.actor == 'lirtual' && github.ref == 'refs/heads/main' &&
+          inputs.worker == 'browser-mcp-worker' && inputs.browser_access_readonly == true &&
+          inputs.deploy_to_production == false &&
+          inputs.legacy_secret_cleanup_mode == 'none' &&
+          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
+          inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
+          needs.checks.result == 'success' &&
+          needs.checks.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: browser-mcp-worker
+    concurrency:
+      group: worker-release-browser-mcp-worker
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RELEASE_STATE_FILE: /tmp/worker-release-state.json
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate exact main with no publish capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Compare Owner email to independent Repository source
+        env:
+          CANONICAL_OWNER_EMAIL: ${{ needs.checks.outputs.canonical_owner_email }}
+          OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
+        run: node scripts/check-shared-owner-vars.mjs browser-mcp-worker
+      - name: Verify real Runner Organization permission and active Browser identity (GET only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
+        run: node scripts/manual-worker-release.mjs preflight browser-mcp-worker
 
   deploy:
     name: Manual selected Worker release
@@ -276,6 +332,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
+          inputs.browser_access_readonly != true &&
           inputs.legacy_secret_cleanup_mode == 'none' &&
           inputs.uu_session_secret_cleanup != true &&
           inputs.uu_cleanup_approved != true &&
@@ -388,9 +445,7 @@ jobs:
           WORKFLOW_AUDIENCE_RENAME: ${{ inputs.workflow_audience_rename }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
-          BROWSER_ACTIVATION_EXPECTED: ${{ vars.BROWSER_ACTIVATION_AUDIENCE }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
@@ -404,9 +459,7 @@ jobs:
       - name: Compare selected Worker effective Owner identity to Repository source
         if: inputs.worker == 'browser-mcp-worker'
         env:
-          CANONICAL_ACCESS_TEAM_DOMAIN: ${{ needs.checks.outputs.canonical_access_team_domain }}
           CANONICAL_OWNER_EMAIL: ${{ needs.checks.outputs.canonical_owner_email }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
         run: node scripts/check-shared-owner-vars.mjs "$SELECTED_WORKER"
 
@@ -435,11 +488,9 @@ jobs:
       - name: Stage approved Worker variables
         shell: bash
         env:
-          ACCESS_TEAM_DOMAIN: ${{ (inputs.worker == 'browser-mcp-worker') && vars.ACCESS_TEAM_DOMAIN || '' }}
           OWNER_EMAIL: ${{ (inputs.worker == 'browser-mcp-worker') && vars.OWNER_EMAIL || '' }}
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           RCA_PERMANENT_IDLE_DAYS: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.RCA_PERMANENT_IDLE_DAYS || '' }}
-          BROWSER_ACTIVATION_AUDIENCE: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
@@ -1051,10 +1102,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
-          BROWSER_ACTIVATION_AUDIENCE: ${{ vars.BROWSER_ACTIVATION_AUDIENCE }}
-        run: node scripts/browser-owner-access.mjs
+        run: node scripts/manual-worker-release.mjs identity-recheck "$SELECTED_WORKER"
 
       - name: Recheck unified Actions Worker before Workflow publication (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
@@ -1150,9 +1199,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
-          BROWSER_ACTIVATION_EXPECTED: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_ACTIVATION_AUDIENCE || '' }}
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
           WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
@@ -1306,7 +1353,7 @@ jobs:
           github.ref == 'refs/heads/main' && github.actor == 'lirtual' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.uu_cleanup_approved == true &&
-          inputs.deploy_to_production == false &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true &&
           inputs.workflow_code_only != true &&
           inputs.uu_session_secret_cleanup != true &&
           inputs.legacy_secret_cleanup_mode == 'none' &&
@@ -1375,7 +1422,7 @@ jobs:
     needs: checks
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.deploy_to_production == true &&
+          github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true &&
           needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
           (
             (
