@@ -636,16 +636,14 @@ jobs:
             $originalAction = [string]$originalTask.Actions[0].Execute
             $origId = (Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash
             $origKey = (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash
-            # Source pin fields are mandatory even for CI's separately hashed
-            # offline archive; the offline branch is unavailable outside CI.
-            $ciCommit = 'a' * 40
+            # Offline CI hashes the candidate archive. It does not pass a source pin.
             $stagerScript = Join-Path $oldDir 'apps/remote-control-agent/scripts/windows-stage-install.ps1'
             if (-not (Test-Path -LiteralPath $stagerScript -PathType Leaf) -or
                 (Get-FileHash -LiteralPath $stagerScript -Algorithm SHA256).Hash -ne
                   (Get-FileHash -LiteralPath 'apps/remote-control-mcp-worker/agent/install.ps1' -Algorithm SHA256).Hash) {
               throw 'Installed current-version StageOnly script is not the reviewed installer'
             }
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $stagerScript -StageOnly -Version $newVersion -PinnedCommit $ciCommit -PinnedReleaseSha256 $secondDigest -OfflineArchive $secondZip -ExpectedSha256 $secondDigest
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $stagerScript -StageOnly -Version $newVersion -OfflineArchive $secondZip -ExpectedSha256 $secondDigest
             if ($LASTEXITCODE -ne 0) { throw 'Real installer stage-only candidate failed' }
             $afterStaging = Get-ScheduledTask -TaskName $originalTask.TaskName
             if (-not [string]::Equals([string]$afterStaging.Actions[0].Execute,$originalAction,[StringComparison]::OrdinalIgnoreCase) -or
@@ -831,7 +829,6 @@ jobs:
           $target = Join-Path $root 'programs\v0.0.1-ci-windows-x64'
           $args = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',
             '-File','apps/remote-control-mcp-worker/agent/install.ps1','-Version','v0.0.1-ci',
-            '-PinnedCommit',('0' * 40),'-PinnedReleaseSha256',('0' * 64),
             '-OfflineArchive',$archive,'-ExpectedSha256',$sha)
           $env:LOCALAPPDATA = $profile
           try {
