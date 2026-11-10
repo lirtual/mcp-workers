@@ -35,29 +35,25 @@ function fixture() {
   return { cache, values, get writes() { return writes; } };
 }
 
-test("shared validated snapshot serves Linux and macOS with one upstream request", async () => {
+test("new public Linux/macOS scripts do not use the Worker release-cache or GitHub egress", async () => {
   const shared = fixture();
   let calls = 0;
   const env = {
     MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: origin,
     DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({}) },
     AGENT_RELEASE_CACHE: shared.cache,
-    AGENT_RELEASE_FETCH: async () => { calls++; return Response.json(release()); },
+    AGENT_RELEASE_FETCH: async () => { calls++; throw Error("Worker must not call GitHub Latest"); },
   } as unknown as Env;
   const linux = await worker.fetch(new Request(origin + "/install.sh"), env);
   const mac = await worker.fetch(new Request(origin + "/install-macos.sh"), env);
   assert.equal(linux.status, 200);
   assert.equal(mac.status, 200);
-  assert.equal(calls, 1);
-  assert.equal(shared.writes, 1);
+  assert.equal(calls, 0);
+  assert.equal(shared.writes, 0);
   assert.equal(linux.headers.get("cache-control"), "no-store");
   assert.equal(mac.headers.get("cache-control"), "no-store");
-  assert.match(await linux.text(), /v0\.4\.0-linux-x64-glibc/);
-  assert.match(await mac.text(), /v0\.4\.0-darwin-arm64/);
-  const stored = [...shared.values.values()][0];
-  assert.ok(stored);
-  assert.equal(stored.headers.get("cache-control"), "public, max-age=300");
-  assert.doesNotMatch(await stored.clone().text(), /untrusted upstream release notes/);
+  assert.match(await linux.text(), /rca-release-v1/);
+  assert.match(await mac.text(), /rca-release-v1/);
 });
 
 test("cache is valid before but never at or after 300s and errors do not extend it", async () => {

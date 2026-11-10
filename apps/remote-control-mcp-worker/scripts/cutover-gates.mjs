@@ -6,7 +6,6 @@ import { acceptAgentReleaseReadback, reviewAgentPublication } from "../agent/scr
 import { planInstalledWindowsTakeover } from "../agent/src/windows-installed-takeover.ts";
 import { selectLatestAgentRelease } from "../src/github-latest-agent-release.ts";
 
-const { macInstallFailure } = await import("../src/install-macos-latest.ts");
 
 const SHA = /^[a-f0-9]{40}$/;
 const ACTIONS = ["publish-release", "deploy-worker", "upgrade-device"];
@@ -124,7 +123,15 @@ export async function reviewInstallerLookup(lookup) {
       deviceMutation: false,
     };
   }
-  const response = macInstallFailure(decision);
+  // Historical read-only API evidence classification, not a live Worker route.
+  // Public Linux/macOS bootstrap paths now resolve Release on owner devices.
+  const statuses = {
+    not_found: [503, "No stable Agent Release is published.\\n"],
+    forbidden: [403, "GitHub refused the Agent Release lookup.\\n"],
+    rate_limited: [429, "GitHub rate limit stopped the Agent Release lookup.\\n"],
+  };
+  const [code, message] = statuses[decision.stop] ?? [503, "Stable Agent Release is not usable.\\n"];
+  const response = new Response(message, { status: code });
   return {
     name: lookup.name,
     outcome: "fail-closed",
