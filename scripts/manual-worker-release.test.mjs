@@ -896,6 +896,19 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  // A code-only release preserves deployed Variables: reject Audience drift
+  // BEFORE deploy, not only during post-publication readback.
+  const codeOnlyPreflight=(list=bindings)=>verifyBindings("workflow-mcp-worker",
+    {...settings,bindings:list},secrets,{mode:"preflight",requireExistingSecrets:true});
+  assert.equal(codeOnlyPreflight(),true);
+  for(const value of ["workflow-github-action:production", "workflow-github-action:staging", ""]){
+    assert.throws(()=>codeOnlyPreflight(bindings.map(binding=>
+      binding.name==="WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE"?{...binding,text:value}:binding)),
+    /Workflow code-only Action OIDC audience drift/);
+  }
+  assert.throws(()=>codeOnlyPreflight(bindings.filter(binding=>
+    binding.name!=="WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE")),
+  /Workflow code-only release blocked/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"}],
     [...secrets,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY"}]),/Unexpected runtime Secret/);
   assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),
