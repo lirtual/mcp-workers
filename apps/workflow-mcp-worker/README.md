@@ -629,6 +629,8 @@ Use `.github/workflows/release.yml` (GitHub Actions → Release Worker) on `main
 
 GitHub Actions are dispatched only through the explicitly approved `github.action` Task/Session contract; there is no dedicated fixed CI executor.
 
+**Action Audience discovery:** The public, read-only `GET /github/action/config` returns only `{"audience": WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE}` with `Cache-Control: no-store`, or fails closed if the binding is invalid. It is not an authorization endpoint; actual `POST /github/action/claim` still validates the GitHub-signed JWT against this same server-owned Audience and the persisted D1 Attempt, physical Run, and Published Plan. GitHub Runners must use the already trusted `WORKFLOW_ACTION_CLAIM_URL` HTTPS origin (no redirects), validate the bounded response, and never mint a JWT when discovery fails. Publish this Worker endpoint **before** switching `lirtual/github-actions` off its repository Audience variable. The production binding value remains `workflow-github-action:production`; suffix removal is a separate trust-identity change, not a prerequisite for discovery.
+
 The regular test contract is `pnpm --filter workflow-mcp-worker check` (TypeScript, unit/contract suite, Wrangler dry-run). Production smoke tests are explicitly selected through `.github/workflows/acceptance.yml` and are separate from deployment; Portal registration requires a separate `confirm_portal_write` acknowledgment. A passing dry-run does not establish production acceptance.
 
 Old schema migration filenames are retained because they have already been recorded by D1. They are historical database identifiers, not product stages.
