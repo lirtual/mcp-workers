@@ -263,9 +263,26 @@ test('Version 143 admission predicates match the code that would run after rollb
     'apps/workflow-mcp-worker/src/scheduled.ts',
     'apps/workflow-mcp-worker/src/webhook.ts',
     'apps/workflow-mcp-worker/src/github-event.ts',
-    'apps/workflow-mcp-worker/src/index.ts',
     'apps/workflow-mcp-worker/wrangler.jsonc',
   ])assert.equal(gitShow(file),readFileSync(new URL('../'+file,import.meta.url),'utf8'),file);
+  // Version143's actual Claim and Portal admission gates must remain byte-identical,
+  // while unrelated, non-authorizing GET routes may be added to the current index.
+  const oldIndex=gitShow('apps/workflow-mcp-worker/src/index.ts');
+  const newIndex=readFileSync(new URL('../apps/workflow-mcp-worker/src/index.ts',import.meta.url),'utf8');
+  const indexSlice=(source,start,end)=>{
+    const first=source.indexOf(start),last=source.indexOf(end);
+    assert.ok(first>=0&&last>first,'historical admission marker missing: '+start);
+    return source.slice(first,last);
+  };
+  for(const [start,end] of [
+    ["if(url.pathname==='/github/action/claim'","if(url.pathname==='/health'"],
+    ["if(url.pathname==='/health'","/** Private named RPC only"],
+    ["if(url.pathname.startsWith('/triggers/webhook/'","// Non-secret audience is discovered"],
+  ]){
+    const originalEnd=end==='// Non-secret audience is discovered'?
+      '// Only approved GitHub Actions use':end;
+    assert.equal(indexSlice(newIndex,start,end),indexSlice(oldIndex,start,originalEnd),start);
+  }
   const oldStore=gitShow('apps/workflow-mcp-worker/src/store.ts');
   const newStore=readFileSync(new URL('../apps/workflow-mcp-worker/src/store.ts',import.meta.url),'utf8');
   const slice=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
