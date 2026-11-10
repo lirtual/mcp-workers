@@ -55,7 +55,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 - Raindrop：`RAINDROP_RATE_LIMIT_MAX_RETRIES`（0–10）。
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
 - Database：`DATABASE_CONNECTIONS`、被引用的独立 Secrets 和 `DB_HOST`；可选 `DATABASE_MAX_ROWS`（1–5000）、`DATABASE_MAX_RESULT_BYTES`（1–8388608）、`DATABASE_MAX_SCHEMA_BYTES`（1–4194304）、`DATABASE_QUERY_TIMEOUT_MS`（1–60000）、`DATABASE_MAX_WRITE_AFFECTED_ROWS`（1–100）。
-- Browser：`ACCESS_TEAM_DOMAIN` 和 `OWNER_EMAIL` 仅使用 Repository Variables；运行时 Browser issuer、owner 和激活 origin 从共享身份与 Custom Domain 派生；只单独设置 `BROWSER_ACTIVATION_AUDIENCE`；`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置。旧 Review 的 `BROWSER_APPROVAL_*` / `BROWSER_ACCESS_AUDIENCE` 不再由发布流程传入。
+- Browser（Spec #733 历史生产来源，待 #804 切换）：`ACCESS_TEAM_DOMAIN` 和 `OWNER_EMAIL` 曾由 Repository Variables 提供；运行时 Browser issuer、owner 和激活 origin 从共享身份与 Custom Domain 派生；只单独设置 `BROWSER_ACTIVATION_AUDIENCE`；`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置。旧 Review 的 `BROWSER_APPROVAL_*` / `BROWSER_ACCESS_AUDIENCE` 不再由发布流程传入。
 - Workflow：`WORKFLOW_MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`）。
 - SSH、GitHub Actions：无额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导，`RCA_PERMANENT_IDLE_DAYS` 为可选变量。
 
@@ -96,3 +96,14 @@ Spec #774 补充（非生产，尚未执行切换）：原表格记录 Spec #733
 Production 原绑定和 GitHub 来源 Secret 仍存在并受保护，
 仅在单独授权的 Version Prepare/Publish 及回读验收后
 才可通过独立授权删除 GitHub 来源值。
+
+### Spec #804 Browser 发布输入（代码已实施，生产未切换）
+
+新的发布实现只需要维护 Repository Variable `OWNER_EMAIL`；
+`ACCESS_TEAM_DOMAIN` 与 Browser Environment `BROWSER_ACTIVATION_AUDIENCE`
+不再作为可执行发布输入。它们的值分别由受保护 Release Runner
+只读查询 Zero Trust Organization `auth_domain` 及固定 Browser Access
+App 的 `aud`，并与生产当前身份绑定独立核对。运行时 Browser
+Audience、issuer、Owner 和 Origin 仍然必须完整存在。旧 GitHub
+来源实际删除必须等生产切换、权限和路径验收通过后的单独授权；
+本说明不代表生产已经切换，也不允许修改或删除其他 Access 应用。

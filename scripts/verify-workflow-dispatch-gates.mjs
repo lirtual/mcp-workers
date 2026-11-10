@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -114,9 +114,38 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 17,
-  'Release workflow_dispatch must have exactly seventeen reviewed inputs');
-// A UU-retirement request may only reach the reviewed versioned Secret job,
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 18,
+  'Release workflow_dispatch must have exactly eighteen reviewed inputs');
+// Spec #804: this additional protected Runner entry is strictly GET-only.
+assert.match(release, /      browser_access_readonly:\n        description:[^\n]+\n        required: false\n        type: boolean\n        default: false/);
+assert.ok(deploy.gate.includes('inputs.browser_access_readonly != true'),
+  'Read-only Browser permission probe must be fenced from deploy');
+const accessProbe=job(release,'browser-access-readonly');
+for (const clause of [
+  "github.event_name == 'workflow_dispatch'", "github.actor == 'lirtual'",
+  "github.ref == 'refs/heads/main'", "inputs.worker == 'browser-mcp-worker'",
+  'inputs.browser_access_readonly == true', 'inputs.deploy_to_production == false',
+  "inputs.legacy_secret_cleanup_mode == 'none'",
+  'inputs.uu_session_secret_cleanup != true','inputs.uu_cleanup_approved != true',
+  "needs.checks.result == 'success'",
+  "needs.checks.outputs.release_ready == 'true'",
+]) assert.ok(accessProbe.gate.includes(clause),'Browser GET-only gate missing: '+clause);
+for(const clause of [
+  'name: browser-mcp-worker','group: worker-release-browser-mcp-worker',
+  'cancel-in-progress: false',
+  'node scripts/check-shared-owner-vars.mjs browser-mcp-worker',
+  'node scripts/manual-worker-release.mjs preflight browser-mcp-worker',
+]) assert.ok(accessProbe.content.includes(clause),'Browser GET-only proof missing: '+clause);
+assert.doesNotMatch(accessProbe.content, /wrangler|secret (?:put|delete|set)|(?:curl|fetch) .*--request (?:POST|PUT|DELETE)|manual-worker-release\.mjs readback|deploy_to_production: true/,
+  'Browser permission probe must not publish or modify Cloudflare/GitHub state');
+
+// Spec #804 read-only intent excludes all mutation-capable jobs.
+for(const name of [
+  'deploy','workflow-actions-migration-prepare','workflow-actions-gate-reopen',
+  'workflow-uu-table-retirement','legacy-secret-cleanup'
+]) assert.ok(job(release,name).gate.includes('inputs.browser_access_readonly != true'),
+  'Browser read-only intent could reach mutating job: '+name);
+
 // never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
 assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
   'UU Secret request must be fenced from ordinary production deploy');

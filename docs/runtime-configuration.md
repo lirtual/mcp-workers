@@ -9,7 +9,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 ## Source of truth
 
 - Wrangler defines non-secret settings, Cloudflare bindings and required Secret names; never commit secret values.
-- The Repository is the canonical owner for `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL`; Browser Environments must not override them. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
+- Under Spec #804, Browser **release code** reads `auth_domain` from the Zero Trust Organization and `aud` from the fixed reviewed Access App; Repository `OWNER_EMAIL` is its sole maintained Owner identity Variable. The former `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE` GitHub source values remain in production Settings until separately authorized deletion after production acceptance. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
 - Every selected Worker has its own same-name GitHub Environment for app Secrets and whitelisted Variables. Only a separately approved, `main`-only, manual **Release Worker** run publishes it. Editing a GitHub Secret alone does not rotate live credentials.
 - All Workers require `MCP_ACCESS_TOKEN`. `IMA_CLIENT_ID` and `WORKFLOW_MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
 
@@ -84,7 +84,7 @@ Wrangler can preserve omitted old `secret_text` names after the initial SSH/Work
 
 ### Repository identity provenance check
 
-The existing CI's pre-release job (which has **no** Worker GitHub Environment) captures `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` as Repository-resolved values. The selected release job compares its effective values to these CI outputs and fails closed on mismatch. This comparison does **not** prove absence of a same-value Environment shadow. Before the first Browser production switch, the separately authorized GitHub Settings inspection and shadow cleanup were completed and independently checked (see Browser cutover evidence above). The built-in `GITHUB_TOKEN` has no assumed Variables/Environments inventory permission and is not used to claim proof.
+The existing CI's pre-release job (which has **no** Worker GitHub Environment) captures only the Repository-resolved `OWNER_EMAIL`. The selected Browser release compares its effective Owner email with this CI output and blocks on mismatch. Browser Organization and Audience are now read-only discovered in the protected release and verified against existing active runtime bindings; they are **not** sourced from GitHub Variables. This comparison does **not** prove absence of a same-value Environment shadow. Before the first Browser production switch, the separately authorized GitHub Settings inspection and shadow cleanup were completed and independently checked (see Browser cutover evidence above). The built-in `GITHUB_TOKEN` has no assumed Variables/Environments inventory permission and is not used to claim proof.
 
 ### Spec #733: migration-original-value gates and cleanup readback
 
@@ -129,3 +129,30 @@ GitHub 来源 Secret 删除和 D1 清理均为后续独立授权事项；不得�
 - **Workflow 现行生产：** Cloudflare 唯一 100% 活动版本为 `7b74910d-03cb-4be8-bd34-9af4146371d9`，共 10 个绑定，没有 `WORKFLOW_SESSION_RUNTIME_DATA_KEY`。历史 Version 142 `414da2d7-a16f-4ce6-9350-013ad4f7166a` 仍有旧版本化绑定，但这不证明该版本在 #774 v21 旧表清理后能够安全恢复，亦不证明密钥原值可用。#774 于 2026-11-07 完成 v21 和 GitHub 来源 Secret 清理（[生产回执](https://github.com/lirtual/mcp-workers/issues/774#issuecomment-6707337731)）及 [Windows Session E2E](https://github.com/lirtual/mcp-workers/issues/774#issuecomment-6707890211)。勿再按上方旧 143→142 恢复步骤派发。
 - **Database GitHub 旧配置已删除（2026-11-09）：** `database-mcp-worker` Environment 中的 Variables `DATABASE_ACCESS_AUD`、`DATABASE_KEY_ID` 和 Secrets `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN` 已通过 GitHub CLI 逐项删除，每项独立回读 Pass；该 Environment 当前为零 Variables、零 Secrets。Version 46 `c28c0af8-e773-4400-9106-425779932fcf` 继续独占 100% 流量且不含旧绑定；当前 Repository `DATABASE_CONNECTIONS`、`DATABASE_B2B_PASSWORD`、`DATABASE_SCRAPE_RELAY_PASSWORD` 等发布来源保持不变。历史版本 `eeaaaba6-3b45-4158-8537-d9989c044bd4`、`dbf5b157-ef7d-4f36-b162-62bd1b49246a` 虽留有旧绑定，但不再是受支持的恢复目标；不重建旧凭据。
 - **阶段与范围：** PR #797 阶段仅只读核查并修正文档；2026-11-09 本次另获授权，只删除上述四项 GitHub Environment 旧配置，删除前后只读回读 Repository 来源及 Cloudflare 生产绑定。未读取 Secret 原值、修改 Repository 配置、生产 D1/Worker、Portal 或执行恢复。
+
+### Spec #804 — staged Browser identity automation (code only)
+
+Source-level Browser Release now discovers the Organization auth domain and the
+fixed Browser Activation Access Application Audience on its **actual selected
+Worker Runner**, validates the complete Owner-only 15m SSO+OTP policy and
+compares the candidate with the independently observed active identity.
+Candidate staging/recheck/readback reuse the existing protected release state.
+No new Access app, policy, proxy, Cloudflare runtime credential or environment
+was created; the old GitHub variable names are no longer consumed in current
+CI/Release code. Do not infer this change is deployed: the first protected Runner
+permission preflight, production switching, real same-Profile Owner activation
+and separate GitHub source deletion still require new production authorization.
+
+A read-only Cloudflare Access application inventory on 2026-11-10 showed
+17 complete account applications (page 1/1). The Browser Activation app
+`77945f97-e1ea-4b2b-b89a-ec71c0472afa` remains required and unchanged.
+Two **independent Stage B** historical candidates exist:
+`Database MCP Owner Setup` (`9f91a9ea-d498-49e5-9d9d-2289d1c08f65`)
+guards the broader `database.lirtual.dpdns.org` domain rather than a
+`/setup` route alone; **retain** until exposure/routing and real clients are
+independently demonstrated safe. `Weixin MCP Setup`
+(`6b025bd1-8c89-453e-8a84-b62462d81894`) covers
+`weixin.lirtual.dpdns.org`; remaining traffic, DNS and consumers have not
+been proven absent, so classification is **Unknown, retain**. No Access deletion
+or policy change was authorized or performed. This investigation does not block
+Browser Stage A code delivery.

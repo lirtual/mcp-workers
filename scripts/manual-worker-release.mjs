@@ -10,6 +10,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars, BROWSER_ACCESS_VARIABLES, browserActivationOrigin } from "./worker-release-variables.mjs";
+import { discoverBrowserActivationIdentity, verifyBrowserIdentityContinuity } from "./browser-owner-access.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
@@ -385,14 +386,21 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     const env = Object.fromEntries(runtimeNames.filter(name => !!find(name, "plain_text"))
       .map(name => [name, find(name, "plain_text").text]));
     if (options.mode === "preflight") {
-      if (env.BROWSER_ACCESS_ISSUER || env.BROWSER_OWNER_EMAIL)
-        invariant(typeof options.sharedAccessTeamDomain === "string" &&
-          env.BROWSER_ACCESS_ISSUER === "https://" + options.sharedAccessTeamDomain &&
-          env.BROWSER_OWNER_EMAIL === options.sharedOwnerEmail,
-          "Browser live identity differs from reviewed shared source");
-      if (env.BROWSER_ACTIVATION_ORIGIN)
-        invariant(env.BROWSER_ACTIVATION_ORIGIN === browserActivationOrigin(options.sourceConfig),
-          "Browser live activation origin differs from Custom Domain");
+      const identity=options.browserIdentity;
+      invariant(identity && identity.accountId && identity.appId &&
+        identity.teamDomain===options.sharedAccessTeamDomain &&
+        identity.ownerEmail===options.sharedOwnerEmail &&
+        identity.audience===options.expectedBrowserActivationAudience &&
+        identity.origin===browserActivationOrigin(options.sourceConfig),
+        "Browser discovered identity baseline missing");
+      // Independently read the *active production* bindings, not just the
+      // newly discovered API response. No implicit trust-boundary migration.
+      invariant(names.every(name=>typeof env[name]==="string") &&
+        env.BROWSER_ACCESS_ISSUER==="https://"+identity.teamDomain &&
+        env.BROWSER_OWNER_EMAIL===identity.ownerEmail &&
+        env.BROWSER_ACTIVATION_ORIGIN===identity.origin &&
+        env.BROWSER_ACTIVATION_AUDIENCE===identity.audience,
+        "Browser active production identity differs from discovered candidate");
     }
     if (options.mode === "readback") {
       const staged = collectWorkerVars("browser-mcp-worker", {
@@ -1044,9 +1052,22 @@ export async function retryReleaseReadback(read, pause = ms => new Promise(resol
   }
 }
 
+// A protected prepublication GET must observe both the same Access identity
+// and the same independently inventoried active Worker. A candidate must not
+// silently rebase itself onto a changed production trust boundary.
+export function verifyBrowserPrepublicationCandidate(previous, observed, discovered) {
+  invariant(previous?.worker==="browser-mcp-worker" &&
+    typeof previous?.version_id==="string" &&
+    previous.version_id===observed?.version_id &&
+    previous.deployment_id===observed?.deployment_id,
+    "Browser active production baseline changed before publication");
+  verifyBrowserIdentityContinuity(previous.browserIdentity,discovered);
+  return true;
+}
+
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "cleanup-readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "identity-recheck", "cleanup-readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
   if (mode === "migration-sql") {
     invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
     console.log(reviewedTerminalRunSql(WORKFLOW_MIGRATION_READINESS_SQL));
@@ -1142,24 +1163,47 @@ async function main() {
     return;
   }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
-  const previous = mode === "readback"
+  if(mode==="identity-recheck")
+    invariant(worker==="browser-mcp-worker" &&
+      process.env.GITHUB_REPOSITORY==="lirtual/mcp-workers" &&
+      process.env.GITHUB_REF==="refs/heads/main" &&
+      process.env.GITHUB_ACTOR==="lirtual",
+      "Browser prepublication recheck requires protected main context");
+  const previous = ["readback","identity-recheck"].includes(mode)
     ? JSON.parse(await readFile(statePath, "utf8")) : null;
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
     "Release source changed");
   const exists = mode === "preflight" ? await scriptExists(account, worker, token) : true;
+  // Browser must have a separately observed active baseline. No bootstrap or
+  // missing production identity may silently define a new trust boundary.
+  if(worker==="browser-mcp-worker" && mode==="preflight")
+    invariant(exists,"Browser active production identity baseline unavailable");
+  const discoveredBrowserIdentity=worker==="browser-mcp-worker" &&
+    ["preflight","identity-recheck"].includes(mode)
+      ? await discoverBrowserActivationIdentity(process.env) : undefined;
+  const browserIdentity=worker==="browser-mcp-worker"
+    ? mode==="preflight" ? discoveredBrowserIdentity : previous?.browserIdentity
+    : undefined;
+  if(worker==="browser-mcp-worker")
+    invariant(browserIdentity?.accountId===account &&
+      browserIdentity.ownerEmail===process.env.OWNER_EMAIL &&
+      /^[a-f0-9]{64}$/.test(browserIdentity.audience) &&
+      browserIdentity.origin===browserActivationOrigin(sourceConfig),
+      "Browser candidate identity state missing or changed");
   if (mode === "preflight" && process.env.WORKFLOW_CODE_ONLY === "true")
     invariant(worker === "workflow-mcp-worker" && exists,
       "Code-only release requires an existing Workflow Worker");
   const read = async () => {
     const observed = await current(account, worker, token, {
-      mode, sourceConfig, requireExistingSecrets: mode === "preflight" &&
+      mode: mode==="identity-recheck" ? "preflight" : mode,
+      sourceConfig,
+      requireExistingSecrets: mode === "preflight" &&
         process.env.WORKFLOW_CODE_ONLY === "true",
       previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
-      sharedAccessTeamDomain: ["browser-mcp-worker", "database-mcp-worker"].includes(worker)
-        ? process.env.ACCESS_TEAM_DOMAIN : undefined,
-      sharedOwnerEmail: ["browser-mcp-worker", "database-mcp-worker"].includes(worker)
-        ? process.env.OWNER_EMAIL : undefined,
+      browserIdentity,
+      sharedAccessTeamDomain: browserIdentity?.teamDomain,
+      sharedOwnerEmail: browserIdentity?.ownerEmail,
       databaseConnections: worker === "database-mcp-worker" ? process.env.DATABASE_CONNECTIONS : undefined,
       databaseVariables: {DB_HOST:process.env.DB_HOST},
       expectedDatabaseLimits: worker === "database-mcp-worker"
@@ -1170,8 +1214,7 @@ async function main() {
         ? process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID : undefined,
       expectedWorkflowGrants: worker === "workflow-mcp-worker"
         ? process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES : undefined,
-      expectedBrowserActivationAudience: worker === "browser-mcp-worker"
-        ? process.env.BROWSER_ACTIVATION_EXPECTED : undefined,
+      expectedBrowserActivationAudience: browserIdentity?.audience,
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Keep identity and binding drift failures fatal.
@@ -1182,8 +1225,14 @@ async function main() {
   const observed = !exists ? { mode: "bootstrap" }
     : mode === "readback" && worker === "workflow-mcp-worker"
       ? await retryReleaseReadback(read) : await read();
+  if (mode === "identity-recheck") {
+    verifyBrowserPrepublicationCandidate(previous, observed, discoveredBrowserIdentity);
+    console.log("Browser prepublication Access and active Worker identity: PASS");
+    return;
+  }
   if (mode === "preflight") {
-    await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed }), { mode: 0o600 });
+    await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed,
+      ...(browserIdentity ? {browserIdentity} : {}) }), { mode: 0o600 });
     if (process.env.GITHUB_OUTPUT) {
       await appendFile(process.env.GITHUB_OUTPUT, "bootstrap=" + (!exists) + "\n");
     }

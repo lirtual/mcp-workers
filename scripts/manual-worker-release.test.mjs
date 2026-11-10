@@ -1170,7 +1170,14 @@ test('Browser release retains identity, DO, Assets and Bearer under canonical ow
     sharedAccessTeamDomain:'lirtualzero.cloudflareaccess.com',sharedOwnerEmail:'lirtual@outlook.com'};
   assert.equal(verifyBindings(worker,settings(identity),secret,options),true);
   assert.throws(()=>verifyBindings(worker,settings({}),secret,options),/Browser live bindings differ/);
-  assert.equal(verifyBindings(worker,settings({}),secret,{...options,mode:'preflight'}),true);
+  assert.throws(()=>verifyBindings(worker,settings({}),secret,{...options,mode:'preflight'}),/identity baseline/);
+  const browserIdentity={accountId:'c'.repeat(32),appId:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',
+    teamDomain:'lirtualzero.cloudflareaccess.com',ownerEmail:'lirtual@outlook.com',
+    audience,origin:'https://browser.lirtual.dpdns.org'};
+  assert.equal(verifyBindings(worker,settings({...identity,...activation}),secret,
+    {...options,mode:'preflight',browserIdentity,expectedBrowserActivationAudience:audience}),true);
+  assert.throws(()=>verifyBindings(worker,settings({...identity,...activation,BROWSER_ACTIVATION_AUDIENCE:'c'.repeat(64)}),secret,
+    {...options,mode:'preflight',browserIdentity,expectedBrowserActivationAudience:audience}),/production identity/);
   assert.equal(verifyBindings(worker,settings({...identity,...activation}),secret,
     {...options,expectedBrowserActivationAudience:audience}),true);
   assert.throws(()=>verifyBindings(worker,settings({...identity,BROWSER_OWNER_EMAIL:'wrong@example.com'}),secret,options),/Browser live bindings differ/);
@@ -1276,4 +1283,29 @@ test('Spec 733 Workflow Portal identity and grants must retain exact approved va
   assert.throws(()=>verify(old,{mode:'preflight',expectedWorkflowGrants:'[]'}),/approved repositories/);
   assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowGrants:'not-json'}),/valid JSON/);
   assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowPortalClientId:''}),/Portal client identity/);
+});
+
+test('Spec #804 prepublication gate rejects Access and active Worker drift without resetting state',async()=>{
+  const {verifyBrowserPrepublicationCandidate}=await import('./manual-worker-release.mjs');
+  const {readFileSync}=await import('node:fs');
+  const source=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  const candidate={worker:'browser-mcp-worker',version_id:'12345678-1234-1234-1234-123456789abc',
+    deployment_id:'original-100-percent',browserIdentity:{
+      accountId:'c'.repeat(32),appId:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',
+      teamDomain:'owner.cloudflareaccess.com',ownerEmail:'owner@example.com',
+      audience:'a'.repeat(64),origin:'https://browser.lirtual.dpdns.org',
+      policyId:'a9ad0c55-9533-4391-ad59-60018b264401',
+      identityProviders:['sso-id','otp-id'].sort()
+    }};
+  assert.equal(verifyBrowserPrepublicationCandidate(candidate,{
+    version_id:candidate.version_id,deployment_id:candidate.deployment_id
+  },{...candidate.browserIdentity}),true);
+  assert.throws(()=>verifyBrowserPrepublicationCandidate(candidate,{
+    version_id:'another',deployment_id:candidate.deployment_id
+  },candidate.browserIdentity),/production baseline/);
+  assert.throws(()=>verifyBrowserPrepublicationCandidate(candidate,{
+    version_id:candidate.version_id,deployment_id:candidate.deployment_id
+  },{...candidate.browserIdentity,audience:'b'.repeat(64)}),/identity_drift/);
+  assert.ok(source.indexOf('manual-worker-release.mjs identity-recheck')<
+    source.indexOf('Publish exactly selected Worker'));
 });

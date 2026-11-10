@@ -3,14 +3,13 @@
 // The separate GitHub Settings audit must still prove no same-value shadow.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const scoped = new Set(['browser-mcp-worker', 'database-mcp-worker']);
+const scoped = new Set(['browser-mcp-worker']);
 export function verifySharedOwnerVars(worker, env) {
   if (!scoped.has(worker)) throw Error('Unsupported shared Owner release target');
   if (env.GITHUB_REPOSITORY !== 'lirtual/mcp-workers' ||
       env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_ACTOR !== 'lirtual')
     throw Error('Invalid shared Owner release context');
   const fields = [
-    ['ACCESS_TEAM_DOMAIN', 'CANONICAL_ACCESS_TEAM_DOMAIN', /^[a-z0-9-]+\.cloudflareaccess\.com$/],
     ['OWNER_EMAIL', 'CANONICAL_OWNER_EMAIL', /^[^@\s]+@[^@\s]+\.[^@\s]+$/],
   ];
   for (const [runtime, source, pattern] of fields) {
