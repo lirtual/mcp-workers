@@ -274,8 +274,8 @@ export function parseNodeBootstrapArgs(args){
     result[flag.slice(2)]=args[++i];
   }
   const {archive,tag,commit,sha256,endpoint}=result;
-  if(!isAbsolute(archive||"")||!TAG.test(tag||"")||
-      !/^[a-f0-9]{40}$/.test(commit||"")||!SHA.test(sha256||""))
+  if(!isAbsolute(archive||"")||!TAG.test(tag||"")||!SHA.test(sha256||"")||
+      (commit!==undefined&&!/^[a-f0-9]{40}$/.test(commit)))
     throw Error("Untrusted Release pins");
   const u=new URL(endpoint);
   if(u.protocol!=="https:"||u.username||u.password||u.search||u.hash||
@@ -393,7 +393,8 @@ export function executeNodeBootstrap(options,{
     const processResult=invoke("flock",[
       "-n","-E","75","-F",lock,process.execPath,bootstrap,
       "--archive",options.archive,"--tag",options.tag,
-      "--commit",options.commit,"--sha256",options.sha256,
+      ...(options.commit?["--commit",options.commit]:[]),
+      "--sha256",options.sha256,
       "--endpoint",options.endpoint,"--lock-held",
       ...(options.upgrade?["--upgrade"]:[])
     ],{stdio:"inherit",env:{...process.env,NODE_OPTIONS:"",NODE_PATH:""}});

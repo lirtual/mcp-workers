@@ -1,5 +1,6 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { AgentReleaseSelectionError, selectLatestAgentRelease } from "./github-latest-agent-release.ts";
+import { handleAgentInstallerRequest, rejectUntrustedInstallerRequest, renderLinuxLatestInstallShell, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN } from "./install-bootstrap.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -9,6 +10,8 @@ type V2Env = Env & {
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
+  /** Test-only fetch for GitHub latest. Not a Worker binding or cache. */
+  AGENT_RELEASE_FETCH?: typeof fetch;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1085,16 +1088,37 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1" || url.pathname === "/install-macos.sh") {
-      // Serve pinned public installer only from the existing, configured
+      // Serve public installers only from the existing, configured
       // production owner Worker; other environments remain fail-closed.
       if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
         return new Response("Preview installer is disabled.\n", {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
+      const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
+      const rejected = rejectUntrustedInstallerRequest(request, origin);
+      if (rejected) return rejected;
+      // Linux resolves one mcp-workers latest snapshot. Windows and macOS stay pinned.
+      if (url.pathname === "/install.sh") {
+        const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
+        try {
+          const release = await selectLatestAgentRelease({
+            fetch: (env as V2Env).AGENT_RELEASE_FETCH ?? globalThis.fetch,
+          });
+          return new Response(renderLinuxLatestInstallShell(origin, release), {
+            status: 200,
+            headers: { ...headers, "content-type": "text/x-shellscript; charset=utf-8" },
+          });
+        } catch (error) {
+          const message = error instanceof AgentReleaseSelectionError ? error.message : "Agent Release lookup failed.";
+          return new Response(message.endsWith("\n") ? message : message + "\n", {
+            status: 503,
+            headers: { ...headers, "content-type": "text/plain; charset=utf-8" },
+          });
+        }
+      }
       return handleAgentInstallerRequest(request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,
-        (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org",
-        REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN);
+        origin, REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

@@ -48,15 +48,38 @@ test("production DO binding lists per-device tools without v1 fallback", async (
 test("production public installer routes use only reviewed pinned release", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
+  const linuxTag = "v1.4.0";
+  const linuxSha = "ab".repeat(32);
+  const linuxAssets = ["linux-x64-glibc", "linux-arm64-glibc", "windows-x64", "darwin-arm64", "darwin-x64"]
+    .map((target, index) => {
+      const ext = target === "windows-x64" ? ".zip" : ".tar.gz";
+      const name = "remote-control-agent-" + linuxTag + "-" + target + ext;
+      return {
+        id: 40 + index, name, state: "uploaded", size: 4096 + index,
+        digest: "sha256:" + (index === 0 ? linuxSha : String(index).repeat(64)),
+        browser_download_url: "https://github.com/lirtual/mcp-workers/releases/download/" + linuxTag + "/" + name,
+      };
+    });
+  let lookups = 0;
   const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: prod,
-    
+    AGENT_RELEASE_FETCH: async () => {
+      lookups += 1;
+      if (lookups > 1) throw new Error("latest lookup retried");
+      return new Response(JSON.stringify({
+        id: 77, tag_name: linuxTag, draft: false, prerelease: false, immutable: true,
+        assets: linuxAssets,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
     DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({}) } };
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();
-  assert.match(content, /remote-control-agent-v0\.1\.51/);
+  assert.equal(lookups, 1);
+  assert.match(content, /remote-control-agent-v1\.4\.0-linux-x64-glibc\.tar\.gz/);
+  assert.match(content, new RegExp(linuxSha));
   assert.match(content, /--upgrade/);
-  assert.doesNotMatch(content, /remote-control-agent-v0\.1\.13/);
+  assert.doesNotMatch(content, /lirtual\/remote-control-agent/);
+  assert.doesNotMatch(content, /remote-control-agent-v0\.1\.51|remote-control-agent-v0\.1\.13|--commit /);
   const windows = await worker.fetch(new Request(prod + "/install.ps1"), env);
   assert.equal(windows.status, 200);
   const windowsScript = await windows.text();

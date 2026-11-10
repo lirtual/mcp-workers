@@ -8,7 +8,7 @@ import { readFileSync, lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  resolvePinnedRelease, downloadPinnedAsset,
+  resolvePinnedRelease, downloadPinnedAsset, downloadSelectedReleaseAsset,
 } from "./verify-v2-release.mjs";
 import { inspectPinnedArchiveBytes, stageOrVerifyPinnedProgram }
   from "./bootstrap-node.mjs";
@@ -17,10 +17,27 @@ const SHA=/^[a-f0-9]{40}$/;
 const VERSION=/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const APP="apps/remote-control-agent";
 
+const SNAPSHOT_PREFIX="#!/bin/sh\n# Worker-origin Agent installer: one immutable GitHub Release snapshot\nset -eu\n";
+const STABLE=/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+function oneAssignment(script,name,pattern){
+  const found=[...script.matchAll(new RegExp("^"+name+"='("+pattern+")'$","gm"))];
+  if(found.length!==1)throw Error("Worker installer has no unambiguous immutable Release snapshot");
+  return found[0][1];
+}
+function snapshotAsset(script,prefix,tag,target){
+  const name="remote-control-agent-"+tag+"-"+target+".tar.gz";
+  const url=oneAssignment(script,prefix+"_url",
+    "https://github\\.com/lirtual/mcp-workers/releases/download/"+
+    tag.replaceAll(".","\\.")+"/"+name.replaceAll(".","\\."));
+  const sha256=oneAssignment(script,prefix+"_sha256","[a-f0-9]{64}");
+  const size=Number(oneAssignment(script,prefix+"_size","[1-9][0-9]{3,8}"));
+  if(!Number.isSafeInteger(size)||size>180_000_000)
+    throw Error("Worker installer has no unambiguous immutable Release snapshot");
+  return Object.freeze({url,sha256,size});
+}
 /**
- * Discover the immutable Release pin from this device's already-bound Worker.
- * Treat the installer as DATA only; never execute fetched shell text.
- * The existing GitHub release verifier still checks tag, commit and SHA-256.
+ * Read the one Release snapshot embedded in this device's Worker installer.
+ * The shell is DATA only. There is no remote commit pin and no old repository.
  */
 export async function resolveWorkerUpgradePin(endpoint,{request=fetch}={}){
   const origin=new URL(endpoint);
@@ -38,16 +55,34 @@ export async function resolveWorkerUpgradePin(endpoint,{request=fetch}={}){
     throw Error("Unexpected Worker installer size");
   const script=await response.text();
   if(Buffer.byteLength(script,"utf8")>16384||
-     !script.startsWith("#!/bin/sh\n# Worker-origin Agent installer: published immutable GitHub archive only\nset -eu\n")||
-     !script.includes('sha256sum -c -')||
-     !script.includes('case "$(uname -m)" in'))
+     !script.startsWith(SNAPSHOT_PREFIX)||
+     !script.includes("sha256sum -c -")||
+     !script.includes('case "$(uname -m)" in')||
+     script.includes("github.com/lirtual/remote-control-agent/")||
+     script.includes('--commit "'))
     throw Error("Unrecognized reviewed Worker installer");
-  const matches=[...script.matchAll(/--tag "(v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?)" --commit "([a-f0-9]{40})" --sha256 "\$expected" --endpoint "(https:\/\/[^"\s]+\/)" "\$@" < \/dev\/tty/g)];
-  if(matches.length!==1||matches[0][3]!==endpoint||
-     !/x86_64\) target=linux-x64-glibc; expected=[a-f0-9]{64} ;;/.test(script)||
-     !/aarch64\) target=linux-arm64-glibc; expected=[a-f0-9]{64} ;;/.test(script))
-    throw Error("Worker installer has no unambiguous immutable Release pin");
-  return Object.freeze({tag:matches[0][1],commit:matches[0][2]});
+  const tag=oneAssignment(script,"tag","v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)");
+  if(!STABLE.test(tag)||
+     !/ x86_64\) target=linux-x64-glibc; expected="\$x64_sha256"; bytes="\$x64_size"; download="\$x64_url" ;;/.test(script)||
+     !/ aarch64\) target=linux-arm64-glibc; expected="\$arm64_sha256"; bytes="\$arm64_size"; download="\$arm64_url" ;;/.test(script))
+    throw Error("Worker installer has no unambiguous immutable Release snapshot");
+  const endpoints=[...script.matchAll(/--endpoint "(https:\/\/[^"\s]+\/)"/g)];
+  if(endpoints.length!==1||endpoints[0][1]!==endpoint)
+    throw Error("Worker installer has no unambiguous immutable Release snapshot");
+  return Object.freeze({
+    tag,
+    x64:snapshotAsset(script,"x64",tag,"linux-x64-glibc"),
+    arm64:snapshotAsset(script,"arm64",tag,"linux-arm64-glibc"),
+  });
+}
+function normalizeUpgradePins(state,pins){
+  if(pins&&pins.commit===undefined&&pins.url===undefined&&pins.x64&&pins.arm64){
+    const chosen=state?.info?.target==="linux-arm64-glibc"?pins.arm64:
+      state?.info?.target==="linux-x64-glibc"?pins.x64:null;
+    if(!chosen)throw Error("Unsupported upgrade architecture");
+    return {home:pins.home,tag:pins.tag,url:chosen.url,sha256:chosen.sha256,size:chosen.size};
+  }
+  return pins??{};
 }
 
 function ownedFile(p,mode){
@@ -78,8 +113,26 @@ function serviceEndpoint(unit){
      endpoint!==url.origin+"/")throw Error("Untrusted installed Worker endpoint");
   return endpoint;
 }
-export function validateManualUpgrade(state,{home=os.homedir(),tag,commit}){
-  if(process.getuid()===0||!SHA.test(commit)||!VERSION.test(tag))
+function selectedAssetUrl(url,tag,target){
+  const name="remote-control-agent-"+tag+"-"+target+".tar.gz";
+  let parsed;
+  try{parsed=new URL(url);}catch{return false;}
+  return parsed.protocol==="https:"&&parsed.hostname==="github.com"&&!parsed.port&&
+    !parsed.username&&!parsed.password&&!parsed.search&&!parsed.hash&&
+    parsed.pathname==="/lirtual/mcp-workers/releases/download/"+tag+"/"+name;
+}
+export function validateManualUpgrade(state,input){
+  const pins=normalizeUpgradePins(state,input);
+  const {home=os.homedir(),tag,commit,url,sha256,size}=pins;
+  if(process.getuid()===0||!VERSION.test(tag))
+    throw Error("Manual upgrade requires a stable reviewed release");
+  let asset=null;
+  if(commit===undefined){
+    if(!selectedAssetUrl(url,tag,state?.info?.target)||!/^[a-f0-9]{64}$/.test(sha256||"")||
+       !Number.isSafeInteger(size)||size<1024||size>180_000_000)
+      throw Error("Manual upgrade requires the selected Release asset");
+    asset=Object.freeze({url,bytes:size,digest:sha256});
+  }else if(!SHA.test(commit))
     throw Error("Manual upgrade requires reviewed tag and commit");
   if(!state?.unit||!state?.root||!state?.info||!state?.ids?.permanent)
     throw Error("Only an approved permanent installation can upgrade");
@@ -107,7 +160,7 @@ export function validateManualUpgrade(state,{home=os.homedir(),tag,commit}){
   // The old unit is already owned and path-checked by manager inventory.
   const endpoint=serviceEndpoint(state.unit);
   const targetDir=path.join(programs,tag+"-"+target);
-  return Object.freeze({tag,commit,target,programs,targetDir,endpoint,oldRoot:state.root});
+  return Object.freeze({tag,commit,target,programs,targetDir,endpoint,oldRoot:state.root,asset});
 }
 /**
  * Network fetch remains bounded to reviewed immutable GitHub origins by
@@ -118,15 +171,26 @@ export async function prepareManualUpgrade(state,pins,{
   home=os.homedir(),
   resolve=resolvePinnedRelease,
   download=downloadPinnedAsset,
+  downloadAsset=downloadSelectedReleaseAsset,
   stage=stageOrVerifyPinnedProgram,
 }={}){
   const approved=validateManualUpgrade(state,{home,...pins});
-  const release=await resolve({tag:approved.tag,commit:approved.commit,target:approved.target});
-  if(release.tag!==approved.tag||release.commit!==approved.commit||
-     release.target!==approved.target||!/^[a-f0-9]{64}$/.test(release.digest))
-    throw Error("Release pin mismatch");
-  const bytes=await download(release);
-  const expected={tag:approved.tag,target:approved.target,expectedSha256:release.digest};
+  let bytes;
+  let digest;
+  if(approved.asset){
+    bytes=await downloadAsset(approved.asset);
+    if(!Buffer.isBuffer(bytes)||bytes.length!==approved.asset.bytes)
+      throw Error("Incomplete or unexpected asset length.");
+    digest=approved.asset.digest;
+  }else{
+    const release=await resolve({tag:approved.tag,commit:approved.commit,target:approved.target});
+    if(release.tag!==approved.tag||release.commit!==approved.commit||
+       release.target!==approved.target||!/^[a-f0-9]{64}$/.test(release.digest))
+      throw Error("Release pin mismatch");
+    bytes=await download(release);
+    digest=release.digest;
+  }
+  const expected={tag:approved.tag,target:approved.target,expectedSha256:digest};
   inspectPinnedArchiveBytes(bytes,expected);
   const program=stage(bytes,expected,approved.programs,path.basename(approved.targetDir));
   if(program!==approved.targetDir)throw Error("Unexpected staged version directory");
