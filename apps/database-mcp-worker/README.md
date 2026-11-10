@@ -2,6 +2,8 @@
 
 Database MCP serves authenticated `/mcp` requests using stable logical connection IDs. Other paths, including `/setup` and `/internal/hyperdrive-health`, return 404. MCP Portal authentication, per-principal/connection rate limits, SQL read guards, row/time/byte limits, structured writes/DDL and database-native permissions remain enforced.
 
+The maintained production ingress is `https://database-mcp-worker.aiyaya.workers.dev/mcp`. The older `database.lirtual.dpdns.org` custom-domain route is removed from source configuration but may remain deployed until separately authorized Cloudflare domain/DNS and Access retirement. Do not delete the domain-wide Owner Setup Access application while that public custom-domain route is still active.
+
 ## Connection configuration (Spec #760)
 
 GitHub Environment Variable `DATABASE_CONNECTIONS` is the sole logical catalog: a flat JSON object containing zero to ten unique IDs. Each value is one Direct URI (`mysql://` or `postgresql://`) or `hyperdrive://HYPERDRIVE_BINDING`. IDs use 1–64 ASCII letters/digits/underscore/hyphen, starting with a letter or digit. Removed IDs fail deterministically; multiple IDs require explicit selection.

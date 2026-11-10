@@ -6,6 +6,13 @@ import {collectWorkerVars} from './worker-release-variables.mjs';
 import {verifyBindings,readConfiguration} from './manual-worker-release.mjs';
 const catalog='{"b2b":"mysql://user:${DATABASE_B2B_PASSWORD}@#{DB_HOST}:3306/b2b"}';
 const env={DATABASE_CONNECTIONS:catalog,DATABASE_B2B_PASSWORD:'synthetic@/%:password',DB_HOST:'8.8.8.8',MCP_ACCESS_TOKEN:'synthetic-token'};
+test('Database ingress stays on workers.dev without re-creating retired Owner Setup domain',()=>{
+  for (const filename of ['wrangler.jsonc','wrangler.jsonc.example']) {
+    const config=JSON.parse(readFileSync('apps/database-mcp-worker/'+filename,'utf8'));
+    assert.equal(config.workers_dev,true);
+    assert.deepEqual(config.routes??[],[]);
+  }
+});
 test('selected Database release keeps unresolved catalog and independent secret_text payloads',()=>{
   assert.deepEqual(collectBootstrapSecrets('database-mcp-worker',env),{MCP_ACCESS_TOKEN:env.MCP_ACCESS_TOKEN,DATABASE_B2B_PASSWORD:env.DATABASE_B2B_PASSWORD});
   const vars=collectWorkerVars('database-mcp-worker',env);

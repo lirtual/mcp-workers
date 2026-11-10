@@ -39,11 +39,5 @@
       }
     }
   ],
-  "hyperdrive": [],
-  "routes": [
-    {
-      "pattern": "database.lirtual.dpdns.org",
-      "custom_domain": true
-    }
-  ]
+  "hyperdrive": []
 }
