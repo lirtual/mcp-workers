@@ -1,0 +1,212 @@
+name: Publish Agent Release
+
+# Manual stable Release only. Candidate builds, pull requests, and main pushes do not publish.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable five-platform Agent tag
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful manual native candidate run for this main commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-release
+  cancel-in-progress: false
+
+jobs:
+  refuse:
+    name: Agent publication requires the manual main workflow
+    if: github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' || github.actor != 'lirtual'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Refuse publication outside the manual main workflow
+        run: echo 'Agent publication requires the manual main workflow' >&2; exit 1
+
+  publish:
+    name: Publish immutable stable Agent Release
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+
+      - name: Review the five candidate packages before any Release write
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/agent-release"
+          mkdir -p "$work/candidates" "$work/publish"
+          immutable="$(gh api "repos/$GH_REPO/immutable-releases")"
+          run="$(gh api "repos/$GH_REPO/actions/runs/$CANDIDATE_RUN_ID")"
+          existing_release=false
+          set +e
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" >"$work/release-view.json" 2>"$work/release-view.err"
+          release_status=$?
+          gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >"$work/tag.json" 2>"$work/tag.err"
+          tag_status=$?
+          set -e
+          if [[ "$release_status" -eq 0 ]]; then
+            existing_release=true
+          elif ! grep -q 'release not found\|Not Found' "$work/release-view.json" "$work/release-view.err"; then
+            echo 'GitHub release conflict' >&2
+            exit 1
+          fi
+          existing_tag=false
+          if [[ "$tag_status" -eq 0 ]]; then
+            existing_tag=true
+          elif ! grep -q 'Not Found' "$work/tag.json" "$work/tag.err"; then
+            echo 'GitHub release conflict' >&2
+            exit 1
+          fi
+          source_macos="$(git show "$SOURCE_SHA:apps/remote-control-mcp-worker/agent/scripts/macos-local.sh" | sha256sum | awk '{print $1}')"
+          candidates='[]'
+          declare -a specs=(
+            'linux-x64-glibc ubuntu-24.04 tar.gz linux'
+            'linux-arm64-glibc ubuntu-24.04-arm tar.gz linux'
+            'windows-x64 windows-x64 zip windows'
+            'darwin-arm64 darwin-arm64 tar.gz darwin'
+            'darwin-x64 darwin-x64 tar.gz darwin'
+          )
+          macos_hashes=()
+          for spec in "${specs[@]}"; do
+            read -r target artifact ext kind <<<"$spec"
+            name="remote-control-agent-$RELEASE_TAG-$target.$ext"
+            dir="$work/candidates/$target"
+            mkdir -p "$dir"
+            gh run download "$CANDIDATE_RUN_ID" --repo "$GH_REPO" --name "$RELEASE_TAG-$artifact" --dir "$dir"
+            if [[ "$kind" == linux ]]; then
+              archive="$dir/$target/$name"
+              record="$dir/$target/SHA256SUMS.txt"
+            else
+              archive="$dir/$name"
+              record="$dir/SHA256SUMS.txt"
+            fi
+            test -f "$archive" && test ! -L "$archive"
+            test -f "$record" && test ! -L "$record"
+            observed="$(sha256sum "$archive" | awk '{print $1}')"
+            declared="$(tr -d '\r' < "$record" | awk -v name="$name" '$2 == name || $2 ~ ("/" name "$") { print $1; exit }')"
+            if [[ "$ext" == zip ]]; then
+              bundle="$(unzip -p "$archive" bundle.json)"
+            else
+              bundle="$(tar -xzOf "$archive" bundle.json)"
+            fi
+            if [[ "$kind" == darwin ]]; then
+              test -f "$dir/macos-local.sh" && test ! -L "$dir/macos-local.sh"
+              macos_hashes+=("$(sha256sum "$dir/macos-local.sh" | awk '{print $1}')")
+            fi
+            candidates="$(jq -c \
+              --arg target "$target" \
+              --arg artifact "$RELEASE_TAG-$artifact" \
+              --arg name "$name" \
+              --arg sha256 "$declared" \
+              --arg observedSha256 "$observed" \
+              --argjson bundle "$bundle" \
+              '. + [{target:$target,artifact:$artifact,name:$name,sha256:$sha256,observedSha256:$observedSha256,bundle:$bundle}]' \
+              <<<"$candidates")"
+            printf '%s\n' "$archive" >> "$work/archives.txt"
+          done
+          macos="${macos_hashes[0]:-}"
+          if [[ "${#macos_hashes[@]}" -ne 2 || "${macos_hashes[0]}" != "${macos_hashes[1]}" ]]; then
+            macos="candidate source drifted"
+          fi
+          jq -n \
+            --arg event "$EVENT_NAME" \
+            --arg ref "$REF" \
+            --arg actor "$ACTOR" \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --argjson immutable "$immutable" \
+            --argjson existingRelease "$existing_release" \
+            --argjson existingTag "$existing_tag" \
+            --argjson run "$run" \
+            --arg macos "$macos" \
+            --arg sourceMacos "$source_macos" \
+            --argjson candidates "$candidates" \
+            '{event:$event,ref:$ref,actor:$actor,deployWorker:false,releaseTag:$releaseTag,sourceSha:$sourceSha,immutableReleases:$immutable,existingRelease:$existingRelease,existingTag:$existingTag,candidateRun:{event:$run.event,path:$run.path,head_branch:$run.head_branch,head_sha:$run.head_sha,status:$run.status,conclusion:$run.conclusion},macosScriptSha256:$macos,sourceMacosScriptSha256:$sourceMacos,candidates:$candidates}' \
+            > "$work/preflight.json"
+          node apps/remote-control-mcp-worker/agent/scripts/agent-release-guard.mjs preflight < "$work/preflight.json"
+          while IFS= read -r archive; do
+            cp -- "$archive" "$work/publish/$(basename "$archive")"
+          done < "$work/archives.txt"
+
+      - name: Publish the draft, then require an immutable stable Latest readback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/agent-release"
+          test -s "$work/preflight.json"
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo 'existing release may not be overwritten' >&2
+            exit 1
+          fi
+          assets=(
+            "$work/publish/remote-control-agent-$RELEASE_TAG-linux-x64-glibc.tar.gz"
+            "$work/publish/remote-control-agent-$RELEASE_TAG-linux-arm64-glibc.tar.gz"
+            "$work/publish/remote-control-agent-$RELEASE_TAG-windows-x64.zip"
+            "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-arm64.tar.gz"
+            "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-x64.tar.gz"
+          )
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GH_REPO" \
+            --target "$SOURCE_SHA" \
+            --title "Remote Control Agent $RELEASE_TAG" \
+            --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
+            --draft
+          mkdir -p "$work/recheck"
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$work/recheck" --clobber
+          downloaded='[]'
+          for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
+            sha="$(sha256sum "$work/recheck/$name" | awk '{print $1}')"
+            downloaded="$(jq -c --arg name "$name" --arg sha256 "$sha" '. + [{name:$name,sha256:$sha256}]' <<<"$downloaded")"
+          done
+          release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+            -F draft=false -F prerelease=false -F make_latest=true >/dev/null
+          release="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+          latest="$(gh api "repos/$GH_REPO/releases/latest")"
+          tag="$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG")"
+          jq -n \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --argjson release "$release" \
+            --argjson latest "$latest" \
+            --argjson tag "$tag" \
+            --argjson downloaded "$downloaded" \
+            --argjson expected "$(jq '[.candidates[] | {name,sha256}]' "$work/preflight.json")" \
+            '{releaseTag:$releaseTag,sourceSha:$sourceSha,release:$release,latest:$latest,tag:$tag,downloaded:$downloaded,expectedAssets:$expected}' \
+            > "$work/readback.json"
+          node apps/remote-control-mcp-worker/agent/scripts/agent-release-guard.mjs readback < "$work/readback.json"
+          echo "Verified immutable stable Latest $RELEASE_TAG; no Worker deployment."

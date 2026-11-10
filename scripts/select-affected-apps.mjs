@@ -32,20 +32,31 @@ function requiresAllApps(file) {
     || file.startsWith('scripts/worker-release-variables');
 }
 
+const AGENT_NATIVE_WORKFLOW = '.github/workflows/agent-native-candidates.yml';
+const AGENT_RELEASE_WORKFLOW = '.github/workflows/agent-release.yml';
+
+function selectsRemoteControl(file) {
+  return file.startsWith('apps/remote-control-mcp-worker/')
+    || file === AGENT_NATIVE_WORKFLOW
+    || file === AGENT_RELEASE_WORKFLOW;
+}
+
 export function selectAffectedApps(changedFiles) {
   if (changedFiles.some(requiresAllApps)) return [...APPLICATIONS];
   return APPLICATIONS.filter(app => changedFiles.some(file =>
-    file.startsWith(`apps/${app}/`) || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/')))));
+    file.startsWith(`apps/${app}/`)
+    || (app === 'remote-control-mcp-worker' && (file === AGENT_NATIVE_WORKFLOW || file === AGENT_RELEASE_WORKFLOW))
+    || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/')))));
 }
 
 export function selectionDetails(changedFiles) {
   const apps = selectAffectedApps(changedFiles);
   const checkAll = changedFiles.some(requiresAllApps);
-  const remoteControlChanged = checkAll || changedFiles.some(file =>
-    file.startsWith('apps/remote-control-mcp-worker/'));
+  const remoteControlChanged = checkAll || changedFiles.some(selectsRemoteControl);
   // Five-platform native builds follow nested Agent source only, not every Worker edit.
   const agentNativeChanged = changedFiles.some(file =>
-    file.startsWith('apps/remote-control-mcp-worker/agent/'));
+    file.startsWith('apps/remote-control-mcp-worker/agent/')
+    || file === AGENT_NATIVE_WORKFLOW);
   return {
     apps,
     databaseChanged: apps.includes('database-mcp-worker'),

@@ -948,9 +948,8 @@ test("#70 pidfd capability probe is isolated and refuses unsupported syscall bef
 test("native Windows packaging and installer omit the retired screenshot helper", async () => {
   const testDir = path.dirname(fileURLToPath(import.meta.url));
   const agentRoot = path.resolve(testDir, "..");
-  const repoRoot = path.resolve(agentRoot, "../..");
   const expected = "windows-private-store|windows-session-private-store|windows-user-task|windows-stage-install|windows-upgrade-once";
-  const installer = await readFile(path.join(repoRoot, "install.ps1"), "utf8");
+  const installer = await readFile(path.join(agentRoot, "install.ps1"), "utf8");
   const stageFixture = await readFile(path.join(testDir, "fixtures/windows-stage-only.ps1"), "utf8");
   const builder = await readFile(path.join(agentRoot, "scripts/build-windows-preview.mjs"), "utf8");
   const verifier = await readFile(path.join(agentRoot, "scripts/verify-windows-preview.mjs"), "utf8");

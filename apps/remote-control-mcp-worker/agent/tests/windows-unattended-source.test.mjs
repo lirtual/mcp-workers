@@ -3,7 +3,7 @@ import {test} from "node:test";
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 
-const text=readFileSync(fileURLToPath(new URL("../../../install.ps1",import.meta.url)),"utf8");
+const text=readFileSync(fileURLToPath(new URL("../install.ps1",import.meta.url)),"utf8");
 test("unattended Windows opt-in is limited to a running, already-paired owner task",()=>{
   for(const part of [
     "Invoke-AgentUpgradeFreeze $identityFile 'freeze'",
