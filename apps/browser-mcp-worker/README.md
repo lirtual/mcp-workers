@@ -21,15 +21,14 @@ on 2026-11-10 the Owner authorized **QQ OTP only** for this Browser application.
 The release gate now rejects unexpected SSO/multiple IdPs, Owner or policy changes,
 and any Audience/session drift. Unrelated organization OTP providers do not
 block this application-specific verification. EdgeSSH and other Access applications
-are unaffected. The separate `Browser` MCP Access app still uses a reusable
-three-mailbox human Allow policy shared with 12 other Access apps; its Workflow
-Service Token policy remains separate. Do not edit that shared policy to narrow
-Browser-only human login. A separately reviewed `Browser MCP Owner QQ Only`
-reusable Policy (`07204847-0459-4197-b3c3-2dbe2a47a550`) was created with
-no attachments. Once the Browser-only Access policy cutover is independently
-verified, this policy replaces only Browser's shared human Allow reference;
-`WORKFLOWS`, other Access applications and the 24h Browser MCP session remain
-unchanged. Code/CI merge alone does not switch production Access.
+are unaffected. Separately, the `Browser` MCP Access app was scoped on
+2026-11-10 to the reusable `Browser MCP Owner QQ Only` policy
+(`07204847-0459-4197-b3c3-2dbe2a47a550`) with exact `lirtual@qq.com`.
+Cloudflare app/policy readback confirmed its unique reference (app_count=1),
+that the original three-mailbox shared Allow rule still serves 12 other apps,
+and that `WORKFLOWS` Service Token, Audience and the 24h Browser MCP session
+are unchanged. Fresh human login E2E was not performed; the earlier activation
+`Not found` remains a separate unlocated symptom.
 No extra Worker, DB migration, queue, or browser-extension protocol change is introduced.
 The historical Review Access application was removed **after** the authorized Worker release and readback: public `/owner/unknown/*` returns 404 while Browser Activation remains Access-protected ([retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175)). The retired Review-only variables are absent from the new deployment; the original activation variables, Owner identity, and historical receipts remain intact. No new Worker or identity service was introduced.
 
