@@ -2,7 +2,7 @@
 
 Spec: [#849](https://github.com/lirtual/mcp-workers/issues/849) — ready-for-agent，Issue 发布不代表实施或生产授权。
 
-Status: **6/6 Secrets + 2/2 Variables 已原值迁至 Repository 且逐字节独立核验 Pass；Repository 配置现为 6 Variables / 10 Secrets，10 Environments 原样保留；PR #850 仍为 Draft，未发布生产**（2026-11-11）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A，并在设计 Spec 之后分别授权代码实施、临时迁移入口合并、六个 Secret 原值迁移及两个 Variable 原值迁移。最初只读预检和阶段性未完成事项按时间顺序保留；当前有效状态以本页末尾最新实测回执为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
+Status: **6/6 Secrets + 2/2 Variables 原值迁移及独立字节验证 Pass；正式消费者切换 PR #850 已合并至 main `1b8fdb6`，现为 Repository 6 Variables / 10 Secrets / 10 Environments；10 个旧 Environment 尚未获删除授权，未发布生产 Worker**（2026-11-11）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A，并在设计 Spec 后分别授权代码实施、临时迁移入口合并、六个 Secret 原值迁移、两个 Variable 原值迁移及 PR #850 消费者切换。早期只读预检与阶段性待办保留为历史记录；最新可执行状态以本页末尾实测回执为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
 
 ## 已确定决策
 
@@ -139,3 +139,12 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 - 与 GitHub 官方事件语义一致：`workflow_dispatch` 可针对分支选择，但其工作流须存在默认分支；`repository_dispatch` 与 `schedule` 只在默认分支文件上触发。参考 [GitHub Events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)。仅有旧分支包含 `environment` 字符串不足以认定可自动重建 Environment。
 - PR #850 待合并树的现行 **6 个工作流均不再声明 job-level `environment`**；`release.yml`、`acceptance.yml`、`agent-release.yml`、`spec775-business-acceptance.yml` 保持手动触发，`ci.yml` 的 `push` 仅针对 main。已接受的例外仍是移除 Agent Release 平台人工审批、扩大 Repository Secret 可用范围及 main 无 Branch Protection/Ruleset（见 ADR-0003）；**不应声称安全等级不变**。
 - 合并 PR #850 后先回读真实 main 工作流、CI 与 Repository 6 Variables / 10 Secrets / 10 Environments；只有在**另外授权删除**且再次核对实时工作流、分支和在途/审批 Runs 后，才能串行删除 10 个 Environments 并回读目标 6/10/0。现阶段删除 **Not run**；生产 Worker E2E **Not run**。
+
+## 2026-11-11 PR #850 正式 Repository 消费者切换及合并后验收
+
+- **代码已合并**：[PR #850](https://github.com/lirtual/mcp-workers/pull/850) 审核的 Head 为 `be1058ce4a12ecd4de1ca0487744057fec4f86ec`，合并后真实 `main=1b8fdb6f65e4880635552c54086707ada27fcc62`；[PR CI #42869187849](https://github.com/lirtual/mcp-workers/actions/runs/42869187849) 和 [main Push CI #42870597084](https://github.com/lirtual/mcp-workers/actions/runs/42870597084) 均 **completed/success**，包括应用、数据库集成、Windows/Linux/macOS 原生构建及强制门禁。
+- **真实 main 代码回读 Pass**：从 `origin/main` 的六份现行 GitHub Actions YAML 独立解析全部 Job，`job.environment` **0**；Release/Acceptance/Agent Release/Spec775 仅包含 `workflow_dispatch`。四项专有 Secret `RAINDROP_ACCESS_TOKEN`、`IMA_API_KEY`、`ACTIONS_GITHUB_DISPATCH_TOKENS`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` 均保持选定 Worker 条件注入；`WORKFLOW_RELEASE_GATE_CONTRACT_OK` 和本地相关 **92/92** 定向测试 Pass。
+- **GitHub Settings 再回读 Pass**：Repository **6 Variables / 10 Secrets**，原 10 个 GitHub Environments **仍全部存在**；原值迁移证据分别为 2/2 Variables 和 6/6 Secrets 完整字节 Pass。合并仅触发 `main` Push CI，未出现任何待处理/运行中的 Release Worker、Publish Agent Release 或 Workflow Acceptance。未修改 Cloudflare Worker 运行时、Portal、Access、D1、业务数据或生产版本。
+- **历史分支增量审查**：上述 500 个分支 tip 的集中扫描后，合并前新增第 **501** 个远端分支 `implement/spec853-oauth-t0-20261111`，另以当前 tip 独立核对其 6 个 Workflow / 13 个旧 Environment Job：全部 `workflow_dispatch`，且 Job `if` 要求 `refs/heads/main`，无新可达旧入口。扫描只证明**当时**的远端分支快照，最终删 Environment 前须重新回读。
+- **已接受且实际生效的风险**：Repository Secrets 的可访问工作流范围比各旧 Environment 更广；移除 Agent Release 的 GitHub Environment 人工审批绑定，`main` 仍无平台 Branch Protection/Ruleset。这些不是等价安全保护，不应声称风险被消除。所有生产部署与发布仍需要 Owner 单独授权。
+- **明确未完成（Spec 保持 Open）**：最终删除 10 个 GitHub Environments 必须另行授权，删除前复核现行 main、Owner、CI、在途/待审批 Runs、旧分支触发可达性与恢复条件，执行后逐个回读至 **6 Variables / 10 Secrets / 0 Environments**。本轮没有生产业务 E2E；共享配置来源已由旧/新独立原值验真加真实 main 工作流/CI 静态及集成门禁验证，不能把未执行的生产 E2E 记为 Pass。
