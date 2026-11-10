@@ -2,7 +2,7 @@
 
 Spec: [#849](https://github.com/lirtual/mcp-workers/issues/849) — ready-for-agent，Issue 发布不代表实施或生产授权。
 
-Status: Accepted **design decision** (2026-11-10); code implementation requested by Owner; GitHub Settings migration, deletion and production remain independently gated.
+Status: **Accepted design decision** (2026-11-10); 2 Variables + 6 Secrets original-byte Repository migration and consumer code PR #850 merge completed (2026-11-11). The 10 GitHub Environments are still present; their deletion and all production releases remain separately gated.
 
 Owner 决定将 `lirtual/mcp-workers` 余下 2 个 GitHub Actions Environment Variables、6 个 Environment Secrets 在**原值不变**的前提下迁至 Repository 级，移除工作流中的 Environment 依赖并最终删除全部 10 个 Environments。此处仅改变 GitHub Actions 配置来源，不改变 Cloudflare Worker 运行时绑定、业务数据或生产发布；不新建密钥代理、兼容层、审批系统或分支 Ruleset。
 
