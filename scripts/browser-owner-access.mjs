@@ -1,6 +1,6 @@
 // Read-only Browser Profile Activation (#531) Access release gate.
-// After the production cutover, only the exact Cloudflare account-member SSO + OTP
-// configuration is accepted; OTP-only rollback or incomplete inventories fail closed. No API writes.
+// Current Browser production policy permits the exact QQ Owner OTP identity only.
+// Unexpected SSO/multiple IdPs or incomplete inventories fail closed. No API writes.
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { collectWorkerVars } from "./worker-release-variables.mjs";
@@ -10,10 +10,7 @@ const ACTIVATION_DOMAIN = "browser.lirtual.dpdns.org/activate/verify/*";
 // Current independently inspected Access policy and identity-provider identities.
 // Changing these trust boundaries requires reviewed code and a separate release.
 const REVIEWED_POLICY_ID = "a9ad0c55-9533-4391-ad59-60018b264401";
-const REVIEWED_IDPS = new Set([
-  "6a3456ba-dd71-47e9-a888-b53aaa5dc93b", // OTP
-  "26b88b6c-81e8-4f70-93ba-8af984bd5d63", // account-member SSO
-]);
+const REVIEWED_OTP_ID = "6a3456ba-dd71-47e9-a888-b53aaa5dc93b";
 const fail = (ok,code) => {if(!ok)throw Error(code);};
 function responseList(body,code) {
   const info=body?.result_info;
@@ -38,15 +35,10 @@ export function verifyBrowserActivationAccess(app,policies,providers,env) {
     "app_identity");
   fail(app.session_duration === "15m","app_session");
   const otp = providers.filter(p=>p?.type === "onetimepin");
-  const cloudflare = providers.filter(p=>p?.type === "cloudflare" &&
-    p.config?.restrict_to_account_members === true);
-  fail(otp.length===1 && /^[a-f0-9-]{36}$/i.test(otp[0].id),"otp_provider");
-  fail(Array.isArray(app.allowed_idps) && app.allowed_idps.includes(otp[0].id),"otp_pin");
-  fail(app.allowed_idps.length===2 && app.auto_redirect_to_identity===false &&
-    cloudflare.length===1 && app.allowed_idps.includes(cloudflare[0].id),
-    "idp_scope");
-  fail(new Set(app.allowed_idps).size === app.allowed_idps.length &&
-    app.allowed_idps.every(id=>REVIEWED_IDPS.has(id)),"idp_scope");
+  fail(otp.length===1 && otp[0].id===REVIEWED_OTP_ID,"otp_provider");
+  fail(Array.isArray(app.allowed_idps) && app.allowed_idps.includes(REVIEWED_OTP_ID),"otp_pin");
+  fail(app.allowed_idps.length===1 && app.allowed_idps[0]===REVIEWED_OTP_ID &&
+    app.auto_redirect_to_identity===false,"idp_scope");
   fail(Array.isArray(policies) && policies.length===1,"policy_count");
   const policy=policies[0];
   fail(policy.id===REVIEWED_POLICY_ID && policy.decision==="allow" &&
