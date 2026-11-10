@@ -12,7 +12,7 @@ import type {WorkflowStep} from 'cloudflare:workers';
 
 const runId='11111111-1111-4111-8111-111111111111';
 const repo='lirtual/github-actions',ref='refs/tags/task-v1',sha='a'.repeat(40);
-const audience='workflow-github-action:production';
+const audience='workflow-github-action';
 const action={repository:repo,repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/task.yml',commitSha:sha,type:'task' as const,
  contractDigest:'b'.repeat(64)};

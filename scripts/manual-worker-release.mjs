@@ -181,6 +181,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(present.length > 0 || JSON.stringify(expected) === "[]",
         "Workflow approved repositories missing from existing runtime");
     }
+    if (options.mode === "preflight" && options.workflowAudienceRename) {
+      invariant(find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE", "plain_text")?.text ===
+        "workflow-github-action:production", "One-time Action Audience rename requires the reviewed old value");
+    }
     if (options.mode === "preflight" && options.requireExistingSecrets) {
       invariant(!!find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") &&
         !!find("WORKFLOW_MCP_PORTAL_ENDPOINT", "plain_text") &&
@@ -205,7 +209,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "GITHUB_TEST_DEDICATED_EXECUTOR"].includes(x.name)),
         "Retired fixed GitHub executor variables must be removed");
       invariant(find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
-        "workflow-github-action:production", "Workflow Action OIDC audience drift");
+        "workflow-github-action", "Workflow Action OIDC audience drift");
       for (const name of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);
@@ -1153,7 +1157,9 @@ async function main() {
   const read = async () => {
     const observed = await current(account, worker, token, {
       mode, sourceConfig, requireExistingSecrets: mode === "preflight" &&
-        process.env.WORKFLOW_CODE_ONLY === "true", previousNamespaceId: previous?.previousNamespaceId,
+        process.env.WORKFLOW_CODE_ONLY === "true",
+      workflowAudienceRename: mode === "preflight" && process.env.WORKFLOW_AUDIENCE_RENAME === "true",
+      previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
       sharedAccessTeamDomain: ["browser-mcp-worker", "database-mcp-worker"].includes(worker)
         ? process.env.ACCESS_TEAM_DOMAIN : undefined,

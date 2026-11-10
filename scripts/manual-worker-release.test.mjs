@@ -368,6 +368,11 @@ test("Workflow code-only release never stages secrets or runs migrations, preser
   const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
   assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
   assert.match(deployment, /deploy_args=\(--keep-vars\)/);
+  assert.match(workflow, /workflow_audience_rename:[\s\S]*?default: false/);
+  assert.match(deployment, /WORKFLOW_AUDIENCE_RENAME: \$\{\{ inputs.workflow_audience_rename \}\}/);
+  assert.match(deployment, /if \[\[ "\$WORKFLOW_AUDIENCE_RENAME" == 'true' \]\]/);
+  assert.match(deployment, /deploy_args\+=\(--var 'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action'\)/);
+  assert.match(workflow, /"\$SELECTED_WORKER" == 'workflow-mcp-worker' && "\$WORKFLOW_CODE_ONLY" == 'true'/);
   assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
   assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
   assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
@@ -888,7 +893,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
@@ -896,6 +901,19 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  // One-time Audience cutover requires precisely the reviewed prior trust value.
+  const fromOld=bindings.map(item=>item.name==='WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'
+    ? {...item,text:'workflow-github-action:production'}:item);
+  const verifyRename=items=>verifyBindings('workflow-mcp-worker',
+    {...settings,bindings:items},secrets,{mode:'preflight',workflowAudienceRename:true});
+  assert.equal(verifyRename(fromOld),true);
+  for (const invalid of [bindings,
+    bindings.map(item=>item.name==='WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'
+      ? {...item,text:'workflow-github-action:other'}:item),
+    bindings.filter(item=>item.name!=='WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE')]) {
+    assert.throws(()=>verifyRename(invalid),/reviewed old value/);
+  }
+  assert.throws(()=>check(fromOld),/Action OIDC audience drift/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"}],
     [...secrets,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY"}]),/Unexpected runtime Secret/);
   assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),
@@ -1013,7 +1031,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
@@ -1037,7 +1055,7 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action"},
   ];
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
@@ -1207,7 +1225,7 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
     {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
     {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
     {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
-    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action:production'}];
+    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action'}];
   const wrap=x=>({bindings:x,observability:{enabled:true,logs:{invocation_logs:true}}});
   const inventory=[...bindings,...old.map(name=>({name,type:'secret_text'}))];
   const listed=[...secrets,...old.map(name=>({name}))];
@@ -1262,7 +1280,7 @@ test('Spec 733 Workflow Portal identity and grants must retain exact approved va
     {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
     {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
     {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
-    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action:production'}];
+    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action'}];
   const old=[...common,{name:'MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
     {name:'GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants}];
   const current=[...common,{name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
