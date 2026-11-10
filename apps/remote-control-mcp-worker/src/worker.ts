@@ -13,6 +13,8 @@ type V2Env = Env & {
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
   /** Test seam only. Production uses the Worker runtime fetch. Not a binding. */
   AGENT_RELEASE_FETCH?: typeof fetch;
+  /** Test seam only. Production uses the existing Workers Cache API. */
+  AGENT_RELEASE_CACHE?: Pick<Cache, "match" | "put">;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1111,10 +1113,12 @@ function linuxReleaseFailure(decision: Extract<LatestReleaseDecision, { ok: fals
 }
 
 /** One readLatestAgentRelease call. The shell does not look up latest again. */
-async function linuxLatestInstall(request: Request, origin: string, doFetch: typeof fetch): Promise<Response> {
+async function linuxLatestInstall(
+  request: Request, origin: string, doFetch: typeof fetch, releaseCache?: Pick<Cache, "match" | "put">,
+): Promise<Response> {
   const rejected = rejectLatestInstallRequest(request, origin);
   if (rejected) return rejected;
-  const decision = await readLatestAgentRelease(doFetch);
+  const decision = await readLatestAgentRelease(doFetch, releaseCache);
   if (!decision.ok) return linuxReleaseFailure(decision);
   try {
     return new Response(renderLinuxLatestInstallShell(origin, decision.release), {
@@ -1145,13 +1149,16 @@ export default {
       }
       const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
       const releaseFetch = (env as V2Env).AGENT_RELEASE_FETCH ?? fetch;
+      const releaseCache = (env as V2Env).AGENT_RELEASE_CACHE ??
+        // DOM CacheStorage typings omit Cloudflare Workers' default cache.
+        (typeof caches === "undefined" ? undefined : (caches as CacheStorage & { default: Cache }).default);
       if (url.pathname === "/install-macos.sh") {
         const rejected = rejectLatestInstallRequest(request, origin);
         if (rejected) return rejected;
-        const decision = await readLatestAgentRelease(releaseFetch);
+        const decision = await readLatestAgentRelease(releaseFetch, releaseCache);
         return handleLatestMacInstallRequest(request, origin, decision);
       }
-      if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin, releaseFetch);
+      if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin, releaseFetch, releaseCache);
       return handleAgentInstallerRequest(request, origin);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
