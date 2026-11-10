@@ -24,7 +24,7 @@ function requestPipe(pipe,action){
   });
 }
 async function requestPowershell(key,action,fromTask=false){
-  const target=fromTask?"../scripts/windows-user-task.ps1":"../../../install.ps1";
+  const target=fromTask?"../scripts/windows-user-task.ps1":"../install.ps1";
   const source=await readFile(fileURLToPath(new URL(target,import.meta.url)),"utf8");
   const functionText=source.split("function Invoke-AgentUpgradeFreeze(")[1]
     ?.split(fromTask?"if ($Action -eq 'Switch')":"# A Remote Control Shell may schedule")[0];

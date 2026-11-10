@@ -12,7 +12,7 @@ for file in "${files[@]}"; do
   echo "::group::Remote Control test: ${file}"
   echo "Starting ${file} at $(date -u +%H:%M:%S) UTC"
   if timeout --signal=TERM --kill-after=5s 45s \
-    node --experimental-strip-types --test "${file}"; then
+    node --experimental-strip-types --import ./scripts/register-ps1-text.mjs --test "${file}"; then
     echo "::endgroup::"
     continue
   else

@@ -194,18 +194,22 @@ test('public installation home is isolated from authentication and shows the two
   assert.equal(requestInstall(new Request(custom+'/install.ps1'),undefined,custom).status,503);
 });
 
-test('Windows installer fetches only independently source-pinned script and release',async()=>{
+test('Windows installer resolves one mcp-workers latest Release and does not fetch the old repository',async()=>{
   const { renderAgentInstallPowerShell } = await import('../src/install-bootstrap.ts');
   const synthetic={tag:'v0.1.99-windows.1',commit:'a'.repeat(40),scriptSha256:'b'.repeat(64),assetSha256:'c'.repeat(64)};
-  const script=renderAgentInstallPowerShell(origin,synthetic);
-  assert.match(script,/Invoke-WebRequest .* -MaximumRedirection 0/);
-  assert.match(script,/SHA-256 mismatch/);
-  assert.match(script,/ScriptBlock\]::Create/);
-  assert.match(script,/-PinnedReleaseSha256/);
+  const script=renderAgentInstallPowerShell(origin);
+  assert.match(script,/https:\/\/api\.github\.com\/repos\/lirtual\/mcp-workers\/releases\/latest/);
+  assert.match(script,/MaximumRedirection 0/);
+  assert.match(script,/SHA256 mismatch/);
+  assert.match(script,/SelectedReleaseSha256/);
+  assert.doesNotMatch(script,/raw\.githubusercontent\.com/);
+  assert.doesNotMatch(script,/github\.com\/lirtual\/remote-control-agent/);
+  assert.doesNotMatch(script,/PinnedCommit/);
+  assert.doesNotMatch(script,/v0\.1\.99-windows\.1/);
   const resp=handleAgentInstallerRequest(new Request(origin+'/install.ps1'),undefined,origin,synthetic);
   assert.equal(resp.status,200);
-  assert.match(await resp.text(),/v0\.1\.99-windows\.1/);
-  assert.throws(()=>renderAgentInstallPowerShell(origin,{...synthetic,commit:'not-pinned'}),/Unapproved/);
+  assert.match(await resp.text(),/lirtual\/mcp-workers\/releases\/latest/);
+  assert.throws(()=>renderAgentInstallPowerShell('https://unknown.example/path'),/Unapproved/);
 });
 
 test('homepage copy state follows the separately verified platform pins',async()=>{
@@ -250,10 +254,11 @@ test('reviewed Linux and Windows v0.1.51 public installers pin immutable local u
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
-  assert.match(ps1, /v0\.1\.51/);
-  assert.match(ps1, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
-  assert.match(ps1, /6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a/);
-  assert.match(ps1, /03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311/);
+  assert.match(ps1, /https:\/\/api\.github\.com\/repos\/lirtual\/mcp-workers\/releases\/latest/);
+  assert.doesNotMatch(ps1, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
+  assert.doesNotMatch(ps1, /6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a/);
+  assert.doesNotMatch(ps1, /03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311/);
+  assert.doesNotMatch(ps1, /raw\.githubusercontent\.com/);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
   assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
