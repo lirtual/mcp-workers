@@ -114,7 +114,7 @@ test("#809 macOS route reports lookup failures without a script or old repositor
   const origin = ORIGIN;
   const cases = [
     { status: 404, http: 503, body: "No stable Agent Release is published.\n" },
-    { status: 403, http: 403, body: "GitHub refused the Agent Release lookup.\n" },
+    { status: 403, http: 403, body: "GitHub refused the Agent Release lookup.\n", retry: "12" },
     { status: 429, http: 429, body: "GitHub rate limit stopped the Agent Release lookup.\n", retry: "30" },
   ];
   for (const item of cases) {

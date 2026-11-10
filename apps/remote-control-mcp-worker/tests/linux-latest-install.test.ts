@@ -134,18 +134,24 @@ test("Linux install.sh fails closed when GitHub has no stable latest release", a
 test("GitHub 403 and 429 stop Linux install without a retry or a script", async () => {
   const forbidden = await serve(403, { message: "forbidden" }, { "retry-after": "12" });
   assert.equal(forbidden.calls.length, 1);
-  assert.equal(forbidden.response.status, 503);
+  assert.equal(forbidden.response.status, 403);
+  assert.equal(forbidden.response.headers.get("retry-after"), "12");
   assert.match(forbidden.text, /GitHub refused the Agent Release lookup/);
-  assert.match(forbidden.text, /Retry-After: 12/);
+  assert.doesNotMatch(forbidden.text, /Retry-After:/);
   assert.doesNotMatch(forbidden.text, /^#!/);
 
-  const limited = await serve(429, { message: "slow down" }, { "retry-after": "30 seconds" });
+  const limited = await serve(429, { message: "slow down" }, { "retry-after": "30" });
   assert.equal(limited.calls.length, 1);
-  assert.equal(limited.response.status, 503);
+  assert.equal(limited.response.status, 429);
+  assert.equal(limited.response.headers.get("retry-after"), "30");
   assert.match(limited.text, /GitHub rate limit blocked the Agent Release lookup/);
   assert.doesNotMatch(limited.text, /Retry-After:/);
-  assert.doesNotMatch(limited.text, /30 seconds/);
   assert.doesNotMatch(limited.text, /^#!/);
+
+  const prose = await serve(429, { message: "slow down" }, { "retry-after": "30 seconds" });
+  assert.equal(prose.response.status, 429);
+  assert.equal(prose.response.headers.get("retry-after"), null);
+  assert.doesNotMatch(prose.text, /30 seconds/);
 });
 
 test("redirected, wrong, draft, prerelease and incomplete latest releases are not installed", async () => {
@@ -153,7 +159,7 @@ test("redirected, wrong, draft, prerelease and incomplete latest releases are no
   assert.equal(redirected.calls.length, 1);
   assert.equal(redirected.calls[0]?.init?.redirect, "manual");
   assert.equal(redirected.response.status, 503);
-  assert.match(redirected.text, /metadata redirected/);
+  assert.match(redirected.text, /not a stable five-platform immutable Release/);
   assert.doesNotMatch(redirected.text, /evil\.example/);
   assert.doesNotMatch(redirected.text, /^#!/);
 

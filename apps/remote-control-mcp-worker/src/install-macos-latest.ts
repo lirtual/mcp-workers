@@ -129,8 +129,8 @@ export function renderLatestMacInstallShell(origin: string, release: SelectedAge
 
 const NO_STORE = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
 
-/** Reject a bad installer request before any GitHub lookup. Null means proceed. */
-export function rejectMacInstallRequest(request: Request, trustedOrigin: string | undefined): Response | null {
+/** Reject a bad latest-install request before any GitHub lookup. Null means proceed. */
+export function rejectLatestInstallRequest(request: Request, trustedOrigin: string | undefined): Response | null {
   const url = new URL(request.url);
   if (request.method !== "GET" || url.search || url.hash || request.headers.has("origin")) {
     return new Response("Invalid installation request.\n", { status: 405, headers: NO_STORE });
@@ -146,17 +146,21 @@ export function rejectMacInstallRequest(request: Request, trustedOrigin: string 
   return null;
 }
 
+function retryHeaders(decision: Extract<LatestReleaseDecision, { ok: false }>): Record<string, string> {
+  const headers: Record<string, string> = { ...NO_STORE };
+  if (decision.retryAfter) headers["retry-after"] = decision.retryAfter;
+  return headers;
+}
+
 export function macInstallFailure(decision: Extract<LatestReleaseDecision, { ok: false }>): Response {
   if (decision.stop === "not_found") {
     return new Response("No stable Agent Release is published.\n", { status: 503, headers: NO_STORE });
   }
   if (decision.stop === "forbidden") {
-    return new Response("GitHub refused the Agent Release lookup.\n", { status: 403, headers: NO_STORE });
+    return new Response("GitHub refused the Agent Release lookup.\n", { status: 403, headers: retryHeaders(decision) });
   }
   if (decision.stop === "rate_limited") {
-    const headers: Record<string, string> = { ...NO_STORE };
-    if (decision.retryAfter) headers["retry-after"] = decision.retryAfter;
-    return new Response("GitHub rate limit stopped the Agent Release lookup.\n", { status: 429, headers });
+    return new Response("GitHub rate limit stopped the Agent Release lookup.\n", { status: 429, headers: retryHeaders(decision) });
   }
   return new Response("Stable Agent Release is not usable.\n", { status: 503, headers: NO_STORE });
 }
@@ -166,7 +170,7 @@ export function handleLatestMacInstallRequest(
   trustedOrigin: string | undefined,
   decision: LatestReleaseDecision,
 ): Response {
-  const rejected = rejectMacInstallRequest(request, trustedOrigin);
+  const rejected = rejectLatestInstallRequest(request, trustedOrigin);
   if (rejected) return rejected;
   if (!decision.ok) return macInstallFailure(decision);
   return new Response(renderLatestMacInstallShell(trustedOrigin as string, decision.release), {

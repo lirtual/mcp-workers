@@ -93,9 +93,13 @@ export function selectionForEvent(env) {
     selected = [env.MANUAL_WORKER];
     changedFiles = [];
   } else if (env.EVENT_NAME === 'push' && env.MANUAL_REF === 'refs/heads/main') {
-    // Main always validates the full active application set, not only the diff.
+    // Main always validates the full active application set. Native builds still
+    // follow the diff when the previous commit is a real SHA. A placeholder such
+    // as "unavailable" must not call git and must not throw.
     selected = [...APPLICATIONS];
-    changedFiles = [];
+    changedFiles = /^[0-9a-f]{40}$/.test(env.BEFORE_SHA ?? '')
+      ? changedFilesForCurrentEvent(env)
+      : [];
   } else {
     changedFiles = changedFilesForCurrentEvent(env);
     selected = selectAffectedApps(changedFiles);

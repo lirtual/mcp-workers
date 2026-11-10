@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   acceptAgentReleaseReadback,
+  requireReadbackAfterPromotion,
   reviewAgentPublication,
 } from '../scripts/agent-release-guard.mjs';
 
@@ -208,6 +209,13 @@ test('only the manual Agent workflow can publish, and it does not deploy the Wor
   assert.doesNotMatch(workflow, /-X (?:PUT|DELETE)|--method (?!GET|PATCH)\w+[^\n]*immutable-releases|immutable-releases[^\n]*-X PUT/);
   assert.match(workflow, /make_latest=true/);
   assert.match(workflow, /prerelease=false/);
+  assert.deepEqual(requireReadbackAfterPromotion(workflow), { ok: true });
+  const hashedBeforePromotion = workflow.replace(
+    'release="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"',
+    'gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$work/recheck" --clobber\n          sha256sum "$work/recheck/early"\n          release="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"',
+  );
+  assert.throws(() => requireReadbackAfterPromotion(hashedBeforePromotion),
+    /downloaded and rehashed after/);
   assert.doesNotMatch(workflow, /wrangler|uses: \.\/\.github\/workflows\/release\.yml|workflow-mcp-worker/);
   for (const name of [
     'remote-control-agent-$RELEASE_TAG-linux-x64-glibc.tar.gz',

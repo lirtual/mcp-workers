@@ -144,7 +144,7 @@ function Resolve-LatestAgentRelease {
   if ([int]$response.StatusCode -ne 200) { throw 'GitHub latest Release lookup failed' }
   $release = $response.Content | ConvertFrom-Json
   if ($release.immutable -ne $true -or $release.draft -ne $false -or $release.prerelease -ne $false -or
-      $release.tag_name -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$') {
+      $release.tag_name -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
     throw 'Latest Agent Release is not a stable immutable Agent Release'
   }
   $tag = [string]$release.tag_name
@@ -156,10 +156,16 @@ function Resolve-LatestAgentRelease {
     @{ target = 'darwin-x64'; ext = 'tar.gz' }
   )
   $assets = @($release.assets)
-  $windowsMatches = @($assets | Where-Object { $_.name -ceq "remote-control-agent-$tag-windows-x64.zip" })
-  if ($windowsMatches.Count -eq 0) { throw 'Windows x64 Agent asset is missing' }
-  if ($windowsMatches.Count -gt 1 -or $assets.Count -ne 5) {
-    throw 'Latest Agent Release is not a five-platform Agent Release'
+  $platformName = '^remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$'
+  foreach ($asset in $assets) {
+    $name = [string]$asset.name
+    $known = $false
+    foreach ($spec in $specs) {
+      if ($name -ceq "remote-control-agent-$tag-$($spec.target).$($spec.ext)") { $known = $true }
+    }
+    if (-not $known -and $name -cmatch $platformName) {
+      throw 'Latest Agent Release is not a stable immutable Agent Release'
+    }
   }
   $windows = $null
   foreach ($spec in $specs) {

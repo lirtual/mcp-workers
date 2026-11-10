@@ -1,7 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest, renderLinuxLatestInstallShell, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
-import { LATEST_AGENT_RELEASE_URL, readLatestAgentRelease, selectLatestAgentRelease, type LatestReleaseDecision } from "./github-latest-agent-release.ts";
-import { handleLatestMacInstallRequest, rejectMacInstallRequest } from "./install-macos-latest.ts";
+import { readLatestAgentRelease, type LatestReleaseDecision } from "./github-latest-agent-release.ts";
+import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -1093,54 +1093,28 @@ function linuxInstallFailure(message: string): Response {
 }
 
 function linuxReleaseFailure(decision: Extract<LatestReleaseDecision, { ok: false }>): Response {
-  if (decision.stop === "not_found") return linuxInstallFailure("No stable Agent Release is published.");
+  const headers: Record<string, string> = { ...LINUX_INSTALL_HEADERS };
+  if (decision.retryAfter && (decision.stop === "forbidden" || decision.stop === "rate_limited")) {
+    headers["retry-after"] = decision.retryAfter;
+  }
+  if (decision.stop === "not_found") {
+    return new Response("No stable Agent Release is published.\n", { status: 503, headers });
+  }
   if (decision.stop === "forbidden") {
-    return linuxInstallFailure("GitHub refused the Agent Release lookup." +
-      (decision.retryAfter ? "\nRetry-After: " + decision.retryAfter : ""));
+    return new Response("GitHub refused the Agent Release lookup.\n", { status: 403, headers });
   }
   if (decision.stop === "rate_limited") {
-    return linuxInstallFailure("GitHub rate limit blocked the Agent Release lookup." +
-      (decision.retryAfter ? "\nRetry-After: " + decision.retryAfter : ""));
+    return new Response("GitHub rate limit blocked the Agent Release lookup.\n", { status: 429, headers });
   }
+  if (decision.stop === "unavailable") return linuxInstallFailure("Agent Release lookup failed.");
   return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release.");
 }
 
-/** One selectLatestAgentRelease call. The shell does not look up latest again. */
+/** One readLatestAgentRelease call. The shell does not look up latest again. */
 async function linuxLatestInstall(request: Request, origin: string, doFetch: typeof fetch): Promise<Response> {
-  const rejected = rejectMacInstallRequest(request, origin);
+  const rejected = rejectLatestInstallRequest(request, origin);
   if (rejected) return rejected;
-  let response: Response;
-  try {
-    response = await doFetch(LATEST_AGENT_RELEASE_URL, {
-      method: "GET",
-      redirect: "manual",
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "mcp-workers-remote-control",
-        "x-github-api-version": "2022-11-28",
-      },
-    });
-  } catch {
-    return linuxInstallFailure("Agent Release lookup failed.");
-  }
-  if (response.status >= 300 && response.status < 400) {
-    await response.body?.cancel().catch(() => {});
-    return linuxInstallFailure("Agent Release metadata redirected.");
-  }
-  let body: unknown;
-  if (response.status === 200) {
-    const text = await response.text();
-    if (text.length > 1_048_576) return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release.");
-    try { body = JSON.parse(text); }
-    catch { return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release."); }
-  } else {
-    await response.body?.cancel().catch(() => {});
-  }
-  const decision = selectLatestAgentRelease({
-    status: response.status,
-    body,
-    retryAfter: response.headers.get("retry-after"),
-  });
+  const decision = await readLatestAgentRelease(doFetch);
   if (!decision.ok) return linuxReleaseFailure(decision);
   try {
     return new Response(renderLinuxLatestInstallShell(origin, decision.release), {
@@ -1172,7 +1146,7 @@ export default {
       const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
       const releaseFetch = (env as V2Env).AGENT_RELEASE_FETCH ?? fetch;
       if (url.pathname === "/install-macos.sh") {
-        const rejected = rejectMacInstallRequest(request, origin);
+        const rejected = rejectLatestInstallRequest(request, origin);
         if (rejected) return rejected;
         const decision = await readLatestAgentRelease(releaseFetch);
         return handleLatestMacInstallRequest(request, origin, decision);

@@ -32,6 +32,7 @@ jobs:
   publish:
     name: Publish immutable stable Agent Release
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual'
+    environment: remote-control-agent-release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -184,6 +185,22 @@ jobs:
             --title "Remote Control Agent $RELEASE_TAG" \
             --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
             --draft
+          release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+            -F draft=false -F prerelease=false -F make_latest=true >/dev/null
+          release="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+          latest="$(gh api "repos/$GH_REPO/releases/latest")"
+          tag="$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG")"
+          if [[ "$(jq -r '.draft' <<<"$release")" != false \
+             || "$(jq -r '.prerelease' <<<"$release")" != false \
+             || "$(jq -r '.immutable' <<<"$release")" != true \
+             || "$(jq -r '.tag_name' <<<"$latest")" != "$RELEASE_TAG" \
+             || "$(jq -r '.draft' <<<"$latest")" != false \
+             || "$(jq -r '.prerelease' <<<"$latest")" != false \
+             || "$(jq -r '.immutable' <<<"$latest")" != true ]]; then
+            echo 'Release is not an immutable stable Latest' >&2
+            exit 1
+          fi
           mkdir -p "$work/recheck"
           gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir "$work/recheck" --clobber
           downloaded='[]'
@@ -192,12 +209,6 @@ jobs:
             sha="$(sha256sum "$work/recheck/$name" | awk '{print $1}')"
             downloaded="$(jq -c --arg name "$name" --arg sha256 "$sha" '. + [{name:$name,sha256:$sha256}]' <<<"$downloaded")"
           done
-          release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
-          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
-            -F draft=false -F prerelease=false -F make_latest=true >/dev/null
-          release="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
-          latest="$(gh api "repos/$GH_REPO/releases/latest")"
-          tag="$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG")"
           jq -n \
             --arg releaseTag "$RELEASE_TAG" \
             --arg sourceSha "$SOURCE_SHA" \

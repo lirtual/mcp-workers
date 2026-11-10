@@ -89,6 +89,27 @@ export function reviewAgentPublication(input) {
   return { ok: true };
 }
 
+/** The publish job must re-download and rehash after the Release is stable, latest, and immutable. */
+export function requireReadbackAfterPromotion(workflow) {
+  const marker = 'Publish the draft, then require an immutable stable Latest readback';
+  const step = String(workflow).slice(String(workflow).indexOf(marker));
+  const mark = step.indexOf('make_latest=true');
+  const latest = step.indexOf('releases/latest');
+  const immutable = step.indexOf('.immutable');
+  const download = step.indexOf('gh release download');
+  const hash = step.indexOf('sha256sum');
+  const readback = step.indexOf('agent-release-guard.mjs readback');
+  if (step.indexOf(marker) !== 0 || mark < 0 || latest < 0 || immutable < 0
+    || download < 0 || hash < 0 || readback < 0
+    || !(mark < latest && latest < immutable && immutable < download && download < hash && hash < readback)) {
+    fail('five official assets must be downloaded and rehashed after the Release is stable, latest, and immutable');
+  }
+  if (!/^ {4}environment: remote-control-agent-release$/m.test(String(workflow))) {
+    fail('Agent publication requires a protected GitHub Environment');
+  }
+  return { ok: true };
+}
+
 export function acceptAgentReleaseReadback(input) {
   const release = input?.release ?? {};
   const latest = input?.latest ?? {};

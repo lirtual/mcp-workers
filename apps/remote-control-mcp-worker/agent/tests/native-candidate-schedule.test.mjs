@@ -57,10 +57,28 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.equal(publishWorkflow.agentNativeChanged, false);
   assert.deepEqual(publishWorkflow.apps, ['remote-control-mcp-worker']);
 
-  const main = selectionForEvent({
+  const placeholder = selectionForEvent({
     EVENT_NAME: 'push',
     MANUAL_REF: 'refs/heads/main',
     BEFORE_SHA: 'abc',
   });
-  assert.equal(selectionDetails(main.changedFiles).agentNativeChanged, false);
+  assert.equal(selectionDetails(placeholder.changedFiles).agentNativeChanged, false);
+
+  const workerOnlyPush = selectionForEvent({
+    EVENT_NAME: 'push',
+    MANUAL_REF: 'refs/heads/main',
+    BEFORE_SHA: '04dd234f4d8b59041f8a0c90a6e114dd3bb50eb7',
+    GITHUB_SHA: 'c61d6c1227582e74c0c55059b5a73c8c762adb03',
+  });
+  assert.equal(selectionDetails(workerOnlyPush.changedFiles).agentNativeChanged, false);
+  assert.ok(workerOnlyPush.changedFiles.includes('apps/remote-control-mcp-worker/src/worker.ts') === false);
+  assert.ok(workerOnlyPush.changedFiles.some((file) => file.startsWith('apps/remote-control-mcp-worker/')));
+
+  const agentPush = selectionForEvent({
+    EVENT_NAME: 'push',
+    MANUAL_REF: 'refs/heads/main',
+    BEFORE_SHA: '56faa70e4b9824c5f71d8d9835af63ec162de47e',
+    GITHUB_SHA: '04dd234f4d8b59041f8a0c90a6e114dd3bb50eb7',
+  });
+  assert.equal(selectionDetails(agentPush.changedFiles).agentNativeChanged, true);
 });

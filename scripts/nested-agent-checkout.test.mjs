@@ -41,9 +41,11 @@ test('one checkout contains the nested Agent and does not fetch a pinned public 
   assert.doesNotMatch(read('.github/workflows/ci.yml'), /macos-15-intel|windows-2025|ubuntu-24\.04-arm/);
   assert.doesNotMatch(read('.github/workflows/release.yml'), /publish-agent-release|release-pins/);
 
-  const bootstrap = read('apps/remote-control-mcp-worker/src/install-bootstrap.ts');
-  assert.match(bootstrap, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
-  assert.doesNotMatch(read('apps/remote-control-mcp-worker/src/worker.ts'), /agent\/install\.ps1/);
+  const worker = read('apps/remote-control-mcp-worker/src/worker.ts');
+  assert.doesNotMatch(worker, /agent\/install\.ps1/);
+  assert.doesNotMatch(worker, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
+  assert.doesNotMatch(worker, /lirtual\/remote-control-agent\/releases\/download/);
+  assert.doesNotMatch(read('apps/remote-control-mcp-worker/src/install-bootstrap.ts'), /function renderAgentInstallShell/);
   assert.match(read('CONTEXT-MAP.md'), /apps\/remote-control-mcp-worker\/agent/);
   assert.doesNotMatch(read('CONTEXT-MAP.md'), /apps\/remote-control-agent/);
 

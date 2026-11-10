@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, createPublicKey, generateKeyPairSync, verify } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,6 +13,9 @@ import { downloadSelectedReleaseAsset } from "../scripts/verify-v2-release.mjs";
 import { renderLinuxLatestInstallShell } from "../../src/install-bootstrap.ts";
 import { readLatestAgentRelease } from "../../src/github-latest-agent-release.ts";
 import { runInteractiveLocalManager } from "../scripts/manage-v2.mjs";
+import { createAgentExecutionEngine } from "../src/execution.ts";
+import { ReceiptStore, operationDigest } from "../src/operations.ts";
+import { signedSessionProof, verifyApprovedDeviceId } from "../src/v2-session-client.ts";
 
 const APP="apps/remote-control-agent";
 const ID="ea3b5d4f-e35c-4425-84d1-fa16d25e2efe";
@@ -319,6 +322,27 @@ test("an installed v0.1.51 layout upgrades from one latest asset without a commi
   chmodSync(path.join(f.oldRoot,APP,"src/v2-main.js"),0o600);
   writeFileSync(path.join(stateDir,"operation-receipts.sqlite"),unknown,{mode:0o600});
   writeFileSync(path.join(stateDir,"owner-stopped"),"stopped\n",{mode:0o600});
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const keyPath = path.join(stateDir, "v2-identity.pem");
+  writeFileSync(keyPath, pem, { mode: 0o600 });
+  const effect = path.join(f.home, "effect.txt");
+  const replayArgs = { path: effect, content: "replayed\n", mode: "rewrite" };
+  const replayDigest = operationDigest("write_file", { ...replayArgs, path: path.resolve(effect) });
+  const unknownOperationId = "v0151-unknown-write";
+  const receiptDir = path.join(stateDir, "receipt-store");
+  const seeded = createAgentExecutionEngine({ receiptDirectory: receiptDir });
+  await seeded.executeTool({
+    tool: "write_file", operation_id: unknownOperationId, arguments: replayArgs,
+  }, new AbortController().signal);
+  const admitted = await seeded.getReceipt(unknownOperationId);
+  assert.equal(admitted?.state, "completed");
+  await seeded.close();
+  const store = new ReceiptStore(receiptDir);
+  await store.open();
+  await store.update(unknownOperationId, "unknown", "Effect cannot be established.");
+  await store.close();
+  rmSync(effect);
   const before=preserved(f.home);
   try{
     let lookups=0;
@@ -358,6 +382,42 @@ test("an installed v0.1.51 layout upgrades from one latest asset without a commi
     assert.equal(result.program,path.join(f.programs,releaseTag+"-"+TARGET));
     assert.equal(readFileSync(path.join(f.oldRoot,APP,"src/v2-main.js"),"utf8"),FULL_MAIN);
     assert.deepEqual(preserved(f.home),before);
+    assert.equal(readFileSync(keyPath, "utf8"), pem);
+    assert.equal(readFileSync(path.join(stateDir, "owner-stopped"), "utf8"), "stopped\n");
+    assert.equal(existsSync(effect), false);
+    const restarted = createAgentExecutionEngine({ receiptDirectory: receiptDir });
+    try {
+      const replay = await restarted.executeTool({
+        tool: "write_file", operation_id: unknownOperationId, arguments: replayArgs,
+      }, new AbortController().signal);
+      assert.equal(replay?.status, 200);
+      assert.equal(replay?.body.status, "unknown");
+      assert.equal(existsSync(effect), false);
+      assert.equal((await restarted.getReceipt(unknownOperationId))?.state, "unknown");
+    } finally {
+      await restarted.close();
+    }
+    const nonce = "abcdefghijklmnopqrstuvwx";
+    const signed = signedSessionProof(readFileSync(keyPath, "utf8"), ID, nonce);
+    assert.equal(verify(
+      null,
+      Buffer.from("remote-control:v2:session:" + ID + ":" + nonce + ":" + signed.public_key),
+      createPublicKey(pem),
+      Buffer.from(signed.proof, "base64url"),
+    ), true);
+    const recovered = await verifyApprovedDeviceId("https://rca.example/", keyPath, async (input, init) => {
+      const requestUrl = new URL(String(input));
+      const body = JSON.parse(String(init?.body));
+      if (requestUrl.pathname === "/agent/session/challenge") {
+        return Response.json({ device_id: ID, nonce });
+      }
+      assert.equal(requestUrl.pathname, "/agent/session/recover");
+      assert.equal(body.device_id, ID);
+      assert.equal(body.nonce, nonce);
+      assert.equal(body.proof, signedSessionProof(readFileSync(keyPath, "utf8"), ID, nonce).proof);
+      return Response.json({ status: "verified", device_id: ID });
+    });
+    assert.equal(recovered, ID);
     assert.ok(readFileSync(path.join(f.programs,releaseTag+"-"+TARGET,"bundle.json"),"utf8").includes(releaseTag));
   }finally{cleanup(f);}
 });

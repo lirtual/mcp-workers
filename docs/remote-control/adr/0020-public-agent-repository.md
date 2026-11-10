@@ -1,5 +1,7 @@
 # ADR-0020 — Public Remote Control Agent repository boundary
 
+**Superseded for future source and distribution by [ADR-0024](./0024-rca-monorepo-latest-agent-releases.md).** Historical public-repository evidence below remains. New installs do not use `lirtual/remote-control-agent` as the release source.
+
 **Implementation checkpoint (2026-10-18; historical plan statements below do not define today's completion):** The relevant no-tombstone and single-code changes exist in the nonproduction stacked Draft #79, supported by real #71/#97 nonproduction acceptance and public Agent immutable TEST v0.1.8. Both native architecture CI checks have succeeded; *real externally paired native ARM64*, connected-device 24-hour expiry/Hibernation, genuine continuous #57 48-hour observation, and all formal merge/production authorization remain separate unfulfilled gates. There is no v1 production cutover.
 
 **Status:** Accepted architecture direction (2026-10-17); migration and release remain staged and independently verified.

@@ -1,28 +1,12 @@
 import { readFileSync } from "node:fs";
-import { registerHooks } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import "./register-ps1-text.mjs";
 import { acceptAgentReleaseReadback, reviewAgentPublication } from "../agent/scripts/agent-release-guard.mjs";
-import { planInstalledWindowsTakeover, selectLatestAgentRelease } from "../src/github-latest-agent-release.ts";
+import { planInstalledWindowsTakeover } from "../agent/src/windows-installed-takeover.ts";
+import { selectLatestAgentRelease } from "../src/github-latest-agent-release.ts";
 
-let macInstallFailurePromise;
-function loadMacInstallFailure() {
-  if (!macInstallFailurePromise) {
-    registerHooks({
-      load(url, context, nextLoad) {
-        if (!url.endsWith(".ps1")) return nextLoad(url, context);
-        const source = readFileSync(fileURLToPath(url), "utf8");
-        return {
-          format: "module",
-          source: `export default ${JSON.stringify(source)};\n`,
-          shortCircuit: true,
-        };
-      },
-    });
-    macInstallFailurePromise = import("../src/install-macos-latest.ts").then((mod) => mod.macInstallFailure);
-  }
-  return macInstallFailurePromise;
-}
+const { macInstallFailure } = await import("../src/install-macos-latest.ts");
 
 const SHA = /^[a-f0-9]{40}$/;
 const ACTIONS = ["publish-release", "deploy-worker", "upgrade-device"];
@@ -140,7 +124,6 @@ export async function reviewInstallerLookup(lookup) {
       deviceMutation: false,
     };
   }
-  const macInstallFailure = await loadMacInstallFailure();
   const response = macInstallFailure(decision);
   return {
     name: lookup.name,

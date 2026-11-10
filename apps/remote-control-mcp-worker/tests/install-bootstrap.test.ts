@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { handleAgentInstallerRequest, renderAgentInstallShell, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, renderAgentInstallMacShell } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, renderAgentInstallMacShell } from "../src/install-bootstrap.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
 function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
@@ -36,29 +36,13 @@ test("public Linux installer remains disabled until new interactive-mode Release
   assert.doesNotMatch(script,/v0\.1\.13|curl|sha256sum/);
 });
 
-test("one-line installer reports genuine download progress and each checked stage", () => {
-  const shell=renderAgentInstallShell(origin,REVIEWED_V018_RELEASE_PIN);
-  const stage=(n: number): number => {
-    const position=shell.indexOf(`[${n}/5]`);
-    assert.ok(position>=0);
-    return position;
-  };
-  assert.ok(stage(1)<stage(2) && stage(2)<stage(3) &&
-    stage(3)<stage(4) && stage(4)<stage(5));
-  assert.match(shell,/effective=\$\(curl -fL --progress-bar /);
-  assert.doesNotMatch(shell,/effective=\$\(curl -fsSL /);
-  assert.match(shell,/--max-redirs 3 --max-time 180 --max-filesize 180000000/);
-  assert.match(shell,/SHA-256 verification passed/);
-  const download=shell.indexOf("effective=$(curl");
-  const verify=shell.indexOf("sha256sum -c");
-  const unpack=shell.indexOf("tar -xOzf");
-  const launch=shell.indexOf('"$stage/node" "$stage/bootstrap-node.mjs"');
-  assert.ok(stage(2)<download && download<stage(3));
-  assert.ok(stage(3)<verify && verify<stage(4));
-  assert.ok(stage(4)<unpack && unpack<stage(5));
-  assert.ok(stage(5)<launch);
-  const syntax=spawnSync("sh",["-n"],{input:shell,encoding:"utf8",timeout:3000});
-  assert.equal(syntax.status,0,syntax.stderr);
+test("the pinned-shell helper does not serve an old-repository install.sh", async () => {
+  const response = requestInstall(new Request(origin + "/install.sh"), REVIEWED_V018_RELEASE_PIN);
+  assert.equal(response.status, 503);
+  const script = await response.text();
+  assert.doesNotMatch(script, /#!\/bin\/sh/);
+  assert.doesNotMatch(script, /lirtual\/remote-control-agent\/releases\/download/);
+  assert.doesNotMatch(script, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
 });
 
 test("production custom hostname does not advertise old Linux binary while reviewed candidate is absent",async()=>{
@@ -67,11 +51,10 @@ test("production custom hostname does not advertise old Linux binary while revie
   assert.equal(noPin.status,503);
   assert.doesNotMatch(await noPin.text(),/#!/);
   const response=requestInstall(new Request(custom+"/install.sh"), pin, custom);
-  assert.equal(response.status,200);
+  assert.equal(response.status,503);
   const shell=await response.text();
-  assert.ok(shell.startsWith("#!/bin/sh"));
-  assert.ok(shell.includes('--endpoint "https://rca.lirtual.dpdns.org/"'));
-  assert.equal(shell.includes("--endpoint \"https://remote-control-v2-preview"),false);
+  assert.doesNotMatch(shell,/#!\/bin\/sh/);
+  assert.doesNotMatch(shell,/lirtual\/remote-control-agent\/releases\/download/);
   assert.equal(requestInstall(new Request("http://rca.lirtual.dpdns.org/install.sh"), undefined, custom).status,403);
   assert.equal(requestInstall(new Request(custom+"/install.sh",{headers:{host:"evil.test"}}), undefined, custom).status,403);
   assert.equal(requestInstall(new Request("https://evil.lirtual.dpdns.org/install.sh"), undefined, custom).status,403);
@@ -98,44 +81,18 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   const incompatible=requestInstall(new Request(origin+"/install.sh"),reviewed);
   assert.equal(incompatible.status,503);
   assert.doesNotMatch(await incompatible.text(),/#!/);
-  assert.throws(()=>renderAgentInstallShell(origin,reviewed),/Unapproved/);
+  assert.doesNotMatch(await requestInstall(new Request(origin+"/install.sh"), reviewed).text(), /lirtual\/remote-control-agent/);
 });
 
-test("future reviewed route binds its own validated origin and pins both ABIs", async()=>{
+test("a historical pin is not emitted as install.sh", async()=>{
   const response=requestInstall(new Request(origin+"/install.sh"),pin);
-  assert.equal(response.status,200);
-  assert.match(response.headers.get("content-type")??"",/text\/x-shellscript/);
+  assert.equal(response.status,503);
   const shell=await response.text();
-  assert.match(shell,/--endpoint "https:\/\/remote-control-v2-preview.aiyaya.workers.dev\/"/);
-  assert.match(shell,/^#!\/bin\/sh/);
-  assert.match(shell,/--sha256/);
-  assert.match(shell,/sha256sum -c/);
-  assert.match(shell,/bootstrap-node.mjs/);
-  assert.match(shell,/for tool in curl sha256sum tar mktemp uname id chmod flock rm readlink dirname/);
-  assert.match(shell,/unset NODE_OPTIONS NODE_PATH/);
-  assert.doesNotMatch(shell,/python3|pip install|REMOTE_CONTROL_AGENT_ENDPOINT/);
-  assert.ok(shell.indexOf("sha256sum -c")<shell.indexOf("tar -xOzf"));
-  assert.match(shell,/effective=\$\(curl[\s\S]*-w '%\{url_effective\}'/);
-  assert.match(shell,/case "\$effective" in/);
-  assert.match(shell,/https:\/\/release-assets\.githubusercontent\.com\/\*/);
-  assert.match(shell,/https:\/\/objects\.githubusercontent\.com\/\*/);
-  assert.match(shell,/Unexpected GitHub Release asset redirect/);
-  assert.ok(shell.indexOf('case "$effective" in')<shell.indexOf("sha256sum -c"));
-  const syntax=spawnSync("sh",["-n"],{input:shell,encoding:"utf8",timeout:3000});
-  assert.equal(syntax.status,0,syntax.stderr);
-});
-
-test("migration flag is fail-closed on the published v0.1.4 pin and opt-in for a future reviewed release",()=>{
-  const current=renderAgentInstallShell(origin,REVIEWED_V014_RELEASE_PIN);
-  assert.doesNotMatch(current,/1\) \[ "\$1" = "--upgrade"/);
-  assert.match(current,/Unsupported installer action/);
-  assert.match(current,/"\$@" < \/dev\/tty/);
-  const future=renderAgentInstallShell(origin,REVIEWED_V016_RELEASE_PIN);
-  assert.match(future,/1\) \[ "\$1" = "--upgrade"/);
-  assert.match(future,/"\$@" < \/dev\/tty/);
-  const syntax=spawnSync("sh",["-n"],{input:future,encoding:"utf8"});
-  assert.equal(syntax.status,0,syntax.stderr);
-  assert.throws(()=>renderAgentInstallShell(origin,{...pin,upgradeMode:"bogus" as never}),/Unapproved/);
+  assert.doesNotMatch(shell,/^#!\/bin\/sh/);
+  assert.doesNotMatch(shell,/lirtual\/remote-control-agent\/releases\/download/);
+  assert.doesNotMatch(shell,/bootstrap-node\.mjs/);
+  assert.equal(REVIEWED_V014_RELEASE_PIN.tag, "v0.1.4");
+  assert.equal(REVIEWED_V016_RELEASE_PIN.upgradeMode, "explicit-v1");
 });
 
 test("fake Host, Forwarded, scheme, path, query and method are refused",async()=>{
@@ -157,7 +114,7 @@ test("fake Host, Forwarded, scheme, path, query and method are refused",async()=
   }
 });
 
-test("untrusted pinned release metadata cannot interpolate shell commands",async()=>{
+test("untrusted pinned release metadata is not served as install.sh",async()=>{
   const bad=[
     {...pin,tag:"v0.1.2; touch /tmp/unsafe"},
     {...pin,commit:"$(id)"},
@@ -165,9 +122,10 @@ test("untrusted pinned release metadata cannot interpolate shell commands",async
     {...pin,arm64Sha256:"a".repeat(63)},
   ];
   for(const candidate of bad){
-    assert.throws(()=>renderAgentInstallShell(origin,candidate),/Unapproved/);
+    const response=requestInstall(new Request(origin+"/install.sh"), candidate);
+    assert.equal(response.status,503);
+    assert.doesNotMatch(await response.text(), /#!\/bin\/sh|touch \/tmp\/unsafe|\$\(id\)/);
   }
-  assert.throws(()=>renderAgentInstallShell("https://unknown.example/path",pin),/Unapproved/);
 });
 
 test('public installation home is isolated from authentication and shows the two exact commands',async()=>{
@@ -246,16 +204,19 @@ test('reviewed Linux and Windows v0.1.51 public installers pin immutable local u
   assert.equal(home.status, 200);
   assert.match(await home.text(), /const ready=\{windows:true,linux:true,macos:false\}/);
   const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
-  assert.equal(linux.status, 200);
+  assert.equal(linux.status, 503);
   const shell = await linux.text();
-  assert.match(shell, /remote-control-agent-v0\.1\.51/);
-  assert.match(shell, /1\) \[ "\$1" = "--upgrade"/);
-  assert.match(shell, /"\$@" < \/dev\/tty/);
+  assert.doesNotMatch(shell, /#!\/bin\/sh/);
+  assert.doesNotMatch(shell, /lirtual\/remote-control-agent\/releases\/download/);
+  assert.doesNotMatch(shell, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
   const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
   assert.match(ps1, /https:\/\/api\.github\.com\/repos\/lirtual\/mcp-workers\/releases\/latest/);
   assert.doesNotMatch(ps1, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
+  assert.match(ps1, /\^v\(\?:0\|\[1-9\]\[0-9\]\*\)/);
+  assert.doesNotMatch(ps1, /assets\.Count -ne 5/);
+  assert.doesNotMatch(ps1, /tag_name -notmatch '\^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(\?:-\[a-z0-9\.-\]\+\)\?'/);
   assert.doesNotMatch(ps1, /6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a/);
   assert.doesNotMatch(ps1, /03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311/);
   assert.doesNotMatch(ps1, /raw\.githubusercontent\.com/);

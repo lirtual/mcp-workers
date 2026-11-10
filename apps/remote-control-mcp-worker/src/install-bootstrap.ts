@@ -135,10 +135,10 @@ export type MacInstallPin = Readonly<{
   // Deliberate opt-in only after a separately reviewed immutable Agent Release.
   remoteUpgradeMode?: "detached-launchd-v1";
 }>;
-// Historical immutable v0.1.51 macOS pin kept for evidence and pin-renderer tests.
-// The public /install-macos.sh route resolves one current-repository latest Release.
-// Linux stays on its reviewed pin. Windows serves the nested latest installer;
-// its pin only authorizes that route and is not embedded in the script.
+// Historical immutable v0.1.51 pins kept for evidence. Public /install.sh,
+// /install.ps1, and /install-macos.sh resolve one current-repository latest
+// Release and do not embed these commits or the old repository download URL.
+// The Windows pin only authorizes that route and is not embedded in the script.
 export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
   tag: "v0.1.51",
   commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
@@ -249,66 +249,6 @@ function validPin(p: InstallReleasePin): boolean {
     && /^[a-f0-9]{40}$/.test(p.commit)
     && /^[a-f0-9]{64}$/.test(p.x64Sha256)
     && /^[a-f0-9]{64}$/.test(p.arm64Sha256);
-}
-
-export function renderAgentInstallShell(origin: string, p: InstallReleasePin): string {
-  if (!validInstallerOrigin(origin) || !validPin(p))
-    throw new Error("Unapproved immutable Agent release or install origin");
-  // All interpolation is restricted to validated ASCII pins and origin.
-  return [
-    "#!/bin/sh",
-    "# Worker-origin Agent installer: published immutable GitHub archive only",
-    "set -eu",
-    "umask 077",
-    'case "$#" in',
-    "  0) ;;",
-    ...(p.upgradeMode === "explicit-v1"
-      ? ['  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; } ;;']
-      : []),
-    '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
-    "esac",
-    "if [ \"$(id -u)\" -eq 0 ] || [ ! -r /dev/tty ] || [ ! -t 1 ]; then",
-    "  echo 'Requires an ordinary interactive Linux user' >&2; exit 1",
-    "fi",
-    "for tool in curl sha256sum tar mktemp uname id chmod flock rm readlink dirname; do",
-    "  command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing Linux installer tool' >&2; exit 1; }",
-    "done",
-    "[ \"$(uname -s)\" = Linux ] || { echo 'Linux only' >&2; exit 1; }",
-    "case \"$(uname -m)\" in",
-    " x86_64) target=linux-x64-glibc; expected=" + p.x64Sha256 + " ;;",
-    " aarch64) target=linux-arm64-glibc; expected=" + p.arm64Sha256 + " ;;",
-    " *) echo 'Unsupported Linux CPU' >&2; exit 1 ;;",
-    "esac",
-    "echo '==> [1/5] Linux host and CPU checks passed'",
-    "stage=$(mktemp -d /tmp/rca-stage.XXXXXXXX)",
-    "trap 'rm -rf -- \"$stage\"' EXIT",
-    "trap 'exit 130' INT",
-    "trap 'exit 143' TERM",
-    "archive=\"$stage/agent.tar.gz\"",
-    "download=\"https://github.com/lirtual/remote-control-agent/releases/download/" + p.tag + "/remote-control-agent-" + p.tag + "-$target.tar.gz\"",
-    "echo '==> [2/5] Downloading Remote Control Agent " + p.tag + "...'",
-    "effective=$(curl -fL --progress-bar --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 3 --max-time 180 --max-filesize 180000000 -w '%{url_effective}' \"$download\" -o \"$archive\")",
-    "# Curl writes its real download progress to stderr; stdout retains only the final verified URL.",
-    "# GitHub may redirect immutable Release assets to its own CDN, never an arbitrary host.",
-    "case \"$effective\" in",
-    "  \"$download\"|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*) ;;",
-    "  *) echo 'Unexpected GitHub Release asset redirect' >&2; exit 1 ;;",
-    "esac",
-    "echo '==> [3/5] Verifying GitHub asset URL and SHA-256...'",
-    "printf '%s  %s\\n' \"$expected\" \"$archive\" | sha256sum -c - >/dev/null || { echo 'Verified asset checksum mismatch' >&2; exit 1; }",
-    "echo '==> SHA-256 verification passed'",
-    "# The COMPLETE archive has been verified before any bundled byte executes.",
-    "echo '==> [4/5] Extracting bundled Node.js and bootstrap...'",
-    "tar -xOzf \"$archive\" bin/node > \"$stage/node\"",
-    "tar -xOzf \"$archive\" apps/remote-control-agent/scripts/bootstrap-node.mjs > \"$stage/bootstrap-node.mjs\"",
-    "chmod 700 \"$stage/node\"",
-    "chmod 600 \"$stage/bootstrap-node.mjs\"",
-    "unset NODE_OPTIONS NODE_PATH",
-    "echo '==> [5/5] Launching interactive Agent installer...'",
-    "\"$stage/node\" \"$stage/bootstrap-node.mjs\" --archive \"$archive\" --tag \"" + p.tag +
-      "\" --commit \"" + p.commit + "\" --sha256 \"$expected\" --endpoint \"" + origin + "/\" \"$@\" < /dev/tty",
-    "",
-  ].join("\n");
 }
 
 const INSTALLER_PATHS = ["/", "/install.sh", "/install.ps1", "/install-macos.sh"];
@@ -450,9 +390,6 @@ export function handleAgentInstallerRequest(
         "x-frame-options":"DENY"},
     });
   }
-  if (!release || !validPin(release))
-    return new Response("No reviewed Python-free Agent release is published yet.\n", { status:503, headers });
-  return new Response(renderAgentInstallShell(u.origin,release), {
-    status:200, headers: { ...headers, "content-type":"text/x-shellscript; charset=utf-8" },
-  });
+  // Public /install.sh is the Worker latest route, not a pinned old-repository shell.
+  return new Response("No reviewed Python-free Agent release is published yet.\n", { status:503, headers });
 }
