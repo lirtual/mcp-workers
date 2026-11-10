@@ -44,6 +44,9 @@ test('only exact reviewed QQ Owner OTP provider is accepted after cutover',()=>{
   assert.equal(verifyBrowserActivationAccess(app,[policy],
     [otp,{...cf,config:{restrict_to_account_members:false}}],actual),true,
     'unused organization identity providers cannot alter the app boundary');
+  assert.equal(verifyBrowserActivationAccess(app,[policy],
+    [otp,{...otp,id:'00000000-0000-4000-8000-000000000000'},cf],actual),true,
+    'a second unrelated OTP provider cannot block Browser releases');
   for(const bad of [
     {...app,allowed_idps:[]},{...app,allowed_idps:[cf.id]},
     {...app,allowed_idps:[otp.id],auto_redirect_to_identity:true},
@@ -57,7 +60,11 @@ test('only exact reviewed QQ Owner OTP provider is accepted after cutover',()=>{
     {...app,destinations:[{type:'public',uri:domain,overrides:[{}]}]}
   ])assert.throws(()=>verifyBrowserActivationAccess(bad,[policy],providers,actual));
   assert.throws(()=>verifyBrowserActivationAccess(app,[policy],
-    [otp,{...otp,id:'00000000-0000-4000-8000-000000000000'},cf],actual),/otp_provider/);
+    [{...otp,type:'cloudflare'},cf],actual),/otp_provider/);
+  assert.throws(()=>verifyBrowserActivationAccess(app,[policy],
+    [{...otp,id:'00000000-0000-4000-8000-000000000000'},cf],actual),/otp_provider/);
+  assert.throws(()=>verifyBrowserActivationAccess(app,[policy],
+    [otp,{...otp},cf],actual),/otp_provider/);
   assert.throws(()=>verifyBrowserActivationAccess(app,[{...policy,
     include:[{email:{email:'other@example.com'}}]}],providers,actual),/policy_identity/);
   assert.throws(()=>verifyBrowserActivationAccess(app,[{...policy,
@@ -179,7 +186,7 @@ test('Spec #804 fails closed on Organization, Audience, policy, provider or cand
     [url=>url.includes('/access/apps/')&&!url.includes('/policies?'),{...app,aud:'wrong'},/app_audience/],
     [url=>url.includes('/access/apps/')&&!url.includes('/policies?'),{...app,domain:'browser.lirtual.dpdns.org/*'},/app_identity/],
     [url=>url.includes('/policies?'),[{...policy,id:'00000000-0000-4000-8000-000000000000'}],/policy_identity/],
-    [url=>url.includes('/identity_providers'),[{...otp,id:'00000000-0000-4000-8000-000000000000'},cf],/otp_provider/],
+    [url=>url.includes('/identity_providers'),[{...otp,type:'cloudflare'},cf],/otp_provider/],
   ];
   for(const [match,replacement,code] of rejects){
     const overridden=async url=>match(url)?mockedResponse(replacement):valid(url);

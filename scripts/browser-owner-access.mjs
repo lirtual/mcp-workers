@@ -34,8 +34,10 @@ export function verifyBrowserActivationAccess(app,policies,providers,env) {
     (!app.destinations[0]?.overrides || app.destinations[0].overrides.length === 0),
     "app_identity");
   fail(app.session_duration === "15m","app_session");
-  const otp = providers.filter(p=>p?.type === "onetimepin");
-  fail(otp.length===1 && otp[0].id===REVIEWED_OTP_ID,"otp_provider");
+  // Only the IdP selected by this application matters: unrelated account-wide
+  // OTP providers must not block an otherwise unchanged Browser release.
+  const reviewed = providers.filter(p=>p?.id===REVIEWED_OTP_ID);
+  fail(reviewed.length===1 && reviewed[0].type==="onetimepin","otp_provider");
   fail(Array.isArray(app.allowed_idps) && app.allowed_idps.includes(REVIEWED_OTP_ID),"otp_pin");
   fail(app.allowed_idps.length===1 && app.allowed_idps[0]===REVIEWED_OTP_ID &&
     app.auto_redirect_to_identity===false,"idp_scope");
