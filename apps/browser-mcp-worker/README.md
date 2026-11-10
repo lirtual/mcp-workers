@@ -24,7 +24,12 @@ block this application-specific verification. EdgeSSH and other Access applicati
 are unaffected. The separate `Browser` MCP Access app still uses a reusable
 three-mailbox human Allow policy shared with 12 other Access apps; its Workflow
 Service Token policy remains separate. Do not edit that shared policy to narrow
-Browser-only human login.
+Browser-only human login. A separately reviewed `Browser MCP Owner QQ Only`
+reusable Policy (`07204847-0459-4197-b3c3-2dbe2a47a550`) was created with
+no attachments. Once the Browser-only Access policy cutover is independently
+verified, this policy replaces only Browser's shared human Allow reference;
+`WORKFLOWS`, other Access applications and the 24h Browser MCP session remain
+unchanged. Code/CI merge alone does not switch production Access.
 No extra Worker, DB migration, queue, or browser-extension protocol change is introduced.
 The historical Review Access application was removed **after** the authorized Worker release and readback: public `/owner/unknown/*` returns 404 while Browser Activation remains Access-protected ([retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175)). The retired Review-only variables are absent from the new deployment; the original activation variables, Owner identity, and historical receipts remain intact. No new Worker or identity service was introduced.
 
