@@ -30,8 +30,6 @@ jobs:
           inputs.confirm_business_acceptance == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    environment:
-      name: workflow-mcp-worker
     concurrency:
       group: spec775-business-acceptance
       cancel-in-progress: false

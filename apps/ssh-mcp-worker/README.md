@@ -7,7 +7,7 @@ It supports EdgeSSH hosts with inline passwords/keys and upstream keychain refer
 ## Production cutover requirements
 
 - Do not replace EdgeSSH's existing ENCRYPTION_KEY while encrypted host, snippet or keychain rows still use the old key. Cloudflare does not return existing Worker Secret values. When the original key cannot be recovered, migrate **all** encrypted record families atomically using both old and new keys in a controlled process, and verify rollback before updating either Worker.
-- Keep the original 32-byte Base64 key bytes unchanged under `SSH_ENCRYPTION_KEY` in the `ssh-mcp-worker` GitHub Environment. The Release Worker consumes that canonical name directly; never rotate, duplicate, disclose, or silently replace the EdgeSSH key.
+- Keep the original 32-byte Base64 key bytes unchanged under `SSH_ENCRYPTION_KEY` in GitHub Repository Secrets (after verified Spec #849 cutover). The Release Worker consumes that canonical name directly; never rotate, duplicate, disclose, or silently replace the EdgeSSH key.
 - Preserve EdgeSSH's existing D1 and SSH MCP's existing SSH_OPERATIONS Durable Object namespace. The SSH Worker release verifies the expected live D1 ID and disallows the retired Broker Service Binding and Secret.
 - Only after authenticated EdgeSSH and actual SSH/SFTP checks pass should the EdgeSSH fork be reset to an upstream commit and its normal automatic upstream synchronization resumed.
 
@@ -52,7 +52,7 @@ The existing application selector includes `ssh-mcp-worker`. Changes under `apps
 
 The rerunnable command list, fixture revision, runtime pins, and the documented Workers/DO plan comparison are in `acceptance-record.json`. A live GitHub Actions run is not required to see the path filter: `.github/workflows/ci.yml` runs `node scripts/select-affected-apps.mjs` and then `pnpm --filter "$app" check` for every selected app. Remote command output is not redacted; stored connection secrets and `ENCRYPTION_KEY` are excluded from tool schemas, receipts, and error text. No production account usage was measured.
 
-The deployment manifest pins the production EdgeSSH D1 identifier (not a credential). Secrets are only populated through the authorized GitHub Environment release, and existing encrypted data must be migrated before switching the runtime key.
+The deployment manifest pins the production EdgeSSH D1 identifier (not a credential). Secrets are only populated through the authorized GitHub Repository-sourced Release Worker, and existing encrypted data must be migrated before switching the runtime key.
 
 ## MCP tool naming (breaking change)
 

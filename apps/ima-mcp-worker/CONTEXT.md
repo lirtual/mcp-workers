@@ -28,7 +28,7 @@ _Avoid_: IMA API credential, Worker origin bearer
 _Avoid_: IMA API key, OAuth access token
 
 **IMA Business Credential**:
-`IMA_CLIENT_ID` 是 GitHub Environment Variable（Worker `plain_text`），`IMA_API_KEY` 是 GitHub Environment Secret（Worker `secret_text`）；二者共同用于 Worker -> IMA OpenAPI。旧名称 `IMA_OPENAPI_CLIENTID`、`IMA_OPENAPI_APIKEY`、`CLIENTID`、`APIKEY` 均不再受支持。
+`IMA_CLIENT_ID` 是 GitHub Repository Variable（Worker `plain_text`），`IMA_API_KEY` 是 GitHub Repository Secret（Worker `secret_text`）；二者共同用于 Worker -> IMA OpenAPI。旧名称 `IMA_OPENAPI_CLIENTID`、`IMA_OPENAPI_APIKEY`、`CLIENTID`、`APIKEY` 均不再受支持。
 _Avoid_: Portal credential, per-user BYOK database
 
 **Export removed**:

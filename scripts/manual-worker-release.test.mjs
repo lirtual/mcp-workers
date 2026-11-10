@@ -379,18 +379,36 @@ test("Workflow code-only release never stages secrets or runs migrations, preser
   assert.match(workflow, /Require complete Workflow code-only migration inventory/);
 });
 
-test("manual release selects GitHub Environment directly from the allowlisted Worker name", () => {
+test("manual release retains Owner/main and selected-Worker deployment gates without an Environment", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.ok(workflow.includes("      name: ${{ inputs.worker }}"),
-    "selected Worker must resolve the same-named GitHub Environment");
-  assert.doesNotMatch(workflow, /WORKER_CONFIG_SCOPE/,
-    "no duplicated manually configured Environment name marker");
-  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/,
-    "only manually dispatched workflow can publish");
-  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/,
-    "only main branch may publish");
-  assert.match(workflow, /Stage selected Worker Secrets for every release/,
-    "default manual releases must stage required secrets unless the guarded Workflow code-only path is chosen");
+  assert.doesNotMatch(workflow, /^ {4}environment:/gm);
+  assert.doesNotMatch(workflow, /WORKER_CONFIG_SCOPE/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /Stage selected Worker Secrets for every release/);
+});
+
+test("Repository-scoped jobs never bind an Environment and staging limits app Secrets to the selected Worker", () => {
+  for (const name of ["release", "acceptance", "agent-release", "spec775-business-acceptance"]) {
+    const source = readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /^ {4}environment:/gm, `${name} must not bind a GitHub Environment`);
+  }
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const secretStep = release.split("      - name: Stage selected Worker Secrets for every release")[1]
+    ?.split("      - name: Stage approved Worker variables")[0];
+  assert.ok(secretStep);
+  for (const [name,worker] of [
+    ["RAINDROP_ACCESS_TOKEN","raindrop-mcp-worker"],
+    ["IMA_API_KEY","ima-mcp-worker"],
+    ["ACTIONS_GITHUB_DISPATCH_TOKENS","github-actions-mcp-worker"],
+    ["WORKFLOW_GITHUB_DISPATCH_TOKEN","workflow-mcp-worker"],
+  ]) {
+    const expression = `          ${name}: ` + '$' +
+      `{{ inputs.worker == '${worker}' && secrets.${name} || '' }}`;
+    assert.ok(secretStep.includes(expression), `${name} must be nonblank only for ${worker}`);
+    assert.equal(secretStep.split(`          ${name}:`).length - 1, 1,
+      `${name} must have exactly one staging source`);
+  }
 });
 
 test("manual release always syncs selected Worker Secrets from GitHub and never silently falls back", () => {
@@ -406,7 +424,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
     assert.ok(secretStep.includes("secrets." + name), "GitHub must provide " + name);
   }
   assert.ok(secretStep.includes("SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}"),
-    "SSH Environment Secret source and runtime binding must use the same canonical name");
+    "SSH Repository Secret source and runtime binding must use the same canonical name");
   assert.ok(secretStep.includes("WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || '' }}"),
     "Workflow Portal Secret source and runtime binding must use the same canonical name");
   assert.ok(!secretStep.includes("WORKFLOW_SESSION_RUNTIME_DATA_KEY:") &&
@@ -420,7 +438,7 @@ test("manual release always syncs selected Worker Secrets from GitHub and never 
   const variableStep = workflow.slice(variableStart,
     workflow.indexOf("      - name: Recheck current main inside acquired release lock", variableStart));
   assert.ok(variableStep.includes("vars.IMA_CLIENT_ID"),
-    "IMA_CLIENT_ID must be provided by the GitHub Environment Variable");
+    "IMA_CLIENT_ID must be provided by the GitHub Repository Variable");
   const deployStart = workflow.indexOf("      - name: Publish exactly selected Worker");
   const deployEnd = workflow.indexOf("      - name: Remove temporary deployment configuration", deployStart);
   assert.ok(deployStart > 0 && deployEnd > deployStart);
@@ -494,7 +512,7 @@ test("GitHub Actions deploy requires only one PAT Secret and no repository lists
   assert.throws(() => verifyBindings(worker, settings,
     [{ name: "MCP_ACCESS_TOKEN" }], { mode: "readback" }), /Required runtime Secret missing/);
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.ok(release.includes("ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}"));
+  assert.ok(release.includes("ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ inputs.worker == 'github-actions-mcp-worker' && secrets.ACTIONS_GITHUB_DISPATCH_TOKENS || '' }}"));
   assert.ok(!release.includes("GH_TOKEN: ${{ secrets.GH_TOKEN }}"));
   assert.ok(!release.includes("ACTIONS_MCP_TOKENS: ${{ secrets.ACTIONS_MCP_TOKENS }}"));
   assert.ok(!release.includes("MCP_BROKER_TOKEN: ${{ secrets.MCP_BROKER_TOKEN }}"));

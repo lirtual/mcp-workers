@@ -6,7 +6,7 @@ The production MCP Portal upstream is `https://database-mcp-worker.aiyaya.worker
 
 ## Connection configuration (Spec #760)
 
-GitHub Environment Variable `DATABASE_CONNECTIONS` is the sole logical catalog: a flat JSON object containing zero to ten unique IDs. Each value is one Direct URI (`mysql://` or `postgresql://`) or `hyperdrive://HYPERDRIVE_BINDING`. IDs use 1–64 ASCII letters/digits/underscore/hyphen, starting with a letter or digit. Removed IDs fail deterministically; multiple IDs require explicit selection.
+GitHub Repository Variable `DATABASE_CONNECTIONS` is the sole logical catalog: a flat JSON object containing zero to ten unique IDs. Each value is one Direct URI (`mysql://` or `postgresql://`) or `hyperdrive://HYPERDRIVE_BINDING`. IDs use 1–64 ASCII letters/digits/underscore/hyphen, starting with a letter or digit. Removed IDs fail deterministically; multiple IDs require explicit selection.
 
 ```json
 {"b2b":"mysql://user:${DATABASE_B2B_PASSWORD}@#{DB_HOST}:3306/b2b"}
@@ -24,7 +24,7 @@ Hyperdrive configs, credentials, TLS and rotations are managed natively in Cloud
 
 Source changes are not production acceptance. Before a separately authorized release, independently inspect main/CI, active Worker version/bindings, actual logical IDs/transports/permissions, old Registry and unfinished Hyperdrive operations. Stop for Unknown operations or missing rollback dependencies. Compare intended inventory with current production; preserve `b2b` and `scrape_relay` if still active. Historical README inventories are not current evidence.
 
-The Owner manually supplies existing Direct passwords as the independent GitHub Environment Secrets through a separately authorized configuration action. No D1 password extraction, rotation or generated replacement is provided. Secret metadata does not prove byte equality.
+The Owner manually supplies existing Direct passwords as the independent GitHub Repository Secrets through a separately authorized configuration action. No D1 password extraction, rotation or generated replacement is provided. Secret metadata does not prove byte equality.
 
 Use only existing protected **Release Worker**, selecting `database-mcp-worker` with exact `database_expected_release_sha` and production authorization. Staging validates the entire catalog before deploy, retaining unresolved Secret references in the plain Variable and placing each credential in `secret_text`. Verify exact active version, catalog, binding IDs/types and referenced Variables after publication. Normal Wrangler releases preserve omitted legacy Secrets; their presence is recovery compatibility, not cleanup success.
 

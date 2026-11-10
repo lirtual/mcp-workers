@@ -218,7 +218,7 @@ test('Spec 733 cleanup mode is isolated from ordinary selected Worker release an
   assert.match(cleanup,/needs\.checks\.outputs\.release_ready == 'true'/);
   assert.match(cleanup,/group: worker-release-/);
   assert.match(cleanup,/cancel-in-progress: false/);
-  assert.match(cleanup,/environment:/);
+  assert.doesNotMatch(cleanup,/^    environment:/m);
   assert.match(cleanup,/node scripts\/legacy-secret-cleanup\.mjs preflight/);
   assert.match(cleanup,/node scripts\/legacy-secret-cleanup\.mjs candidate/);
   assert.match(cleanup,/wrangler versions secret bulk/);

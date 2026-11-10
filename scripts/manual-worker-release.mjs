@@ -260,7 +260,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   }
   if (worker === "ima-mcp-worker") {
     // During preflight, existing CLIENT_ID Variable may still be present.
-    // The selected GitHub Environment stages IMA_CLIENT_ID on publish.
+    // The selected Worker release stages Repository IMA_CLIENT_ID on publish.
     // Readback MUST confirm the new name and type, with no old binding.
     if (options.mode !== "preflight") {
       const clientId = find("IMA_CLIENT_ID", "plain_text");

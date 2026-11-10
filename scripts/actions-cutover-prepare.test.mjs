@@ -45,7 +45,7 @@ test('read-only preflight checks legacy bindings, D1 paused inventory and six na
  await assert.rejects(()=>readOnlyPrepare({...env,ACTIONS_OLD_INGRESS_QUIESCED:'false'},fake),/quiescence/);
  assert.equal(calls.length,8);
 });
-test('prepare mode uses the current main, existing Workflow release environment and cannot deploy',()=>{
+test('prepare mode uses current main and existing Workflow release lock without deployment',()=>{
  const s=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
  const idx=s.indexOf('  workflow-actions-migration-prepare:');
  const end=s.indexOf('  checks:',idx);
@@ -53,7 +53,7 @@ test('prepare mode uses the current main, existing Workflow release environment 
  const job=s.slice(idx,end);
  for(const required of ["github.actor == 'lirtual'", "inputs.deploy_to_production == false",
   "inputs.actions_migration_prepare == true", "inputs.actions_old_ingress_quiesced == true",
-  'name: workflow-mcp-worker','group: worker-release-workflow-mcp-worker',
+  'group: worker-release-workflow-mcp-worker',
   'actions-cutover-prepare.mjs preflight','wrangler d1 migrations apply workflow-mcp-db --remote',
   "state='frozen'",'actions-cutover-prepare.mjs postflight'])
   assert.ok(job.includes(required),required);
@@ -149,7 +149,7 @@ test('protected gate-only recovery is mutually exclusive with freeze and Worker 
  for(const guard of ["github.actor == 'lirtual'","inputs.worker == 'workflow-mcp-worker'",
   'inputs.actions_gate_reopen == true','inputs.deploy_to_production == false',
   'inputs.actions_migration_prepare != true','inputs.actions_old_ingress_quiesced == true',
-  'name: workflow-mcp-worker','group: worker-release-workflow-mcp-worker',
+  'group: worker-release-workflow-mcp-worker',
   'actions-cutover-prepare.mjs activate-preflight','actions-cutover-prepare.mjs activate-postflight',
 'inspectGateRecovery',
   "inputs.actions_expected_provider_version != ''",

@@ -112,9 +112,6 @@ export function requireReadbackAfterPromotion(workflow) {
     || !(mark < latest && latest < immutable && immutable < download && download < hash && hash < readback)) {
     fail('six official assets must be downloaded and rehashed after the Release is stable, latest, and immutable');
   }
-  if (!/^ {4}environment: remote-control-agent-release$/m.test(String(workflow))) {
-    fail('Agent publication requires a protected GitHub Environment');
-  }
   return { ok: true };
 }
 

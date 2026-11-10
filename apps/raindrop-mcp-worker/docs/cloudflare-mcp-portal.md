@@ -23,7 +23,7 @@ Never reuse either value for the other purpose.
 
 ## 1. Configure Worker secrets
 
-Configure `RAINDROP_ACCESS_TOKEN` in the `raindrop-mcp-worker` GitHub Environment Secret and the default `MCP_ACCESS_TOKEN` in the GitHub Repository Secret (or a reviewed same-name Environment override). The main-only, manual **Release Worker** workflow synchronizes Secrets for the selected Worker with `--secrets-file`. Routine production releases do not use Cloudflare Builds or direct `wrangler secret put`. Never commit or log real values.
+Configure `RAINDROP_ACCESS_TOKEN` in the `raindrop-mcp-worker` GitHub Repository Secret and the default `MCP_ACCESS_TOKEN` in the GitHub Repository Secret (or a reviewed same-name Environment override). The main-only, manual **Release Worker** workflow synchronizes Secrets for the selected Worker with `--secrets-file`. Routine production releases do not use Cloudflare Builds or direct `wrangler secret put`. Never commit or log real values.
 
 MCP Portal sends the Worker credential as:
 

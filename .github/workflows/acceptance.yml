@@ -48,8 +48,6 @@ jobs:
           contains(fromJSON('["legacy-cleanup-readonly-ssh","legacy-cleanup-readonly-workflow"]'), inputs.test_type) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment:
-      name: ${{ inputs.test_type == 'legacy-cleanup-readonly-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
     concurrency:
       group: worker-release-${{ inputs.test_type == 'legacy-cleanup-readonly-ssh' && 'ssh-mcp-worker' || 'workflow-mcp-worker' }}
       cancel-in-progress: false
@@ -97,8 +95,6 @@ jobs:
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    environment:
-      name: workflow-mcp-worker
     concurrency:
       group: workflow-production-smoke
       cancel-in-progress: false
@@ -144,8 +140,6 @@ jobs:
           inputs.test_type == 'portal-readonly' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment:
-      name: workflow-mcp-worker
     env:
       WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
       WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET }}
@@ -172,8 +166,6 @@ jobs:
           inputs.test_type == 'github-action-result-cloud' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment:
-      name: workflow-mcp-worker
     permissions:
       contents: read
       id-token: write
@@ -209,8 +201,6 @@ jobs:
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
-    environment:
-      name: workflow-mcp-worker
     concurrency:
       group: worker-release-workflow-mcp-worker
       cancel-in-progress: false

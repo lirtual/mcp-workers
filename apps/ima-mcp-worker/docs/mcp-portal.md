@@ -30,7 +30,7 @@ Do not reuse any credential across these layers or between Workers.
 
 Required Worker Secrets: `IMA_API_KEY`, `MCP_ACCESS_TOKEN`.
 
-Required Worker Variable: `IMA_CLIENT_ID` (`plain_text` in Cloudflare, configured under the `ima-mcp-worker` GitHub Environment Variables).
+Required Worker Variable: `IMA_CLIENT_ID` (`plain_text` in Cloudflare, configured under the `ima-mcp-worker` GitHub Repository Variables).
 
 No R2 binding or public export domain is required. The Worker does not provide file-export tools or public Litterbox uploads.
 

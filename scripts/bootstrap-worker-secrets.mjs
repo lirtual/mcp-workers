@@ -1,7 +1,7 @@
 import {databaseCatalogStage} from './database-catalog-stage.mjs';
-// Stage only the selected Worker's GitHub Environment + repository secrets.
+// Stage only the selected Worker's Repository Secrets.
 // Used for EVERY authorized manual release, not only for first deployment.
-// GitHub resolves an Environment secret over a same-name repository secret.
+// Source scope must remain unambiguous; do not add Environment-bound jobs.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
 import { writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
@@ -42,7 +42,7 @@ export function collectBootstrapSecrets(worker, env) {
     if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, "base64").length !== 32 || Buffer.from(key, "base64").toString("base64") !== key) throw new Error("SSH_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
   }
   if (worker === "github-actions-mcp-worker") {
-    // Preserve the single, multiline GitHub Environment Secret unchanged.
+    // Preserve the single, multiline GitHub Repository Secret unchanged.
     // Reject malformed/duplicated entries before any Worker deployment.
     const tokens = payload.ACTIONS_GITHUB_DISPATCH_TOKENS.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
     if (!tokens.length || tokens.length > 8 ||

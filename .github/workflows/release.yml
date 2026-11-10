@@ -124,8 +124,6 @@ jobs:
           inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
-    environment:
-      name: workflow-mcp-worker
     concurrency:
       group: worker-release-workflow-mcp-worker
       cancel-in-progress: false
@@ -191,8 +189,6 @@ jobs:
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
           inputs.database_expected_release_sha == '' }}
     runs-on: ubuntu-latest
-    environment:
-      name: workflow-mcp-worker
     concurrency:
       group: worker-release-workflow-mcp-worker
       cancel-in-progress: false
@@ -281,8 +277,6 @@ jobs:
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
-    environment:
-      name: browser-mcp-worker
     concurrency:
       group: worker-release-browser-mcp-worker
       cancel-in-progress: false
@@ -341,10 +335,7 @@ jobs:
            inputs.worker == 'github-actions-mcp-worker' ||
            inputs.worker == 'workflow-mcp-worker') }}
     runs-on: ubuntu-latest
-    # A GitHub Environment is a Worker-scoped configuration namespace, not a
-    # staging/production selector. Only manual dispatch on main can deploy.
-    environment:
-      name: ${{ inputs.worker }}
+    # Only reviewed manual dispatch on main can publish the selected Worker.
     concurrency:
       group: worker-release-${{ inputs.worker }}
       cancel-in-progress: false
@@ -437,7 +428,7 @@ jobs:
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
 
-      # SSH/Workflow GitHub Environment Secrets now use canonical runtime names.
+      # SSH/Workflow Repository Secrets use canonical runtime binding names.
       # Only the selected Worker stages its canonical Secret, without legacy aliases.
       # Workflow code-only releases use deployed Secrets (read-only inventory),
       # never stage or re-upload their values.
@@ -452,15 +443,14 @@ jobs:
         if: inputs.worker != 'workflow-mcp-worker' || inputs.workflow_code_only != true
         shell: bash
         env:
-          # GitHub automatically uses same-name Environment Secrets over
-          # Repository Secrets. Values are scoped to this one staging step.
+          # Repository Secrets are staged only for the selected Worker in this step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
-          RAINDROP_ACCESS_TOKEN: ${{ secrets.RAINDROP_ACCESS_TOKEN }}
-          IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
+          RAINDROP_ACCESS_TOKEN: ${{ inputs.worker == 'raindrop-mcp-worker' && secrets.RAINDROP_ACCESS_TOKEN || '' }}
+          IMA_API_KEY: ${{ inputs.worker == 'ima-mcp-worker' && secrets.IMA_API_KEY || '' }}
           SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}
-          ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ secrets.ACTIONS_GITHUB_DISPATCH_TOKENS }}
+          ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ inputs.worker == 'github-actions-mcp-worker' && secrets.ACTIONS_GITHUB_DISPATCH_TOKENS || '' }}
           WORKFLOW_MCP_PORTAL_CLIENT_SECRET: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_MCP_PORTAL_CLIENT_SECRET || '' }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
           DATABASE_B2B_PASSWORD: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_B2B_PASSWORD || '' }}
@@ -481,15 +471,15 @@ jobs:
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
-          # The Provider pin is resolved read-only after the existing environment approval,
-          # not copied from a potentially stale GitHub Environment variable.
+          # The Provider pin is resolved read-only after the existing Owner/main preflight,
+          # not copied from a stale manually maintained GitHub Variable.
           DATABASE_MAX_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_ROWS || '' }}
           DATABASE_MAX_RESULT_BYTES: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_RESULT_BYTES || '' }}
           DATABASE_MAX_SCHEMA_BYTES: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_SCHEMA_BYTES || '' }}
           DATABASE_QUERY_TIMEOUT_MS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_QUERY_TIMEOUT_MS || '' }}
           DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
           # GitHub reserves GITHUB_* variable names; translate our reviewed
-          # GitHub Environment variable into the Worker's runtime binding.
+          # Repository variable into the selected Worker's runtime binding.
           WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_REPOSITORY || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
@@ -946,7 +936,7 @@ jobs:
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "SELECT name FROM d1_migrations ORDER BY name") |
             node scripts/workflow-release-schema-selection.mjs
 
-      # Only the existing production release lock and GitHub Environment can
+      # Only the existing production release lock and Owner/main checks can
       # apply the reviewed Action capability and Session lifecycle migrations. This changes the
       # schema without changing any running instance.
       - name: Enforce original all-Workflow migration gate before any ordinary D1 writes
@@ -1371,8 +1361,6 @@ jobs:
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
-    environment:
-      name: workflow-mcp-worker
     concurrency:
       group: worker-release-workflow-mcp-worker
       cancel-in-progress: false
@@ -1450,8 +1438,6 @@ jobs:
           inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
           inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
-    environment:
-      name: ${{ inputs.worker }}
     concurrency:
       group: worker-release-${{ inputs.worker }}
       cancel-in-progress: false

@@ -17,7 +17,7 @@ Deploy only through the separately authorized manual Worker release workflow.
 
 Required Worker Secrets: `IMA_API_KEY`, `MCP_ACCESS_TOKEN`.
 
-Required non-secret Worker Variable: `IMA_CLIENT_ID` (`plain_text`, provided through the `ima-mcp-worker` GitHub Environment Variables).
+Required non-secret Worker Variable: `IMA_CLIENT_ID` (`plain_text`, provided through the `ima-mcp-worker` GitHub Repository Variables).
 
 No R2 storage binding, Litterbox configuration, public download domain, or other export credential is required. Do not delete the old R2 bucket/domain/objects or the historical Durable Object in this change.
 
