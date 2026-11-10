@@ -141,7 +141,13 @@ for(const clause of [
 assert.doesNotMatch(accessProbe.content, /wrangler|secret (?:put|delete|set)|(?:curl|fetch) .*--request (?:POST|PUT|DELETE)|manual-worker-release\.mjs readback|deploy_to_production: true/,
   'Browser permission probe must not publish or modify Cloudflare/GitHub state');
 
-// A UU-retirement request may only reach the reviewed versioned Secret job,
+// Spec #804 read-only intent excludes all mutation-capable jobs.
+for(const name of [
+  'deploy','workflow-actions-migration-prepare','workflow-actions-gate-reopen',
+  'workflow-uu-table-retirement','legacy-secret-cleanup'
+]) assert.ok(job(release,name).gate.includes('inputs.browser_access_readonly != true'),
+  'Browser read-only intent could reach mutating job: '+name);
+
 // never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
 assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
   'UU Secret request must be fenced from ordinary production deploy');

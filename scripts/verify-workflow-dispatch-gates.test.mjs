@@ -40,6 +40,17 @@ test('Spec #804 Browser protected Runner probe excludes any production release',
   assert.doesNotMatch(probe,/wrangler|pnpm exec wrangler|gh secret|cloudflare.*(?:POST|PUT|DELETE)/);
 });
 
+test('Spec #804 read-only mode cannot trigger any mutation branch',()=>{
+  for(const name of ['deploy','workflow-actions-migration-prepare',
+    'workflow-actions-gate-reopen','workflow-uu-table-retirement','legacy-secret-cleanup']){
+    const start=release.indexOf('  '+name+':\n');
+    assert.ok(start>=0);
+    const text=release.slice(start,release.indexOf('    runs-on:',start));
+    assert.match(text,/inputs\.browser_access_readonly != true/,
+      'Mutating job must reject browser_access_readonly: '+name);
+  }
+});
+
 test('retired Email encryption secret is not referenced by production release', () => {
   assert.doesNotThrow(() => verifyReleaseWorkers(release, RELEASE_WORKERS));
   assert.throws(() => verifyReleaseWorkers(release + '\nMAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}\n', RELEASE_WORKERS),

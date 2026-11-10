@@ -125,7 +125,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.actions_migration_prepare == true &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare == true &&
           inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true }}
     runs-on: ubuntu-latest
@@ -190,7 +190,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.actions_migration_prepare != true &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
@@ -1353,7 +1353,7 @@ jobs:
           github.ref == 'refs/heads/main' && github.actor == 'lirtual' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.uu_cleanup_approved == true &&
-          inputs.deploy_to_production == false &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true &&
           inputs.workflow_code_only != true &&
           inputs.uu_session_secret_cleanup != true &&
           inputs.legacy_secret_cleanup_mode == 'none' &&
@@ -1422,7 +1422,7 @@ jobs:
     needs: checks
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.deploy_to_production == true &&
+          github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true &&
           needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
           (
             (
