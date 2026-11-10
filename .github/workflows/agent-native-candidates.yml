@@ -384,8 +384,12 @@ jobs:
             (Resolve-Path 'apps/remote-control-mcp-worker/agent/scripts/windows-session-private-store.ps1').Path,
             [ref]$sessionTokens, [ref]$sessionErrors)
           if ($sessionErrors.Count -ne 0) { throw 'Windows Session ACL helper syntax invalid' }
-          if ((Get-Content -Raw 'apps/remote-control-mcp-worker/agent/install.ps1') -notmatch 'PinnedReleaseSha256') {
-            throw 'Public Windows installer must require a reviewed immutable asset hash'
+          $installer = Get-Content -Raw 'apps/remote-control-mcp-worker/agent/install.ps1'
+          if ($installer -notmatch 'releases/latest' -or $installer -notmatch 'sha256:' -or $installer -notmatch 'SelectedReleaseSha256') {
+            throw 'Public Windows installer must require the official latest Release digest'
+          }
+          if ($installer -match 'PinnedReleaseSha256') {
+            throw 'Public Windows installer must not accept a source pin'
           }
           # Invoke only the isolated redirect validator function against
           # deliberately invalid starting origins. No HTTP request is made.
