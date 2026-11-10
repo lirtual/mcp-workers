@@ -237,3 +237,38 @@ test('Database retains prefixed limits while removing Setup Access variables', (
   assert.deepEqual(collectWorkerVars('database-mcp-worker',dbVars({DATABASE_MAX_ROWS:'35'})),
     ['DATABASE_CONNECTIONS:{}','DATABASE_MAX_ROWS:35']);
 });
+
+test('Spec #804 stages Browser runtime values only from protected candidate state',async()=>{
+  const {mkdtempSync,writeFileSync,readFileSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');
+  const {join}=await import('node:path');
+  const {spawnSync}=await import('node:child_process');
+  const root=mkdtempSync(join(tmpdir(),'spec804-browser-'));
+  try {
+    const sha='a'.repeat(40), account='c'.repeat(32);
+    const state=join(root,'release.json'),output=join(root,'stage.txt');
+    const env={...process.env,RUNNER_TEMP:root,RELEASE_STATE_FILE:state,
+      GITHUB_SHA:sha,CLOUDFLARE_ACCOUNT_ID:account,OWNER_EMAIL:'owner@example.com'};
+    delete env.ACCESS_TEAM_DOMAIN;
+    delete env.BROWSER_ACTIVATION_AUDIENCE;
+    const candidate={worker:'browser-mcp-worker',sourceSha:sha,browserIdentity:{
+      accountId:account,appId:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',
+      teamDomain:'owner.cloudflareaccess.com',ownerEmail:env.OWNER_EMAIL,
+      audience:'a'.repeat(64),origin:'https://browser.lirtual.dpdns.org'
+    }};
+    const run=()=>spawnSync(process.execPath,['scripts/worker-release-variables.mjs',
+      'browser-mcp-worker',output],{cwd:new URL('..',import.meta.url),env,encoding:'utf8'});
+    writeFileSync(state,JSON.stringify(candidate));
+    assert.equal(run().status,0);
+    assert.deepEqual(readFileSync(output,'utf8').trim().split('\n'),[
+      'BROWSER_ACCESS_ISSUER:https://owner.cloudflareaccess.com',
+      'BROWSER_OWNER_EMAIL:owner@example.com',
+      'BROWSER_ACTIVATION_ORIGIN:https://browser.lirtual.dpdns.org',
+      'BROWSER_ACTIVATION_AUDIENCE:'+'a'.repeat(64)
+    ]);
+    rmSync(output);
+    writeFileSync(state,JSON.stringify({...candidate,sourceSha:'b'.repeat(40)}));
+    assert.notEqual(run().status,0);
+    assert.throws(()=>readFileSync(output,'utf8'));
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

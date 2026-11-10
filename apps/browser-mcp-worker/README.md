@@ -62,3 +62,16 @@ The owner-approved v0.2.5 security hardening release checks bounded `aria-labell
 The new remembered grant lifecycle uses a **14-day idle default** (single reviewed release variable `BROWSER_REMEMBERED_IDLE_DAYS`, integer 1–90), server-owned OFF and disconnected deadlines, irreversible expiry, and owner-local Profile alias management. ON with current authenticated WSS has no countdown; temporary pairing and Access/OTP remain independent. Release-variable validation and Durable Object alarms are reused, with no new background service. See the [design](docs/idle-pairing-and-options-design.md) and [ADR](docs/adr/0003-remembered-pairing-idle-expiry.md). **Code candidate only:** production v0.2.5/installed Chrome+Edge remain unchanged until a separately authorized manual release and coordinated client upgrade.
 
 Spec #733: GitHub Repository `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` are the only Owner identity source. Release derives runtime `BROWSER_ACCESS_ISSUER`, `BROWSER_OWNER_EMAIL` and Custom Domain `BROWSER_ACTIVATION_ORIGIN`. Only `BROWSER_ACTIVATION_AUDIENCE` is an independently configured Activation Variable. Existing Access/OTP policy and pairing storage are unchanged.
+
+### Spec #804 (release-code delivery; production switch not yet authorized)
+
+Browser Owner Access identity inputs are now read-only discovered from the
+account Zero Trust Organization (`auth_domain`) and the existing fixed
+Browser Activation Access Application (`aud`) on the protected release path.
+The Repository's `OWNER_EMAIL` remains the only maintained Owner identity
+Variable. The application still requires the identical runtime issuer,
+Audience, Owner email and activation Origin; SSO+OTP, Owner-only policy,
+15m Access session and single-use same-Profile proof remain unchanged.
+Existing #733 instructions above describe the **historical live production
+source** until a separately approved #804 production cutover. Do not delete
+legacy GitHub Variables or change Access apps merely after merging code.

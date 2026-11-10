@@ -30,6 +30,16 @@ test('canonical SSH and Workflow GitHub Secret inputs are scoped, single-source 
   }
 });
 
+test('Spec #804 Browser protected Runner probe excludes any production release',()=>{
+  assert.match(release,/browser_access_readonly:/);
+  assert.match(release,/inputs\.browser_access_readonly != true/);
+  const probe=release.split('  browser-access-readonly:\n')[1]?.split('\n  deploy:\n')[0];
+  assert.ok(probe);
+  assert.match(probe,/inputs\.deploy_to_production == false/);
+  assert.match(probe,/node scripts\/manual-worker-release\.mjs preflight browser-mcp-worker/);
+  assert.doesNotMatch(probe,/wrangler|pnpm exec wrangler|gh secret|cloudflare.*(?:POST|PUT|DELETE)/);
+});
+
 test('retired Email encryption secret is not referenced by production release', () => {
   assert.doesNotThrow(() => verifyReleaseWorkers(release, RELEASE_WORKERS));
   assert.throws(() => verifyReleaseWorkers(release + '\nMAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}\n', RELEASE_WORKERS),
@@ -44,7 +54,7 @@ test('a missing or duplicated manual Worker choice fails', () => {
 test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'github-actions-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
-  assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+  assert.throws(() => verifyReleaseWorkers(release.replace("inputs.browser_access_readonly != true &&\n          inputs.legacy_secret_cleanup_mode", "true &&\n          inputs.legacy_secret_cleanup_mode"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
 
 test('retired HTTP MCP cannot enter the release allowlist', () => {

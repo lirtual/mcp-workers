@@ -15,9 +15,6 @@ on:
       release_ready:
         description: Explicit success of all checks required for the selected Worker
         value: ${{ jobs.release-gate.outputs.release_ready }}
-      canonical_access_team_domain:
-        description: Repository-scoped Owner Access team, captured without Worker Environment
-        value: ${{ jobs.checks.outputs.canonical_access_team_domain }}
       canonical_owner_email:
         description: Repository-scoped Owner mailbox, captured without Worker Environment
         value: ${{ jobs.checks.outputs.canonical_owner_email }}
@@ -43,7 +40,6 @@ jobs:
     outputs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
       remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
-      canonical_access_team_domain: ${{ steps.canonical_owner.outputs.team }}
       canonical_owner_email: ${{ steps.canonical_owner.outputs.email }}
     steps:
       - uses: actions/checkout@v4
@@ -56,14 +52,12 @@ jobs:
         id: canonical_owner
         shell: bash
         env:
-          SOURCE_TEAM: ${{ vars.ACCESS_TEAM_DOMAIN }}
           SOURCE_EMAIL: ${{ vars.OWNER_EMAIL }}
         run: |
           set -euo pipefail
-          [[ "$SOURCE_TEAM" =~ ^[a-z0-9-]+\.cloudflareaccess\.com$ ]]
           [[ "$SOURCE_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]
-          [[ ${#SOURCE_TEAM} -le 256 && ${#SOURCE_EMAIL} -le 256 ]]
-          printf 'team=%s\nemail=%s\n' "$SOURCE_TEAM" "$SOURCE_EMAIL" >> "$GITHUB_OUTPUT"
+          [[ ${#SOURCE_EMAIL} -le 256 ]]
+          printf 'email=%s\n' "$SOURCE_EMAIL" >> "$GITHUB_OUTPUT"
 
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs
