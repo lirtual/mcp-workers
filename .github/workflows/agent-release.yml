@@ -181,7 +181,7 @@ jobs:
               --title "Remote Control Agent $RELEASE_TAG" \
               --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
               --draft
-            release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+            release_id="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json apiUrl --jq '.apiUrl | split("/") | last')"
             gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
               -F draft=false -F prerelease=false -F make_latest=false >/dev/null
             published="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
@@ -245,7 +245,7 @@ jobs:
               --notes "Stable five-platform Agent release from candidate run $CANDIDATE_RUN_ID." \
               --draft
           fi
-          release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+          release_id="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json apiUrl --jq '.apiUrl | split("/") | last')"
           gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
             -F draft=false -F prerelease=false -F make_latest=true >/dev/null
           release="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
