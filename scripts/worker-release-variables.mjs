@@ -95,7 +95,7 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "workflow-mcp-worker") {
     variables.push(
       "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-      "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production"
+      "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action"
     );
     // Repository onboarding is an explicit GitHub Environment Variable.
     // The owner must approve a repository ID and its immutable commit SHA;
@@ -185,7 +185,20 @@ async function main() {
       .replace(/^\s*\/\/.*$/gm, "")) : undefined;
   // The Provider is verified at runtime and release; no persistent
   // deployment-UUID pin is staged for the Workflow Consumer.
-  const flags = collectWorkerVars(worker, process.env, { config });
+  let effective=process.env;
+  if(worker==="browser-mcp-worker") {
+    if(!process.env.RELEASE_STATE_FILE) throw Error("Browser release state required");
+    const state=JSON.parse(await readFile(process.env.RELEASE_STATE_FILE,"utf8"));
+    const identity=state?.browserIdentity;
+    if(state.worker!==worker || state.sourceSha!==process.env.GITHUB_SHA ||
+       state.sourceSha?.length!==40 || identity?.accountId!==process.env.CLOUDFLARE_ACCOUNT_ID ||
+       identity?.ownerEmail!==process.env.OWNER_EMAIL ||
+       !/^[a-f0-9]{64}$/.test(identity?.audience??""))
+      throw Error("Browser candidate identity state missing or mismatched");
+    effective={...process.env,ACCESS_TEAM_DOMAIN:identity.teamDomain,
+      BROWSER_ACTIVATION_AUDIENCE:identity.audience};
+  }
+  const flags = collectWorkerVars(worker, effective, { config });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",
     { flag: "wx", mode: 0o600 });
   console.log("Selected Worker Variables validated: " + flags.length + " override(s)");

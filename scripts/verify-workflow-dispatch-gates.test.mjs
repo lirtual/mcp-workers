@@ -30,6 +30,36 @@ test('canonical SSH and Workflow GitHub Secret inputs are scoped, single-source 
   }
 });
 
+test('Spec #804 Browser candidate stage receives canonical account ID', () => {
+  const stage = release.split('      - name: Stage approved Worker variables\n')[1]
+    ?.split('      - name: Pin the reviewed unified Actions Worker')[0];
+  assert.ok(stage);
+  assert.ok(stage.includes('CLOUDFLARE_ACCOUNT_ID: ' + '$' + '{{ vars.CLOUDFLARE_ACCOUNT_ID }}'));
+  assert.match(stage, /OWNER_EMAIL:/);
+  assert.match(stage, /node scripts\/worker-release-variables\.mjs/);
+});
+
+test('Spec #804 Browser protected Runner probe excludes any production release',()=>{
+  assert.match(release,/browser_access_readonly:/);
+  assert.match(release,/inputs\.browser_access_readonly != true/);
+  const probe=release.split('  browser-access-readonly:\n')[1]?.split('\n  deploy:\n')[0];
+  assert.ok(probe);
+  assert.match(probe,/inputs\.deploy_to_production == false/);
+  assert.match(probe,/node scripts\/manual-worker-release\.mjs preflight browser-mcp-worker/);
+  assert.doesNotMatch(probe,/wrangler|pnpm exec wrangler|gh secret|cloudflare.*(?:POST|PUT|DELETE)/);
+});
+
+test('Spec #804 read-only mode cannot trigger any mutation branch',()=>{
+  for(const name of ['deploy','workflow-actions-migration-prepare',
+    'workflow-actions-gate-reopen','workflow-uu-table-retirement','legacy-secret-cleanup']){
+    const start=release.indexOf('  '+name+':\n');
+    assert.ok(start>=0);
+    const text=release.slice(start,release.indexOf('    runs-on:',start));
+    assert.match(text,/inputs\.browser_access_readonly != true/,
+      'Mutating job must reject browser_access_readonly: '+name);
+  }
+});
+
 test('retired Email encryption secret is not referenced by production release', () => {
   assert.doesNotThrow(() => verifyReleaseWorkers(release, RELEASE_WORKERS));
   assert.throws(() => verifyReleaseWorkers(release + '\nMAIL_ENCRYPTION_KEY: ${{ secrets.MAIL_ENCRYPTION_KEY }}\n', RELEASE_WORKERS),
@@ -44,7 +74,7 @@ test('a missing or duplicated manual Worker choice fails', () => {
 test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'github-actions-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
-  assert.throws(() => verifyReleaseWorkers(release.replace("needs.checks.result == 'success' &&", "true &&"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+  assert.throws(() => verifyReleaseWorkers(release.replace("inputs.browser_access_readonly != true &&\n          inputs.legacy_secret_cleanup_mode", "true &&\n          inputs.legacy_secret_cleanup_mode"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
 
 test('retired HTTP MCP cannot enter the release allowlist', () => {

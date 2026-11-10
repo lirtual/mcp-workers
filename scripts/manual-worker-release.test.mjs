@@ -888,7 +888,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action"},
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
@@ -896,6 +896,19 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  // A code-only release preserves deployed Variables: reject Audience drift
+  // BEFORE deploy, not only during post-publication readback.
+  const codeOnlyPreflight=(list=bindings)=>verifyBindings("workflow-mcp-worker",
+    {...settings,bindings:list},secrets,{mode:"preflight",requireExistingSecrets:true});
+  assert.equal(codeOnlyPreflight(),true);
+  for(const value of ["workflow-github-action:production", "workflow-github-action:staging", ""]){
+    assert.throws(()=>codeOnlyPreflight(bindings.map(binding=>
+      binding.name==="WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE"?{...binding,text:value}:binding)),
+    /Workflow code-only Action OIDC audience drift/);
+  }
+  assert.throws(()=>codeOnlyPreflight(bindings.filter(binding=>
+    binding.name!=="WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE")),
+  /Workflow code-only release blocked/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"}],
     [...secrets,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY"}]),/Unexpected runtime Secret/);
   assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),
@@ -1013,7 +1026,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action"},
   ];
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
@@ -1037,7 +1050,7 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
     {name:"WORKFLOW",type:"workflow",workflow_name:"workflow-mcp-orchestrator",class_name:"WorkflowOrchestrator"},
     {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
     {name:"WORKFLOW_MCP_PORTAL_ENDPOINT",type:"plain_text",text:"https://mcp.lirtual.dpdns.org/mcp"},
-    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action:production"},
+    {name:"WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE",type:"plain_text",text:"workflow-github-action"},
   ];
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
@@ -1170,7 +1183,14 @@ test('Browser release retains identity, DO, Assets and Bearer under canonical ow
     sharedAccessTeamDomain:'lirtualzero.cloudflareaccess.com',sharedOwnerEmail:'lirtual@outlook.com'};
   assert.equal(verifyBindings(worker,settings(identity),secret,options),true);
   assert.throws(()=>verifyBindings(worker,settings({}),secret,options),/Browser live bindings differ/);
-  assert.equal(verifyBindings(worker,settings({}),secret,{...options,mode:'preflight'}),true);
+  assert.throws(()=>verifyBindings(worker,settings({}),secret,{...options,mode:'preflight'}),/identity baseline/);
+  const browserIdentity={accountId:'c'.repeat(32),appId:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',
+    teamDomain:'lirtualzero.cloudflareaccess.com',ownerEmail:'lirtual@outlook.com',
+    audience,origin:'https://browser.lirtual.dpdns.org'};
+  assert.equal(verifyBindings(worker,settings({...identity,...activation}),secret,
+    {...options,mode:'preflight',browserIdentity,expectedBrowserActivationAudience:audience}),true);
+  assert.throws(()=>verifyBindings(worker,settings({...identity,...activation,BROWSER_ACTIVATION_AUDIENCE:'c'.repeat(64)}),secret,
+    {...options,mode:'preflight',browserIdentity,expectedBrowserActivationAudience:audience}),/production identity/);
   assert.equal(verifyBindings(worker,settings({...identity,...activation}),secret,
     {...options,expectedBrowserActivationAudience:audience}),true);
   assert.throws(()=>verifyBindings(worker,settings({...identity,BROWSER_OWNER_EMAIL:'wrong@example.com'}),secret,options),/Browser live bindings differ/);
@@ -1207,7 +1227,7 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
     {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
     {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
     {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
-    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action:production'}];
+    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action'}];
   const wrap=x=>({bindings:x,observability:{enabled:true,logs:{invocation_logs:true}}});
   const inventory=[...bindings,...old.map(name=>({name,type:'secret_text'}))];
   const listed=[...secrets,...old.map(name=>({name}))];
@@ -1262,7 +1282,7 @@ test('Spec 733 Workflow Portal identity and grants must retain exact approved va
     {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
     {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
     {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
-    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action:production'}];
+    {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action'}];
   const old=[...common,{name:'MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
     {name:'GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants}];
   const current=[...common,{name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
@@ -1276,4 +1296,29 @@ test('Spec 733 Workflow Portal identity and grants must retain exact approved va
   assert.throws(()=>verify(old,{mode:'preflight',expectedWorkflowGrants:'[]'}),/approved repositories/);
   assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowGrants:'not-json'}),/valid JSON/);
   assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowPortalClientId:''}),/Portal client identity/);
+});
+
+test('Spec #804 prepublication gate rejects Access and active Worker drift without resetting state',async()=>{
+  const {verifyBrowserPrepublicationCandidate}=await import('./manual-worker-release.mjs');
+  const {readFileSync}=await import('node:fs');
+  const source=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
+  const candidate={worker:'browser-mcp-worker',version_id:'12345678-1234-1234-1234-123456789abc',
+    deployment_id:'original-100-percent',browserIdentity:{
+      accountId:'c'.repeat(32),appId:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',
+      teamDomain:'owner.cloudflareaccess.com',ownerEmail:'owner@example.com',
+      audience:'a'.repeat(64),origin:'https://browser.lirtual.dpdns.org',
+      policyId:'a9ad0c55-9533-4391-ad59-60018b264401',
+      identityProviders:['sso-id','otp-id'].sort()
+    }};
+  assert.equal(verifyBrowserPrepublicationCandidate(candidate,{
+    version_id:candidate.version_id,deployment_id:candidate.deployment_id
+  },{...candidate.browserIdentity}),true);
+  assert.throws(()=>verifyBrowserPrepublicationCandidate(candidate,{
+    version_id:'another',deployment_id:candidate.deployment_id
+  },candidate.browserIdentity),/production baseline/);
+  assert.throws(()=>verifyBrowserPrepublicationCandidate(candidate,{
+    version_id:candidate.version_id,deployment_id:candidate.deployment_id
+  },{...candidate.browserIdentity,audience:'b'.repeat(64)}),/identity_drift/);
+  assert.ok(source.indexOf('manual-worker-release.mjs identity-recheck')<
+    source.indexOf('Publish exactly selected Worker'));
 });

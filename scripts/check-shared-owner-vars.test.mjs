@@ -5,10 +5,8 @@ const env={GITHUB_REPOSITORY:'lirtual/mcp-workers',GITHUB_REF:'refs/heads/main',
   ACCESS_TEAM_DOMAIN:'owner.cloudflareaccess.com',CANONICAL_ACCESS_TEAM_DOMAIN:'owner.cloudflareaccess.com',
   OWNER_EMAIL:'owner@example.com',CANONICAL_OWNER_EMAIL:'owner@example.com'};
 test('release owner values equal the independent no-Environment CI source',()=>{
-  for(const worker of ['database-mcp-worker','browser-mcp-worker'])
-    assert.equal(verifySharedOwnerVars(worker,env),true);
-  for(const [key,value] of [['ACCESS_TEAM_DOMAIN','other.cloudflareaccess.com'],
-    ['OWNER_EMAIL','someone@example.com'],['CANONICAL_ACCESS_TEAM_DOMAIN',''],
+  assert.equal(verifySharedOwnerVars('browser-mcp-worker',env),true);
+  for(const [key,value] of [['OWNER_EMAIL','someone@example.com'],
     ['CANONICAL_OWNER_EMAIL','bad'],['GITHUB_REF','refs/heads/other']])
     assert.throws(()=>verifySharedOwnerVars('browser-mcp-worker',{...env,[key]:value}),/identity|context/);
   assert.throws(()=>verifySharedOwnerVars('ssh-mcp-worker',env),/Unsupported/);
@@ -22,17 +20,32 @@ test('Repository source is captured outside the selected Worker Environment and 
     ?.split('\n      - name:')[0];
   assert.ok(capture);
   assert.match(capture,/github\.ref == 'refs\/heads\/main'/);
-  assert.match(capture,/vars\.ACCESS_TEAM_DOMAIN/);
+  assert.doesNotMatch(capture,/vars\.ACCESS_TEAM_DOMAIN/);
   assert.match(capture,/vars\.OWNER_EMAIL/);
   assert.doesNotMatch(capture,/environment:/);
-  for(const name of ['canonical_access_team_domain','canonical_owner_email']){
+  for(const name of ['canonical_owner_email']){
     assert.match(ci,new RegExp('jobs\\.checks\\.outputs\\.'+name));
     assert.match(release,new RegExp('needs\\.checks\\.outputs\\.'+name));
   }
+  assert.doesNotMatch(release,/vars\.ACCESS_TEAM_DOMAIN|vars\.BROWSER_ACTIVATION_AUDIENCE/);
   assert.ok(release.indexOf('node scripts/check-shared-owner-vars.mjs') <
     release.indexOf('node scripts/bootstrap-worker-secrets.mjs'));
   const ownerStep=release.split('      - name: Compare selected Worker effective Owner identity to Repository source')[1]
     ?.split('      - name: Stage selected Worker Secrets')[0];
   assert.ok(ownerStep);
   assert.doesNotMatch(ownerStep,/GITHUB_TOKEN/);
+});
+
+test('Spec #804 no executable workflow consumes retired Github Access identity source Variables',async()=>{
+  const {readFileSync}=await import('node:fs');
+  for(const workflow of ['ci','release','acceptance','spec775-business-acceptance']){
+    const yml=readFileSync(new URL('../.github/workflows/'+workflow+'.yml',import.meta.url),'utf8');
+    assert.doesNotMatch(yml,/\$\{\{[^}]*vars\.(?:ACCESS_TEAM_DOMAIN|BROWSER_ACTIVATION_AUDIENCE)\b/,
+      'Retired GitHub Variable consumer in '+workflow);
+  }
+  const release=readFileSync(new URL('./manual-worker-release.mjs',import.meta.url),'utf8');
+  assert.doesNotMatch(release,/process\.env\.(?:ACCESS_TEAM_DOMAIN|BROWSER_ACTIVATION_EXPECTED)\b/);
+  const stage=readFileSync(new URL('./worker-release-variables.mjs',import.meta.url),'utf8');
+  assert.match(stage,/state\?\.browserIdentity/);
+  assert.match(stage,/effective=\{\.\.\.process\.env,ACCESS_TEAM_DOMAIN:identity\.teamDomain/);
 });

@@ -6,6 +6,29 @@ Status: Accepted and implemented under Spec #733 (closed/completed, 2026-11-06).
 
 `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` are canonical GitHub Repository Variables for Browser and Database only, with no same-named Environment overrides. Service-specific keys use `DATABASE_`, `SSH_`, and `WORKFLOW_` prefixes. `MCP_ACCESS_TOKEN`, `ACTIONS_GITHUB_DISPATCH_TOKENS` and existing GitHub dispatch tokens stay unchanged. Database's subsequent Spec #760 supersedes its former D1/encryption configuration. Browser derives issuer/owner from the shared variables and activation origin from the reviewed Wrangler Custom Domain. Spec #733 did not rename Cloudflare D1, DO, Service Binding or Portal resource identities; Database's subsequent architectural change is governed by Spec #760.
 
+## Scoped subsequent decision: Spec #804 (production deployed; GitHub source cleanup pending)
+
+Browser release code now obtains the Zero Trust Organization `auth_domain` and
+the fixed reviewed Browser Access App `aud` read-only via the selected
+Cloudflare account. Only Repository `OWNER_EMAIL` remains a maintained Owner
+identity source. The protected release state carries one verified candidate to
+variable staging, immediate prepublication Access recheck and post-deploy
+binding readback. The existing active production identity is checked
+independently; an unexpected issuer/Audience/Owner/Origin drift blocks release.
+The required Browser runtime bindings remain, including their original names.
+
+This **narrowly supersedes** the opening #733 identity-source decision for
+Browser's executable release code only. It does not alter the historical
+#733 migration evidence or Database's independent #760 contract. The authorized [production Release #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
+completed on 2026-11-10, with independent 100% active-version and identity
+binding readback. The old Repository `ACCESS_TEAM_DOMAIN` and Browser Environment
+`BROWSER_ACTIVATION_AUDIENCE` sources were subsequently deleted under
+separate authorization on 2026-11-10, with independent HTTP 404 readbacks;
+current release code never consumes those old sources.
+Physical Owner same-Profile activation has not yet been retested.
+No new Access application, global policy, gateway or authentication method
+is introduced. SSH and MCP/Portal keep separate authentication boundaries.
+
 ## Migration safeguards (historical)
 
 Code/tests/docs were merged before the separately authorized Worker cutovers and legacy Cloudflare runtime binding cleanup. Temporary source-name compatibility checks applied during migration; the final approved exception retains the three existing GitHub Environment Secrets as sole sources, mapped to canonical runtime bindings without copying their values. Preflight compares selected-Worker effective identity with the Repository values captured by the pre-release CI job. Absence of same-value Environment shadow requires a separately authorized GitHub Settings inventory check; CI comparison alone is not proof of removal. Postflight must check active version, new key types and exact names. Wrangler may preserve omitted `secret_text` bindings; tolerate only SSH `ENCRYPTION_KEY` and Workflow `MCP_PORTAL_CLIENT_SECRET` / `SESSION_RUNTIME_DATA_KEY` temporarily. They are not clean until a separately authorized cleanup is verified by negative Cloudflare inventory. `workflow_code_only` cannot be used for first cutover.

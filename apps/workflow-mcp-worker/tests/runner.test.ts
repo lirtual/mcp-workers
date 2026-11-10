@@ -1156,7 +1156,7 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
    .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  let calls=0;
  const old=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -1283,7 +1283,7 @@ test('late invalid dynamic Task choice is rejected before any per-item GitHub di
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  let posts=0;
  const before=globalThis.fetch;
  globalThis.fetch=(async()=>{posts++;throw Error('must not dispatch');}) as typeof fetch;
@@ -1320,7 +1320,7 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  const checkpoints:string[]=[];
  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
   {payload:{run_id:start.run_id}} as WorkflowEvent<{run_id:string}>,
@@ -1467,7 +1467,7 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),started.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
- env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action:production';
+ env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  let posts=0;
  const savedFetch=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -1536,7 +1536,7 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  const identity={repository:'lirtual/github-actions',repositoryId:123,
   workflowId:456,workflowPath:'.github/workflows/task.yml',
   commitSha:'a'.repeat(40),contractDigest:'b'.repeat(64),type:'task' as const};
- const tag='refs/tags/task-v1',audience='workflow-github-action:production';
+ const tag='refs/tags/task-v1',audience='workflow-github-action';
  const {plan}=await compilePlan({version:1,name:'Signed ordered Task pipeline',steps:[
   {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
    template:{steps:[

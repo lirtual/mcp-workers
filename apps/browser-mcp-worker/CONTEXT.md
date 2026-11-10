@@ -51,3 +51,21 @@ Released v0.2.4 / WSS 3 adds bounded, sensitive-filtered native choice and ARIA 
 ## 2026-10-31 proposed remembered-pairing idle lifetime and UI
 
 The Owner-approved [incremental design](docs/idle-pairing-and-options-design.md) and [ADR 0003](docs/adr/0003-remembered-pairing-idle-expiry.md) propose **ON-online holds authorization without a countdown; explicit OFF or long offline starts a server-enforced idle countdown (14 days by default, configurable by reviewed GitHub Actions Variable `BROWSER_REMEMBERED_IDLE_DAYS`), and expiry revokes the old Endpoint grant**. This replaces only the indefinite remembered-pairing lifetime and improves local Profile naming, discovery metadata, and Options presentation. Temporary grants, Access same-Profile proof, Stop/Revoke priority and Unknown receipts stay intact. **v0.2.6 implementation candidate:** lifecycle, variable and Profile UI have source/regression coverage; this is not yet a production Worker release or native Chrome/Edge acceptance. Current production remains v0.2.5.
+
+## Spec #804 Browser identity source (code implemented; production pending)
+
+The protected Browser release now reads Zero Trust Organization
+`auth_domain` and the fixed reviewed Browser Activation Access App's `aud`
+through Cloudflare GET requests, not GitHub's `ACCESS_TEAM_DOMAIN` or
+`BROWSER_ACTIVATION_AUDIENCE` Variables. GitHub Repository `OWNER_EMAIL`
+remains the canonical Owner mailbox. The existing `BROWSER_OWNER` Durable
+Object and all four Browser Activation runtime identity bindings remain
+unchanged. Preflight compares active production identity with the discovered
+candidate, and the original Release state holds that candidate for staging,
+prepublication Access/active-version read-only recheck and binding readback.
+SSO+OTP, 15-minute session, strict JWT claims and same-Profile one-use proof
+are unchanged. A separate real protected Runner GET-only permission test,
+authorized production release and independent E2E acceptance are **not yet
+recorded as Pass**. Historical #733 and Owner Review retirement evidence above
+remains historical fact; no production resources or GitHub Variables were
+deleted by this source implementation.

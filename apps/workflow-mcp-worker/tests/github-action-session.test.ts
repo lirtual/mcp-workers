@@ -279,7 +279,7 @@ test('verified physical GitHub completion after parent Ready still settles and f
  }finally{f.db.close();}
 });
 
-const audience='workflow-github-action:production';
+const audience='workflow-github-action';
 async function signedReady(claims:Record<string,unknown>={}){
  const {privateKey,publicKey}=await generateKeyPair('RS256');
  const jwt=await new SignJWT({
@@ -1075,7 +1075,7 @@ test('historical tagged Session Plan cannot accept a new Run',async()=>{
   let created=0;
   const env={DB:f.adapter,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'private-test-token',
-   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-action:production',
+   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-action',
    WORKFLOW:{create:async()=>{created++;}}
   } as unknown as Env;
   const service=new WorkflowService(env);

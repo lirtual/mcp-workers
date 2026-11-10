@@ -6,7 +6,7 @@ import type {Env} from '../src/store.ts';
 
 const url='https://workflow.example.org/github/action/claim';
 const attemptId='11111111-1111-4111-8111-111111111111';
-const audience='workflow-github-action:production';
+const audience='workflow-github-action';
 const ref='refs/tags/test-v1';
 const sha='a'.repeat(40);
 const repo='lirtual/github-actions';
