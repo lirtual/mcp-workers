@@ -2,7 +2,7 @@
 
 Spec: [#849](https://github.com/lirtual/mcp-workers/issues/849) — ready-for-agent，Issue 发布不代表实施或生产授权。
 
-Status: **Grill With Docs 最终设计 + Spec #849 非生产代码实施分支；GitHub Settings 与生产仍未迁移**（2026-11-10）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A；不存在尚需选择的架构问题。Issue 的设计阶段不授权代码变更；Owner 此后单独要求实施 Spec #849，因此当前只推进非生产代码、测试、PR，Settings、密钥迁移、Environment 删除和生产操作仍需独立授权。取舍依据见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
+Status: **6/6 Environment Secrets 已按原字节迁至 Repository 并独立验真 Pass；2 Variables 待迁，10 Environments 保留；PR #850 仍为 Draft，未发布生产**（2026-11-11）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A，并在设计 Spec 之后分别授权代码实施、临时迁移入口合并与六个 Secret 原值迁移。最初的只读预检、受阻和后续解阻经过作为时间顺序的历史记录保留；当前有效状态以本页末尾最新实测回执为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
 
 ## 已确定决策
 
@@ -108,3 +108,13 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 - 临时迁移工具已隔离至独立 Draft [PR #851](https://github.com/lirtual/mcp-workers/pull/851)：以 GitHub Environment 旧来源与无 Environment 的 Repository 来源分别加密给本地一次性公钥，再在本地内存中完成原字节比对。合成数据的 7 项密码学/边界测试和现有相关契约测试通过；真实 Runner 读取、GitHub Settings 写入与 6 项字节验真均尚未执行。
 - 因 GitHub `workflow_dispatch` 要求工作流文件先存在默认分支，PR #851 仅供审核；**合并临时 Secret 读取入口到 main 本身需要另外明确授权**。在那之前不派发真实工作流。待获批后，运行时主分支 SHA 固定并回读；手动本地迁移工具必须显式 `--mode=apply`，遇到 Unknown 停止并只读核对。
 - PR #850 继续保持 Draft，先用 PR #851 进行按原值迁移与独立验证，之后删除临时工具，再合并消费者改造，最后另行授权删除 10 个 Environments。未发生的步骤仍标记 Blocked/Not run。
+
+
+## 2026-11-11 六项 Secret 迁移独立实测终态
+
+- **Byte equality: 6/6 PASS**。经 Owner 明确授权，6 个 Environment Secret 分别从原环境读取并加密封装，由 Repository 无 Environment 的独立 Runner 读取新来源后在本机临时验证进程中完整字节比较。固定执行基线 `main=56cd7de33d7810e329f071c283a431144639aaa5`；全部 12 个最终验真 Run `completed/success`。
+- 逐项回执：[IMA_API_KEY：旧 42859872080 / 新 42859958103](https://github.com/lirtual/mcp-workers/actions/runs/42859958103)、[ACTIONS_GITHUB_DISPATCH_TOKENS：旧 42860131760 / 新 42860224194](https://github.com/lirtual/mcp-workers/actions/runs/42860224194)、[RAINDROP_ACCESS_TOKEN：旧 42860318899 / 新 42860443985](https://github.com/lirtual/mcp-workers/actions/runs/42860443985)、[SSH_ENCRYPTION_KEY：旧 42860548395 / 新 42860646083](https://github.com/lirtual/mcp-workers/actions/runs/42860646083)、[WORKFLOW_GITHUB_DISPATCH_TOKEN：旧 42860747509 / 新 42860841061](https://github.com/lirtual/mcp-workers/actions/runs/42860841061)、[WORKFLOW_MCP_PORTAL_CLIENT_SECRET：旧 42860940951 / 新 42861037954](https://github.com/lirtual/mcp-workers/actions/runs/42861037954)。完整表与异常消歧见 [临时迁移审计归档](./spec849-one-time-secret-staging.md)。
+- IMA 首次写入后本地验证工具失败，但旧/新加密 Run 均成功，已在目标元数据回读后通过 **只读 verify** 消歧，没有二次写入。其他五项首次复制和立即验证均成功。
+- 最终只读清单：Repository Secrets **10**、Variables **4**、Environments **10**；六个旧 Secret 的原 Environment 元数据与迁移前完全一致，旧值未删、未轮换。没有在途 GitHub Actions Run；未触发任何 Cloudflare Worker 或 Agent Release。
+- 已另外提交临时读取入口退役 [PR #852](https://github.com/lirtual/mcp-workers/pull/852)，待 CI/合并读回后才可将临时工作流移除标记为 Pass。该临时迁移机制不得保留为长期发布服务。
+- **尚未完成**：两个原 Environment Variables `IMA_CLIENT_ID` 和 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 迁移、PR #850 消费者切换及对应 CI、旧分支可执行风险分类、10 个 Environment 删除，以及另行判断所需的真实业务验收。本轮 Secret Pass 不代表整个 Spec #849 完成。
