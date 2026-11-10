@@ -2,7 +2,7 @@
 
 Database MCP serves authenticated `/mcp` requests using stable logical connection IDs. Other paths, including `/setup` and `/internal/hyperdrive-health`, return 404. MCP Portal authentication, per-principal/connection rate limits, SQL read guards, row/time/byte limits, structured writes/DDL and database-native permissions remain enforced.
 
-The maintained production ingress is `https://database-mcp-worker.aiyaya.workers.dev/mcp`. The older `database.lirtual.dpdns.org` custom-domain route is removed from source configuration but may remain deployed until separately authorized Cloudflare domain/DNS and Access retirement. Do not delete the domain-wide Owner Setup Access application while that public custom-domain route is still active.
+The production MCP Portal upstream is `https://database-mcp-worker.aiyaya.workers.dev/mcp`. On 2026-11-10, the retired `database.lirtual.dpdns.org` Worker Custom Domain was detached, its associated AAAA DNS record removed automatically, and the hostname-wide `Database MCP Owner Setup` Access application deleted after independent readback. The independent `Database` MCP Access application and the Worker remain active. Wildcard DNS may still resolve the old hostname, but it no longer routes to this Worker.
 
 ## Connection configuration (Spec #760)
 

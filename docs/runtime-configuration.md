@@ -173,8 +173,23 @@ applications (page 1/1); sampled public `/`, `/setup` and `/mcp` returned 403
 ([independent Weixin retirement receipt](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)). The wildcard DNS remains; sampled 403 cannot prove that all
 possible future fallback routes are safe. The Browser Activation app
 `77945f97-e1ea-4b2b-b89a-ec71c0472afa` remains required and unchanged.
-`Database MCP Owner Setup` (`9f91a9ea-d498-49e5-9d9d-2289d1c08f65`)
-continues protecting the entire `database.lirtual.dpdns.org` hostname;
-**retain** rather than equating `/setup` retirement with removal of its
-hostname-wide Access protection. These Stage B decisions are separate from
-Browser Stage A delivery.
+Following separate explicit Owner authorization on 2026-11-10, the
+`database.lirtual.dpdns.org` Worker Custom Domain
+(`6313bc0a3a885c9232ac46a7e8c412841dca1294`) was detached. The
+corresponding proxied AAAA DNS record (`0ff8e9c68d38a5c461900d105a5f0f28`)
+was automatically removed; complete exact-domain readbacks showed no remaining
+Custom Domain or DNS entries. Only after those checks, the legacy hostname-wide
+`Database MCP Owner Setup` Access app
+(`9f91a9ea-d498-49e5-9d9d-2289d1c08f65`) was deleted. Complete Access
+inventory returned 15 apps, with that ID absent. The independent `Database`
+MCP Access app (`7d6c1e91-9c28-4e43-b52f-e2673b9a59d1`) was retained.
+Portal `mcp` still registers Database via
+`https://database-mcp-worker.aiyaya.workers.dev/mcp` (`ready`, 14 tools);
+Worker Version 46 `c28c0af8-e773-4400-9106-425779932fcf` remains 100% active.
+Unauthenticated HTTP checks returned 403 for old `/mcp` and `/setup`, and
+401 for the active workers.dev `/mcp`. A pre-existing DNS wildcard CNAME
+may still resolve the retired hostname; 403 alone does not establish
+permanent NXDOMAIN or that every possible future fallback is safe. The
+independently verified Worker Domain binding is absent. No Worker release,
+Portal change, credential rotation or database data modification occurred.
+These Stage B changes are separate from Browser Stage A delivery.
