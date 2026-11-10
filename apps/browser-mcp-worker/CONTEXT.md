@@ -8,6 +8,13 @@ app, Audience, 15m session, JWT checks and same-Profile one-use proof are unchan
 the release read-only gate now requires this single IdP. The historical SSO+OTP
 migration evidence below remains valid for its date, not a statement of current
 Browser configuration. EdgeSSH and other Owner entrypoints are outside this change.
+The release gate checks the reviewed activation OTP IdP, not the number of
+unrelated OTP providers in the organization. The separate `Browser` MCP Access
+app currently inherits the reusable `Default Allow Rule`, shared by 13 Access
+apps; it permits QQ/Outlook/Gmail for human login. This shared rule was **not**
+changed during the Browser-only review, and the Workflow Service Token remains
+independent. A Browser-specific human login restriction needs a separately scoped
+application rule; updating the reusable rule would affect all 13 consumers.
 
 The Owner accepted [Cloudflare account SSO with OTP fallback for active Owner entrypoints](../../docs/owner-access-sso-browser-review-design.md): Browser Activation, Database Setup, and EdgeSSH retain their **exact Owner email** grants, distinct audiences, session durations and application-layer verification. The existing Cloudflare account-members identity provider can be reused; legacy Weixin, App Launcher and MCP/Portal sign-ins are not in this Owner-only scope. The 2026-11-04 approval was design-only; later scoped production authorizations and real logins are recorded in the [final acceptance](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813).
 
@@ -67,8 +74,10 @@ Cloudflare requests. Repository `OWNER_EMAIL` remains the only maintained Owner
 identity Variable. Preflight compares this candidate with independently observed
 active production bindings and reuses the existing release state for staging,
 prepublication recheck and binding readback. `BROWSER_OWNER`, all four runtime
-identity bindings, strict JWT verification, 15-minute Owner-only SSO+OTP and
-same-Profile one-use proof remain required.
+identity bindings, strict JWT verification, 15-minute Owner-only activation
+and same-Profile one-use proof remain required. At the #804 release, activation
+supported SSO+OTP; the subsequent 2026-11-10 Browser Activation update selected
+QQ OTP-only without changing the other checks.
 
 The actual protected Runner permission proof passed in
 [Run #42748869402](https://github.com/lirtual/mcp-workers/actions/runs/42748869402).

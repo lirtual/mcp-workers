@@ -19,7 +19,12 @@ Owner email, same-Profile one-use proof, local gesture and unchanged 15-minute
 Access application session. The 2026-11-05 migration originally required SSO + OTP;
 on 2026-11-10 the Owner authorized **QQ OTP only** for this Browser application.
 The release gate now rejects unexpected SSO/multiple IdPs, Owner or policy changes,
-and any Audience/session drift. EdgeSSH and other Access applications are unaffected.
+and any Audience/session drift. Unrelated organization OTP providers do not
+block this application-specific verification. EdgeSSH and other Access applications
+are unaffected. The separate `Browser` MCP Access app still uses a reusable
+three-mailbox human Allow policy shared with 12 other Access apps; its Workflow
+Service Token policy remains separate. Do not edit that shared policy to narrow
+Browser-only human login.
 No extra Worker, DB migration, queue, or browser-extension protocol change is introduced.
 The historical Review Access application was removed **after** the authorized Worker release and readback: public `/owner/unknown/*` returns 404 while Browser Activation remains Access-protected ([retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175)). The retired Review-only variables are absent from the new deployment; the original activation variables, Owner identity, and historical receipts remain intact. No new Worker or identity service was introduced.
 
