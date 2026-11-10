@@ -52,3 +52,14 @@
 **最小后续步骤：** 在真实客户端的非敏感连接配置/失败回执中确认插件 → Endpoint → OAuth Client/Grant 映射，取得平台支持的 Grant 期限读回方式；评估是否存在可兼容 ChatGPT 的 `offline_access` 或等价声明与实际签发。之后经明确授权，仅对一个低风险独立插件做真实短 Token 过期后静默刷新、Scope/Owner 拒绝与残余撤销窗口的代表性 E2E。若固定 Grant 到期必须人工登录，记录原生方案“短期体验可改善、严格 Q1 不满足”，暂停大规模迁移；自托管身份兜底另行安全设计和授权。
 
 不新增代码、Token 管理器、OAuth 代理、定时任务或状态数据库；此问题位于 ChatGPT ↔ Cloudflare Managed OAuth 边界，改变 `packages/portal-auth` 的静态上游 Bearer 鉴权不能修复客户端刷新。
+
+## T1 前置真实客户端只读验收（2026-11-11，后续回读）
+
+- **代表插件：Sentry**。通过当前已连接的 ChatGPT Sentry MCP 插件调用 `portal_list_servers`，返回 11 个可选上游且仅 `sentry` 为 enabled。证明该插件当前隔离选择 Sentry，不证明 11 个独立 OAuth Client/Grant 的数量或身份。
+- 通过同一已连接插件执行 `sentry_find_organizations`（只读、无修改参数），返回 `organization_count=1`、`hasMore=false`；仅记录成功和数量，不记录组织信息。**真实 ChatGPT → Portal → Sentry 只读工具调用 Pass**。
+- Cloudflare 两项新的生产 `GET` 回读：Portal 仍挂载 11 个上游；Sentry 上游 `ready`、`on_behalf=false`、上游 `auth_type=bearer`；Portal Access 应用仍为 `session_duration=24h`、两条现有 Policy；GET 仍不返回 `oauth_configuration`。这些是**上游与 Access 配置**，不代表 ChatGPT Token 签发或续期。
+- **T1 子验收**：现有连接非破坏性调用 **Pass**；独立插件选择范围 **Pass**；Access Token 实际过期后的静默刷新 **Unknown / 未证明**；ChatGPT 是否持有 Refresh Token、Grant 期限及固定到期行为 **Unknown**。单次工具成功不得冒充 OAuth 刷新 E2E。
+- **Cloudflare 原生方案严格目标风险**：官方 [Managed OAuth 文档](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)明确描述 Grant/Refresh Token 到期后必须重新认证；因此即便后续短期刷新成功，若没有可验证的合法自动延长 Grant 机制，严格 Q1（无计划性人工重连）仍 **Not Met**。不能将推荐的 1–2 周配置冒充无期限有效。
+- **停止边界**：未读取、记录、交换、刷新或撤销真实 Token；未操作 ChatGPT 插件重连、Client Registration、Access/Portal 配置、Worker 或生产数据。浏览器管理页观察未获得可靠可用回执，不以页面错误反推系统状态；Cloudflare Account OAuth Clients API 的既有 403 不绕过。
+
+**进入真实刷新 E2E 的最小授权条件：** 限定 `Sentry` 这一个现有 ChatGPT 插件；先只读回读其实际 Endpoint/连接身份及可恢复方式，再确认与留存不含密钥的现状；如果必须重新授权或重建客户端，需先明确告知该插件可能暂时不可用及如何用原 Endpoint 重连，获得该具体客户端变更授权；不触碰其余插件、生产 Access Policy、Grant 配置或凭据。使用真实客户端在已确认的 Access Token 生存期过去后进行无人工登录的安全只读调用；若无法独立取得 Token 生存期或刷新行为回执，结论继续标记 Unknown，不把等待 15 分钟后的一次成功调用认定为自动刷新。
