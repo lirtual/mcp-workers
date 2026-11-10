@@ -279,6 +279,9 @@ test("Node bootstrap pins only clean Worker origin and strict version+commit",()
     const argv=["--archive",f.archive,"--tag","v0.1.2","--commit","a".repeat(40),
       "--sha256",f.x.sha,"--endpoint",f.opts.endpoint];
     assert.equal(parseNodeBootstrapArgs(argv).target,nativeTarget);
+    const withoutCommit=argv.filter((item,index)=>item!=="--commit"&&argv[index-1]!=="--commit");
+    assert.equal(parseNodeBootstrapArgs(withoutCommit).commit,undefined);
+    assert.throws(()=>parseNodeBootstrapArgs(withoutCommit.concat("--commit","zz")));
     assert.equal(parseNodeBootstrapArgs(argv).upgrade,false);
     assert.equal(parseNodeBootstrapArgs([...argv,"--upgrade"]).upgrade,true);
     assert.throws(()=>parseNodeBootstrapArgs([...argv,"--upgrade","--upgrade"]),/Duplicate/);

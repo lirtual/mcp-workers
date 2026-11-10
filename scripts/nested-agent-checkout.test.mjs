@@ -53,7 +53,9 @@ test('one checkout contains the nested Agent and does not fetch a pinned public 
     if (!/\.(?:ts|mjs)$/.test(name)) continue;
     const text = readFileSync(path.join(testsDir, name), 'utf8');
     for (const match of text.matchAll(/from\s+['"](\.\.\/[^'"]+)['"]/g)) {
-      if (match[1].includes('agent')) specifiers.push({ name, spec: match[1] });
+      if (match[1] === '../agent' || match[1].startsWith('../agent/') || match[1].includes('remote-control-agent')) {
+        specifiers.push({ name, spec: match[1] });
+      }
     }
   }
   assert.ok(specifiers.length >= 10, 'Worker compatibility tests import Agent modules');

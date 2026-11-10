@@ -45,7 +45,7 @@ test("production DO binding lists per-device tools without v1 fallback", async (
   assert.equal(unscoped.result.isError, true, "never allow implicit fallback to the old VPC");
 });
 
-test("production public installer routes keep the Linux pin, serve Windows latest, and resolve macOS latest", async () => {
+test("production public installers resolve one latest stable Release for Linux, Windows, and macOS", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const { LATEST_AGENT_RELEASE_URL } = await import("../src/github-latest-agent-release.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
@@ -77,9 +77,12 @@ test("production public installer routes keep the Linux pin, serve Windows lates
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
   const content = await response.text();
-  assert.match(content, /remote-control-agent-v0\.1\.51/);
+  assert.equal(releaseCalls, 1, "Linux install resolves one latest snapshot");
+  assert.match(content, /remote-control-agent-v0\.2\.0-linux-x64-glibc\.tar\.gz/);
+  assert.match(content, new RegExp(sha));
   assert.match(content, /--upgrade/);
-  assert.doesNotMatch(content, /remote-control-agent-v0\.1\.13/);
+  assert.doesNotMatch(content, /lirtual\/remote-control-agent/);
+  assert.doesNotMatch(content, /remote-control-agent-v0\.1\.51|remote-control-agent-v0\.1\.13|--commit /);
   const windows = await worker.fetch(new Request(prod + "/install.ps1"), env);
   assert.equal(windows.status, 200);
   const windowsScript = await windows.text();
@@ -94,10 +97,10 @@ test("production public installer routes keep the Linux pin, serve Windows lates
   const homepage = await home.text();
   assert.match(homepage, /Remote Control Agent/);
   assert.match(homepage, /const ready=\{windows:true,linux:true,macos:true\}/);
-  assert.equal(releaseCalls, 0, "the install page must not look up latest");
+  assert.equal(releaseCalls, 1, "the install page must not look up latest");
   const macos = await worker.fetch(new Request(prod + "/install-macos.sh"), env);
   assert.equal(macos.status, 200, "available only after official Agent Release and explicit Worker deployment");
-  assert.equal(releaseCalls, 1, "one install attempt resolves one latest snapshot");
+  assert.equal(releaseCalls, 2, "macOS install resolves its own latest snapshot");
   const macShell=await macos.text();
   assert.match(macShell, /#!\/bin\/sh/);
   assert.match(macShell, /arm64\) target=darwin-arm64/);

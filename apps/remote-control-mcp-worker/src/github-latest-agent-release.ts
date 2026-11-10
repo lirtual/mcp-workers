@@ -1,13 +1,12 @@
 /**
  * One latest stable Agent Release from lirtual/mcp-workers.
- * Windows install.ps1 enforces the same decision on the device. The Worker
- * macOS route uses readLatestAgentRelease. Neither path falls back to another
- * repository or tag.
+ * Windows install.ps1, Linux /install.sh, and macOS /install-macos.sh all use
+ * selectLatestAgentRelease. None fall back to another repository or tag.
  *
- * Windows snapshot bounds match install.ps1 (100 KiB–100 MiB). The macOS
- * lookup accepts the wider reviewed window (1 byte–180 MiB). Both require a
- * stable, non-draft, immutable Release, five platform assets, digest, size,
- * and architecture, and both stop on 404, 403, and 429.
+ * Windows snapshot bounds match install.ps1 (100 KiB–100 MiB). Linux and macOS
+ * use the wider window (1 byte–180 MiB); the Linux shell then refuses an asset
+ * below 1 KiB. A stable tag has no prerelease suffix. html_url, when present,
+ * must be this repository. 404, 403, and 429 fail closed.
  */
 
 export const LATEST_AGENT_RELEASE_URL =
@@ -37,7 +36,7 @@ const WINDOWS_MAX_ASSET_BYTES = 100_000_000;
 const RELEASE_MIN_ASSET_BYTES = 1;
 const RELEASE_MAX_ASSET_BYTES = 180_000_000;
 
-const TAG = /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/;
+const TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const PLATFORM_ASSET = /^remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$/;
@@ -192,7 +191,7 @@ function parseRelease(
   const tag = body.tag_name;
   if (typeof tag !== "string" || !TAG.test(tag) ||
       body.draft !== false || body.prerelease !== false || body.immutable !== true ||
-      body.html_url !== releaseHtmlUrl(tag)) {
+      (body.html_url !== undefined && body.html_url !== releaseHtmlUrl(tag))) {
     return { ok: false, code: "untrusted" };
   }
   if (!Array.isArray(body.assets)) return { ok: false, code: "incomplete" };

@@ -114,6 +114,65 @@ export async function resolvePinnedRelease({tag,commit,target,send=fetch}) {
   return Object.freeze({tag,commit,target,releaseId:release.id,assetId:asset.id,
     name,bytes:asset.size,digest:asset.digest.slice(7)});
 }
+function selectedLinuxAssetUrl(url) {
+  let parsed;
+  try { parsed=new URL(url); }
+  catch { throw new Error("Untrusted Release asset URL."); }
+  if (parsed.protocol!=="https:" || parsed.username || parsed.password || parsed.search ||
+      parsed.hash || parsed.port || parsed.hostname!=="github.com" ||
+      !/^\/lirtual\/mcp-workers\/releases\/download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\/remote-control-agent-v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-linux-(?:x64|arm64)-glibc\.tar\.gz$/.test(parsed.pathname)) {
+    throw new Error("Untrusted Release asset URL.");
+  }
+  return parsed;
+}
+function allowedAssetRedirect(next, original) {
+  if (next.protocol!=="https:" || next.username || next.password || next.hash ||
+      (next.port && next.port!=="443")) return false;
+  if (next.toString()===original.toString()) return true;
+  return next.hostname==="release-assets.githubusercontent.com" ||
+    next.hostname==="objects.githubusercontent.com";
+}
+/**
+ * Download one asset already chosen from the current repository's latest
+ * stable Release. One redirect chain, no retry, and no old-repository URL.
+ */
+export async function downloadSelectedReleaseAsset(asset,send=fetch) {
+  if (!asset || !hex.test(asset.digest) || !Number.isSafeInteger(asset.bytes) ||
+      asset.bytes<1024 || asset.bytes>MAX_ARCHIVE) {
+    throw new Error("Selected Release asset is incomplete.");
+  }
+  const original=selectedLinuxAssetUrl(asset.url);
+  let current=original;
+  for (let hop=0;;hop++) {
+    const response=await send(current.toString(),{method:"GET",redirect:"manual",
+      headers:{...apiHeaders,accept:"application/octet-stream"},
+      signal:AbortSignal.timeout(20000)});
+    if ([301,302,303,307,308].includes(response.status)) {
+      await response.body?.cancel?.().catch(()=>{});
+      if (hop===3) throw new Error("Too many Release redirects.");
+      const location=response.headers.get("location");
+      if (!location) throw new Error("Missing Release redirect location.");
+      const next=new URL(location,current);
+      if (!allowedAssetRedirect(next,original)) throw new Error("Release redirected outside GitHub HTTPS.");
+      current=next;
+      continue;
+    }
+    if (response.status===403 || response.status===429) {
+      await response.body?.cancel?.().catch(()=>{});
+      throw new Error(response.status===403 ?
+        "GitHub refused the Agent download." :
+        "GitHub rate limit blocked the Agent download.");
+    }
+    if (response.status!==200) throw new Error("Official GitHub Release response unavailable.");
+    const bytes=await readBounded(response,asset.bytes);
+    if (bytes.length!==asset.bytes) throw new Error("Incomplete or unexpected asset length.");
+    const actual=createHash("sha256").update(bytes).digest();
+    if (!timingSafeEqual(actual,Buffer.from(asset.digest,"hex"))) {
+      throw new Error("GitHub official SHA-256 digest mismatch.");
+    }
+    return bytes;
+  }
+}
 export async function downloadPinnedAsset(pinned,send=fetch) {
   const assetUrl=API+"/releases/assets/"+pinned.assetId;
   const response=await checkedFetch(assetUrl,"application/octet-stream",send);
