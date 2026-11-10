@@ -17,7 +17,13 @@ const freshTools=()=>BROWSER_TOOLS.map(name=>{
     required:['endpoint_id'],additionalProperties:false};
   return tool;
 });
-const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies},...(enabled?[{name:'Browser',type:'mcp',policies}]:[])];
+const browserPolicies=()=>[policies[0],{
+  id:'07204847-0459-4197-b3c3-2dbe2a47a550',name:'Browser MCP Owner QQ Only',
+  decision:'allow',reusable:true,precedence:2,
+  include:[{email:{email:'lirtual@qq.com'}}],exclude:[],require:[],
+}];
+const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies},
+  ...(enabled?[{name:'Browser',type:'mcp',policies:browserPolicies()}]:[])];
 test('the exact fixed 15 tools match public Browser MCP and five interaction actions',()=>{
   const source=readFileSync(new URL('../apps/browser-mcp-worker/src/worker.ts',import.meta.url),'utf8');
   const interactions=readFileSync(new URL('../apps/browser-mcp-worker/src/interactions.ts',import.meta.url),'utf8');

@@ -40,6 +40,18 @@ two **reusable** policies, in the same order, as the trusted One-MCP
 1. `WORKFLOWS`: `non_identity` service-token selector (precedence 1).
 2. `Default Allow Rule`: `allow` for the approved email selectors (precedence 2).
 
+**Browser-only scoped exception (approved 2026-11-10):** The existing `Browser`
+MCP Access application may use the reviewed dedicated reusable policy
+`Browser MCP Owner QQ Only` (`07204847-0459-4197-b3c3-2dbe2a47a550`) at
+precedence 2, with exactly the `lirtual@qq.com` email selector. Precedence 1
+remains the identical `WORKFLOWS` Service Token policy shared with Portal. The
+read-only registration gate pins the exception to `id=browser` and `name=Browser`;
+all other MCP applications must still have both exact Portal policy IDs. The
+shared `Default Allow Rule` is used by 12 other applications and must not be
+changed for this cutover. A reviewed policy existing with zero attachments is
+not evidence the production Browser application has switched: read back its
+actual Access policy list after the separately authorized attachment.
+
 Verify reusable **policy IDs**, not just display names. Never add an
 `Everyone`, bypass, or unrestricted Allow rule. Missing, ambiguous or
 misordered policies and failed Access API reads are **release blockers**,

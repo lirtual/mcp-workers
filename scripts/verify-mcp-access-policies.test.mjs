@@ -84,3 +84,38 @@ test('no Access credential or malformed target means no network request',async()
     /target_invalid/);
   assert.equal(reads,0);
 });
+
+const browserPolicy = () => ({
+  id:'07204847-0459-4197-b3c3-2dbe2a47a550',
+  name:'Browser MCP Owner QQ Only',decision:'allow',precedence:2,reusable:true,
+  include:[{email:{email:'lirtual@qq.com'}}],exclude:[],require:[],
+});
+const browserApps = () => {
+  const apps=fakeApps('Browser');
+  apps[1].policies[1]=browserPolicy();
+  return apps;
+};
+const browserTarget={id:'browser',name:'Browser'};
+test('only reviewed Browser MCP Owner QQ policy may differ from Portal shared policy',async()=>{
+  const verify=(apps,target=browserTarget)=>verifyMcpAccessPolicies(env,target,
+    async()=>fakeAccessAppResponse(apps));
+  assert.equal(await verify(browserApps()),true);
+  const invalid=[
+    apps=>{apps[1].policies[1].id='22222222-2222-4222-8222-222222222222';},
+    apps=>{apps[1].policies[1].name='Default Allow Rule';},
+    apps=>{apps[1].policies[1].include=[{email:{email:'lirtual@outlook.com'}}];},
+    apps=>{apps[1].policies[1].include.push({email:{email:'lirtual@gmail.com'}});},
+    apps=>{apps[1].policies[1].include=[{everyone:{}}];},
+    apps=>{apps[1].policies[1].precedence=1;},
+    apps=>{apps[1].policies[0].id='33333333-3333-4333-8333-333333333333';},
+    apps=>{apps[0].policies[1]=browserPolicy();},
+  ];
+  for(const mutate of invalid){
+    const apps=browserApps();mutate(apps);
+    await assert.rejects(()=>verify(apps),/portal_access_policy_/);
+  }
+  await assert.rejects(()=>verify(browserApps(),{id:'other',name:'Browser'}),
+    /portal_access_policy_/);
+  await assert.rejects(()=>verify(browserApps(),{id:'browser',name:'Other'}),
+    /portal_access_policy_/);
+});

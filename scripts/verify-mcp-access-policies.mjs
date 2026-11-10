@@ -4,6 +4,9 @@
 // rules, edits policies, or discloses selectors/credentials in errors or logs.
 const PORTAL = 'MCP';
 const PORTAL_HOSTNAME = 'mcp.lirtual.dpdns.org';
+// Exact reviewed Browser-only exception; other MCP apps still match Portal.
+const BROWSER_POLICY_ID = '07204847-0459-4197-b3c3-2dbe2a47a550';
+const BROWSER_OWNER_EMAIL = 'lirtual@qq.com';
 
 function fail(code) { throw new Error('portal_access_policy_' + code); }
 function one(items, predicate) {
@@ -11,12 +14,13 @@ function one(items, predicate) {
   if (found.length !== 1) fail('app_missing_or_ambiguous');
   return found[0];
 }
-function signature(app) {
+function signature(app, browserOnly = false) {
   const policies = app?.policies;
   if (!Array.isArray(policies) || policies.length !== 2) fail('missing');
   const expected = [
     { name: 'WORKFLOWS', decision: 'non_identity', selector: 'service_token' },
-    { name: 'Default Allow Rule', decision: 'allow', selector: 'email' },
+    { name: browserOnly ? 'Browser MCP Owner QQ Only' : 'Default Allow Rule',
+      decision: 'allow', selector: 'email' },
   ];
   return policies.map((p, i) => {
     const spec = expected[i];
@@ -29,6 +33,11 @@ function signature(app) {
         (Array.isArray(p.exclude) && p.exclude.length !== 0) ||
         (Array.isArray(p.require) && p.require.length !== 0))
       fail('baseline_drift');
+    if (browserOnly && i === 1 && (p.id !== BROWSER_POLICY_ID ||
+        p.include.length !== 1 ||
+        p.include[0]?.email?.email !== BROWSER_OWNER_EMAIL ||
+        Object.keys(p.include[0]?.email ?? {}).join() !== 'email'))
+      fail('browser_owner_drift');
     return p.id;
   });
 }
@@ -62,10 +71,12 @@ export async function verifyMcpAccessPolicies(env, target, transport = fetch) {
     app.type === 'mcp_portal' && app.domain === PORTAL_HOSTNAME);
   const application = one(data.result, app => app.name === target.name &&
     app.type === 'mcp');
+  const browserOnly = target.id === 'browser' && target.name === 'Browser';
   const baseline = signature(portal);
-  const actual = signature(application);
+  const actual = signature(application, browserOnly);
   if (baseline.length !== actual.length ||
-      baseline.some((policyId, i) => policyId !== actual[i]))
+      baseline.some((policyId, i) =>
+        (browserOnly && i === 1 ? BROWSER_POLICY_ID : policyId) !== actual[i]))
     fail('policy_mismatch');
   return true;
 }
