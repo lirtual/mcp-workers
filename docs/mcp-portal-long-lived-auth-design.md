@@ -1,11 +1,13 @@
 # MCP Portal 长期免重连设计（Grill With Docs）
 
-状态：第二轮设计草案；仅设计，不构成实施、生产变更或发布授权。日期：2026-11-11。
+状态：Grill With Docs 四项决策已确认；本文件为设计阶段的最小方案，技术可行性与客户端 E2E 待验证；不构成实施、生产变更或发布授权。日期：2026-11-11。
 
 ## 目标与已决策项
 
 - Q1=A：追求正常使用期间无需计划性人工重连；短期访问令牌自动刷新。主动撤销、权限变化、异常安全事件或平台不可避免的限制可中断。
 - Q2=A：保留 ChatGPT 中各 MCP 插件的独立形态和访问边界，不改为单个聚合插件。
+- Q3=A：Cloudflare Managed OAuth 原生优先；若证实固定 Grant 到期无法达到 Q1，再单独设计、审查最小自托管 OAuth 兜底；该选择**不授权**开发、引入持久凭据或部署新服务。
+- Q4=A：选一个低风险独立插件作为真实 ChatGPT 刷新代表性验收，再分批迁移其他插件；允许必要的一次性重新授权/重建，不接受周期性手工重连成为常态。
 - 不能仅以延长登录 Cookie、关闭 Access 或提供永久静态 Bearer Token 作为达标证明。
 - 成功标准针对最终用户：长期使用已安装的独立 ChatGPT MCP 插件，不应因为固定日历期限而逐个重新授权。
 
@@ -22,7 +24,7 @@
 
 ### 官方产品契约（截至 2026-11-11）
 
-- Cloudflare Managed OAuth：Access Token 建议 5–15 分钟；Grant session duration 是 Refresh Token 保持有效的期限，官方示例为 1–2 周。Access Token 到期可刷新并重评 Access Policy，**Grant 到期则必须重新认证**；这不等于无上限滚动续期。文档：https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/
+- Cloudflare Managed OAuth：Access Token 建议 5–15 分钟；Grant session duration 是 Refresh Token 保持有效的期限，官方推荐非浏览器客户端使用 1–2 周。Access Token 到期可刷新并重评 Access Policy，**Grant 到期则必须重新认证**；示例周期不是本项目实际 Grant 配置，也不是已核实的最大值。公开 API schema 的 grant.session_duration 是时长字符串，未在已查字段中声明可以无期限滚动续期。文档：https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/
 - Cloudflare MCP Portals：新的 Portal 默认支持 Managed OAuth，2026-07-28 无状态 MCP 请求关联到用户授权 Grant；旧版客户端还存在 24 小时无活动过期的会话机制，不能混淆。文档：https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/
 - OpenAI 自定义 MCP：连接需要实际取得可持续续期的 Refresh Token；官方要求 OIDC/OAuth 的 discovery 能声明 offline_access 或等价刷新能力，并在必要时重新创建已发现旧元数据的应用。不提供“任意 OAuth 服务必然永久自动刷新”的保证。文档：https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt
 - 以上是官方机制支持边界，不是针对这 11 个 ChatGPT 插件已经完成的成功刷新 E2E 证据。
@@ -35,7 +37,7 @@
 - 独立插件意味着独立客户端 OAuth 授权状态，不承诺同一 Portal 浏览器登录就能在 ChatGPT 自动修复所有插件；如需重新创建插件，应按受影响插件逐个确认，但尽可能避免重复迁移。
 - 后备 OAuth 代理如果使用 Portal service-token 凭据，本质上扩大了高权限机器身份，必须先论证完整用户身份验证、作用域、撤销、审计与托管泄露风险，不能把它当成默认轻量方案。
 
-## 最小方案序列（待第二轮决策后收敛）
+## 已确定的最小方案与实施前调查
 
 1. 仅只读确认实际 Portal 的 OAuth 授权服务元数据可发现性、Grant 配置读取途径、OAuth Token 的签发与刷新能力，区分配置已知、推断和未知；不采集或打印令牌。
 2. 先评估是否只需 Cloudflare 原生 OAuth 的配置调整和 ChatGPT 一次性重新发现，即可在既定安全边界内显著改善使用体验；“两周免登录”不能冒称“长期免计划性重连”。
@@ -43,10 +45,20 @@
 4. 如果原生方案存在不可消除的定期 Grant 到期，严格目标 Q1=A 需要单独评估自托管长效授权/刷新边界是否值得其维护与安全成本；在完成这种取舍前不实施、不引入新服务。
 5. 验证代表性机制后按独立客户端分批迁移；无证据时不得把 11 个插件的认证状态统一称为 Pass。
 
-## 第二轮未决决策（等待用户选择）
+## 设计决策树与后置条件
 
-- Q3 兜底授权边界：A（推荐）原生优先；如证实硬期限不可满足 Q1，再单独设计和审查最小自托管 OAuth 兜底（不自动批准新服务）。B 永久限制在 Cloudflare 原生方案内，即接受 Grant 硬过期时必须重新登录，与严格 Q1=A 存在差距。
-- Q4 一次性迁移节奏：A（推荐）先一个低风险插件真实验证续期，然后分批处理剩余独立插件；允许必要的一次性重新授权/重新创建。B 同时切换所有插件，减少步骤但提高故障扩散和回退风险。
+- 本轮已确定 Q1=A、Q2=A、Q3=A、Q4=A；**目前没有必要的新增用户设计决策**。后续事实判断由工程核查完成，不要求用户猜测 OAuth 运行方式。
+- 前置事实门：获取 Cloudflare Access 当前 OAuth Grant 的真实配置/默认值、确认端点对 ChatGPT 可发现、是否签发 Refresh Token、ChatGPT 是否能持续刷新、是否有固定无法延长的到期边界。公开 GET 缺少 oauth_configuration 时不得假定默认值；不得用正常 24h Access session 代替 Grant 证据。
+- 如果原生能够达到 Q1，优先只做最小配置与必要的一次性插件重新发现；不引入独立 OAuth 服务。
+- 如果原生只能将人工重新登录延长到某个固定期限，应明确归类为**体验改善但目标未达成**；再对最小自托管兜底进行单独的安全、复杂度、滥用和维护成本评估。自托管也必须可撤销、最小权限、密钥隔离，不能以永久不失效的静态 Token 代替人类授权，更不能把单个 Portal 管理员 Service Token 直接发给 ChatGPT。
+- 如确需自托管兜底且涉及新增长期身份授权边界，需先提交新的具体风险和折中供用户确认；Q3=A 不意味着不经授权即可部署该方案。
+- 未来实施前决定低风险的代表性插件，先读取/工具列表/安全拒绝验收，不对生产数据或外部服务产生副作用；代表性刷新机制成功后逐插件验收独有连接范围，重复共享机制标记 Waived 而不是 Pass。
+
+## 非目标和剩余不确定性
+
+- 本文并不证明 ChatGPT 对 Cloudflare OAuth 长期续期已经可用，也不保证第三方 OAuth 客户端提供无期限 Refresh Token；最终能力依赖客户端、授权服务器与产品政策共同支持。
+- 暂不为该设计增加 D1/KV/DO/后台定时器、Token 轮换服务、独立网络入口、额外 Access 策略或其他运维组件。
+- 设计阶段不进行改变实际 OAuth Grant 的写操作，也不触碰任何真实 Refresh Token 或登录凭据。
 
 ## 验收与变更边界
 
