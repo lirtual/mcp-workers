@@ -205,7 +205,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         "GITHUB_TEST_DEDICATED_EXECUTOR"].includes(x.name)),
         "Retired fixed GitHub executor variables must be removed");
       invariant(find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE","plain_text")?.text ===
-        "workflow-github-action:production", "Workflow Action OIDC audience drift");
+        "workflow-github-action", "Workflow Action OIDC audience drift");
       for (const name of ["WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"]) {
         invariant(secretNames.has(name) && !!find(name,"secret_text"),
           "Workflow runtime credential binding missing: " + name);

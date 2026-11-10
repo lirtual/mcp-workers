@@ -95,7 +95,7 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "workflow-mcp-worker") {
     variables.push(
       "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-      "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production"
+      "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action"
     );
     // Repository onboarding is an explicit GitHub Environment Variable.
     // The owner must approve a repository ID and its immutable commit SHA;

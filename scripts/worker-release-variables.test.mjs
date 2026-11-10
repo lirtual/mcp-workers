@@ -92,7 +92,7 @@ test("Workflow has pinned MCP Portal and GitHub Action OIDC identity without rol
   });
   assert.deepEqual(fixed,[
     "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
-    "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action:production",
+    "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action",
     "WORKFLOW_MCP_PORTAL_CLIENT_ID:test-id",
   ]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"}),fixed);
