@@ -1,20 +1,21 @@
 import type {ReviewedGitHubAction} from './github-action-review.ts';
 
 export const DYNAMIC_MAIN_REF='refs/heads/main';
-const REPOSITORY='lirtual/github-actions';
-const REPOSITORY_ID=1430925009;
-// Moving main is restricted to this owner repository; Publish and preflight
-// additionally require an explicit public declaration in the audited YAML.
+// Current repository identity is checked against the release-pinned Worker
+// binding at Publish and before any new physical dispatch.
 const WORKFLOW=/^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.ya?ml$/;
 const SHA=/^[0-9a-f]{40}$/;
 
-/** Fixed trusted repository, reviewed workflow identity and bounded path. */
+/** Structurally valid dynamic-main Task/Session; identity admission is separate. */
 export function isDynamicMainAction(
   action:Pick<ReviewedGitHubAction,'repository'|'repositoryId'|'workflowId'|'workflowPath'|'type'>,
   ref:unknown,planName?:string,
 ):boolean {
-  if(ref!==DYNAMIC_MAIN_REF||action.repository!==REPOSITORY||
-    action.repositoryId!==REPOSITORY_ID||!WORKFLOW.test(action.workflowPath)||
+  if(ref!==DYNAMIC_MAIN_REF||!WORKFLOW.test(action.workflowPath)||
+    typeof action.repository!=='string'||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(action.repository)||
+    action.repository.includes('..')||
+    !Number.isSafeInteger(action.repositoryId)||action.repositoryId<=0||
     !Number.isSafeInteger(action.workflowId)||action.workflowId<=0||
     (action.type!=='task'&&action.type!=='session'))return false;
   return true;

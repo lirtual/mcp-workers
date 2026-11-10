@@ -32,13 +32,13 @@ test('job identity, uniqueness, status and timestamp ambiguity deny',async()=>{
     assert.equal(await inspectSessionJobStart(action,123,2,'server-token',http(jobs,total),now),null);
   }
 });
-test('renamed repository is required; legacy name and wrong immutable repository ID fail closed',async()=>{
+test('malformed repository and missing immutable repository ID fail closed before GitHub call',async()=>{
   let requests=0;
   const blockedHttp=async()=>{requests++;return reply([job]);};
   const now=Date.parse('2026-10-30T00:30:00Z');
   for(const invalid of [
-    {...action,repository:'lirtual/session-actions'},
-    {...action,repositoryId:123},
+    {...action,repository:'untrusted/repo/extra'},
+    {...action,repositoryId:0},
   ]) {
     assert.equal(await inspectSessionJobStart(invalid,123,2,'server-token',blockedHttp,now),null);
   }
@@ -91,6 +91,7 @@ const goodServices={
 };
 const env=(row:unknown)=>({DB:fakeDb(row),
   WORKFLOW_GITHUB_DISPATCH_TOKEN:'server-token',
+  WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:action.repository,repositoryId:action.repositoryId,ciWorkflowId:999}),
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-abcde'} as any);
 test('current approved ready Session may admit, with a deadline fixed to the physical job start',async()=>{
   const decision=await decideSessionAdmission(env(baseRow),{attempt_id:attemptId,oidc_jwt:'signed'},goodServices);

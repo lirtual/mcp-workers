@@ -1,5 +1,5 @@
 import type { GitHubActionSource } from './github-action-discovery.ts';
-import { approvedActionRepositories } from './github-action-catalog.ts';
+import { currentExecutorRepository } from './github-action-catalog.ts';
 import { validateGitHubActionInputs } from './github-action-inputs.ts';
 
 export type ReviewedGitHubAction = {
@@ -50,9 +50,9 @@ export async function assertReviewedGitHubAction(
   approvedRepositories: string | undefined,
   suppliedInputs: Record<string, unknown>,
 ): Promise<Record<string, string>> {
-  const repositories = approvedActionRepositories(approvedRepositories);
-  if (!repositories.some(x => x.repository === reviewed.repository &&
-      x.repositoryId === reviewed.repositoryId))
+  const current = currentExecutorRepository(approvedRepositories);
+  if (!current || current.repository !== reviewed.repository ||
+      current.repositoryId !== reviewed.repositoryId)
     throw Error('github_action_repository_not_approved');
   const actual = await reviewedGitHubAction(discovered);
   if (Object.keys(reviewed).length !== Object.keys(actual).length ||

@@ -20,6 +20,7 @@ const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0')
 const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
  type:'session',contractDigest:'b'.repeat(64)};
+const executorIdentity=JSON.stringify({repository:action.repository,repositoryId:action.repositoryId,ciWorkflowId:999});
 const plan={github_execution_approved:true,github_action_approvals:[action],
  steps:[{id:'launch',uses:'github.run',with:{
   capability:'github.action',action:{...action,ref:'refs/tags/release-v1',inputs:{duration_minutes:5}},
@@ -117,12 +118,12 @@ test('fixed Windows and Ubuntu provide stable MagicDNS locators only after Ready
    assert.equal(await reservePublishedSessionSlot(f.adapter,run(index),'launch'),'reserved');
    f.claim(index,'claimed',true);
    f.db.prepare("UPDATE session_executions SET state='ready' WHERE run_id=?").run(run(index));
-   const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+   const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env);
    const info=await service.status(run(index));
    assert.equal(info.sessions?.[0]?.private_hostname,'session-'+platform);
    assert.equal(info.sessions?.[0]?.session_mode,'fixed');
   }
-  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env);
   const listed=await service.list();
   assert.deepEqual(listed.active_sessions.map(s=>s.session_mode),['fixed','fixed']);
  }finally{f.db.close();}
@@ -153,7 +154,7 @@ test('four concurrent Sessions reserve distinct slots, fifth denied until physic
 test('workflow_list reports four durable quota holders even after parent success and allows locating a stuck Run',async()=>{
  const f=fixture();
  try{
-  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env);
   const empty=await service.list();
   assert.deepEqual(empty.active_sessions,[]);
   for(let i=1;i<=4;i++)
@@ -214,7 +215,7 @@ test('existing Workflow status and result preserve Session record after parent s
   f.db.prepare("UPDATE runs SET outcome='succeeded',start_state='started' WHERE id=?").run(run(1));
   f.db.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
     VALUES(?,'launch','succeeded',1)`).run(run(1));
-  const env={DB:f.adapter,WORKFLOW:{}} as Env;
+  const env={DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env;
   const service=new WorkflowService(env);
   const status=await service.status(run(1));
   assert.equal(status.status,'succeeded');
@@ -235,7 +236,7 @@ test('status provides stable private Tailnet name only for signed Ready, never a
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
   f.claim(1,'claimed',true);
   f.db.prepare("UPDATE session_executions SET state='ready'").run();
-  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{}} as Env);
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env);
   const status=await service.status(run(1));
   assert.equal(status.sessions?.[0]?.private_hostname,'sa-42-a1');
   assert.equal(status.sessions?.[0]?.physical_health,'unverified');
@@ -584,7 +585,7 @@ test('HTTP Ready is OIDC-only and returns no private credentials; wake is adviso
   const {jwt,publicKey}=await signedReady();
   let notifications=0;
   const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
-   WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+   WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW:{get:async()=>({sendEvent:async()=>{notifications++;}})}} as unknown as Env;
   const url='https://worker.example/github/action/ready';
   const request=()=>new Request(url,{method:'POST',headers:{authorization:'Bearer '+jwt},
@@ -641,7 +642,7 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
     return {attemptId};
    },
   } as unknown as WorkflowStep;
-  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
    (plan as unknown as Plan).steps[0],run(1),workflow,http);
@@ -694,7 +695,7 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
      return {attemptId};
     },
    } as unknown as WorkflowStep;
-   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
     WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
    const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
     (plan as unknown as Plan).steps[0],run(1),workflow,http);
@@ -710,7 +711,7 @@ test('fifth Session is rejected before any GitHub outbound request',async()=>{
    assert.equal(await reservePublishedSessionSlot(f.adapter,run(i),'launch'),'reserved');
   let requests=0;
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
-  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   const outcome=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
    (plan as unknown as Plan).steps[0],run(5),workflow,async()=>{
@@ -741,7 +742,7 @@ test('workflow_status reconciles a Ready Session after parent success and releas
     event:'workflow_dispatch',status:'completed',conclusion:'failure',
    });
   };
-  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as unknown as Env);
   const result=await service.status(run(1));
   assert.equal(inspected,1);
@@ -760,7 +761,7 @@ test('GitHub status outage cannot release Session quota even if parent succeeded
   f.db.prepare("UPDATE runs SET outcome='succeeded',start_state='started' WHERE id=?").run(run(1));
   f.claim(1,'claimed',true);
   globalThis.fetch=async()=>new Response(null,{status:503});
-  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},
+  const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as unknown as Env);
   const result=await service.status(run(1));
   assert.equal(result.sessions?.[0]?.recorded_state,'ready');
@@ -1074,7 +1075,7 @@ test('historical tagged Session Plan cannot accept a new Run',async()=>{
   f.db.prepare("UPDATE workflows SET active_version_id='v' WHERE id='wf'").run();
   let created=0;
   const env={DB:f.adapter,
-   WORKFLOW_GITHUB_DISPATCH_TOKEN:'private-test-token',
+   WORKFLOW_GITHUB_DISPATCH_TOKEN:'private-test-token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-action',
    WORKFLOW:{create:async()=>{created++;}}
   } as unknown as Env;
@@ -1110,7 +1111,7 @@ test('definitively rejected GitHub dispatch releases a Session slot with no phys
  const f=fixture();
  try{
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
-  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   let posts=0;
   const response=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
@@ -1172,7 +1173,7 @@ test('unknown outbound dispatch ACK never releases a Session slot or posts twice
  const f=fixture();
  try{
   const workflow={do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb()} as unknown as WorkflowStep;
-  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
   let posts=0;
   const response=await runPublishedGitHubActionSession(env,plan as unknown as Plan,
@@ -1206,7 +1207,7 @@ test('signed web Ready persists the exact Quick Tunnel locator without inventing
   const inspect=async()=>({state:'running' as const});
   const url='https://example-test-session.trycloudflare.com';
   const env={DB:f.adapter,WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience,
-   WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW:{}} as Env;
+   WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,WORKFLOW:{}} as Env;
   const request=(sessionUrl:string)=>new Request('https://worker.example/github/action/ready',{
    method:'POST',headers:{authorization:'Bearer '+jwt},
    body:JSON.stringify({attemptId:run(11),sessionUrl}),
@@ -1262,7 +1263,7 @@ test('Workflow admission only permits opted-in Session duration override within 
   f.db.prepare('UPDATE workflows SET active_version_id=? WHERE id=?').run('v','wf');
   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(bound),'v');
   const service=new WorkflowService({
-   DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
+   DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'workflow-github-test',
    WORKFLOW:{create:async()=>({})},
   } as unknown as Env);

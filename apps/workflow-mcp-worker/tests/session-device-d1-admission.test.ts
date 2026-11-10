@@ -56,7 +56,8 @@ function fixture(onRead?: (readCount:number)=>void){
       return result as T|null;
     },
   })})} as unknown as D1Database;
-  const env={DB:adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
+  const env={DB:adapter,WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:action.repository,repositoryId:action.repositoryId,ciWorkflowId:999}),
+    WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
     WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'test-audience'} as Env;
   const services={oidc:async()=>true,physical:async()=>({state:'running' as const}),
     jobStart:async()=>Date.now()-60_000};

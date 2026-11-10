@@ -274,6 +274,7 @@ test('fully granted approved Task reaches a single mock dispatch without cancell
    runId,stepId:'run_task',attemptId:'44444444-4444-4444-8444-444444444444',
    dispatchId:'55555555-5555-4555-8555-555555555555',
    action:approvedAction,ref:action.ref,token:'test-token',inputs:{},
+   executorIdentity:{repository:approvedAction.repository,repositoryId:approvedAction.repositoryId,ciWorkflowId:778},
   },async request=>{
    outbound.push(request.method);
    if(request.method==='GET')return new Response(JSON.stringify({
@@ -304,6 +305,7 @@ test('approval consumed and Step running without Attempt is still cancellable; l
    runId,stepId:'run_task',attemptId:'44444444-4444-4444-8444-444444444444',
    dispatchId:'55555555-5555-4555-8555-555555555555',
    action:approvedAction,ref:action.ref,token:'unused',inputs:{},
+   executorIdentity:{repository:approvedAction.repository,repositoryId:approvedAction.repositoryId,ciWorkflowId:778},
   },async()=>{outbound++;throw Error('must_not_dispatch');}),/github_action_publication_missing/);
   assert.equal(outbound,0);
   assert.equal(ctx.sqlite.prepare('SELECT COUNT(*) n FROM step_attempts').get()?.n,0);

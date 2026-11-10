@@ -1,29 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvedActionRepositories, listAvailableGitHubActions } from '../src/github-action-catalog.ts';
+import { currentExecutorRepository, listAvailableGitHubActions } from '../src/github-action-catalog.ts';
 
 const approved = {repository:'lirtual/github-actions',repositoryId:123,commitSha:'a'.repeat(40)};
 test('no approved repositories means zero actions, without requiring a token', async () => {
   assert.deepEqual(await listAvailableGitHubActions({}), {actions:[]});
 });
-test('explicit allowlist accepts only pinned, unique repository identities', () => {
-  assert.deepEqual(approvedActionRepositories(JSON.stringify([approved])),
-    [{repository:approved.repository,repositoryId:approved.repositoryId}]);
-  assert.deepEqual(approvedActionRepositories(JSON.stringify([{
-    repository:approved.repository,repositoryId:approved.repositoryId,
-  }])), [{repository:approved.repository,repositoryId:approved.repositoryId}]);
-  for (const entries of [
-    [{...approved,repository:'another/repo/invalid'}],
-    [{...approved,commitSha:'main'}],
-    [{...approved,repositoryId:0}],
-    [approved,approved],
-    [{...approved,token:'not-allowed'}],
-  ]) assert.throws(() => approvedActionRepositories(JSON.stringify(entries)), /catalog_invalid/);
-  assert.throws(() => approvedActionRepositories('{broken'), /catalog_invalid/);
+test('one release-owned executor identity replaces the multi-repo allowlist', () => {
+  const identity={repository:approved.repository,repositoryId:approved.repositoryId,ciWorkflowId:777};
+  assert.deepEqual(currentExecutorRepository(JSON.stringify(identity)),identity);
+  for(const bad of ['{broken',JSON.stringify([identity]),
+    JSON.stringify({...identity,extra:true}),JSON.stringify({...identity,repositoryId:0}),
+    JSON.stringify({...identity,ciWorkflowId:0}),JSON.stringify({...identity,repository:'bad/repo/extra'})])
+    assert.equal(currentExecutorRepository(bad),null);
 });
 test('approved discovery requires a server-owned credential', async () => {
   await assert.rejects(listAvailableGitHubActions({
-    WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([approved]),
+    WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:approved.repository,repositoryId:approved.repositoryId,ciWorkflowId:777}),
   }), /token_missing/);
 });
 
@@ -42,9 +35,9 @@ function githubMock(requests:string[],mode:'public'|'private'='public',actualNam
    return Response.json({id:1430925009,full_name:actualName,default_branch:'main'});
  };
 }
-const discoveryEnv={WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([{
-    repository:'lirtual/github-actions',repositoryId:1430925009,
-  }]),WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'};
+const discoveryEnv={WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({
+    repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:777,
+  }),WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'};
 test('catalog exposes one current main candidate and never resolves a Tag',async()=>{
  const requests:string[]=[];
  const found=await listAvailableGitHubActions(discoveryEnv,githubMock(requests));
@@ -67,14 +60,15 @@ test('only explicitly declared trusted main Actions are visible',async()=>{
  await assert.rejects(()=>listAvailableGitHubActions(discoveryEnv,
    githubMock([],'public','lirtual/session-actions')),/repository_mismatch/);
  const differentRepo=await listAvailableGitHubActions({
-   WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([{
-     repository:'other/actions',repositoryId:1430925009,
-   }]),WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
+   WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({
+     repository:'other/actions',repositoryId:1430925009,ciWorkflowId:777,
+   }),WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
  },async req=>{const u=new URL(req.url);
    if(u.pathname.endsWith('/commits/main'))return Response.json({sha:headSha});
    if(u.pathname.endsWith('/actions/workflows'))return Response.json({workflows:[{id:100,path:'.github/workflows/task.yml',state:'active'}]});
    if(u.pathname.endsWith('/contents/.github/workflows/task.yml'))return Response.json({path:'.github/workflows/task.yml',encoding:'base64',content:btoa(actionYaml)});
    return Response.json({id:1430925009,full_name:'other/actions',default_branch:'main'});
  });
- assert.equal(differentRepo.actions.length,0);
+ assert.equal(differentRepo.actions.length,1);
+ assert.equal(differentRepo.actions[0].repository,'other/actions');
 });

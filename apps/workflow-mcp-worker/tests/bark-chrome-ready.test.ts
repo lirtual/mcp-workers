@@ -58,17 +58,26 @@ async function fixture(t:test.TestContext){
    return {status:'accepted',input_digest:input.input_digest};
   }};
  const env={DB:{prepare},ACTIONS:provider,ACTIONS_DEPLOYMENT_ID:version,
-  WORKFLOW_GITHUB_DISPATCH_TOKEN:'fixture-token'} as unknown as Env;
+  WORKFLOW_GITHUB_DISPATCH_TOKEN:'fixture-token',
+  WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:123,ciWorkflowId:999})} as unknown as Env;
  const ctx={inputs:{duration_minutes:10},steps:{chrome_session:{status:'succeeded'}}};
  const inspect=async()=>({state:'running' as const});
  return {sql,plan,bark,manifest,env,ctx,inspect,sends:()=>sends};
 }
 function useReviewedChromeMain(f:Awaited<ReturnType<typeof fixture>>){
+ f.env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999});
  f.plan.name='chrome';
  Object.assign(f.plan.steps[0]!.with.action as object,{
   repositoryId:1430925009,workflowId:394689653,
   commitSha:'c'.repeat(40),ref:'refs/heads/main',
  });
+ const current=f.plan.steps[0]!.with.action as any;
+ f.plan.github_execution_approved=true;
+ f.plan.github_action_approvals=[{
+  repository:current.repository,repositoryId:current.repositoryId,
+  workflowId:current.workflowId,workflowPath:current.workflowPath,
+  commitSha:current.commitSha,type:current.type,contractDigest:current.contractDigest
+ }];
  f.sql.prepare('UPDATE step_attempts SET workflow_ref=?').run(
   'lirtual/github-actions/.github/workflows/chrome.yml@refs/heads/main');
 }
@@ -98,7 +107,7 @@ test('Bark never trusts unrelated branches, SHA, repo/workflow IDs or plan names
  ] as const){
   const f=await fixture(t);useReviewedChromeMain(f);change(f);
   const result=await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect);
-  assert.deepEqual(result,{status:'failed',error_code:'untrusted_session_reference'},name);
+  assert.deepEqual(result,{status:'failed',error_code:name==='wrong repository ID'?'github_action_executor_changed':'untrusted_session_reference'},name);
   assert.equal(f.sends(),0,name);
   assert.equal((f.sql.prepare('SELECT COUNT(*) AS c FROM cloudflare_action_invocations').get() as any).c,0,name);
  }
@@ -126,7 +135,7 @@ test('compiler accepts reviewed Chrome Ready to Bark and rejects unreviewed sour
  for(const change of [
   (p:Plan)=>{p.steps[1]!.needs=[];},
   (p:Plan)=>{(p.steps[0]!.with.action as any).workflowPath='.github/workflows/windows.yml';},
-  (p:Plan)=>{(p.steps[0]!.with.action as any).repository='untrusted/repo';},
+  (p:Plan)=>{(p.steps[0]!.with.action as any).repository='untrusted/repo/extra';},
   (p:Plan)=>{(p.steps[1]!.with.input as any).session_step_id='another';},
   (p:Plan)=>{(p.steps[1]!.with.input as any).notification.url='https://evil.example';},
  ]){
@@ -184,4 +193,13 @@ test('OpenList signed live Session uses the same Bark admission as Chrome',async
  assert.equal((await compilePlan(draft)).plan.steps[1]!.uses,'action.run');
  assert.equal((await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect)).status,'succeeded');
  assert.equal(f.sends(),1);
+});
+
+
+test('retired executor cannot create a new Bark side effect from an old signed Session, while independent Cloudflare grants remain separate',async t=>{
+ const f=await fixture(t);
+ f.env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({repository:'other-org/current',repositoryId:999,ciWorkflowId:321});
+ assert.deepEqual(await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect),
+  {status:'failed',error_code:'github_action_executor_changed'});
+ assert.equal(f.sends(),0);
 });

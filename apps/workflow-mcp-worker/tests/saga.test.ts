@@ -76,7 +76,7 @@ test('Compensator persists exactly one reservation; a cancellation ACK remains o
   github_action_approvals:[{repository:ACTION.repository,repositoryId:ACTION.repositoryId,
    workflowId:ACTION.workflowId,workflowPath:ACTION.workflowPath,
    commitSha:ACTION.commitSha,type:ACTION.type,contractDigest:ACTION.contractDigest}]};
- const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
+ const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999})} as Env;
  let calls=0;
  const cancel=(async()=>{calls++;return 'cancel_requested';}) as typeof requestGitHubActionCancellation;
  assert.equal(await compensateSession(env,{...granted,github_execution_approved:undefined},
@@ -140,7 +140,7 @@ test('partial Session compensation continues in reverse order without replaying 
   github_action_approvals:[{repository:ACTION.repository,repositoryId:ACTION.repositoryId,
    workflowId:ACTION.workflowId,workflowPath:ACTION.workflowPath,
    commitSha:ACTION.commitSha,type:ACTION.type,contractDigest:ACTION.contractDigest}]};
- const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
+ const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999})} as Env;
  const calls:string[]=[];
  const cancel=(async (_db:Parameters<typeof requestGitHubActionCancellation>[0],_runId:string,stepId:string)=>{
   calls.push(stepId);
@@ -191,7 +191,7 @@ test('independent parallel Saga branches preserve each exact grant and an unclea
   github_action_approvals:[{repository:ACTION.repository,repositoryId:ACTION.repositoryId,
    workflowId:ACTION.workflowId,workflowPath:ACTION.workflowPath,commitSha:ACTION.commitSha,
    type:ACTION.type,contractDigest:ACTION.contractDigest}]};
- const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
+ const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999})} as Env;
  const calls:string[]=[];
  const cancel=(async (_db:Parameters<typeof requestGitHubActionCancellation>[0],
     _runId:string,stepId:string)=>{
@@ -238,7 +238,7 @@ test('source-reviewed temporary Windows Session uses the same one-shot GitHub ca
   github_action_approvals:[{repository:windows.repository,repositoryId:windows.repositoryId,
    workflowId:windows.workflowId,workflowPath:windows.workflowPath,commitSha:windows.commitSha,
    type:windows.type,contractDigest:windows.contractDigest}]};
- const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token'} as Env;
+ const env={DB:db,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999})} as Env;
  let calls=0;
  const cancel=(async()=>{calls++;return 'cancel_requested';}) as typeof requestGitHubActionCancellation;
  assert.equal(await compensateSession(env,granted,'run',plan.steps[0]!,cancel),'requested');

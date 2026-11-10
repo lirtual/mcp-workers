@@ -33,7 +33,7 @@
 | `browser-mcp-worker` | 既有设计要求独立 `MCP_ACCESS_TOKEN` 同名 Environment 覆盖；实际配置尚待核实 | `ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository）、`BROWSER_ACTIVATION_AUDIENCE`（Environment）；其余运行时 Browser Access 值从共享源及 Wrangler Custom Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
-| `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`（UU Session Secret 已按 #774 退役） | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES` |
+| `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`（UU Session Secret 已按 #774 退役） | `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Environment）、`WORKFLOW_GITHUB_ACTION_REPOSITORY`（Repository） |
 
 **现行 Secret 规范：** SSH GitHub `SSH_ENCRYPTION_KEY` 与 Workflow GitHub `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` 必须与运行时同名。#733 旧名仅保留历史记录，原值迁移须先校验完整字节一致，再切换 Release/Acceptance 消费者，最后删除旧 GitHub 名称；不得增加双来源回退。#774 已退役 UU Session Secret，勿重新创建。仅修改 GitHub 来源不会触发生产发布。
 
@@ -56,7 +56,7 @@ GitHub Environment Variables 只影响对应 Worker。工作流显式允许下�
 - IMA：**`IMA_CLIENT_ID`（必填，非空、不能包含空格或控制字符，最大 512 字符）**；`IMA_BASE_URL`（可选 HTTPS URL，不能包含 URL 凭据）。
 - Database：`DATABASE_CONNECTIONS`、被引用的独立 Secrets 和 `DB_HOST`；可选 `DATABASE_MAX_ROWS`（1–5000）、`DATABASE_MAX_RESULT_BYTES`（1–8388608）、`DATABASE_MAX_SCHEMA_BYTES`（1–4194304）、`DATABASE_QUERY_TIMEOUT_MS`（1–60000）、`DATABASE_MAX_WRITE_AFFECTED_ROWS`（1–100）。
 - Browser（Spec #804 现行）：仅维护 Repository `OWNER_EMAIL`；受保护发布流程从 Zero Trust Organization 和固定 Access App 自动读取 issuer/Audience，Origin 来自 Wrangler Custom Domain。Repository 旧 `ACCESS_TEAM_DOMAIN` 与 Browser Environment 旧 `BROWSER_ACTIVATION_AUDIENCE` GitHub 来源已删除，**不得为发布重新配置**；同名 Worker 运行时 Audience 绑定仍必需。`BROWSER_REMEMBERED_IDLE_DAYS` 为可选配置；Spec #733 的手工来源仅属历史。
-- Workflow：`WORKFLOW_MCP_PORTAL_CLIENT_ID`（必填）；`WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`（可选，受控批准的仓库清单，发布流程映射为运行时 `WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES`）。
+- Workflow：`WORKFLOW_MCP_PORTAL_CLIENT_ID`（Environment，必填），以及唯一的 Repository Variable `WORKFLOW_GITHUB_ACTION_REPOSITORY=owner/repo`（必填，禁止同名 Environment 变量覆盖）；`WORKFLOW_GITHUB_DISPATCH_TOKEN` 是现有 Secret。Release 在受保护环境只读解析真实 Repository ID 与 `ci.yml` Workflow ID，写入 Worker `WORKFLOW_GITHUB_ACTION_IDENTITY`。旧多仓库 JSON 变量不可作为新发布来源。生产切换需另行授权，见 [Spec #834 安全切换清单](./workflow-github-executor-cutover.md)。
 - SSH、GitHub Actions：无额外可自定义的 Environment Runtime Variables。Remote Control 安装地址从 Wrangler 自定义域名自动推导，`RCA_PERMANENT_IDLE_DAYS` 为可选变量。
 
 未填写可选 Variable 时仍采用 `wrangler.jsonc` 中的默认值；GitHub 中填写时会由 `wrangler deploy --var` 传入**当前选中的 Worker**，并在发布前进行类型/范围验证。受管 Worker 使用 `keep_vars: false`，所以旧 Cloudflare Dashboard 中**没有在源码或当前 GitHub Variables 明确声明的普通 Variable 会在下次手动部署后被清理**。不要把数据库密码或访问 Token 当作 Variable；Durable Object、Service Binding 和 Secret 不属于这些可选纯文本 Variable。

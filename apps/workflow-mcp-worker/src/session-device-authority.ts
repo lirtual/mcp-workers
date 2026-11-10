@@ -7,8 +7,9 @@ import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspe
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {publishedGitHubActionStep,type Plan} from './plan.ts';
-import {inspectSessionJobStart,resolveSessionDeadline,SESSION_REPOSITORY,SESSION_REPOSITORY_ID} from './session-device-admission.ts';
+import {inspectSessionJobStart,resolveSessionDeadline} from './session-device-admission.ts';
 import type {Env} from './store.ts';
+import {readWorkflowGitHubExecutor,isCurrentWorkflowGitHubAction} from './workflow-github-executor.ts';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DENY={allowed:false} as const;
@@ -65,7 +66,7 @@ const read=async(db:D1Database,attemptId:string)=>db.prepare(
     AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id)`)
  .bind(attemptId).first<Row>();
 
-function reviewedAction(row:Row, approval:AdmissionServices['approval']):
+function reviewedAction(row:Row, approval:AdmissionServices['approval'],currentExecutor:unknown):
   {action:ReviewedGitHubAction;pinned:Record<string,unknown>;
    defaults:Record<string,unknown>;supplied:Record<string,unknown>}|null{
  try{
@@ -76,7 +77,7 @@ function reviewedAction(row:Row, approval:AdmissionServices['approval']):
   const step=publishedGitHubActionStep(plan,row.step_id);
   if(!step||step.uses!=='github.run'||step.with?.capability!=='github.action')return null;
   const raw=step.with.action as (ReviewedGitHubAction & {inputs?:Record<string,unknown>;ref?:string})|undefined;
-  if(!raw||raw.type!=='session'||raw.repository!==SESSION_REPOSITORY||raw.repositoryId!==SESSION_REPOSITORY_ID||
+  if(!raw||raw.type!=='session'||!isCurrentWorkflowGitHubAction(readWorkflowGitHubExecutor(currentExecutor),raw)||
     !['.github/workflows/windows.yml','.github/workflows/ubuntu.yml'].includes(raw.workflowPath)||
     !raw.inputs||typeof raw.inputs!=='object'||Array.isArray(raw.inputs))return null;
   const action:ReviewedGitHubAction={
@@ -114,7 +115,7 @@ export async function decideSessionAdmission(
      row.owner_run_id!==row.candidate_run_id||
      row.owner_run_attempt!==row.candidate_run_attempt||
      !row.candidate_run_id||!row.candidate_run_attempt)return DENY;
-  const approved=reviewedAction(row,deps.approval);
+  const approved=reviewedAction(row,deps.approval,env.WORKFLOW_GITHUB_ACTION_IDENTITY);
   if(!approved)return DENY;
   if(input.oidc_jwt!==undefined&&
      !await deps.oidc(env,attemptId,input.oidc_jwt))return DENY;

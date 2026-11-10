@@ -9,6 +9,7 @@ import type {TerminalCasResult} from './github-action-terminal-cas.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {readWorkflowGitHubExecutor,isCurrentWorkflowGitHubAction} from './workflow-github-executor.ts';
 
 type Outcome={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:unknown};
 type Http=(request:Request)=>Promise<Response>;
@@ -32,6 +33,9 @@ export async function runPublishedGitHubActionTask(
  if(plan.github_execution_approved!==true||
     !isPublishedGitHubActionApproved(plan.github_action_approvals,identity))
   return {status:'failed',error_code:'github_action_approval_missing'};
+ const executorIdentity=readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY);
+ if(!isCurrentWorkflowGitHubAction(executorIdentity,identity))
+  return {status:'failed',error_code:'github_action_executor_changed'};
  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE)
   return {status:'failed',error_code:'github_action_executor_not_configured'};
  if(typeof raw.ref!=='string'||!(
@@ -53,7 +57,7 @@ export async function runPublishedGitHubActionTask(
   const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
   const ack=await registerAndDispatchGitHubAction(db,{
    runId,stepId:stepPlan.id,attemptId,dispatchId,
-   action:identity,ref:raw.ref as string,token,inputs,
+   action:identity,ref:raw.ref as string,token,inputs,executorIdentity,
   },http);
   return {attemptId,...ack};
  });

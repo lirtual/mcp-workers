@@ -44,7 +44,8 @@ function setup(){
   first:async()=>db.prepare(sql).get(...args as []),
   run:async()=>({meta:{changes:db.prepare(sql).run(...args as []).changes}}),
  })})} as unknown as D1Database;
- const env={DB:adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
+ const env={DB:adapter,WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:action.repository,repositoryId:action.repositoryId,ciWorkflowId:999}),
+ WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-token',
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:audience} as Env;
  let sleeps=0,postCount=0;
  const step={do:async(_name:string,_opts:unknown,callback:()=>Promise<unknown>)=>callback(),

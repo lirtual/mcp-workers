@@ -83,6 +83,7 @@ async function fixture(t:test.TestContext){
   },
  };
  const env={DB:{prepare},ACTIONS:provider,
+  WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:10,ciWorkflowId:999}),
   ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
  const ctx={inputs:{},steps:{[sourceId]:{status:'succeeded'}}};
  const call=()=>runBarkAction(env,plan,notify,runId,ctx);
@@ -172,6 +173,14 @@ async function dynamicMainBarkDownload(t:test.TestContext){
  Object.assign((upstream.with.template as any).with.action,{
   repositoryId:1430925009,workflowId:401335372,ref:'refs/heads/main',
  });
+ f.env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999});
+ const current=(upstream.with.template as any).with.action;
+ f.plan.github_execution_approved=true;
+ f.plan.github_action_approvals=[{
+  repository:current.repository,repositoryId:current.repositoryId,
+  workflowId:current.workflowId,workflowPath:current.workflowPath,
+  commitSha:current.commitSha,type:current.type,contractDigest:current.contractDigest,
+ }];
  f.sql.prepare(`UPDATE step_attempts SET repository_id=?,workflow_ref=?,ref=?,resolved_sha=?`)
    .run('1430925009','lirtual/github-actions/.github/workflows/download.yml@refs/heads/main',
      'refs/heads/main','c'.repeat(40));
