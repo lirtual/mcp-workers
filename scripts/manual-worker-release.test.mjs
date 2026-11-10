@@ -368,6 +368,11 @@ test("Workflow code-only release never stages secrets or runs migrations, preser
   const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
   assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
   assert.match(deployment, /deploy_args=\(--keep-vars\)/);
+  assert.match(workflow, /workflow_audience_rename:[\s\S]*?default: false/);
+  assert.match(deployment, /WORKFLOW_AUDIENCE_RENAME: \$\{\{ inputs.workflow_audience_rename \}\}/);
+  assert.match(deployment, /if \[\[ "\$WORKFLOW_AUDIENCE_RENAME" == 'true' \]\]/);
+  assert.match(deployment, /deploy_args\+=\(--var 'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action'\)/);
+  assert.match(workflow, /"\$SELECTED_WORKER" == 'workflow-mcp-worker' && "\$WORKFLOW_CODE_ONLY" == 'true'/);
   assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
   assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
   assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
@@ -896,6 +901,19 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
   assert.equal(check(),true);
+  // One-time Audience cutover requires precisely the reviewed prior trust value.
+  const fromOld=bindings.map(item=>item.name==='WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'
+    ? {...item,text:'workflow-github-action:production'}:item);
+  const verifyRename=items=>verifyBindings('workflow-mcp-worker',
+    {...settings,bindings:items},secrets,{mode:'preflight',workflowAudienceRename:true});
+  assert.equal(verifyRename(fromOld),true);
+  for (const invalid of [bindings,
+    bindings.map(item=>item.name==='WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'
+      ? {...item,text:'workflow-github-action:other'}:item),
+    bindings.filter(item=>item.name!=='WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE')]) {
+    assert.throws(()=>verifyRename(invalid),/reviewed old value/);
+  }
+  assert.throws(()=>check(fromOld),/Action OIDC audience drift/);
   assert.throws(()=>check([...bindings,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY",type:"secret_text"}],
     [...secrets,{name:"WORKFLOW_SESSION_RUNTIME_DATA_KEY"}]),/Unexpected runtime Secret/);
   assert.throws(()=>check([...bindings,{name:"WEIXIN_ACTION_PROVIDER",type:"service",service:"weixin-mcp-worker"}]),

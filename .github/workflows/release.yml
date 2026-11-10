@@ -51,6 +51,11 @@ on:
         required: false
         type: boolean
         default: false
+      workflow_audience_rename:
+        description: 'One-time Workflow code-only release: change only Action OIDC Audience, retaining other settings'
+        type: boolean
+        required: false
+        default: false
       uu_cleanup_approved:
         description: 'Spec774: authorize destructive empty UU table only, no Worker publish'
         type: boolean
@@ -307,6 +312,7 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
           WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
+          WORKFLOW_AUDIENCE_RENAME: ${{ inputs.workflow_audience_rename }}
           ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
         shell: bash
         run: |
@@ -320,6 +326,12 @@ jobs:
           if [[ "$WORKFLOW_CODE_ONLY" == "true" ]]; then
             [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$ACTIONS_OLD_INGRESS_QUIESCED" != "true" ]] || {
               echo "Code-only release accepts only existing Workflow Worker without admission-gate changes" >&2
+              exit 1
+            }
+          fi
+          if [[ "$WORKFLOW_AUDIENCE_RENAME" == 'true' ]]; then
+            [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' && "$WORKFLOW_CODE_ONLY" == 'true' ]] || {
+              echo 'Audience rename requires the reviewed Workflow code-only release' >&2
               exit 1
             }
           fi
@@ -373,6 +385,7 @@ jobs:
         id: preflight
         env:
           WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
+          WORKFLOW_AUDIENCE_RENAME: ${{ inputs.workflow_audience_rename }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
@@ -1072,6 +1085,7 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
           WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
+          WORKFLOW_AUDIENCE_RENAME: ${{ inputs.workflow_audience_rename }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
@@ -1102,6 +1116,10 @@ jobs:
             # Wrangler retains deployed Secrets automatically; keep plain Variables
             # without re-uploading either, after existing read-only binding gates.
             deploy_args=(--keep-vars)
+            if [[ "$WORKFLOW_AUDIENCE_RENAME" == 'true' ]]; then
+              # Exactly one approved plaintext Variable; all other bindings are retained.
+              deploy_args+=(--var 'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action')
+            fi
           else
             # Existing releases always restage exactly the approved GitHub Secrets.
             test -s "$RUNNER_TEMP/mcp-worker-secrets.json"
