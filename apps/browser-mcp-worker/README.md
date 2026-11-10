@@ -63,7 +63,7 @@ The new remembered grant lifecycle uses a **14-day idle default** (single review
 
 Historical Spec #733 state: GitHub Repository `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` are the only Owner identity source. Release derives runtime `BROWSER_ACCESS_ISSUER`, `BROWSER_OWNER_EMAIL` and Custom Domain `BROWSER_ACTIVATION_ORIGIN`. Only `BROWSER_ACTIVATION_AUDIENCE` is an independently configured Activation Variable. Existing Access/OTP policy and pairing storage are unchanged.
 
-### Spec #804 (production released; legacy GitHub source cleanup pending)
+### Spec #804 (production released; GitHub sources retired; physical Owner E2E pending)
 
 Browser Owner Access identity inputs are now read-only discovered from the
 account Zero Trust Organization (`auth_domain`) and the existing fixed
@@ -72,4 +72,4 @@ The Repository's `OWNER_EMAIL` remains the only maintained Owner identity
 Variable. The application still requires the identical runtime issuer,
 Audience, Owner email and activation Origin; SSO+OTP, Owner-only policy,
 15m Access session and single-use same-Profile proof remain unchanged.
-The separately authorized [Release Worker #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111) published Version `bd556e57-2c60-4fca-840c-e3091339abba` to 100% on 2026-11-10. Independent Cloudflare GET verified identity-critical bindings, unchanged BrowserOwner namespace and 15-tool Portal readiness. This is **not** proof of physical Owner SSO/OTP and same-Profile activation: all Browser endpoints were offline during follow-up inspection. The two unused GitHub source Variables were separately authorized for deletion and each independently verified absent (HTTP 404) on 2026-11-10; required runtime Access bindings remain present. The #733 instructions above are historical.
+The separately authorized [Release Worker #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111) published Version `bd556e57-2c60-4fca-840c-e3091339abba` to 100% on 2026-11-10. Independent Cloudflare GET verified identity-critical bindings, unchanged BrowserOwner namespace and 15-tool Portal readiness. This is **not** proof of physical Owner SSO/OTP and same-Profile activation: the earlier follow-up observed offline endpoints; a later Edge Endpoint became online/control-ready, which still does not independently attest same-Profile Owner activation. The two unused GitHub source Variables were separately authorized for deletion and each independently verified absent (HTTP 404) on 2026-11-10; required runtime Access bindings remain present. The #733 instructions above are historical.
