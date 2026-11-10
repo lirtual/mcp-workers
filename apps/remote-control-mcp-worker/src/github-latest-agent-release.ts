@@ -200,8 +200,35 @@ export function selectLatestAgentRelease(lookup: ReleaseLookup): LatestReleaseDe
   return decideLatest(lookup);
 }
 
-/** One latest lookup. Redirects and transport failures stop; they are not a second chance. */
-export async function readLatestAgentRelease(doFetch: typeof fetch): Promise<LatestReleaseDecision> {
+/** Cache only a fully validated five-asset snapshot, never GitHub error responses. */
+const RELEASE_CACHE_KEY = new Request("https://rca.lirtual.dpdns.org/__internal/latest-agent-release-v1");
+const RELEASE_CACHE_MAX_AGE_MS = 5 * 60_000;
+type ReleaseCache = Pick<Cache, "match" | "put">;
+
+export async function readLatestAgentRelease(
+  doFetch: typeof fetch,
+  cache?: ReleaseCache,
+  now: () => number = Date.now,
+): Promise<LatestReleaseDecision> {
+  if (cache) {
+    try {
+      const hit = await cache.match(RELEASE_CACHE_KEY);
+      if (hit?.status === 200) {
+        const validatedAt = Number(hit.headers.get("x-rca-validated-at"));
+        const age = now() - validatedAt;
+        if (Number.isSafeInteger(validatedAt) && validatedAt > 0 &&
+            age >= 0 && age < RELEASE_CACHE_MAX_AGE_MS) {
+          const text = await hit.text();
+          if (text.length <= 1_048_576) {
+            const decision = selectLatestAgentRelease({ status: 200, body: JSON.parse(text) });
+            if (decision.ok) return decision;
+          }
+        }
+      }
+    } catch { /* Cache failures are misses, never permission to serve stale metadata. */ }
+  }
+
+  // On a miss, preserve the original single-request/fail-closed GitHub behavior.
   let response: Response;
   try {
     response = await doFetch(LATEST_AGENT_RELEASE_URL, {
@@ -224,9 +251,40 @@ export async function readLatestAgentRelease(doFetch: typeof fetch): Promise<Lat
     try { body = JSON.parse(text); }
     catch { return { ok: false, stop: "rejected" }; }
   }
-  return selectLatestAgentRelease({
+  const decision = selectLatestAgentRelease({
     status: response.status,
     body,
     retryAfter: response.headers.get("retry-after"),
   });
+  if (decision.ok && cache) {
+    // Cache only verified fields; revalidate the same trust contract on every hit.
+    const release = decision.release;
+    const snapshot = {
+      tag_name: release.tag,
+      draft: false,
+      prerelease: false,
+      immutable: true,
+      html_url: release.htmlUrl,
+      assets: AGENT_RELEASE_TARGETS.map(target => {
+        const asset = release.assets[target];
+        return {
+          name: asset.name,
+          state: "uploaded",
+          size: asset.size,
+          digest: "sha256:" + asset.sha256,
+          browser_download_url: asset.downloadUrl,
+        };
+      }),
+    };
+    try {
+      await cache.put(RELEASE_CACHE_KEY, new Response(JSON.stringify(snapshot), {
+        headers: {
+          "cache-control": "public, max-age=300",
+          "content-type": "application/json",
+          "x-rca-validated-at": String(now()),
+        },
+      }));
+    } catch { /* Cache writes are best-effort; valid live Latest still works. */ }
+  }
+  return decision;
 }
