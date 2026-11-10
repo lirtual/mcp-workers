@@ -1,73 +1,86 @@
-# RCA Monorepo consolidation — Grill With Docs decision record
+# RCA Monorepo consolidation — Grill With Docs
 
-**Status:** Design in progress (2026-11-10). Q1–Q4 accepted. Q5–Q8 and any dependent acceptance details are open. **Design/documentation only:** no code migration, PR merge, Agent Release, Worker deployment, device upgrade, pairing, runtime configuration, or credential change is authorized.
+**Status:** Design in progress, simplified direction updated 2026-11-10. Q1–Q4 accepted in earlier rounds; Owner has superseded the earlier Q5/Q6/Q8 recommendations by explicitly rejecting legacy compatibility, pinned tag/commit/repository maps, and incremental cutover. Q7 and device-disruption policy remain to be settled. **This is a design record only.** No code, CI/release workflow, device, production Worker, GitHub repository administration, or published asset is changed or authorized by this document.
 
-## Objective and verified baseline
+## Objective
 
-Consolidate RCA Worker and native Agent source under the existing `lirtual/mcp-workers` monorepo, following Browser MCP's source-management precedent without coupling runtimes or deployment authority.
+Manage the RCA Worker and all five native Agent targets inside `lirtual/mcp-workers`, with one source tree and one GitHub Release origin. Installers resolve the **latest published stable Agent Release** from that repository at install/upgrade time. Perform one deliberate cutover; do not build a compatibility layer for old Agent releases or old repository source paths.
 
-- `mcp-workers/apps/remote-control-mcp-worker` owns the existing Cloudflare Worker, Portal ingress, device coordinator, signed-WSS pairing and public `/install.sh`, `/install.ps1`, `/install-macos.sh` endpoints.
-- The public `lirtual/remote-control-agent` repository owns the Agent source, five-platform candidate CI, reviewed release pins and immutable GitHub Releases. The verified historical `v0.1.51` Release has five native assets plus `SHA256SUMS.txt`.
-- Current Worker CI and manual Worker release invoke `scripts/stage-public-remote-control-agent.sh`, fetching a pinned Agent repository commit into a temporary `apps/remote-control-agent` package. The Worker compatibility fixture SHA and the public installer Release source SHA have different purposes and must not be conflated.
-- Browser MCP keeps the extension source under `apps/browser-mcp-worker/extension` and packages its distribution in the Worker repo. RCA's native binaries and owner-controlled upgrades remain a distinct artifact boundary.
-- Existing device IDs, grants, signed-WSS authentication, local receipts, Unknown/no-blind-replay rules, STOP/Resume and rollback controls must stay valid.
+## Verified current baseline
 
-## Accepted design decisions
+- Current Worker source: `apps/remote-control-mcp-worker/` and its existing public installer endpoints on `rca.lirtual.dpdns.org`.
+- Current Agent source: separate `lirtual/remote-control-agent/apps/remote-control-agent/`, with Linux x64/ARM64, Windows x64, macOS ARM64/x64 artifacts and native CI.
+- Current Worker CI fetches a pinned Agent commit into `apps/remote-control-agent/`; current Linux/Windows/macOS installer, native verifier and release archive internals encode `lirtual/remote-control-agent` and/or `apps/remote-control-agent`.
+- The existing Agent `v0.1.51` is a published immutable **prerelease** in the old repository. `mcp-workers` currently has **no latest stable Release**: its `/releases/latest` endpoint returned 404 on 2026-11-10.
+- GitHub's `GET /repos/{owner}/{repo}/releases/latest` returns a published **non-prerelease, non-draft** Release, not prereleases. Publishing a draft/prerelease alone cannot satisfy a latest-based installer. The latest release is determined by GitHub, including its latest designation; do not improvise sorting by version strings.
 
-### Q1 — Source-management consolidation: **A**
+## Accepted decisions
 
-Put Agent source and related engineering management in `mcp-workers`. Retain independent Agent and Worker execution, verification, versioning, release authorization and device-upgrade authority. No lockstep versions, automatic updates, extra service or orchestrator.
+### Q1 — One source-management repository: A
 
-### Q2 — Directory structure: **B**
+Move Agent source, tests and release workflows into `mcp-workers`. Worker and Agent still run separately, and Agent Release, Worker production publication and real-device upgrades remain distinct kinds of action. No extra Worker, service, updater or deployment environment.
 
-Nest the **source** of the Agent under the existing Worker context at:
+### Q2 — Nested Agent source: B
 
-```text
-mcp-workers/
-  apps/
-    remote-control-mcp-worker/
-      agent/
-        package.json
-        src/
-        scripts/
-        tests/
-      src/
-      tests/
-      wrangler.jsonc
-  .github/workflows/
-  pnpm-workspace.yaml
-```
+Use `apps/remote-control-mcp-worker/agent/` for the native Agent, beside Worker `src/` and `tests/`. Explicitly add the nested Agent package to pnpm workspace. Keep only one lockfile. Scope native CI and Worker compatibility checks to affected code, without making unrelated Worker changes rebuild five native targets.
 
-The `agent/` package remains a separately testable/native-buildable package despite nesting. Prefer an explicit pnpm workspace include for that exact package over a broad recursive glob. Update affected-app selection and the Worker check dependency deliberately; do not accidentally run native five-platform builds for unrelated Worker changes or allow Agent changes to escape compatibility CI.
+### Q3 — New Agent Release origin: A
 
-**Crucial distinction:** source directory layout is NOT the deployed Agent archive layout. The existing builders, Linux Python/bootstrap and JS validators, Windows PowerShell installer, system service/task launchers, installed program paths, and tar/zip entry allowlists refer to `apps/remote-control-agent/` inside release bundles. Unless a separate requirement makes it impossible, keep the legacy **internal archive layout** and local installed runtime paths unchanged by copying from the new source path into the existing archive structure. No on-device migration is an intended outcome of a repo move.
+New Agent packages publish **only** as GitHub Releases of `lirtual/mcp-workers`. The Worker installer never falls back to `lirtual/remote-control-agent`. The old repository may remain available as historical GitHub evidence, but its source, releases and URLs are outside the supported new installation/upgrade path. Repository archive/deletion is a separate later administrative decision, not part of design documentation.
 
-### Q3 — Future GitHub Release ownership: **A**
+### Q4 — Source snapshot only: A
 
-New Agent Release tags and verified native assets will be published to `lirtual/mcp-workers`, independently from Cloudflare Worker deployment. Old tags and immutable release assets remain at their original `lirtual/remote-control-agent` URLs and must not be modified, copied over, or silently treated as new-repository tags. New repo's Release must pass the existing immutable/tag/commit/asset digest and cross-platform candidate verification contract. All new source commit SHAs are rooted in `mcp-workers`; historical source SHAs continue to identify old-repository history.
+Import a reviewed current Agent source snapshot, not the old Git history. A source-revision reference in design/PR evidence is useful for audit, **not a runtime/Release pin**. No source-SHA mapping table, repository compatibility routing, submodule, or sync bot.
 
-### Q4 — Source history migration: **A**
+### Q5 — No legacy compatibility layer: Owner's new direction
 
-Import only the current reviewed Agent source snapshot with clear source-repository URL and exact old commit provenance; do not graft/rewrite the full Git history. Preserve the former repository and its Issues, tags, released artifacts and evidence links as historical references. Archiving or other repository-administration changes are **not** part of the design-only stage or authorized automatically.
+Replace all active old-repository URLs, origin allowlists, test/build paths and package assumptions needed by the new Agent distribution and installer. No requirement to preserve historical Agent binary layouts, old repo installer scripts, upgrade path from old repo packages, or old protocol compatibility solely to enable migration.
 
-## Verified integration constraints (not new decisions)
+**Boundary to settle:** This does not automatically mean delete existing owner credentials, identities or receipts. A source/archive break is different from destroying a paired device's local state. Whether existing devices must be reinstalled/re-paired is an explicit future decision (Q9).
 
-1. **Workspace:** The present `pnpm-workspace.yaml` includes `apps/*` and `packages/*`, not `apps/remote-control-mcp-worker/agent`. The new Agent package needs an explicit include and a single reviewed lockfile; avoid the old secondary root workspace.
-2. **Native artifact fidelity:** `apps/remote-control-agent/scripts/build-v2-release.mjs`, `scripts/bootstrap-v2.py`, `scripts/verify-v2-release.mjs`, Windows `install.ps1`, and other platform paths encode the established artifact layout. Build from nested source but keep the installation contract stable. Scope the necessary build-path edits and test a real produced archive without changing device state.
-3. **Published origin:** Worker `src/install-bootstrap.ts` generates Linux, Windows and macOS installers using `lirtual/remote-control-agent` Release/source URLs. Native verifier and Windows bootstrap also enforce old repo origin. Switching to a new repo requires an explicit reviewed origin/pin contract, not a broad redirect allowance or `latest` lookup.
-4. **Provenance:** Old `v0.1.51` immutable tag points at an Agent-repository commit; a new Monorepo source commit has a different SHA. Preserve a one-time old-source/new-source migration map and check every *new* candidate against its *new* repo tag, exact source SHA, native build run and SHA-256 manifests. Never rewrite historical release-pins to claim different source origins.
-5. **CI and release:** Current Agent `.github/workflows/publish-agent-release.yml` can publish on main pushes changing `.github/release-pins/*.json`. Worker release is separately manual via `workflow_dispatch`. If the Owner requires no publish from a routine main merge in the destination, the migrated Agent publication trigger must be explicitly manual and separately authorized. CI candidate builds are not publication.
-6. **Compatibility:** A passing same-commit Agent/Worker build is not sufficient evidence about already-installed older Agents. Preserve the existing relevant protocol/receipt tests and independently verify real-device identity and signed-WSS behavior after a separately authorized future release.
+Keep `https://rca.lirtual.dpdns.org/install.sh`, `/install.ps1`, and `/install-macos.sh` as the proposed *new* stable user-facing entrypoints because their URLs do not inherently require a legacy GitHub origin. These endpoints should not implement old-version fallback.
 
-## Third-round decision frontier (OPEN — owner selection required)
+### Q6 — Dynamic latest stable Release; no tag/commit pins: Owner's new direction
 
-- **Q5 — Historical entrypoints:** A (recommended): keep the current public `rca.lirtual.dpdns.org` installer URLs unchanged; leave all old GitHub tags/assets on the legacy repository; switch only the explicitly reviewed new-release pins and origin after testing. B: new versioned public installer URLs or source URLs with an explicit user-facing migration.
-- **Q6 — Release provenance:** A (recommended): store or embed the reviewed Release repository/origin as part of each immutable pin; validate exact repo, tag-to-source SHA, published immutable release, asset identity/digest, platform and installer-source SHA before execution, with no silent legacy/new fallback. B: accept either repository based on opportunistic fallback/lookup.
-- **Q7 — Agent publication trigger:** A (recommended): native PR/main CI is read-only/non-publishing, candidate artifact generation is deliberate and does not publish, and a separate manually approved workflow publishes only a reviewed Agent pin. Worker retains its independent manually approved production release. B: retain old automatic publication on pin-file main push.
-- **Q8 — Cutover and rollback:** A (recommended): stage the source/CI migration first, then separately review and publish the *first* new-repository Agent Release, then separately authorize the Worker installer-pin cutover; keep the old release and old Worker version as rollback choices; do not change devices as part of the migration. B: switch source, Release and Worker installer pin together as one cutover.
+At each explicitly initiated installation/upgrade, resolve `GET https://api.github.com/repos/lirtual/mcp-workers/releases/latest` **once**. Require a published stable Release and the expected platform asset (Linux x64/ARM64, Windows x64, macOS ARM64/x64). Use that single response's asset information for the whole operation. Do **not** require a configured version, pinned tag, source commit, Git tag-to-commit match, or standalone origin/version map. Avoid a second `latest` lookup in the same operation that could race a new publication.
 
-The third-round answers unblock the detailed dry-run matrix, tag collision/rollback behavior, installed older-Agent compatibility tests, follow-on repository disposition and precise go/no-go acceptance plan.
+**Retain minimal safety checks, not an extra pinning system:** verify the selected artifact's GitHub-reported SHA-256 digest against downloaded bytes, expected architecture/package type and archive boundaries before extracting/executing; reject absent or invalid digest, incomplete asset or unexpected redirect. Serve bootstrap scripts from the reviewed existing RCA Worker entrypoint rather than dynamically executing unchecked old-repository raw source. Release metadata plus matching digest provides transport/artifact integrity, **not independent proof of trusted source provenance**; publishing a malicious latest Release under a compromised account is an accepted residual risk of this simplified design unless later revisited. No `latest` fallback to prerelease or old repo.
 
-## Design-phase boundaries
+This is a dynamic *installation-time* latest selection, **not** an instruction to silently auto-upgrade already paired devices or bypass owner upgrade authorization.
 
-All edits during Grill With Docs are limited to draft design documents on `docs/rca-monorepo-grill`. No implementation edits, CI/Workflow trigger changes, Release publication, production rollout, GitHub repository archive/delete, credential or device operations, or merge. An ADR is warranted only when the final irreversible repository/release provenance trade-off is settled; do not create extra glossary terms for file layout.
+### Q8 — Single cutover, no dual-track compatibility: Owner's new direction
+
+Prepare a single implementation set that imports Agent source, updates workspace/build/CI paths and archive/installer expectations, replaces the old origin logic, and adds independent native Release publication. Validate unpublished five-platform candidates and Worker/Agent integration before release. At a separately authorized execution window, **publish the first stable Agent Release to `mcp-workers` before enabling the latest-based Worker installer**; verify latest resolves all expected assets and digests; then publish the revised Worker and verify installer downloads and real device operation. No long-lived parallel source or distribution systems and no staged old-repo compatibility window.
+
+**Failure behavior:** If the new stable Release is missing or an asset/verification fails, halt the affected cutover before deploying a broken installer; once switched, fail closed rather than quietly downloading old versions. For recovery, fix and publish a new good stable Release (which becomes latest) or restore an already-local validated installation where independently safe. No runtime lookup of a legacy version or destructive rollback of receipt/identity data.
+
+## Pending decisions (next Grill frontier)
+
+### Q7 — Agent Release publishing trigger
+
+- **A (recommended):** Retain ordinary CI on PR/main, and deliberately create release candidates; only an explicitly manually dispatched release workflow publishes a new stable Agent Release. A normal merge to main cannot publish Agent or Worker.
+- **B:** Allow merges that change a special release metadata file to automatically publish the next stable Agent Release. Simpler for a release author, but creates a production distribution side effect from a normal merge.
+
+### Q9 — Existing paired device impact
+
+- **A (recommended):** No legacy distribution compatibility, but preserve existing device identity, owner grants, STOP state and receipts where feasible via one-time reviewed local migration/reinstall. If a particular device cannot safely preserve state, report it as an exception rather than silently re-pairing or deleting receipts.
+- **B:** Treat existing native installations as disposable; allow one-time uninstall/reinstall and fresh pairing, while explicitly accepting loss of prior identity continuity and possible local receipt history, subject to a later specific authorization for each destructive device action.
+
+### Q10 — Automatic upgrades
+
+- **A (recommended):** `latest` is selected only on a user/Owner-initiated install or authorized upgrade. No unattended latest polling or automatic restart.
+- **B:** Automatically upgrade existing paired devices when a new stable Release becomes latest, requiring additional update/rollback controls.
+
+Q7 and Q9 remain materially consequential decisions. Q10 is included to ensure 'use latest' is not silently interpreted as permission for unattended device mutations. Once these are decided, finalize source/package acceptance, first release proof, cutover rollback and relevant ADR.
+
+## Validation expectations for a future implementation
+
+- A non-production checkout builds/types/tests both Worker and nested Agent under one workspace and one lockfile, and validates five unpublished native assets.
+- Agent release uses its own explicit publishing authority independent of Worker deployment. Publish a **stable** Release so GitHub latest succeeds, then independently read back the five assets and verify each downloaded SHA-256. Capture Release tag and run in the acceptance record for observability, **not** installer pinning.
+- The Worker installer uses only `mcp-workers` latest stable metadata and never fetches `remote-control-agent` legacy GitHub URLs; each OS gets a verified correct artifact. No additional service or permanent release registry.
+- Validate one authorized real device upgrade/first install, checking signed WSS, intentional STOP behavior, identity/receipt outcomes consistent with Q9, no blind replay and failure recovery. Distinguish CI pass, Release published, Worker deployed, and physical device pass.
+- Current physical devices are **not** affected by this design-only document.
+
+## Design-only constraint
+
+The `docs/rca-monorepo-grill` branch contains only a design record. No implementation commits, CI trigger changes, PR merge, publication, old-repository deletion/archive, production configuration edits or device operations may occur under this round.
