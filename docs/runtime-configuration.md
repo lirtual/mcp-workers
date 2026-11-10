@@ -68,7 +68,7 @@ The Browser Worker uses https://browser.lirtual.dpdns.org as its production cust
 
 The Browser GitHub Environment was verified to have no MCP_ACCESS_TOKEN Secret override. The separately authorized [Release Worker #42137310441](https://github.com/lirtual/mcp-workers/actions/runs/42137310441) on 2026-11-06 deployed main 6c0fcd6c9fe16ac9d2a944e75be19bb37ee902fc, restaging the unchanged Repository MCP_ACCESS_TOKEN and approved Owner Variables. Independent Cloudflare readback confirmed active version a80f88bd-4f29-4660-bdf9-2df1a55f0619 (100% traffic), one MCP_ACCESS_TOKEN secret_text binding, and the derived Browser Access Variable bindings. The existing Browser Portal upstream was synchronized once without creating a new server or changing its 11-member Portal mapping; it is ready with 15 tools and reviewed UUIDv7/operation-status schemas (last successful sync 2026-11-06 00:31:39 UTC). Independent anonymous direct tools/list was denied HTTP 401. The older [Workflow Acceptance #41964023278](https://github.com/lirtual/mcp-workers/actions/runs/41964023278) had established Repository Token authenticated direct tools/list compatibility with the previously deployed version; a later [Workflow Acceptance #42174762888](https://github.com/lirtual/mcp-workers/actions/runs/42174762888) authenticated direct `tools/list` against the new Browser production version and verified its 15-tool/schema contract. A real browser operation and client E2E were **not** performed. No Secret bytes were read or compared. Future releases must recheck provenance and obtain explicit authorization for both Worker publication and Portal sync.
 
-## Spec #804: production release and pending acceptance
+## Spec #804: production release and Owner-approved scoped acceptance
 
 The separately authorized [Release Worker #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
 published Browser Version `bd556e57-2c60-4fca-840c-e3091339abba` to
@@ -77,12 +77,16 @@ original Durable Object binding, MCP bearer requirement and existing Portal
 server (15 tools, ready) passed independent readback. The prior
 [failed Run #42750552088](https://github.com/lirtual/mcp-workers/actions/runs/42750552088)
 stopped before deployment; its missing account-ID staging input was fixed in
-PR #815 and subsequent main CI passed. Live physical Owner SSO/OTP and
-same-Profile one-use activation remain **Not performed** because the
-observed Browser endpoints were offline. The two legacy GitHub sources were separately authorized for deletion
-and independently verified absent (HTTP 404) on 2026-11-10; the necessary
-runtime identity bindings remain unchanged. Historical Database/Weixin Access apps
-were only read-only classified, not retired.
+PR #815 and subsequent main CI passed. Subsequent real SSO login,
+Owner-confirmed OFF→ON and an online/control-ready Edge Endpoint are positive
+production observations, **not** a fresh instrumented one-use proof-consumption
+or replay-denial test. The Owner expressly accepted the #531 inherited native
+E2E plus current regression evidence and marked fresh post-#804 physical
+proof/replay/cross-Profile retests **Waived, not Pass** ([Owner-approved final acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590));
+Spec #804 is closed/completed. The two legacy GitHub sources were separately
+authorized for deletion and independently verified absent (HTTP 404) on
+2026-11-10; required runtime identity bindings remain unchanged. Weixin Access
+was separately deleted, while Database Access remains in place.
 
 ## Spec #733: separately authorized configuration cutover
 
@@ -158,19 +162,19 @@ published these bindings, and live Cloudflare/Portal readbacks passed.
 Both retired GitHub sources were separately deleted and independently
 verified absent (HTTP 404); Repository `OWNER_EMAIL` and all required runtime
 identity bindings remain. No new Access application, policy, proxy or
-credential was added. Physical Owner same-Profile one-use activation remains
-**Not performed**, despite a subsequently online Edge Endpoint.
+credential was added. Fresh post-#804 one-use proof consumption and replay/
+cross-Profile physical tests were not performed; they are **Owner-approved
+Waived, not Pass** ([Owner-approved final acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590)).
 
-A read-only Cloudflare Access application inventory on 2026-11-10 showed
-17 complete account applications (page 1/1). The Browser Activation app
+After separate Owner authorization, `Weixin MCP Setup` Access application
+(`6b025bd1-8c89-453e-8a84-b62462d81894`) was deleted. Exact application
+GET returned 404, and complete Access inventory changed from 17 to **16**
+applications (page 1/1); sampled public `/`, `/setup` and `/mcp` returned 403
+([independent Weixin retirement receipt](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)). The wildcard DNS remains; sampled 403 cannot prove that all
+possible future fallback routes are safe. The Browser Activation app
 `77945f97-e1ea-4b2b-b89a-ec71c0472afa` remains required and unchanged.
-Two **independent Stage B** historical candidates exist:
 `Database MCP Owner Setup` (`9f91a9ea-d498-49e5-9d9d-2289d1c08f65`)
-guards the broader `database.lirtual.dpdns.org` domain rather than a
-`/setup` route alone; **retain** until exposure/routing and real clients are
-independently demonstrated safe. `Weixin MCP Setup`
-(`6b025bd1-8c89-453e-8a84-b62462d81894`) covers
-`weixin.lirtual.dpdns.org`; remaining traffic, DNS and consumers have not
-been proven absent, so classification is **Unknown, retain**. No Access deletion
-or policy change was authorized or performed. This investigation does not block
-Browser Stage A code delivery.
+continues protecting the entire `database.lirtual.dpdns.org` hostname;
+**retain** rather than equating `/setup` retirement with removal of its
+hostname-wide Access protection. These Stage B decisions are separate from
+Browser Stage A delivery.

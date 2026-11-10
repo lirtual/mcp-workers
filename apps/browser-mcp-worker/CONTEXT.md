@@ -52,7 +52,7 @@ Released v0.2.4 / WSS 3 adds bounded, sensitive-filtered native choice and ARIA 
 
 The Owner-approved [incremental design](docs/idle-pairing-and-options-design.md) and [ADR 0003](docs/adr/0003-remembered-pairing-idle-expiry.md) propose **ON-online holds authorization without a countdown; explicit OFF or long offline starts a server-enforced idle countdown (14 days by default, configurable by reviewed GitHub Actions Variable `BROWSER_REMEMBERED_IDLE_DAYS`), and expiry revokes the old Endpoint grant**. This replaces only the indefinite remembered-pairing lifetime and improves local Profile naming, discovery metadata, and Options presentation. Temporary grants, Access same-Profile proof, Stop/Revoke priority and Unknown receipts stay intact. **v0.2.6 implementation candidate:** lifecycle, variable and Profile UI have source/regression coverage; this is not yet a production Worker release or native Chrome/Edge acceptance. Current production remains v0.2.5.
 
-## Spec #804 Browser identity source (production released; physical Owner E2E pending)
+## Spec #804 Browser identity source (production released; Owner-accepted scoped Waiver)
 
 The protected Browser Release Worker obtains Zero Trust Organization `auth_domain`
 and the fixed reviewed Browser Activation Access App's `aud` through read-only
@@ -71,7 +71,11 @@ independent Cloudflare/Portal readback. Obsolete Repository
 `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE`
 **GitHub sources** were separately authorized for deletion and each returned
 HTTP 404 on readback; the runtime audience binding remains mandatory.
-A later Edge Endpoint was online and control-ready, but physical Owner
-SSO/OTP and same-Profile one-use activation **remain Not performed**, not Pass.
-Historical #733/#531/Owner Review evidence above remains intact;
-Database/Weixin Access applications were not retired under #804.
+An actual post-release Cloudflare SSO login, Owner-confirmed OFF→ON activation
+and online/control-ready Edge Endpoint were observed; these do **not** prove a
+fresh instrumented same-Profile one-use proof consumption or replay rejection.
+The Owner explicitly marked fresh post-#804 physical proof/replay/cross-Profile
+retests **Waived, not Pass**, reusing prior #531 physical E2E and current tests
+([Spec #804 final Owner acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590)). Historical #733/#531/Owner Review evidence remains intact.
+The historical Weixin Access application was separately retired and read back
+absent ([separately authorized Weixin retirement](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)); Database Access remains in place.

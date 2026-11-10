@@ -25,9 +25,16 @@ binding readback. The old Repository `ACCESS_TEAM_DOMAIN` and Browser Environmen
 `BROWSER_ACTIVATION_AUDIENCE` sources were subsequently deleted under
 separate authorization on 2026-11-10, with independent HTTP 404 readbacks;
 current release code never consumes those old sources.
-Physical Owner same-Profile activation has not yet been retested.
-No new Access application, global policy, gateway or authentication method
-is introduced. SSH and MCP/Portal keep separate authentication boundaries.
+Post-release SSO login, Owner-confirmed OFF→ON and live Edge control were
+observed but did not independently attest a new one-use proof consumption or
+replay denial. The Owner explicitly accepted #531 inherited native E2E and
+current regression evidence; fresh post-#804 physical proof/replay/cross-Profile
+retests are **Waived, not Pass**, and #804 is closed/completed ([Owner-approved final acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590)).
+The historical Weixin Access app was retired by separate Owner authorization
+with 404 and 16/16 inventory readback ([independent Weixin retirement receipt](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)); Database Access remains
+in place because it protects the entire hostname. No new Access application,
+global policy, gateway or authentication method was introduced; SSH and
+MCP/Portal retain separate authentication boundaries.
 
 ## Migration safeguards (historical)
 
