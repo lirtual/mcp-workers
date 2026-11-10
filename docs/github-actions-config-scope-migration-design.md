@@ -2,7 +2,7 @@
 
 Spec: [#849](https://github.com/lirtual/mcp-workers/issues/849) — ready-for-agent，Issue 发布不代表实施或生产授权。
 
-Status: **6/6 Secrets + 2/2 Variables 原值迁移及独立字节验证 Pass；正式消费者切换 PR #850 已合并至 main `1b8fdb6`，现为 Repository 6 Variables / 10 Secrets / 10 Environments；10 个旧 Environment 尚未获删除授权，未发布生产 Worker**（2026-11-11）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A，并在设计 Spec 后分别授权代码实施、临时迁移入口合并、六个 Secret 原值迁移、两个 Variable 原值迁移及 PR #850 消费者切换。早期只读预检与阶段性待办保留为历史记录；最新可执行状态以本页末尾实测回执为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
+Status: **Completed / GitHub Settings 与消费者代码验收 Pass（2026-11-11）**。6/6 Environment Secrets 与 2/2 Variables 已在不改变原字节的前提下迁移到 Repository；[PR #850](https://github.com/lirtual/mcp-workers/pull/850) 已合并，现行工作流的 Job Environment 引用数为 0；Owner 单独授权的 10 个旧 Environments 均已逐个删除并独立回读。最终 GitHub 配置为 **Repository Variables 6、Secrets 10、Environments 0**；本 Spec 未执行任何生产 Worker/Agent 发布。Q1=B、Q2=A、Q3=A、Q4=A、Q5=A 的非等价安全取舍仍有效。早期审计、迁移和阶段性未完成描述均保留为当时历史记录，最新事实以本页末尾「最终删除验收」为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
 
 ## 已确定决策
 
@@ -148,3 +148,13 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 - **历史分支增量审查**：上述 500 个分支 tip 的集中扫描后，合并前新增第 **501** 个远端分支 `implement/spec853-oauth-t0-20261111`，另以当前 tip 独立核对其 6 个 Workflow / 13 个旧 Environment Job：全部 `workflow_dispatch`，且 Job `if` 要求 `refs/heads/main`，无新可达旧入口。扫描只证明**当时**的远端分支快照，最终删 Environment 前须重新回读。
 - **已接受且实际生效的风险**：Repository Secrets 的可访问工作流范围比各旧 Environment 更广；移除 Agent Release 的 GitHub Environment 人工审批绑定，`main` 仍无平台 Branch Protection/Ruleset。这些不是等价安全保护，不应声称风险被消除。所有生产部署与发布仍需要 Owner 单独授权。
 - **明确未完成（Spec 保持 Open）**：最终删除 10 个 GitHub Environments 必须另行授权，删除前复核现行 main、Owner、CI、在途/待审批 Runs、旧分支触发可达性与恢复条件，执行后逐个回读至 **6 Variables / 10 Secrets / 0 Environments**。本轮没有生产业务 E2E；共享配置来源已由旧/新独立原值验真加真实 main 工作流/CI 静态及集成门禁验证，不能把未执行的生产 E2E 记为 Pass。
+
+## 2026-11-11 10 个 GitHub Environments 最终删除与独立验收
+
+**结论：Spec #849 GitHub 配置集中化目标全部达到，最终 6 Repository Variables / 10 Repository Secrets / 0 GitHub Environments，Pass。**
+
+- **授权与准入**：Owner 在代码与原值迁移验收后，独立明确授权删除全部 10 个 Environments。删除前再次核实 `lirtual/mcp-workers`、GitHub 用户 `lirtual` 的 Admin 权限、`main=8e5eb1303a93a39f5354aef7d6366fdb26d62652` 及 [main CI #42872606046](https://github.com/lirtual/mcp-workers/actions/runs/42872606046) Success；六份现行 Workflow YAML 全部 **0** 个 Job Environment，Repo 6 Variables + 10 Secrets 的名称集合精确符合 Spec。历史分支集中和增量风险检查无可达旧 Environment Job；删除前 `queued`、`in_progress`、`waiting`、`pending` 均为 0。旧配置中只有已迁移的六项 Secret 和两项 Variable，另外五个 Environment 无配置值。
+- **删除范围与顺序（10/10 Pass）**：`browser-mcp-worker` → `database-mcp-worker` → `remote-control-mcp-worker` → `weixin-mcp-worker` → `remote-control-agent-release` → `github-actions-mcp-worker` → `ima-mcp-worker` → `raindrop-mcp-worker` → `ssh-mcp-worker` → `workflow-mcp-worker`。每个删除前复核精确 Environment ID 和 main SHA，经 GitHub 官方 REST DELETE 后独立执行按名称 GET 缺失校验及完整剩余 Environment 列表比对；逐项输出 `DELETE_PASS`，剩余数量依次由 9 递减至 0。唯一执行的串行操作 `spec849-10-env-delete-authorized-serial-20261111-g` 退出码 **0**，未遇 Unknown 或拒绝。
+- **删除后独立进程回读**：GitHub REST Environments 清单 `total_count=0`、原 10 个 Environment 的单独 GET 均不存在；Repository Variables 清单 **6**、Secrets 清单 **10**，完整名称集合与删除前一致。固定 main CI 已成功；没有发起新的 Release Worker、Agent Release、Workflow Acceptance 或 Worker 生产部署。旧 Environment 内的 Secret/Variable 作用域副本和保护规则已随 Environment 删除，**不意味着 Repository 级原值遭删除**；原值一致性仍由此前 6/6 Secret 与 2/2 Variable 独立验收支持。
+- **接受的安全变化实际生效**：`remote-control-agent-release` 原 required reviewer + branch policy、`raindrop-mcp-worker` 原 branch policy 均已删除；无替代审批层、无 Branch Protection/Ruleset，Repository Secret 的访问边界较旧 Environment 更广。这是 Spec 已接受的非等价权衡，发布操作仍受现行手动 Owner/main 和校验条件约束，但**不等同于平台原审批保护**。
+- **分类验收**：代码与 main CI **Pass**；Variables/Secrets 原值迁移、无同名遮蔽独立核验 **Pass**；当前 Workflow 零 Environment 与历史分支风险快照审计 **Pass**；10 个 Environment 精确删除与最终配置清单 **Pass**。生产业务 E2E / Worker 重新发布 **Not run（本 Spec 不涉及生产运行时变更）**；不冒充已执行生产 E2E。历史审计文档中的旧配置数字是当时的真实快照，不能解读为当前残留。
