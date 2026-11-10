@@ -127,3 +127,15 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 - 初次本地调用仅因 Repository 根路径末尾斜杠导致 GitHub GET 返回失败，错误发生在任何写入前；修正请求路径后一次完整执行成功，**两项均仅新建一次，没有重试写入或覆盖同名变量**。
 - 独立终态读回：**Repository Variables=6，Secrets=10，Environments=10**，名称集合精确符合 Spec；全部旧 Environment 配置完整保留。一次性本地迁移脚本已移除；未执行 Agent/Worker 生产发布或修改 Cloudflare/Portal/D1。
 - **仍待后续独立推进**：[PR #850](https://github.com/lirtual/mcp-workers/pull/850) 的消费者切换与 CI/合并、496 个历史非 `main` 分支的实际触发可达性检查（执行时重读最新分支数）、另行授权删除 10 个 Environments。**目前不能把整个 Spec #849 标记为 Completed。**
+
+## 2026-11-11 历史分支 Environment 再建风险可达性审计（合并前）
+
+**结论：按本次远端分支当前 tip 和实际工作流入口审查，未发现能够通过现有自动事件或在非 main 手动派发而执行旧 Environment Job 的可达路径；无需批量删除历史分支，也无需引入新锁、Ruleset 或后台清理服务。** 本结论仅是本次快照，不包含未来有人修改/强推旧分支、或有写权限者修改工作流后产生的新风险；最终删除 Environments 之前仍须复核实时状态。
+
+- 固定审查仓库：`lirtual/mcp-workers`；审查时 `main=9d7094a1fe879983ffd81c5f742955b415269436`，PR #850 的待合并源码 `43cd2cd19a48eff7838e1dde5f44162ff2ffbff0`。从 GitHub 远端逐条枚举并获取所有 **500 个分支 tip（main 1、非 main 499）**，对 GitHub Actions 工作流树按对象 ID 去重，共 **169 个不同工作流目录快照**，逐一解析 YAML、`on` 事件、Job `environment` 和 Job `if`。解析失败 **0**。审查的是**现存分支的当前 tip**，不是每条分支所有历史提交。
+- 分类（按分支、互斥）：**485** 个分支上的 Environment Job 仅对应手动 `workflow_dispatch`（或复用分类，本次无 `workflow_call` Environment Job）；**12** 个分支快照同时包含自动事件声明；**3** 个分支 tip 没有任何 Environment Job。
+- 对 12 个候选自动事件逐项核对：**10** 个旧 `ci.yml` 的 `push` 限定 `main`，且唯一引用 Environment 的 `deploy` Job 同时要求 `github.event_name == 'workflow_dispatch'` 和 `github.ref == 'refs/heads/main'`；**1** 个 `weixin-provider-pin-sync.yml` 有 `repository_dispatch`，Job 要求 main ref，该工作流不在现行默认分支；**1** 个旧 `openlist-acceptance.yml` 有 `schedule`，其两个 Environment Job 仍要求手动派发与 main ref，且该文件不在现行默认分支。自动路径实际可达 Environment Job：**0**。
+- 其余旧分支的手动 Release/Acceptance/Agent Release Job 都存在 `github.ref == 'refs/heads/main'` 约束，因此选非 main ref 不会进入 Environment Job。**仅有 2 个分支 tip** 尚包含临时 `spec849-sealed-secret.yml`：其旧值封装 Job 虽未独立重复 main 条件，但必须依赖前置 `preflight`（Owner + main）的成功，且临时工作流已在 [PR #852](https://github.com/lirtual/mcp-workers/pull/852) 从默认分支和登记中退役，没有仍可达的已授权入口。
+- 与 GitHub 官方事件语义一致：`workflow_dispatch` 可针对分支选择，但其工作流须存在默认分支；`repository_dispatch` 与 `schedule` 只在默认分支文件上触发。参考 [GitHub Events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)。仅有旧分支包含 `environment` 字符串不足以认定可自动重建 Environment。
+- PR #850 待合并树的现行 **6 个工作流均不再声明 job-level `environment`**；`release.yml`、`acceptance.yml`、`agent-release.yml`、`spec775-business-acceptance.yml` 保持手动触发，`ci.yml` 的 `push` 仅针对 main。已接受的例外仍是移除 Agent Release 平台人工审批、扩大 Repository Secret 可用范围及 main 无 Branch Protection/Ruleset（见 ADR-0003）；**不应声称安全等级不变**。
+- 合并 PR #850 后先回读真实 main 工作流、CI 与 Repository 6 Variables / 10 Secrets / 10 Environments；只有在**另外授权删除**且再次核对实时工作流、分支和在途/审批 Runs 后，才能串行删除 10 个 Environments 并回读目标 6/10/0。现阶段删除 **Not run**；生产 Worker E2E **Not run**。
