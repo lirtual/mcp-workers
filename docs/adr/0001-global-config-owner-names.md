@@ -6,7 +6,7 @@ Status: Accepted and implemented under Spec #733 (closed/completed, 2026-11-06).
 
 `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` are canonical GitHub Repository Variables for Browser and Database only, with no same-named Environment overrides. Service-specific keys use `DATABASE_`, `SSH_`, and `WORKFLOW_` prefixes. `MCP_ACCESS_TOKEN`, `ACTIONS_GITHUB_DISPATCH_TOKENS` and existing GitHub dispatch tokens stay unchanged. Database's subsequent Spec #760 supersedes its former D1/encryption configuration. Browser derives issuer/owner from the shared variables and activation origin from the reviewed Wrangler Custom Domain. Spec #733 did not rename Cloudflare D1, DO, Service Binding or Portal resource identities; Database's subsequent architectural change is governed by Spec #760.
 
-## Scoped subsequent decision: Spec #804 (code path; production pending)
+## Scoped subsequent decision: Spec #804 (production deployed; GitHub source cleanup pending)
 
 Browser release code now obtains the Zero Trust Organization `auth_domain` and
 the fixed reviewed Browser Access App `aud` read-only via the selected
@@ -19,9 +19,11 @@ The required Browser runtime bindings remain, including their original names.
 
 This **narrowly supersedes** the opening #733 identity-source decision for
 Browser's executable release code only. It does not alter the historical
-#733 migration evidence or Database's independent #760 contract. The current
-production version and old GitHub source entries remain untouched until
-separately authorized production switching and source deletion are verified.
+#733 migration evidence or Database's independent #760 contract. The authorized [production Release #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
+completed on 2026-11-10, with independent 100% active-version and identity
+binding readback. The old GitHub source entries remain present pending their
+separately authorized deletion; they are not used by current release code.
+Physical Owner same-Profile activation has not yet been retested.
 No new Access application, global policy, gateway or authentication method
 is introduced. SSH and MCP/Portal keep separate authentication boundaries.
 

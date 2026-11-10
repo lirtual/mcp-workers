@@ -60,14 +60,19 @@ Variable, while `BROWSER_ACCESS_ISSUER`,
 `BROWSER_ACTIVATION_AUDIENCE`, `BROWSER_OWNER_EMAIL` and
 `BROWSER_ACTIVATION_ORIGIN` remain required runtime bindings.
 
-**Delivery state:** repository code/tests do not switch the active Worker.
-The first real protected Runner permission test, actual Browser release,
-same-Profile Owner activation and client compatibility acceptance are
-pending separate production authorization. Only after independent success
-and proof of no current executable consumer may the old GitHub
-`ACCESS_TEAM_DOMAIN` and Browser Environment
-`BROWSER_ACTIVATION_AUDIENCE` be deleted under *separate* authorization;
-do not rotate Secrets, repurpose Access apps or delete old source values early.
+**Current delivery state (2026-11-10):** the protected Runner Organization read
+permission proved Pass in [read-only Run #42748869402](https://github.com/lirtual/mcp-workers/actions/runs/42748869402).
+After a variable-stage wiring fix in PR #815, the separately authorized
+[Release Worker #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
+successfully published Browser Version `bd556e57-2c60-4fca-840c-e3091339abba`
+to 100%; its identity bindings and existing Portal were independently
+read back. Live physical Owner SSO/OTP and same-Profile activation remain
+**Not performed** while browser Profiles are offline, not silently Pass.
+The old GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment
+`BROWSER_ACTIVATION_AUDIENCE` still exist; current executable release
+workflows do not consume them. Their deletion requires **separate explicit
+authorization** and negative-inventory readback. Keep the active runtime
+bindings and Secrets; do not repurpose Access apps.
 
 ### Spec #733 first migration and post-cleanup
 
