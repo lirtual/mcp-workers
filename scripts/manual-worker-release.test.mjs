@@ -1237,6 +1237,41 @@ test('Browser release retains identity, DO, Assets and Bearer under canonical ow
   assert.throws(()=>readConfiguration(worker,JSON.stringify({...conf,migrations:[]})),/persistence drift/);
 });
 
+test('Browser QQ owner cutover permits only exact reviewed old production baseline', () => {
+  const worker='browser-mcp-worker';
+  const conf=readConfiguration(worker, readFileSync(new URL('../apps/browser-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
+  const audience='b'.repeat(64);
+  const browserIdentity={accountId:'c'.repeat(32),appId:'77945f97-e1ea-4b2b-b89a-ec71c0472afa',
+    teamDomain:'lirtualzero.cloudflareaccess.com',ownerEmail:'lirtual@qq.com',
+    audience,origin:'https://browser.lirtual.dpdns.org'};
+  const bindings=[
+    {name:'MCP_ACCESS_TOKEN',type:'secret_text'},
+    {name:'BROWSER_OWNER',type:'durable_object_namespace',class_name:'BrowserOwner',namespace_id:'browser-original'},
+    {name:'ASSETS',type:'assets'},
+    ...Object.entries({
+      BROWSER_ACCESS_ISSUER:'https://lirtualzero.cloudflareaccess.com',
+      BROWSER_OWNER_EMAIL:'lirtual@outlook.com',
+      BROWSER_ACTIVATION_ORIGIN:'https://browser.lirtual.dpdns.org',
+      BROWSER_ACTIVATION_AUDIENCE:audience,
+    }).map(([name,text])=>({name,type:'plain_text',text})),
+  ];
+  const settings={bindings,observability:{enabled:true,logs:{invocation_logs:false,head_sampling_rate:0}}};
+  const secret=[{name:'MCP_ACCESS_TOKEN'}];
+  const options={mode:'preflight',sourceConfig:conf,browserNamespaceId:'browser-original',
+    sharedAccessTeamDomain:'lirtualzero.cloudflareaccess.com',sharedOwnerEmail:'lirtual@qq.com',
+    browserIdentity,expectedBrowserActivationAudience:audience,
+    activeBrowserVersionId:'bd556e57-2c60-4fca-840c-e3091339abba',
+    activeBrowserDeploymentId:'0ad5ceba-002a-4975-8e04-ca3e2c4a47c9'};
+  const verify=(overrides={},changedSettings=settings)=>verifyBindings(worker,changedSettings,secret,{...options,...overrides});
+  assert.equal(verify(),true);
+  assert.throws(()=>verify({activeBrowserVersionId:'different'}),/production identity/);
+  assert.throws(()=>verify({activeBrowserDeploymentId:'different'}),/production identity/);
+  assert.throws(()=>verify({mode:'readback'}),/Browser live bindings differ/);
+  assert.throws(()=>verify({browserIdentity:{...browserIdentity,ownerEmail:'someone@example.com'},sharedOwnerEmail:'someone@example.com'}),/production identity/);
+  assert.throws(()=>verify({}, {...settings,bindings:bindings.map(b=>b.name==='BROWSER_OWNER_EMAIL'?{...b,text:'another@example.com'}:b)}),/production identity/);
+  assert.throws(()=>verify({}, {...settings,bindings:bindings.map(b=>b.name==='BROWSER_ACTIVATION_AUDIENCE'?{...b,text:'c'.repeat(64)}:b)}),/production identity/);
+});
+
 test('production release external actions use immutable commit SHAs', () => {
   const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const references = [...workflow.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)]

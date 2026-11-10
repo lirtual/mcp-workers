@@ -411,7 +411,13 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       // newly discovered API response. No implicit trust-boundary migration.
       invariant(names.every(name=>typeof env[name]==="string") &&
         env.BROWSER_ACCESS_ISSUER==="https://"+identity.teamDomain &&
-        env.BROWSER_OWNER_EMAIL===identity.ownerEmail &&
+        (env.BROWSER_OWNER_EMAIL===identity.ownerEmail ||
+          // Single reviewed Outlook -> QQ cutover, pinned to the exact
+          // independently inspected 100% active production baseline.
+          (identity.ownerEmail==="lirtual@qq.com" &&
+            env.BROWSER_OWNER_EMAIL==="lirtual@outlook.com" &&
+            options.activeBrowserVersionId==="bd556e57-2c60-4fca-840c-e3091339abba" &&
+            options.activeBrowserDeploymentId==="0ad5ceba-002a-4975-8e04-ca3e2c4a47c9")) &&
         env.BROWSER_ACTIVATION_ORIGIN===identity.origin &&
         env.BROWSER_ACTIVATION_AUDIENCE===identity.audience,
         "Browser active production identity differs from discovered candidate");
@@ -1046,8 +1052,13 @@ async function current(account, worker, token, options) {
   // After a successful release, validation must work even if Preview is gone.
   const previousNamespaceId = options.mode === "preflight"
     ? existingOwner?.namespace_id : options.previousNamespaceId;
+  const browserActive=worker==="browser-mcp-worker" ? activeVersion(deployments) : null;
   verifyBindings(worker, settings, secrets, {
     ...options, previousNamespaceId,
+    ...(browserActive ? {
+      activeBrowserVersionId:browserActive.version_id,
+      activeBrowserDeploymentId:browserActive.deployment_id,
+    } : {}),
   });
   let workflowExecutorBaseline;
   if(worker==="workflow-mcp-worker") {
