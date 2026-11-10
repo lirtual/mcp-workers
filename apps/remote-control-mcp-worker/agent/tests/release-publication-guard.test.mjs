@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { renderAgentReleaseManifest, RELEASE_MANIFEST_NAME } from '../scripts/agent-release-manifest.mjs';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -55,6 +57,7 @@ function candidateFor([target, artifact, extension, digestByte]) {
     name: `remote-control-agent-${TAG}-${target}${extension}`,
     sha256,
     observedSha256: sha256,
+    size: 2048,
     bundle: bundleFor(target),
   };
 }
@@ -86,21 +89,32 @@ function reviewed() {
 
 function published() {
   const input = reviewed();
+  const expected = input.candidates.map(({ name, sha256, size }) => ({ name, sha256, size }));
+  const manifest = renderAgentReleaseManifest(TAG, expected);
+  const digest = createHash('sha256').update(manifest).digest('hex');
   return {
     releaseTag: TAG,
     sourceSha: SOURCE,
-    expectedAssets: input.candidates.map(({ name, sha256 }) => ({ name, sha256 })),
-    downloaded: input.candidates.map(({ name, sha256 }) => ({ name, sha256 })),
+    expectedAssets: expected,
+    downloaded: [
+      ...expected.map((a) => ({ ...a })),
+      { name: RELEASE_MANIFEST_NAME, sha256: digest, size: Buffer.byteLength(manifest) },
+    ],
+    manifest,
+    manifestSha256: digest,
     release: {
-      tag_name: TAG,
-      draft: false,
-      prerelease: false,
-      immutable: true,
-      assets: input.candidates.map(({ name, sha256 }) => ({
-        name,
-        state: 'uploaded',
-        digest: `sha256:${sha256}`,
-      })),
+      tag_name: TAG, draft: false, prerelease: false, immutable: true,
+      assets: [
+        ...expected.map(({ name, sha256, size }) => ({
+          name, size, state: 'uploaded', digest: 'sha256:' + sha256,
+        })),
+        {
+          name: RELEASE_MANIFEST_NAME, size: Buffer.byteLength(manifest),
+          state: 'uploaded', digest: 'sha256:' + digest,
+          browser_download_url:
+            'https://github.com/lirtual/mcp-workers/releases/download/' + TAG + '/' + RELEASE_MANIFEST_NAME,
+        },
+      ],
     },
     latest: { tag_name: TAG, draft: false, prerelease: false, immutable: true },
     tag: { object: { type: 'commit', sha: SOURCE } },
@@ -199,6 +213,25 @@ test('readback stops unless the release is a complete immutable stable Latest', 
   assert.throws(() => acceptAgentReleaseReadback(badDownload), /damaged native candidate/);
 });
 
+test('immutable manifest cannot be missing, modified, mismatched or duplicated', () => {
+  const valid = published();
+  const bad = published(); bad.manifest = bad.manifest.replace('2048','2049');
+  assert.throws(() => acceptAgentReleaseReadback(bad), /invalid immutable Release manifest/);
+  const badDigest = published(); badDigest.manifestSha256 = '0'.repeat(64);
+  assert.throws(() => acceptAgentReleaseReadback(badDigest), /invalid immutable Release manifest/);
+  const missing = published();
+  missing.release.assets = missing.release.assets.slice(0, 5);
+  assert.throws(() => acceptAgentReleaseReadback(missing), /partial native Release/);
+  const duplicate = published();
+  duplicate.release.assets[5] = { ...duplicate.release.assets[1] };
+  assert.throws(() => acceptAgentReleaseReadback(duplicate), /invalid immutable Release manifest/);
+  const change = published();
+  change.release.assets[5] = { ...change.release.assets[5], size: 42 };
+  assert.throws(() => acceptAgentReleaseReadback(change), /invalid immutable Release manifest/);
+  assert.match(valid.manifest, /^rca-release-v1 v0[.]2[.]0\n/);
+  assert.equal(valid.manifest.trim().split('\n').length, 6);
+});
+
 test('the guard command refuses a push fixture and does not require GitHub', () => {
   const guard = fileURLToPath(new URL('../scripts/agent-release-guard.mjs', import.meta.url));
   const result = spawnSync(process.execPath, [guard, 'preflight'], {
@@ -224,6 +257,11 @@ test('only the manual Agent workflow can publish, and it does not deploy the Wor
   assert.match(workflow, /Agent publication requires the manual main workflow/);
   assert.match(workflow, /node apps\/remote-control-mcp-worker\/agent\/scripts\/agent-release-guard\.mjs preflight/);
   assert.match(workflow, /node apps\/remote-control-mcp-worker\/agent\/scripts\/agent-release-guard\.mjs readback/);
+  assert.match(workflow, /agent-release-manifest[.]mjs generate/);
+  assert.match(workflow, /--rawfile manifest/);
+  assert.match(workflow, /manifestSha256/);
+  assert.equal((workflow.match(/"\$work\/publish\/remote-control-agent-manifest[.]txt"/g) ?? []).length >= 3, true);
+
   assert.match(workflow, /repos\/\$GH_REPO\/immutable-releases/);
   const preflight = workflow.slice(0, workflow.indexOf('Publish the draft'));
   const probeAt = preflight.indexOf('agent-release-guard.mjs probe');

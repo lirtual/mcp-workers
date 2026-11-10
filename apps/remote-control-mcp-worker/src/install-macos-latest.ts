@@ -1,8 +1,5 @@
 import { validInstallerOrigin } from "./install-bootstrap.ts";
-import {
-  type LatestReleaseDecision,
-  type SelectedAgentRelease,
-} from "./github-latest-agent-release.ts";
+import { renderClientReleaseManifestShell } from "./release-manifest-shell.ts";
 
 const ARCHIVE_AWK = String.raw`/(^\/|(^|\/)\.\.?($|\/)|[^A-Za-z0-9._\/-])/ {bad=1}
   !($0 ~ /^bin\/?$/ || $0=="bin/node" ||
@@ -26,16 +23,9 @@ function shellQuote(value: string): string {
   return `'${value}'`;
 }
 
-/** Worker-served macOS bootstrap for one already selected Release snapshot. */
-export function renderLatestMacInstallShell(origin: string, release: SelectedAgentRelease): string {
+/** Static bootstrap; the owner Mac reads one immutable GitHub manifest. */
+export function renderLatestMacInstallShell(origin: string): string {
   if (!validInstallerOrigin(origin)) throw new Error("Unapproved macOS install origin");
-  const arm = release.assets["darwin-arm64"];
-  const intel = release.assets["darwin-x64"];
-  if (arm.target !== "darwin-arm64" || intel.target !== "darwin-x64" ||
-      arm.name !== `remote-control-agent-${release.tag}-darwin-arm64.tar.gz` ||
-      intel.name !== `remote-control-agent-${release.tag}-darwin-x64.tar.gz`) {
-    throw new Error("macOS assets are not one Release snapshot");
-  }
   const endpoint = origin + "/";
   return [
     "#!/bin/sh",
@@ -55,24 +45,16 @@ export function renderLatestMacInstallShell(origin: string, release: SelectedAge
     "major=$(sw_vers -productVersion | awk -F. '{print $1}')",
     "case \"$major\" in ''|*[!0-9]*) exit 1 ;; esac",
     "[ \"$major\" -ge 15 ] || { echo 'Requires macOS 15 or newer' >&2; exit 1; }",
-    "tag=" + shellQuote(release.tag),
-    "arm_url=" + shellQuote(arm.downloadUrl),
-    "arm_sha=" + shellQuote(arm.sha256),
-    "arm_size=" + String(arm.size),
-    "x64_url=" + shellQuote(intel.downloadUrl),
-    "x64_sha=" + shellQuote(intel.sha256),
-    "x64_size=" + String(intel.size),
     "case \"$(uname -m)\" in",
-    "  arm64) target=darwin-arm64; download=$arm_url; expected=$arm_sha; expected_size=$arm_size ;;",
-    "  x86_64) target=darwin-x64; download=$x64_url; expected=$x64_sha; expected_size=$x64_size; [ \"$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || :)\" != 1 ] || { echo 'Rosetta not supported' >&2; exit 1; } ;;",
+    "  arm64) target=darwin-arm64 ;;",
+    "  x86_64) target=darwin-x64; [ \"$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || :)\" != 1 ] || { echo 'Rosetta not supported' >&2; exit 1; } ;;",
     "  *) echo 'Unsupported macOS architecture' >&2; exit 1 ;;",
     "esac",
-    "approved=\"https://github.com/lirtual/mcp-workers/releases/download/\${tag}/remote-control-agent-\${tag}-\${target}.tar.gz\"",
-    "[ \"$download\" = \"$approved\" ] || { echo 'Unapproved Release asset URL' >&2; exit 1; }",
     "stage=$(mktemp -d \"${TMPDIR:-/tmp}/rca-macos.XXXXXXXX\")",
     "trap 'rm -rf -- \"$stage\"' EXIT",
     "trap 'exit 130' INT",
     "trap 'exit 143' TERM",
+    ...renderClientReleaseManifestShell(),
     "archive=\"$stage/agent.tar.gz\"",
     "echo 'Downloading the latest stable native macOS Agent...'",
     "effective=$(curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 3 --max-time 180 --max-filesize 180000000 -w '%{url_effective}' \"$download\" -o \"$archive\")",
@@ -146,34 +128,13 @@ export function rejectLatestInstallRequest(request: Request, trustedOrigin: stri
   return null;
 }
 
-function retryHeaders(decision: Extract<LatestReleaseDecision, { ok: false }>): Record<string, string> {
-  const headers: Record<string, string> = { ...NO_STORE };
-  if (decision.retryAfter) headers["retry-after"] = decision.retryAfter;
-  return headers;
-}
-
-export function macInstallFailure(decision: Extract<LatestReleaseDecision, { ok: false }>): Response {
-  if (decision.stop === "not_found") {
-    return new Response("No stable Agent Release is published.\n", { status: 503, headers: NO_STORE });
-  }
-  if (decision.stop === "forbidden") {
-    return new Response("GitHub refused the Agent Release lookup.\n", { status: 403, headers: retryHeaders(decision) });
-  }
-  if (decision.stop === "rate_limited") {
-    return new Response("GitHub rate limit stopped the Agent Release lookup.\n", { status: 429, headers: retryHeaders(decision) });
-  }
-  return new Response("Stable Agent Release is not usable.\n", { status: 503, headers: NO_STORE });
-}
-
 export function handleLatestMacInstallRequest(
   request: Request,
   trustedOrigin: string | undefined,
-  decision: LatestReleaseDecision,
 ): Response {
   const rejected = rejectLatestInstallRequest(request, trustedOrigin);
   if (rejected) return rejected;
-  if (!decision.ok) return macInstallFailure(decision);
-  return new Response(renderLatestMacInstallShell(trustedOrigin as string, decision.release), {
+  return new Response(renderLatestMacInstallShell(trustedOrigin as string), {
     status: 200,
     headers: {
       ...NO_STORE,

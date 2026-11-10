@@ -139,8 +139,9 @@ jobs:
               --arg name "$name" \
               --arg sha256 "$declared" \
               --arg observedSha256 "$observed" \
+              --argjson size "$(stat -c %s "$archive")" \
               --argjson bundle "$bundle" \
-              '. + [{target:$target,artifact:$artifact,name:$name,sha256:$sha256,observedSha256:$observedSha256,bundle:$bundle}]' \
+              '. + [{target:$target,artifact:$artifact,name:$name,sha256:$sha256,observedSha256:$observedSha256,size:$size,bundle:$bundle}]' \
               <<<"$candidates")"
             printf '%s\n' "$archive" >> "$work/archives.txt"
           done
@@ -167,6 +168,10 @@ jobs:
           while IFS= read -r archive; do
             cp -- "$archive" "$work/publish/$(basename "$archive")"
           done < "$work/archives.txt"
+          # A fixed-name sixth asset binds all five verified native archives.
+          node apps/remote-control-mcp-worker/agent/scripts/agent-release-manifest.mjs generate \
+            < "$work/preflight.json" > "$work/publish/remote-control-agent-manifest.txt"
+          test "$(wc -c < "$work/publish/remote-control-agent-manifest.txt")" -le 1024
           if [[ "$(jq -r '.immutableReleases.pendingProbe' "$work/preflight.json")" == true ]]; then
             assets=(
               "$work/publish/remote-control-agent-$RELEASE_TAG-linux-x64-glibc.tar.gz"
@@ -174,6 +179,7 @@ jobs:
               "$work/publish/remote-control-agent-$RELEASE_TAG-windows-x64.zip"
               "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-arm64.tar.gz"
               "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-x64.tar.gz"
+              "$work/publish/remote-control-agent-manifest.txt"
             )
             gh release create "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GH_REPO" \
@@ -230,6 +236,7 @@ jobs:
             "$work/publish/remote-control-agent-$RELEASE_TAG-windows-x64.zip"
             "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-arm64.tar.gz"
             "$work/publish/remote-control-agent-$RELEASE_TAG-darwin-x64.tar.gz"
+            "$work/publish/remote-control-agent-manifest.txt"
           )
           if [[ -f "$work/awaiting-latest" ]]; then
             :
@@ -267,7 +274,9 @@ jobs:
           for asset in "${assets[@]}"; do
             name="$(basename "$asset")"
             sha="$(sha256sum "$work/recheck/$name" | awk '{print $1}')"
-            downloaded="$(jq -c --arg name "$name" --arg sha256 "$sha" '. + [{name:$name,sha256:$sha256}]' <<<"$downloaded")"
+            downloaded="$(jq -c --arg name "$name" --arg sha256 "$sha" \
+              --argjson size "$(stat -c %s "$work/recheck/$name")" \
+              '. + [{name:$name,sha256:$sha256,size:$size}]' <<<"$downloaded")"
           done
           jq -n \
             --arg releaseTag "$RELEASE_TAG" \
@@ -276,8 +285,10 @@ jobs:
             --argjson latest "$latest" \
             --argjson tag "$tag" \
             --argjson downloaded "$downloaded" \
-            --argjson expected "$(jq '[.candidates[] | {name,sha256}]' "$work/preflight.json")" \
-            '{releaseTag:$releaseTag,sourceSha:$sourceSha,release:$release,latest:$latest,tag:$tag,downloaded:$downloaded,expectedAssets:$expected}' \
+            --rawfile manifest "$work/recheck/remote-control-agent-manifest.txt" \
+            --arg manifestSha256 "$(sha256sum "$work/recheck/remote-control-agent-manifest.txt" | awk '{print $1}')" \
+            --argjson expected "$(jq '[.candidates[] | {name,sha256,size}]' "$work/preflight.json")" \
+            '{releaseTag:$releaseTag,sourceSha:$sourceSha,release:$release,latest:$latest,tag:$tag,downloaded:$downloaded,manifest:$manifest,manifestSha256:$manifestSha256,expectedAssets:$expected}' \
             > "$work/readback.json"
           node apps/remote-control-mcp-worker/agent/scripts/agent-release-guard.mjs readback < "$work/readback.json"
           echo "Verified immutable stable Latest $RELEASE_TAG; no Worker deployment."

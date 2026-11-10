@@ -14,6 +14,7 @@ import {
   type SelectedAgentRelease,
 } from "../src/github-latest-agent-release.ts";
 import { handleLatestMacInstallRequest, renderLatestMacInstallShell } from "../src/install-macos-latest.ts";
+import { LATEST_MANIFEST_URL } from "../src/release-manifest-shell.ts";
 
 const ORIGIN = "https://rca.lirtual.dpdns.org";
 const OLD_COMMIT = "03a14fd4138ca8d77fa8aced78f7a53ccc51724e";
@@ -96,37 +97,14 @@ test("#809 latest lookup fails closed on 404, 403, 429, and unusable releases", 
   for (const body of unusable) {
     assert.equal(selectLatestAgentRelease({ status: 200, body }).ok, false, JSON.stringify(body).slice(0, 180));
   }
-  const origin = ORIGIN;
-  for (const status of [404, 403, 429] as const) {
-    const response = handleLatestMacInstallRequest(
-      new Request(origin + "/install-macos.sh"),
-      origin,
-      selectLatestAgentRelease({ status, retryAfter: status === 429 ? "30" : null }),
-    );
-    const text = response.statusText;
-    void text;
-    assert.notEqual(response.status, 200);
-    assert.doesNotMatch(response.headers.get("content-type") ?? "", /shellscript/);
-  }
+
 });
 
 test("#809 macOS route reports lookup failures without a script or old repository", async () => {
-  const origin = ORIGIN;
-  const cases = [
-    { status: 404, http: 503, body: "No stable Agent Release is published.\n" },
-    { status: 403, http: 403, body: "GitHub refused the Agent Release lookup.\n", retry: "12" },
-    { status: 429, http: 429, body: "GitHub rate limit stopped the Agent Release lookup.\n", retry: "30" },
-  ];
-  for (const item of cases) {
-    const response = handleLatestMacInstallRequest(
-      new Request(origin + "/install-macos.sh"), origin,
-      selectLatestAgentRelease({ status: item.status, retryAfter: item.retry ?? null }));
-    assert.equal(response.status, item.http);
-    const failure = await response.text();
-    assert.equal(failure, item.body);
-    if (item.retry) assert.equal(response.headers.get("retry-after"), item.retry);
-    assert.doesNotMatch(failure, /#!\/bin\/sh|remote-control-agent/);
-  }
+  const staticRoute = handleLatestMacInstallRequest(
+    new Request(ORIGIN + "/install-macos.sh"), ORIGIN);
+  assert.equal(staticRoute.status, 200);
+  assert.match(await staticRoute.text(), /rca-release-v1/);
   const redirected = await readLatestAgentRelease(async () => new Response(null, { status: 302, headers: { location: "https://github.com/lirtual/remote-control-agent/releases/latest" } }));
   assert.deepEqual(redirected, { ok: false, stop: "rejected" });
   let calls = 0;
@@ -206,7 +184,7 @@ function shellFor(bytes: { arm: Buffer; intel: Buffer }, body?: string): string 
     asset(TAG, "darwin-x64", bytes.intel.length, sha256(bytes.intel)),
   ];
   if (body) release.body = body;
-  return renderLatestMacInstallShell(ORIGIN, selected(release));
+  return renderLatestMacInstallShell(ORIGIN);
 }
 
 function runInstaller(script: string, arch: "arm64" | "x86_64", bytes: { arm: Buffer; intel: Buffer }, extra: Record<string, string> = {}, action = "--remote-upgrade") {
@@ -222,30 +200,43 @@ echo Darwin
   const intelFile = path.join(root, "intel.tar.gz");
   writeFileSync(armFile, bytes.arm);
   writeFileSync(intelFile, bytes.intel);
+  const manifestFile = path.join(root, "manifest.txt");
+  writeFileSync(manifestFile, [
+    "rca-release-v1 " + TAG,
+    "linux-x64-glibc 1200 " + "11".repeat(32),
+    "linux-arm64-glibc 1201 " + "22".repeat(32),
+    "windows-x64 1202 " + "33".repeat(32),
+    "darwin-arm64 " + bytes.arm.length + " " + sha256(bytes.arm),
+    "darwin-x64 " + bytes.intel.length + " " + sha256(bytes.intel),
+  ].join("\n") + "\n");
   const curlLog = path.join(root, "curl.log");
   const nodeLog = path.join(root, "node.log");
   writeFileSync(curlLog, "");
   writeFileSync(nodeLog, "");
-  writeFileSync(path.join(bin, "curl"), `#!/bin/sh
-out=""
-prev=""
-url=""
-for arg in "$@"; do
-  if [ "$prev" = "-o" ]; then out=$arg; fi
-  case "$arg" in
-    https://*) url=$arg ;;
-  esac
-  prev=$arg
-done
-printf '%s\\n' "$url" >> '${curlLog}'
-if [ -n "\${RCA_CURL_EFFECTIVE:-}" ]; then printf '%s' "$RCA_CURL_EFFECTIVE"; else printf '%s' "$url"; fi
-case "$url" in
-  *darwin-arm64*) cat '${armFile}' > "$out" ;;
-  *darwin-x64*) cat '${intelFile}' > "$out" ;;
-  *) echo missing > "$out" ;;
-esac
-if [ -n "\${RCA_CURL_APPEND:-}" ]; then printf '%s' "$RCA_CURL_APPEND" >> "$out"; fi
-`, { mode: 0o755 });
+  writeFileSync(path.join(bin, "curl"), [
+    "#!/bin/sh",
+    "out=",
+    "prev=",
+    "url=",
+    "for arg in \"$@\"; do",
+    "  if [ \"$prev\" = -o ]; then out=$arg; fi",
+    "  case \"$arg\" in https://*) url=$arg ;; esac",
+    "  prev=$arg",
+    "done",
+    "printf '%s\\n' \"$url\" >> \"$RCA_CURL_LOG\"",
+    "if [ \"$url\" = \"$RCA_MANIFEST_URL\" ]; then",
+    "  cp \"$RCA_MANIFEST_FILE\" \"$out\"",
+    "  printf '%s' \"$url\"",
+    "  exit 0",
+    "fi",
+    "if [ -n \"$RCA_CURL_EFFECTIVE\" ]; then printf '%s' \"$RCA_CURL_EFFECTIVE\"; else printf '%s' \"$url\"; fi",
+    "case \"$url\" in",
+    "  *darwin-arm64*) cp \"$RCA_ARM_FILE\" \"$out\" ;;",
+    "  *darwin-x64*) cp \"$RCA_INTEL_FILE\" \"$out\" ;;",
+    "  *) exit 22 ;;",
+    "esac",
+    "if [ -n \"$RCA_CURL_APPEND\" ]; then printf '%s' \"$RCA_CURL_APPEND\" >> \"$out\"; fi",
+  ].join("\n") + "\n", { mode: 0o755 });
   for (const name of ["uname", "sw_vers", "curl"]) chmodSync(path.join(bin, name), 0o755);
   const result = spawnSync("sh", ["-c", script, "macos-script", action], {
     encoding: "utf8",
@@ -256,6 +247,12 @@ if [ -n "\${RCA_CURL_APPEND:-}" ]; then printf '%s' "$RCA_CURL_APPEND" >> "$out"
       TMPDIR: root,
       RCA_NODE_LOG: nodeLog,
       RCA_CURL_LOG: curlLog,
+      RCA_MANIFEST_URL: LATEST_MANIFEST_URL,
+      RCA_MANIFEST_FILE: manifestFile,
+      RCA_ARM_FILE: armFile,
+      RCA_INTEL_FILE: intelFile,
+      RCA_CURL_APPEND: "",
+      RCA_CURL_EFFECTIVE: "",
       ...extra,
     },
   });
@@ -280,6 +277,7 @@ test("#809 installer shell picks one arch asset from the snapshot and does not u
   const arm = runInstaller(script, "arm64", bytes);
   assert.equal(arm.result.status, 0, arm.result.stderr);
   assert.deepEqual(arm.curls, [
+    LATEST_MANIFEST_URL,
     `https://github.com/lirtual/mcp-workers/releases/download/${TAG}/remote-control-agent-${TAG}-darwin-arm64.tar.gz`,
   ]);
   assert.match(arm.nodes, new RegExp("--source-sha " + NEW_COMMIT));
@@ -288,6 +286,7 @@ test("#809 installer shell picks one arch asset from the snapshot and does not u
   const intel = runInstaller(script, "x86_64", bytes);
   assert.equal(intel.result.status, 0, intel.result.stderr);
   assert.deepEqual(intel.curls, [
+    LATEST_MANIFEST_URL,
     `https://github.com/lirtual/mcp-workers/releases/download/${TAG}/remote-control-agent-${TAG}-darwin-x64.tar.gz`,
   ]);
   assert.match(intel.nodes, /darwin-x64|dispatch/);
@@ -303,7 +302,7 @@ test("#809 corrupt, redirected, wrong-arch, failed, and unknown upgrades stop on
   const corrupt = runInstaller(script, "arm64", bytes, { RCA_CURL_APPEND: "x" });
   assert.notEqual(corrupt.result.status, 0);
   assert.match(corrupt.result.stderr, /Release asset size mismatch/);
-  assert.equal(corrupt.curls.length, 1);
+  assert.equal(corrupt.curls.length, 2);
   assert.equal(corrupt.nodes, "");
   const redirected = runInstaller(script, "arm64", bytes, { RCA_CURL_EFFECTIVE: "https://evil.example/agent.tar.gz" });
   assert.notEqual(redirected.result.status, 0);
@@ -314,16 +313,16 @@ test("#809 corrupt, redirected, wrong-arch, failed, and unknown upgrades stop on
   assert.notEqual(wrongArch.result.status, 0);
   assert.match(wrongArch.result.stderr, /does not match this Mac or Release/);
   assert.doesNotMatch(wrongArch.nodes, /macos-remote-upgrade/);
-  assert.equal(wrongArch.curls.length, 1);
+  assert.equal(wrongArch.curls.length, 2);
   const failed = runInstaller(script, "arm64", bytes, { RCA_NODE_MODE: "fail" });
   assert.notEqual(failed.result.status, 0);
   assert.match(failed.result.stderr, /local recovery evidence retained/);
-  assert.equal(failed.curls.length, 1);
+  assert.equal(failed.curls.length, 2);
   assert.equal((failed.nodes.match(/macos-remote-upgrade/g) ?? []).length, 1);
   const unknown = runInstaller(script, "arm64", bytes, { RCA_NODE_MODE: "unknown" });
   assert.notEqual(unknown.result.status, 0);
   assert.match(unknown.result.stderr, /Unknown macOS installer result/);
-  assert.equal(unknown.curls.length, 1);
+  assert.equal(unknown.curls.length, 2);
   assert.equal((unknown.nodes.match(/macos-remote-upgrade/g) ?? []).length, 1);
 });
 
@@ -341,33 +340,25 @@ test("#809 hostile archive members never reach the bundled Agent", () => {
     assert.notEqual(ran.result.status, 0);
     assert.match(ran.result.stderr, /Untrusted archive member/);
     assert.equal(ran.nodes, "");
-    assert.equal(ran.curls.length, 1);
+    assert.equal(ran.curls.length, 2);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("#809 production macOS route performs one latest read and ignores the old pin", async () => {
+test("production macOS route is static and does not call GitHub API from Cloudflare", async () => {
   const { default: worker } = await import("../src/worker.ts");
-  const prod = "https://rca.lirtual.dpdns.org";
   let calls = 0;
   const env = {
     MCP_ACCESS_TOKEN: "owner-only",
-    REMOTE_CONTROL_INSTALL_ORIGIN: prod,
+    REMOTE_CONTROL_INSTALL_ORIGIN: ORIGIN,
     DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({}) },
-    AGENT_RELEASE_FETCH: async (url: string) => {
-      calls += 1;
-      assert.equal(String(url), LATEST_AGENT_RELEASE_URL);
-      return new Response("missing", { status: 404 });
-    },
+    AGENT_RELEASE_FETCH: async () => { calls++; throw Error("forbidden Worker API call"); },
   };
   const blocked = await worker.fetch(new Request("https://unauthorized.test/install-macos.sh"), env as never);
   assert.equal(blocked.status, 403);
+  const shell = await worker.fetch(new Request(ORIGIN + "/install-macos.sh"), env as never);
+  assert.equal(shell.status, 200);
+  assert.match(await shell.text(), /rca-release-v1/);
   assert.equal(calls, 0);
-  const missing = await worker.fetch(new Request(prod + "/install-macos.sh"), env as never);
-  assert.equal(missing.status, 503);
-  const missingText = await missing.text();
-  assert.equal(missingText, "No stable Agent Release is published.\n");
-  assert.equal(calls, 1);
-  assert.doesNotMatch(missingText, /#!\/bin\/sh|remote-control-agent|03a14fd/);
 });

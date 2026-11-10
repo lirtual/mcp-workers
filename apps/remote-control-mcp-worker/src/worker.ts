@@ -1,6 +1,5 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest, renderLinuxLatestInstallShell } from "./install-bootstrap.ts";
-import { readLatestAgentRelease, type LatestReleaseDecision } from "./github-latest-agent-release.ts";
 import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -11,10 +10,6 @@ type V2Env = Env & {
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
-  /** Test seam only. Production uses the Worker runtime fetch. Not a binding. */
-  AGENT_RELEASE_FETCH?: typeof fetch;
-  /** Test seam only. Production uses the existing Workers Cache API. */
-  AGENT_RELEASE_CACHE?: Pick<Cache, "match" | "put">;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1094,39 +1089,17 @@ function linuxInstallFailure(message: string): Response {
   });
 }
 
-function linuxReleaseFailure(decision: Extract<LatestReleaseDecision, { ok: false }>): Response {
-  const headers: Record<string, string> = { ...LINUX_INSTALL_HEADERS };
-  if (decision.retryAfter && (decision.stop === "forbidden" || decision.stop === "rate_limited")) {
-    headers["retry-after"] = decision.retryAfter;
-  }
-  if (decision.stop === "not_found") {
-    return new Response("No stable Agent Release is published.\n", { status: 503, headers });
-  }
-  if (decision.stop === "forbidden") {
-    return new Response("GitHub refused the Agent Release lookup.\n", { status: 403, headers });
-  }
-  if (decision.stop === "rate_limited") {
-    return new Response("GitHub rate limit blocked the Agent Release lookup.\n", { status: 429, headers });
-  }
-  if (decision.stop === "unavailable") return linuxInstallFailure("Agent Release lookup failed.");
-  return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release.");
-}
-
-/** One readLatestAgentRelease call. The shell does not look up latest again. */
-async function linuxLatestInstall(
-  request: Request, origin: string, doFetch: typeof fetch, releaseCache?: Pick<Cache, "match" | "put">,
-): Promise<Response> {
+/** Static installer does not contact GitHub until executed by the owner device. */
+function linuxLatestInstall(request: Request, origin: string): Response {
   const rejected = rejectLatestInstallRequest(request, origin);
   if (rejected) return rejected;
-  const decision = await readLatestAgentRelease(doFetch, releaseCache);
-  if (!decision.ok) return linuxReleaseFailure(decision);
   try {
-    return new Response(renderLinuxLatestInstallShell(origin, decision.release), {
+    return new Response(renderLinuxLatestInstallShell(origin), {
       status: 200,
       headers: { ...LINUX_INSTALL_HEADERS, "content-type": "text/x-shellscript; charset=utf-8" },
     });
   } catch {
-    return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release.");
+    return linuxInstallFailure("Agent installer origin is unavailable.");
   }
 }
 
@@ -1148,17 +1121,10 @@ export default {
         });
       }
       const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
-      const releaseFetch = (env as V2Env).AGENT_RELEASE_FETCH ?? fetch;
-      const releaseCache = (env as V2Env).AGENT_RELEASE_CACHE ??
-        // DOM CacheStorage typings omit Cloudflare Workers' default cache.
-        (typeof caches === "undefined" ? undefined : (caches as CacheStorage & { default: Cache }).default);
       if (url.pathname === "/install-macos.sh") {
-        const rejected = rejectLatestInstallRequest(request, origin);
-        if (rejected) return rejected;
-        const decision = await readLatestAgentRelease(releaseFetch, releaseCache);
-        return handleLatestMacInstallRequest(request, origin, decision);
+        return handleLatestMacInstallRequest(request, origin);
       }
-      if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin, releaseFetch, releaseCache);
+      if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin);
       return handleAgentInstallerRequest(request, origin);
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {

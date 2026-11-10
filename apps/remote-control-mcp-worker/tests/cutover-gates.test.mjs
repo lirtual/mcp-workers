@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { renderAgentReleaseManifest, RELEASE_MANIFEST_NAME } from "../agent/scripts/agent-release-manifest.mjs";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -47,6 +49,7 @@ function candidateFor([target, artifact, extension, digestByte]) {
     name: `remote-control-agent-${TAG}-${target}${extension}`,
     sha256,
     observedSha256: sha256,
+    size: 2048,
     bundle: bundleFor(target),
   };
 }
@@ -204,24 +207,35 @@ test("an explicit authorization still does not publish, deploy, or upgrade", () 
 
 function releaseReadback() {
   const input = sourceAndCandidates().candidates;
+  const expected = input.candidates.map(({ name, sha256, size }) => ({ name, sha256, size }));
+  const manifest = renderAgentReleaseManifest(TAG, expected);
+  const digest = createHash('sha256').update(manifest).digest('hex');
   return {
     releaseTag: TAG,
     sourceSha: SHA,
-    expectedAssets: input.candidates.map(({ name, sha256 }) => ({ name, sha256 })),
-    downloaded: input.candidates.map(({ name, sha256 }) => ({ name, sha256 })),
+    expectedAssets: expected,
+    downloaded: [
+      ...expected.map((a) => ({ ...a })),
+      { name: RELEASE_MANIFEST_NAME, sha256: digest, size: Buffer.byteLength(manifest) },
+    ],
+    manifest,
+    manifestSha256: digest,
     release: {
-      tag_name: TAG,
-      draft: false,
-      prerelease: false,
-      immutable: true,
-      assets: input.candidates.map(({ name, sha256 }) => ({
-        name,
-        state: "uploaded",
-        digest: `sha256:${sha256}`,
-      })),
+      tag_name: TAG, draft: false, prerelease: false, immutable: true,
+      assets: [
+        ...expected.map(({ name, sha256, size }) => ({
+          name, size, state: 'uploaded', digest: 'sha256:' + sha256,
+        })),
+        {
+          name: RELEASE_MANIFEST_NAME, size: Buffer.byteLength(manifest),
+          state: 'uploaded', digest: 'sha256:' + digest,
+          browser_download_url:
+            'https://github.com/lirtual/mcp-workers/releases/download/' + TAG + '/' + RELEASE_MANIFEST_NAME,
+        },
+      ],
     },
     latest: { tag_name: TAG, draft: false, prerelease: false, immutable: true },
-    tag: { object: { type: "commit", sha: SHA } },
+    tag: { object: { type: 'commit', sha: SHA } },
   };
 }
 

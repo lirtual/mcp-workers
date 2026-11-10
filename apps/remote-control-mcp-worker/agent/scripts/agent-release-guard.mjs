@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { RELEASE_MANIFEST_NAME, renderAgentReleaseManifest } from './agent-release-manifest.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -83,6 +85,7 @@ export function reviewAgentPublication(input) {
     if (!item) fail('incomplete native candidate');
     const name = `remote-control-agent-${input.releaseTag}-${spec.target}${spec.extension}`;
     const artifact = `${input.releaseTag}-${spec.artifact}`;
+    if (!Number.isSafeInteger(item.size) || item.size < 1 || item.size > 180_000_000) fail('damaged native candidate');
     if (item.name !== name
       || item.artifact !== artifact
       || item.sha256 !== item.observedSha256
@@ -94,7 +97,7 @@ export function reviewAgentPublication(input) {
   return { ok: true };
 }
 
-/** The publish job must re-download and rehash after the Release is stable, latest, and immutable. */
+/** All six assets are re-downloaded and rehashed after immutable Latest promotion. */
 export function requireReadbackAfterPromotion(workflow) {
   const marker = 'Publish the draft, then require an immutable stable Latest readback';
   const step = String(workflow).slice(String(workflow).indexOf(marker));
@@ -107,7 +110,7 @@ export function requireReadbackAfterPromotion(workflow) {
   if (step.indexOf(marker) !== 0 || mark < 0 || latest < 0 || immutable < 0
     || download < 0 || hash < 0 || readback < 0
     || !(mark < latest && latest < immutable && immutable < download && download < hash && hash < readback)) {
-    fail('five official assets must be downloaded and rehashed after the Release is stable, latest, and immutable');
+    fail('six official assets must be downloaded and rehashed after the Release is stable, latest, and immutable');
   }
   if (!/^ {4}environment: remote-control-agent-release$/m.test(String(workflow))) {
     fail('Agent publication requires a protected GitHub Environment');
@@ -152,8 +155,8 @@ export function acceptAgentReleaseReadback(input) {
   const downloaded = Array.isArray(input.downloaded) ? input.downloaded : [];
   const assets = Array.isArray(release.assets) ? release.assets : [];
   if (expected.length !== TARGETS.length
-    || downloaded.length !== TARGETS.length
-    || assets.length !== TARGETS.length) {
+    || downloaded.length !== TARGETS.length + 1
+    || assets.length !== TARGETS.length + 1) {
     fail('partial native Release');
   }
   for (const spec of TARGETS) {
@@ -165,9 +168,30 @@ export function acceptAgentReleaseReadback(input) {
     const digest = typeof got.digest === 'string' && got.digest.startsWith('sha256:')
       ? got.digest.slice('sha256:'.length)
       : '';
-    if (want.sha256 !== file.sha256 || want.sha256 !== digest || !DIGEST.test(want.sha256 ?? '')) {
+    if (want.sha256 !== file.sha256 || want.sha256 !== digest ||
+        got.size !== want.size || file.size !== want.size ||
+        !DIGEST.test(want.sha256 ?? '')) {
       fail('damaged native candidate');
     }
+  }
+  // Sixth asset: canonical five-archive manifest, independently rehashed.
+  const content = renderAgentReleaseManifest(input.releaseTag, expected);
+  const sha256 = createHash('sha256').update(content).digest('hex');
+  const manifest = assets.find((a) => a?.name === RELEASE_MANIFEST_NAME);
+  const manifestFile = downloaded.find((f) => f?.name === RELEASE_MANIFEST_NAME);
+  if (input.manifest !== content || input.manifestSha256 !== sha256 ||
+      !manifestFile || manifestFile.sha256 !== sha256 ||
+      manifestFile.size !== Buffer.byteLength(content) ||
+      !manifest || manifest.state !== 'uploaded' ||
+      manifest.browser_download_url !==
+        ('https://github.com/lirtual/mcp-workers/releases/download/' + input.releaseTag + '/' + RELEASE_MANIFEST_NAME) ||
+      manifest.size !== Buffer.byteLength(content) ||
+      manifest.digest !== 'sha256:' + sha256) {
+    fail('invalid immutable Release manifest');
+  }
+  if (new Set(downloaded.map((a) => a?.name)).size !== TARGETS.length + 1 ||
+      new Set(assets.map((a) => a?.name)).size !== TARGETS.length + 1) {
+    fail('duplicate immutable Release asset');
   }
   return { ok: true };
 }
