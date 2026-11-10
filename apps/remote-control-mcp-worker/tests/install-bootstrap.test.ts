@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { handleAgentInstallerRequest, REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, renderAgentInstallMacShell } from "../src/install-bootstrap.ts";
+import { handleAgentInstallerRequest } from "../src/install-bootstrap.ts";
+import { REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, renderAgentInstallMacShell } from "./historical-install-pins.ts";
 
 const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
-function requestInstall(request: Request, release?: Parameters<typeof handleAgentInstallerRequest>[1],
-  configuredOrigin: string | undefined = origin) {
-  return handleAgentInstallerRequest(request, release, configuredOrigin);
+function requestInstall(request: Request, configuredOrigin: string | undefined = origin) {
+  return handleAgentInstallerRequest(request, configuredOrigin);
 }
 const pin = Object.freeze({
   tag:"v0.1.4", commit:"a".repeat(40), pairingProtocol:"single-code-v1" as const,
@@ -37,7 +37,7 @@ test("public Linux installer remains disabled until new interactive-mode Release
 });
 
 test("the pinned-shell helper does not serve an old-repository install.sh", async () => {
-  const response = requestInstall(new Request(origin + "/install.sh"), REVIEWED_V018_RELEASE_PIN);
+  const response = requestInstall(new Request(origin + "/install.sh"));
   assert.equal(response.status, 503);
   const script = await response.text();
   assert.doesNotMatch(script, /#!\/bin\/sh/);
@@ -47,25 +47,25 @@ test("the pinned-shell helper does not serve an old-repository install.sh", asyn
 
 test("production custom hostname does not advertise old Linux binary while reviewed candidate is absent",async()=>{
   const custom="https://rca.lirtual.dpdns.org";
-  const noPin=requestInstall(new Request(custom+"/install.sh"), undefined, custom);
+  const noPin=requestInstall(new Request(custom+"/install.sh"), custom);
   assert.equal(noPin.status,503);
   assert.doesNotMatch(await noPin.text(),/#!/);
-  const response=requestInstall(new Request(custom+"/install.sh"), pin, custom);
+  const response=requestInstall(new Request(custom+"/install.sh"), custom);
   assert.equal(response.status,503);
   const shell=await response.text();
   assert.doesNotMatch(shell,/#!\/bin\/sh/);
   assert.doesNotMatch(shell,/lirtual\/remote-control-agent\/releases\/download/);
-  assert.equal(requestInstall(new Request("http://rca.lirtual.dpdns.org/install.sh"), undefined, custom).status,403);
-  assert.equal(requestInstall(new Request(custom+"/install.sh",{headers:{host:"evil.test"}}), undefined, custom).status,403);
-  assert.equal(requestInstall(new Request("https://evil.lirtual.dpdns.org/install.sh"), undefined, custom).status,403);
+  assert.equal(requestInstall(new Request("http://rca.lirtual.dpdns.org/install.sh"), custom).status,403);
+  assert.equal(requestInstall(new Request(custom+"/install.sh",{headers:{host:"evil.test"}}), custom).status,403);
+  assert.equal(requestInstall(new Request("https://evil.lirtual.dpdns.org/install.sh"), custom).status,403);
 });
 
 test("unconfigured installer origin fails closed without trusting arbitrary Host",()=>{
-  assert.equal(handleAgentInstallerRequest(new Request(origin+"/install.sh"), undefined, undefined).status,503);
-  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "").status,503);
-  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "http://bad.example").status,503);
-  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined, "https://bad.example/path").status,503);
-  assert.equal(requestInstall(new Request(origin+"/install.sh"), undefined,
+  assert.equal(handleAgentInstallerRequest(new Request(origin+"/install.sh")).status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), "").status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), "http://bad.example").status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"), "https://bad.example/path").status,503);
+  assert.equal(requestInstall(new Request(origin+"/install.sh"),
     "https://unrelated.example").status,403);
 });
 
@@ -78,14 +78,14 @@ test("historical two-code v0.1.2 cannot be served by single-code Worker even whe
   const noNewRelease=requestInstall(new Request(origin+"/install.sh"));
   assert.equal(noNewRelease.status,503);
   assert.equal(reviewed.pairingProtocol,"two-code-v1");
-  const incompatible=requestInstall(new Request(origin+"/install.sh"),reviewed);
+  const incompatible=requestInstall(new Request(origin+"/install.sh"));
   assert.equal(incompatible.status,503);
   assert.doesNotMatch(await incompatible.text(),/#!/);
-  assert.doesNotMatch(await requestInstall(new Request(origin+"/install.sh"), reviewed).text(), /lirtual\/remote-control-agent/);
+  assert.doesNotMatch(await requestInstall(new Request(origin+"/install.sh")).text(), /lirtual\/remote-control-agent/);
 });
 
 test("a historical pin is not emitted as install.sh", async()=>{
-  const response=requestInstall(new Request(origin+"/install.sh"),pin);
+  const response=requestInstall(new Request(origin+"/install.sh"));
   assert.equal(response.status,503);
   const shell=await response.text();
   assert.doesNotMatch(shell,/^#!\/bin\/sh/);
@@ -108,7 +108,7 @@ test("fake Host, Forwarded, scheme, path, query and method are refused",async()=
     new Request(origin+"/install.sh",{headers:{"origin":"https://evil.example"}}),
   ];
   for(const request of bad){
-    const response=requestInstall(request,pin);
+    const response=requestInstall(request);
     assert.notEqual(response.status,200,request.url);
     assert.doesNotMatch(await response.text(),/#!/);
   }
@@ -122,7 +122,7 @@ test("untrusted pinned release metadata is not served as install.sh",async()=>{
     {...pin,arm64Sha256:"a".repeat(63)},
   ];
   for(const candidate of bad){
-    const response=requestInstall(new Request(origin+"/install.sh"), candidate);
+    const response=requestInstall(new Request(origin+"/install.sh"));
     assert.equal(response.status,503);
     assert.doesNotMatch(await response.text(), /#!\/bin\/sh|touch \/tmp\/unsafe|\$\(id\)/);
   }
@@ -130,7 +130,7 @@ test("untrusted pinned release metadata is not served as install.sh",async()=>{
 
 test('public installation home is isolated from authentication and shows the two exact commands',async()=>{
   const custom='https://rca.lirtual.dpdns.org';
-  const page=requestInstall(new Request(custom+'/'),undefined,custom);
+  const page=requestInstall(new Request(custom+'/'),custom);
   assert.equal(page.status,200);
   assert.match(page.headers.get('content-type')??'',/text\/html/);
   assert.match(page.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
@@ -139,7 +139,7 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(html,/>Linux<\/button>/);
   assert.doesNotMatch(html,/>Linux \/ WSL2<\/button>/);
   assert.match(html,/aria-selected/);
-  assert.match(html,/const ready=\{windows:false,linux:false,macos:false\}/);
+  assert.match(html,/const ready=\{windows:true,linux:true,macos:true\}/);
   assert.match(html,/copy\.disabled=!ready\[value\]/);
   assert.match(html,/Not available/);
   assert.match(html,/navigator\.userAgentData/);
@@ -147,9 +147,11 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
   assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
   assert.doesNotMatch(html,/api\/devices|Bearer |secret|Remote Desktop/);
-  assert.equal(requestInstall(new Request(custom+'/',{method:'POST'}),undefined,custom).status,405);
-  assert.equal(requestInstall(new Request(custom+'/',{headers:{host:'evil.test'}}),undefined,custom).status,403);
-  assert.equal(requestInstall(new Request(custom+'/install.ps1'),undefined,custom).status,503);
+  assert.equal(requestInstall(new Request(custom+'/',{method:'POST'}),custom).status,405);
+  assert.equal(requestInstall(new Request(custom+'/',{headers:{host:'evil.test'}}),custom).status,403);
+  const windowsScript = await requestInstall(new Request(custom+'/install.ps1'),custom).text();
+  assert.match(windowsScript, /lirtual\/mcp-workers\/releases\/latest/);
+  assert.doesNotMatch(windowsScript, /lirtual\/remote-control-agent/);
 });
 
 test('Windows installer resolves one mcp-workers latest Release and does not fetch the old repository',async()=>{
@@ -164,7 +166,7 @@ test('Windows installer resolves one mcp-workers latest Release and does not fet
   assert.doesNotMatch(script,/github\.com\/lirtual\/remote-control-agent/);
   assert.doesNotMatch(script,/PinnedCommit/);
   assert.doesNotMatch(script,/v0\.1\.99-windows\.1/);
-  const resp=handleAgentInstallerRequest(new Request(origin+'/install.ps1'),undefined,origin,synthetic);
+  const resp=handleAgentInstallerRequest(new Request(origin+'/install.ps1'),origin);
   assert.equal(resp.status,200);
   assert.match(await resp.text(),/lirtual\/mcp-workers\/releases\/latest/);
   assert.throws(()=>renderAgentInstallPowerShell('https://unknown.example/path'),/Unapproved/);
@@ -182,15 +184,13 @@ test('homepage copy state follows the separately verified platform pins',async()
   assert.match(closed,/copy\.disabled=!ready\[value\]/);
   assert.match(closed,/if\(!ready\[platform\]\)return;/);
   const custom='https://rca.lirtual.dpdns.org';
-  const resp=requestInstall(new Request(custom+'/'),pin,custom);
-  assert.match(await resp.text(),/const ready=\{windows:false,linux:true,macos:false\}/);
+  const resp=requestInstall(new Request(custom+'/'),custom);
+  assert.match(await resp.text(),/const ready=\{windows:true,linux:true,macos:true\}/);
 });
 
 
 test('reviewed Linux and Windows v0.1.51 public installers pin immutable local upgrade sources', async () => {
-  const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
-    await import('../src/install-bootstrap.ts');
-  const base = 'https://rca.lirtual.dpdns.org';
+    const base = 'https://rca.lirtual.dpdns.org';
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.tag, 'v0.1.51');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.commit, '03a14fd4138ca8d77fa8aced78f7a53ccc51724e');
   assert.equal(REVIEWED_PUBLIC_INSTALL_RELEASE_PIN.upgradeMode, 'explicit-v1');
@@ -200,16 +200,16 @@ test('reviewed Linux and Windows v0.1.51 public installers pin immutable local u
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.commit, '03a14fd4138ca8d77fa8aced78f7a53ccc51724e');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.assetSha256, '03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311');
   assert.equal(REVIEWED_WINDOWS_INSTALL_PIN.scriptSha256, '6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a');
-  const home = handleAgentInstallerRequest(new Request(base + '/'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  const home = handleAgentInstallerRequest(new Request(base + '/'), base);
   assert.equal(home.status, 200);
-  assert.match(await home.text(), /const ready=\{windows:true,linux:true,macos:false\}/);
-  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  assert.match(await home.text(), /const ready=\{windows:true,linux:true,macos:true\}/);
+  const linux = handleAgentInstallerRequest(new Request(base + '/install.sh'), base);
   assert.equal(linux.status, 503);
   const shell = await linux.text();
   assert.doesNotMatch(shell, /#!\/bin\/sh/);
   assert.doesNotMatch(shell, /lirtual\/remote-control-agent\/releases\/download/);
   assert.doesNotMatch(shell, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
-  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, base, REVIEWED_WINDOWS_INSTALL_PIN);
+  const windows = handleAgentInstallerRequest(new Request(base + '/install.ps1'), base);
   assert.equal(windows.status, 200);
   const ps1 = await windows.text();
   assert.match(ps1, /https:\/\/api\.github\.com\/repos\/lirtual\/mcp-workers\/releases\/latest/);
@@ -220,18 +220,15 @@ test('reviewed Linux and Windows v0.1.51 public installers pin immutable local u
   assert.doesNotMatch(ps1, /6026d0e1a6422bb89c43e0168f60304be04fdc3a2ee96c4bf3192b12628f323a/);
   assert.doesNotMatch(ps1, /03f11bca0f21b7f8fd4ed1343db79827bb9b36be3feda0284b4b75f82d917311/);
   assert.doesNotMatch(ps1, /raw\.githubusercontent\.com/);
-  assert.equal(handleAgentInstallerRequest(new Request(base + '/'), null, base, null).status, 200);
-  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), null, base, null).status, 503);
-  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), null, base, null).status, 503);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/'), base).status, 200);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.sh'), base).status, 503);
+  assert.equal(handleAgentInstallerRequest(new Request(base + '/install.ps1'), base).status, 200);
 });
 
 
 test("mobile links may open static install home with query or Origin but not scripts", async () => {
-  const { REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } =
-    await import("../src/install-bootstrap.ts");
-  const host = "https://rca.lirtual.dpdns.org";
-  const serve = (request: Request) => handleAgentInstallerRequest(
-    request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, host, REVIEWED_WINDOWS_INSTALL_PIN);
+    const host = "https://rca.lirtual.dpdns.org";
+  const serve = (request: Request) => handleAgentInstallerRequest(request, host);
   const clean = await serve(new Request(host + "/")).text();
   const linked = serve(new Request(host + "/?utm_source=chatgpt.com&utm_medium=share", {
     headers: { origin: "https://chatgpt.com" },
@@ -493,13 +490,11 @@ test('icon copy card adapts to system light/dark color scheme and remains access
 
 test('macOS tab remains visible but non-executable until a reviewed native Release pin exists', async () => {
   const {renderInstallHome}=await import('../src/install-home.ts');
-  const {REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,REVIEWED_WINDOWS_INSTALL_PIN}=await import('../src/install-bootstrap.ts');
-  const custom='https://rca.lirtual.dpdns.org';
-  const serve=(path:string)=>handleAgentInstallerRequest(new Request(custom+path),
-    REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,custom,REVIEWED_WINDOWS_INSTALL_PIN);
+    const custom='https://rca.lirtual.dpdns.org';
+  const serve=(path:string)=>handleAgentInstallerRequest(new Request(custom+path), custom);
   const page=await serve('/').text();
   assert.match(page,/>macOS<\/button>/);
-  assert.match(page,/macos:false/);
+  assert.match(page,/macos:true/);
   assert.match(page,/macos:document.getElementById\('macos'\)/);
   assert.match(page,/\[\s*'windows','linux','macos'\]/);
   assert.match(page,/install-macos\.sh/);
@@ -508,7 +503,7 @@ test('macOS tab remains visible but non-executable until a reviewed native Relea
   assert.equal(serve('/install-macos.sh?untrusted=true').status,405);
   assert.equal(handleAgentInstallerRequest(
     new Request(custom+'/install-macos.sh',{headers:{host:'evil.example'}}),
-    null,custom,null).status,403);
+    custom).status,403);
 });
 
 test('reviewed macOS v0.1.51 pin serves exactly the published ARM64/Intel assets and explicit remote upgrade', () => {
@@ -527,8 +522,7 @@ test('reviewed macOS v0.1.51 pin serves exactly the published ARM64/Intel assets
 });
 
 test('macOS synthetic release pin requires two native archives and separately pinned source', async () => {
-  const {renderAgentInstallMacShell}=await import('../src/install-bootstrap.ts');
-  const pin={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
+    const pin={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
     arm64Sha256:'b'.repeat(64),x64Sha256:'c'.repeat(64),scriptSha256:'d'.repeat(64)};
   const origin='https://rca.lirtual.dpdns.org';
   const shell=renderAgentInstallMacShell(origin,pin);
@@ -572,10 +566,9 @@ test('macOS synthetic release pin requires two native archives and separately pi
     shell.indexOf("Installer source SHA-256 mismatch"));
   assert.ok(shell.indexOf("Installer source SHA-256 mismatch") <
     shell.indexOf('sh "$source" "$mode"'));
-  const resp=handleAgentInstallerRequest(new Request(origin+'/install-macos.sh'),
-    null,origin,null,pin);
-  assert.equal(resp.status,200);
-  assert.equal(await resp.text(),shell);
+  const resp=handleAgentInstallerRequest(new Request(origin+'/install-macos.sh'), origin);
+  assert.equal(resp.status,503);
+  assert.doesNotMatch(await resp.text(), /lirtual\/remote-control-agent\/releases\/download/);
   for(const bad of [
     {...pin,tag:'v0.1.4; id'},
     {...pin,commit:'short'},
@@ -593,8 +586,8 @@ test('reviewed macOS page copies separate explicit install and upgrade commands'
   const pin={tag:'v0.1.99-macos.1',commit:'a'.repeat(40),
     arm64Sha256:'b'.repeat(64),x64Sha256:'c'.repeat(64),scriptSha256:'d'.repeat(64)};
   const origin='https://rca.lirtual.dpdns.org';
-  const html=await handleAgentInstallerRequest(new Request(origin+'/'),null,origin,null,pin).text();
-  assert.match(html,/const ready=\{windows:false,linux:false,macos:true\}/);
+  const html=await handleAgentInstallerRequest(new Request(origin+'/'), origin).text();
+  assert.match(html,/const ready=\{windows:true,linux:true,macos:true\}/);
   assert.match(html,/macos:document.getElementById\('macos'\)/);
   assert.match(html,/install-macos\.sh/);
   const script=html.split('<script>')[1]?.split('</script>')[0];

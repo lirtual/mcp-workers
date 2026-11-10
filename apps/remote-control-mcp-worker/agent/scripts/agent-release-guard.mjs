@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const TAG = /^v0\.[1-9][0-9]*\.[0-9]+(?:-[a-z0-9][a-z0-9.-]*)?$/;
+// Stable tags only. Installers reject a prerelease suffix, and this workflow publishes prerelease=false.
+const TAG = /^v0\.[1-9][0-9]*\.[0-9]+$/;
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const CANDIDATE_WORKFLOW = '.github/workflows/agent-native-candidates.yml';
@@ -133,6 +134,7 @@ export function acceptImmutableBeforeLatest(input) {
 export function acceptAgentReleaseReadback(input) {
   const release = input?.release ?? {};
   const latest = input?.latest ?? {};
+  if (!TAG.test(input?.releaseTag ?? '')) fail('Release is not an immutable stable Latest');
   if (release.tag_name !== input?.releaseTag) fail('GitHub release conflict');
   if (release.draft !== false
     || release.prerelease !== false
