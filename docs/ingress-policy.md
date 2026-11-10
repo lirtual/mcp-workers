@@ -47,10 +47,13 @@ precedence 2, with exactly the `lirtual@qq.com` email selector. Precedence 1
 remains the identical `WORKFLOWS` Service Token policy shared with Portal. The
 read-only registration gate pins the exception to `id=browser` and `name=Browser`;
 all other MCP applications must still have both exact Portal policy IDs. The
-shared `Default Allow Rule` is used by 12 other applications and must not be
-changed for this cutover. A reviewed policy existing with zero attachments is
-not evidence the production Browser application has switched: read back its
-actual Access policy list after the separately authorized attachment.
+shared `Default Allow Rule` continues to be used by 12 other applications
+without modification. The authorized 2026-11-10 Cloudflare cutover was
+independently read back: `Browser` now references `WORKFLOWS` (precedence 1)
+and its dedicated QQ-only policy (precedence 2); dedicated app_count=1,
+shared human app_count=12 and Workflow Service Token app_count=12. The Browser
+Audience, Portal target and 24h Access session remain unchanged. This is
+configuration readback, not a new authenticated QQ login E2E.
 
 Verify reusable **policy IDs**, not just display names. Never add an
 `Everyone`, bypass, or unrestricted Allow rule. Missing, ambiguous or
