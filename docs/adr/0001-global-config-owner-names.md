@@ -6,7 +6,7 @@ Status: Accepted and implemented under Spec #733 (closed/completed, 2026-11-06).
 
 `ACCESS_TEAM_DOMAIN` and `OWNER_EMAIL` are canonical GitHub Repository Variables for Browser and Database only, with no same-named Environment overrides. Service-specific keys use `DATABASE_`, `SSH_`, and `WORKFLOW_` prefixes. `MCP_ACCESS_TOKEN`, `ACTIONS_GITHUB_DISPATCH_TOKENS` and existing GitHub dispatch tokens stay unchanged. Database's subsequent Spec #760 supersedes its former D1/encryption configuration. Browser derives issuer/owner from the shared variables and activation origin from the reviewed Wrangler Custom Domain. Spec #733 did not rename Cloudflare D1, DO, Service Binding or Portal resource identities; Database's subsequent architectural change is governed by Spec #760.
 
-## Scoped subsequent decision: Spec #804 (production deployed; GitHub source cleanup pending)
+## Scoped subsequent decision: Spec #804 (production deployed; GitHub sources retired)
 
 Browser release code now obtains the Zero Trust Organization `auth_domain` and
 the fixed reviewed Browser Access App `aud` read-only via the selected

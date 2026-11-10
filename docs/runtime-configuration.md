@@ -146,18 +146,20 @@ GitHub 来源 Secret 删除和 D1 清理均为后续独立授权事项；不得�
 - **Database GitHub 旧配置已删除（2026-11-09）：** `database-mcp-worker` Environment 中的 Variables `DATABASE_ACCESS_AUD`、`DATABASE_KEY_ID` 和 Secrets `DATABASE_ENCRYPTION_KEY`、`DATABASE_GITHUB_ACTIONS_TOKEN` 已通过 GitHub CLI 逐项删除，每项独立回读 Pass；该 Environment 当前为零 Variables、零 Secrets。Version 46 `c28c0af8-e773-4400-9106-425779932fcf` 继续独占 100% 流量且不含旧绑定；当前 Repository `DATABASE_CONNECTIONS`、`DATABASE_B2B_PASSWORD`、`DATABASE_SCRAPE_RELAY_PASSWORD` 等发布来源保持不变。历史版本 `eeaaaba6-3b45-4158-8537-d9989c044bd4`、`dbf5b157-ef7d-4f36-b162-62bd1b49246a` 虽留有旧绑定，但不再是受支持的恢复目标；不重建旧凭据。
 - **阶段与范围：** PR #797 阶段仅只读核查并修正文档；2026-11-09 本次另获授权，只删除上述四项 GitHub Environment 旧配置，删除前后只读回读 Repository 来源及 Cloudflare 生产绑定。未读取 Secret 原值、修改 Repository 配置、生产 D1/Worker、Portal 或执行恢复。
 
-### Spec #804 — staged Browser identity automation (code only)
+### Spec #804 — current Browser identity automation (production released)
 
-Source-level Browser Release now discovers the Organization auth domain and the
-fixed Browser Activation Access Application Audience on its **actual selected
-Worker Runner**, validates the complete Owner-only 15m SSO+OTP policy and
-compares the candidate with the independently observed active identity.
-Candidate staging/recheck/readback reuse the existing protected release state.
-No new Access app, policy, proxy, Cloudflare runtime credential or environment
-was created; the old GitHub variable names are no longer consumed in current
-CI/Release code. Do not infer this change is deployed: the first protected Runner
-permission preflight, production switching, real same-Profile Owner activation
-and separate GitHub source deletion still require new production authorization.
+The actual protected Runner proved read-only Organization and fixed App
+discovery in [Run #42748869402](https://github.com/lirtual/mcp-workers/actions/runs/42748869402).
+The Owner-only 15m SSO+OTP and independent active-identity gate use the existing
+candidate state, staging, prepublication recheck and post-release readback.
+The authorized
+[Release #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
+published these bindings, and live Cloudflare/Portal readbacks passed.
+Both retired GitHub sources were separately deleted and independently
+verified absent (HTTP 404); Repository `OWNER_EMAIL` and all required runtime
+identity bindings remain. No new Access application, policy, proxy or
+credential was added. Physical Owner same-Profile one-use activation remains
+**Not performed**, despite a subsequently online Edge Endpoint.
 
 A read-only Cloudflare Access application inventory on 2026-11-10 showed
 17 complete account applications (page 1/1). The Browser Activation app

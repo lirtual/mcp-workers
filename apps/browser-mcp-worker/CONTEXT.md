@@ -52,20 +52,26 @@ Released v0.2.4 / WSS 3 adds bounded, sensitive-filtered native choice and ARIA 
 
 The Owner-approved [incremental design](docs/idle-pairing-and-options-design.md) and [ADR 0003](docs/adr/0003-remembered-pairing-idle-expiry.md) propose **ON-online holds authorization without a countdown; explicit OFF or long offline starts a server-enforced idle countdown (14 days by default, configurable by reviewed GitHub Actions Variable `BROWSER_REMEMBERED_IDLE_DAYS`), and expiry revokes the old Endpoint grant**. This replaces only the indefinite remembered-pairing lifetime and improves local Profile naming, discovery metadata, and Options presentation. Temporary grants, Access same-Profile proof, Stop/Revoke priority and Unknown receipts stay intact. **v0.2.6 implementation candidate:** lifecycle, variable and Profile UI have source/regression coverage; this is not yet a production Worker release or native Chrome/Edge acceptance. Current production remains v0.2.5.
 
-## Spec #804 Browser identity source (code implemented; production pending)
+## Spec #804 Browser identity source (production released; physical Owner E2E pending)
 
-The protected Browser release now reads Zero Trust Organization
-`auth_domain` and the fixed reviewed Browser Activation Access App's `aud`
-through Cloudflare GET requests, not GitHub's `ACCESS_TEAM_DOMAIN` or
-`BROWSER_ACTIVATION_AUDIENCE` Variables. GitHub Repository `OWNER_EMAIL`
-remains the canonical Owner mailbox. The existing `BROWSER_OWNER` Durable
-Object and all four Browser Activation runtime identity bindings remain
-unchanged. Preflight compares active production identity with the discovered
-candidate, and the original Release state holds that candidate for staging,
-prepublication Access/active-version read-only recheck and binding readback.
-SSO+OTP, 15-minute session, strict JWT claims and same-Profile one-use proof
-are unchanged. A separate real protected Runner GET-only permission test,
-authorized production release and independent E2E acceptance are **not yet
-recorded as Pass**. Historical #733 and Owner Review retirement evidence above
-remains historical fact; no production resources or GitHub Variables were
-deleted by this source implementation.
+The protected Browser Release Worker obtains Zero Trust Organization `auth_domain`
+and the fixed reviewed Browser Activation Access App's `aud` through read-only
+Cloudflare requests. Repository `OWNER_EMAIL` remains the only maintained Owner
+identity Variable. Preflight compares this candidate with independently observed
+active production bindings and reuses the existing release state for staging,
+prepublication recheck and binding readback. `BROWSER_OWNER`, all four runtime
+identity bindings, strict JWT verification, 15-minute Owner-only SSO+OTP and
+same-Profile one-use proof remain required.
+
+The actual protected Runner permission proof passed in
+[Run #42748869402](https://github.com/lirtual/mcp-workers/actions/runs/42748869402).
+[Release #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
+published Version `bd556e57-2c60-4fca-840c-e3091339abba` to 100%, with
+independent Cloudflare/Portal readback. Obsolete Repository
+`ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE`
+**GitHub sources** were separately authorized for deletion and each returned
+HTTP 404 on readback; the runtime audience binding remains mandatory.
+A later Edge Endpoint was online and control-ready, but physical Owner
+SSO/OTP and same-Profile one-use activation **remain Not performed**, not Pass.
+Historical #733/#531/Owner Review evidence above remains intact;
+Database/Weixin Access applications were not retired under #804.
