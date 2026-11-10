@@ -22,7 +22,7 @@ This records the maintained Wrangler ingress configuration, **not** proof of dep
 | Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
 | Weixin Action Provider | `weixin-mcp-worker` (existing physical Worker) | Access owner setup domain + internal Service Binding | No public MCP ingress; `weixin.lirtual.dpdns.org` is owner administration only |
 
-These are configured ingress addresses, not evidence of a successful production release, a live Portal mapping or an authenticated ChatGPT tool call. Verify every release and actual Portal target independently.
+These are configured ingress addresses, not evidence of a successful production release, a live Portal mapping or an authenticated ChatGPT tool call. The Database `database.lirtual.dpdns.org` legacy custom-domain route is absent from the maintained Wrangler source but remains a separately managed **live** Cloudflare resource pending authorized retirement; remove that route before removing its domain-wide `Database MCP Owner Setup` Access application. The registered production Database Portal upstream was read back on 2026-11-10 as the workers.dev address above. Verify every release and actual Portal target independently.
 
 ## Cutover rule
 
