@@ -2,7 +2,7 @@
 
 Spec: [#849](https://github.com/lirtual/mcp-workers/issues/849) — ready-for-agent，Issue 发布不代表实施或生产授权。
 
-Status: **6/6 Environment Secrets 已按原字节迁至 Repository 并独立验真 Pass；2 Variables 待迁，10 Environments 保留；PR #850 仍为 Draft，未发布生产**（2026-11-11）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A，并在设计 Spec 之后分别授权代码实施、临时迁移入口合并与六个 Secret 原值迁移。最初的只读预检、受阻和后续解阻经过作为时间顺序的历史记录保留；当前有效状态以本页末尾最新实测回执为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
+Status: **6/6 Secrets + 2/2 Variables 已原值迁至 Repository 且逐字节独立核验 Pass；Repository 配置现为 6 Variables / 10 Secrets，10 Environments 原样保留；PR #850 仍为 Draft，未发布生产**（2026-11-11）。Owner 已确认 Q1=B、Q2=A、Q3=A、Q4=A、Q5=A，并在设计 Spec 之后分别授权代码实施、临时迁移入口合并、六个 Secret 原值迁移及两个 Variable 原值迁移。最初只读预检和阶段性未完成事项按时间顺序保留；当前有效状态以本页末尾最新实测回执为准。风险取舍见 [ADR-0003](./adr/0003-retire-github-actions-environments.md)。
 
 ## 已确定决策
 
@@ -118,3 +118,12 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 - 最终只读清单：Repository Secrets **10**、Variables **4**、Environments **10**；六个旧 Secret 的原 Environment 元数据与迁移前完全一致，旧值未删、未轮换。没有在途 GitHub Actions Run；未触发任何 Cloudflare Worker 或 Agent Release。
 - **临时 Secret 读取入口退役 Pass**：[PR #852](https://github.com/lirtual/mcp-workers/pull/852) 已合并至 `main=9d7094a1fe879983ffd81c5f742955b415269436`，[合并后 CI #42862728144](https://github.com/lirtual/mcp-workers/actions/runs/42862728144) 全部通过；独立回读显示临时工作流文件在 `main` 不存在，GitHub Workflow 注册列表已无该入口。迁移审计归档仍保留，临时密文工件按一天保留期自然到期；不保留长期临时 Secret 读取服务。
 - **尚未完成**：两个原 Environment Variables `IMA_CLIENT_ID` 和 `WORKFLOW_MCP_PORTAL_CLIENT_ID` 迁移、PR #850 消费者切换及对应 CI、旧分支可执行风险分类、10 个 Environment 删除，以及另行判断所需的真实业务验收。本轮 Secret Pass 不代表整个 Spec #849 完成。
+
+## 2026-11-11 两项 Environment Variable 原值迁移终态
+
+- **2/2 Variables BYTE_EQUALITY_PASS**，经 Owner 单独授权仅迁移 `ima-mcp-worker/IMA_CLIENT_ID`（32 UTF-8 字节）与 `workflow-mcp-worker/WORKFLOW_MCP_PORTAL_CLIENT_ID`（39 UTF-8 字节）。旧值从 GitHub Environment Variables API 直接读取，在受信任执行进程内以官方 Repository Variables API 创建，随后**独立重新读取**两个 API 来源并比较 UTF-8 完整字节。未输出原值、摘要，不生成替代值，不将原值写入临时文件或命令行参数。
+- 固定写入基线：`main=9d7094a1fe879983ffd81c5f742955b415269436`，[对应 CI #42862728144](https://github.com/lirtual/mcp-workers/actions/runs/42862728144) Success。GitHub API 登录身份为仓库管理员，写入前 Repository 同名 Variables 均不存在；除 PR #850 的 CI 外无在途 Actions Run。
+- 逐项写入后立即回读 **Pass**；另在独立进程中重新回读旧新值及清单，`INDEPENDENT_READBACK_PASS` 两项均 Pass：`IMA_CLIENT_ID` 恰好 32 字节，旧 `updated_at=2026-10-24T18:18:26Z` 不变；`WORKFLOW_MCP_PORTAL_CLIENT_ID` 恰好 39 字节，旧 `updated_at=2026-11-06T04:07:56Z` 不变。
+- 初次本地调用仅因 Repository 根路径末尾斜杠导致 GitHub GET 返回失败，错误发生在任何写入前；修正请求路径后一次完整执行成功，**两项均仅新建一次，没有重试写入或覆盖同名变量**。
+- 独立终态读回：**Repository Variables=6，Secrets=10，Environments=10**，名称集合精确符合 Spec；全部旧 Environment 配置完整保留。一次性本地迁移脚本已移除；未执行 Agent/Worker 生产发布或修改 Cloudflare/Portal/D1。
+- **仍待后续独立推进**：[PR #850](https://github.com/lirtual/mcp-workers/pull/850) 的消费者切换与 CI/合并、496 个历史非 `main` 分支的实际触发可达性检查（执行时重读最新分支数）、另行授权删除 10 个 Environments。**目前不能把整个 Spec #849 标记为 Completed。**
