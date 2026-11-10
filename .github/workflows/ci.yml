@@ -77,6 +77,8 @@ jobs:
 
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs
+      - name: Spec #849 one-time Secret transport synthetic-byte tests (no real Secrets)
+        run: node --test scripts/spec849-sealed-secret.test.mjs
       - name: Spec #774 isolated UU table retirement regression
         run: node --test scripts/workflow-uu-cleanup-gate.test.mjs
       - name: Spec #775 fixed Version143 recovery safety regression
