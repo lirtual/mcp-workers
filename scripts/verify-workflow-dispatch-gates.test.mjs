@@ -30,6 +30,15 @@ test('canonical SSH and Workflow GitHub Secret inputs are scoped, single-source 
   }
 });
 
+test('Spec #804 Browser candidate stage receives canonical account ID', () => {
+  const stage = release.split('      - name: Stage approved Worker variables\n')[1]
+    ?.split('      - name: Pin the reviewed unified Actions Worker')[0];
+  assert.ok(stage);
+  assert.ok(stage.includes('CLOUDFLARE_ACCOUNT_ID: ' + '$' + '{{ vars.CLOUDFLARE_ACCOUNT_ID }}'));
+  assert.match(stage, /OWNER_EMAIL:/);
+  assert.match(stage, /node scripts\/worker-release-variables\.mjs/);
+});
+
 test('Spec #804 Browser protected Runner probe excludes any production release',()=>{
   assert.match(release,/browser_access_readonly:/);
   assert.match(release,/inputs\.browser_access_readonly != true/);
