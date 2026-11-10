@@ -52,7 +52,11 @@ export function reviewAgentPublication(input) {
   if (input.deployWorker === true) fail('Worker production release is not part of Agent publication');
   if (!TAG.test(input.releaseTag ?? '')) fail('unreviewed native candidate');
   if (!SHA.test(input.sourceSha ?? '')) fail('candidate source drifted');
-  if (input.immutableReleases?.enabled !== true) fail('immutable releases are not enabled');
+  // GITHUB_TOKEN cannot read the admin-only immutable-releases setting (HTTP 403).
+  // pendingProbe defers that proof to a non-latest published release, before make_latest.
+  if (input.immutableReleases?.enabled !== true && input.immutableReleases?.pendingProbe !== true) {
+    fail('immutable releases are not enabled');
+  }
   if (input.existingRelease || input.existingTag) fail('existing release may not be overwritten');
 
   const run = input.candidateRun ?? {};
@@ -110,6 +114,22 @@ export function requireReadbackAfterPromotion(workflow) {
   return { ok: true };
 }
 
+/** A published, non-draft release must already be immutable before it is made Latest. */
+export function acceptImmutableBeforeLatest(input) {
+  const release = input?.release ?? {};
+  if (release.tag_name !== input?.releaseTag
+    || release.draft !== false
+    || release.prerelease !== false
+    || release.immutable !== true) {
+    fail('immutable releases are not enabled');
+  }
+  const latest = input.latest ?? null;
+  if (latest?.tag_name === input.releaseTag && latest.immutable !== true) {
+    fail('immutable releases are not enabled');
+  }
+  return { ok: true };
+}
+
 export function acceptAgentReleaseReadback(input) {
   const release = input?.release ?? {};
   const latest = input?.latest ?? {};
@@ -161,6 +181,7 @@ function main() {
   }
   try {
     if (mode === 'preflight') reviewAgentPublication(input);
+    else if (mode === 'probe') acceptImmutableBeforeLatest(input);
     else if (mode === 'readback') acceptAgentReleaseReadback(input);
     else {
       process.stderr.write('unknown guard mode\n');
