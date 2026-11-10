@@ -114,10 +114,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 19,
-  'Release workflow_dispatch must have exactly nineteen reviewed inputs');
-assert.match(dispatchInputs, /workflow_audience_rename:\n\s*description:.*Action OIDC Audience/);
-assert.match(release, /WORKFLOW_AUDIENCE_RENAME: \$\{\{ inputs.workflow_audience_rename \}\}/);
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 18,
+  'Release workflow_dispatch must have exactly eighteen reviewed inputs');
 // Spec #804: this additional protected Runner entry is strictly GET-only.
 assert.match(release, /      browser_access_readonly:\n        description:[^\n]+\n        required: false\n        type: boolean\n        default: false/);
 assert.ok(deploy.gate.includes('inputs.browser_access_readonly != true'),

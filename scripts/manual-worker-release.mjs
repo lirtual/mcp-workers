@@ -182,10 +182,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(present.length > 0 || JSON.stringify(expected) === "[]",
         "Workflow approved repositories missing from existing runtime");
     }
-    if (options.mode === "preflight" && options.workflowAudienceRename) {
-      invariant(find("WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE", "plain_text")?.text ===
-        "workflow-github-action:production", "One-time Action Audience rename requires the reviewed old value");
-    }
     if (options.mode === "preflight" && options.requireExistingSecrets) {
       invariant(!!find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") &&
         !!find("WORKFLOW_MCP_PORTAL_ENDPOINT", "plain_text") &&
@@ -1203,7 +1199,6 @@ async function main() {
       sourceConfig,
       requireExistingSecrets: mode === "preflight" &&
         process.env.WORKFLOW_CODE_ONLY === "true",
-      workflowAudienceRename: mode === "preflight" && process.env.WORKFLOW_AUDIENCE_RENAME === "true",
       previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
       browserIdentity,
