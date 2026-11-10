@@ -114,8 +114,10 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 17,
-  'Release workflow_dispatch must have exactly seventeen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 18,
+  'Release workflow_dispatch must have exactly eighteen reviewed inputs');
+assert.match(dispatchInputs, /workflow_audience_rename:\n\s*description:.*Action OIDC Audience/);
+assert.match(release, /WORKFLOW_AUDIENCE_RENAME: \$\{\{ inputs.workflow_audience_rename \}\}/);
 // A UU-retirement request may only reach the reviewed versioned Secret job,
 // never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
 assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
