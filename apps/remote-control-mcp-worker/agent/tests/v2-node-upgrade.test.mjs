@@ -10,7 +10,6 @@ import {
   validateManualUpgrade,prepareManualUpgrade,activateManualUpgrade,resolveWorkerUpgradePin
 } from "../scripts/upgrade-v2.mjs";
 import { downloadSelectedReleaseAsset } from "../scripts/verify-v2-release.mjs";
-import { renderLinuxLatestInstallShell } from "../../src/install-bootstrap.ts";
 import { readLatestAgentRelease } from "../../src/github-latest-agent-release.ts";
 import { runInteractiveLocalManager } from "../scripts/manage-v2.mjs";
 import { createAgentExecutionEngine } from "../src/execution.ts";
@@ -192,56 +191,64 @@ test("service activation rejection propagates without touching keys or receipt",
 });
 
 
-function workerInstallFixture(endpoint=ENDPOINT){
-  const asset=(target,ext,sha,size,id)=>({
-    target,id,name:"remote-control-agent-"+tag+"-"+target+ext,size,sha256:sha,
-    downloadUrl:"https://github.com/lirtual/mcp-workers/releases/download/"+tag+
-      "/remote-control-agent-"+tag+"-"+target+ext,
-  });
-  return renderLinuxLatestInstallShell(endpoint.slice(0,-1),{
-    repository:"lirtual/mcp-workers",id:5,tag,immutable:true,
-    assets:{
-      "linux-x64-glibc":asset("linux-x64-glibc",".tar.gz","a".repeat(64),1111,1),
-      "linux-arm64-glibc":asset("linux-arm64-glibc",".tar.gz","b".repeat(64),2222,2),
-      "windows-x64":asset("windows-x64",".zip","c".repeat(64),3333,3),
-      "darwin-arm64":asset("darwin-arm64",".tar.gz","d".repeat(64),4444,4),
-      "darwin-x64":asset("darwin-x64",".tar.gz","e".repeat(64),5555,5),
-    },
-  });
-}
-const mockWorkerResponse=(url,body,status=200)=>({
-  ok:status===200,status,url,headers:new Headers(),
-  text:async()=>body,
-});
-test("rca upgrade discovers only bound Worker immutable pin without executing fetched script",async()=>{
-  let fetched;
+test("rca upgrade reads one direct device GitHub Latest snapshot, never Worker /install.sh",async()=>{
+  let calls=0;
+  const release=latestBody(tag,TARGET,"a".repeat(64),2222);
   const pin=await resolveWorkerUpgradePin(ENDPOINT,{request:async(url,opts)=>{
-    fetched={url,opts};
-    return mockWorkerResponse(url,workerInstallFixture());
+    calls++;
+    assert.equal(url,"https://api.github.com/repos/lirtual/mcp-workers/releases/latest");
+    assert.equal(opts.method,"GET");
+    assert.equal(opts.redirect,"manual");
+    assert.equal(opts.headers.accept,"application/vnd.github+json");
+    return Response.json(release);
   }});
+  assert.equal(calls,1);
   assert.equal(pin.tag,tag);
   assert.equal(pin.commit,undefined);
-  assert.equal(pin.x64.sha256,"a".repeat(64));
-  assert.equal(pin.x64.size,1111);
-  assert.equal(pin.arm64.sha256,"b".repeat(64));
-  assert.equal(pin.x64.url,"https://github.com/lirtual/mcp-workers/releases/download/"+tag+"/remote-control-agent-"+tag+"-linux-x64-glibc.tar.gz");
-  assert.equal(fetched.url,ENDPOINT+"install.sh");
-  assert.equal(fetched.opts.redirect,"error");
+  for(const [field,target] of [["x64","linux-x64-glibc"],["arm64","linux-arm64-glibc"]]){
+    const asset=release.assets.find(a=>a.name==="remote-control-agent-"+tag+"-"+target+".tar.gz");
+    assert.equal(pin[field].url,asset.browser_download_url);
+    assert.equal(pin[field].sha256,asset.digest.slice(7));
+    assert.equal(pin[field].size,asset.size);
+  }
 });
-test("reviewed pin discovery fails closed on wrong endpoint, redirects and ambiguous content",async()=>{
-  const source=workerInstallFixture();
-  const request=async(url)=>mockWorkerResponse(url,source);
-  await assert.rejects(resolveWorkerUpgradePin("http://evil.example/",{request}),/Untrusted/);
-  await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{request:async(url)=>
-    mockWorkerResponse("https://other.example/install.sh",source)}),/unavailable/);
-  await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{request:async(url)=>
-    mockWorkerResponse(url,source+source)}),/unambiguous/);
-  await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{request:async(url)=>
-    mockWorkerResponse(url,source.replace("sha256sum -c -","skip-check"))}),/Unrecognized/);
-  await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{request:async(url)=>
-    mockWorkerResponse(url,source.replace(ENDPOINT,"https://other.example/"))}),/unambiguous/);
+
+test("device Latest rejects untrusted endpoint, GitHub errors, and malformed five-asset metadata",async()=>{
+  let calls=0;
+  const ok=latestBody(tag,TARGET,"a".repeat(64),2222);
+  const send=async()=>{calls++;return Response.json(ok);};
+  await assert.rejects(resolveWorkerUpgradePin("http://other.test/",{request:send}),/Untrusted/);
+  assert.equal(calls,0);
+  for(const status of [302,403,429,404,503]){
+    let count=0;
+    await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{request:async()=>{
+      count++;return new Response(null,{status});
+    }}),/GitHub metadata unavailable/);
+    assert.equal(count,1,"GitHub denial must never be retried");
+  }
+  const malformed=[
+    r=>{r.immutable=false;},r=>{r.draft=true;},r=>{r.prerelease=true;},
+    r=>{r.tag_name="v0.1.3-rc.1";},
+    r=>{r.html_url="https://github.com/lirtual/remote-control-agent/releases/tag/"+tag;},
+    r=>{r.assets.pop();},
+    r=>{r.assets[0].digest="sha256:"+"z".repeat(64);},
+    r=>{r.assets[0].size=180000001;},
+    r=>{r.assets[0].browser_download_url="https://evil.example/archive.tar.gz";},
+    r=>{r.assets.push({...r.assets[0]});},
+    r=>{r.assets.push({...r.assets[0],name:"remote-control-agent-v0.1.4-linux-x64-glibc.tar.gz"});},
+  ];
+  for(const mutate of malformed){
+    const release=structuredClone(ok);mutate(release);
+    await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{
+      request:async()=>Response.json(release),
+    }),/Release|release|asset|platform/);
+  }
+  await assert.rejects(resolveWorkerUpgradePin(ENDPOINT,{
+    request:async()=>new Response("x".repeat(1024*1024+1)),
+  }),/size limit/);
 });
-test("rca upgrade with no tag or commit uses reviewed Worker release, preserving recovery order",async()=>{
+
+test("rca upgrade with no tag or commit selects direct immutable Release, preserving recovery order",async()=>{
   const calls=[];
   const state={unit:"# Managed by Remote Control Agent installer.\nEnvironment=REMOTE_CONTROL_AGENT_ENDPOINT="+ENDPOINT+"\n",
     root:"old-root",info:{version:"v0.1.2"},ids:{permanent:ID}};
@@ -258,7 +265,7 @@ test("rca upgrade with no tag or commit uses reviewed Worker release, preserving
   assert.deepEqual(calls,["recover","inventory","pin","prepare","activate"]);
 });
 
-test("rca upgrade is idempotent if bound Worker already pins installed release",async()=>{
+test("rca upgrade is idempotent if GitHub latest matches installed release",async()=>{
   const calls=[];
   let output="";
   const unit="# Managed by Remote Control Agent installer.\n"+
@@ -287,6 +294,7 @@ function latestBody(releaseTag,target,digest,size){
   ];
   return {
     id:80,tag_name:releaseTag,draft:false,prerelease:false,immutable:true,
+    html_url:"https://github.com/lirtual/mcp-workers/releases/tag/"+releaseTag,
     assets:specs.map(([name,ext],index)=>{
       const file="remote-control-agent-"+releaseTag+"-"+name+ext;
       const selected=name===target;
@@ -355,8 +363,17 @@ test("an installed v0.1.51 layout upgrades from one latest asset without a commi
     assert.equal(lookups,1);
     assert.equal(decision.ok,true);
     if(!decision.ok) throw new Error("latest Agent Release was not selected");
-    const shell=renderLinuxLatestInstallShell(ENDPOINT.slice(0,-1),decision.release);
-    const pin=await resolveWorkerUpgradePin(ENDPOINT,{request:async()=>mockWorkerResponse(ENDPOINT+"install.sh",shell)});
+    // A cloud-edge GitHub rejection does not block a device-local Latest lookup.
+    const workerDenied=await readLatestAgentRelease(async()=>new Response(null,{status:403}));
+    assert.deepEqual(workerDenied,{ok:false,stop:"forbidden"});
+    let directLookups=0;
+    const pin=await resolveWorkerUpgradePin(ENDPOINT,{request:async(url,init)=>{
+      directLookups++;
+      assert.equal(url,"https://api.github.com/repos/lirtual/mcp-workers/releases/latest");
+      assert.equal(init.redirect,"manual");
+      return Response.json(latestBody(releaseTag,TARGET,f.digest,f.archive.length));
+    }});
+    assert.equal(directLookups,1);
     assert.equal(pin.tag,releaseTag);
     assert.equal(pin.commit,undefined);
     assert.equal(pin[TARGET==="linux-arm64-glibc"?"arm64":"x64"].url,assetUrl(releaseTag));
