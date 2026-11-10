@@ -404,10 +404,6 @@ jobs:
         # Explicit release on main only; no additional deployment or state mutation.
         run: node --experimental-strip-types scripts/check-rca-idle-release.mjs
 
-      - name: Stage pinned public Agent source (remote-control release only)
-        if: inputs.worker == 'remote-control-mcp-worker'
-        run: bash scripts/stage-public-remote-control-agent.sh
-
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 

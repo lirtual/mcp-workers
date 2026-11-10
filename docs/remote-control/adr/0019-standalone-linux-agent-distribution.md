@@ -1,5 +1,7 @@
 # ADR-0019 — Remote Control v2 standalone Linux/WSL2 CLI distribution
 
+**Amended by [ADR-0024](./0024-rca-monorepo-latest-agent-releases.md) for future source and distribution.** A new install selects one immutable latest Release from `lirtual/mcp-workers` instead of a configured tag or commit pin. Q4 still holds inside that one resolution: the installer must not switch artifacts mid-install. Ed25519, owner authorization, STOP, receipts, and no blind replay are not superseded.
+
 **Implementation checkpoint (2026-10-18; historical plan statements below do not define today's completion):** The relevant no-tombstone and single-code changes exist in the nonproduction stacked Draft #79, supported by real #71/#97 nonproduction acceptance and public Agent immutable TEST v0.1.8. Both native architecture CI checks have succeeded; *real externally paired native ARM64*, connected-device 24-hour expiry/Hibernation, genuine continuous #57 48-hour observation, and all formal merge/production authorization remain separate unfulfilled gates. There is no v1 production cutover.
 
 **Status:** Grilling Q1–Q8 accepted; public immutable v0.1.8 Python-free bundled-Node TEST assets, existing Preview `/install.sh`, and real x64 one-code owner pairing have been delivered. Native ARM64 owner-device/48h release gates and formal production approval remain open. Updated 2026-10-18.

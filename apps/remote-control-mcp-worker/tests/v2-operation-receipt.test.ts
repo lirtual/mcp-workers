@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createAgentExecutionEngine } from "../../remote-control-agent/src/execution.ts";
-import { monitorDeviceSocket, executeV2FileOperation, executeV2SessionRead } from "../../remote-control-agent/src/v2-connection-lifecycle.ts";
+import { createAgentExecutionEngine } from "../agent/src/execution.ts";
+import { monitorDeviceSocket, executeV2FileOperation, executeV2SessionRead } from "../agent/src/v2-connection-lifecycle.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 class Client extends EventTarget {

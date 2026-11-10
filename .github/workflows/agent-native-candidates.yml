@@ -1,0 +1,932 @@
+name: Native Agent candidates
+
+# Unpublished five-platform packages only. Publication is agent-release.yml.
+# PR/main CI calls this with v0.0.0-ci and does not upload a promotable Release.
+on:
+  workflow_call:
+    inputs:
+      candidate_tag:
+        description: Unpublished candidate label
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Unpublished candidate label; this workflow never publishes a Release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RCA_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+
+jobs:
+  refuse-unreviewed-ref:
+    name: Manual native candidates are built from main only
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Refuse a candidate dispatch that is not main
+        run: echo 'Manual native candidates are built from main only' >&2; exit 1
+
+  native-agent:
+    name: Native Agent / ${{ matrix.os }}
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install pinned source dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Typecheck
+        run: pnpm --filter remote-control-agent typecheck
+      - name: Build native supervisor and test
+        run: pnpm --filter remote-control-agent test
+      - name: Isolated Linux one-shot immutable staging contract (no systemd effects)
+        run: python3 -B apps/remote-control-mcp-worker/agent/tests/linux-stage-only.test.py
+      - name: Build and unpack unpublished native candidate (no Release publishing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_tag="$RCA_CANDIDATE_TAG"
+          # A candidate label is not release approval. No version-specific
+          # feature switch or published-Release mutation is permitted here.
+          if [[ "$candidate_tag" != v0.0.0-ci &&
+                ! "$candidate_tag" =~ ^v0\.[1-9][0-9]*\.[0-9]+(-[a-z0-9][a-z0-9.-]*)?$ ]]; then
+            echo "Invalid candidate-only version label" >&2
+            exit 1
+          fi
+          # Digests from the official Node.js v24.21.0 SHASUMS256.txt,
+          # independently reviewed before pinning this CI. Do not package a
+          # mutable setup-node cache binary or an unreviewed Node patch release.
+          case "$(uname -m)" in
+            x86_64)
+              target=linux-x64-glibc
+              node_arch=x64
+              node_archive_sha256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+              ;;
+            aarch64)
+              target=linux-arm64-glibc
+              node_arch=arm64
+              node_archive_sha256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
+              ;;
+            *) echo "Unsupported CPU for native bundle smoke"; exit 1 ;;
+          esac
+          native_bin="$(realpath apps/remote-control-mcp-worker/agent/.build/session-supervisor)"
+          command -v readelf >/dev/null
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          node_archive="$temp_dir/node-v24.21.0-linux-$node_arch.tar.xz"
+          curl --fail --silent --show-error --location --max-time 60 \
+            --proto '=https' --tlsv1.2 \
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-$node_arch.tar.xz" \
+            -o "$node_archive"
+          echo "$node_archive_sha256  $node_archive" | sha256sum --check --status
+          node_bin="$temp_dir/node"
+          tar -xJOf "$node_archive" "node-v24.21.0-linux-$node_arch/bin/node" > "$node_bin"
+          chmod 700 "$node_bin"
+          test "$("$node_bin" --version)" = v24.21.0
+          node apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
+            --version "$candidate_tag" --target "$target" \
+            --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
+            --native "$native_bin" --native-sha256 "$(sha256sum "$native_bin" | cut -d' ' -f1)" \
+            --out "$temp_dir/build"
+          archive="$temp_dir/build/remote-control-agent-$candidate_tag-$target.tar.gz"
+          python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
+            "$archive" "$candidate_tag" "$target"
+          # A genuinely separate, minimal runtime image without Node, Git or
+          # compiler verifies the *packaged* Node and native helper. The image
+          # is pulled before running the fully offline, read-only container.
+          docker pull --quiet python:3.12-slim-bookworm >/dev/null
+          mkdir "$temp_dir/bootstrap"
+          cp apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py \
+             apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
+             "$temp_dir/bootstrap/"
+          chmod 755 "$temp_dir/bootstrap"
+          chmod 644 "$temp_dir/bootstrap/"*.py "$archive"
+          docker run --rm --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --user 65534:65534 --tmpfs /tmp:rw,exec,mode=1777 \
+            -v "$archive:/opt/agent.tar.gz:ro" \
+            -v "$temp_dir/bootstrap:/opt/bootstrap:ro" \
+            python:3.12-slim-bookworm sh -ec \
+            'for tool in node git cc; do
+               if command -v "$tool" >/dev/null; then exit 11; fi
+             done
+             exec python3 -B /opt/bootstrap/validate-local-archive.py \
+               /opt/agent.tar.gz "$2" "$1"' shell "$target" "$candidate_tag"
+          # Real packaged runtime, not just source mocks: this must exit and
+          # restore raw TTY after Enter, arrows, numbers and cancellation.
+          mkdir -p "$temp_dir/pty"
+          tar -xzf "$archive" -C "$temp_dir/pty"
+          python3 apps/remote-control-mcp-worker/agent/tests/packaged-install-mode-pty.py "$temp_dir/pty"
+          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
+            mkdir -p "release-candidate/$target"
+            cp -- "$archive" "release-candidate/$target/"
+            sha256sum "release-candidate/$target/"*.tar.gz > "release-candidate/$target/SHA256SUMS.txt"
+          fi
+          echo "Candidate verified on build runner and offline minimal container; never published."
+      - name: Save reviewed native candidate for manual Release promotion
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.candidate_tag }}-${{ matrix.os }}
+          path: release-candidate/
+          retention-days: 2
+          if-no-files-found: error
+          compression-level: 0
+
+  macos-native-candidate:
+    name: Unpublished native macOS 15 / ${{ matrix.arch }} candidate
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: darwin-arm64
+            uname_arch: arm64
+            runner: macos-15
+            node_archive_sha256: 6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe
+          - arch: x64
+            target: darwin-x64
+            uname_arch: x86_64
+            runner: macos-15-intel
+            node_archive_sha256: 0ae5a24c24bb7d015cd816c5036b3f90f2945aa872fcf54e58da054753b3a299
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build native Darwin owned-group helper (no owner pairing)
+        run: |
+          set -euo pipefail
+          mkdir -p apps/remote-control-mcp-worker/agent/.build
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            apps/remote-control-mcp-worker/agent/scripts/darwin-session-supervisor.c \
+            -o apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor
+          chmod 700 apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor
+      - name: Typecheck and verify native file/receipt seam (no owner pairing)
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.uname_arch }}"
+          test "$(node -p process.arch)" = "${{ matrix.arch }}"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 15
+          pnpm --filter remote-control-agent typecheck
+          cd apps/remote-control-mcp-worker/agent
+          node --experimental-strip-types --test tests/macos-candidate.test.mjs tests/macos-file-tools.test.ts tests/pair-device.test.ts
+          # macOS-owned child groups must not hold CI indefinitely when
+          # the helper or a test faults. This is the SAME existing job.
+          node -e 'const {spawnSync}=require("node:child_process"); const r=spawnSync(process.execPath,["--experimental-strip-types","--test","tests/macos-managed-sessions.test.ts"],{timeout:45000,stdio:"inherit"}); if(r.error||r.status!==0) {console.error("Native Darwin session tests failed or timed out:",r.error?.code??r.status);process.exit(1)}'
+
+      - name: Build and inspect native unpublished CPU-specific candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          archive="$temp_dir/node.tar.xz"
+          curl --fail --silent --show-error --location --max-time 90 \
+            --proto '=https' --tlsv1.2 \
+            https://nodejs.org/dist/v24.21.0/node-v24.21.0-${{ matrix.target }}.tar.xz -o "$archive"
+          echo '${{ matrix.node_archive_sha256 }}  '"$archive" | shasum -a 256 --check
+          tar -xJOf "$archive" node-v24.21.0-${{ matrix.target }}/bin/node > "$temp_dir/node"
+          chmod 700 "$temp_dir/node"
+          test "$("$temp_dir/node" --version)" = v24.21.0
+          for pass in first second; do
+            "$temp_dir/node" apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
+              --version "$RCA_CANDIDATE_TAG" --target ${{ matrix.target }} \
+              --node-bin "$temp_dir/node" \
+              --node-sha256 "$(shasum -a 256 "$temp_dir/node" | awk '{print $1}')" \
+              --native "$(pwd)/apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor" \
+              --native-sha256 "$(shasum -a 256 apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor | awk '{print $1}')" \
+              --out "$temp_dir/$pass"
+          done
+          asset="remote-control-agent-$RCA_CANDIDATE_TAG-${{ matrix.target }}.tar.gz"
+          cmp "$temp_dir/first/$asset" "$temp_dir/second/$asset"
+          mkdir "$temp_dir/unpacked"
+          chmod 700 "$temp_dir/unpacked"
+          tar -xzf "$temp_dir/first/$asset" -C "$temp_dir/unpacked"
+          test "$("$temp_dir/unpacked/bin/node" --version)" = v24.21.0
+          node -e 'const m=require(process.argv[1]); if(m.target!=="darwin-"+process.argv[3] || m.candidate_profile!=="darwin-permanent-local-v1" || m.native_supervisor!=="darwin-owned-group-v1" || m.source_commit!==process.argv[2] || m.upgrade_profile)process.exit(1)' \
+            "$temp_dir/unpacked/bundle.json" "$(git rev-parse HEAD)" "${{ matrix.arch }}"
+          test ! -e "$temp_dir/unpacked/apps/remote-control-agent/.build/session-supervisor"
+          test -x "$temp_dir/unpacked/apps/remote-control-agent/.build/darwin-session-supervisor"
+          test ! -e "$temp_dir/unpacked/apps/remote-control-agent/scripts/install-v2.mjs"
+          for js in "$temp_dir/unpacked"/apps/remote-control-agent/src/*.js; do
+            "$temp_dir/unpacked/bin/node" --check "$js"
+          done
+          home="$temp_dir/unpaired-home"
+          mkdir "$home"
+          chmod 700 "$home"
+          if HOME="$home" "$temp_dir/unpacked/bin/node" \
+              "$temp_dir/unpacked/apps/remote-control-agent/src/macos-temporary.js" \
+              --endpoint https://example.invalid/ </dev/null > "$temp_dir/stdout" 2> "$temp_dir/stderr"; then
+            echo 'Noninteractive candidate unexpectedly enabled a device' >&2; exit 1
+          fi
+          test ! -e "$home/.local"
+          grep -q 'interactive owner terminal' "$temp_dir/stderr"
+          # Test the extracted native runtime itself: WSS frame adapter, file
+          # effects, permission denial, SQLite receipts and Unknown recovery.
+          RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \
+            "$temp_dir/unpacked/bin/node" --test \
+            apps/remote-control-mcp-worker/agent/tests/macos-packaged-runtime-smoke.mjs
+          RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \
+            "$temp_dir/unpacked/bin/node" --experimental-strip-types --test \
+            apps/remote-control-mcp-worker/agent/tests/macos-local.test.mjs \
+            apps/remote-control-mcp-worker/agent/tests/macos-remote-upgrade.test.mjs
+          # Offline first-stage refuses non-owner/noninteractive execution.
+          if sh apps/remote-control-mcp-worker/agent/scripts/macos-local.sh install \
+              --archive "$temp_dir/first/$asset" --sha256 "$(shasum -a 256 "$temp_dir/first/$asset" | awk '{print $1}')" \
+              --source-sha "$(git rev-parse HEAD)" --endpoint https://example.invalid/ \
+              </dev/null; then
+            echo 'macOS offline bootstrap accepted a non-owner terminal' >&2; exit 1
+          fi
+          echo "Verified native candidate from $(git rev-parse HEAD), unpublished SHA:"
+          shasum -a 256 "$temp_dir/first/$asset"
+          # Save *only* an explicitly dispatched, verified candidate for
+          # owner-Mac E2E. Pull-request CI never publishes/downloads assets.
+          # This is a short-lived Actions artifact, NOT a GitHub Release.
+          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
+            mkdir -p "release-candidate/${{ matrix.target }}"
+            cp -- "$temp_dir/first/$asset" "release-candidate/${{ matrix.target }}/"
+            cp -- apps/remote-control-mcp-worker/agent/scripts/macos-local.sh \
+              "release-candidate/${{ matrix.target }}/"
+            (
+              cd "release-candidate/${{ matrix.target }}"
+              shasum -a 256 "$asset" macos-local.sh > SHA256SUMS.txt
+              shasum -a 256 -c SHA256SUMS.txt
+            )
+          fi
+          # CI runner is NOT an owner-paired real Mac. No permanent grant or public Release.
+      - name: Save unpublished macOS candidate for owner-native E2E
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.candidate_tag }}-${{ matrix.target }}
+          path: release-candidate/${{ matrix.target }}/
+          retention-days: 2
+          if-no-files-found: error
+          compression-level: 0
+
+  windows-native-preview:
+    name: Native Windows full tools preview / x64
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install pinned source dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Typecheck shared and Windows preview sources
+        run: pnpm --filter remote-control-agent typecheck
+      - name: Windows path, identity ACL and native full-tool smoke (isolated temp fixtures)
+        shell: pwsh
+        run: |
+          Set-Location apps/remote-control-mcp-worker/agent
+          # Match the already validated Windows Release gate: native ACL probes
+          # must not contend with concurrently running full-tool Shell tests.
+          node --experimental-strip-types --test --test-concurrency=4 tests/windows-v2.test.ts tests/windows-log.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows full-tool tests failed' }
+          # Native PowerShell startup is load-sensitive; run this existing full-mode
+          # integration test without concurrent native smoke-test processes.
+          # Keep its 7-second output assertion and every original safety check.
+          node --experimental-strip-types --test tests/windows-full-tools.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows process integration tests failed' }
+          node --experimental-strip-types --test tests/windows-acl.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows ACL tests failed' }
+          node --experimental-strip-types --test tests/windows-upgrade-pipe.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows upgrade-freeze IPC failed' }
+          node --experimental-strip-types --test tests/session-rca-windows.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Session runner context tests failed' }
+      - name: Native Windows Session-private identity ACL (synthetic Runner fixture)
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: github-hosted
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = 'apps/remote-control-mcp-worker/agent/scripts/windows-session-private-store.ps1'
+          $dir = Join-Path $env:RUNNER_TEMP 'session-rca'
+          if (Test-Path -LiteralPath $dir) { throw 'Unexpected pre-existing Session identity fixture' }
+          try {
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -Action Init -Directory $dir
+            if ($LASTEXITCODE -ne 0) { throw 'Session identity ACL initialization failed' }
+            [IO.File]::WriteAllText((Join-Path $dir 'identity.json'), '{"synthetic":true}')
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -Action Seal -Directory $dir -FileName identity.json
+            if ($LASTEXITCODE -ne 0) { throw 'Session identity ACL sealing failed' }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -Action Check -Directory $dir
+            if ($LASTEXITCODE -ne 0) { throw 'Session identity ACL check failed' }
+            $invalid = Join-Path $env:RUNNER_TEMP 'not-session-rca'
+            $failure = Join-Path $env:RUNNER_TEMP 'expected-session-acl-rejection.txt'
+            $process = Start-Process -FilePath powershell.exe -ArgumentList @(
+              '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File', $script,
+              '-Action','Check','-Directory',$invalid) -NoNewWindow -Wait -PassThru -RedirectStandardError $failure
+            if ($process.ExitCode -eq 0) { throw 'Unreviewed Session directory was accepted' }
+          } finally {
+            if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+          }
+      - name: New public PowerShell installer parses under Windows without executing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $parseErrors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'apps/remote-control-mcp-worker/agent/install.ps1').Path, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -ne 0) {
+            throw ('New public installer has Windows PowerShell syntax errors: ' +
+              ($parseErrors | ForEach-Object { $_.Message } | Out-String))
+          }
+          # The Session-only ACL helper is bundled but never executed by this parser gate.
+          $sessionErrors = $null
+          $sessionTokens = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'apps/remote-control-mcp-worker/agent/scripts/windows-session-private-store.ps1').Path,
+            [ref]$sessionTokens, [ref]$sessionErrors)
+          if ($sessionErrors.Count -ne 0) { throw 'Windows Session ACL helper syntax invalid' }
+          $installer = Get-Content -Raw 'apps/remote-control-mcp-worker/agent/install.ps1'
+          if ($installer -notmatch 'releases/latest' -or $installer -notmatch 'sha256:' -or $installer -notmatch 'SelectedReleaseSha256') {
+            throw 'Public Windows installer must require the official latest Release digest'
+          }
+          if ($installer -match 'PinnedReleaseSha256') {
+            throw 'Public Windows installer must not accept a source pin'
+          }
+          # Invoke only the isolated redirect validator function against
+          # deliberately invalid starting origins. No HTTP request is made.
+          $functionAst = $null
+          $functionAst = ([System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'apps/remote-control-mcp-worker/agent/install.ps1').Path, [ref]$tokens, [ref]$parseErrors)).Find({
+            param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+              $node.Name -eq 'Download-ApprovedAsset'
+          }, $true)
+          if (-not $functionAst) { throw 'Pinned redirect checker is missing' }
+          Invoke-Expression $functionAst.Extent.Text
+          foreach ($bad in @('http://github.com/lirtual/remote-control-agent/releases/download/test.zip',
+            'https://127.0.0.1/internal.zip', 'https://evil.example/install.zip',
+            'https://github.com/other/project/releases/download/evil.zip')) {
+            $rejected = $false
+            try { Download-ApprovedAsset $bad (Join-Path $env:RUNNER_TEMP 'blocked-download.zip') }
+            catch { $rejected = $_.Exception.Message -like '*Unexpected GitHub Release asset redirect*' }
+            if (-not $rejected -or (Test-Path (Join-Path $env:RUNNER_TEMP 'blocked-download.zip'))) {
+              throw ('Untrusted Windows download origin was not blocked: ' + $bad)
+            }
+          }
+      - name: One-command Windows upgrade decision checks (no task writes)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'apps/remote-control-mcp-worker/agent/install.ps1'
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path $path).Path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) { throw 'Installer PowerShell syntax invalid' }
+          $func = $ast.Find({
+            param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+              $node.Name -eq 'Get-ExistingAgentVersion'
+          }, $true)
+          if (-not $func) { throw 'Existing device version classifier missing' }
+          Invoke-Expression $func.Extent.Text
+          $root = Join-Path $env:RUNNER_TEMP 'rca-fixture-programs'
+          $good = Join-Path $root 'v0.1.13-windows.1-windows-x64\bin\rca-background.exe'
+          if ((Get-ExistingAgentVersion $root $good) -cne 'v0.1.13-windows.1') {
+            throw 'Older paired Windows task was not detected'
+          }
+          foreach ($bad in @(
+            (Join-Path $root '..\outside\node.exe'),
+            (Join-Path $root 'v0.1.15-windows-x64\unexpected.exe'),
+            'C:\Windows\System32\cmd.exe'
+          )) {
+            $rejected = $false
+            try { $null = Get-ExistingAgentVersion $root $bad }
+            catch { $rejected = $true }
+            if (-not $rejected) { throw 'Untrusted legacy task path was accepted' }
+          }
+          $source = Get-Content -LiteralPath $path -Raw
+          if (-not $source.Contains('Confirm-Upgrade $Host.UI') -or
+              -not $source.Contains("ReadKey('NoEcho,IncludeKeyDown')") -or
+              -not $source.Contains('Upgrade? [y/N]') -or
+              -not $source.Contains('Cancelled. No changes.') -or
+              $source.Contains('$Host.UI.PromptForChoice') -or
+              $source.Contains("Read-Host 'Upgrade this device") -or
+              -not $source.Contains('& $nodeExisting $verifyExisting $target | Out-Null') -or
+              -not $source.Contains('& $node $verifier $stage | Out-Null') -or
+              -not $source.Contains("upgrade --version `$Version") -or
+              $source.Contains('public installer never upgrades it')) {
+            throw 'Installer must use a safe English-only console prompt and hide verifier JSON'
+          }
+          $confirm = $ast.Find({
+            param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+              $node.Name -eq 'Confirm-Upgrade'
+          }, $true)
+          if (-not $confirm) { throw 'Upgrade confirmation function missing' }
+          Invoke-Expression $confirm.Extent.Text
+          $raw = [pscustomobject]@{ Key = 'n'; Fail = $false }
+          $raw | Add-Member -MemberType ScriptMethod -Name ReadKey -Value {
+            param($flags)
+            if ($flags -ne 'NoEcho,IncludeKeyDown') { throw 'Unexpected key flags' }
+            if ($this.Fail) { throw 'No interactive terminal' }
+            return [pscustomobject]@{ Character = $this.Key; KeyDown = $true }
+          }
+          $ui = [pscustomobject]@{ RawUI = $raw }
+          foreach ($key in @('n', 'N', '', [string][char]13, '?', 'x')) {
+            $raw.Key = $key
+            if (Confirm-Upgrade $ui) { throw "Unsafe confirmation for key '$key'" }
+          }
+          foreach ($key in @('y', 'Y')) {
+            $raw.Key = $key
+            if (-not (Confirm-Upgrade $ui)) { throw "Valid Y approval rejected" }
+          }
+          $raw.Fail = $true
+          $denied = $false
+          try { $null = Confirm-Upgrade $ui }
+          catch { $denied = $true }
+          if (-not $denied) { throw 'No-console failure must not approve upgrade' }
+
+      - name: User task negative checks (never create a task)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1'
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -Action Status
+          if ($LASTEXITCODE -ne 0) { throw 'Task status failed' }
+          # A deliberate native-process error is an expected negative result.
+          # Start-Process avoids treating stderr as a pwsh terminating error.
+          $p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$script,'-Action','Enable','-Endpoint','https://rca.example.test/','-Node','C:\Windows\System32\not-node.exe','-Entry','C:\Temp\windows-v2.js') -PassThru -Wait -NoNewWindow -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'expected-task-rejection.txt')
+          if ($p.ExitCode -eq 0) { throw 'Untrusted native task path was accepted' }
+      - name: Build native windowless scheduled launcher (no user install)
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/scripts/build-windows-background.ps1 -Output (Join-Path $env:RUNNER_TEMP 'rca-background.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Windowless background launcher compile failed' }
+      - name: Stage native Windows x64 offline candidate (no publishing)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # SHA-256 from official Node.js v24.21.0 signed release checksums.
+          $official = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
+          $nodeBinary = (Get-Command node.exe).Source
+          $digest = (Get-FileHash -LiteralPath $nodeBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne $official) { throw 'Pinned Node binary SHA-256 mismatch' }
+          $output = Join-Path $env:RUNNER_TEMP 'windows-preview-bundle'
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version v0.0.0-ci --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --out $output
+          if ($LASTEXITCODE -ne 0) { throw 'Native bundle build failed' }
+          $stage = Join-Path $output 'remote-control-agent-v0.0.0-ci-windows-x64'
+          & (Join-Path $stage 'bin/node.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled native Node cannot run' }
+          $entry = Join-Path $stage 'apps/remote-control-agent/src/windows-v2.js'
+          $capabilities = & (Join-Path $stage 'bin/node.exe') $entry status | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $capabilities.platform -cne 'win32' -or
+              $capabilities.shell -ne $true -or $capabilities.write_file -ne $true) {
+            throw 'Bundled Windows Agent full capability status failed'
+          }
+          $bundle = Get-Content -LiteralPath (Join-Path $stage 'bundle.json') -Raw | ConvertFrom-Json
+          if ($bundle.upgrade_profile -cne 'paired-full-v1') { throw 'Full-tools profile not present in signed bundle' }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path $output 'candidate.zip') -CompressionLevel Optimal
+          $zip = Join-Path $output 'candidate.zip'
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $extracted = Join-Path $env:RUNNER_TEMP 'windows-preview-reopened'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extracted -ErrorAction Stop
+          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $extracted
+          if ($LASTEXITCODE -ne 0) { throw 'Reopened archive file inventory failed' }
+          & (Join-Path $extracted 'rca.cmd') status
+          if ($LASTEXITCODE -ne 0) { throw 'Portable rca launcher failed' }
+          # CI-only offline fixture: hash verification, safe extraction, private
+          # staging and bundled CLI; no pairing, task creation or cloud access.
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/tests/fixtures/windows-stage-only.ps1 -Version v0.0.0-ci -OfflineArchive $zip -ExpectedSha256 $hash
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows offline installer failed' }
+          $installed = Join-Path $env:LOCALAPPDATA 'mcp-workers\remote-control\programs\v0.0.0-ci-windows-x64'
+          & (Join-Path $installed 'rca.cmd') status
+          if ($LASTEXITCODE -ne 0) { throw 'Installed bundled CLI failed' }
+          $rejectRepeat = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','apps/remote-control-mcp-worker/agent/tests/fixtures/windows-stage-only.ps1','-Version','v0.0.0-ci','-OfflineArchive',$zip,'-ExpectedSha256',$hash) -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $output 'expected-repeat-rejection.txt')
+          if ($rejectRepeat.ExitCode -eq 0) { throw 'Repeat-install unexpectedly succeeded' }
+          $rejectDigest = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','apps/remote-control-mcp-worker/agent/tests/fixtures/windows-stage-only.ps1','-Version','v0.0.1-ci','-OfflineArchive',$zip,'-ExpectedSha256',('0' * 64)) -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $output 'expected-digest-rejection.txt')
+          if ($rejectDigest.ExitCode -eq 0) { throw 'Tampered checksum accepted' }
+          Write-Output "Candidate ZIP SHA256: $hash (unpublished)"
+
+      - name: Native Windows second-version rollback candidate (GUI-free archive)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $official = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
+          $nodeBinary = (Get-Command node.exe).Source
+          if ((Get-FileHash -LiteralPath $nodeBinary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $official) {
+            throw 'Untrusted Windows Node for rollback fixture'
+          }
+          $out = Join-Path $env:RUNNER_TEMP 'windows-preview-second-version'
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version v0.0.1-ci --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --out $out
+          if ($LASTEXITCODE -ne 0) { throw 'Second-version fixture build failed' }
+          $stage = Join-Path $out 'remote-control-agent-v0.0.1-ci-windows-x64'
+          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $stage
+          if ($LASTEXITCODE -ne 0) { throw 'GUI-free Windows bundle verification failed' }
+          $archive = Join-Path $env:RUNNER_TEMP 'candidate-next-version.zip'
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -CompressionLevel Optimal
+          $reopened = Join-Path $env:RUNNER_TEMP 'windows-preview-reopened-second'
+          Expand-Archive -LiteralPath $archive -DestinationPath $reopened -ErrorAction Stop
+          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $reopened
+          if ($LASTEXITCODE -ne 0) { throw 'Reopened second-version archive refused' }
+      - name: Register and remove user-logon task with synthetic identity (no cloud calls)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Synthetic task acceptance requires isolated CI' }
+          $root = Join-Path $env:LOCALAPPDATA 'mcp-workers\remote-control'
+          $key = Join-Path $root 'v2-identity.pem'
+          $device = $key + '.device-id'
+          $program = Join-Path $env:LOCALAPPDATA 'mcp-workers\remote-control\programs\v0.0.0-ci-windows-x64\rca.cmd'
+          $acl = 'apps/remote-control-mcp-worker/agent/scripts/windows-private-store.ps1'
+          if (Test-Path -LiteralPath $key) { throw 'Refusing to replace an existing key' }
+          if (Test-Path -LiteralPath $device) { throw 'Refusing to replace an existing ID' }
+          $created = $false
+          try {
+            [IO.File]::WriteAllText($key,'TEST_ONLY_NON_PRIVATE_KEY')
+            [IO.File]::WriteAllText($device,("00000000-0000-4000-8000-000000000001" + [char]10))
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'v2-identity.pem'
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic key ACL seal failed' }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'v2-identity.pem.device-id'
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic ID ACL seal failed' }
+            # An interrupted first Start persists a *protected* activation
+            # marker. Validate its real PowerShell ACL path in disposable CI.
+            $pending = $key + '.activation-pending'
+            [IO.File]::WriteAllText($pending, ("00000000-0000-4000-8000-000000000001" + [char]10))
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'v2-identity.pem.activation-pending'
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic activation marker seal failed' }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Check -Directory $root -FileName 'v2-identity.pem.activation-pending'
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic activation marker check failed' }
+            [IO.File]::Delete($pending)
+
+            # Synthetic ID deliberately has no cloud grant. Exercise the
+            # protected Task Scheduler backend directly; NEVER bypass the
+            # signed grant check in the public `rca enable` command.
+            $installed = Split-Path -Parent $program
+            $node = Join-Path $installed 'bin\node.exe'
+            $entry = Join-Path $installed 'apps\remote-control-agent\src\windows-v2.js'
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `
+              'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' `
+              -Action Enable -Endpoint 'https://rca.example.test/' -Node $node -Entry $entry
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic task registration failed' }
+            $created = $true
+            # CI-only task fixture: expose safe structural validation errors
+            # while the end-user CLI continues redacting local OS details.
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Status
+            if ($LASTEXITCODE -ne 0) { throw 'Raw native Task Scheduler validation failed' }
+            # A direct PowerShell call in an isolated runner surfaces a safe,
+            # non-secret status validation reason if metadata round-trip differs.
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Status
+            if ($LASTEXITCODE -ne 0) { throw 'Registered task metadata failed direct validation' }
+            $status = & $program task-status | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $status.installed -ne $true) { throw 'Task not registered' }
+            # Build an isolated second-version CI ZIP and use the *real*
+            # hash-verifying installer, not an ACL-changing Copy-Item fixture.
+            $oldVersion = 'v0.0.0-ci'
+            $newVersion = 'v0.0.1-ci'
+            $basePrograms = Join-Path $root 'programs'
+            $newDir = Join-Path $basePrograms ($newVersion + '-windows-x64')
+            $oldDir = Join-Path $basePrograms ($oldVersion + '-windows-x64')
+            # New version is the separately built, checksum-verified
+            # GUI-free second-version bundle from the preceding native CI step.
+            $secondZip = Join-Path $env:RUNNER_TEMP 'candidate-next-version.zip'
+            if (-not (Test-Path -LiteralPath $secondZip)) {
+              throw 'Second-version upgrade candidate ZIP unavailable'
+            }
+            $secondDigest = (Get-FileHash -LiteralPath $secondZip -Algorithm SHA256).Hash.ToLowerInvariant()
+            # A real stage-only request must never stop or mutate the existing
+            # Task or bypass the local installer's default RawUI approval.
+            $originalTask = Get-ScheduledTask -TaskName ('RCA-Remote-Control-v2-' + ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value).Replace('-','_'))
+            $originalAction = [string]$originalTask.Actions[0].Execute
+            $origId = (Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash
+            $origKey = (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash
+            # Offline CI hashes the candidate archive. It does not pass a source pin.
+            $stagerScript = Join-Path $oldDir 'apps/remote-control-agent/scripts/windows-stage-install.ps1'
+            if (-not (Test-Path -LiteralPath $stagerScript -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $stagerScript -Algorithm SHA256).Hash -ne
+                  (Get-FileHash -LiteralPath 'apps/remote-control-mcp-worker/agent/install.ps1' -Algorithm SHA256).Hash) {
+              throw 'Installed current-version StageOnly script is not the reviewed installer'
+            }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $stagerScript -StageOnly -Version $newVersion -OfflineArchive $secondZip -ExpectedSha256 $secondDigest
+            if ($LASTEXITCODE -ne 0) { throw 'Real installer stage-only candidate failed' }
+            $afterStaging = Get-ScheduledTask -TaskName $originalTask.TaskName
+            if (-not [string]::Equals([string]$afterStaging.Actions[0].Execute,$originalAction,[StringComparison]::OrdinalIgnoreCase) -or
+                (Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
+                (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
+              throw 'Stage-only changed the original Task or paired device'
+            }
+            $newCli = Join-Path $newDir 'rca.cmd'
+            # Forced post-switch failure must restore original task's action.
+            $badSwitch = Start-Process -FilePath powershell.exe -ArgumentList @(
+              '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',
+              'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1',
+              '-Action','Switch','-Version',$newVersion,
+              '-Direction','Upgrade','-CIInjectFailure'
+            ) -PassThru -Wait -NoNewWindow -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'expected-switch-refusal.txt')
+            if ($badSwitch.ExitCode -eq 0) { throw 'Injected task switch unexpectedly succeeded' }
+            $failureEvidence = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'expected-switch-refusal.txt') -Raw
+            if ($failureEvidence -notmatch 'previous task restored') {
+              # Disposable synthetic device only. No production identifiers.
+              Write-Output ('CI SWITCH FAILURE REASON: ' + $failureEvidence.Substring(0,[Math]::Min(1800,$failureEvidence.Length)))
+              throw 'Injected failure did not exercise the post-switch rollback path'
+            }
+            $taskName = 'RCA-Remote-Control-v2-' + ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value).Replace('-','_')
+            $current = Get-ScheduledTask -TaskName $taskName
+            if (-not [string]::Equals([string]$current.Actions[0].Execute,
+                (Join-Path $oldDir 'bin\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Failed switch did not restore old executable'
+            }
+            # The existing CI-only user Task is the process that an updater
+            # will need to stop. WMI spawns under the same SID *outside* its
+            # inherited Job, so the verified switch child must survive Stop.
+            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $oldRunning = Get-ScheduledTask -TaskName $taskName
+            if ($oldRunning.State -ne 'Running') {
+              $lastTask = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+              Write-Output ('CI synthetic Task state=' + $oldRunning.State + '; last_result=' + $lastTask.LastTaskResult)
+              & $program logs | Select-Object -Last 12 | Write-Output
+              throw 'Synthetic Agent Task did not remain active before WMI upgrade'
+            }
+            $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+            $switchScript = (Resolve-Path 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1').Path
+            # CI-only: capture a bounded diagnostic from the WMI child.
+            # All paths and versions here belong to the isolated runner fixture.
+            $wmiLog = Join-Path $env:RUNNER_TEMP 'rca-wmi-switch-diagnostic.log'
+            $wmiCommand = Join-Path $env:RUNNER_TEMP 'rca-wmi-switch-once.ps1'
+            $wmiBody = @"
+            `$ErrorActionPreference = 'Stop'
+            try {
+              & '$switchScript' -Action Switch -Version '$newVersion' -Direction Upgrade *>&1 |
+                Out-File -LiteralPath '$wmiLog' -Encoding utf8 -Append
+            } catch {
+              (`$_ | Out-String) | Out-File -LiteralPath '$wmiLog' -Encoding utf8 -Append
+              exit 1
+            }
+          "@
+            [IO.File]::WriteAllText($wmiCommand, $wmiBody)
+            $launchLine = '"' + $powershellPath + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $wmiCommand + '"'
+            $launchAt = Get-Date
+            $child = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $launchLine } -ErrorAction Stop
+            if ($child.ReturnValue -ne 0 -or $child.ProcessId -le 0) {
+              throw 'Independent WMI upgrade process could not start'
+            }
+            $verifiedChild = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $child.ProcessId) -ErrorAction SilentlyContinue
+            if ($verifiedChild -and
+                (Invoke-CimMethod -InputObject $verifiedChild -MethodName GetOwnerSid).Sid -ne
+                  ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
+              throw 'Independent upgrade process owner SID changed'
+            }
+            try {
+              $deadline = (Get-Date).AddSeconds(45)
+              $switched = $false
+              do {
+                Start-Sleep -Milliseconds 500
+                $liveTask = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+                $switched = [string]::Equals([string]$liveTask.Actions[0].Execute,
+                  (Join-Path $newDir 'bin\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)
+              } while (-not $switched -and (Get-Date) -lt $deadline)
+              if (-not $switched) {
+                if (Test-Path -LiteralPath $wmiLog) {
+                  Get-Content -LiteralPath $wmiLog -Tail 25 | Write-Output
+                }
+                throw 'WMI updater did not survive the synthetic running Task stop'
+              }
+              # Observing the new Action is possible between Set-ScheduledTask
+              # and Start-ScheduledTask. Wait for the same finite runner window
+              # instead of treating that expected transition as a failed upgrade.
+              $runningDeadline = (Get-Date).AddSeconds(12)
+              while ($liveTask.State -ne 'Running' -and (Get-Date) -lt $runningDeadline) {
+                Start-Sleep -Milliseconds 500
+                $liveTask = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+              }
+              if ($liveTask.State -ne 'Running') {
+                throw 'Independent updater did not restart the upgraded synthetic Agent Task'
+              }
+              Start-Sleep -Seconds 2
+              if ((Get-ScheduledTask -TaskName $taskName).State -ne 'Running') {
+                throw 'Upgraded synthetic Agent Task exited immediately after restart'
+              }
+            } finally {
+              # This is the exact just-created WMI fixture process, not an
+              # arbitrary PID. Never kill or clean any production device.
+              $remaining = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $child.ProcessId) -ErrorAction SilentlyContinue
+              if ($remaining -and $remaining.Name -eq 'powershell.exe' -and
+                  $remaining.CreationDate -ge $launchAt.AddSeconds(-3) -and
+                  (Invoke-CimMethod -InputObject $remaining -MethodName GetOwnerSid).Sid -eq
+                    ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
+                Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
+              }
+            }
+            & (Join-Path $newDir 'bin/node.exe') (Join-Path $newDir 'apps/remote-control-agent/scripts/verify-windows-preview.mjs') $newDir
+            if ($LASTEXITCODE -ne 0) { throw 'Installed upgraded GUI-free candidate hashes failed' }
+            $current = Get-ScheduledTask -TaskName $taskName
+            if (-not [string]::Equals([string]$current.Actions[0].Execute,
+                (Join-Path $newDir 'bin\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Windows task did not switch to new executable'
+            }
+            & $newCli rollback --version $oldVersion
+            if ($LASTEXITCODE -ne 0) { throw 'Verified Windows version rollback failed' }
+            $current = Get-ScheduledTask -TaskName $taskName
+            if (-not [string]::Equals([string]$current.Actions[0].Execute,
+                (Join-Path $oldDir 'bin\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Windows task did not restore old executable'
+            }
+            if ((Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
+                (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
+              throw 'Windows upgrade or rollback changed protected identity'
+            }
+            & $program disable
+            if ($LASTEXITCODE -ne 0) {
+              # CI-only: isolate a CLI/private-store refusal from a native
+              # Task-Scheduler backend failure without printing credentials.
+              $privateScript = Join-Path $oldDir 'apps/remote-control-agent/scripts/windows-private-store.ps1'
+              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $privateScript -Action Check -Directory $root *> $null
+              Write-Output ('CI CLEANUP PRIVATE ACL: ' + $(if ($LASTEXITCODE -eq 0) {'PASS'} else {'REFUSED'}))
+              $taskBackend = Join-Path $oldDir 'apps/remote-control-agent/scripts/windows-user-task.ps1'
+              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $taskBackend -Action Status
+              Write-Output ('CI CLEANUP TASK BACKEND: ' + $(if ($LASTEXITCODE -eq 0) {'PASS'} else {'REFUSED'}))
+              throw 'Task removal failed'
+            }
+            $created = $false
+            $status = & $program task-status | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $status.installed -ne $false) { throw 'Task remained after removal' }
+          } finally {
+            if ($created) { & $program disable }
+            Remove-Item -LiteralPath $device -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Uninstall inactive native version without deleting identity or logs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:LOCALAPPDATA 'mcp-workers\remote-control'
+          $sentinel = Join-Path $root 'agent-events.ndjson'
+          [IO.File]::WriteAllText($sentinel, '{"utc":"2026-01-01T00:00:00.000Z","event":"stopping"}' + [char]10)
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.0.1-ci
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall of inactive upgrade version failed' }
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.0.0-ci
+          if ($LASTEXITCODE -ne 0) { throw 'Safe Windows runtime uninstall failed' }
+          $old = Join-Path $root 'programs\v0.0.0-ci-windows-x64'
+          if (Test-Path -LiteralPath $old) { throw 'Uninstalled version still exists' }
+          if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Windows Agent diagnostics not preserved' }
+          if (-not (Test-Path -LiteralPath $root)) { throw 'Private identity directory was deleted' }
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.0.0-ci
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall retry must be idempotent' }
+          Remove-Item -LiteralPath $sentinel -Force
+      - name: Public Windows install.ps1 offline first-install and repeat fail closed without TTY
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Offline installer acceptance requires GitHub CI' }
+          $originalProfile = $env:LOCALAPPDATA
+          $profile = Join-Path $env:RUNNER_TEMP 'spec24-public-onboarding-profile'
+          $archive = Join-Path $env:RUNNER_TEMP 'candidate-next-version.zip'
+          if (Test-Path -LiteralPath $profile) { throw 'CI public installer fixture profile already exists' }
+          if (-not (Test-Path -LiteralPath $archive)) { throw 'Isolated reviewed Windows candidate is missing' }
+          $null = New-Item -ItemType Directory -Path $profile
+          $stdinFile = Join-Path $env:RUNNER_TEMP 'spec24-empty-input.txt'
+          [IO.File]::WriteAllText($stdinFile, '')
+          $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $root = Join-Path $profile 'mcp-workers\remote-control'
+          $target = Join-Path $root 'programs\v0.0.1-ci-windows-x64'
+          $args = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',
+            '-File','apps/remote-control-mcp-worker/agent/install.ps1','-Version','v0.0.1-ci',
+            '-OfflineArchive',$archive,'-ExpectedSha256',$sha)
+          $env:LOCALAPPDATA = $profile
+          try {
+            foreach ($attempt in @(1,2)) {
+              $stderrFile = Join-Path $env:RUNNER_TEMP "spec24-onboard-$attempt.err"
+              $stdoutFile = Join-Path $env:RUNNER_TEMP "spec24-onboard-$attempt.out"
+              $process = Start-Process -FilePath powershell.exe -ArgumentList $args `
+                -RedirectStandardInput $stdinFile -RedirectStandardOutput $stdoutFile `
+                -RedirectStandardError $stderrFile -NoNewWindow -PassThru -Wait
+              if ($process.ExitCode -eq 0) { throw 'Installer enrolled without a real interactive terminal' }
+              $diagnostic = (Get-Content -LiteralPath $stderrFile -Raw) + (Get-Content -LiteralPath $stdoutFile -Raw)
+              if ($diagnostic -match '\{"target":"windows-x64"') {
+                throw 'Verifier JSON leaked to public installer output'
+              }
+              if ($diagnostic -notmatch 'Authorization incomplete. Identity kept.') {
+                # This fixture uses a disposable profile and no credentials;
+                # expose only a bounded native error to diagnose the seam.
+                $bounded = $diagnostic.Substring(0, [Math]::Min(1400, $diagnostic.Length))
+                Write-Output ('CI_PUBLIC_INSTALL_DIAGNOSTIC: ' + $bounded)
+                throw "Unexpected public installer first/repeat failure (attempt $attempt)"
+              }
+              if (-not (Test-Path -LiteralPath $target)) {
+                throw 'Verified Windows candidate was not staged before onboarding refusal'
+              }
+              if (Test-Path -LiteralPath (Join-Path $root 'v2-identity.pem')) {
+                throw 'Non-interactive public install created a private key'
+              }
+              if (Test-Path -LiteralPath (Join-Path $root 'v2-identity.pem.device-id')) {
+                throw 'Non-interactive public install created a device identity'
+              }
+              if (Test-Path -LiteralPath (Join-Path $root 'v2-identity.pem.install-mode')) {
+                throw 'Non-interactive public install persisted a grant choice'
+              }
+              if ($attempt -eq 1) {
+                $before = (Get-FileHash -LiteralPath (Join-Path $target 'bundle.json') -Algorithm SHA256).Hash
+                $programBefore = (Get-FileHash -LiteralPath (Join-Path $target 'rca.cmd') -Algorithm SHA256).Hash
+              } else {
+                if ((Get-FileHash -LiteralPath (Join-Path $target 'bundle.json') -Algorithm SHA256).Hash -ne $before -or
+                    (Get-FileHash -LiteralPath (Join-Path $target 'rca.cmd') -Algorithm SHA256).Hash -ne $programBefore) {
+                  throw 'Non-interactive repeat changed verified package files'
+                }
+              }
+            }
+            & (Join-Path $target 'bin\node.exe') (Join-Path $target 'apps\remote-control-agent\scripts\verify-windows-preview.mjs') $target
+            if ($LASTEXITCODE -ne 0) { throw 'Public installer staged package fails its native inventory verifier' }
+            Write-Output 'PUBLIC_WINDOWS_FIRST_AND_REPEAT_NON_TTY=PASS; owner approval untouched'
+          } finally {
+            $env:LOCALAPPDATA = $originalProfile
+            if (Test-Path -LiteralPath $profile) { Remove-Item -LiteralPath $profile -Recurse -Force }
+          }
+      - name: Assemble verifiable Windows release candidate (never publish)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:RCA_CANDIDATE_TAG
+          if ($tag -cnotmatch '^v0\.[1-9][0-9]*\.[0-9]+(?:-[a-z0-9][a-z0-9.-]*)?$') {
+            throw 'Invalid candidate-only version label'
+          }
+          $nodeSha = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
+          $nodeBin = (Get-Command node.exe).Source
+          if ((Get-FileHash -LiteralPath $nodeBin -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nodeSha) {
+            throw 'Unreviewed Windows Node binary for candidate'
+          }
+          $output = Join-Path $env:RUNNER_TEMP 'spec24-reviewed-windows-candidate'
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $tag `
+            --node-bin $nodeBin --node-sha256 $nodeSha `
+            --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') `
+            --out $output
+          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate build refused' }
+          $stage = Join-Path $output "remote-control-agent-$tag-windows-x64"
+          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $stage
+          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate integrity refused' }
+          $status = & (Join-Path $stage 'rca.cmd') status | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $status.identity_present -ne $false -or
+              $status.mode -cne 'native-user-agent' -or $status.shell -ne $true -or
+              $status.write_file -ne $true) { throw 'Windows candidate CLI contract refused' }
+          $dist = Join-Path $env:RUNNER_TEMP 'spec24-windows-review-artifacts'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $name = "remote-control-agent-$tag-windows-x64.zip"
+          $zip = Join-Path $dist $name
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+          $reopened = Join-Path $env:RUNNER_TEMP 'spec24-review-windows-reopened'
+          Expand-Archive -LiteralPath $zip -DestinationPath $reopened -ErrorAction Stop
+          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $reopened
+          if ($LASTEXITCODE -ne 0) { throw 'Reopened Windows candidate ZIP refused' }
+          $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'),
+            ($digest + '  ' + $name + [Environment]::NewLine))
+          Write-Output "Reviewed Windows candidate $tag SHA256: $digest"
+          Write-Output "Windows candidate $tag archived and verified without Release publication"
+
+      - name: Save unpublished Windows candidate for independent review
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.candidate_tag }}-windows-x64
+          path: ${{ runner.temp }}/spec24-windows-review-artifacts/
+          retention-days: 2
+          if-no-files-found: error
+          compression-level: 0

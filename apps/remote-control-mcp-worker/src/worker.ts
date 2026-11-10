@@ -1,5 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, renderLinuxLatestInstallShell, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { readLatestAgentRelease, type LatestReleaseDecision } from "./github-latest-agent-release.ts";
+import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -9,6 +11,8 @@ type V2Env = Env & {
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
+  /** Test seam only. Production uses the Worker runtime fetch. Not a binding. */
+  AGENT_RELEASE_FETCH?: typeof fetch;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1075,6 +1079,53 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   return rpcError(rpcMessage.id, -32601, "Method not found.");
 }
 
+const LINUX_INSTALL_HEADERS = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+  "content-type": "text/plain; charset=utf-8",
+};
+
+function linuxInstallFailure(message: string): Response {
+  return new Response(message.endsWith("\n") ? message : message + "\n", {
+    status: 503,
+    headers: LINUX_INSTALL_HEADERS,
+  });
+}
+
+function linuxReleaseFailure(decision: Extract<LatestReleaseDecision, { ok: false }>): Response {
+  const headers: Record<string, string> = { ...LINUX_INSTALL_HEADERS };
+  if (decision.retryAfter && (decision.stop === "forbidden" || decision.stop === "rate_limited")) {
+    headers["retry-after"] = decision.retryAfter;
+  }
+  if (decision.stop === "not_found") {
+    return new Response("No stable Agent Release is published.\n", { status: 503, headers });
+  }
+  if (decision.stop === "forbidden") {
+    return new Response("GitHub refused the Agent Release lookup.\n", { status: 403, headers });
+  }
+  if (decision.stop === "rate_limited") {
+    return new Response("GitHub rate limit blocked the Agent Release lookup.\n", { status: 429, headers });
+  }
+  if (decision.stop === "unavailable") return linuxInstallFailure("Agent Release lookup failed.");
+  return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release.");
+}
+
+/** One readLatestAgentRelease call. The shell does not look up latest again. */
+async function linuxLatestInstall(request: Request, origin: string, doFetch: typeof fetch): Promise<Response> {
+  const rejected = rejectLatestInstallRequest(request, origin);
+  if (rejected) return rejected;
+  const decision = await readLatestAgentRelease(doFetch);
+  if (!decision.ok) return linuxReleaseFailure(decision);
+  try {
+    return new Response(renderLinuxLatestInstallShell(origin, decision.release), {
+      status: 200,
+      headers: { ...LINUX_INSTALL_HEADERS, "content-type": "text/x-shellscript; charset=utf-8" },
+    });
+  } catch {
+    return linuxInstallFailure("Agent Release is not a stable five-platform immutable Release.");
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // A newly uploaded public preview must not expose even the bounded
@@ -1085,16 +1136,24 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1" || url.pathname === "/install-macos.sh") {
-      // Serve pinned public installer only from the existing, configured
+      // Serve public installers only from the existing, configured
       // production owner Worker; other environments remain fail-closed.
       if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
         return new Response("Preview installer is disabled.\n", {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
+      const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
+      const releaseFetch = (env as V2Env).AGENT_RELEASE_FETCH ?? fetch;
+      if (url.pathname === "/install-macos.sh") {
+        const rejected = rejectLatestInstallRequest(request, origin);
+        if (rejected) return rejected;
+        const decision = await readLatestAgentRelease(releaseFetch);
+        return handleLatestMacInstallRequest(request, origin, decision);
+      }
+      if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin, releaseFetch);
       return handleAgentInstallerRequest(request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,
-        (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org",
-        REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN);
+        origin, REVIEWED_WINDOWS_INSTALL_PIN, null, "latest");
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

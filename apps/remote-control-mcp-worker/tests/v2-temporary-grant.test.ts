@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { newEnrollment } from "../../remote-control-agent/src/v2-enrollment.ts";
+import { newEnrollment } from "../agent/src/v2-enrollment.ts";
 import {
   registerPending, lookupPending, approvePendingKey,
   verifyRegistration,

@@ -32,22 +32,37 @@ function requiresAllApps(file) {
     || file.startsWith('scripts/worker-release-variables');
 }
 
+const AGENT_NATIVE_WORKFLOW = '.github/workflows/agent-native-candidates.yml';
+const AGENT_RELEASE_WORKFLOW = '.github/workflows/agent-release.yml';
+
+function selectsRemoteControl(file) {
+  return file.startsWith('apps/remote-control-mcp-worker/')
+    || file === AGENT_NATIVE_WORKFLOW
+    || file === AGENT_RELEASE_WORKFLOW;
+}
+
 export function selectAffectedApps(changedFiles) {
   if (changedFiles.some(requiresAllApps)) return [...APPLICATIONS];
   return APPLICATIONS.filter(app => changedFiles.some(file =>
-    file.startsWith(`apps/${app}/`) || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/'))) || (app === 'remote-control-mcp-worker' && file === 'scripts/stage-public-remote-control-agent.sh')));
+    file.startsWith(`apps/${app}/`)
+    || (app === 'remote-control-mcp-worker' && (file === AGENT_NATIVE_WORKFLOW || file === AGENT_RELEASE_WORKFLOW))
+    || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/')))));
 }
 
 export function selectionDetails(changedFiles) {
   const apps = selectAffectedApps(changedFiles);
   const checkAll = changedFiles.some(requiresAllApps);
-  const remoteControlChanged = checkAll || changedFiles.some(file =>
-    file.startsWith('apps/remote-control-agent/') || file.startsWith('apps/remote-control-mcp-worker/') || file === 'scripts/stage-public-remote-control-agent.sh');
+  const remoteControlChanged = checkAll || changedFiles.some(selectsRemoteControl);
+  // Five-platform native builds follow nested Agent source only, not every Worker edit.
+  const agentNativeChanged = changedFiles.some(file =>
+    file.startsWith('apps/remote-control-mcp-worker/agent/')
+    || file === AGENT_NATIVE_WORKFLOW);
   return {
     apps,
     databaseChanged: apps.includes('database-mcp-worker'),
     portalAuthChanged: changedFiles.some(file => file.startsWith('packages/portal-auth/')),
     remoteControlChanged,
+    agentNativeChanged,
   };
 }
 
@@ -78,9 +93,13 @@ export function selectionForEvent(env) {
     selected = [env.MANUAL_WORKER];
     changedFiles = [];
   } else if (env.EVENT_NAME === 'push' && env.MANUAL_REF === 'refs/heads/main') {
-    // Main always validates the full active application set, not only the diff.
+    // Main always validates the full active application set. Native builds still
+    // follow the diff when the previous commit is a real SHA. A placeholder such
+    // as "unavailable" must not call git and must not throw.
     selected = [...APPLICATIONS];
-    changedFiles = [];
+    changedFiles = /^[0-9a-f]{40}$/.test(env.BEFORE_SHA ?? '')
+      ? changedFilesForCurrentEvent(env)
+      : [];
   } else {
     changedFiles = changedFilesForCurrentEvent(env);
     selected = selectAffectedApps(changedFiles);
@@ -109,6 +128,7 @@ function main(env = process.env) {
       `portal_auth_changed=${details.portalAuthChanged}`,
       `database_changed=${details.databaseChanged}`,
       `remote_control_changed=${details.remoteControlChanged}`,
+      `agent_native_changed=${details.agentNativeChanged}`,
     ].join('\n') + '\n');
   }
   process.stdout.write(selected.length ? `Selected applications: ${selected.join(' ')}\n` : 'No application checks are required for this change set.\n');

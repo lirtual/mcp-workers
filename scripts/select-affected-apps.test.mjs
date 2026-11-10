@@ -9,11 +9,32 @@ test('an ssh-mcp-worker-only change selects and schedules its app check', () => 
   assert.equal(selection.apps.includes('ssh-mcp-worker'), true);
 });
 
-test('pinned public Agent staging selects existing Remote Control Worker compatibility checks', () => {
-  const selection = selectionDetails(['scripts/stage-public-remote-control-agent.sh']);
-  assert.deepEqual(selection.apps, ['remote-control-mcp-worker']);
-  assert.equal(selection.remoteControlChanged, true);
-  assert.equal(selection.apps.includes('ssh-mcp-worker'), false);
+test('retired cross-repo Agent paths do not select Remote Control or a native build', () => {
+  for (const file of ['scripts/stage-public-remote-control-agent.sh', 'apps/remote-control-agent/src/v2-main.ts']) {
+    const selection = selectionDetails([file]);
+    assert.deepEqual(selection.apps, [], file);
+    assert.equal(selection.remoteControlChanged, false, file);
+    assert.equal(selection.agentNativeChanged, false, file);
+  }
+});
+
+test('a nested Agent edit selects Remote Control compatibility checks, and a Worker-only edit does not select a five-platform native build', () => {
+  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  assert.deepEqual(agent.apps, ['remote-control-mcp-worker']);
+  assert.equal(agent.remoteControlChanged, true);
+  assert.equal(agent.agentNativeChanged, true);
+  assert.equal(agent.apps.includes('ssh-mcp-worker'), false);
+
+  const workerOnly = selectionDetails(['apps/remote-control-mcp-worker/src/worker.ts']);
+  assert.deepEqual(workerOnly.apps, ['remote-control-mcp-worker']);
+  assert.equal(workerOnly.remoteControlChanged, true);
+  assert.equal(workerOnly.agentNativeChanged, false);
+
+  const ssh = selectionDetails(['apps/ssh-mcp-worker/src/hosts.ts']);
+  assert.deepEqual(ssh.apps, ['ssh-mcp-worker']);
+  assert.equal(ssh.remoteControlChanged, false);
+  assert.equal(ssh.agentNativeChanged, false);
+  assert.equal(ssh.apps.includes('remote-control-mcp-worker'), false);
 });
 
 test('shared package and lockfile changes select every app, including ssh-mcp-worker', () => {

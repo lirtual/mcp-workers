@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { newEnrollment, saveNewPrivateKey } from "../../remote-control-agent/src/v2-enrollment.ts";
-import { recoverDeviceId, signedSessionProof } from "../../remote-control-agent/src/v2-session-client.ts";
+import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
+import { recoverDeviceId, signedSessionProof } from "../agent/src/v2-session-client.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 import { authorizeSession, issueSessionChallenge, handleIdleSocketMessage } from "../src/v2-session.ts";
 

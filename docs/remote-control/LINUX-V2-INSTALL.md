@@ -11,7 +11,7 @@
 
 From the checkout, the **single installer invocation** is:
 
-    node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
+    node --experimental-strip-types apps/remote-control-mcp-worker/agent/scripts/install-v2.mjs --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
 
 The ordinary CLI holds a private, non-blocking Linux `flock` while installing. A second simultaneous installer is rejected without modifying identities; a process killed with `SIGKILL` releases the kernel lock automatically (the owner-only empty lockfile may remain for reuse). No daemon, database, or background cleanup is introduced. This advisory lock prevents accidental overlapping commands; it does not substitute for cryptographic authorization.\n\nThis requires a TTY. After dependency checks, it writes an Ed25519 key to the owner-controlled directory under ~/.local/share/mcp-workers/remote-control/, with mode 0600 and parent mode 0700, and displays only a short-lived **10-character one-use code in the default local interactive terminal**. For optional extra visual verification, pass `--show-fingerprint` to the original first-install invocation to show the local public-key fingerprint (first 12 bytes of SHA-256 over Ed25519 SPKI DER) and compare it with `pairing_lookup`. No separate `openssl` command or second terminal is needed. This optional comparison may help catch approval of an unintended host; MCP-side key matching alone does not prove physical-host identity. Avoid recording the pairing code/confirmation challenge or sending them to logs.
 
@@ -36,17 +36,17 @@ An active service alone is **not** acceptance. Independently verify **list_devic
 
 If local confirmation succeeded but activating the user service failed, the original paired key and ID remain. **Rerun the same installer command**: it recovers the matching identity and installs the missing v2 service. The legacy explicit `--resume` remains available for an already confirmed local identity:
 
-    node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --resume --endpoint https://APPROVED-V2-WORKER/
+    node --experimental-strip-types apps/remote-control-mcp-worker/agent/scripts/install-v2.mjs --resume --endpoint https://APPROVED-V2-WORKER/
 
 To explicitly upgrade an already installed, owned v2 unit from an independently reviewed checkout, rebuilding the helper and verifying the new unit before cutover:
 
-    node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --upgrade --endpoint https://APPROVED-V2-WORKER/
+    node --experimental-strip-types apps/remote-control-mcp-worker/agent/scripts/install-v2.mjs --upgrade --endpoint https://APPROVED-V2-WORKER/
 
 On activation failure, the installer restores the previous v2 systemd unit; no v1 unit is edited. If the source checkout becomes unavailable or the new binary is broken, stop the *v2 unit only* and inspect sanitized local diagnostics before further attempts.
 
 Remove just the **v2 unit** (does not require a working C compiler):
 
-    node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --uninstall
+    node --experimental-strip-types apps/remote-control-mcp-worker/agent/scripts/install-v2.mjs --uninstall
 
 Uninstall deliberately retains the paired private key and server-issued device ID. If permanently retiring a device, **revoke_device({device_id}) via authenticated MCP separately**. A revoked device's old key stays permanently blocked and cannot use the automatic interrupted-pairing recovery to re-enroll. **Rejoining after revoke requires an owner-approved NEW key and NEW device ID, never unattended Agent/systemd retry.** Only rerunning the local interactive installer can detect signed revocation and begin fresh pairing. The previous identity remains unchanged until the new MCP challenge is manually approved and signed in the local terminal; never delete the old identity in an attempt to force enrollment. Deleting local files alone cannot revoke server-side access. The installer refuses to overwrite a service without its own generated marker and will never stop **remote-control-agent.service** (v1) or **remote-control-tunnel.service**.
 
@@ -57,7 +57,7 @@ Only sanitized state names are written to the service journal, never private key
 
 **After `revoke_device` is confirmed in authenticated MCP**, run the *same regular install command on the intended local terminal*:
 
-    node --experimental-strip-types apps/remote-control-agent/scripts/install-v2.mjs --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
+    node --experimental-strip-types apps/remote-control-mcp-worker/agent/scripts/install-v2.mjs --endpoint https://APPROVED-V2-WORKER/ --name linux-workstation
 
 - A device with an intact **approved** key/ID remains unchanged, even if the managed v2 systemd service already exists. A missing service can be reinstalled with the same identity. Repeating install against an existing owned service also checks the configured Worker origin: a different `--endpoint` is rejected rather than silently accepted; deliberate endpoint migration requires separate review and the explicit `--upgrade` mode. A pending initial pairing without a device ID uses its **existing** private key and generates a fresh 10-character code only after the server returns a definitive unapproved-key 404.
 - For an existing key and device ID, a permanent approval failure is **not sufficient** to rotate identity. The installer uses the existing Ed25519 key to send a short-lived **signed read-only proof** to `/agent/re-pair/status`; the DO verifies the **exact old device ID and public key** and returns `revoked` only for an immutable tombstone. All network ambiguity, wrong keys, wrong IDs, 401/403/404 from this probe, unexpected response, or invalid files fail closed, preserving the existing identity. No automatic re-pair takes place inside the Agent or a systemd reconnect.

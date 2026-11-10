@@ -1,0 +1,67 @@
+/** Signed outbound-WSS Linux Agent entrypoint. */
+import { lstat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { maintainAuthenticatedDeviceSession } from "./v2-connection-lifecycle.ts";
+// Immutable release profile identifier, not a user-configurable capability switch.
+export const V2_RUNTIME_PROFILE = "paired-full-v1";
+
+const keyPath = process.env.REMOTE_CONTROL_AGENT_KEY_PATH ??
+  path.join(os.homedir(), ".local", "share", "mcp-workers", "remote-control", "v2-identity.pem");
+const endpoint = process.env.REMOTE_CONTROL_AGENT_ENDPOINT;
+const log = (event: string) =>
+  process.stderr.write(JSON.stringify({ service: "remote-control-agent", event }) + "\n");
+
+if (!endpoint || process.platform !== "linux") {
+  process.stderr.write("The Linux Agent requires a trusted endpoint.\n");
+  process.exitCode = 1;
+} else {
+  try {
+    const privateKey = await lstat(keyPath);
+    const deviceId = await lstat(keyPath + ".device-id");
+    if (!privateKey.isFile() || !deviceId.isFile() ||
+        (privateKey.mode & 0o077) !== 0 || (deviceId.mode & 0o077) !== 0 ||
+        privateKey.uid !== process.getuid?.() || deviceId.uid !== process.getuid?.()) {
+      throw new Error("unsafe identity");
+    }
+    // Only the signed device identity authenticates outbound HTTPS/WSS.
+    // No Portal, Cloudflare, v1 device, or per-machine bearer token is needed.
+    // Private owner STOP survives systemd restarts and Agent upgrades. Invalid
+    // markers fail closed; do not ever treat network loss as local STOP.
+    let deliberateOff = false;
+    try {
+      const marker = await lstat(keyPath + ".owner-stopped");
+      if (!marker.isFile() || marker.isSymbolicLink() || marker.nlink !== 1 ||
+          marker.uid !== process.getuid?.() || (marker.mode & 0o777) !== 0o600)
+        throw Error("Unsafe owner STOP marker.");
+      deliberateOff = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (deliberateOff) {
+      log("owner_stopped");
+    } else {
+    process.umask(0o077);
+    const controller = new AbortController();
+    for (const name of ["SIGINT", "SIGTERM"] as const) {
+      process.on(name, () => controller.abort());
+    }
+    let rejected = false;
+    // A successfully paired device exposes file, Shell and session tools.
+    // Signed WSS identity, device revocation and durable receipts still apply.
+    await maintainAuthenticatedDeviceSession(endpoint, keyPath, controller.signal, {
+      onState: state => {
+        log(state);
+        if (state === "rejected") rejected = true;
+      },
+    });
+    // 1008 policy denial stops the service with exit 0 (Restart=on-failure),
+    // not an authentication-hammer loop. Other transient faults reconnect inside
+    // maintainAuthenticatedDeviceSession with bounded backoff.
+    if (rejected) log("identity_rejected");
+    }
+  } catch {
+    log("startup_unavailable");
+    process.exitCode = 1;
+  }
+}
