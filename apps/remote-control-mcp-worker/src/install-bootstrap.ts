@@ -1,9 +1,10 @@
 import windowsInstallerSource from "../agent/install.ps1";
 import { renderInstallHome } from "./install-home.ts";
 /**
- * Existing immutable, explicitly pinned Linux and macOS bootstraps and the
- * public onboarding page. Windows serves the nested installer, which resolves
- * one mcp-workers latest stable Release on the device.
+ * Pinned Linux bootstrap and the public onboarding page. Windows serves the
+ * nested installer, which resolves one mcp-workers latest stable Release on
+ * the device. The macOS pin remains for evidence and pin-renderer tests; the
+ * public macOS route resolves latest in install-macos-latest.ts.
  */
 export type InstallReleasePin = Readonly<{
   tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
@@ -132,9 +133,10 @@ export type MacInstallPin = Readonly<{
   // Deliberate opt-in only after a separately reviewed immutable Agent Release.
   remoteUpgradeMode?: "detached-launchd-v1";
 }>;
-// Independently verified immutable v0.1.51 Agent Release for all three installer routes.
-// The detached launchd one-shot path is explicitly authorized by the Mac owner,
-// not an automatic upgrade or new pairing. This source change does not deploy Worker.
+// Historical immutable v0.1.51 macOS pin kept for evidence and pin-renderer tests.
+// The public /install-macos.sh route resolves one current-repository latest Release.
+// Linux stays on its reviewed pin. Windows serves the nested latest installer;
+// its pin only authorizes that route and is not embedded in the script.
 export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
   tag: "v0.1.51",
   commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
@@ -313,6 +315,7 @@ export function handleAgentInstallerRequest(
   trustedOrigin?: string,
   windowsPin: WindowsInstallPin | null = null,
   macosPin: MacInstallPin | null = null,
+  macosChannel: "pin" | "latest" = "pin",
 ): Response {
   const u = new URL(request.url);
   const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
@@ -332,11 +335,13 @@ export function handleAgentInstallerRequest(
   if (u.pathname === "/") {
     return new Response(renderInstallHome({linux:!!release && validPin(release),
       windows:!!windowsPin && validWindowsPin(windowsPin),
-      macos:!!macosPin && validMacPin(macosPin)}), {status:200, headers:{...headers,
+      macos:macosChannel === "latest" || (!!macosPin && validMacPin(macosPin))}), {status:200, headers:{...headers,
       "content-type":"text/html; charset=utf-8", "x-frame-options":"DENY",
       "referrer-policy":"no-referrer", "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}});
   }
   if (u.pathname === "/install-macos.sh") {
+    if (macosChannel === "latest")
+      return new Response("Reviewed macOS Agent release is resolved per install attempt.\n",{status:503,headers});
     if (!macosPin || !validMacPin(macosPin))
       return new Response("Reviewed macOS Agent release is not published yet.\n",{status:503,headers});
     return new Response(renderAgentInstallMacShell(u.origin,macosPin),{

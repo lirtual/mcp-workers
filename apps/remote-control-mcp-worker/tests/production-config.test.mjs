@@ -45,11 +45,34 @@ test("production DO binding lists per-device tools without v1 fallback", async (
   assert.equal(unscoped.result.isError, true, "never allow implicit fallback to the old VPC");
 });
 
-test("production public installer routes use only reviewed pinned release", async () => {
+test("production public installer routes keep the Linux pin, serve Windows latest, and resolve macOS latest", async () => {
   const { default: worker } = await import("../src/worker.ts");
+  const { LATEST_AGENT_RELEASE_URL } = await import("../src/github-latest-agent-release.ts");
   const prod = "https://remote-control-mcp-worker.aiyaya.workers.dev";
+  const tag = "v0.2.0";
+  const sha = "ab".repeat(32);
+  const asset = (target, ext) => {
+    const name = `remote-control-agent-${tag}-${target}.${ext}`;
+    return { name, state: "uploaded", size: 2048, digest: "sha256:" + sha,
+      browser_download_url: `https://github.com/lirtual/mcp-workers/releases/download/${tag}/${name}` };
+  };
+  const latest = {
+    tag_name: tag, draft: false, prerelease: false, immutable: true,
+    html_url: `https://github.com/lirtual/mcp-workers/releases/tag/${tag}`,
+    assets: [
+      asset("linux-x64-glibc", "tar.gz"), asset("linux-arm64-glibc", "tar.gz"),
+      asset("windows-x64", "zip"), asset("darwin-arm64", "tar.gz"), asset("darwin-x64", "tar.gz"),
+      { name: "SHA256SUMS", state: "uploaded", size: 80, digest: "sha256:" + "cd".repeat(32),
+        browser_download_url: "https://example.invalid/sums" },
+    ],
+  };
+  let releaseCalls = 0;
   const env = { MCP_ACCESS_TOKEN: "owner-only", REMOTE_CONTROL_INSTALL_ORIGIN: prod,
-    
+    AGENT_RELEASE_FETCH: async (url) => {
+      releaseCalls += 1;
+      if (url !== LATEST_AGENT_RELEASE_URL) throw new Error("unexpected GitHub URL " + url);
+      return Response.json(latest);
+    },
     DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({}) } };
   const response = await worker.fetch(new Request(prod + "/install.sh"), env);
   assert.equal(response.status, 200);
@@ -71,20 +94,26 @@ test("production public installer routes use only reviewed pinned release", asyn
   const homepage = await home.text();
   assert.match(homepage, /Remote Control Agent/);
   assert.match(homepage, /const ready=\{windows:true,linux:true,macos:true\}/);
+  assert.equal(releaseCalls, 0, "the install page must not look up latest");
   const macos = await worker.fetch(new Request(prod + "/install-macos.sh"), env);
   assert.equal(macos.status, 200, "available only after official Agent Release and explicit Worker deployment");
+  assert.equal(releaseCalls, 1, "one install attempt resolves one latest snapshot");
   const macShell=await macos.text();
   assert.match(macShell, /#!\/bin\/sh/);
   assert.match(macShell, /arm64\) target=darwin-arm64/);
   assert.match(macShell, /x86_64\) target=darwin-x64/);
-  assert.match(macShell, /remote-control-agent-v0\.1\.51-\$target\.tar\.gz/);
-  assert.match(macShell, /dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803/);
-  assert.match(macShell, /f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5/);
-  assert.match(macShell, /59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55/);
+  assert.match(macShell, /arm_url='https:\/\/github\.com\/lirtual\/mcp-workers\/releases\/download\/v0\.2\.0\/remote-control-agent-v0\.2\.0-darwin-arm64\.tar\.gz'/);
+  assert.match(macShell, /x64_url='https:\/\/github\.com\/lirtual\/mcp-workers\/releases\/download\/v0\.2\.0\/remote-control-agent-v0\.2\.0-darwin-x64\.tar\.gz'/);
+  assert.match(macShell, new RegExp(sha));
+  assert.doesNotMatch(macShell, /github\.com\/lirtual\/remote-control-agent/);
+  assert.doesNotMatch(macShell, /03a14fd4138ca8d77fa8aced78f7a53ccc51724e/);
+  assert.doesNotMatch(macShell, /dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803/);
+  assert.doesNotMatch(macShell, /raw\.githubusercontent\.com/);
+  assert.doesNotMatch(macShell, /api\.github\.com/);
   assert.ok(macShell.includes('1) case "$1" in --upgrade) mode=upgrade ;; --remote-upgrade) mode=remote-upgrade ;;'));
   assert.match(macShell,/if \[ "\$mode" != upgrade \] && \[ "\$mode" != remote-upgrade \]/);
   assert.match(macShell,/--remote-upgrade\) mode=remote-upgrade/);
-  assert.match(macShell,/sh "\$source" "\$mode" --archive/);
+  assert.match(macShell,/--source-sha "\$identity"/);
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);
 });

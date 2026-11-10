@@ -1,5 +1,7 @@
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { handleAgentInstallerRequest, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN } from "./install-bootstrap.ts";
+import { readLatestAgentRelease } from "./github-latest-agent-release.ts";
+import { handleLatestMacInstallRequest, rejectMacInstallRequest } from "./install-macos-latest.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -9,6 +11,8 @@ type V2Env = Env & {
   DEVICE_COORDINATOR?: DurableObjectNamespace;
   REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
+  /** Test seam only. Production uses the Worker runtime fetch. */
+  AGENT_RELEASE_FETCH?: typeof fetch;
 };
 function pairedOnly(env: Env): boolean {
   return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
@@ -1092,9 +1096,15 @@ export default {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
+      const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
+      if (url.pathname === "/install-macos.sh") {
+        const rejected = rejectMacInstallRequest(request, origin);
+        if (rejected) return rejected;
+        const decision = await readLatestAgentRelease((env as V2Env).AGENT_RELEASE_FETCH ?? fetch);
+        return handleLatestMacInstallRequest(request, origin, decision);
+      }
       return handleAgentInstallerRequest(request, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN,
-        (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org",
-        REVIEWED_WINDOWS_INSTALL_PIN, REVIEWED_MACOS_INSTALL_PIN);
+        origin, REVIEWED_WINDOWS_INSTALL_PIN, null, "latest");
     }
     if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);

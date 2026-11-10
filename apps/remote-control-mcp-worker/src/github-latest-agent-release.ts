@@ -1,24 +1,74 @@
 /**
- * One-shot selection of the repository's latest stable Agent Release.
- * Windows install.ps1 enforces the same decision on the device; this module
- * is the shared client. It never falls back to another repository or tag.
+ * One latest stable Agent Release from lirtual/mcp-workers.
+ * Windows install.ps1 enforces the same decision on the device. The Worker
+ * macOS route uses readLatestAgentRelease. Neither path falls back to another
+ * repository or tag.
+ *
+ * Windows snapshot bounds match install.ps1 (100 KiB–100 MiB). The macOS
+ * lookup accepts the wider reviewed window (1 byte–180 MiB). Both require a
+ * stable, non-draft, immutable Release, five platform assets, digest, size,
+ * and architecture, and both stop on 404, 403, and 429.
  */
 
-const LATEST_URL = "https://api.github.com/repos/lirtual/mcp-workers/releases/latest";
-const TAG = /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/;
-const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-const MIN_ASSET_BYTES = 100_000;
-const MAX_ASSET_BYTES = 100_000_000;
+export const LATEST_AGENT_RELEASE_URL =
+  "https://api.github.com/repos/lirtual/mcp-workers/releases/latest";
 
-const PLATFORMS = [
-  ["linux-x64-glibc", "tar.gz", "x64"],
-  ["linux-arm64-glibc", "tar.gz", "arm64"],
-  ["windows-x64", "zip", "x64"],
-  ["darwin-arm64", "tar.gz", "arm64"],
-  ["darwin-x64", "tar.gz", "x64"],
+export const AGENT_RELEASE_TARGETS = [
+  "linux-x64-glibc",
+  "linux-arm64-glibc",
+  "windows-x64",
+  "darwin-arm64",
+  "darwin-x64",
 ] as const;
 
-export type AgentPlatform = (typeof PLATFORMS)[number][0];
+export type AgentReleaseTarget = typeof AGENT_RELEASE_TARGETS[number];
+export type AgentPlatform = AgentReleaseTarget;
+
+const TARGET_ARCH = {
+  "linux-x64-glibc": "x64",
+  "linux-arm64-glibc": "arm64",
+  "windows-x64": "x64",
+  "darwin-arm64": "arm64",
+  "darwin-x64": "x64",
+} as const satisfies Record<AgentReleaseTarget, "x64" | "arm64">;
+
+const WINDOWS_MIN_ASSET_BYTES = 100_000;
+const WINDOWS_MAX_ASSET_BYTES = 100_000_000;
+const RELEASE_MIN_ASSET_BYTES = 1;
+const RELEASE_MAX_ASSET_BYTES = 180_000_000;
+
+const TAG = /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const DEVICE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const PLATFORM_ASSET = /^remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$/;
+
+export type SelectedAgentAsset = Readonly<{
+  target: AgentReleaseTarget;
+  name: string;
+  size: number;
+  sha256: string;
+  downloadUrl: string;
+  architecture: "x64" | "arm64";
+}>;
+
+export type SelectedAgentRelease = Readonly<{
+  repository: "lirtual/mcp-workers";
+  tag: string;
+  htmlUrl: string;
+  immutable: true;
+  assets: Readonly<Record<AgentReleaseTarget, SelectedAgentAsset>>;
+}>;
+
+export type LatestReleaseStop =
+  | "not_found"
+  | "forbidden"
+  | "rate_limited"
+  | "rejected"
+  | "unavailable";
+
+export type LatestReleaseDecision =
+  | { ok: true; release: SelectedAgentRelease }
+  | { ok: false; stop: LatestReleaseStop; retryAfter?: string };
 
 export type AgentReleaseAsset = {
   target: AgentPlatform;
@@ -38,7 +88,7 @@ export type LatestAgentReleaseSnapshot = {
   identity: "remote-control-agent";
   maxRedirects: 3;
   allowedRedirectHosts: readonly ["release-assets.githubusercontent.com", "objects.githubusercontent.com"];
-  sizeBounds: { readonly min: typeof MIN_ASSET_BYTES; readonly max: typeof MAX_ASSET_BYTES };
+  sizeBounds: { readonly min: typeof WINDOWS_MIN_ASSET_BYTES; readonly max: typeof WINDOWS_MAX_ASSET_BYTES };
   assets: readonly AgentReleaseAsset[];
   windows: AgentReleaseAsset;
 };
@@ -59,6 +109,244 @@ export class LatestAgentReleaseError extends Error {
     this.name = "LatestAgentReleaseError";
     this.code = code;
   }
+}
+
+type ReleaseLookup = {
+  status: number;
+  body?: unknown;
+  retryAfter?: string | null;
+};
+
+type ParseFailure = "untrusted" | "incomplete" | "wrong_platform" | "corrupt";
+
+export function agentAssetName(tag: string, target: AgentReleaseTarget): string {
+  const ext = target === "windows-x64" ? "zip" : "tar.gz";
+  return `remote-control-agent-${tag}-${target}.${ext}`;
+}
+
+function assetDownloadUrl(tag: string, name: string): string {
+  return `https://github.com/lirtual/mcp-workers/releases/download/${tag}/${name}`;
+}
+
+function releaseHtmlUrl(tag: string): string {
+  return `https://github.com/lirtual/mcp-workers/releases/tag/${tag}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Pass through only a bounded Retry-After a later owner attempt may display. */
+export function sanitizeRetryAfter(value: string | null | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (/^[0-9]{1,6}$/.test(trimmed)) return trimmed;
+  if (/^[A-Za-z0-9, :+-]{1,40}$/.test(trimmed) && Number.isFinite(Date.parse(trimmed))) return trimmed;
+  return undefined;
+}
+
+function stop(kind: LatestReleaseStop, retryAfter?: string | null): LatestReleaseDecision {
+  const safe = sanitizeRetryAfter(retryAfter);
+  return safe ? { ok: false, stop: kind, retryAfter: safe } : { ok: false, stop: kind };
+}
+
+function readPlatformAsset(
+  tag: string,
+  target: AgentReleaseTarget,
+  raw: Record<string, unknown>,
+  bounds: { min: number; max: number },
+): { ok: true; asset: SelectedAgentAsset } | { ok: false; code: "untrusted" | "corrupt" } {
+  const name = agentAssetName(tag, target);
+  const downloadUrl = assetDownloadUrl(tag, name);
+  if (raw.name !== name || raw.state !== "uploaded" || raw.browser_download_url !== downloadUrl) {
+    return { ok: false, code: "untrusted" };
+  }
+  const digest = raw.digest;
+  if (typeof digest !== "string" || !digest.startsWith("sha256:") || !SHA256.test(digest.slice("sha256:".length))) {
+    return { ok: false, code: "corrupt" };
+  }
+  const size = raw.size;
+  if (typeof size !== "number" || !Number.isSafeInteger(size) || size < bounds.min || size > bounds.max) {
+    return { ok: false, code: "untrusted" };
+  }
+  return {
+    ok: true,
+    asset: Object.freeze({
+      target,
+      name,
+      size,
+      sha256: digest.slice("sha256:".length),
+      downloadUrl,
+      architecture: TARGET_ARCH[target],
+    }),
+  };
+}
+
+/** Shared acceptance: stable identity, five platform assets, digest, size, arch, this repo only. */
+function parseRelease(
+  body: unknown,
+  bounds: { min: number; max: number },
+  exactAssetCount: boolean,
+): { ok: true; tag: string; assets: Record<AgentReleaseTarget, SelectedAgentAsset> } | { ok: false; code: ParseFailure } {
+  if (!isRecord(body)) return { ok: false, code: "untrusted" };
+  const tag = body.tag_name;
+  if (typeof tag !== "string" || !TAG.test(tag) ||
+      body.draft !== false || body.prerelease !== false || body.immutable !== true ||
+      body.html_url !== releaseHtmlUrl(tag)) {
+    return { ok: false, code: "untrusted" };
+  }
+  if (!Array.isArray(body.assets)) return { ok: false, code: "incomplete" };
+  const assetCount = body.assets.length;
+  const expected = new Map(AGENT_RELEASE_TARGETS.map((target) => [agentAssetName(tag, target), target]));
+  const selected = new Map<AgentReleaseTarget, SelectedAgentAsset>();
+  for (const asset of body.assets) {
+    if (!isRecord(asset) || typeof asset.name !== "string") return { ok: false, code: "untrusted" };
+    const target = expected.get(asset.name);
+    if (!target) {
+      if (PLATFORM_ASSET.test(asset.name)) return { ok: false, code: "untrusted" };
+      continue;
+    }
+    if (selected.has(target)) return { ok: false, code: "untrusted" };
+    const parsed = readPlatformAsset(tag, target, asset, bounds);
+    if (!parsed.ok) return parsed;
+    selected.set(target, parsed.asset);
+  }
+  if (!selected.has("windows-x64")) return { ok: false, code: "wrong_platform" };
+  if (exactAssetCount && assetCount !== AGENT_RELEASE_TARGETS.length) {
+    return { ok: false, code: assetCount > AGENT_RELEASE_TARGETS.length ? "untrusted" : "incomplete" };
+  }
+  if (selected.size !== AGENT_RELEASE_TARGETS.length) return { ok: false, code: "incomplete" };
+  const assets = {} as Record<AgentReleaseTarget, SelectedAgentAsset>;
+  for (const target of AGENT_RELEASE_TARGETS) {
+    const asset = selected.get(target);
+    if (!asset) return { ok: false, code: "incomplete" };
+    assets[target] = asset;
+  }
+  return { ok: true, tag, assets: Object.freeze(assets) };
+}
+
+function decideLatest(lookup: ReleaseLookup): LatestReleaseDecision {
+  if (lookup.status === 404) return stop("not_found");
+  if (lookup.status === 403) return stop("forbidden", lookup.retryAfter);
+  if (lookup.status === 429) return stop("rate_limited", lookup.retryAfter);
+  if (lookup.status !== 200) return stop("rejected");
+  const parsed = parseRelease(lookup.body, { min: RELEASE_MIN_ASSET_BYTES, max: RELEASE_MAX_ASSET_BYTES }, false);
+  if (!parsed.ok) return stop("rejected");
+  return {
+    ok: true,
+    release: Object.freeze({
+      repository: "lirtual/mcp-workers",
+      tag: parsed.tag,
+      htmlUrl: releaseHtmlUrl(parsed.tag),
+      immutable: true,
+      assets: parsed.assets,
+    }),
+  };
+}
+
+function fail(code: LatestAgentReleaseCode, message: string): never {
+  throw new LatestAgentReleaseError(code, message);
+}
+
+async function readWindowsSnapshot(doFetch: typeof fetch): Promise<LatestAgentReleaseSnapshot> {
+  const response = await doFetch(LATEST_AGENT_RELEASE_URL, {
+    method: "GET",
+    redirect: "manual",
+    headers: {
+      accept: "application/vnd.github+json",
+      "user-agent": "rca-windows-latest-installer",
+    },
+  });
+  const status = response.status;
+  if (status === 404) fail("not_found", "No stable Agent Release is published");
+  if (status === 403) fail("forbidden", "GitHub rate limit reached; installation stopped");
+  if (status === 429) fail("rate_limited", "GitHub rate limit reached; installation stopped");
+  if (status >= 300 && status < 400) fail("untrusted", "Unexpected GitHub latest redirect");
+  if (status !== 200) fail("untrusted", "GitHub latest Release lookup failed");
+  let body: unknown;
+  try { body = await response.json(); }
+  catch { fail("untrusted", "GitHub latest Release lookup failed"); }
+  const parsed = parseRelease(body, { min: WINDOWS_MIN_ASSET_BYTES, max: WINDOWS_MAX_ASSET_BYTES }, true);
+  if (!parsed.ok) {
+    const message = parsed.code === "corrupt"
+      ? "Latest Agent Release is missing an official SHA-256"
+      : parsed.code === "wrong_platform"
+        ? "Windows x64 Agent asset is missing"
+        : parsed.code === "incomplete"
+          ? "Latest Agent Release is missing a platform asset"
+          : "Latest Agent Release is not a stable immutable Agent Release";
+    fail(parsed.code, message);
+  }
+  const assets: AgentReleaseAsset[] = AGENT_RELEASE_TARGETS.map((target) => {
+    const asset = parsed.assets[target];
+    return {
+      target: asset.target,
+      name: asset.name,
+      sha256: asset.sha256,
+      size: asset.size,
+      url: asset.downloadUrl,
+      architecture: asset.architecture,
+    };
+  });
+  const windows = assets[2];
+  if (!windows || windows.target !== "windows-x64") fail("wrong_platform", "Windows x64 Agent asset is missing");
+  return {
+    repository: "lirtual/mcp-workers",
+    tag: parsed.tag,
+    draft: false,
+    prerelease: false,
+    immutable: true,
+    identity: "remote-control-agent",
+    maxRedirects: 3,
+    allowedRedirectHosts: ["release-assets.githubusercontent.com", "objects.githubusercontent.com"],
+    sizeBounds: { min: WINDOWS_MIN_ASSET_BYTES, max: WINDOWS_MAX_ASSET_BYTES },
+    assets,
+    windows,
+  };
+}
+
+/**
+ * Select one latest Release. A status lookup returns a macOS decision.
+ * A fetch lookup returns the Windows snapshot and throws instead of falling open.
+ */
+export function selectLatestAgentRelease(lookup: ReleaseLookup): LatestReleaseDecision;
+export function selectLatestAgentRelease(input: { fetch: typeof fetch }): Promise<LatestAgentReleaseSnapshot>;
+export function selectLatestAgentRelease(
+  input: ReleaseLookup | { fetch: typeof fetch },
+): LatestReleaseDecision | Promise<LatestAgentReleaseSnapshot> {
+  if ("fetch" in input) return readWindowsSnapshot(input.fetch);
+  return decideLatest(input);
+}
+
+/** One latest lookup. Redirects and transport failures stop; they are not a second chance. */
+export async function readLatestAgentRelease(doFetch: typeof fetch): Promise<LatestReleaseDecision> {
+  let response: Response;
+  try {
+    response = await doFetch(LATEST_AGENT_RELEASE_URL, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        accept: "application/vnd.github+json",
+        "user-agent": "mcp-workers-remote-control",
+        "x-github-api-version": "2022-11-28",
+      },
+    });
+  } catch {
+    return { ok: false, stop: "unavailable" };
+  }
+  if (response.status >= 300 && response.status < 400) return { ok: false, stop: "rejected" };
+  let body: unknown;
+  if (response.status === 200) {
+    const text = await response.text();
+    if (text.length > 1_048_576) return { ok: false, stop: "rejected" };
+    try { body = JSON.parse(text); }
+    catch { return { ok: false, stop: "rejected" }; }
+  }
+  return selectLatestAgentRelease({
+    status: response.status,
+    body,
+    retryAfter: response.headers.get("retry-after"),
+  });
 }
 
 const EXTRACT_DIR = /^(?:bin|apps|apps\/remote-control-agent|apps\/remote-control-agent\/src|apps\/remote-control-agent\/scripts)\/$/;
@@ -162,98 +450,5 @@ export function planInstalledWindowsTakeover(
     action: "upgrade",
     grant: "permanent",
     startAgent: !installed.ownerStopped,
-  };
-}
-
-function fail(code: LatestAgentReleaseCode, message: string): never {
-  throw new LatestAgentReleaseError(code, message);
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function assetName(tag: string, target: string, ext: string): string {
-  return `remote-control-agent-${tag}-${target}.${ext}`;
-}
-
-function readAsset(tag: string, target: AgentPlatform, ext: string, architecture: "x64" | "arm64", raw: unknown): AgentReleaseAsset {
-  const record = asRecord(raw);
-  if (!record) fail("untrusted", "Latest Agent Release asset is not an object");
-  const name = assetName(tag, target, ext);
-  const digest = record.digest;
-  const url = record.browser_download_url;
-  const size = record.size;
-  const expectedUrl = `https://github.com/lirtual/mcp-workers/releases/download/${tag}/${name}`;
-  if (record.name !== name || record.state !== "uploaded" || url !== expectedUrl) {
-    fail("untrusted", "Untrusted GitHub Release asset digest/URL");
-  }
-  if (typeof digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
-    fail("corrupt", "Latest Agent Release is missing an official SHA-256");
-  }
-  if (typeof size !== "number" || !Number.isInteger(size) || size < MIN_ASSET_BYTES || size > MAX_ASSET_BYTES) {
-    fail("untrusted", "Untrusted GitHub Release asset size");
-  }
-  return { target, name, sha256: digest.slice("sha256:".length), size, url: expectedUrl, architecture };
-}
-
-export async function selectLatestAgentRelease(input: { fetch: typeof fetch }): Promise<LatestAgentReleaseSnapshot> {
-  const response = await input.fetch(LATEST_URL, {
-    method: "GET",
-    redirect: "manual",
-    headers: {
-      accept: "application/vnd.github+json",
-      "user-agent": "rca-windows-latest-installer",
-    },
-  });
-  const status = response.status;
-  if (status === 404) fail("not_found", "No stable Agent Release is published");
-  if (status === 403) fail("forbidden", "GitHub rate limit reached; installation stopped");
-  if (status === 429) fail("rate_limited", "GitHub rate limit reached; installation stopped");
-  if (status >= 300 && status < 400) fail("untrusted", "Unexpected GitHub latest redirect");
-  if (status !== 200) fail("untrusted", "GitHub latest Release lookup failed");
-  let body: unknown;
-  try { body = await response.json(); }
-  catch { fail("untrusted", "GitHub latest Release lookup failed"); }
-  const release = asRecord(body);
-  if (!release) fail("untrusted", "GitHub latest Release lookup failed");
-  if (release.draft !== false || release.prerelease !== false || release.immutable !== true ||
-      typeof release.tag_name !== "string" || !TAG.test(release.tag_name)) {
-    fail("untrusted", "Latest Agent Release is not a stable immutable Agent Release");
-  }
-  const tag = release.tag_name;
-  const rawAssets: unknown = release.assets;
-  if (!Array.isArray(rawAssets)) fail("incomplete", "Latest Agent Release is missing a platform asset");
-  const listed: readonly unknown[] = rawAssets;
-  const windowsName = assetName(tag, "windows-x64", "zip");
-  const windowsCount = listed.filter((item) => asRecord(item)?.name === windowsName).length;
-  if (windowsCount === 0) fail("wrong_platform", "Windows x64 Agent asset is missing");
-  if (windowsCount > 1) fail("untrusted", "Latest Agent Release is not a five-platform Agent Release");
-  if (listed.length !== PLATFORMS.length) {
-    fail(listed.length > PLATFORMS.length ? "untrusted" : "incomplete",
-      "Latest Agent Release is missing a platform asset");
-  }
-  const assets = PLATFORMS.map(([target, ext, architecture]) => {
-    const name = assetName(tag, target, ext);
-    const matched = listed.filter((item) => asRecord(item)?.name === name);
-    if (matched.length !== 1) fail("incomplete", "Latest Agent Release is missing a platform asset");
-    return readAsset(tag, target, ext, architecture, matched[0]);
-  });
-  const windows = assets[2];
-  if (!windows || windows.target !== "windows-x64") fail("wrong_platform", "Windows x64 Agent asset is missing");
-  return {
-    repository: "lirtual/mcp-workers",
-    tag,
-    draft: false,
-    prerelease: false,
-    immutable: true,
-    identity: "remote-control-agent",
-    maxRedirects: 3,
-    allowedRedirectHosts: ["release-assets.githubusercontent.com", "objects.githubusercontent.com"],
-    sizeBounds: { min: MIN_ASSET_BYTES, max: MAX_ASSET_BYTES },
-    assets,
-    windows,
   };
 }

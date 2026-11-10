@@ -5,10 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { parseArgs, machOMachine } from "../scripts/build-v2-release.mjs";
+import { parseArgs, machOMachine, darwinGitRoot } from "../scripts/build-v2-release.mjs";
 import { requireNativeMac, parseTemporaryMacArgs, privateDirectory, privateFileIfPresent } from "../src/macos-temporary.ts";
 
 const sha = "a".repeat(64);
+test("#809 darwin archive source identity is the monorepo HEAD, not the apps directory", () => {
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const shown = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: packageRoot, encoding: "utf8", timeout: 5000,
+  });
+  assert.equal(shown.status, 0);
+  assert.equal(darwinGitRoot(packageRoot), shown.stdout.trim());
+  assert.notEqual(path.resolve(packageRoot, "../.."), shown.stdout.trim());
+});
 test("#661 both Darwin native candidates require pinned Node and owned-group helper", () => {
   assert.deepEqual(parseArgs(["--version","v0.0.0-ci","--target","darwin-arm64",
     "--node-bin","/tmp/native-node","--node-sha256",sha,

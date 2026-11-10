@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** Nested package: apps/remote-control-mcp-worker/agent. Git identity is the monorepo root. */
+export function darwinGitRoot(packageRoot = root) {
+  return path.resolve(packageRoot, "../../..");
+}
 const ts = require("typescript");
 const ALLOWED = new Set(["linux-x64-glibc", "linux-arm64-glibc", "darwin-arm64", "darwin-x64"]);
 const source = path.join(root, "src");
@@ -274,7 +278,7 @@ export function build(args) {
   }
   writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),JSON.stringify({type:"module"})+"\n",{mode:0o600});
   const sourceCommit=darwin ? spawnSync("git",["rev-parse","HEAD"],{
-    cwd:path.resolve(root,"../.."),encoding:"utf8",timeout:5000,
+    cwd:darwinGitRoot(root),encoding:"utf8",timeout:5000,
   }) : null;
   if (darwin && (sourceCommit.error || sourceCommit.status!==0 ||
       !/^[a-f0-9]{40}\s*$/.test(sourceCommit.stdout)))

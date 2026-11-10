@@ -42,6 +42,7 @@ function release(patch: Record<string, unknown> = {}, assets = TARGETS.map(([tar
     draft: false,
     prerelease: false,
     immutable: true,
+    html_url: `https://github.com/lirtual/mcp-workers/releases/tag/${TAG}`,
     assets,
     ...patch,
   };

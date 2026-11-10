@@ -72,6 +72,37 @@ export function parsePlist(xml,programs,endpoint,arch=process.arch){
     throw Error("Unexpected LaunchAgent configuration.");
   return {root,generation:tokens[7]};
 }
+// Explicit upgrades must move forward. A recorded source_commit is not download authority.
+export function forwardMacVersion(current,next){
+  const re=/^v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([a-z0-9.-]+))?-darwin-(arm64|x64)$/;
+  const a=re.exec(current),b=re.exec(next);
+  if(!a||!b||a[5]!==b[5])return false;
+  for(let i=1;i<=3;i++){
+    const x=BigInt(a[i]),y=BigInt(b[i]);
+    if(x!==y)return y>x;
+  }
+  if(!a[4])return false;
+  if(!b[4])return true;
+  const old=a[4].split("."),fresh=b[4].split(".");
+  for(let i=0;i<Math.max(old.length,fresh.length);i++){
+    if(i>=old.length)return true;
+    if(i>=fresh.length)return false;
+    const n=/^[0-9]+$/;
+    const x=old[i],y=fresh[i];
+    if(x===y)continue;
+    if(n.test(x)&&n.test(y))return BigInt(y)>BigInt(x);
+    if(n.test(x))return true;
+    if(n.test(y))return false;
+    return y>x;
+  }
+  return false;
+}
+const SOURCE_COMMIT=/^[a-f0-9]{40}$/;
+/** Old and new source commits may differ after the repository move. Neither commit authorizes a download. */
+export function admitsMacOwnerUpgrade({installedVersion,installedSourceCommit,candidateVersion,candidateSourceCommit}){
+  if(!SOURCE_COMMIT.test(installedSourceCommit??"")||!SOURCE_COMMIT.test(candidateSourceCommit??""))return false;
+  return forwardMacVersion(installedVersion,candidateVersion);
+}
 export function candidateName(meta,sha,arch=process.arch){
   if(!SHA.test(sha)||meta.source_commit!==sha||!VERSION.test(meta.version)||
     !["arm64","x64"].includes(arch)||meta.target!=="darwin-"+arch||
@@ -334,6 +365,17 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     throw Error("Stopped marker conflicts with an active service; inspect locally.");
   if(action==="upgrade"&&!current)throw Error("No existing permanent LaunchAgent.");
   const version=await checkCandidate(bundle,sourceSha);
+  if(action==="upgrade"){
+    const installedManifest=path.join(current.root,"bundle.json");
+    await checked(installedManifest,{mode:0o600});
+    const installedMeta=JSON.parse(await readFile(installedManifest,"utf8"));
+    if(!admitsMacOwnerUpgrade({
+      installedVersion:path.basename(current.root),
+      installedSourceCommit:installedMeta.source_commit,
+      candidateVersion:version,
+      candidateSourceCommit:sourceSha,
+    })) throw Error("Downgrade or non-forward version is not permitted.");
+  }
   const nextRoot=path.join(programs,version);
   if(await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite. " +
     "Inspect existing state and use a separately verified newer candidate; " +
