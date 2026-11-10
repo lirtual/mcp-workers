@@ -15,6 +15,7 @@
 | Repository | Secret | `CLOUDFLARE_API_TOKEN` | Wrangler 和只读发布检查所需 Cloudflare API Token |
 | Repository | Secret | `MCP_ACCESS_TOKEN` | 所有 Worker 每次手动发布时同步的**默认** Portal Bearer Token |
 | Repository | Variable | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID |
+| Repository | Variable | `OWNER_EMAIL` | Browser 激活 Owner 邮箱的唯一维护来源 |
 
 如果之前将 Cloudflare Token 或账户 ID 仅保存在 `production` Environment 中，请自行将**原值**迁到 Repository（已隐藏的 Secret 无法从 GitHub 取回明文；须使用自己保存的凭据或重新签发）。不要放进代码、PR、Issue 或聊天中。
 
@@ -30,7 +31,7 @@
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY` | 无 |
-| `browser-mcp-worker` | 既有设计要求独立 `MCP_ACCESS_TOKEN` 同名 Environment 覆盖；实际配置尚待核实 | `ACCESS_TEAM_DOMAIN`、`OWNER_EMAIL`（Repository）、`BROWSER_ACTIVATION_AUDIENCE`（Environment）；其余运行时 Browser Access 值从共享源及 Wrangler Custom Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
+| `browser-mcp-worker` | 默认继承 Repository `MCP_ACCESS_TOKEN`；如有独立值，则由同名 Environment Secret 覆盖 | Repository `OWNER_EMAIL`；可选 Environment `BROWSER_REMEMBERED_IDLE_DAYS`。Issuer/Audience/Origin 由发布流程只读获取 Cloudflare 与 Wrangler 配置并派生；旧 `ACCESS_TEAM_DOMAIN` 和 GitHub `BROWSER_ACTIVATION_AUDIENCE` 已退役，勿重建 |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`（UU Session Secret 已按 #774 退役） | `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Environment）、`WORKFLOW_GITHUB_ACTION_REPOSITORY`（Repository） |
