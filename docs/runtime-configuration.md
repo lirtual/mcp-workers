@@ -9,7 +9,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 ## Source of truth
 
 - Wrangler defines non-secret settings, Cloudflare bindings and required Secret names; never commit secret values.
-- Under Spec #804, Browser **release code** reads `auth_domain` from the Zero Trust Organization and `aud` from the fixed reviewed Access App; Repository `OWNER_EMAIL` is its sole maintained Owner identity Variable. The former `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE` GitHub source values remain in production Settings until separately authorized deletion after production acceptance. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
+- Under Spec #804, Browser **release code** reads `auth_domain` from the Zero Trust Organization and `aud` from the fixed reviewed Access App; Repository `OWNER_EMAIL` is its sole maintained Owner identity Variable. The former GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE` sources were separately authorized for deletion on 2026-11-10 and each independently confirmed absent (HTTP 404); required Cloudflare runtime identity bindings remain. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
 - Every selected Worker has its own same-name GitHub Environment for app Secrets and whitelisted Variables. Only a separately approved, `main`-only, manual **Release Worker** run publishes it. Editing a GitHub Secret alone does not rotate live credentials.
 - All Workers require `MCP_ACCESS_TOKEN`. `IMA_CLIENT_ID` and `WORKFLOW_MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
 
@@ -18,7 +18,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | Worker | Additional Environment Secrets | Environment Variables |
 | --- | --- | --- |
 | `database-mcp-worker` | Referenced independent `DATABASE_B2B_PASSWORD` / `DATABASE_SCRAPE_RELAY_PASSWORD` Secrets | `DATABASE_CONNECTIONS`, referenced `DB_HOST`, optional `DATABASE_*` SQL limits |
-| `browser-mcp-worker` | 无同名 `MCP_ACCESS_TOKEN` Environment Secret 覆盖；现行版本已于 2026-11-10 发布并独立回读 | 仅 `OWNER_EMAIL`（Repository）为现行人工维护的 Owner 身份来源；`ACCESS_TEAM_DOMAIN`（Repository）与 `BROWSER_ACTIVATION_AUDIENCE`（Environment）仍存在但已非现行发布来源，待分别授权删除；运行时身份绑定由 Organization / 固定 Access App / Wrangler Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
+| `browser-mcp-worker` | 无同名 `MCP_ACCESS_TOKEN` Environment Secret 覆盖；现行版本已于 2026-11-10 发布并独立回读 | 仅 `OWNER_EMAIL`（Repository）为现行人工维护的 Owner 身份来源；`ACCESS_TEAM_DOMAIN`（Repository）和 `BROWSER_ACTIVATION_AUDIENCE`（Environment）旧来源均已删除并回读确认不存在；运行时身份绑定由 Organization / 固定 Access App / Wrangler Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY`（GitHub/运行时同名） | 无 |
@@ -64,7 +64,7 @@ Git, Wrangler or README changes cannot decommission live Cloudflare resources or
 
 ## Browser activation (current)
 
-The Browser Worker uses https://browser.lirtual.dpdns.org as its production custom domain (workers_dev: false, preview_urls: false). Current activation uses Owner Access verification and a one-use same-Profile proof. Under published Spec #804, the Browser runtime issuer and Audience are derived at release time from the Zero Trust Organization and fixed reviewed Access App, Owner email from Repository `OWNER_EMAIL`, and Origin from the reviewed Wrangler Custom Domain. The historical manually maintained GitHub `BROWSER_ACTIVATION_AUDIENCE` source is no longer consumed but is still present pending separately authorized deletion. The independent Unknown Review page, Access application and BROWSER_APPROVAL_* runtime settings were retired; historical Unknown receipts and no-replay guards remain.
+The Browser Worker uses https://browser.lirtual.dpdns.org as its production custom domain (workers_dev: false, preview_urls: false). Current activation uses Owner Access verification and a one-use same-Profile proof. Under published Spec #804, the Browser runtime issuer and Audience are derived at release time from the Zero Trust Organization and fixed reviewed Access App, Owner email from Repository `OWNER_EMAIL`, and Origin from the reviewed Wrangler Custom Domain. The manually maintained GitHub `BROWSER_ACTIVATION_AUDIENCE` source was retired on 2026-11-10; only the required runtime binding remains. The independent Unknown Review page, Access application and BROWSER_APPROVAL_* runtime settings were retired; historical Unknown receipts and no-replay guards remain.
 
 The Browser GitHub Environment was verified to have no MCP_ACCESS_TOKEN Secret override. The separately authorized [Release Worker #42137310441](https://github.com/lirtual/mcp-workers/actions/runs/42137310441) on 2026-11-06 deployed main 6c0fcd6c9fe16ac9d2a944e75be19bb37ee902fc, restaging the unchanged Repository MCP_ACCESS_TOKEN and approved Owner Variables. Independent Cloudflare readback confirmed active version a80f88bd-4f29-4660-bdf9-2df1a55f0619 (100% traffic), one MCP_ACCESS_TOKEN secret_text binding, and the derived Browser Access Variable bindings. The existing Browser Portal upstream was synchronized once without creating a new server or changing its 11-member Portal mapping; it is ready with 15 tools and reviewed UUIDv7/operation-status schemas (last successful sync 2026-11-06 00:31:39 UTC). Independent anonymous direct tools/list was denied HTTP 401. The older [Workflow Acceptance #41964023278](https://github.com/lirtual/mcp-workers/actions/runs/41964023278) had established Repository Token authenticated direct tools/list compatibility with the previously deployed version; a later [Workflow Acceptance #42174762888](https://github.com/lirtual/mcp-workers/actions/runs/42174762888) authenticated direct `tools/list` against the new Browser production version and verified its 15-tool/schema contract. A real browser operation and client E2E were **not** performed. No Secret bytes were read or compared. Future releases must recheck provenance and obtain explicit authorization for both Worker publication and Portal sync.
 
@@ -79,9 +79,9 @@ server (15 tools, ready) passed independent readback. The prior
 stopped before deployment; its missing account-ID staging input was fixed in
 PR #815 and subsequent main CI passed. Live physical Owner SSO/OTP and
 same-Profile one-use activation remain **Not performed** because the
-observed Browser endpoints were offline. The legacy GitHub sources remain
-present pending separately authorized removal; the necessary runtime
-identity bindings remain unchanged. Historical Database/Weixin Access apps
+observed Browser endpoints were offline. The two legacy GitHub sources were separately authorized for deletion
+and independently verified absent (HTTP 404) on 2026-11-10; the necessary
+runtime identity bindings remain unchanged. Historical Database/Weixin Access apps
 were only read-only classified, not retired.
 
 ## Spec #733: separately authorized configuration cutover
