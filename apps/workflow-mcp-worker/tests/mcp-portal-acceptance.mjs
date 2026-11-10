@@ -1,6 +1,6 @@
 /**
  * Manual Workflow-only Portal authentication and read-only listing probe from
- * the trusted GitHub Environment. Never log credentials, headers or tool data.
+ * the trusted GitHub Repository Secret source. Never log credentials, headers or tool data.
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';

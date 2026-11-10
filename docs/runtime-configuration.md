@@ -1,5 +1,7 @@
 # Cloudflare runtime configuration
 
+**Spec #849 migration state:** The code change removes GitHub job Environment bindings, but the last read-only GitHub Settings snapshot still has 10 Environments and six unmigrated Secrets. Do not merge/activate the new release workflow until separately authorized exact-byte source migration and verification pass; final removal is separately authorized. Worker runtime values and Cloudflare production are not modified by code/CI.
+
 **Spec #392 and subsequent Bark-only retirement:** The legacy Weixin MCP Worker and release entry are no longer maintained in this repository. [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) owns the unified Action Provider; its current executable catalog contains no Weixin send operation. Historical data and recovery evidence are governed separately and are not deleted by GitHub configuration cleanup.
 
 The eight independently managed MCP Workers share an MCP-entry Secret **name**, not a uniform hostname, credential or logging policy. Authoritative release contracts: `.github/workflows/release.yml`, `scripts/bootstrap-worker-secrets.mjs`, `scripts/worker-release-variables.mjs`, `scripts/manual-worker-release.mjs` and each app's `wrangler.jsonc`.
@@ -9,13 +11,13 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 ## Source of truth
 
 - Wrangler defines non-secret settings, Cloudflare bindings and required Secret names; never commit secret values.
-- Under Spec #804, Browser **release code** reads `auth_domain` from the Zero Trust Organization and `aud` from the fixed reviewed Access App; Repository `OWNER_EMAIL` is its sole maintained Owner identity Variable. The former GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE` sources were separately authorized for deletion on 2026-11-10 and each independently confirmed absent (HTTP 404); required Cloudflare runtime identity bindings remain. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. A matching same-name GitHub Environment Secret overrides the default. Without an override, the next Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
-- Every selected Worker has its own same-name GitHub Environment for app Secrets and whitelisted Variables. Only a separately approved, `main`-only, manual **Release Worker** run publishes it. Editing a GitHub Secret alone does not rotate live credentials.
+- Under Spec #804, Browser **release code** reads `auth_domain` from the Zero Trust Organization and `aud` from the fixed reviewed Access App; Repository `OWNER_EMAIL` is its sole maintained Owner identity Variable. The former GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE` sources were separately authorized for deletion on 2026-11-10 and each independently confirmed absent (HTTP 404); required Cloudflare runtime identity bindings remain. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. Before Spec #849 cutover, a same-name GitHub Environment Secret could override the default; after verified Environment retirement no override remains. Without an override, the selected Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
+- The post-#849 release contract uses a single GitHub **Repository** source for all selected Workers, without job Environments. Only an independently authorized, `main`-only, manual **Release Worker** run publishes production. Editing a GitHub Secret alone does not rotate live credentials.
 - All Workers require `MCP_ACCESS_TOKEN`. `IMA_CLIENT_ID` and `WORKFLOW_MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
 
 ## Worker-scoped configuration
 
-| Worker | Additional Environment Secrets | Environment Variables |
+| Worker | Additional Repository Secrets (target) | Repository Variables (target) |
 | --- | --- | --- |
 | `database-mcp-worker` | Referenced independent `DATABASE_B2B_PASSWORD` / `DATABASE_SCRAPE_RELAY_PASSWORD` Secrets | `DATABASE_CONNECTIONS`, referenced `DB_HOST`, optional `DATABASE_*` SQL limits |
 | `browser-mcp-worker` | 无同名 `MCP_ACCESS_TOKEN` Environment Secret 覆盖；现行版本已于 2026-11-10 发布并独立回读 | 仅 `OWNER_EMAIL`（Repository）为现行人工维护的 Owner 身份来源；`ACCESS_TEAM_DOMAIN`（Repository）和 `BROWSER_ACTIVATION_AUDIENCE`（Environment）旧来源均已删除并回读确认不存在；运行时身份绑定由 Organization / 固定 Access App / Wrangler Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
@@ -24,7 +26,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY`（GitHub/运行时同名） | 无 |
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
-| `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`；`SESSION_RUNTIME_DATA_KEY` 已按 #774 清理，不再是现行发布来源 | `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Environment）、`WORKFLOW_GITHUB_ACTION_REPOSITORY`（Repository） |
+| `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`；`SESSION_RUNTIME_DATA_KEY` 已按 #774 清理，不再是现行发布来源 | `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Repository）、`WORKFLOW_GITHUB_ACTION_REPOSITORY`（Repository） |
 
 **Historical Spec #733 exception (2026-11-06, superseded):** GitHub Environment `ENCRYPTION_KEY` (SSH), `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` (Workflow) were originally kept as release inputs and mapped to canonical Worker runtime names. The #774 UU cleanup removed `SESSION_RUNTIME_DATA_KEY`. The subsequent authorized GitHub-source-only normalization replaces the remaining two with unchanged-byte `SSH_ENCRYPTION_KEY` and `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` inputs. Historical failed rename attempts and their audit evidence below remain unchanged; the source-only change does not deploy Workers or prove decryption.
 
@@ -54,7 +56,7 @@ Use [ingress policy](./ingress-policy.md) rather than deriving `workers.dev` for
 
 ## Deployment verification
 
-1. Verify selected GitHub Repository/Environment Secrets, Variables, branch protection and approvals. Do not use Cloudflare Builds or unreviewed direct Wrangler deploys for routine production publishing.
+1. Verify selected GitHub Repository Secrets/Variables, current migration stage, and actual release gates. Do not use Cloudflare Builds or unreviewed direct Wrangler deploys for routine production publishing.
 2. Manually dispatch **Release Worker** from current `main` with exactly one Worker selected and `deploy_to_production` explicitly approved.
 3. Confirm exact Cloudflare active Version ID and required Secret/Variable/DO/D1/Service Bindings and custom-domain settings where applicable.
 4. Verify public health where implemented and reject anonymous `/mcp` requests. A 401/403 alone does not prove end-to-end authenticated access.

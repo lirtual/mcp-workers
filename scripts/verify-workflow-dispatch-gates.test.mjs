@@ -30,6 +30,29 @@ test('canonical SSH and Workflow GitHub Secret inputs are scoped, single-source 
   }
 });
 
+test('Repository-scoped Secret staging rejects any unscoped selected-Worker input', () => {
+  for (const [name,worker] of [
+    ['RAINDROP_ACCESS_TOKEN','raindrop-mcp-worker'],
+    ['IMA_API_KEY','ima-mcp-worker'],
+    ['ACTIONS_GITHUB_DISPATCH_TOKENS','github-actions-mcp-worker'],
+    ['WORKFLOW_GITHUB_DISPATCH_TOKEN','workflow-mcp-worker'],
+  ]) {
+    const scoped = name + ': ' + '$' +
+      "{{ inputs.worker == '" + worker + "' && secrets." + name + " || '' }}";
+    const unscoped = name + ': ' + '$' + '{{ secrets.' + name + ' }}';
+    const stageStart = release.indexOf('      - name: Stage selected Worker Secrets for every release');
+    const changed = release.slice(0,stageStart) + release.slice(stageStart).replace(scoped,unscoped);
+    assert.throws(() => verifyReleaseWorkers(changed,RELEASE_WORKERS),
+      /Selected Worker staging leaked or omitted/);
+  }
+});
+
+test('static workflow references reject restored job-level Environments', () => {
+  assert.throws(() => verifyStaticWorkflowReferences({
+    'test.yml': 'jobs:\n  job:\n    environment: retired-worker\n    runs-on: ubuntu-latest',
+  }, () => true), /must not bind a GitHub Environment/);
+});
+
 test('Spec #804 Browser candidate stage receives canonical account ID', () => {
   const stage = release.split('      - name: Stage approved Worker variables\n')[1]
     ?.split('      - name: Pin the reviewed unified Actions Worker')[0];
@@ -129,7 +152,7 @@ test('a local workflow reference cannot traverse out of the workflow directory',
 
 test('release documentation contracts reject wrong Worker and Secret/Variable drift', () => {
   const docs = {
-    imaContext: '`IMA_CLIENT_ID` 是 GitHub Environment Variable；`IMA_API_KEY` 是 GitHub Environment Secret。',
+    imaContext: '`IMA_CLIENT_ID` 是 GitHub Repository Variable；`IMA_API_KEY` 是 GitHub Repository Secret。',
     raindropReadme: 'Production uses Release Worker.',
     githubActionsReadme: 'inputs={"worker":"github-actions-mcp-worker","deploy_to_production":"true"}',
   };

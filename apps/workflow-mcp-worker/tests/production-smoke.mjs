@@ -10,9 +10,9 @@ import { toolSchemaDigest } from '../src/plan.ts';
 import {WORKFLOW_MIGRATION_READINESS_SQL,verifyWorkflowCodeReleaseReadiness} from '../../../scripts/manual-worker-release.mjs';
 
 const token = process.env.MCP_ACCESS_TOKEN;
-assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Environment');
+assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Repository');
 assert.ok(process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID,
-  'Cloudflare read/cleanup credentials must be present in GitHub Environment');
+  'Cloudflare read/cleanup credentials must be present in GitHub Repository');
 
 const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const base = 'https://workflow.lirtual.dpdns.org';

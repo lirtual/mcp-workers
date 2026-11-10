@@ -2,7 +2,7 @@
 
 This stateless MCP Worker manages GitHub Actions exclusively using GitHub REST and existing owner Portal authentication.
 
-`ACTIONS_GITHUB_DISPATCH_TOKENS` is one GitHub Environment Secret containing up to eight distinct PATs separated by lines. A single-line value remains supported. No `GH_TOKEN_SECONDARY`, repository allowlist variable, account switcher, JSON secret object, database, GitHub App or second Worker is required.
+`ACTIONS_GITHUB_DISPATCH_TOKENS` is one GitHub Repository Secret containing up to eight distinct PATs separated by lines. A single-line value remains supported. No `GH_TOKEN_SECONDARY`, repository allowlist variable, account switcher, JSON secret object, database, GitHub App or second Worker is required.
 
 The Worker discovers accessible repositories independently with authenticated GitHub `GET /user/repos` on each PAT. Discovery is bounded to 200 repositories per PAT and fails closed on errors. `repositories_list` combines results and flags any ambiguous overlap. Every operation resolves the exact `owner/repo` to precisely one PAT before calling GitHub Actions. Upstream failures do not trigger write retries under another PAT. Permissions remain enforced by GitHub, not duplicated in MCP configuration.
 

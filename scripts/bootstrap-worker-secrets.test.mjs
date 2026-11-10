@@ -104,7 +104,7 @@ test("Workflow registered GitHub token must be nonblank, bounded and not multili
   assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",{...valid,ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored"}),valid);
 });
 
-test("Workflow GitHub Environment secrets never use reserved GITHUB_ names",()=>{
+test("Workflow Repository secrets never use reserved GITHUB_ names",()=>{
   const actual=collectBootstrapSecrets("workflow-mcp-worker",{
     ...fixtures["workflow-mcp-worker"],WORKFLOW_SESSION_RUNTIME_DATA_KEY:"retired-ignore",
     SESSION_RUNTIME_DATA_KEY:"old-source-ignore",

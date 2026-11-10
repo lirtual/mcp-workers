@@ -61,7 +61,7 @@ async function callApprovedMcp(env:Env,plan:Plan,step:Step,args:Record<string,un
   if(await toolSchemaDigest(step.with.input_schema,step.with.output_schema)!==schema_digest)
     throw Error('approved_schema_changed');
   const client=new Client({name:'workflow-mcp-reviewed-candidate',version:'0.1.0'});
-  // Environment-scoped Portal identity cannot be changed by a Draft, a
+  // Repository-sourced Portal identity cannot be changed by a Draft, a
   // Published Plan, or Run inputs. Only the production Portal is supported.
   const chosenPortal=env.WORKFLOW_MCP_PORTAL_ENDPOINT;
   if(chosenPortal===undefined)throw Error('portal_target_not_configured');

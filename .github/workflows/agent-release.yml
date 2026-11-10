@@ -32,7 +32,6 @@ jobs:
   publish:
     name: Publish immutable stable Agent Release
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual'
-    environment: remote-control-agent-release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

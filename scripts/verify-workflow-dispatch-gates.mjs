@@ -30,7 +30,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   const allowed = [...list.matchAll(/inputs\.worker == '([^']+)'/g)].map(match => match[1]);
   sameMembers(allowed, expectedWorkers, 'release allowlist');
 
-  // Canonical GitHub Environment Secret names must match the Worker runtime bindings.
+  // Canonical GitHub Repository Secret names must match Worker runtime bindings.
   // Old source names must not be accepted as aliases or fallback inputs.
   const stageStart=source.indexOf('      - name: Stage selected Worker Secrets for every release');
   const stageEnd=source.indexOf('      - name: Stage approved Worker variables',stageStart);
@@ -49,6 +49,19 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
     assert.ok(!secretStage.includes('          '+legacy+': '),
       'Legacy runtime binding forbidden: '+legacy);
   }
+  // Only the selected Worker's nonshared credential reaches the staging process.
+  for (const [name, worker] of [
+    ['RAINDROP_ACCESS_TOKEN', 'raindrop-mcp-worker'],
+    ['IMA_API_KEY', 'ima-mcp-worker'],
+    ['ACTIONS_GITHUB_DISPATCH_TOKENS', 'github-actions-mcp-worker'],
+    ['WORKFLOW_GITHUB_DISPATCH_TOKEN', 'workflow-mcp-worker'],
+  ]) {
+    const scoped = '          ' + name + ': ' + String.fromCharCode(36) +
+      "{{ inputs.worker == '" + worker + "' && secrets." + name + " || '' }}";
+    assert.ok(secretStage.includes(scoped), 'Selected Worker staging leaked or omitted ' + name);
+    assert.equal(secretStage.split('          ' + name + ':').length - 1, 1,
+      'Duplicate staged Secret ' + name);
+  }
   assert.doesNotMatch(secretStage,/WORKFLOW_SESSION_RUNTIME_DATA_KEY:|secrets\.SESSION_RUNTIME_DATA_KEY/,
     'Retired UU Secret source must not be staged into new Worker versions');
 }
@@ -57,6 +70,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
 export function verifyStaticWorkflowReferences(workflows, exists) {
   const command = /(?:(?:pnpm\s+--filter\s+([a-z0-9-]+)\s+exec\s+)?node(?:\s+--[a-z0-9-]+)*|bash)\s+((?:(?:scripts|apps)\/[a-zA-Z0-9_./-]+\.(?:mjs|sh))(?:\s+(?:scripts|apps)\/[a-zA-Z0-9_./-]+\.(?:mjs|sh))*)/g;
   for (const [workflow, source] of Object.entries(workflows)) {
+    assert.doesNotMatch(source, /^ {4}environment:/gm, workflow + ' must not bind a GitHub Environment');
     for (const [index, line] of source.split('\n').entries()) {
       if (line.trimStart().startsWith('#')) continue;
       const loc = workflow + ':' + (index + 1);
@@ -131,7 +145,7 @@ for (const clause of [
   "needs.checks.outputs.release_ready == 'true'",
 ]) assert.ok(accessProbe.gate.includes(clause),'Browser GET-only gate missing: '+clause);
 for(const clause of [
-  'name: browser-mcp-worker','group: worker-release-browser-mcp-worker',
+  'group: worker-release-browser-mcp-worker',
   'cancel-in-progress: false',
   'node scripts/check-shared-owner-vars.mjs browser-mcp-worker',
   'node scripts/manual-worker-release.mjs preflight browser-mcp-worker',
@@ -226,7 +240,7 @@ assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release
 assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]'),
   'Database release expected SHA gate missing');
 verifyReleaseWorkers(release, RELEASE_WORKERS);
-assert.ok(deploy.content.includes('name: ' + dollar + '{{ inputs.worker }}'), 'Worker-scoped Environment missing');
+assert.doesNotMatch(release, /^    environment:/gm, 'Release jobs must not bind a GitHub Environment');
 assert.ok(deploy.content.includes('group: worker-release-' + dollar + '{{ inputs.worker }}'), 'Release lock missing');
 for (const marker of [
   'Stage selected Worker Secrets for every release',
