@@ -101,3 +101,10 @@ GitHub 资料：https://docs.github.com/en/code-security/reference/secret-securi
 **未解决的实际阻断**：目前既没有确认可用的平台允许原 Secret 原值搬运/写入路径，也没有可运行的独立旧/新字节核验入口。为避免添加不能执行、长期留在 main 的敏感迁移 Workflow，本轮**不创建一次性 Workflow、不编写真实密钥迁移程序、不存储加密工件**。待可执行路径被平台明确允许后，采用最少的临时工作流和本地验证步骤；成功之后连同临时入口一起撤销。无法验证时保持现状，并向 Owner 交接具体阻断，而不是提前合并、删除或声称完成迁移。
 
 技术事实参考：GitHub [Secret 层级覆盖](https://docs.github.com/en/actions/reference/security/secrets)、[GitHub REST Secret API](https://docs.github.com/en/rest/actions/secrets) 以及 [Actions Secret 传递限制](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)。
+
+## 2026-11-11 模拟加密与临时迁移入口更新
+
+- Owner 在其 WSL 上执行使用纯虚构值的 GitHub CLI `--no-store` 命令，反馈 `DUMMY_ENCRYPTION_PASS`。这是**用户报告的本地合成值加密 Pass**；此前 Agent 工具平台拒绝的记录仍属实，不应改写为 Agent 已自行完成。
+- 临时迁移工具已隔离至独立 Draft [PR #851](https://github.com/lirtual/mcp-workers/pull/851)：以 GitHub Environment 旧来源与无 Environment 的 Repository 来源分别加密给本地一次性公钥，再在本地内存中完成原字节比对。合成数据的 7 项密码学/边界测试和现有相关契约测试通过；真实 Runner 读取、GitHub Settings 写入与 6 项字节验真均尚未执行。
+- 因 GitHub `workflow_dispatch` 要求工作流文件先存在默认分支，PR #851 仅供审核；**合并临时 Secret 读取入口到 main 本身需要另外明确授权**。在那之前不派发真实工作流。待获批后，运行时主分支 SHA 固定并回读；手动本地迁移工具必须显式 `--mode=apply`，遇到 Unknown 停止并只读核对。
+- PR #850 继续保持 Draft，先用 PR #851 进行按原值迁移与独立验证，之后删除临时工具，再合并消费者改造，最后另行授权删除 10 个 Environments。未发生的步骤仍标记 Blocked/Not run。
