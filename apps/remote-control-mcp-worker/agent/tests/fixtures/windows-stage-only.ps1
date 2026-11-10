@@ -65,7 +65,7 @@ function Ensure-PrivateFolder([string]$folder) {
   Assert-PrivateFolder $folder
 }
 function Download-ImmutableRelease([string]$tag, [string]$dest) {
-  $base = 'https://api.github.com/repos/lirtual/remote-control-agent'
+  $base = 'https://api.github.com/repos/lirtual/mcp-workers'
   $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rca-windows-pinned-installer' }
   $release = Invoke-RestMethod -Uri "$base/releases/tags/$tag" -Headers $headers -TimeoutSec 30
   if ($release.immutable -ne $true -or $release.draft -ne $false -or $release.tag_name -ne $tag) {
@@ -86,7 +86,7 @@ function Download-ImmutableRelease([string]$tag, [string]$dest) {
   $assets = @($release.assets | Where-Object { $_.name -ceq $name })
   if ($assets.Count -ne 1) { throw 'Pinned Windows asset is missing' }
   $asset = $assets[0]
-  $expectedUri = "https://github.com/lirtual/remote-control-agent/releases/download/$tag/$name"
+  $expectedUri = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
   if ($asset.state -ne 'uploaded' -or $asset.digest -cnotmatch '^sha256:[a-f0-9]{64}$' -or
       $asset.browser_download_url -cne $expectedUri -or
       $asset.size -lt 100000 -or $asset.size -gt 100000000) {

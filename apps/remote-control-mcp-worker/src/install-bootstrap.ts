@@ -1,7 +1,9 @@
+import windowsInstallerSource from "../agent/install.ps1";
 import { renderInstallHome } from "./install-home.ts";
 /**
- * Existing immutable, explicitly pinned Linux bootstrap and the public
- * onboarding page. Windows remains fail-closed without a new reviewed Release.
+ * Existing immutable, explicitly pinned Linux and macOS bootstraps and the
+ * public onboarding page. Windows serves the nested installer, which resolves
+ * one mcp-workers latest stable Release on the device.
  */
 export type InstallReleasePin = Readonly<{
   tag: string; commit: string; x64Sha256: string; arm64Sha256: string;
@@ -217,23 +219,12 @@ function validWindowsPin(pin: WindowsInstallPin): boolean {
     /^[a-f0-9]{64}$/.test(pin.scriptSha256) && /^[a-f0-9]{64}$/.test(pin.assetSha256);
 }
 
-/** Fetch reviewed source bytes, validate them before executing any PowerShell. */
-export function renderAgentInstallPowerShell(origin: string, pin: WindowsInstallPin): string {
-  if (!validInstallerOrigin(origin) || !validWindowsPin(pin)) {
+/** Serve the nested Windows installer. It resolves latest itself; no raw source pin. */
+export function renderAgentInstallPowerShell(origin: string): string {
+  if (!validInstallerOrigin(origin)) {
     throw Error("Unapproved Windows installer pin or origin");
   }
-  return [
-    "$ErrorActionPreference = 'Stop'",
-    "$uri = 'https://raw.githubusercontent.com/lirtual/remote-control-agent/" + pin.commit + "/install.ps1'",
-    "$response = Invoke-WebRequest -Uri $uri -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 30",
-    "$source = [string]$response.Content",
-    "$sha = [Security.Cryptography.SHA256]::Create()",
-    "try { $actual = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($source))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }",
-    "if ($actual -cne '" + pin.scriptSha256 + "') { throw 'Installer source SHA-256 mismatch' }",
-    "& ([ScriptBlock]::Create($source)) -Version '" + pin.tag + "' -PinnedCommit '" + pin.commit + "' -PinnedReleaseSha256 '" + pin.assetSha256 + "'",
-    "if (-not $?) { throw 'Windows onboarding failed' }",
-    "",
-  ].join("\n");
+  return windowsInstallerSource.endsWith("\n") ? windowsInstallerSource : `${windowsInstallerSource}\n`;
 }
 
 // Never trust request Host alone: the allowed origin is supplied by the
@@ -356,7 +347,7 @@ export function handleAgentInstallerRequest(
     if (!windowsPin || !validWindowsPin(windowsPin)) {
       return new Response("Reviewed Windows installer is not published yet.\n", {status:503,headers});
     }
-    return new Response(renderAgentInstallPowerShell(u.origin,windowsPin), {
+    return new Response(renderAgentInstallPowerShell(u.origin), {
       status:200, headers:{...headers,"content-type":"text/plain; charset=utf-8",
         "x-frame-options":"DENY"},
     });

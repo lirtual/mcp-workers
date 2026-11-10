@@ -152,7 +152,8 @@ if ($Action -eq 'Switch') {
       $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
       $Direction -notin @('Upgrade','Rollback')) { throw 'Untrusted switch arguments' }
   $marker = [IO.Path]::Combine($env:LOCALAPPDATA,'mcp-workers','remote-control','v2-identity.pem.owner-stopped')
-  if ($Direction -eq 'Rollback' -and (Test-Path -LiteralPath $marker)) {
+  $ownerStopped = Test-Path -LiteralPath $marker
+  if ($Direction -eq 'Rollback' -and $ownerStopped) {
     throw 'Owner-stopped identity cannot roll back to an unchecked runtime'
   }
   $oldAction = $task.Actions[0]
@@ -237,7 +238,7 @@ if ($Action -eq 'Switch') {
         -not [string]::Equals([string]$task.Actions[0].Arguments,$newArgs,[StringComparison]::Ordinal)) {
       throw 'Task switch was not persisted'
     }
-    if ($wasRunning) {
+    if ($wasRunning -and -not $ownerStopped) {
       Start-ScheduledTask -TaskName $name -ErrorAction Stop
       Start-Sleep -Seconds 2
       $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
@@ -258,7 +259,7 @@ if ($Action -eq 'Switch') {
           -not [string]::Equals([string]$task.Actions[0].Arguments,$oldArguments,[StringComparison]::Ordinal)) {
         throw 'Previous task action not restored'
       }
-      if ($wasRunning) { Start-ScheduledTask -TaskName $name -ErrorAction Stop }
+      if ($wasRunning -and -not $ownerStopped) { Start-ScheduledTask -TaskName $name -ErrorAction Stop }
       $rollbackOkay = $true
     } catch { $rollbackOkay = $false }
     if ($rollbackOkay) { throw 'Local version switch refused; previous task restored' }

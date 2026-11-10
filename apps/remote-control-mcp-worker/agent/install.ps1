@@ -1,10 +1,10 @@
-# Native Windows x64 bootstrap. Refuses a Release unless published and immutable.
+# Native Windows x64 bootstrap. One mcp-workers latest stable Release per attempt.
 # Verify GitHub Release immutability + official SHA256 BEFORE extracting/executing.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$')][string]$Version,
-  [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{40}$')][string]$PinnedCommit,
-  [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{64}$')][string]$PinnedReleaseSha256,
+  [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$')][string]$Version,
+  [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$')][string]$SelectedTag,
+  [ValidatePattern('^[a-f0-9]{64}$')][string]$SelectedReleaseSha256,
   [string]$OfflineArchive,
   [string]$ExpectedSha256,
   [switch]$StageOnly
@@ -66,7 +66,7 @@ function Ensure-PrivateFolder([string]$folder) {
   [IO.Directory]::SetAccessControl($folder, $acl)
   Assert-PrivateFolder $folder
 }
-function Download-ApprovedAsset([string]$firstUri, [string]$dest) {
+function Download-ApprovedAsset([string]$firstUri, [string]$dest, [long]$expectedSize) {
   # Do not let an HTTP redirect select a new release source or an internal URL.
   Add-Type -AssemblyName System.Net.Http
   $handler = [Net.Http.HttpClientHandler]::new()
@@ -75,12 +75,12 @@ function Download-ApprovedAsset([string]$firstUri, [string]$dest) {
   $client.Timeout = [TimeSpan]::FromSeconds(120)
   $uri = [Uri]::new($firstUri)
   try {
-    for ($redirects = 0; $redirects -le 5; $redirects++) {
+    for ($redirects = 0; $redirects -le 3; $redirects++) {
       if ($uri.Scheme -cne 'https' -or $uri.Port -ne 443 -or
           $uri.UserInfo -or $uri.Fragment -or
           (($redirects -eq 0 -and
             ($uri.AbsoluteUri -cne $firstUri -or $uri.Host -cne 'github.com' -or
-             $uri.AbsolutePath -cnotlike '/lirtual/remote-control-agent/releases/download/*')) -or
+             $uri.AbsolutePath -cnotlike '/lirtual/mcp-workers/releases/download/*')) -or
            ($redirects -gt 0 -and $uri.Host -cnotin @(
               'release-assets.githubusercontent.com', 'objects.githubusercontent.com')))) {
         throw 'Unexpected GitHub Release asset redirect'
@@ -89,7 +89,7 @@ function Download-ApprovedAsset([string]$firstUri, [string]$dest) {
       try {
         $status = [int]$response.StatusCode
         if ($status -in @(301,302,303,307,308)) {
-          if (-not $response.Headers.Location -or $redirects -eq 5) {
+          if (-not $response.Headers.Location -or $redirects -eq 3) {
             throw 'GitHub Release asset redirect limit exceeded'
           }
           $uri = [Uri]::new($uri, $response.Headers.Location)
@@ -97,7 +97,8 @@ function Download-ApprovedAsset([string]$firstUri, [string]$dest) {
         }
         if ($status -ne 200 -or
             ($response.Content.Headers.ContentLength -ne $null -and
-             $response.Content.Headers.ContentLength -gt 100000000)) {
+             ($response.Content.Headers.ContentLength -gt 100000000 -or
+              ($expectedSize -gt 0 -and $response.Content.Headers.ContentLength -ne $expectedSize)))) {
           throw 'Untrusted GitHub Release asset response'
         }
         $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
@@ -111,6 +112,7 @@ function Download-ApprovedAsset([string]$firstUri, [string]$dest) {
             if ($total -gt 100000000) { throw 'Oversized GitHub Release asset' }
             $outputStream.Write($buffer, 0, $count)
           }
+          if ($expectedSize -gt 0 -and $total -ne $expectedSize) { throw 'Release asset size mismatch' }
           $outputStream.Flush($true)
         } finally {
           $outputStream.Dispose()
@@ -126,39 +128,60 @@ function Download-ApprovedAsset([string]$firstUri, [string]$dest) {
   }
 }
 
-function Download-ImmutableRelease([string]$tag, [string]$dest) {
-  $base = 'https://api.github.com/repos/lirtual/remote-control-agent'
-  $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rca-windows-pinned-installer' }
-  $release = Invoke-RestMethod -Uri "$base/releases/tags/$tag" -Headers $headers -TimeoutSec 30
-  if ($release.immutable -ne $true -or $release.draft -ne $false -or $release.tag_name -ne $tag) {
-    throw 'Unpublished or mutable GitHub Release'
+function Resolve-LatestAgentRelease {
+  # One lookup. 403/429/404 stop here; do not retry or read another repository.
+  $uri = 'https://api.github.com/repos/lirtual/mcp-workers/releases/latest'
+  $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rca-windows-latest-installer' }
+  try {
+    $response = Invoke-WebRequest -Uri $uri -Headers $headers -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 30
+  } catch {
+    $code = 0
+    if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+    if ($code -eq 404) { throw 'No stable Agent Release is published' }
+    if ($code -eq 403 -or $code -eq 429) { throw 'GitHub rate limit reached; installation stopped' }
+    throw 'GitHub latest Release lookup failed'
   }
-  $ref = Invoke-RestMethod -Uri "$base/git/ref/tags/$tag" -Headers $headers -TimeoutSec 30
-  if ($ref.ref -ne "refs/tags/$tag") { throw 'Unexpected Git tag' }
-  $commit = $ref.object
-  if ($commit.type -eq 'tag') {
-    if ($commit.sha -notmatch '^[a-f0-9]{40}$') { throw 'Invalid annotated tag' }
-    $annotated = Invoke-RestMethod -Uri "$base/git/tags/$($commit.sha)" -Headers $headers -TimeoutSec 30
-    $commit = $annotated.object
+  if ([int]$response.StatusCode -ne 200) { throw 'GitHub latest Release lookup failed' }
+  $release = $response.Content | ConvertFrom-Json
+  if ($release.immutable -ne $true -or $release.draft -ne $false -or $release.prerelease -ne $false -or
+      $release.tag_name -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$') {
+    throw 'Latest Agent Release is not a stable immutable Agent Release'
   }
-  if ($commit.type -ne 'commit' -or $commit.sha -cne $PinnedCommit) {
-    throw 'Untrusted Release source commit'
+  $tag = [string]$release.tag_name
+  $specs = @(
+    @{ target = 'linux-x64-glibc'; ext = 'tar.gz' },
+    @{ target = 'linux-arm64-glibc'; ext = 'tar.gz' },
+    @{ target = 'windows-x64'; ext = 'zip' },
+    @{ target = 'darwin-arm64'; ext = 'tar.gz' },
+    @{ target = 'darwin-x64'; ext = 'tar.gz' }
+  )
+  $assets = @($release.assets)
+  $windowsMatches = @($assets | Where-Object { $_.name -ceq "remote-control-agent-$tag-windows-x64.zip" })
+  if ($windowsMatches.Count -eq 0) { throw 'Windows x64 Agent asset is missing' }
+  if ($windowsMatches.Count -gt 1 -or $assets.Count -ne 5) {
+    throw 'Latest Agent Release is not a five-platform Agent Release'
   }
-  $name = "remote-control-agent-$tag-windows-x64.zip"
-  $assets = @($release.assets | Where-Object { $_.name -ceq $name })
-  if ($assets.Count -ne 1) { throw 'Pinned Windows asset is missing' }
-  $asset = $assets[0]
-  $expectedUri = "https://github.com/lirtual/remote-control-agent/releases/download/$tag/$name"
-  if ($asset.state -ne 'uploaded' -or $asset.digest -cne ('sha256:' + $PinnedReleaseSha256) -or
-      $asset.browser_download_url -cne $expectedUri -or
-      $asset.size -lt 100000 -or $asset.size -gt 100000000) {
-    throw 'Untrusted GitHub Release asset digest/URL'
+  $windows = $null
+  foreach ($spec in $specs) {
+    $name = "remote-control-agent-$tag-$($spec.target).$($spec.ext)"
+    $matched = @($assets | Where-Object { $_.name -ceq $name })
+    if ($matched.Count -ne 1) { throw 'Latest Agent Release is missing a platform asset' }
+    $asset = $matched[0]
+    $expectedUri = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
+    if ($asset.digest -cnotmatch '^sha256:[a-f0-9]{64}$') {
+      throw 'Latest Agent Release is missing an official SHA-256'
+    }
+    if ($asset.state -ne 'uploaded' -or $asset.browser_download_url -cne $expectedUri -or
+        $asset.size -lt 100000 -or $asset.size -gt 100000000) {
+      throw 'Untrusted GitHub Release asset digest/URL'
+    }
+    if ($spec.target -ceq 'windows-x64') { $windows = $asset }
   }
-  Download-ApprovedAsset $expectedUri $dest
-  return $asset.digest.Substring(7)
+  if (-not $windows) { throw 'Windows x64 Agent asset is missing' }
+  return @{ Tag = $tag; Sha = $windows.digest.Substring(7); Url = [string]$windows.browser_download_url; Size = [long]$windows.size }
 }
 function Assert-ArchiveDigest([string]$file, [string]$sha) {
-  if ($sha -cnotmatch '^[a-f0-9]{64}$') { throw 'SHA256 must be pinned' }
+  if ($sha -cnotmatch '^[a-f0-9]{64}$') { throw 'SHA256 must be the official digest' }
   $item = Get-Item -LiteralPath $file -Force
   if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
       $item.Length -lt 100000 -or $item.Length -gt 100000000) {
@@ -243,6 +266,10 @@ function Get-ExistingAgentVersion([string]$programs, [string]$taskExe) {
 function Complete-ApprovedOnboarding([string]$launcher) {
   # The local installer is interactive. Missing grants require one remote MCP
   # owner approval; do not treat a task-start response as proof of WSS online.
+  if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
+    Write-Output 'Owner STOP preserved. Agent was not started.'
+    return
+  }
   & $launcher onboard --endpoint 'https://rca.lirtual.dpdns.org/'
   if ($LASTEXITCODE -ne 0) {
     throw 'Authorization incomplete. Identity kept.'
@@ -299,7 +326,28 @@ $detachedRequest = $env:RCA_UNATTENDED_UPGRADE -ceq 'launch-approved-task-v1'
 $temp = $null
 $stage = $null
 $promoted = $false
+$releaseUrl = $null
+$releaseSha = $null
+$releaseSize = [long]0
 try {
+  if ($OfflineArchive) {
+    if ($env:GITHUB_ACTIONS -ne 'true' -or -not $Version -or -not $ExpectedSha256) {
+      throw 'Offline input is allowed only by explicit CI fixture'
+    }
+    $releaseSha = $ExpectedSha256
+  } elseif ($SelectedTag) {
+    if (-not $SelectedReleaseSha256) { throw 'Selected Release digest required' }
+    $Version = $SelectedTag
+    $releaseSha = $SelectedReleaseSha256
+    $releaseUrl = "https://github.com/lirtual/mcp-workers/releases/download/$Version/remote-control-agent-$Version-windows-x64.zip"
+  } else {
+    if ($Version -or $ExpectedSha256) { throw 'Live install resolves the latest Agent Release and does not accept a source pin' }
+    $latest = Resolve-LatestAgentRelease
+    $Version = [string]$latest.Tag
+    $releaseSha = [string]$latest.Sha
+    $releaseUrl = [string]$latest.Url
+    $releaseSize = [long]$latest.Size
+  }
   Ensure-PrivateFolder ([IO.Path]::Combine($env:LOCALAPPDATA, 'mcp-workers'))
   Ensure-PrivateFolder $root
   $programs = [IO.Path]::Combine($root, 'programs')
@@ -327,7 +375,7 @@ try {
     if ([version]($Version.Substring(1)) -le [version]($oldVersion.Substring(1))) {
       throw 'Remote upgrade requires a strictly newer reviewed Release'
     }
-    # Worker already verified exact immutable installer source SHA.
+    # The parent attempt already selected one latest snapshot. Do not look up latest again.
     $source = [string]$MyInvocation.MyCommand.ScriptBlock.ToString()
     if (-not $source.StartsWith('# Native Windows x64 bootstrap.')) {
       throw 'Cannot stage authenticated installer source'
@@ -351,7 +399,7 @@ try {
       '  $claim.Write($bytes,0,$bytes.Length); $claim.Flush($true)'
       '} finally { $claim.Dispose() }'
       'try {'
-      ("  & '{0}' -Version '{1}' -PinnedCommit '{2}' -PinnedReleaseSha256 '{3}'" -f $installerQ,$Version,$PinnedCommit,$PinnedReleaseSha256)
+      ("  & '{0}' -SelectedTag '{1}' -SelectedReleaseSha256 '{2}'" -f $installerQ,$Version,$releaseSha)
       '  if (-not $?) { throw ''Local switch failed'' }'
       '  $result = ''local_switch_returned'''
       '} catch { $result = ''needs_attention'' }'
@@ -463,14 +511,13 @@ try {
   }
   $temp = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('rca-' + [guid]::NewGuid().ToString('N') + '.zip'))
   if ($OfflineArchive) {
-    if ($env:GITHUB_ACTIONS -ne 'true' -or -not $ExpectedSha256) {
-      throw 'Offline input is allowed only by explicit CI fixture'
-    }
     [IO.File]::Copy([IO.Path]::GetFullPath($OfflineArchive), $temp, $false)
     $expected = $ExpectedSha256
   } else {
     if ($ExpectedSha256) { throw 'Live checksum must come from immutable GitHub Release' }
-    $expected = Download-ImmutableRelease $Version $temp
+    if (-not $releaseUrl -or -not $releaseSha) { throw 'Latest Agent Release was not resolved' }
+    Download-ApprovedAsset $releaseUrl $temp $releaseSize
+    $expected = $releaseSha
   }
   Assert-ArchiveDigest $temp $expected
   $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))

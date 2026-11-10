@@ -106,7 +106,7 @@ export function buildWindowsPreview(args) {
   // One immutable source for Release/JWT-independent checks; do not fetch or
   // execute a remote PowerShell script at upgrade time.
   const stageInstaller = "apps/remote-control-agent/scripts/windows-stage-install.ps1";
-  const installerBytes = readFileSync(path.join(root, "..", "..", "install.ps1"));
+  const installerBytes = readFileSync(path.join(root, "install.ps1"));
   writeFileSync(path.join(stage, stageInstaller), installerBytes, { mode: 0o600 });
   hashes[stageInstaller] = digest(installerBytes);
   const scripts = ["windows-private-store.ps1", "windows-session-private-store.ps1", "windows-user-task.ps1", "verify-windows-preview.mjs"];
