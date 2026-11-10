@@ -21,13 +21,16 @@ test('Workflow preflight refuses conflicting old/new Portal identities', () => {
     {...workflowOptions, expectedWorkflowPortalClientId: ''}), /Portal client identity/);
 });
 
-test('Workflow preflight refuses conflicting old/new repository approvals', () => {
-  const old = plain('MCP_PORTAL_CLIENT_ID', 'original');
-  const legacy = plain('GITHUB_ACTION_APPROVED_REPOSITORIES', '[]');
-  const newer = plain('WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES', workflowOptions.expectedWorkflowGrants);
-  assert.throws(() => verifyBindings('workflow-mcp-worker', workflowSettings([old, legacy, newer]), [], workflowOptions), /approved repositories/);
-  assert.equal(verifyBindings('workflow-mcp-worker', workflowSettings([old, plain(legacy.name, newer.text), newer]), [], workflowOptions), true);
-  assert.throws(() => verifyBindings('workflow-mcp-worker', workflowSettings([old, plain(newer.name,'[]')]), [], workflowOptions), /approved repositories/);
+test('Workflow preflight accepts only one historical source and rejects two even if identical', () => {
+  const owner=plain('MCP_PORTAL_CLIENT_ID','original');
+  const legacy=plain('GITHUB_ACTION_APPROVED_REPOSITORIES','[]');
+  const newer=plain('WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES',workflowOptions.expectedWorkflowGrants);
+  assert.throws(()=>verifyBindings('workflow-mcp-worker',workflowSettings([owner,legacy,newer]),[],workflowOptions),
+    /baseline missing or ambiguous/);
+  assert.throws(()=>verifyBindings('workflow-mcp-worker',workflowSettings([owner,
+    plain(legacy.name,newer.text),newer]),[],workflowOptions),/baseline missing or ambiguous/);
+  assert.equal(verifyBindings('workflow-mcp-worker',workflowSettings([owner,legacy]),[],workflowOptions),true);
+  assert.equal(verifyBindings('workflow-mcp-worker',workflowSettings([owner,newer]),[],workflowOptions),true);
 });
 
 const limits = {
@@ -133,7 +136,7 @@ test('protected read-only cleanup selection cannot execute a release or portal-w
   assert.match(section,/EXPECTED_VERSION_ID: \$\{\{ inputs\.cleanup_expected_version \}\}/);
   assert.match(section,/node scripts\/manual-worker-release\.mjs cleanup-readback/);
   assert.match(section,/github\.sha|GITHUB_SHA/);
-  assert.doesNotMatch(section, /wrangler deploy|delete-secret|secret delete|portal-register|deploy_to_production|POST|PUT|PATCH|DELETE/);
+  assert.doesNotMatch(section, /wrangler deploy|delete-secret|secret delete|portal-register|deploy_to_production|\bPOST\b|\bPUT\b|\bPATCH\b|\bDELETE\b/);
   const source=readFileSync('scripts/manual-worker-release.mjs','utf8');
   assert.match(source,/mode === "cleanup-readback"/);
   assert.match(source,/cleanupVerified: true/);

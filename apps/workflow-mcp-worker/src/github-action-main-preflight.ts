@@ -2,10 +2,9 @@ import {discoverGitHubActions} from './github-action-discovery.ts';
 import {reviewedGitHubAction,type ReviewedGitHubAction} from './github-action-review.ts';
 import {isDynamicMainAction,DYNAMIC_MAIN_REF} from './github-action-main.ts';
 import {verifyActionDispatchRef} from './github-action-dispatch-ref.ts';
+import {isCurrentWorkflowGitHubAction,type WorkflowGitHubExecutor} from './workflow-github-executor.ts';
 
 type Http=(request:Request)=>Promise<Response>;
-const REPO='lirtual/github-actions';
-const CI_ID=394262523;
 const LIMIT=128*1024;
 const SHA=/^[0-9a-f]{40}$/;
 
@@ -13,12 +12,13 @@ const SHA=/^[0-9a-f]{40}$/;
  * success of its main-push CI, then recheck the branch before allowing a POST.
  * Every error is pre-dispatch denial; there is no fallback to an older commit. */
 export async function resolveApprovedMainAction(
-  baseline:ReviewedGitHubAction,token:string,http:Http=fetch,
+  baseline:ReviewedGitHubAction,token:string,identity:WorkflowGitHubExecutor,http:Http=fetch,
 ):Promise<ReviewedGitHubAction> {
-  if(!isDynamicMainAction(baseline,DYNAMIC_MAIN_REF)||!token?.trim())
+  if(!isCurrentWorkflowGitHubAction(identity,baseline)||
+     !isDynamicMainAction(baseline,DYNAMIC_MAIN_REF)||!token?.trim())
     throw Error('github_action_main_not_allowed');
   const source=(await discoverGitHubActions({
-    repository:REPO,repositoryId:baseline.repositoryId,token,
+    repository:identity.repository,repositoryId:identity.repositoryId,token,
   },http)).find(s=>s.workflowId===baseline.workflowId&&
      s.workflowPath===baseline.workflowPath);
   if(!source||source.contract.publicMain!==true||!SHA.test(source.commitSha))
@@ -32,7 +32,7 @@ export async function resolveApprovedMainAction(
      current.contractDigest!==baseline.contractDigest)
     throw Error('github_action_main_contract_changed');
 
-  const url='https://api.github.com/repos/'+REPO+
+  const url='https://api.github.com/repos/'+identity.repository+
     '/actions/workflows/ci.yml/runs?event=push&head_sha='+current.commitSha+
     '&per_page=20';
   let response:Response;
@@ -55,7 +55,7 @@ export async function resolveApprovedMainAction(
     const r=run as Record<string,unknown>;
     const repo=r.repository as {id?:unknown}|undefined;
     const headRepo=r.head_repository as {id?:unknown}|undefined;
-    return r.workflow_id===CI_ID&&r.event==='push'&&
+    return r.workflow_id===identity.ciWorkflowId&&r.event==='push'&&
       r.head_branch==='main'&&r.head_sha===current.commitSha&&
       r.status==='completed'&&r.conclusion==='success'&&
       r.path==='.github/workflows/ci.yml'&&

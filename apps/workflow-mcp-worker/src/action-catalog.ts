@@ -91,7 +91,7 @@ export async function discoverCloudflareActionCatalog(env:Pick<Env,'ACTIONS'>){
 
 /** Stable IDs from both executors, one current candidate each. */
 export async function listUnifiedActions(env:Pick<Env,
- 'ACTIONS'|'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>){
+ 'ACTIONS'|'WORKFLOW_GITHUB_ACTION_IDENTITY'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>){
  const github=await listAvailableGitHubActions(env);
  const cloudflare=env.ACTIONS?await discoverCloudflareActionCatalog(env):{actions:[]};
  const actions=[...github.actions.map(action=>({

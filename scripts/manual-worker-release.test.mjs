@@ -878,8 +878,34 @@ test('code-only gate proves terminal Saga receipts using exact physical Session 
   }finally{db.close();}
 });
 
+const executorIdentity={repository:'alternate-owner/private-actions',
+  repositoryId:987654321,ciWorkflowId:456789012};
+const executorBinding={name:'WORKFLOW_GITHUB_ACTION_IDENTITY',
+  type:'plain_text',text:JSON.stringify(executorIdentity)};
+
+test("Workflow active executor source must match the immutable 100 percent Version, not only Settings",async()=>{
+  const {verifyWorkflowActiveExecutorBaseline}=await import('./manual-worker-release.mjs');
+  const identity=executorBinding;
+  const legacy={name:"WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES",
+    type:"plain_text",text:"[]"};
+  assert.deepEqual(verifyWorkflowActiveExecutorBaseline([legacy],[legacy]),{
+    name:legacy.name,text:legacy.text
+  });
+  assert.deepEqual(verifyWorkflowActiveExecutorBaseline([identity],[identity]),{
+    name:identity.name,text:identity.text
+  });
+  assert.throws(()=>verifyWorkflowActiveExecutorBaseline([legacy],[identity]),
+    /active Version and Settings/);
+  assert.throws(()=>verifyWorkflowActiveExecutorBaseline([identity],[]),
+    /missing or ambiguous/);
+  assert.throws(()=>verifyWorkflowActiveExecutorBaseline([identity],[identity,legacy]),
+    /missing or ambiguous/);
+  assert.throws(()=>verifyWorkflowActiveExecutorBaseline([legacy],
+    [{...legacy,text:"[{}]"}]),/active Version and Settings/);
+});
+
 test("Workflow readback verifies one integrated runtime, GitHub Action audience and Portal",()=>{
-  const bindings=[
+  const bindings=[executorBinding,
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
@@ -894,7 +920,7 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
     "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const check=(list=bindings,ss=secrets)=>
-    verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback"});
+    verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback",expectedWorkflowIdentity:executorIdentity});
   assert.equal(check(),true);
   // A code-only release preserves deployed Variables: reject Audience drift
   // BEFORE deploy, not only during post-publication readback.
@@ -964,7 +990,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql","0009_fixed_sessions.sql","0010_session_runtime_data.sql","0011_awaited_child_capacity.sql"]){
     assert.equal(ci.split(name).length,3);
   }
-  assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"));
+  assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_REPOSITORY: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
   assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"), "Legacy grants must not shadow canonical release inputs");
   assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
   assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
@@ -985,13 +1011,19 @@ test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bi
   // Canonical nonsecret Variables are the only supported release inputs.
   for(const [binding,canonical,legacy] of [
     ["WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.WORKFLOW_MCP_PORTAL_CLIENT_ID","vars.MCP_PORTAL_CLIENT_ID"],
-    ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES","vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"],
+    ["WORKFLOW_GITHUB_ACTION_REPOSITORY","vars.WORKFLOW_GITHUB_ACTION_REPOSITORY","vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"],
   ]) {
     const matched=lines.filter(line=>line.trimStart().startsWith(binding+": "));
-    assert.equal(matched.length,3,binding+" must be staged only at reviewed release gates");
+    assert.equal(matched.length,binding==="WORKFLOW_GITHUB_ACTION_REPOSITORY"?4:3,
+      binding+" must be staged only at reviewed release gates");
     const expected=binding+": "+String.fromCharCode(36)+"{{ inputs.worker == 'workflow-mcp-worker' && "+
       canonical+" || '' }}";
-    for(const line of matched)assert.equal(line.trim(),expected);
+    for(const line of matched) {
+      if(binding==="WORKFLOW_GITHUB_ACTION_REPOSITORY" &&
+         line.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY") &&
+         !line.includes("inputs.worker"))continue;
+      assert.equal(line.trim(),expected);
+    }
     assert.equal(normalRelease.split(legacy).length-1,0,
       legacy+" must not be referenced in release expressions");
   }
@@ -1019,7 +1051,7 @@ test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bi
 });
 
 test("Workflow release pins the exact Portal and rejects target drift",()=>{
-  const bindings=[
+  const bindings=[executorBinding,
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},{name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},{name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
     {name:"DB",type:"d1",id:"a4a477cd-6339-478c-ab7c-f7d87bb0d772"},
@@ -1031,7 +1063,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
     "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
-  const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback"});
+  const check=(updated)=>verifyBindings("workflow-mcp-worker",{...settings,bindings:updated},secrets,{mode:"readback",expectedWorkflowIdentity:executorIdentity});
   assert.equal(check(bindings),true);
   assert.throws(()=>check(bindings.map(x=>x.name==="WORKFLOW_MCP_PORTAL_ENDPOINT"
     ?{...x,text:"https://retired.example.org/mcp"}:x)),/pinned Workflow MCP Portal|Pinned Workflow MCP Portal/);
@@ -1041,7 +1073,7 @@ test("Workflow release pins the exact Portal and rejects target drift",()=>{
 
 
 test("Workflow production readback rejects retired fixed executor pins",()=>{
-  const bindings=[
+  const bindings=[executorBinding,
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_ID",type:"plain_text",text:"test-id"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
@@ -1054,7 +1086,7 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
   ];
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET","WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
   const settings={observability:{enabled:true,logs:{invocation_logs:true}}};
-  const verify=list=>verifyBindings("workflow-mcp-worker",{...settings,bindings:list},secrets,{mode:"readback"});
+  const verify=list=>verifyBindings("workflow-mcp-worker",{...settings,bindings:list},secrets,{mode:"readback",expectedWorkflowIdentity:executorIdentity});
   assert.equal(verify(bindings),true);
   for(const name of ["GITHUB_EXECUTOR_REPOSITORY","GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF","GITHUB_EXECUTOR_AUDIENCE"])
     assert.throws(()=>verify([...bindings,{name,type:"plain_text",text:"obsolete"}]),/Retired fixed GitHub executor variables/);
@@ -1063,7 +1095,7 @@ test("Workflow production readback rejects retired fixed executor pins",()=>{
 test("Workflow preflight tolerates removed service bindings, readback rejects them",()=>{
   const secrets=["MCP_ACCESS_TOKEN","WORKFLOW_MCP_PORTAL_CLIENT_SECRET",
     "WORKFLOW_GITHUB_DISPATCH_TOKEN"].map(name=>({name}));
-  const bindings=[
+  const bindings=[executorBinding,
     {name:"MCP_ACCESS_TOKEN",type:"secret_text"},
     {name:"WORKFLOW_MCP_PORTAL_CLIENT_SECRET",type:"secret_text"},
     {name:"WORKFLOW_GITHUB_DISPATCH_TOKEN",type:"secret_text"},
@@ -1075,7 +1107,7 @@ test("Workflow preflight tolerates removed service bindings, readback rejects th
   ];
   const settings={bindings,observability:{enabled:true,logs:{invocation_logs:true}}};
   assert.equal(verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"preflight"}),true);
-  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback"}),/Workflow native Workflow binding drift/);
+  assert.throws(()=>verifyBindings("workflow-mcp-worker",settings,secrets,{mode:"readback",expectedWorkflowIdentity:executorIdentity}),/Workflow native Workflow binding drift/);
 });
 
 
@@ -1221,7 +1253,7 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
     'WORKFLOW_GITHUB_DISPATCH_TOKEN'];
   const secrets=required.map(name=>({name}));
   const old=['MCP_PORTAL_CLIENT_SECRET','SESSION_RUNTIME_DATA_KEY'];
-  const bindings=[...required.map(name=>({name,type:'secret_text'})),
+  const bindings=[executorBinding,...required.map(name=>({name,type:'secret_text'})),
     {name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'test-id'},
     {name:'DB',type:'d1',id:'a4a477cd-6339-478c-ab7c-f7d87bb0d772'},
     {name:'WORKFLOW',type:'workflow',workflow_name:'workflow-mcp-orchestrator',class_name:'WorkflowOrchestrator'},
@@ -1231,14 +1263,14 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
   const wrap=x=>({bindings:x,observability:{enabled:true,logs:{invocation_logs:true}}});
   const inventory=[...bindings,...old.map(name=>({name,type:'secret_text'}))];
   const listed=[...secrets,...old.map(name=>({name}))];
-  assert.equal(verifyBindings('workflow-mcp-worker',wrap(inventory),listed,{mode:'readback'}),true);
+  assert.equal(verifyBindings('workflow-mcp-worker',wrap(inventory),listed,{mode:'readback',expectedWorkflowIdentity:executorIdentity}),true);
   assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap(inventory),listed,
-    {mode:'readback',cleanupVerified:true}),/Legacy Secret cleanup not complete/);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity,cleanupVerified:true}),/Legacy Secret cleanup not complete/);
   assert.equal(verifyBindings('workflow-mcp-worker',wrap(bindings),secrets,
-    {mode:'readback',cleanupVerified:true}),true);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity,cleanupVerified:true}),true);
   assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap([...bindings,
     {name:'UNREVIEWED_SECRET',type:'secret_text'}]),[...secrets,{name:'UNREVIEWED_SECRET'}],
-    {mode:'readback'}),/Unexpected runtime Secret/);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity}),/Unexpected runtime Secret/);
 });
 
 test('Spec 733 Database cleanup readback is exact and does not narrow normal migration readback', () => {
@@ -1272,7 +1304,7 @@ test('Spec 733 Database cleanup readback is exact and does not narrow normal mig
   assert.equal(verifyBindings(worker,wrap(ordinaryBindings),ordinary,{...options,cleanupVerified:false}),true);
 });
 
-test('Spec 733 Workflow Portal identity and grants must retain exact approved values across the rename', () => {
+test('Workflow intentional executor migration preserves old baseline but requires exactly the new identity at readback', () => {
   const req=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET','WORKFLOW_GITHUB_DISPATCH_TOKEN'];
   const secrets=req.map(name=>({name}));
   const grants=JSON.stringify([{repository:'lirtual/github-actions',repositoryId:1430925009,
@@ -1283,19 +1315,21 @@ test('Spec 733 Workflow Portal identity and grants must retain exact approved va
     {name:'ACTIONS',type:'service',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'},
     {name:'WORKFLOW_MCP_PORTAL_ENDPOINT',type:'plain_text',text:'https://mcp.lirtual.dpdns.org/mcp'},
     {name:'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE',type:'plain_text',text:'workflow-github-action'}];
-  const old=[...common,{name:'MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
-    {name:'GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants}];
-  const current=[...common,{name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},
-    {name:'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants}];
+  const legacy={name:'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES',type:'plain_text',text:grants};
+  const previous=[...common,{name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},legacy];
+  const next=[...common,{name:'WORKFLOW_MCP_PORTAL_CLIENT_ID',type:'plain_text',text:'approved-client'},executorBinding];
   const verify=(bindings,options)=>verifyBindings('workflow-mcp-worker',
     {bindings,observability:{enabled:true,logs:{invocation_logs:true}}},secrets,
-    {expectedWorkflowPortalClientId:'approved-client',expectedWorkflowGrants:grants,...options});
-  assert.equal(verify(old,{mode:'preflight'}),true);
-  assert.equal(verify(current,{mode:'readback'}),true);
-  assert.throws(()=>verify(old,{mode:'preflight',expectedWorkflowPortalClientId:'new-client'}),/Portal client identity/);
-  assert.throws(()=>verify(old,{mode:'preflight',expectedWorkflowGrants:'[]'}),/approved repositories/);
-  assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowGrants:'not-json'}),/valid JSON/);
-  assert.throws(()=>verify(current,{mode:'readback',expectedWorkflowPortalClientId:''}),/Portal client identity/);
+    {expectedWorkflowPortalClientId:'approved-client',expectedWorkflowIdentity:executorIdentity,...options});
+  const baseline={name:legacy.name,text:legacy.text};
+  assert.equal(verify(previous,{mode:'preflight',workflowExecutorBaseline:baseline}),true);
+  assert.equal(verify(next,{mode:'readback'}),true);
+  assert.throws(()=>verify(previous,{mode:'readback'}),/new executor|baseline|identity invalid/);
+  assert.throws(()=>verify(next,{mode:'readback',expectedWorkflowIdentity:{...executorIdentity,repositoryId:9}}),
+    /new executor/);
+  assert.throws(()=>verify(previous,{mode:'preflight',
+    workflowExecutorBaseline:{...baseline,text:'[]'}}),/baseline changed/);
+  assert.throws(()=>verify(next,{mode:'readback',expectedWorkflowPortalClientId:''}),/Portal client identity/);
 });
 
 test('Spec #804 prepublication gate rejects Access and active Worker drift without resetting state',async()=>{

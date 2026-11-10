@@ -23,7 +23,7 @@ test('rejects missing and dynamic immutable Action identities',async()=>{
   await assert.rejects(compilePlan(definition({...action,workflowPath:'../escape.yml'})),/invalid_github_action/);
   await assert.rejects(compilePlan(definition({...action,repository:'${{ inputs.repo }}'})),/invalid_github_action/);
   await assert.rejects(compilePlan(definition({...action,extra:true})),/unsupported_field/);
-  await assert.rejects(compilePlan(definition({...action,ref:'refs/heads/main'})),/invalid_github_action/);
+  await assert.rejects(compilePlan(definition({...action,ref:'refs/heads/feature'})),/invalid_github_action/);
   await assert.rejects(compilePlan(definition({...action,ref:'refs/tags/../bad'})),/invalid_github_action/);
 });
 test('unsupported GitHub capabilities remain rejected',async()=>{
@@ -58,7 +58,7 @@ test('bounded GitHub Task foreach pins one immutable reviewed template per child
    {...task,type:'session'},
    {...task,inputs:{outcome:{ref:'inputs.items'}}},
    {...task,inputs:{outcome:{ref:'item.not_allowed'}}},
-   {...task,ref:'refs/heads/main'},
+   {...task,ref:'refs/heads/feature'},
  ]){
   const bad=structuredClone(source);
   bad.steps[0]!.template!.steps[0]!.with.action=invalid as typeof task;

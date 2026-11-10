@@ -4,7 +4,7 @@ import {compilePlan,PlanError,PUBLIC_STEP_USES,PLAN_LIMITS} from '../src/plan.ts
 import {workflowCapabilities,WORKFLOW_DEFINITION_SCHEMA,reviewedPortalTools,WORKFLOW_ACTION_WITH_SCHEMAS} from '../src/capabilities.ts';
 import {PRODUCTION_PORTAL_ENDPOINT} from '../src/mcp-public-fetch.ts';
 
-const env={WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
+const env={WORKFLOW_GITHUB_ACTION_IDENTITY:undefined,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
   WORKFLOW_MCP_PORTAL_ENDPOINT:undefined,WORKFLOW_MCP_PORTAL_CLIENT_ID:undefined,WORKFLOW_MCP_PORTAL_CLIENT_SECRET:undefined};
 const portalEnv={...env,WORKFLOW_MCP_PORTAL_ENDPOINT:PRODUCTION_PORTAL_ENDPOINT,
   WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-only-id',WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-only-secret'};

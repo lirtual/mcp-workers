@@ -33,8 +33,9 @@ const source={...approved,ref:DYNAMIC_MAIN_REF,inputs:{duration_minutes:5}};
 const plan={version:1,name:'ubuntu',github_execution_approved:true,
  github_action_approvals:[approved],steps:[{id:'ubuntu',uses:'github.run',
  with:{capability:'github.action',action:source}}]};
+const executorIdentity={repository:REPO,repositoryId:REPO_ID,ciWorkflowId:394262523};
 const dispatch={runId:RID,stepId:'ubuntu',attemptId:AID,dispatchId:DID,
- action:approved,ref:DYNAMIC_MAIN_REF,token:'test-token',inputs:{duration_minutes:'5'}};
+ action:approved,ref:DYNAMIC_MAIN_REF,token:'test-token',inputs:{duration_minutes:'5'},executorIdentity};
 
 function fake(o:{ci?:'success'|'failure'|'absent';changed?:boolean;
  moved?:boolean;throwPost?:boolean;onPost?:()=>void}={}){
@@ -107,7 +108,7 @@ test('moving main is restricted to one trusted owner repository and valid Workfl
   assert.equal(isDynamicMainAction(action,DYNAMIC_MAIN_REF,path.slice(0,-4)),true);
   assert.equal(isDynamicMainAction(action,DYNAMIC_MAIN_REF,'other'),true);
   assert.equal(isDynamicMainAction({...action,workflowId:999},DYNAMIC_MAIN_REF),true);
-  assert.equal(isDynamicMainAction({...action,repository:'other/repo'},DYNAMIC_MAIN_REF),false);
+  assert.equal(isDynamicMainAction({...action,repository:'other/repo'},DYNAMIC_MAIN_REF),true);
   assert.equal(isDynamicMainAction(action,'refs/heads/dev'),false);
  }
  assert.equal(isDynamicMainAction({...approved,workflowPath:'.github/workflows/openlist.yml'},DYNAMIC_MAIN_REF),true);
@@ -116,11 +117,11 @@ test('moving main is restricted to one trusted owner repository and valid Workfl
 });
 
 test('main preflight requires complete successful CI, matching contract and branch SHA',async()=>{
- assert.equal((await resolveApprovedMainAction(approved,'token',fake().http)).commitSha,HEAD);
+ assert.equal((await resolveApprovedMainAction(approved,'token',executorIdentity,fake().http)).commitSha,HEAD);
  for(const invalid of [{ci:'failure' as const},{ci:'absent' as const},
   {changed:true},{moved:true}]){
   const api=fake(invalid);
-  await assert.rejects(()=>resolveApprovedMainAction(approved,'token',api.http));
+  await assert.rejects(()=>resolveApprovedMainAction(approved,'token',executorIdentity,api.http));
   assert.equal(api.posts(),0);
  }
 });

@@ -3,12 +3,11 @@
  */
 import {isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {ReviewedGitHubAction} from './github-action-review.ts';
+import {isWellFormedWorkflowGitHubRepository} from './workflow-github-executor.ts';
 
 type Http=(request:Request)=>Promise<Response>;
 const MAX_BODY=32_768;
 const MAX_DURATION=300;
-export const SESSION_REPOSITORY = 'lirtual/github-actions';
-export const SESSION_REPOSITORY_ID = 1430925009;
 const WORKFLOWS=new Map([
   ['.github/workflows/windows.yml','windows'],
   ['.github/workflows/ubuntu.yml','ubuntu'],
@@ -55,7 +54,8 @@ export async function inspectSessionJobStart(
   http:Http=fetch,now=Date.now(),
 ):Promise<number|null>{
   const expectedName=WORKFLOWS.get(action.workflowPath);
-  if((action.repository!==SESSION_REPOSITORY||action.repositoryId!==SESSION_REPOSITORY_ID)||
+  if(!isWellFormedWorkflowGitHubRepository(action.repository)||
+     !Number.isSafeInteger(action.repositoryId)||action.repositoryId<=0||
      action.type!=='session'||
      !expectedName||!Number.isSafeInteger(runId)||runId<=0||
      !Number.isSafeInteger(runAttempt)||runAttempt<=0||

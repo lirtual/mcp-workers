@@ -10,6 +10,7 @@ import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './githu
 import type {Plan} from './plan.ts';
 import {resolveSessionActionInputs} from './github-action-inputs.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {readWorkflowGitHubExecutor,isCurrentWorkflowGitHubAction,isWellFormedWorkflowGitHubRepository} from './workflow-github-executor.ts';
 
 type Db=Pick<D1Database,'prepare'>;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -183,10 +184,10 @@ export async function recordSignedSessionReady(
  if(!verified||verified.action.type!=='session')return 'denied';
  if(sessionDurationMinutes!==undefined &&
     (!Number.isSafeInteger(sessionDurationMinutes)||sessionDurationMinutes<1||
-     sessionDurationMinutes>300||verified.action.repository!=='lirtual/github-actions'||
+     sessionDurationMinutes>300||!isWellFormedWorkflowGitHubRepository(verified.action.repository)||
      !['.github/workflows/windows.yml','.github/workflows/ubuntu.yml'].includes(verified.action.workflowPath)))return 'denied';
  if(sessionUrl!==undefined &&
-    (verified.action.repository!=='lirtual/github-actions'||
+    (!isWellFormedWorkflowGitHubRepository(verified.action.repository)||
      !WEB_PATHS.has(verified.action.workflowPath)||
      sessionUrl.length>180||!TUNNEL_URL.test(sessionUrl)))return 'denied';
  const {row}=verified;
@@ -259,6 +260,9 @@ export async function runPublishedGitHubActionSession(
  if(plan.github_execution_approved!==true||
     !isPublishedGitHubActionApproved(plan.github_action_approvals,identity))
   return {status:'failed',error_code:'github_action_approval_missing'};
+ const executorIdentity=readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY);
+ if(!isCurrentWorkflowGitHubAction(executorIdentity,identity))
+  return {status:'failed',error_code:'github_action_executor_changed'};
  if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN||!env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE)
   return {status:'failed',error_code:'github_action_executor_not_configured'};
  if(typeof raw.ref!=='string'||!(
@@ -290,7 +294,7 @@ export async function runPublishedGitHubActionSession(
   const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
   const ack=await registerAndDispatchGitHubAction(db,{
    runId,stepId:stepPlan.id,attemptId,dispatchId,action:identity,
-   ref:raw.ref as string,token,inputs,
+   ref:raw.ref as string,token,inputs,executorIdentity,
   },http);
   return {attemptId,...ack};
  });

@@ -1,6 +1,7 @@
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
+import {isCurrentWorkflowGitHubAction,readWorkflowGitHubExecutor} from './workflow-github-executor.ts';
 
 // Reserved internal Step IDs cannot be authored by the Definition compiler.
 export const sagaReceiptId=(id:string)=>'__saga_'+id;
@@ -24,7 +25,8 @@ export async function compensateSession(
  const authorized=plan.github_execution_approved===true&&plan.saga_compensation_approved===true&&
     step.compensate?.kind==='github.session.cancel'&&grant===true&&
     action?.type==='session'&&inputs?.session_mode==='temporary'&&
-    action.repository==='lirtual/github-actions'&&
+    isCurrentWorkflowGitHubAction(readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY),
+      action as {repository:unknown;repositoryId:unknown})&&
     ['.github/workflows/ubuntu.yml','.github/workflows/windows.yml'].includes(String(action.workflowPath))&&
     !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const db=env.DB;

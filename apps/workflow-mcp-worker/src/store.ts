@@ -12,7 +12,7 @@ import { discoverGitHubActions } from './github-action-discovery.ts';
 import { verifyActionDispatchRef } from './github-action-dispatch-ref.ts';
 import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSessionDurationInputRef} from './github-action-inputs.ts';
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
-import { approvedActionRepositories } from './github-action-catalog.ts';
+import { currentExecutorRepository } from './github-action-catalog.ts';
 import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
 import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
@@ -50,7 +50,7 @@ export type Env = {
   // Production GitHub requires explicit opt-in and fixed OIDC/executor pins.
   WORKFLOW_GITHUB_DISPATCH_TOKEN?: string;
   // Server-owned, read-only Action discovery scopes; no publication or execution grant.
-  WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES?: string;
+  WORKFLOW_GITHUB_ACTION_IDENTITY?: string;
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?: string;
@@ -201,7 +201,7 @@ export class WorkflowService {
     if(!actions.length)return [];
     const token=this.env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
     if(!token)throw new PlanError('github_action_token_missing','/steps');
-    const grants=approvedActionRepositories(this.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES);
+    const grant=currentExecutorRepository(this.env.WORKFLOW_GITHUB_ACTION_IDENTITY);
     const approved:ReviewedGitHubAction[]=[];
     for(const {step,path} of actions){
       const raw=step.with.action as Record<string,unknown>;
@@ -211,9 +211,9 @@ export class WorkflowService {
         commitSha:raw.commitSha as string,type:raw.type as 'task'|'session',
         contractDigest:raw.contractDigest as string,
       };
-      const grant=grants.find(g=>g.repository===expected.repository&&
-        g.repositoryId===expected.repositoryId);
-      if(!grant)throw new PlanError('github_action_repository_not_approved',path+'/repository');
+      if(!grant||grant.repository!==expected.repository||
+        grant.repositoryId!==expected.repositoryId)
+        throw new PlanError('github_action_repository_not_approved',path+'/repository');
       // Discovery follows the current default branch, but validation and
       // Publish must re-read the exact SHA approved in this Draft. A newer
       // default-branch commit must not invalidate an immutable old review.
@@ -229,7 +229,7 @@ export class WorkflowService {
         const validated=isDynamic?validateForeachTaskInputTemplate(candidate.contract,given):
           expected.type==='session'&&isSessionDurationInputRef(given.duration_minutes)?
             {...given,duration_minutes:300}:given;
-        await assertReviewedGitHubAction(expected,candidate,this.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES,validated);
+        await assertReviewedGitHubAction(expected,candidate,this.env.WORKFLOW_GITHUB_ACTION_IDENTITY,validated);
         if(isDynamic){
           const controller=plan.steps[Number(path.split('/')[2])];
           if(!controller||controller.uses!=='flow.foreach'||candidate.contract.type!=='task')
@@ -367,7 +367,7 @@ export class WorkflowService {
         ['invalid_step_count','excessive_parallelism','too_many_inputs'].includes(code)?
         'Reduce the definition to the limits returned by workflow_capabilities.':
         ['github_action_ref_mismatch','github_action_ref_unconfirmed'].includes(code)?
-        'Use a verified Tag. Only the five approved lirtual/github-actions business Plans may use refs/heads/main after per-Run CI and SHA verification.':
+        'Use a verified Tag. Only reviewed GitHub executor business Plans may use refs/heads/main after per-Run CI and SHA verification.':
         ['github_action_contract_or_inputs_changed','github_action_not_found'].includes(code)?
         'Rediscover the released Action contract and inputs with workflow_action_list.':
         code==='github_action_repository_not_approved'?
@@ -1166,8 +1166,10 @@ export class WorkflowService {
     // guessed MagicDNS host for it just because its GitHub job became Ready.
     const tailnetSteps=new Map<string,string>(publishedPlan.steps.flatMap(step=>{
       if(step.uses!=='github.run'||step.with.capability!=='github.action')return [];
-      const action=step.with.action as {repository?:unknown;workflowPath?:unknown}|undefined;
-      if(action?.repository!=='lirtual/github-actions')return [];
+      const action=step.with.action as {repository?:unknown;repositoryId?:unknown;workflowPath?:unknown}|undefined;
+      const executor=currentExecutorRepository(this.env.WORKFLOW_GITHUB_ACTION_IDENTITY);
+      if(!executor||!action||action.repository!==executor.repository||
+         action.repositoryId!==executor.repositoryId)return [];
       const name=action.workflowPath==='.github/workflows/windows.yml'?'session-windows':
         action.workflowPath==='.github/workflows/ubuntu.yml'?'session-ubuntu':null;
       return name?[[step.id,name] as [string,string]]:[];

@@ -4,22 +4,33 @@ import {reviewedActionDeployment,canonical,cloudflareActionManifest,TRUSTED_SIGN
 import {evaluateArguments} from './plan.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {isWellFormedWorkflowGitHubRepository,isCurrentWorkflowGitHubAction,readWorkflowGitHubExecutor} from './workflow-github-executor.ts';
+import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 
 /** Stateless Bark: the existing D1 reservation is the only send admission.
  * A prior reservation can never trigger another RPC; without receipts it is unknown.
  */
-// Notification authority is narrower than general public Action discovery:
-// a changed Workflow ID cannot impersonate an existing signed Session/Download.
-const TRUSTED_NOTIFICATION_WORKFLOW_IDS:Record<string,number>={
- '.github/workflows/chrome.yml':394689653,
- '.github/workflows/openlist.yml':394689658,
- '.github/workflows/download.yml':401335372,
+// The approved Plan and persisted physical Attempt establish the precise
+// workflow ID. Only these existing business paths may carry signed receipts.
+const NOTIFICATION_PATHS=new Set([
+ '.github/workflows/chrome.yml',
+ '.github/workflows/openlist.yml',
+ '.github/workflows/download.yml',
+]);
+const trustedNotificationIdentity=(pinned:unknown,plan:Plan):boolean=>{
+ if(!pinned||typeof pinned!=='object'||Array.isArray(pinned))return false;
+ const action=pinned as ReviewedGitHubAction;
+ return isWellFormedWorkflowGitHubRepository(action.repository)&&
+   Number.isSafeInteger(action.repositoryId)&&action.repositoryId>0&&
+   Number.isSafeInteger(action.workflowId)&&action.workflowId>0&&
+   NOTIFICATION_PATHS.has(action.workflowPath)&&
+   isPublishedGitHubActionApproved(plan.github_action_approvals,{
+     repository:action.repository,repositoryId:action.repositoryId,
+     workflowId:action.workflowId,workflowPath:action.workflowPath,
+     commitSha:action.commitSha,type:action.type,contractDigest:action.contractDigest,
+   });
 };
-const trustedNotificationIdentity=(pinned:{workflowPath?:unknown;workflowId?:unknown})=>
- typeof pinned.workflowPath==='string'&&
- Object.hasOwn(TRUSTED_NOTIFICATION_WORKFLOW_IDS,pinned.workflowPath)&&
- pinned.workflowId===TRUSTED_NOTIFICATION_WORKFLOW_IDS[pinned.workflowPath];
 type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:{status:string}};
 const deny=(error_code:string):Result=>({status:'failed',error_code});
 const unknown=(error_code='bark_outcome_unknown'):Result=>({status:'indeterminate',error_code});
@@ -63,30 +74,32 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   const sourceId=(action.with.input as {session_step_id?:unknown}|undefined)?.session_step_id;
   const downloadId=(action.with.input as {download_step_id?:unknown}|undefined)?.download_step_id;
   if(sourceId!==undefined&&downloadId!==undefined)return deny('untrusted_download_reference');
-  let download:{attempt_id:string;workflow_ref:string;child_id:string}|undefined;
+  let download:{attempt_id:string;workflow_ref:string;child_id:string;repository:string}|undefined;
   if(downloadId!==undefined){
    const upstream=plan.steps.find(x=>x.id===downloadId);
    const template=upstream?.with.template as {id?:unknown;uses?:unknown;with?:{action?:unknown}}|undefined;
    const pinned=template?.with?.action as {repository?:unknown;repositoryId?:unknown;workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   if(!isCurrentWorkflowGitHubAction(readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY),pinned as {repository:unknown;repositoryId:unknown}|undefined))
+     return deny('github_action_executor_changed');
    const dynamicMain=typeof pinned?.ref==='string'&&
      isDynamicMainAction(pinned as Parameters<typeof isDynamicMainAction>[0],pinned.ref,plan.name);
    if(typeof downloadId!=='string'||!action.needs.includes(downloadId)||
       ctx?.steps[downloadId]?.status!=='succeeded'||upstream?.uses!=='flow.foreach'||
       upstream.with.max_items!==1||template?.uses!=='github.run'||typeof template.id!=='string'||
-      pinned?.repository!=='lirtual/github-actions'||pinned.workflowPath!=='.github/workflows/download.yml'||
-      (dynamicMain&&(!trustedNotificationIdentity(pinned)||plan.name!=='download'))||
+      !isWellFormedWorkflowGitHubRepository(pinned?.repository)||pinned.workflowPath!=='.github/workflows/download.yml'||
+      (dynamicMain&&(!trustedNotificationIdentity(pinned,plan)||plan.name!=='download'))||
       pinned.type!=='task'||typeof pinned.ref!=='string'||
       (!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)&&!dynamicMain)||
       typeof pinned.commitSha!=='string'||!/^[a-f0-9]{40}$/.test(pinned.commitSha))
     return deny('untrusted_download_reference');
    const childId=downloadId+'_0_'+template.id;
-   const workflowRef='lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref;
+   const workflowRef=pinned.repository+'/'+pinned.workflowPath+'@'+pinned.ref;
    const proof=await db.prepare(`SELECT a.attempt_id FROM step_attempts a
      JOIN run_steps child ON child.run_id=a.run_id AND child.step_id=a.step_id
      JOIN run_steps parent ON parent.run_id=a.run_id AND parent.step_id=?
      WHERE a.run_id=? AND a.step_id=? AND a.capability_id='github.action'
       AND a.state='succeeded' AND child.status='succeeded' AND parent.status='succeeded'
-      AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+      AND a.repository=? AND a.workflow_ref=?
       AND a.repository_id=? AND a.ref=?
       AND ((?=1 AND length(a.resolved_sha)=40
             AND a.resolved_sha NOT GLOB '*[^0-9a-f]*')
@@ -94,10 +107,10 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt
       AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id)`)
-      .bind(downloadId,runId,childId,workflowRef,String(pinned.repositoryId),
+      .bind(downloadId,runId,childId,pinned.repository,workflowRef,String(pinned.repositoryId),
         pinned.ref,dynamicMain?1:0,dynamicMain?1:0).first<{attempt_id:string}>();
    if(!proof)return deny('download_completion_unverified');
-   download={attempt_id:proof.attempt_id,workflow_ref:workflowRef,child_id:childId};
+   download={attempt_id:proof.attempt_id,workflow_ref:workflowRef,child_id:childId,repository:pinned.repository};
   }
   let ready:{attempt_id:string;session_url:string;repository:string;workflow_ref:string}|undefined;
   let trustedWorkflowRef:string|undefined;
@@ -105,6 +118,8 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    const source=plan.steps.find(x=>x.id===sourceId);
    const pinned=source?.with.action as {repository?:unknown;repositoryId?:unknown;
      workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   if(!isCurrentWorkflowGitHubAction(readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY),pinned as {repository:unknown;repositoryId:unknown}|undefined))
+     return deny('github_action_executor_changed');
    // Keep immutable Tag grants, and allow only the five existing reviewed
    // main-branch identities. Bark's trusted path list further limits this to
    // Chrome; the physical Attempt inspector verifies the frozen main SHA.
@@ -114,13 +129,13 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
        isDynamicMainAction(pinned as Parameters<typeof isDynamicMainAction>[0],pinned.ref,plan.name)&&
        typeof pinned.commitSha==='string'&&/^[a-f0-9]{40}$/.test(pinned.commitSha)));
    if(typeof sourceId!=='string'||!action.needs.includes(sourceId)||
-      source?.uses!=='github.run'||pinned?.repository!=='lirtual/github-actions'||
-      (pinned?.ref==='refs/heads/main'&&(!trustedNotificationIdentity(pinned!)||
+      source?.uses!=='github.run'||!isWellFormedWorkflowGitHubRepository(pinned?.repository)||
+      (pinned?.ref==='refs/heads/main'&&(!trustedNotificationIdentity(pinned,plan)||
        plan.name!==String(pinned.workflowPath).split('/').at(-1)?.replace(/\.ya?ml$/,'')))||
       (typeof pinned.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath))||pinned.type!=='session'||
       !trustedRef)
     return deny('untrusted_session_reference');
-   trustedWorkflowRef='lirtual/github-actions/'+pinned.workflowPath+'@'+pinned.ref;
+   trustedWorkflowRef=pinned.repository+'/'+pinned.workflowPath+'@'+pinned.ref;
    const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref
      FROM session_executions s JOIN step_attempts a
      ON a.run_id=s.run_id AND a.step_id=s.step_id
@@ -134,7 +149,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    const raw=current?.session_url;
    if(!current||typeof raw!=='string'||raw.length>180||
       !/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/.test(raw)||
-      current.repository!=='lirtual/github-actions'||current.workflow_ref!==trustedWorkflowRef)
+      current.repository!==pinned.repository||current.workflow_ref!==trustedWorkflowRef)
     return deny('session_ready_not_trusted');
    const canonical=new URL(raw).href;
    if(canonical!==raw&&canonical!==raw+'/')
@@ -184,7 +199,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
        AND s.session_url=? AND a.attempt_id=? AND a.state='claimed'
        AND a.capability_id='github.action'
-       AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+       AND a.repository=? AND a.workflow_ref=?
        AND a.owner_run_id=a.candidate_run_id
        AND a.owner_run_attempt=a.candidate_run_attempt
        AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
@@ -196,7 +211,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
     WHERE a.run_id=? AND a.step_id=? AND a.attempt_id=?
       AND a.capability_id='github.action' AND a.state='succeeded'
       AND child.status='succeeded' AND parent.status='succeeded'
-      AND a.repository='lirtual/github-actions' AND a.workflow_ref=?
+      AND a.repository=? AND a.workflow_ref=?
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt
       AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id))`:'';
@@ -211,8 +226,8 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
       WHERE c.run_id=? AND c.step_id=?)`)
     .bind(runId,action.id,id,ready?.attempt_id??download?.attempt_id??id,inputDigest,manifest.contract_digest,version,
-      Date.now(),runId,...(ready?[runId,sourceId,ready.session_url,ready.attempt_id,trustedWorkflowRef]:[]),
-      ...(download?[downloadId,runId,download.child_id,download.attempt_id,download.workflow_ref]:[]),
+      Date.now(),runId,...(ready?[runId,sourceId,ready.session_url,ready.attempt_id,ready.repository,trustedWorkflowRef]:[]),
+      ...(download?[downloadId,runId,download.child_id,download.attempt_id,download.repository,download.workflow_ref]:[]),
       runId,action.id).run();
   if(fence.meta.changes!==1){
    return await existing()?unknown('bark_receipt_unavailable'):deny('cloudflare_dispatch_not_admitted');

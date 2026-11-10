@@ -1156,6 +1156,9 @@ test('GitHub Task foreach routes each child through physical Attempt; first fail
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
    .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({
+  repository:'lirtual/github-actions',repositoryId:123,ciWorkflowId:999
+ });
  env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  let calls=0;
  const old=globalThis.fetch;
@@ -1283,6 +1286,9 @@ test('late invalid dynamic Task choice is rejected before any per-item GitHub di
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({
+  repository:'lirtual/github-actions',repositoryId:123,ciWorkflowId:999
+ });
  env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  let posts=0;
  const before=globalThis.fetch;
@@ -1320,6 +1326,9 @@ test('valid reviewed item-typed Task reaches one dispatch checkpoint after bound
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),start.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({
+  repository:'lirtual/github-actions',repositoryId:1430925009,ciWorkflowId:999
+ });
  env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  const checkpoints:string[]=[];
  await new WorkflowOrchestrator({} as ExecutionContext,env).run(
@@ -1467,6 +1476,9 @@ test('emit → Task → emit: physical Task failure halts item pipeline and next
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),started.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({
+  repository:'lirtual/github-actions',repositoryId:123,ciWorkflowId:999
+ });
  env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE='workflow-github-action';
  let posts=0;
  const savedFetch=globalThis.fetch;
@@ -1553,6 +1565,9 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  sqlite.prepare('UPDATE workflow_versions SET plan=? WHERE id=(SELECT version_id FROM runs WHERE id=?)')
   .run(JSON.stringify(plan),started.run_id);
  env.WORKFLOW_GITHUB_DISPATCH_TOKEN='test-token';
+ env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({
+  repository:'lirtual/github-actions',repositoryId:123,ciWorkflowId:999
+ });
  env.WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE=audience;
  const {privateKey,publicKey}=await generateKeyPair('RS256');
  const signed=new Map<number,string>();

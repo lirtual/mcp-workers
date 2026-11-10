@@ -18,6 +18,9 @@ on:
       canonical_owner_email:
         description: Repository-scoped Owner mailbox, captured without Worker Environment
         value: ${{ jobs.checks.outputs.canonical_owner_email }}
+      canonical_workflow_executor_repository:
+        description: Sole repository-scoped Workflow GitHub executor, captured outside Worker Environment
+        value: ${{ jobs.checks.outputs.canonical_workflow_executor_repository }}
 
 permissions:
   contents: read
@@ -42,6 +45,7 @@ jobs:
       remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
       agent_native_changed: ${{ steps.scope.outputs.agent_native_changed }}
       canonical_owner_email: ${{ steps.canonical_owner.outputs.email }}
+      canonical_workflow_executor_repository: ${{ steps.canonical_workflow_executor.outputs.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,6 +63,17 @@ jobs:
           [[ "$SOURCE_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]
           [[ ${#SOURCE_EMAIL} -le 256 ]]
           printf 'email=%s\n' "$SOURCE_EMAIL" >> "$GITHUB_OUTPUT"
+
+      - name: Capture sole Repository Workflow executor source before entering Worker Environment
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.worker == 'workflow-mcp-worker'
+        id: canonical_workflow_executor
+        env:
+          SOURCE_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/workflow-github-executor.mjs validate-source "$SOURCE_REPOSITORY"
+          printf 'repository=%s\n' "$SOURCE_REPOSITORY" >> "$GITHUB_OUTPUT"
 
       - name: Verify release and read-only dispatch gates
         run: node scripts/verify-workflow-dispatch-gates.mjs

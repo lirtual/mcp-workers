@@ -9,6 +9,7 @@ import {reviewedWriteArguments} from './mcp-write-contract.ts';
 import {isForeachTaskInputRef,isSessionDurationInputRef} from './github-action-inputs.ts';
 import type {DiscoveredAction} from './github-action-contract.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {isWellFormedWorkflowGitHubRepository} from './workflow-github-executor.ts';
 
 /** Compiler-owned supported Action kinds; discovery must not invent others. */
 export const SUPPORTED_STEP_USES = ['result.emit','mcp.call','github.run','action.run','http.request'] as const;
@@ -946,7 +947,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
       const inputs=action?.inputs as Record<string,unknown>|undefined;
       if(!saga||policy.kind!=='github.session.cancel'||
          action?.type!=='session'||inputs?.session_mode!=='temporary'||
-         action?.repository!=='lirtual/github-actions'||
+         !isWellFormedWorkflowGitHubRepository(action?.repository)||
          !['.github/workflows/ubuntu.yml','.github/workflows/windows.yml'].includes(String(action?.workflowPath)))
         throw new PlanError('compensation_not_supported',stepPath+'/compensate');
       compensate={kind:'github.session.cancel'};
@@ -970,7 +971,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
       const action=(template?.with?.action??template?.action) as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
       if(!s.needs.includes(source)||upstream?.uses!=='flow.foreach'||
          upstream.with.max_items!==1||template?.uses!=='github.run'||
-         action?.repository!=='lirtual/github-actions'||
+         !isWellFormedWorkflowGitHubRepository(action?.repository)||
          action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
         throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
     }
@@ -982,7 +983,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
       const action=template?.with?.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
       if(!s.needs.includes(source)||upstream?.uses!=='flow.foreach'||
          upstream.with.max_items!==1||template?.uses!=='github.run'||
-         action?.repository!=='lirtual/github-actions'||
+         !isWellFormedWorkflowGitHubRepository(action?.repository)||
          action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
         throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
     }
@@ -992,7 +993,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
         const upstream=steps.find(x=>x.id===source);
         const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
         if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
-           action?.repository!=='lirtual/github-actions'||
+           !isWellFormedWorkflowGitHubRepository(action?.repository)||
            (typeof action?.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(action.workflowPath))||action?.type!=='session')
           throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
       }
@@ -1004,7 +1005,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
         const upstream=steps.find(x=>x.id===source);
         const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
         if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
-           action?.repository!=='lirtual/github-actions'||
+           !isWellFormedWorkflowGitHubRepository(action?.repository)||
            (typeof action?.workflowPath!=='string'||!TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS.has(action.workflowPath))||
            action?.type!=='session')
           throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');

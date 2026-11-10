@@ -6,7 +6,7 @@ import {PlanError} from './plan.ts';
 
 const record=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 export async function resolvePublicActionDefinition(definition:string,env:Pick<Env,
- 'ACTIONS'|'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>){
+ 'ACTIONS'|'WORKFLOW_GITHUB_ACTION_IDENTITY'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'>){
  let parsed:unknown;
  try{const doc=YAML.parseDocument(definition,{uniqueKeys:true,strict:true});
    if(doc.errors.length)throw Error('invalid');parsed=doc.toJS({maxAliasCount:16});}

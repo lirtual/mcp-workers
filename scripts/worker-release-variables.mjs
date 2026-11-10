@@ -1,4 +1,5 @@
 import {databaseCatalogStage} from './database-catalog-stage.mjs';
+import {parseVerifiedExecutorIdentity,validateExecutorRepository} from './workflow-github-executor.mjs';
 // Only explicitly supported GitHub Variables may override non-secret Worker vars.
 // The selected Worker is the sole target. Never forward the whole GitHub vars context.
 import { readFile, writeFile } from "node:fs/promises";
@@ -97,36 +98,20 @@ export function collectWorkerVars(worker, env, options = {}) {
       "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
       "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action"
     );
-    // Repository onboarding is an explicit GitHub Environment Variable.
-    // The owner must approve a repository ID and its immutable commit SHA;
-    // ordinary workflow inputs cannot add execution/discovery grants.
-    const grants = env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES;
-    if (grants != null && grants !== "") {
-      if (typeof grants !== "string" || grants.length > 8192) {
-        throw new Error("Invalid WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES");
-      }
-      let parsed;
-      try { parsed = JSON.parse(grants); }
-      catch { throw new Error("Invalid WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"); }
-      const seen = new Set();
-      if (!Array.isArray(parsed) || parsed.length > 16 ||
-          parsed.some(entry => {
-            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
-            const keys = Object.keys(entry).sort().join(",");
-            const name = entry.repository;
-            if (keys !== "commitSha,repository,repositoryId" ||
-                typeof name !== "string" ||
-                !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name) ||
-                name.includes("..") ||
-                !Number.isSafeInteger(entry.repositoryId) || entry.repositoryId <= 0 ||
-                typeof entry.commitSha !== "string" ||
-                !/^[a-f0-9]{40}$/i.test(entry.commitSha) ||
-                seen.has(name.toLowerCase())) return true;
-            seen.add(name.toLowerCase());
-            return false;
-          })) throw new Error("Invalid WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES");
-      variables.push("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:" + JSON.stringify(parsed));
-    }
+    // Exactly one GitHub Repository Variable controls the selected executor.
+    // The immutable ID and CI ID below were independently verified by the
+    // protected release through the dedicated token; they are not settings.
+    const name = validateExecutorRepository(env.WORKFLOW_GITHUB_ACTION_REPOSITORY);
+    const identity = options.workflowExecutorIdentity;
+    if (!identity || identity.repository !== name ||
+        !Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 ||
+        !Number.isSafeInteger(identity.ciWorkflowId) || identity.ciWorkflowId <= 0)
+      throw Error("Workflow executor GitHub identity not verified by release");
+    if (env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES)
+      throw Error("Obsolete Workflow approved-repositories source is forbidden");
+    variables.push("WORKFLOW_GITHUB_ACTION_IDENTITY:" +
+      JSON.stringify({repository:name, repositoryId:identity.repositoryId,
+        ciWorkflowId:identity.ciWorkflowId}));
   }
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);
@@ -198,7 +183,18 @@ async function main() {
     effective={...process.env,ACCESS_TEAM_DOMAIN:identity.teamDomain,
       BROWSER_ACTIVATION_AUDIENCE:identity.audience};
   }
-  const flags = collectWorkerVars(worker, effective, { config });
+  let workflowExecutorIdentity;
+  if(worker==="workflow-mcp-worker"){
+    if(!process.env.RELEASE_STATE_FILE)throw Error("Workflow release state required");
+    const state=JSON.parse(await readFile(process.env.RELEASE_STATE_FILE,"utf8"));
+    if(state.worker!==worker || state.sourceSha!==process.env.GITHUB_SHA ||
+       !/^[a-f0-9]{40}$/.test(state.sourceSha??""))
+      throw Error("Workflow release source identity changed");
+    workflowExecutorIdentity=parseVerifiedExecutorIdentity(state.workflowExecutorIdentity);
+    if(workflowExecutorIdentity.repository!==process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY)
+      throw Error("Workflow release source repository changed");
+  }
+  const flags = collectWorkerVars(worker, effective, { config, workflowExecutorIdentity });
   await writeFile(outputPath, flags.length ? flags.join("\n") + "\n" : "",
     { flag: "wx", mode: 0o600 });
   console.log("Selected Worker Variables validated: " + flags.length + " override(s)");

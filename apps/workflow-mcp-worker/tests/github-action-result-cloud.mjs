@@ -219,6 +219,7 @@ async function verifyApprovalFenceOnIsolatedD1(){
       const result=await registerAndDispatchGitHubAction(adapter(),{
         runId:id,stepId:'verify',attemptId,dispatchId,
         action:reviewed,ref:tag,token:'isolated-mock-only',inputs,
+        executorIdentity:{repository:reviewed.repository,repositoryId:reviewed.repositoryId,ciWorkflowId:778},
       },async request=>{
         assert.equal(new URL(request.url).hostname,'api.github.com',
           'No outbound request may reach another origin');

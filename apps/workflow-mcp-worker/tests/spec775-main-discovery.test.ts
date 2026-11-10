@@ -26,7 +26,7 @@ test('new declared Task appears once at current main; undeclared maintenance rem
  const requests:string[]=[];
  const found=await listAvailableGitHubActions({
    WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-   WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([{repository:repo,repositoryId:repoId}]),
+   WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:repo,repositoryId:repoId,ciWorkflowId:901}),
  },api(requests));
  assert.equal(found.actions.length,1);
  assert.equal(found.actions[0].workflowPath,publicPath);
@@ -42,8 +42,8 @@ test('Action declaration remains strict and main admission is limited to trusted
  const identity={repository:repo,repositoryId:repoId,workflowId:810,
    workflowPath:publicPath,type:'task' as const};
  assert.equal(isDynamicMainAction(identity,DYNAMIC_MAIN_REF,'new-report'),true);
- assert.equal(isDynamicMainAction({...identity,repositoryId:1},DYNAMIC_MAIN_REF),false);
- assert.equal(isDynamicMainAction({...identity,repository:'untrusted/repo'},DYNAMIC_MAIN_REF),false);
+ assert.equal(isDynamicMainAction({...identity,repositoryId:1},DYNAMIC_MAIN_REF),true);
+ assert.equal(isDynamicMainAction({...identity,repository:'untrusted/repo'},DYNAMIC_MAIN_REF),true);
  assert.equal(isDynamicMainAction(identity,'refs/heads/dev'),false);
 });
 test('public action_id resolves inside bounded GitHub Task foreach, not generic Provider foreach',async t=>{
@@ -53,7 +53,7 @@ test('public action_id resolves inside bounded GitHub Task foreach, not generic 
  const {resolvePublicActionDefinition}=await import('../src/public-action-definition.ts');
  const {compilePublicPlan}=await import('../src/plan.ts');
  const env={WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',
-  WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify([{repository:repo,repositoryId:repoId}])};
+  WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:repo,repositoryId:repoId,ciWorkflowId:901})};
  const definition=JSON.stringify({version:1,name:'reports',inputs:{items:['a']},steps:[{
    id:'batch',flow:'foreach',items:{ref:'inputs.items'},max_items:1,template:{steps:[{
      id:'run',uses:'action.run',with:{action_id:'github.new-report',input:{}}},

@@ -10,7 +10,7 @@ const source: GitHubActionSource = {
     duration_minutes:{type:'number',required:false,default:10},
   }},
 };
-const allow = JSON.stringify([{repository:source.repository,repositoryId:source.repositoryId,commitSha:source.commitSha}]);
+const allow = JSON.stringify({repository:source.repository,repositoryId:source.repositoryId,ciWorkflowId:120});
 
 test('repository enrollment is stable while each reviewed publication pins a new commit',async()=>{
   const current={...source,commitSha:'c'.repeat(40)};

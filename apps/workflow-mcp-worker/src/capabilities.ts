@@ -6,7 +6,7 @@ import {PRODUCTION_PORTAL_ENDPOINT,scopedPublicMcpFetch} from './mcp-public-fetc
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {toolSchemaDigest} from './plan.ts';
 import {REVIEWED_WRITE_TOOL,REVIEWED_APPEND_TOOL,REVIEWED_WRITE_TOOLS,reviewedWriteTool} from './mcp-write-contract.ts';
-import {listAvailableGitHubActions,approvedActionRepositories} from './github-action-catalog.ts';
+import {listAvailableGitHubActions,currentExecutorRepository} from './github-action-catalog.ts';
 import type {Env} from './store.ts';
 
 type PortalConfig=Pick<Env,'WORKFLOW_MCP_PORTAL_ENDPOINT'|'WORKFLOW_MCP_PORTAL_CLIENT_ID'|'WORKFLOW_MCP_PORTAL_CLIENT_SECRET'>;
@@ -408,7 +408,7 @@ export const WORKFLOW_DEFINITION_SCHEMA = Object.freeze({
         uses:{enum:[...PUBLIC_STEP_USES]},
         compensate:{type:'object',additionalProperties:false,required:['kind'],
           properties:{kind:{const:'github.session.cancel',
-            description:'Only an explicitly approved temporary lirtual/github-actions Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
+            description:'Only an explicitly approved temporary configured GitHub executor Ubuntu or Windows Session; cancellation ACK is not terminal proof'}}},
         needs:{type:'array',uniqueItems:true,items:{type:'string'}},
         flow:{enum:['repeat','foreach','child','wait','wait_event','while','until']},
         max_iterations:{type:'integer',minimum:1,maximum:PLAN_LIMITS.maxRepeat},
@@ -534,7 +534,7 @@ async function compilingExample(definition:unknown){
 
 export async function workflowCapabilities(env:Pick<Env,
  'WORKFLOW_MCP_PORTAL_ENDPOINT'|'WORKFLOW_MCP_PORTAL_CLIENT_ID'|'WORKFLOW_MCP_PORTAL_CLIENT_SECRET'|
- 'WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS'> & {DB?:Env['DB']},
+ 'WORKFLOW_GITHUB_ACTION_IDENTITY'|'WORKFLOW_GITHUB_DISPATCH_TOKEN'|'WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE'|'ACTIONS'> & {DB?:Env['DB']},
  id?:string,portalDiscovery:typeof discoverPortalTools=discoverPortalTools){
   const portalReady=env.WORKFLOW_MCP_PORTAL_ENDPOINT===PRODUCTION_PORTAL_ENDPOINT &&
     !!env.WORKFLOW_MCP_PORTAL_CLIENT_ID && !!env.WORKFLOW_MCP_PORTAL_CLIENT_SECRET;
@@ -546,7 +546,7 @@ export async function workflowCapabilities(env:Pick<Env,
   const httpState=env.DB?await httpAuthorization(env.DB):null;
   let githubReady=false;
   try {
-    githubReady=approvedActionRepositories(env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES).length>0 &&
+    githubReady=currentExecutorRepository(env.WORKFLOW_GITHUB_ACTION_IDENTITY)!==null &&
       !!env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
   }catch { githubReady=false; } // invalid scope is never treated as approved
   const cloudflareReady=!!env.ACTIONS;

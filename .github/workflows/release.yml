@@ -430,7 +430,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_REPOSITORY || '' }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN || '' }}
+          CANONICAL_WORKFLOW_EXECUTOR_REPOSITORY: ${{ needs.checks.outputs.canonical_workflow_executor_repository }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs preflight "$SELECTED_WORKER"
@@ -488,7 +490,7 @@ jobs:
           DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
           # GitHub reserves GITHUB_* variable names; translate our reviewed
           # GitHub Environment variable into the Worker's runtime binding.
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_REPOSITORY || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
           DATABASE_B2B_PASSWORD: ${{ inputs.worker == 'database-mcp-worker' && secrets.DATABASE_B2B_PASSWORD || '' }}
@@ -1089,6 +1091,18 @@ jobs:
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
         run: node scripts/manual-worker-release.mjs identity-recheck "$SELECTED_WORKER"
 
+      # The verified executor identity is recorded in the protected preflight
+      # state. Reverify repo ID, CI Workflow ID and unchanged old active-version
+      # baseline immediately before publication; no mutable runtime override.
+      - name: Recheck Workflow GitHub executor and unchanged baseline (read-only)
+        if: inputs.worker == 'workflow-mcp-worker'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+        run: node scripts/manual-worker-release.mjs identity-recheck "$SELECTED_WORKER"
+
       - name: Recheck unified Actions Worker before Workflow publication (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
         env:
@@ -1181,7 +1195,7 @@ jobs:
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES || '' }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_GITHUB_ACTION_REPOSITORY || '' }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/manual-worker-release.mjs readback "$SELECTED_WORKER"
@@ -1501,7 +1515,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
@@ -1555,7 +1569,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         run: node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
@@ -1575,7 +1589,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
         shell: bash
@@ -1629,7 +1643,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           EXPECTED_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES: ${{ vars.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES }}
+          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
           DATABASE_MAX_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_ROWS || '' }}

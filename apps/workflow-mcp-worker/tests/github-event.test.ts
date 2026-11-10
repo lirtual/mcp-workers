@@ -71,7 +71,7 @@ test('GitHub event compiler enforces one exact repository, branch, relay and dec
   const capability=await workflowCapabilities({
     WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:aud,
     WORKFLOW_MCP_PORTAL_ENDPOINT:undefined,WORKFLOW_MCP_PORTAL_CLIENT_ID:undefined,
-    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:undefined,WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:undefined,
+    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:undefined,WORKFLOW_GITHUB_ACTION_IDENTITY:undefined,
     WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
   },'trigger.github_event');
   assert.equal(capability.availability,'supported_with_relay');

@@ -10,6 +10,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectWorkerVars, BROWSER_ACCESS_VARIABLES, browserActivationOrigin } from "./worker-release-variables.mjs";
+import { verifyWorkflowGitHubExecutor,parseVerifiedExecutorIdentity } from "./workflow-github-executor.mjs";
 import { discoverBrowserActivationIdentity, verifyBrowserIdentityContinuity } from "./browser-owner-access.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
@@ -162,25 +163,36 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         present.every(binding => binding.text === options.expectedWorkflowPortalClientId),
         "Workflow Portal client identity differs from existing reviewed value");
     }
-    if (typeof options.expectedWorkflowGrants === "string") {
-      const names = options.mode === "preflight"
-        ? ["GITHUB_ACTION_APPROVED_REPOSITORIES", "WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"]
-        : ["WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"];
-      let expected;
-      try { expected = options.expectedWorkflowGrants ? JSON.parse(options.expectedWorkflowGrants) : []; }
-      catch { throw Error("Workflow repository grants are not valid JSON"); }
-      invariant(!bindings.some(b => names.includes(b.name) && b.type !== "plain_text"),
-        "Workflow repository approvals binding type changed");
-      const present = names.map(name => find(name, "plain_text")).filter(Boolean);
-      for (const binding of present) {
-        let actual;
-        try { actual = JSON.parse(binding.text); }
-        catch { throw Error("Workflow repository grants are not valid JSON"); }
-        invariant(JSON.stringify(expected) === JSON.stringify(actual),
-          "Workflow approved repositories differ from existing reviewed grants");
+    const legacyNames=["GITHUB_ACTION_APPROVED_REPOSITORIES",
+      "WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES"];
+    const identityName="WORKFLOW_GITHUB_ACTION_IDENTITY";
+    const executorBindings=bindings.filter(x=>[...legacyNames,identityName].includes(x.name));
+    invariant(executorBindings.length===1 && executorBindings[0].type==="plain_text",
+      "Workflow executor deployed baseline missing or ambiguous");
+    const deployed=executorBindings[0];
+    if (options.mode==="preflight") {
+      if(deployed.name===identityName)
+        parseVerifiedExecutorIdentity(deployed.text);
+      else {
+        let history;
+        try{history=JSON.parse(deployed.text);}
+        catch{throw Error("Workflow historical executor baseline invalid");}
+        invariant(Array.isArray(history)&&history.length<=16&&
+          history.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
+            typeof x.repository==="string"&&
+            Number.isSafeInteger(x.repositoryId)&&x.repositoryId>0),
+          "Workflow historical executor baseline invalid");
       }
-      invariant(present.length > 0 || JSON.stringify(expected) === "[]",
-        "Workflow approved repositories missing from existing runtime");
+      if(options.workflowExecutorBaseline) invariant(
+        deployed.name===options.workflowExecutorBaseline.name &&
+        deployed.text===options.workflowExecutorBaseline.text,
+        "Workflow deployed executor baseline changed before publication");
+    } else if (options.mode==="readback") {
+      const expected=parseVerifiedExecutorIdentity(options.expectedWorkflowIdentity);
+      const actual=parseVerifiedExecutorIdentity(deployed.text);
+      invariant(deployed.name===identityName &&
+        JSON.stringify(actual)===JSON.stringify(expected),
+        "Workflow new executor identity differs from reviewed candidate");
     }
     if (options.mode === "preflight" && options.requireExistingSecrets) {
       invariant(!!find("WORKFLOW_MCP_PORTAL_CLIENT_ID", "plain_text") &&
@@ -992,6 +1004,30 @@ export async function scriptExists(account, worker, token, transport = fetch) {
   return document.result.some((item) => item.id === worker);
 }
 
+const EXECUTOR_BINDING_NAMES=new Set([
+  "GITHUB_ACTION_APPROVED_REPOSITORIES",
+  "WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES",
+  "WORKFLOW_GITHUB_ACTION_IDENTITY"
+]);
+/** Compare the real active Version resources, not mutable Worker Settings
+ * (which may reflect a separate undeployed version candidate).
+ */
+export function verifyWorkflowActiveExecutorBaseline(settingsBindings,activeVersionBindings) {
+  const single=rows=>{
+    invariant(Array.isArray(rows),"Workflow active executor inventory unavailable");
+    const matching=rows.filter(x=>EXECUTOR_BINDING_NAMES.has(x.name));
+    invariant(matching.length===1 && matching[0].type==="plain_text" &&
+      typeof matching[0].text==="string",
+      "Workflow active executor inventory missing or ambiguous");
+    return {name:matching[0].name,text:matching[0].text};
+  };
+  const configured=single(settingsBindings);
+  const active=single(activeVersionBindings);
+  invariant(configured.name===active.name && configured.text===active.text,
+    "Workflow active Version and Settings executor baseline differ");
+  return active;
+}
+
 async function current(account, worker, token, options) {
   const [settings, secrets, deployments, scriptSettings] = await Promise.all([
     cfGet(account, worker, token, "/settings"),
@@ -1013,6 +1049,16 @@ async function current(account, worker, token, options) {
   verifyBindings(worker, settings, secrets, {
     ...options, previousNamespaceId,
   });
+  let workflowExecutorBaseline;
+  if(worker==="workflow-mcp-worker") {
+    const active=activeVersion(deployments);
+    const version=await cfGet(account,worker,token,"/versions/"+active.version_id);
+    invariant(version?.id===active.version_id &&
+      Array.isArray(version?.resources?.bindings),
+      "Workflow active Version resources unavailable");
+    workflowExecutorBaseline=verifyWorkflowActiveExecutorBaseline(
+      settings.bindings,version.resources.bindings);
+  }
   if (options.sourceConfig) {
     invariant(settings.compatibility_date === options.sourceConfig.compatibility_date,
       "Compatibility date drift");
@@ -1034,6 +1080,9 @@ async function current(account, worker, token, options) {
     ...(worker === "browser-mcp-worker" ? {browserNamespaceId: settings.bindings.find(b=>b.name==="BROWSER_OWNER").namespace_id} : {}),
     ...(options.mode === "preflight" && typeof previousNamespaceId === "string"
       ? { previousNamespaceId } : {}),
+    ...(worker==="workflow-mcp-worker" && options.mode==="preflight" ? {
+      workflowExecutorBaseline
+    } : {}),
   };
 }
 
@@ -1142,7 +1191,7 @@ async function main() {
       "Required cleanup readback environment missing");
     if (worker === "workflow-mcp-worker") invariant(
       process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID &&
-      process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES !== undefined,
+      process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY && process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
       "Required Workflow cleanup readback identity inputs missing");
     if (worker === "database-mcp-worker") invariant(
       process.env.DATABASE_CONNECTIONS && process.env.DB_HOST !== undefined,
@@ -1151,7 +1200,9 @@ async function main() {
     const observed = await current(account, worker, token, {
       mode: "readback", cleanupVerified: true, sourceConfig,
       expectedWorkflowPortalClientId: process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
-      expectedWorkflowGrants: process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES,
+      expectedWorkflowIdentity: worker==="workflow-mcp-worker"
+        ? await verifyWorkflowGitHubExecutor(process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY,
+            process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN) : undefined,
       ...(worker === "database-mcp-worker" ? {
         databaseConnections: process.env.DATABASE_CONNECTIONS,
         databaseVariables: { DB_HOST: process.env.DB_HOST },
@@ -1166,11 +1217,11 @@ async function main() {
   }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
   if(mode==="identity-recheck")
-    invariant(worker==="browser-mcp-worker" &&
+    invariant([ "browser-mcp-worker", "workflow-mcp-worker" ].includes(worker) &&
       process.env.GITHUB_REPOSITORY==="lirtual/mcp-workers" &&
       process.env.GITHUB_REF==="refs/heads/main" &&
       process.env.GITHUB_ACTOR==="lirtual",
-      "Browser prepublication recheck requires protected main context");
+      "Protected prepublication recheck requires main context");
   const previous = ["readback","identity-recheck"].includes(mode)
     ? JSON.parse(await readFile(statePath, "utf8")) : null;
   if (previous) invariant(previous.worker === worker && previous.sourceSha === sourceSha,
@@ -1186,6 +1237,25 @@ async function main() {
   const browserIdentity=worker==="browser-mcp-worker"
     ? mode==="preflight" ? discoveredBrowserIdentity : previous?.browserIdentity
     : undefined;
+  if(worker==="workflow-mcp-worker" && mode==="preflight") invariant(
+    process.env.CANONICAL_WORKFLOW_EXECUTOR_REPOSITORY &&
+    process.env.CANONICAL_WORKFLOW_EXECUTOR_REPOSITORY ===
+      process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY,
+    "Workflow repository source differs from Repository-level CI baseline");
+  const workflowExecutorIdentity=worker==="workflow-mcp-worker"
+    ? ["preflight","identity-recheck"].includes(mode)
+      ? await verifyWorkflowGitHubExecutor(process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY,
+          process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN)
+      : previous?.workflowExecutorIdentity
+    : undefined;
+  if(worker==="workflow-mcp-worker") {
+    const identity=parseVerifiedExecutorIdentity(workflowExecutorIdentity);
+    invariant(identity.repository===process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY,
+      "Workflow release repository source changed");
+    if(previous && mode==="identity-recheck") invariant(
+      JSON.stringify(identity)===JSON.stringify(previous.workflowExecutorIdentity),
+      "Workflow executor identity changed after preflight");
+  }
   if(worker==="browser-mcp-worker")
     invariant(browserIdentity?.accountId===account &&
       browserIdentity.ownerEmail===process.env.OWNER_EMAIL &&
@@ -1214,8 +1284,8 @@ async function main() {
         ? process.env.BROWSER_REMEMBERED_IDLE_DAYS : undefined,
       expectedWorkflowPortalClientId: worker === "workflow-mcp-worker"
         ? process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID : undefined,
-      expectedWorkflowGrants: worker === "workflow-mcp-worker"
-        ? process.env.WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES : undefined,
+      expectedWorkflowIdentity: workflowExecutorIdentity,
+      workflowExecutorBaseline: previous?.workflowExecutorBaseline,
       expectedBrowserActivationAudience: browserIdentity?.audience,
     });
     // Compare active deployments inside the existing bounded retry loop.
@@ -1228,13 +1298,23 @@ async function main() {
     : mode === "readback" && worker === "workflow-mcp-worker"
       ? await retryReleaseReadback(read) : await read();
   if (mode === "identity-recheck") {
-    verifyBrowserPrepublicationCandidate(previous, observed, discoveredBrowserIdentity);
-    console.log("Browser prepublication Access and active Worker identity: PASS");
+    if(worker==="browser-mcp-worker") {
+      verifyBrowserPrepublicationCandidate(previous, observed, discoveredBrowserIdentity);
+      console.log("Browser prepublication Access and active Worker identity: PASS");
+    }else{
+      invariant(previous.version_id===observed.version_id &&
+        previous.deployment_id===observed.deployment_id &&
+        JSON.stringify(previous.workflowExecutorBaseline)===
+          JSON.stringify(observed.workflowExecutorBaseline),
+        "Workflow active production baseline changed before cutover");
+      console.log("Workflow executor and active baseline prepublication recheck: PASS");
+    }
     return;
   }
   if (mode === "preflight") {
     await writeFile(statePath, JSON.stringify({ worker, sourceSha, ...observed,
-      ...(browserIdentity ? {browserIdentity} : {}) }), { mode: 0o600 });
+      ...(browserIdentity ? {browserIdentity} : {}),
+      ...(workflowExecutorIdentity ? {workflowExecutorIdentity} : {}) }), { mode: 0o600 });
     if (process.env.GITHUB_OUTPUT) {
       await appendFile(process.env.GITHUB_OUTPUT, "bootstrap=" + (!exists) + "\n");
     }

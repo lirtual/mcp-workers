@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectWorkerVars, remoteControlInstallOrigin, WORKER_VARIABLES } from "./worker-release-variables.mjs";
+import { collectWorkerVars as originalCollectWorkerVars, remoteControlInstallOrigin, WORKER_VARIABLES } from "./worker-release-variables.mjs";
+
+const externalRepository = "alternate-owner/private-actions";
+const externalIdentity = {repository:externalRepository,repositoryId:8090,ciWorkflowId:9010};
+function collectWorkerVars(worker, env={}, options={}) {
+  if (worker !== "workflow-mcp-worker") return originalCollectWorkerVars(worker,env,options);
+  return originalCollectWorkerVars(worker,{
+    WORKFLOW_GITHUB_ACTION_REPOSITORY:externalRepository,...env
+  },{workflowExecutorIdentity:externalIdentity,...options});
+}
 
 const dbOwner = { ACCESS_TEAM_DOMAIN: "owner.cloudflareaccess.com", DATABASE_ACCESS_AUD: "a".repeat(64), OWNER_EMAIL: "owner@example.com" };
 const dbVars = (overrides = {}) => ({ DATABASE_CONNECTIONS:"{}", ...dbOwner, ...overrides });
@@ -30,7 +39,7 @@ test("Remote Control installer origin comes only from its configured Custom Doma
 test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["ssh-mcp-worker"], []);
   assert.deepEqual(WORKER_VARIABLES["workflow-mcp-worker"], ["WORKFLOW_MCP_PORTAL_CLIENT_ID"]);
-  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"}).length,3);
+  assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{ACTIONS_GITHUB_DISPATCH_TOKENS:"ignored", WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"}).length,4);
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], ["RCA_PERMANENT_IDLE_DAYS"]);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { DATABASE_MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
@@ -93,6 +102,7 @@ test("Workflow has pinned MCP Portal and GitHub Action OIDC identity without rol
   assert.deepEqual(fixed,[
     "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
     "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action",
+    "WORKFLOW_GITHUB_ACTION_IDENTITY:"+JSON.stringify(externalIdentity),
     "WORKFLOW_MCP_PORTAL_CLIENT_ID:test-id",
   ]);
   assert.deepEqual(collectWorkerVars("workflow-mcp-worker",{WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"}),fixed);
@@ -108,31 +118,25 @@ test("Workflow Portal Client ID is a required validated Variable, never staged a
   }
 });
 
-test("Workflow Action repository grants are narrowly sourced from an explicit variable",()=>{
-  const grants=[{repository:"lirtual/github-actions",repositoryId:1430925009,
-    commitSha:"d0774dde3a87c7722a939403dbda45507f44b8e0"}];
-  const pinned=collectWorkerVars("workflow-mcp-worker",{
-    WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id",
-    WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:JSON.stringify(grants),
-  });
-  assert.equal(pinned.length,4);
-  assert.deepEqual(JSON.parse(pinned[2].slice("WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:".length)),
-    grants);
-  for(const invalid of [
-    "not-json", "{}", JSON.stringify([{...grants[0],commitSha:"main"}]),
-    JSON.stringify([{...grants[0],repositoryId:0}]),
-    JSON.stringify([grants[0],grants[0]]),
-    JSON.stringify([{...grants[0],extra:true}]),
-    JSON.stringify([{...grants[0],repository:"other/../repo"}]),
-  ]){
+test("Workflow executor has one release-verified repository identity, not a JSON allowlist",()=>{
+  const accepted=collectWorkerVars("workflow-mcp-worker",{WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"});
+  assert.ok(accepted.includes("WORKFLOW_GITHUB_ACTION_IDENTITY:"+JSON.stringify(externalIdentity)));
+  assert.equal(accepted.length,4);
+  for(const bad of ["x", "x/y/z", " [\"x/y\"]", "lirtual/github-actions"]){
     assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{
-      WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id",
-      WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:invalid,
-    }),/WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES/);
+      WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id",WORKFLOW_GITHUB_ACTION_REPOSITORY:bad
+    }),/WORKFLOW_GITHUB_ACTION_REPOSITORY|not verified/);
   }
-  assert.equal(collectWorkerVars("raindrop-mcp-worker",{
-    WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:"garbage",
-  }).length,0);
+  assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{
+    WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id",
+    WORKFLOW_GITHUB_ACTION_APPROVED_REPOSITORIES:"[]",
+  }),/Obsolete/);
+  assert.throws(()=>originalCollectWorkerVars("workflow-mcp-worker",{
+    WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"
+  },{workflowExecutorIdentity:externalIdentity}),/WORKFLOW_GITHUB_ACTION_REPOSITORY/);
+  assert.throws(()=>collectWorkerVars("workflow-mcp-worker",{
+    WORKFLOW_MCP_PORTAL_CLIENT_ID:"test-id"
+  },{workflowExecutorIdentity:{...externalIdentity,repository:"another/repo"}}),/not verified|WORKFLOW_GITHUB/);
 });
 
 test("No other Worker inherits the Workflow GitHub executor's variables",()=>{

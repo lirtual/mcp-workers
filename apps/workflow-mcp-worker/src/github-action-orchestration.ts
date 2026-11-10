@@ -2,6 +2,7 @@ import {resolveSessionActionInputs} from './github-action-inputs.ts';
 import type { ReviewedGitHubAction } from './github-action-review.ts';
 import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {isCurrentWorkflowGitHubAction,type WorkflowGitHubExecutor} from './workflow-github-executor.ts';
 import {resolveApprovedMainAction} from './github-action-main-preflight.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
 import type { DispatchOutcome } from './github-dispatch.ts';
@@ -15,6 +16,7 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 type RequestData={
   runId:string;stepId:string;attemptId:string;dispatchId:string;
   action:ReviewedGitHubAction;ref:string;token:string;inputs:Record<string,string>;
+  executorIdentity:WorkflowGitHubExecutor|null;
 };
 
 /**
@@ -29,6 +31,8 @@ type RequestData={
 export async function registerAndDispatchGitHubAction(
  db:Db,data:RequestData,http:Http=fetch,
 ):Promise<DispatchOutcome>{
+ if(!isCurrentWorkflowGitHubAction(data.executorIdentity,data.action))
+   throw Error('github_action_executor_changed');
  if(!UUID.test(data.attemptId)||!UUID.test(data.dispatchId)||
     !UUID.test(data.runId)||!/^[a-zA-Z0-9_-]{1,64}$/.test(data.stepId)||
     !Number.isSafeInteger(data.action.repositoryId)||data.action.repositoryId<=0||
@@ -111,7 +115,7 @@ export async function registerAndDispatchGitHubAction(
  let runtimeAction=identity;
  let preflightDenied=false;
  if(moving){
-  try{runtimeAction=await resolveApprovedMainAction(identity,data.token,http);}
+  try{runtimeAction=await resolveApprovedMainAction(identity,data.token,data.executorIdentity!,http);}
   catch{preflightDenied=true;}
  }
  const saved=await db.prepare(`INSERT OR IGNORE INTO step_attempts
