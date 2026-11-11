@@ -63,3 +63,19 @@
 - **停止边界**：未读取、记录、交换、刷新或撤销真实 Token；未操作 ChatGPT 插件重连、Client Registration、Access/Portal 配置、Worker 或生产数据。浏览器管理页观察未获得可靠可用回执，不以页面错误反推系统状态；Cloudflare Account OAuth Clients API 的既有 403 不绕过。
 
 **进入真实刷新 E2E 的最小授权条件：** 限定 `Sentry` 这一个现有 ChatGPT 插件；先只读回读其实际 Endpoint/连接身份及可恢复方式，再确认与留存不含密钥的现状；如果必须重新授权或重建客户端，需先明确告知该插件可能暂时不可用及如何用原 Endpoint 重连，获得该具体客户端变更授权；不触碰其余插件、生产 Access Policy、Grant 配置或凭据。使用真实客户端在已确认的 Access Token 生存期过去后进行无人工登录的安全只读调用；若无法独立取得 Token 生存期或刷新行为回执，结论继续标记 Unknown，不把等待 15 分钟后的一次成功调用认定为自动刷新。
+
+## T1/T3 补充只读回读与限制裁定（2026-11-11）
+
+本节为后续状态，**优先于前文仅代表 T0 时间点的 Blocked/Unknown**，但没有改变原始证据。
+
+| 检查对象 | 本轮事实 | 最新裁定 |
+| --- | --- | --- |
+| ChatGPT 独立 Sentry 连接 | 已通过原 Endpoint `https://mcp.lirtual.dpdns.org/mcp` 完成一次新 OAuth 授权与 Callback；原 Primary 保留；用户随后主动清理重复连接。浏览器回读只剩一个 Primary，插件 Sentry 只读工具返回一个组织且 `hasMore=false`。 | **Pass**：客户端授权、单连接恢复及只读连通；**Unknown**：实际工具使用哪一次 Grant 或是否自动刷新 |
+| OAuth 发行配置 | Cloudflare `GET /access/apps/{id}` 返回 MCP Portal `session_duration=24h`，完整返回字段中无 `oauth_configuration`；Portal GET 也未提供 Grant 配置。 | **Unknown**：实际 `grant.session_duration`、`grant.access_token_lifetime`；不能把 24h Access 会话冒充 OAuth Grant |
+| Access 认证审计 | `GET /access/logs/access_requests` 在查询范围内给出 MCP Portal 成功 `login` 于 `2026-11-10T01:02:01Z`、`2026-11-11T01:03:00Z`；后续 `2026-11-11T01:40Z`–`02:10Z` 该应用无新认证事件。仅回读动作、布尔结果与时间，不收集身份、IP 或 Token。 | **Verified**：历史登录事件；**Unknown**：Token 刷新是否发生，认证审计不代表刷新日志，也不代表每个 HTTP 403 |
+| 匿名 OAuth 发现 | 本次从现有 WSL 执行点 `GET /.well-known/oauth-authorization-server` 和 `GET /.well-known/oauth-protected-resource/mcp` 均为 `403 Forbidden`（`text/plain`）；早前同一路径曾返回 `200`，且当时授权服务器声明 `refresh_token`、未返回 `scopes_supported`。收到 403 后未换身份或工具规避。 | **环境/时间差异 Verified；根因 Unknown**。不能推断所有 ChatGPT 请求均 403，也不能把历史 200 当作持续可用 |
+| 原生 Grant 到期行为 | [Cloudflare Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/) 明确指出 Refresh Token/Grant 到期时需要重新认证；[ChatGPT 自定义 MCP OAuth 文档](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt) 要求实际签发 Refresh Token，且需 `offline_access` 或等价发现支持。 | **短期自动刷新 Unknown；严格长期无需计划性重连不满足官方文档描述的固定到期机制**，不能靠延长到 1–2 周声称达成 Q1 |
+
+**最小剩余验证/处置：** 先定位匿名发现 403 的来源（Cloudflare 平台日志和现有策略只读回读；不得通过更换身份绕过）；在可核实方式下读取真实 Grant/Access Token 有效期及 ChatGPT Refresh Token 的**非敏感**签发/刷新回执。若这些观察能力不可用，承认无法通过单次工具成功证明静默刷新。只在获得新的明确生产授权后修复 Cloudflare 设置或单插件配置；原生 Grant 到期不可避免时，先独立审查最小自托管 OAuth 方案的 Client 隔离、Refresh Token 轮换、撤销、Owner 策略持续复核及安全托管，再考虑任何实施。**禁止把现有 Portal 上游管理员 Bearer 暴露给 ChatGPT 或新增永久静态 Token。**
+
+本轮没有修改 Cloudflare、Access、Portal、Policy、Grant、ChatGPT 插件、Token、业务 Worker 或生产数据；没有新建服务或身份系统。Issue #853 保持 Open。
