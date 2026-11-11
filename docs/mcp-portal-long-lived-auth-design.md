@@ -1,13 +1,13 @@
 # Spec #853 — MCP 独立插件长期 OAuth 续期设计（2026-11-11 技术核实修订）
 
-状态：**技术设计已收敛；Clerk 官方协议契约可行，实际 Hobby Production / ChatGPT 静默刷新 / Cloudflare 无特权扩张接入仍待门禁。不得实施生产切换。** 本文替代本分支较早版本的“自建 OAuth 兜底”表述；以 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853) 最新决策为准。仅技术核实、文档；没有创建 Clerk 实例、修改 Portal/Access/Worker/Secret、重连 ChatGPT 或部署。
+状态：**采用最小变更优先的事实门：先核实既有 Cloudflare MCP Portal 是否能实现无固定人工重新认证；仅在无法满足时启动 Clerk 备选。Clerk 的 Hobby Production / ChatGPT 静默刷新及安全接入仍待门禁。不得实施生产切换。** 本文替代本分支较早版本的“自建 OAuth 兜底”表述；以 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853) 最新决策为准。仅技术核实、文档；没有创建 Clerk 实例、修改 Portal/Access/Worker/Secret、重连 ChatGPT 或部署。
 
 ## 一、最终约束（已决策，不再重复提问）
 
 - Q1：首次授权后**正常使用无计划性人工重新授权**，不是 30/90/365 天硬到期；撤销、账号风险、权限调整、客户端凭据丢失或产品政策变更是明确例外。
 - Q2：个人正式生产 $0，**无需绑定信用卡或付款方式**；不得以试用期或隐藏升级作为达标。
 - Q3：保留每个 ChatGPT MCP 插件的独立安装、独立关闭、独立资源受众与工具权限。现有 Portal 有 **11 个上游**，但上游数不证明客户端有 11 个独立 OAuth Client/Grant。
-- Q4：**新路径为 ChatGPT 独立插件 → Clerk OAuth → 各自 MCP Resource/Worker**，不经 Cloudflare Portal。优先复用可控业务 Worker 及共享 OAuth 校验模块；仅对无法直接改造的上游，条件性设计**最多一个薄、尽可能无状态的 Cloudflare 适配 Worker**。Cloudflare Portal 只用于既有连接的过渡/回退，而不是 Clerk 的认证下游。无 VPS/Docker/常驻自托管 OAuth 服务器。
+- Q4：**先核实是否只改现有 Cloudflare MCP Portal 即可满足 Q1**，成功则不引入 Clerk/新 Worker。若 Cloudflare Managed OAuth 存在不可消除的固定 Grant 到期，才采用候选新链路：ChatGPT 独立插件 ↔ Clerk OAuth、ChatGPT 直接调用各自 MCP Resource/Worker（不经 Portal）。优先复用业务 Worker 的共享校验模块；仅无法直接改造的上游，条件性设计**最多一个薄、尽可能无状态的 Cloudflare 适配 Worker**。旧 Portal 保留过渡与回退。无 VPS/Docker/常驻自托管 OAuth 服务器。
 - 生产修改（含 Clerk Production 实例、DNS、Access Policy、Client、ChatGPT 插件连接、凭据、Worker 发布）必须另行精准授权。非生产代码与概念设计不得冒称生产 E2E。
 
 ## 二、证据与现状（Verified / Unknown / Not Met）
@@ -26,11 +26,18 @@
 
 ## 三、最小安全架构：先限制权限扩张，再谈免重连
 
-### A. 新链路：Clerk → 原生 MCP Worker（首选，不使用 Portal）
+### P0. 现有 Cloudflare MCP Portal 的最小变更可行性（第一优先）
+
+- **优先仅做只读事实验证。** 按官方 Managed OAuth 文档，ChatGPT 可使用 Refresh Token 静默刷新短效 Access Token；但 Grant/Refresh Token 到期时用户须重新认证。**仅验证短期刷新，不足以满足严格 Q1**。需要 Cloudflare 官方 API/正式支持确认是否存在安全的无计划性硬到期或合法滚动 Grant 续期；不能从推荐的 1–2 周推导真实上限，也不能从 24h Access 应用会话推断 Grant 配置。
+- **当前生产前置阻断。** 本账户 Access App GET 不回显 `oauth_configuration`，而官方配置接口为整对象 `PUT`；不能证明保留现有配置、读回旧 Grant、确定写入最小差异与恢复原值。**因此不允许对生产试写所谓 Grant-only 调整**。也不得临时重连插件来猜测 Grant 是否延长。
+- **可执行的最小验证顺序：** (1) 只读 Cloudflare 官方 Managed OAuth/API schema、限制与是否存在滚动 Grant 机制；(2) 只读确定本账户实际配置及可回滚原值的可支持途径，平台返回缺失时记录 Unknown；(3) 获取真实 ChatGPT 刷新事件非敏感证据（触及客户端重连或生产配置时另行授权）；(4) 只有能证明 Grant 具有可持续合法续期、所有原配置可独立回读和安全恢复时，才考虑单插件生产变更授权。
+- **停止条件：** Cloudflare 明确仅支持固定 Grant 且到期重新授权，则原生路线标 `Not Met（严格 Q1）`，不做生产长时长调参试验；如果官方机制仍 Unknown，保持 Portal 现状并继续非生产资料核查；若存在符合 Q1 的官方配置，优先只调整 Portal，不建 Clerk 或额外 Worker。
+
+### A. Clerk 备选新链路：Clerk → 原生 MCP Worker（仅在 P0 不满足时）
 
 ChatGPT 各独立插件直接访问自己的 MCP URL；Clerk 只承担 OAuth 授权、签发及刷新；业务 MCP Worker（资源服务器）在每次工具请求验证 Clerk Access Token 的真实身份、受众、Scope，再执行该 Worker 的原生工具。优先在**已有受控 MCP Worker 与共享鉴权代码**中最小接入，不让所有业务请求先绕行 Cloudflare Portal，也不把 Clerk 当成 HTTP 反向代理。现有 `packages/portal-auth` 当前仍只支持预置 `MCP_ACCESS_TOKEN`，所以直接接入需要单独设计鉴权入口变更，不能宣称修改 Clerk 就会自动生效。对无法改造源码的第三方上游（例如 Sentry），只有经过最小权限证明，才考虑一个针对具体后端固定路由的适配 Worker。
 
-### B. 旧链路：Cloudflare Portal 仅保留现状及回退
+### B. 旧链路：Cloudflare Portal 在 Clerk 备选启用时仅保留现状及回退
 
 现有 Portal、11 个 `on_behalf=false` 上游、Owner Email Access Allow、Browser 专属 QQ-only 例外、`WORKFLOWS` Service Auth、`MCP_ACCESS_TOKEN` 与原 Endpoint 均**保持不变**，仅服务原有连接、分批迁移与回退；不构成新 Clerk 认证链路中的节点。原生 Cloudflare Managed OAuth 的固定 Grant 到期问题不因增加 Clerk IdP 消失。
 
@@ -64,7 +71,8 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 
 | 门 | 必须得到的真实证据 | 未通过时 |
 | --- | --- | --- |
-| T0：官方/配置 | Hobby $0 免卡、Production 注册要求、CIMD/PKCE/offline_access、1 天 Access Token 与无固定 RT 到期；当前 Portal 11 上游及 Access Policy | 已完成官方层及 Portal 配置只读层；账号级限制、Token 实例行为保持 Unknown |
+| P0：Portal 优先门 | 官方是否支持合法滚动/无固定硬到期 Grant；实际 Grant 的可靠回读、整对象 PUT 的安全恢复能力；ChatGPT 真实刷新回执是否可核实 | **当前协议资料倾向 Not Met（严格 Q1）**；实际 Grant 和安全修改仍 Unknown/Blocked。绝不以调长固定到期冒充完成 | 
+| T0：Clerk 备选事实门 | Hobby $0 免卡、Production 注册要求、CIMD/PKCE/offline_access、1 天 Access Token 与无固定 RT 到期；当前 Portal 11 上游及 Access Policy | 仅当 P0 不满足时再推进 Clerk；账号级限制、Token 实例行为保持 Unknown |
 | T1：非生产协议/Worker | 不使用真实生产 Token/数据，使用模拟 Clerk 风格 JWT/响应验证 issuer/exp/aud/scope/Owner、跨插件阻断、发现路由、Token/管理 Header 不泄漏、Workers Runtime 兼容与 fail-closed | **Unknown / 待 PoC**；本轮没有写代码、创建 Worker 或运行真实授权 |
 | T2：权限等价性 | 不走 Portal 管理身份聚合捷径；每条后端路由、Service Auth、上游 MCP Token 独立约束且跨服务调用不可达；Opaque/在线撤销机制与计费可行 | **Blocked**，保持现有生产。不得为完成验证而允许聚合管理员权限 |
 | T3：另行授权的一个真实 Sentry 插件 | 在当前 Endpoint 与可回退身份核对后，真实 ChatGPT 首次登录、`offline_access`、成功签发 RT 的**非敏感证据**、Access Token 到期后**真实刷新事件**、7 天浏览器 Session 到期仍可静默刷新；错误 Owner/aud/scope/工具拒绝、撤销后拒绝及残余窗口 | **Unknown**；单次工具成功或“等了 24h 仍能调”不等于刷新日志验收 |
@@ -88,6 +96,6 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **Unknown：** Clerk Hobby 实际生产 Instance 是否无额外付费限制、是否接受 ChatGPT 所用 Client Metadata、真实 RT 是否签发/自动续期、浏览器 Session 过期后的续期、Opaque 在线校验套餐/速率、固定业务路由能否做到与既有 Access 等价。
 - **Blocked：** 以 Portal 管理员机器身份聚合代理作为捷径，以及任何未获得具体生产授权的实际迁移、真实 OAuth 应用创建或 ChatGPT 重连。
 - **Not Met：** Cloudflare Managed OAuth 固定 Grant 到期路径**尚不能证明**严格 Q1；Clerk 离线验证 1 天 JWT **不满足即时撤销**。
-- **下一工程动作：** 非生产分别验证原生受控 MCP Worker 的 Clerk OAuth 资源服务器接入、现有静态入口并存时的 fail-closed 边界、外部 Sentry 所需单后端适配是否安全可行；只有协议、权限、$0、撤销机制门禁全部通过后，才能提出**单个 Sentry 插件**的具体生产授权请求。其他插件暂不动。**无新增必要的用户设计决策。**
+- **下一工程动作：** **先完成 Portal 的官方无固定 Grant 期限/合法滚动续 Grant 与安全回读能力裁定；不能证明达标不试写生产。** 仅当 P0 不满足时，再推进非生产 Clerk 资源服务器/最小权限适配验证；协议、权限、$0 与撤销机制通过后，才能提出**单个 Sentry 插件**的具体生产授权请求。其它插件暂不动。**无新增必要的用户设计决策。**
 
 所有交付维度分别标记：**Docs=本文修订；Code=未改；CI=未执行；Clerk Production=未创建/未验收；ChatGPT Refresh=Unknown；Cloudflare Production=未改；Sentry 新 E2E=未执行。**
