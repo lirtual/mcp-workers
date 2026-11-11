@@ -1,6 +1,6 @@
 # MCP Portal 长期免重连设计（Grill With Docs）
 
-状态：历史 Q1–Q4 已确认；2026-11-11 新一轮 Q1=A（90 天）、Q2=A（免费免绑卡）、Q3=A（分批迁移）、Q4=A（条件性研究一个无状态 Workers 接入层）均已确认；本文件为设计阶段，技术可行性与客户端 E2E 待验证；T0 现场证据见 [只读预检](./mcp-portal-auth-t0-20261111.md)；不构成生产变更或发布授权。日期：2026-11-11。
+状态：历史 Q1–Q4 已确认；2026-11-11 Q1 已进一步修订为首次授权后尽可能无计划性人工重连；Q2=A（免费免绑卡）、Q3=A（分批迁移）、Q4=A（条件性研究一个无状态 Workers 接入层）保持；本文件为设计阶段，技术可行性与客户端 E2E 待验证；T0 现场证据见 [只读预检](./mcp-portal-auth-t0-20261111.md)；不构成生产变更或发布授权。日期：2026-11-11。
 
 ## 目标与已决策项
 
@@ -140,3 +140,35 @@ Q4 已选择 A，另一选项留作历史候选。Free 实际限制、90 天期�
 ### 变更边界
 
 本轮只允许 Docs 分支，不能修改 main、发布生产、变更 Cloudflare/Access/Portal、Secrets、Auth0/WorkOS 生产设置或 ChatGPT 插件。实施前需单独授权 Sentry 代表性 PoC 的目标 Endpoint、范围、风险和回退。
+
+
+## 2026-11-11 最新目标修订：首次授权后尽可能不再计划性重连
+
+此节是当前目标定义，覆盖此前 Q1 的 90 天阈值：用户要求 **11 个独立 ChatGPT MCP 插件分别完成首次 OAuth 授权后，在正常使用中持续自动续期，不按 30/90/365 天固定周期逐个手动认证**。安全撤销、权限变化、泄露处置、客户端丢失轮换令牌、服务商安全事件仍允许要求重新授权。独立插件的首次授权可能仍需分别完成；不能承诺单次点击可给 11 个不同 OAuth 客户端全部授权。
+
+### 供应商重新排序（官方公开事实，尚无当前项目 E2E）
+
+| 方案 | OAuth 期限机制 | 免费与免卡 | 结论 |
+| --- | --- | --- | --- |
+| Clerk OAuth | 官方明确称 Refresh Token 不自动过期；Access Token 1 天，支持 offline_access、CIMD、PKCE、MCP；浏览器用户 Session 是另外的机制 | Hobby 计划 $0、无需信用卡；每应用 50,000 月留存用户（MRU）；Hobby 登录 Session 固定 7 天 | **优先只读设计/非生产 PoC**，必须实际验证 7 天浏览器 Session 到期不会使 ChatGPT OAuth Refresh Token 失效 |
+| WorkOS Connect | 官方称 Refresh Token 暂无自动最长期限或闲置过期 | 正式 Production 要求加入付款方式，不符合现有 Q2=A | 排除当前生产方案 |
+| Auth0 Strict Third-Party | 官方要求 Refresh Token 有限绝对和闲置有效期；轮换不延长初始绝对截止 | Free 免卡 | 不再用“90 天达标”冒充新目标；降为有计划周期重认证备选 |
+| Cloudflare Managed OAuth | Grant 到期需重新授权，实际配置安全回读/更新曾阻断 | 使用既有基础设施 | 保留生产当前可用基线，不以延长 90 天 Grant 当作最终解决方案 |
+
+官方参考：
+- Clerk OAuth/Refresh 生命周期：https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth
+- Clerk Hobby 价格与 7 天 Session：https://clerk.com/pricing
+- Clerk MCP JWT/Metadata 接入：https://clerk.com/docs/guides/ai/mcp/build-mcp-server
+- WorkOS Connect Refresh：https://workos.com/docs/reference/workos-connect/token
+- Auth0 Third-Party 安全要求：https://auth0.com/docs/get-started/applications/third-party-applications/security-controls
+- OpenAI ChatGPT OAuth Refresh 要求：https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt
+
+### 需要的真实验收（不能用文档承诺代替）
+
+1. Clerk Hobby 正式生产 OAuth 与 CIMD 是否在该计划可用且完全无需绑定付款方式；OAuth discovery 必须实际声明 offline_access 或等价能力。
+2. ChatGPT Sentry 代表插件能否获取 Refresh Token，并在一天 Access Token 到期后无用户参与自动刷新；Clerk 浏览器会话到期时是否仍能刷新。此前对 Cloudflare Portal 的一次工具调用成功不代表通过刷新。
+3. 现有 Cloudflare MCP Portal 不直接信任 Clerk Token；Q4=A 仅授权设计最多一个薄边缘验证/路由层，不允许降低 Access Policy 或绕过 Owner、Audience、Scope、每插件工具隔离，更不能把 Portal 管理员 Service Token 或 MCP_ACCESS_TOKEN 暴露给客户端。
+4. 先核实 Workers runtime 与 OAuth metadata/JWT 的端到端可行性；只对 Sentry 做非破坏性代表验证，然后分批迁移，保留回退。未取得新的生产授权前不修改 Portal/Access/ChatGPT 插件/Secrets。
+5. 不能保证任何系统“永远不重登”：需要区分有无产品设定硬过期与真实客户端长期连通性。符合公开机制只是候选，不得标记为当前项目已 Pass。
+
+Q1 目标已修订，Q2/Q3/Q4 不变。当前无需新的用户设计决策，也不新增 ADR；只更新文档，不实施。
