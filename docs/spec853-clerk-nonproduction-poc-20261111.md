@@ -6,7 +6,7 @@
 
 - 非生产工作分支：`docs/spec853-clerk-nonprod-validation-20261111`，来源为最新设计分支；主仓库及各生产 Worker 的运行代码**未修改**。
 - 合同探针：`scripts/spec853-clerk-poc/probe.mjs`。纯 Web API 实现、**仅供测试，禁止复用为生产鉴权**。所有 Issuer/Resource 使用 `.invalid`，所有 RSA 密钥只在测试进程内随机创建，没有 Clerk 密钥、用户数据、上游凭据、Service Token 或网络访问。
-- 单元合同：`node --test scripts/spec853-clerk-poc/probe.test.mjs`（Node.js 22.21.0，本次 22/22 Pass）。
+- 单元合同：`node --test scripts/spec853-clerk-poc/probe.test.mjs`（Node.js 22.21.0，本次 25/25 Pass）。
 - **真实 Cloudflare workerd 本地隔离运行时**：Miniflare `5.20261012.0-beta` / workerd `1.20261012.1`，Node.js `v24.22.2`，compatibilityDate `2026-10-19`（该 workerd 二进制支持的最新日期），`workerd.test.mjs` 1/1 Pass，包含十余次本地请求断言。不启动公开监听、不部署，不调用 Clerk API。
 - 本次仅有模拟的 `tools/call` JSON-RPC；**没有完整 MCP initialize/tools/list 协商，也没有对真实上游的调用**。真实 Clerk 令牌格式、Client ID、Audience/Scope 和 SDK 需要独立实例验收，不以模拟数据冒充实际契约。
 
@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | RFC 9728 风格的每插件 PRM / 401 Challenge | **模拟 Pass** | 独立 Sentry、Workflow HTTPS Resource，正确发布 `authorization_servers`、精确资源和 Scope |
 | RS256 签名验证 | **模拟 Pass** | 仅信任预设 JWKS/kid/alg；伪造签名、`alg=none`、未知 kid 和错误 Issuer 拒绝 |
-| Owner / Audience / Scope | **模拟 Pass** | Owner 只接受受控 `sub`；错误受众、跨插件 Token、缺失 Scope、有效签名但工具未授权均拒绝 |
+| Owner / Audience / Scope | **模拟 Pass** | Owner 只接受受控 `sub`；错误受众、含多个资源的 Audience、跨插件 Token、缺失 Scope、有效签名但工具未授权均拒绝 |
 | 过期和时钟 | **模拟 Pass** | `exp`、`nbf`、`iat` 异常拒绝 |
 | Legacy Bearer/管理员权限 | **模拟 Pass** | 旧 `MCP_ACCESS_TOKEN` 不是 Clerk OAuth Token，不能冒充；业务假工具只接收已核验 principal、resourceId 和工具名，原始 Bearer 不向下传 |
 | Opaque Token 安全行为 | **模拟 Pass** | 模拟 provider 拒绝/撤销、网络中断均 fail-closed；不证明 Clerk Hobby 真实 Opaque 接口、额度、即时撤销回执或真实令牌生命周期 |
@@ -44,12 +44,12 @@ SPEC853_MINIFLARE_ENTRY=file:///absolute/path/to/miniflare/dist/src/index.js \
 
 ## 设计结论与阻断
 
-**优先复用现有自有 MCP Worker + 一个共享 OAuth 验证模块，不增加每插件 OAuth 服务；旧 Portal 暂不变。** 该共享模块必须在入口把 Clerk OAuth Token 与旧管理员 `MCP_ACCESS_TOKEN` 的信任路径清晰隔离，不能因验证通过就跨插件调用 Portal 11 个 `on_behalf=false` 上游。原有 Access Owner Policy 与 Service Auth 不能静默弱化。无法修改的第三方 Sentry **不具备本次验证过的受限后端接线**：必须单独证明使用固定独立后端、限权上游凭据且不汇聚 Portal 管理权限，才允许一个轻适配 Worker。
+**优先复用现有自有 MCP Worker + 一个共享 OAuth 验证模块，不增加每插件 OAuth 服务；旧 Portal 暂不变。** 该共享模块正式实现时必须使用 Clerk SDK `authenticateRequest({ acceptsToken: "oauth_token", audience: MCP_RESOURCE_URL })`，拒绝会话/M2M/API Key token 类型，且在入口把 Clerk OAuth Token 与旧管理员 `MCP_ACCESS_TOKEN` 的信任路径清晰隔离，不能因验证通过就跨插件调用 Portal 11 个 `on_behalf=false` 上游。原有 Access Owner Policy 与 Service Auth 不能静默弱化。无法修改的第三方 Sentry **不具备本次验证过的受限后端接线**：必须单独证明使用固定独立后端、限权上游凭据且不汇聚 Portal 管理权限，才允许一个轻适配 Worker。
 
 | 验收层 | 状态 |
 | --- | --- |
 | 设计、现状只读、官方协议核实 | **Verified**（仅对应已引用契约） |
-| 非生产 JWT / Opaque / Scope / Owner 等合成合同 | **Pass（模拟）**：22 项 |
+| 非生产 JWT / Opaque / Scope / Owner 等合成合同 | **Pass（模拟）**：25 项 |
 | Cloudflare workerd 本地运行时合同 | **Pass（本地）**：1 个集成测试，十余断言 |
 | 真实 Clerk Hobby Production OAuth / 费用 / Opaque 配置 | **Unknown / 未执行** |
 | 真实 Clerk OAuth RT 签发、浏览器 Session 7 天后静默刷新 | **Unknown / 未执行** |

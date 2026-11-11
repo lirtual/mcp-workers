@@ -32,7 +32,7 @@ export async function verifySyntheticJwt(token, { jwks, issuer, now = Date.now()
   if (claims.iss !== issuer || typeof claims.sub !== "string" || !claims.sub || !Number.isFinite(claims.exp) || now >= claims.exp || !Number.isFinite(claims.iat) || claims.iat > now + 60 || (claims.nbf !== undefined && (!Number.isFinite(claims.nbf) || now < claims.nbf))) {
     throw Error("invalid-claims");
   }
-  return claims;
+  return { ...claims, active: true };
 }
 
 const noStore = { "cache-control": "no-store", "content-type": "application/json" };
@@ -49,7 +49,7 @@ function isScopeAllowed(scope, required) {
 }
 
 function hasAudience(aud, expected) {
-  return typeof aud === "string" ? aud === expected : Array.isArray(aud) && aud.includes(expected);
+  return typeof aud === "string" ? aud === expected : Array.isArray(aud) && aud.length === 1 && aud[0] === expected;
 }
 
 export function createSyntheticMcpProbe({ resources, issuer, verify, dispatch }) {
@@ -77,7 +77,7 @@ export function createSyntheticMcpProbe({ resources, issuer, verify, dispatch })
         // Also fail closed for provider timeouts and unexpected verification errors.
         return fail(401, "unauthorized", challenge);
       }
-      if (!verified || verified.sub !== resource.ownerSub || !hasAudience(verified.aud, resource.url) || !isScopeAllowed(verified.scope, resource.scope)) {
+      if (!verified || verified.active !== true || verified.sub !== resource.ownerSub || !hasAudience(verified.aud, resource.url) || !isScopeAllowed(verified.scope, resource.scope)) {
         return fail(403, "forbidden", { ...challenge, "www-authenticate": challenge["www-authenticate"] + ', error="insufficient_scope"' });
       }
       let msg;

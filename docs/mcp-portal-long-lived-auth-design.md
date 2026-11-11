@@ -74,7 +74,7 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 | --- | --- | --- |
 | P0：Portal 优先门 | 官方 Managed OAuth Grant 固定到期、现有可读配置、可安全恢复配置能力及 ChatGPT RT 实际刷新 | **Verified：官方承诺短效 Token 静默刷新、Grant 到期重新认证**；**Not Met（严格 Q1）**；实际 Grant TTL 与 ChatGPT 实际刷新仍 Unknown；因缺 `oauth_configuration`，生产配置最小安全试改 Blocked |
 | T0：Clerk 备选事实门 | Hobby $0 免卡、Production 注册要求、CIMD/PKCE/offline_access、1 天 Access Token 与无固定 RT 到期；当前 Portal 11 上游及 Access Policy | 仅当 P0 不满足时再推进 Clerk；账号级限制、Token 实例行为保持 Unknown |
-| T1：非生产协议/Worker | 不使用真实生产 Token/数据，使用模拟 Clerk 风格 JWT/响应验证 issuer/exp/aud/scope/Owner、跨插件阻断、发现路由、Token/管理 Header 不泄漏、Workers Runtime 兼容与 fail-closed | **Pass（本地模拟 22 tests + 实际 workerd 隔离运行时 1 integration test）**；证据见 [Clerk T1 PoC](./spec853-clerk-nonproduction-poc-20261111.md)；真实 Clerk SDK/Production/ChatGPT 仍 Unknown |
+| T1：非生产协议/Worker | 不使用真实生产 Token/数据，使用模拟 Clerk 风格 JWT/响应验证 issuer/exp/aud/scope/Owner、跨插件阻断、发现路由、Token/管理 Header 不泄漏、Workers Runtime 兼容与 fail-closed | **Pass（本地模拟 25 tests + 实际 workerd 隔离运行时 1 integration test）**；证据见 [Clerk T1 PoC](./spec853-clerk-nonproduction-poc-20261111.md)；真实 Clerk SDK/Production/ChatGPT 仍 Unknown |
 | T2：权限等价性 | 不走 Portal 管理身份聚合捷径；每条后端路由、Service Auth、上游 MCP Token 独立约束且跨服务调用不可达；Opaque/在线撤销机制与计费可行 | **Blocked**，保持现有生产。不得为完成验证而允许聚合管理员权限 |
 | T3：另行授权的一个真实 Sentry 插件 | 在当前 Endpoint 与可回退身份核对后，真实 ChatGPT 首次登录、`offline_access`、成功签发 RT 的**非敏感证据**、Access Token 到期后**真实刷新事件**、7 天浏览器 Session 到期仍可静默刷新；错误 Owner/aud/scope/工具拒绝、撤销后拒绝及残余窗口 | **Unknown**；单次工具成功或“等了 24h 仍能调”不等于刷新日志验收 |
 | T4：长期目标 | 官方没有计划性 RT 硬到期 + 真实 ChatGPT 续期证据，未隐含付费升级/客户端注册门槛 | 达不到标 `Not Met`，不能用 90 天代替 |
@@ -88,7 +88,7 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **主要安全风险 2：** 长效 RT 被盗的风险更大；不使用无限期静态 Bearer 替代人类身份，Clerk 负责撤销，Cloudflare Worker 不保存 RT；按 per-resource 最小授权限制影响面。
 - **主要安全风险 3：** JWT 默认存续 1 天导致撤销残余窗口；优先核实 Opaque 在线校验在 Hobby 与 Workers 的能力/成本，**不允许把失败路径放行**。
 - **主要安全风险 4：** ChatGPT 可能不发送 Scope；必须核实 `offline_access` 的最小默认授权、独立工具 Scope 的实际强制检查，并避免通过默认 Scope 一次授予所有服务。
-- **复杂度结论：** 不宜构建自有 OAuth 服务器、数据库或刷新服务；**Clerk + 现有 MCP Worker 共享校验模块**优先（正式接入优先采用 Clerk 官方 `@clerk/backend` SDK，不使用模拟 PoC 手写验签代码），可能无须新增 Worker。只有第三方 MCP 无法直接集成时才考虑最多一个薄适配 Worker；如果隔离需要高权限跨服务秘钥或多个代理，应停止并重新审查价值，不可仅为 Q1 堆架构。
+- **复杂度结论：** 不宜构建自有 OAuth 服务器、数据库或刷新服务；**Clerk + 现有 MCP Worker 共享校验模块**优先（正式接入优先采用 Clerk 官方 `@clerk/backend` SDK，严格 `acceptsToken: "oauth_token"` 与 `audience`，不使用模拟 PoC 手写验签代码），可能无须新增 Worker。只有第三方 MCP 无法直接集成时才考虑最多一个薄适配 Worker；如果隔离需要高权限跨服务秘钥或多个代理，应停止并重新审查价值，不可仅为 Q1 堆架构。
 - **运营限制：** Hobby 不含 MFA，必须核对既有 Cloudflare Access 身份保障是否等价；Hobby 的 7 天浏览器 Session、1 天日志保留、50k MRU、DNS/回调、在线校验配额和厂商变更风险都要在实际账户下确认。单个用户 MRU 低不代表任何 API 调用永久免费无限次。
 
 ## 六、当前裁定及下一步（不涉及用户新决策）
@@ -97,6 +97,6 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **Unknown：** Clerk Hobby 实际生产 Instance 是否无额外付费限制、是否接受 ChatGPT 所用 Client Metadata、真实 RT 是否签发/自动续期、浏览器 Session 过期后的续期、Opaque 在线校验套餐/速率、固定业务路由能否做到与既有 Access 等价。
 - **Blocked：** 以 Portal 管理员机器身份聚合代理作为捷径，以及任何未获得具体生产授权的实际迁移、真实 OAuth 应用创建或 ChatGPT 重连。
 - **Not Met：** 按 Cloudflare 托管 Managed OAuth 当前官方 Grant 到期契约，**纯 Portal 配置调整无法证明并实现严格 Q1**（无计划性人工重连）；Clerk 离线验证 1 天 JWT **不满足即时撤销**。
-- **下一工程动作：** P0 已完成：纯托管 Portal 的固定 Grant 机制不能达到严格 Q1、配置试写 Blocked。Clerk 的 **T1 模拟安全验证 22 项 + 真实本地 workerd 合同 1 项已 Pass**（[独立证据](./spec853-clerk-nonproduction-poc-20261111.md)），但**真实 Clerk SDK/Hobby Production/无计划性静默刷新与 Sentry 受限适配仍未验收**。后续先验证账户级 $0/官方 Token 格式、受限后端和撤销能力，才可另行申请仅 Sentry 的真实生产 E2E 授权。其它插件不动。**无新增必要的用户设计决策。**
+- **下一工程动作：** P0 已完成：纯托管 Portal 的固定 Grant 机制不能达到严格 Q1、配置试写 Blocked。Clerk 的 **T1 模拟安全验证 25 项 + 真实本地 workerd 合同 1 项已 Pass**（[独立证据](./spec853-clerk-nonproduction-poc-20261111.md)），但**真实 Clerk SDK/Hobby Production/无计划性静默刷新与 Sentry 受限适配仍未验收**。后续先验证账户级 $0/官方 Token 格式、受限后端和撤销能力，才可另行申请仅 Sentry 的真实生产 E2E 授权。其它插件不动。**无新增必要的用户设计决策。**
 
 所有交付维度分别标记：**Docs=本文修订；Code=未改；CI=未执行；Clerk Production=未创建/未验收；ChatGPT Refresh=Unknown；Cloudflare Production=未改；Sentry 新 E2E=未执行。**

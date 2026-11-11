@@ -82,6 +82,15 @@ test("audience missing or different form rejects", async () => {
   await deny(p, request(a.url, token({ aud: undefined })), 403);
   await deny(p, request(a.url, token({ aud: "https://sentry.example.invalid" })), 403);
 });
+test("multi-resource audience is denied rather than expanding a plugin grant", async () => {
+  const p = probe();
+  await deny(p, request(a.url, token({ aud: [a.url, b.url], scope: "sentry:read workflow:read" })), 403);
+});
+test("single-element audience array is accepted for its own exact resource", async () => {
+  const p = probe();
+  const res = await p.fetch(request(a.url, token({ aud: [a.url] })));
+  assert.equal(res.status, 200);
+});
 test("unapproved Clerk user sub is rejected independently of email", async () => {
   const p = probe();
   await deny(p, request(a.url, token({ sub: "attacker", email: "owner@example.invalid" })), 403);
@@ -129,12 +138,16 @@ test("valid identity but tool not on service's allowlist denies", async () => {
   await deny(p, request(a.url, token(), "workflow_get"), 403);
 });
 test("opaque online validator can authorize but must never bypass resource binding", async () => {
-  const p = probe(async () => ({ ...claims, aud: b.url }));
+  const p = probe(async () => ({ ...claims, aud: b.url, active: true }));
   await deny(p, request(a.url, "synthetic-opaque"), 403);
 });
 test("opaque token provider revocation must deny immediately", async () => {
-  const p = probe(async () => ({ active: false }));
+  const p = probe(async () => ({ ...claims, active: false }));
   await deny(p, request(a.url, "synthetic-revoked"), 403);
+});
+test("opaque verification missing active assertion denies even with valid identity", async () => {
+  const p = probe(async () => ({ ...claims }));
+  await deny(p, request(a.url, "synthetic-missing-active"), 403);
 });
 test("provider network outage or 5xx rejects closed, no fallback", async () => {
   const p = probe(async () => { throw Error("simulated-provider-503"); });
