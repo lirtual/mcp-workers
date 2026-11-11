@@ -85,3 +85,16 @@ node --test scripts/spec853-clerk-poc/probe.test.mjs scripts/spec853-clerk-poc/w
 **待办的真实证据（全部未执行）：** Clerk 开发实例与 OAuth Resource 注册/Discovery、ChatGPT CIMD 首次授权、真实 `offline_access` RT 签发与多次交换、RT 撤销和 Opaque Token 的真实在线验证、浏览器 Session 7 天到期后自动续期、Hobby 免费/配额及现有 Access Owner 强度等价审查。没有已连接的 Clerk 账户授权、`CLERK_*` 运行时变量或浏览器 Clerk 会话。官方 [Clerk MCP 管理服务](https://clerk.com/docs/guides/ai/mcp/clerk-mcp-server) 可通过 OAuth 登录授权后仅查看开发实例，但**本轮没有连接、注册、修改任何 Clerk Application**。
 
 **交付状态：** Source/Tests/Docs 非生产分支更新；production Code / Config / Secrets / DNS / Clerk Instance / ChatGPT 插件均未变。真实 OAuth E2E = Unknown / Blocked by account connection；CI 另行读取。禁止将 SDK 离线成功冒充 Clerk 真实 Refresh 验收。
+
+
+## T2：真实 Clerk 工作区连接及隔离开发应用只读/预检（2026-11-11）
+
+- **连接已经验证：** Clerk 官方 MCP `whoami` 可读取当前已授权工作区，OAuth Client 使用 ChatGPT CIMD，范围包含应用读取/管理和 `offline_access`。这只证明**ChatGPT 与 Clerk 官方管理 MCP 的 OAuth 连接成功**，**不证明** ChatGPT 已能使用 Spec #853 自建资源服务器的 Refresh Token。
+- **现有应用隔离：** 在已授权非生产范围内创建独立应用 `mcp-workers-spec853-oauth-lab`，应用 ID `app_3Lx1IDoBxGgYY0veK8Qskm58E7c`、开发实例 ID `ins_3Lx1I9V00eUZEIvYFV9TI7PHL0O`，仅 Development，`pk_test_`；保留现有 `LobeChat` 开发实例原样。没有创建 Production 实例或收费订阅。
+- **真实开发实例默认配置（read-only）：** `session_settings.maximum_lifetime` 为 604800 秒（7 天）；`pkce_required=true`，`aud_claim_enabled=false`，`client_id_metadata_documents_advertised=false`，`dynamic_oauth_client_registration=false`，`oauth_jwt_access_tokens=false`。因此初始实例 **不能直接用作 MCP OAuth 资源签发**；还需要真实 Resource URL 注册和独立验证令牌格式/在线验证。不要将前述合成 JWT 的成功误写为此实例真实 Access Token 已验证。
+- **不写入的模拟预览：** 对 `https://spec853-oauth-lab.example.invalid/mcp` 调用官方 `configure_mcp_server(dry_run=true)` 返回 `preview`，提示注册真实 MCP Resource 时将启用 `aud_claim_enabled` 和 `client_id_metadata_documents_advertised`，保留 PKCE；没有其他配置 blocker。但该 URL 以 `.invalid` 结尾，**不是可连接服务、不得正式注册**。返回的开发 Issuer 为 `https://warm-tadpole-1093.clerk.accounts.dev`，资源 Audience 为 URL 全路径。
+- **防止过度授权：** 预览中 `client_id_metadata_documents_only_allow_pre_registered_clients=false` 且 `client_id_metadata_documents_block_implicitly_allowed_clients=false`，**不能默认声称只允许 ChatGPT CIMD**。需要真实实例预检 Client admission 行为，最小范围约束以实际签发与工具端强制校验共同证明。
+- **回读确认：** `check_mcp_server` 仍返回 `not_configured`、`mcp_servers=[]`、`aud_claim_enabled=false`、`client_id_metadata_documents_advertised=false`；两个应用都只有 Development 环境。故本次没有正式注册虚构资源、没有改动现有应用或业务 Endpoint。
+- **下一阶段真实 OAuth 阻断：** 尚缺可供 ChatGPT 与 Clerk Discovery 访问的独立 **HTTPS 非生产 MCP Resource**。若发布此资源需要创建 Cloudflare Worker/公开路由、DNS、Secret、绑定、访问策略或实际成本，应先按具体对象获得授权；本轮不通过覆盖 `mcp.lirtual.dpdns.org` 或接入 Portal 11 个高权限上游来代替。拿到真实资源后才可在此隔离 Clerk 开发实例注册 MCP Resource、验证 CIMD/PKCE 和 Scope、获取真实 RT 并测试刷新/撤销。浏览器 Session 7 天后行为仍未验收。
+
+**T2 验收结论：** Clerk 管理 MCP 连接 **Pass**；独立开发应用创建 **Pass**；现有 LobeChat 隔离 **Pass（只读回读）**；Resource 注册 **Not performed（dry run only）**；真实 JWT/Opaque Token/Refresh/ChatGPT 自定义 MCP E2E **Unknown**；生产资源和正式插件 **未修改**。
