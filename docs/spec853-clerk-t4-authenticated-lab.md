@@ -25,3 +25,15 @@
 - **下一真实交互门：** 用户在 ChatGPT 连接此独立实验 URL，完成 OAuth 授权；测试仅 `lab_status`，随后再确认真实 token 的用户/Scope/撤销、自动 Refresh、7 天 Session、长期自动连接。不可把 Clerk 管理 MCP 的已连接状态冒充本自建 Resource E2E。
 
 最后所有测试通过也不授权把该 SDK 实验直接接入现有 Portal。
+
+
+## T4 公网实施结果（2026-11-11）
+
+- 固定源码 Commit `52a4bc9505e565ec3e51789504dddd40336dd753`，本地 isolating SDK bundle `148350` bytes，SHA-256 `0d2e8a75a100485570e121638e189705e7b5a83e1d1ae01a980db5d12743935c`。40/40 本地测试 Pass（包括官方 SDK、模拟验证逻辑、实际本地 workerd）；该版本 GitHub Required / Application / GitGuardian 门禁 Pass，跳过无关 DB / 五平台候选。
+- Wrangler `--strict` 第一次明确**安全终止**：默认 `preview_urls=true` 与测试 Worker 的远端 `preview_urls=false` 冲突，**没有上传**。保留 strict 并为隔离测试 Worker 的本地缓存专属 `wrangler.toml` 显式设置 `preview_urls=false`、`workers_dev=true`、`keep_vars=true`，然后通过同一门禁发布。没有修改全局 Cloudflare 或生产业务发布流水线。
+- **唯一更新范围：** 同一个测试 Worker `spec853-clerk-oauth-lab`，最终 Cloudflare Version `c7f2d3dc-fd9a-458a-9d3a-656ed06c94f3` 已在最新 Deployment `1cfdf6e3-f6a6-4661-bdfe-76861cc79cfc` 中承接 **100%** 测试流量。
+- **Secret 续存真实回读 Pass：** `settings.bindings` 恰好一个 `{name:"CLERK_SECRET_KEY",type:"secret_text"}`，没有其他绑定。秘密由用户手动配置，助手没有获取原值；`compatibility_date=2026-10-19`，`workers.dev enabled=true`，`preview_urls=false`。
+- **公网负面 E2E Pass：** GET `/.well-known/oauth-protected-resource/mcp` 返回所登记资源、Issuer 和 `scopes_supported=["profile"]`，HTTP 200；无 Bearer / 伪造 Bearer POST `/mcp` HTTP 401 且包含 OAuth Challenge；未知 `/health` HTTP 404，均从真实 HTTPS 验收，不是本地模拟。未用真实合法令牌成功调用。
+- **Clerk 开发实例正式静态检查：** 对已经注册的实际 MCP Resource 发起 `force_recheck=true` 后读到最终 `state=passed`，包括端点 Challenge、资源描述、Scope、Issuer Discovery、HTTPS、S256 PKCE 公告、CIMD、Audience **全部静态检测 Pass**。DCR 可选且关闭；`runtime-token` / `runtime-flow` 仍为 `Not Checked`，官方 `end_to_end_verified=false`。
+- **尚未验收：** ChatGPT 自定义 MCP 真实首次授权、OAuth token 格式/验证成功、Owner ID 限制、已授予 Scope、Refresh/撤销行为和 7 天会话后免重连。**本测试 Worker 的成功工具调用目前未证明**；不要把本次“接入 Secret + 假令牌拒绝”误写为全部 OAuth 验收成功。
+- **下一操作只需要用户的 ChatGPT 交互：** 在 ChatGPT 的 MCP/自定义连接器管理界面添加 `https://spec853-clerk-oauth-lab.aiyaya.workers.dev/mcp` 并按 Clerk OAuth 登录/同意；完成后再观察 SDK 真令牌的 `lab_status` 和刷新状态。不得将该测试资源接到真实业务工具。
