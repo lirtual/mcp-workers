@@ -98,3 +98,8 @@ node --test scripts/spec853-clerk-poc/probe.test.mjs scripts/spec853-clerk-poc/w
 - **下一阶段真实 OAuth 阻断：** 尚缺可供 ChatGPT 与 Clerk Discovery 访问的独立 **HTTPS 非生产 MCP Resource**。若发布此资源需要创建 Cloudflare Worker/公开路由、DNS、Secret、绑定、访问策略或实际成本，应先按具体对象获得授权；本轮不通过覆盖 `mcp.lirtual.dpdns.org` 或接入 Portal 11 个高权限上游来代替。拿到真实资源后才可在此隔离 Clerk 开发实例注册 MCP Resource、验证 CIMD/PKCE 和 Scope、获取真实 RT 并测试刷新/撤销。浏览器 Session 7 天后行为仍未验收。
 
 **T2 验收结论：** Clerk 管理 MCP 连接 **Pass**；独立开发应用创建 **Pass**；现有 LobeChat 隔离 **Pass（只读回读）**；Resource 注册 **Not performed（dry run only）**；真实 JWT/Opaque Token/Refresh/ChatGPT 自定义 MCP E2E **Unknown**；生产资源和正式插件 **未修改**。
+
+
+## T3：公网 OAuth 发现及 Clerk 开发 Resource 注册
+
+T3 已实现**隔离公网测试资源**：`https://spec853-clerk-oauth-lab.aiyaya.workers.dev/mcp`。Cloudflare Worker 公开发现协议 200、未认证与伪造 Token 的 401 均真实公网验证通过；Clerk 开发实例已注册该 URL、开启 CIMD 和 Audience，Checker 静态项目通过，Scope 提示为 **SHOULD Warning**，真实 Token/Refresh 项 **Not Checked**。完整版本 ID、部署 ID、源代码与运行回执参见 [T3 独立报告](./spec853-clerk-t3-discovery-worker.md)。**此 Worker 目前只做发现、始终拒绝认证，不提供真实工具；不要将 T3 当作 OAuth 登录或 Refresh E2E。**
