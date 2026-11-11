@@ -64,6 +64,7 @@ export async function recordedLitterboxStep(db:D1Database,runId:string,stepId:st
  */
 export async function startLitterboxUpload(env:Env,args:{
  workflow_id:string;file:ChatGptFile;time?:string;idempotency_key:string;
+ expected_published_version_id?:string;
 }):Promise<{run_id:string;status:'succeeded'|'failed'|'indeterminate';download_url?:string;error_code?:string}>{
  const time=args.time??'24h';
  if(!TTL.has(time)||typeof args.idempotency_key!=='string'||
@@ -77,6 +78,8 @@ export async function startLitterboxUpload(env:Env,args:{
    WHERE w.id=? AND w.deleted_at IS NULL`).bind(args.workflow_id)
   .first<{state:string;active_version_id:string;plan:string}>();
  if(!wf||wf.state!=='active')throw new StateError('workflow_not_active');
+ if(args.expected_published_version_id&&args.expected_published_version_id!==wf.active_version_id)
+   throw new StateError('published_version_changed');
  let plan:Plan;
  try{plan=JSON.parse(wf.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
  if(!isLitterboxPlan(plan))throw new StateError('litterbox_published_plan_required');
@@ -97,7 +100,7 @@ export async function startLitterboxUpload(env:Env,args:{
  // Allowlisted download, bounded byte count and SHA256, memory only.
  const selected=await readBoundedAttachment(args.file);
  const meta={file_name,size_bytes:selected.size_bytes,sha256:selected.sha256,time};
- const run=await new WorkflowService(env).start(args.workflow_id,meta,args.idempotency_key,undefined,true);
+ const run=await new WorkflowService(env).start(args.workflow_id,meta,args.idempotency_key,undefined,true,args.expected_published_version_id);
  if(run.start_state!=='started')
   return {run_id:run.run_id,status:'indeterminate',error_code:'litterbox_run_start_unconfirmed'};
  const invocation_id=crypto.randomUUID(),input_digest=await hash(meta);

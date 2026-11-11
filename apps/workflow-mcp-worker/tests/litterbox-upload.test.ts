@@ -131,6 +131,24 @@ test('one real native Run and D1 fence, one private RPC, no signed URL or bytes 
  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,1);
 });
 
+test('stale explicit Published Version cannot read or disclose a selected file',async t=>{
+ const f=fixture(t);await f.publish();
+ await assert.rejects(()=>startLitterboxUpload(f.env,{
+  workflow_id:WF,file,idempotency_key:'stale-file-01',
+  expected_published_version_id:'99999999-9999-4999-8999-999999999999',
+ }),/published_version_changed/);
+ assert.equal(f.audit.reads,0);
+ assert.equal(f.audit.posts,0);
+ assert.equal(f.audit.nativeStarts,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,0);
+ const result=await startLitterboxUpload(f.env,{
+  workflow_id:WF,file,idempotency_key:'checked-file-01',
+  expected_published_version_id:VERSION,
+ });
+ assert.equal(result.status,'succeeded');
+ assert.equal(f.audit.posts,1);
+});
+
 test('unknown private RPC outcome stays fenced and never retries, even with same key',async t=>{
  const f=fixture(t,{response:'throw'});await f.publish();
  const r=await startLitterboxUpload(f.env,{workflow_id:WF,file,idempotency_key:'uncertain01'});
@@ -209,7 +227,8 @@ test('generic workflow_run carries optional fileParams and keeps ordinary calls 
  const listing=await client.listTools();
  assert(!listing.tools.some(tool=>tool.name==='workflow_litterbox_upload'));
  assert(!listing.tools.some(tool=>tool.name==='workflow_file_transport_probe'));
- assert.equal(listing.tools.length,18);
+ assert.equal(listing.tools.length,17);
+ assert(!listing.tools.some(tool=>tool.name==='workflow_capabilities'));
  assert(!listing.tools.some(tool=>tool.name==='workflow_session_data_get'));
  const run=listing.tools.find(tool=>tool.name==='workflow_run');
  assert(run);

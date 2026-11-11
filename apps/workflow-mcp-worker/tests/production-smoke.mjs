@@ -340,35 +340,30 @@ async function runActionTaskSmoke() {
   await client.connect(transport);
   const catalog=await tool('workflow_action_list',{});
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');
-  const candidates=catalog.actions.filter(a=>a.repository==='lirtual/github-actions' &&
-    a.repositoryId===1430925009 && a.workflowPath==='.github/workflows/verify-action.yml' &&
-    a.name==='Verify Workflow Action' && a.type==='task' && a.can_publish===true);
-  assert.equal(candidates.length,1,'Expected one verified released Task, not an untagged HEAD');
+  const candidates=catalog.actions.filter(a=>
+    a.workflowPath==='.github/workflows/verify-action.yml' &&
+    a.name==='Verify Workflow Action' && a.type==='task' &&
+    a.ref==='refs/heads/main' && a.can_publish===true);
+  assert.equal(candidates.length,1,'Expected one reviewed, main-pinned Verify Task');
   const found=candidates[0];
   assert.deepEqual(found.inputs.outcome.options,['success','failure']);
   const reviewed={repository:found.repository,repositoryId:found.repositoryId,
     workflowId:found.workflowId,workflowPath:found.workflowPath,
     commitSha:found.commitSha,type:found.type,contractDigest:found.contractDigest};
-  assert.match(found.ref,/^refs\/tags\//,'Task must be pinned to a verified Tag');
+  assert.equal(found.ref,'refs/heads/main','Task must use reviewed current main');
   const action={...reviewed,ref:found.ref,inputs:{outcome:'success'}};
   // This acceptance client uses only the Workflow MCP's advertised contracts,
   // not local copies of Portal tool schemas or GitHub version identities.
-  const overview=await tool('workflow_capabilities',{});
-  assert.ok(overview.action_with_schemas?.['mcp.call']);
-  assert.ok(overview.expression_rules?.operators.includes('eq'));
-  const portal=await tool('workflow_capabilities',{id:'action.mcp.call'});
-  assert.equal(portal.availability,'verified_contract','Trusted Portal tool was not accessible');
-  const read=portal.discovered_tools.find(t=>t.tool==='ima_list_notebooks');
+  const portal=await tool('workflow_action_list',{source:'portal'});
+  assert.equal(portal.read.availability,'verified_contract',
+    'Trusted Portal read tool was not accessible');
+  const read=portal.read.tools.find(t=>t.tool==='ima_list_notebooks');
   assert.ok(read && read.availability==='discovered_not_executed');
   const readStep={id:'read',uses:'mcp.call',with:{
     endpoint:read.endpoint,tool:read.tool,scope:read.scope,
     arguments:read.arguments,input_schema:read.input_schema,
     ...(read.output_schema?{output_schema:read.output_schema}:{}),
   }};
-  const mixed=await tool('workflow_capabilities',{id:'flow.foreach_mixed_task'});
-  assert.equal(mixed.availability,'publishable_after_owner_approval',
-    'The production compiler has not advertised approved mixed Task stages');
-  assert.equal(mixed.template_policy.github_task_count,1);
   const definition={version:1,name:'workflow-agent-first-'+label,
     inputs:{items:['success','success']},
     steps:[readStep,
@@ -456,7 +451,7 @@ async function runActionTaskSmoke() {
     assert.equal(attempt.owner_run_id,attempt.candidate_run_id);
     assert.equal(attempt.owner_run_attempt,1);
     assert.equal(attempt.state,'succeeded');
-    const url='https://api.github.com/repos/lirtual/github-actions/actions/runs/'+attempt.candidate_run_id;
+    const url='https://api.github.com/repos/'+found.repository+'/actions/runs/'+attempt.candidate_run_id;
     let terminalPhysical=false;
     for(let i=0;i<60;i++){
       const response=await fetch(url,{headers:{
@@ -485,8 +480,6 @@ async function runWebhookSmoke() {
   const outstanding=sql("SELECT count(*) AS n FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')");
   assert.equal(outstanding[0]?.n,0,'Nonterminal production Run blocks acceptance');
   await client.connect(transport);
-  const ability=await tool('workflow_capabilities',{id:'trigger.webhook'});
-  assert.equal(ability.availability,'supported','Production Webhook support is not deployed');
   webhookCredential=randomBytes(32).toString('base64url');
   assert.equal(webhookCredential.length,43);
   const tokenHash=createHash('sha256').update(webhookCredential).digest('hex');

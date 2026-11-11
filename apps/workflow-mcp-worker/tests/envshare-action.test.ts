@@ -93,6 +93,11 @@ test('single manual run persists only ciphertext and ID; original key works once
   }} as unknown as Env;
  const service=new WorkflowService(env);
  const plaintext='secret that must never enter D1! Unicode密钥';
+ await assert.rejects(()=>service.start(WF,{text:plaintext},'envshare-wrong',
+   undefined,false,'99999999-9999-4999-8999-999999999999'),
+   /published_version_changed/);
+ assert.equal(starts,0);
+ assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,0);
  // Two simultaneous first admissions with the same idempotency identity must
  // yield exactly one usable delivery key, one Run, and no replay-friendly ACK.
  const competing=await Promise.allSettled([

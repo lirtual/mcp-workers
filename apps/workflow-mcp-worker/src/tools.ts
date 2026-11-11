@@ -1,7 +1,8 @@
 import {listUnifiedActions} from './action-catalog.ts';
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { workflowCapabilities } from './capabilities.ts';
+import { discoverPortalTools } from './capabilities.ts';
+import {portalAuthorization} from './portal-authorization.ts';
 import { WorkflowService, StateError, cleanError } from './store.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
 import type { Env } from './store.ts';
@@ -39,14 +40,27 @@ async function safe(f:()=>Promise<unknown>){try{return success(await f());}catch
 export function buildMcpServer(env:Env){
  const service=new WorkflowService(env);
  const server=new McpServer({name:'workflow-mcp-worker',version:'0.1.0'},
- {capabilities:{tools:{}},instructions:'First use workflow_capabilities to discover supported Triggers, Action schemas, and live reviewed Portal tool contracts; use workflow_action_list for the single current reviewed GitHub/Cloudflare Action catalog. Treat configured/unverified and unpublished revisions as unavailable for execution. Construct a Draft definition and use workflow_validate with inline definition before workflow_create. Inline validation never creates, publishes or runs anything. Workflows use immutable published plans. MCP calls through the pinned Portal require exact operation scope/schema grants and explicit target-risk acceptance. Only one source-reviewed top-level IMA `ima_create_note` or `ima_append_note` per Plan with immutable literal content and, for append, a literal existing numeric note ID may use write scope; it additionally requires explicit approve_mcp_write_execution, a live matching tool contract, and an irreversible one-shot D1 fence. Unknown write effects are never automatically retried. Portal and HTTP Connections have independent revocation generations; re-enable requires explicit republish of affected Plans. HTTP requests use an exact approved public HTTPS URL/method and no caller credentials or redirects. Reviewed GitHub Task/Session Actions require explicit repository/revision approval, signed physical GitHub OIDC identity, and durable lifecycle tracking. Approved GitHub Actions may have external side effects; discovery alone never authorizes execution. Arbitrary commands, native GitHub webhook deliveries, and GitHub event kinds other than a pinned OIDC push relay are not supported. Cron uses published UTC schedules; Webhook uses independent per-Workflow bearer authentication. GitHub push relay uses a GitHub-signed OIDC job identity bound to the Published Plan (not a native GitHub webhook). Bounded Saga supports only independently approved temporary Ubuntu/Windows GitHub Session cancellation, with native rollback and physical termination verified separately; no general or ACID rollback. All triggers share immutable admission/grant gates.'});
- server.registerTool('workflow_capabilities',{description:'Read compiler-aligned Trigger/Action/Flow schemas, expression rules and examples; id=action.mcp.call discovers actual source-reviewed Portal read tools, id=action.run.github lists the current reviewed main candidate. Configured is not verified; discovery is not an execution grant.',inputSchema:z.object({id:z.string().min(1).max(128).optional()}).strict(),annotations:externalRead},async({id})=>safe(()=>workflowCapabilities(env,id)));
+ {capabilities:{tools:{}},instructions:'Known published workflow ID and inputs: call workflow_run, then workflow_result; use workflow_status only if not terminal. Unknown ID: workflow_list; unknown inputs: workflow_get.published_run_interface (Draft is not runnable). To author, consult the Workflow Skill or README for DSL, use workflow_action_list() for source-reviewed GitHub/Cloudflare Actions or workflow_action_list({source:"portal"}) for reviewed Portal MCP tool contracts, then workflow_validate inline before creating a Draft. Publish requires explicit human authorization for real effects and the exact target-risk grants; discovery or validation alone grants nothing. Published Plans are immutable; opt into expected_published_version_id when consistency with workflow_get matters. One-time EnvShare delivery keys cannot be recovered, Litterbox requires explicit public-upload approval, and Unknown external effects must never be blindly retried.'});
  server.registerTool('workflow_connection_status',{description:'Read current authorization and generation for portal (default) or the independent HTTP Action connection; no credentials.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:read},async({target})=>safe(()=>target==='http'?service.httpConnectionStatus():service.portalConnectionStatus()));
  server.registerTool('workflow_connection_revoke',{description:'Revoke portal (default) or http Connection. New calls are fenced atomically; existing physical effects may finish. Repeated revoke is idempotent.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionRevoke():service.portalConnectionRevoke()));
  server.registerTool('workflow_connection_enable',{description:'Re-enable portal (default) or http Connection for newly republished Plans. Previous generation stays fenced; no unknown effect replay.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionEnable():service.portalConnectionEnable()));
- server.registerTool('workflow_action_list',{description:'Discover one current candidate per Action from source-reviewed GitHub main and trusted Cloudflare Provider Manifest. Discovery alone does not authorize execution; Publish rechecks live identities and internally derives bounded Action grants.',inputSchema:z.object({}).strict(),annotations:externalRead},async()=>safe(()=>listUnifiedActions(env)));
+ server.registerTool('workflow_action_list',{description:'Without source, discover current reviewed GitHub and Cloudflare action.run candidates (unchanged contract). Use source=portal only to discover approved Portal mcp.call read/write tool contracts and schema digests; discovery never executes tools or grants permission.',inputSchema:z.object({source:z.literal('portal').optional()}).strict(),annotations:externalRead},async({source})=>safe(async()=>{
+   if(source===undefined)return listUnifiedActions(env);
+   const authorization=await portalAuthorization(env.DB);
+   if(authorization.state==='revoked')return {source:'portal_mcp',availability:'revoked',
+     read:{availability:'revoked',tools:[]},write:{availability:'revoked',tools:[]}};
+   const found=await discoverPortalTools(env);
+   const readTools=found.tools,writeTools=found.write_tools??[];
+   const scopeStatus=(items:unknown[])=>items.length?'verified_contract':
+     found.availability==='unavailable'?'unavailable':'not_authorized';
+   return {source:'portal_mcp',availability:readTools.length||writeTools.length?
+     'verified_contract':found.availability,
+     read:{availability:scopeStatus(readTools),tools:readTools},
+     write:{availability:scopeStatus(writeTools),tools:writeTools},
+     ...(found.reason?{reason:found.reason}:{})};
+ }));
  server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
- server.registerTool('workflow_get',{description:'Read one Draft and its active Published Version metadata.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
+ server.registerTool('workflow_get',{description:'Read editable Draft and active immutable Published Version; published_run_interface describes only provable runtime inputs, never Draft defaults or secret literal values.',inputSchema:z.object({workflow_id:id}).strict(),annotations:read},async({workflow_id})=>safe(()=>service.get(workflow_id)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
  server.registerTool('workflow_update',{description:'Update an editable Draft using its expected revision.',inputSchema:z.object({workflow_id:id,expected_revision:revision,definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({workflow_id,expected_revision,definition})=>safe(()=>service.update(workflow_id,expected_revision,definition)));
  server.registerTool('workflow_validate',{description:'Validate either an existing Draft (workflow_id plus revision) or an inline YAML/JSON definition. Returns structured issues and required Publish approvals. Inline validation never creates a Draft, publishes, dispatches or writes D1.',inputSchema:z.object({workflow_id:id.optional(),revision:revision.optional(),definition:z.string().min(3).max(32768).optional()}).strict(),annotations:externalRead},async input=>safe(()=>validateWorkflowTarget(service,input)));
@@ -68,12 +82,13 @@ export function buildMcpServer(env:Env){
    inputSchema:z.object({
      workflow_id:id,inputs:z.record(z.string(),z.unknown()).optional(),
      idempotency_key:z.string().min(1).max(128).optional(),
+     expected_published_version_id:id.optional(),
      file:chatGptFileDescriptor.optional(),
    }).strict(),
    _meta:{'openai/fileParams':['file']},
    annotations:externalWrite,
- },async({workflow_id,inputs,idempotency_key,file})=>safe(()=>{
-   if(file===undefined)return service.start(workflow_id,inputs??{},idempotency_key);
+ },async({workflow_id,inputs,idempotency_key,expected_published_version_id,file})=>safe(()=>{
+   if(file===undefined)return service.start(workflow_id,inputs??{},idempotency_key,undefined,false,expected_published_version_id);
    if(!idempotency_key)throw new StateError('file_idempotency_key_required');
    const selectedInputs=inputs??{};
    if(Object.keys(selectedInputs).some(k=>k!=='time')||
@@ -81,7 +96,7 @@ export function buildMcpServer(env:Env){
      throw new StateError('file_inputs_invalid');
    return startLitterboxUpload(env,{workflow_id,file,
      ...(selectedInputs.time===undefined?{}:{time:selectedInputs.time as string}),
-     idempotency_key});
+     idempotency_key,expected_published_version_id});
  }));
  server.registerTool('workflow_cancel',{description:'Request cancellation for a reviewed GitHub Action, a historical already-approved gate before its first durable GitHub Attempt, awaited child or native external event wait by Run/Step ID. A pending/approved gate or event wait must have no other active Steps; force requires an existing GitHub Attempt and cannot force-cancel an event wait. If a registered GitHub Attempt still has no confirmed physical Run identity, cancellation durably fences any later signed Claim without asserting physical termination. Once a physical Run is confirmed, existing GitHub cancellation and reconciliation govern. For children, check native Cloudflare termination but never infer external resource termination. An explicit force=true is accepted only after a prior normal cancellation and a verified still-running job has exceeded the guarded wait. Force may bypass cleanup. Repeated requests never re-POST an uncertain cancellation.',inputSchema:z.object({run_id:id,step_id:z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),force:z.literal(true).optional()}).strict(),annotations:externalWrite},async({run_id,step_id,force})=>safe(()=>service.cancel(run_id,step_id,force===true)));
  server.registerTool('workflow_status',{description:'Inspect durable Run and Step states; may reconcile a previously admitted Run.',inputSchema:z.object({run_id:id}).strict(),annotations:externalReconcile},async({run_id})=>safe(()=>service.status(run_id)));

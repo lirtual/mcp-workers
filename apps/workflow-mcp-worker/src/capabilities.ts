@@ -103,9 +103,9 @@ export async function discoverPortalTools(env:PortalConfig):Promise<PortalDiscov
    const result=await client.listTools();
    const contracts=await reviewedPortalTools(result.tools);
    const write_tools=await reviewedPortalWriteTools(result.tools);
-   return {availability:contracts.length?'verified_contract':'not_authorized',
+   return {availability:contracts.length||write_tools.length?'verified_contract':'not_authorized',
      tools:contracts,write_tools,
-     ...(!contracts.length?{reason:'approved_read_tool_not_present_or_schema_changed'}:{})};
+     ...(!contracts.length&&!write_tools.length?{reason:'approved_portal_tool_not_present_or_schema_changed'}:{})};
  }catch{
    return {availability:authDenied?'not_authorized':'unavailable',
      tools:[],reason:authDenied?'portal_access_denied':'portal_unreachable'};

@@ -62,6 +62,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
   } as unknown as Env;
   let internetCalls=0,toolCalls=0;
+  let portalListing:'reviewed'|'read_duplicate'|'write_drift'|'write_only'='reviewed';
   const previousFetch=globalThis.fetch;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const request=new Request(input,init);
@@ -71,11 +72,34 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(request.headers.get('authorization'),null,'incoming Portal token must not leak');
     assert.equal(request.headers.get('cf-access-client-id'),PORTAL_ID);
     assert.equal(request.headers.get('cf-access-client-secret'),PORTAL_SECRET);
+    let rpc:{method:string;id?:string|number}|undefined;
     if(request.method==='POST'){
-      const rpc=await request.clone().json() as {method:string};
+      rpc=await request.clone().json() as {method:string;id?:string|number};
       if(rpc.method==='tools/call')toolCalls++;
     }
-    return readonlyWorker.fetch(request);
+    if(rpc?.method!=='tools/list')return readonlyWorker.fetch(request);
+    // Model a real MCP tools/list from the approved Portal using the same
+    // transport and auth seam; no tools/call is ever made by discovery.
+    const body:{jsonrpc:string;id:string|number|undefined;result:{tools:any[]}}={
+      jsonrpc:'2.0',id:rpc.id,result:{tools:[{name:'echo',inputSchema:INPUT_SCHEMA,
+        annotations:{readOnlyHint:true,destructiveHint:false}}]},
+    };
+    const read={name:'ima_list_notebooks',
+      inputSchema:{type:'object',properties:{limit:{type:'integer'}},required:[]},
+      annotations:{readOnlyHint:true,destructiveHint:false}};
+    const write={name:'ima_create_note',
+      inputSchema:{type:'object',properties:{content:{type:'string',minLength:1}},required:['content']},
+      annotations:{readOnlyHint:false,destructiveHint:false}};
+    const untrusted={name:'admin_delete_everything',inputSchema:{type:'object',
+      properties:{}},annotations:{readOnlyHint:true,destructiveHint:false}};
+    if(body.result?.tools){
+      body.result.tools.push(...(portalListing==='write_only'?[]:[read]),
+        ...(portalListing==='read_duplicate'?[structuredClone(read)]:[]),
+        portalListing==='write_drift'?{...write,inputSchema:{
+          ...write.inputSchema,properties:{content:{type:'string'}}}}:write,
+        untrusted);
+    }
+    return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});
   }) as typeof fetch;
   t.after(()=>{globalThis.fetch=previousFetch;});
 
@@ -99,7 +123,8 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     await client.connect(transport);
     const listed=await client.listTools();
     assert.ok(listed.tools.some(x=>x.name==='workflow_publish'));
-    assert.equal(listed.tools.length,18,'#775 retires one of #774’s 19 owner tools');
+    assert.equal(listed.tools.length,17,'#860 removes public Capabilities');
+    assert.equal(listed.tools.some(x=>x.name==='workflow_capabilities'),false);
     assert.equal(listed.tools.some(x=>x.name==='workflow_approval'),false);
     const publisher=listed.tools.find(x=>x.name==='workflow_publish')!;
     const publishSchema=(publisher.inputSchema as any).properties;
@@ -119,7 +144,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       }else assert.notEqual(output.isError,true,name+' '+JSON.stringify(value));
       return value;
     }
-    const definition={version:1,name:'Trusted owner-scoped test',steps:[{
+    const definition={version:1,name:'Trusted owner-scoped test',inputs:{message:'draft-only-private-literal'},steps:[{
       id:'lookup',uses:'mcp.call',with:{
         endpoint:TRUSTED,tool:'echo',scope:'read',input_schema:INPUT_SCHEMA,
         arguments:{value:{ref:'inputs.message'}},
@@ -128,15 +153,46 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     // The public authenticated MCP seam validates without creating a Draft,
     // publishing a grant, dispatching a GitHub job or mutating D1.
     const countBefore=(sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n;
-    const capabilities=await call('workflow_capabilities',{});
-    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.manual'&&x.availability==='supported'));
-    assert.ok(capabilities.capability_ids.some((x:any)=>x.id==='trigger.cron'&&x.availability==='supported'));
-    assert.equal(capabilities.capability_ids.some((x:any)=>x.id==='flow.approval_gate'),false);
-    const emitInfo=await call('workflow_capabilities',{id:'action.result.emit'});
-    assert.equal(emitInfo.example.validation,'compiler_valid_only');
-    assert.equal((await call('workflow_capabilities',{id:'legacy.tsrv'})).availability,'unknown');
+    const actions=await call('workflow_action_list',{});
+    assert.deepEqual(actions.actions,[]);
+    assert.equal(internetCalls,0,'ordinary Action discovery never contacts Portal');
+    const portal=await call('workflow_action_list',{source:'portal'});
+    assert.equal(portal.source,'portal_mcp');
+    assert.equal(portal.read.availability,'verified_contract');
+    assert.equal(portal.write.availability,'verified_contract');
+    assert.deepEqual(portal.read.tools.map((x:any)=>x.tool),['ima_list_notebooks']);
+    assert.deepEqual(portal.write.tools.map((x:any)=>x.tool),['ima_create_note']);
+    for(const scoped of [...portal.read.tools,...portal.write.tools]){
+      assert.equal(scoped.endpoint,TRUSTED);
+      assert.match(scoped.schema_digest,/^[a-f0-9]{64}$/);
+      assert.equal(scoped.availability,'discovered_not_executed');
+    }
+    assert.equal(JSON.stringify(portal).includes(PORTAL_SECRET),false);
+    assert.equal(JSON.stringify(portal).includes('admin_delete_everything'),false);
+    portalListing='write_only';
+    const onlyWrite=await call('workflow_action_list',{source:'portal'});
+    assert.equal(onlyWrite.read.availability,'not_authorized');
+    assert.equal(onlyWrite.write.availability,'verified_contract');
+    portalListing='read_duplicate';
+    const duplicate=await call('workflow_action_list',{source:'portal'});
+    assert.equal(duplicate.read.availability,'not_authorized');
+    assert.equal(duplicate.write.availability,'verified_contract');
+    portalListing='write_drift';
+    const drifted=await call('workflow_action_list',{source:'portal'});
+    assert.equal(drifted.read.availability,'verified_contract');
+    assert.equal(drifted.write.availability,'not_authorized');
+    portalListing='reviewed';
+    assert.equal(toolCalls,0,'discovery must not execute Portal tools');
+    const beforeRevocation=internetCalls;
+    await call('workflow_connection_revoke',{});
+    const revokedCatalog=await call('workflow_action_list',{source:'portal'});
+    assert.equal(revokedCatalog.availability,'revoked');
+    assert.equal(revokedCatalog.read.availability,'revoked');
+    assert.equal(revokedCatalog.write.availability,'revoked');
+    assert.equal(internetCalls,beforeRevocation,'revoked discovery cannot contact Portal');
+    await call('workflow_connection_enable',{});
     assert.equal((sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n,countBefore);
-    assert.equal(internetCalls,0);
+    const portalDiscoveryCalls=internetCalls;
     const inline=await call('workflow_validate',{definition:JSON.stringify(definition)});
     assert.equal(inline.valid,true);
     assert.deepEqual(inline.required_approvals,[{
@@ -155,7 +211,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(mixed.valid,false);
     assert.equal(mixed.issues[0].code,'invalid_validate_target');
     assert.equal((sqlite.prepare('SELECT count(*) AS n FROM workflows').get() as {n:number}).n,countBefore);
-    assert.equal(internetCalls,0);
+    assert.equal(internetCalls,portalDiscoveryCalls);
     const created=await call('workflow_create',{definition:JSON.stringify(definition)});
     const preview=await call('workflow_validate',{workflow_id:created.workflow_id,revision:1});
     const grant={endpoint:TRUSTED,tool:'echo',scope:'read',schema_digest:DIGEST};
@@ -167,17 +223,38 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     await call('workflow_publish',{...base,approved_operations:[{...grant,tool:'unreviewed'}],accept_target_risks:true},'external_approval_required');
     await call('workflow_publish',{...base,accept_target_risks:true},'external_approval_required');
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
-    assert.equal(internetCalls,0);
+    assert.equal(internetCalls,portalDiscoveryCalls);
 
     const published=await call('workflow_publish',{...base,approved_operations:[grant],accept_target_risks:true});
     const plan=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
       .get(published.published_version_id) as {plan:string}).plan);
     assert.equal(plan.mcp_target_risks_accepted,true);
     assert.deepEqual(plan.mcp_approvals,[grant]);
+    const publishedView=await call('workflow_get',{workflow_id:created.workflow_id});
+    assert.equal(publishedView.published_run_interface.published_version_id,published.published_version_id);
+    assert.equal(publishedView.published_run_interface.inputs.message.type,'not_declared');
+    assert.equal(publishedView.published_run_interface.inputs.message.default,'not_declared');
+    assert.equal(JSON.stringify(publishedView.published_run_interface).includes('draft-only-private-literal'),false);
+    const draftOnly=structuredClone(definition);
+    draftOnly.name='New unpublished draft';
+    draftOnly.inputs.message='different-UNPUBLISHED-sensitive-value';
+    await call('workflow_update',{workflow_id:created.workflow_id,
+      expected_revision:1,definition:JSON.stringify(draftOnly)});
+    const stillPublished=await call('workflow_get',{workflow_id:created.workflow_id});
+    assert.equal(stillPublished.draft_revision,2);
+    assert.equal(stillPublished.published_run_interface.published_version_id,
+      published.published_version_id);
+    assert.equal(JSON.stringify(stillPublished.published_run_interface)
+      .includes('different-UNPUBLISHED-sensitive-value'),false);
+    const badVersion='11111111-1111-4111-8111-111111111111';
+    await call('workflow_run',{workflow_id:created.workflow_id,inputs:{message:'no dispatch'},
+      expected_published_version_id:badVersion},'published_version_changed');
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get() as {n:number}).n,0);
 
     const run=await call('workflow_run',{
       workflow_id:created.workflow_id,inputs:{message:'approved trusted echo'},
       idempotency_key:'trusted-owner-e2e-'+created.workflow_id,
+      expected_published_version_id:published.published_version_id,
     });
     await new WorkflowOrchestrator({} as ExecutionContext,env).run({
       payload:{run_id:run.run_id},
@@ -190,6 +267,17 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(outcome.steps[0].status,'succeeded');
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
+    const next=await call('workflow_publish',{workflow_id:created.workflow_id,
+      expected_revision:2,approved_operations:[grant],accept_target_risks:true});
+    assert.notEqual(next.published_version_id,published.published_version_id);
+    await call('workflow_run',{workflow_id:created.workflow_id,
+      inputs:{message:'stale checked version'},idempotency_key:'stale-checked',
+      expected_published_version_id:published.published_version_id},
+      'published_version_changed');
+    assert.equal(toolCalls,1,'stale version cannot call Portal');
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get() as {n:number}).n,1);
+    const newer=await call('workflow_get',{workflow_id:created.workflow_id});
+    assert.equal(newer.published_run_interface.published_version_id,next.published_version_id);
 
     // An environment pointing to any unapproved Portal must not execute
     // an approved Plan or leak the production Portal credentials.
@@ -253,7 +341,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       ...target,approve_cloudflare_execution:true,approved_cloudflare_actions:[barkGrant],
     }});
     assert.equal(forged.isError,true,'retired manual-grant parameters are rejected');
-    assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,1);
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,2);
     const barkPublished=await call('workflow_publish',target);
     const frozen=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
       .get(barkPublished.published_version_id) as {plan:string}).plan);
