@@ -134,12 +134,12 @@ The production Provider and Workflow are deployed independently. A signed OpenLi
 
 ### Non-executable nested Flow composition design (Spec #176 / #186)
 
-`workflow_capabilities(id="flow.nested")` exposes a **design-only**
-`design_contract`, with a proposed `flow: block` structural shape, child
+The historical, internal-only `flow.nested` design proposal contains a
+`design_contract` with a `flow: block` structural shape, child
 reference scopes, ordering, outcome propagation, cancellation, immutable
 grant inheritance boundaries, replay-stable step identity, expansion
-snapshots, and worst-case budget rules. Its `availability` is `unsupported`,
-`executable` is `false` and `source_schema` is `not_accepted`. The proposed
+snapshots, and worst-case budget rules. It remains **unsupported** and non-executable; it is not a public
+MCP tool or part of the accepted compiler schema. The proposed
 shape is **not** in `WORKFLOW_DEFINITION_SCHEMA`, has no executable example,
 and both inline Validate and Publish still reject it. In particular, nested
 foreach/while/repeat, multi-Action loop bodies, recursive child invocation
@@ -244,7 +244,7 @@ has to declare `duration_minutes` (default 300) and `duration_mode`
         "commitSha": "<exact reviewed 40-character SHA>",
         "type": "session",
         "contractDigest": "<exact reviewed 64-character digest>",
-        "ref": "refs/tags/<immutable reviewed release tag>",
+        "ref": "refs/heads/main",
         "inputs": {
           "duration_minutes": {"ref": "inputs.duration_minutes"},
           "duration_mode": "explicit",
@@ -260,15 +260,15 @@ The identifiers above are illustrative, not publishable values. Use
 `workflow_action_list` to obtain **all** the real, exact reviewed fields and
 retain the existing Publish approvals (and any downstream notifications).
 
-#### Optional moving-main Action source (five Owner Workflows only)
+#### Current, source-reviewed single GitHub executor
 
-For `lirtual/github-actions` (repository ID `1430925009`) only, a one-time
-Owner-approved Plan may set `ref: "refs/heads/main"` for **windows**, **ubuntu**,
-**chrome**, **code-server**, or **download**. The existing reviewed SHA, Workflow
-ID/path/type, contract digest, inputs and explicit Publish approvals are
-required at the initial Plan publication; other repositories, names and refs
-still require immutable Tags. `openlist`, experimental Spec62 Plans and legacy
-Tag-pinned Plans are not changed automatically.
+The sole configured executor repository is `autoactions/github-actions` under
+[Spec #834](https://github.com/lirtual/mcp-workers/issues/834).
+Call `workflow_action_list({})` for its **actual** reviewed repository ID,
+main SHA, Workflow ID/path/type and input contract. New publishable Actions
+use `refs/heads/main`; do not hardcode the historical repository ID or create
+Tag-pinned candidates. Existing immutable historical Plans are not rewritten
+and may be refused physical dispatch after an identity cutover.
 
 At each new admission the server rereads main HEAD, verifies the unchanged
 reviewed input contract and a **completed successful main-push CI** for that
@@ -281,22 +281,17 @@ older-commit fallback and no blind dispatch retries. A last-moment branch
 move between verification and GitHub scheduling can still create a job, but
 its signed Claim is rejected before private services/credentials are configured.
 
-This optional mode does **not** auto-admit new Runs, auto-republish Plans,
+The current main-based mode does **not** auto-admit new Runs, auto-republish Plans,
 change Bark Provider grants, or grant more GitHub execution authority. After
 one separately authorized Worker deployment and Plan cutover, future normal
 `main` updates passing CI will be used by the next manually authorized Run
 without new Tags or Plan publications. Reverting to an older main commit
 remains ordinary source control, not a recovery replay of an Unknown Attempt.
 
-**Release prerequisite:** apply existing additive D1 migration
-`0020_github_action_main_sha.sql` *before* deploying compatible Worker code,
-using the protected release workflow and a separate production authorization.
-The protected full release accepts exactly v19 before the migration and
-requires v20 plus the new nullable column before publication; future
-`workflow_code_only` releases also require the v20 inventory.
-The migration adds only a nullable per-Attempt SHA field, preserving all
-historical Tag-pinned records and receipts. Do not apply or test this against
-production as part of the non-production implementation PR.
+**Historical migration:** `0020_github_action_main_sha.sql` introduced
+the per-Attempt `resolved_sha` field, which remains part of the existing D1
+schema. This Spec does not add, apply or remove any migration. All historical
+Attempt identities and receipts remain immutable.
 
 
 After this one-time Publish, `workflow_run({workflow_id})` defaults to **300**
@@ -307,7 +302,7 @@ The Run snapshots the selected duration in D1; Session dispatch and one-shot
 Attempt registration independently re-evaluate the same persisted input.
 The Runner enforces the deadline from its earliest job-start timestamp and
 cleans up normally. No Task Action or other GitHub dispatch input is dynamically
-bound; the exact Action source, tag, contract, secrets and approval remain pinned.
+bound; the exact Action source, reviewed main identity, contract, secrets and approval remain bounded.
 
 Already published literal-input Session plans keep their existing behavior:
 they do **not** accept duration overrides until separately republished with
@@ -394,7 +389,7 @@ arbitrary write tools, a generic Provider registry or cross-Provider revocation.
 
 ## MCP owner tools
 
-`workflow_capabilities`, `workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
+`workflow_action_list`, `workflow_connection_status`, `workflow_connection_revoke`, `workflow_connection_enable`, `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_validate`, `workflow_publish`, `workflow_run`, `workflow_cancel`, `workflow_status`, `workflow_result`, `workflow_pause`, `workflow_resume` and `workflow_delete`.
 
 **GitHub Artifact References (bounded Task metadata):** After a GitHub Task has
 physically succeeded, `workflow_result` may include `artifact_references`
@@ -411,9 +406,43 @@ bytes or new D1 storage. GitHub permission is separately required to fetch
 artifact content by ID. Signed Task business output and existing Result shapes
 are preserved when no verified Task is present.
 
-`workflow_capabilities` reports the current compiler's supported and unsupported Triggers, Actions and Flow Control, the structural schema, limits and compiler-checked examples. Pass an optional `id` to inspect one capability. The `workflow_action_list` aggregates reviewed GitHub main and Cloudflare Provider Action catalogs; neither discovery call grants execution. Connection-specific Actions are reported as `unavailable` until the service's already-approved server-side Portal or GitHub configuration is present; no secrets are returned. The current compiler supports manual admission, one UTC Cron per Published Plan, result emission, grant-bound read-only MCP and one reviewed top-level IMA create/append note write, reviewed GitHub Task/Session Actions, bounded DAG dependencies and conditions. GitHub event ingress supports **push only**, through an explicitly installed, OIDC-signed GitHub Actions relay; no direct GitHub webhook, pull-request events or automatic event subscription.
+**Skill-first operation:** a known Published Workflow ID and inputs go straight to
+`workflow_run` → `workflow_result`. Use `workflow_status` only for
+nonterminal results; use `workflow_list` when the ID is unknown, or
+`workflow_get` if its Published input contract is unknown. The Workflow
+Skill and this README provide static DSL guidance; `workflow_validate`
+checks the actual definition. There is no public Capabilities tool.
+
+`workflow_action_list({})` retains its original GitHub main + Cloudflare
+Provider Action list and never contacts the Portal. Explicit
+`workflow_action_list({source:"portal"})` discovers only the audited
+Portal MCP tool contracts, with separate read/write scope availability,
+exact schemas, digests, bounded arguments and no execution or authorization.
+A missing read tool is not a claim about write permission. Discovery,
+validation and connection configuration never grant execution. Manual,
+Cron (five-field UTC), Webhook and signed GitHub push relays remain bounded
+by immutable Published Plans, exact grants, and existing admission fences.
+GitHub push is not a general GitHub webhook or pull-request subscription.
+
+`workflow_get` returns the editable Draft plus optional
+`published_run_interface` bound to the active `published_version_id`
+(`null` when unpublished). It derives from the stored immutable Published
+Plan, never from Draft literals or the newest Provider source. Unproven
+types/required/defaults are `not_declared`, not guessed. EnvShare describes
+the UTF-8 1–16384-byte text, optional ttl 60–604800s (default 86400),
+max reads 1–10 (default 1), required idempotency key and unrecoverable
+one-shot delivery key. Litterbox describes its top-level file, optional
+1h/12h/24h/72h (default 24h) and public plaintext disclosure only when
+the actual Published Plan is eligible. Session duration 1–300min
+(default 300) appears only for explicit Published opt-in.
+
+`workflow_run` accepts optional `expected_published_version_id` after
+a `workflow_get` read; a changed active version fails before new Run admission
+and side effects. This is separate from the internal trigger
+`expected_version_id`, and never allows EnvShare/Litterbox one-shot
+replay. Omit it for normal current-version execution.
 Flow Control currently supports static branches/joins, literal bounded `flow: repeat`, bounded `flow: foreach` templates, `flow: wait`, one authenticated `flow: wait_event`, and **one pinned, nonrecursive** `flow: child` under exact Publish grants. Child calls are awaited by default; `mode: detached` returns a child Run reference after confirmed native creation and consumes a separate Run capacity slot. A detached child retains its own Published Plan and grants, and is not stopped by the parent completing or cancelling. New Drafts reject runtime approval gates; historical Gate/decision receipts remain immutable, and those Plans cannot initiate new Runs.
-Nested loops, general Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. A bounded Saga exception supports only explicitly approved temporary `lirtual/github-actions` Ubuntu/Windows Session cancellation: source `saga.on` declares `failure` and/or `cancel`, each reversible Session step declares `compensate: {kind: github.session.cancel}`, and Publish separately requires `approve_saga_compensation` plus its exact GitHub grants. Native Cloudflare Workflows rolls back registered Steps in reverse start order; dependent Steps follow reverse dependency order, while independent branches have no required order. A GitHub cancellation ACK is only a requested operation, never physical Session termination; the existing GitHub Attempt/Session reconciliation and TTL retain terminal authority. Other side effects are disallowed in Saga definitions, and no ACID rollback is claimed. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. `workflow_capabilities` exposes non-executable design contracts for these gaps, not valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
+Nested loops, general Saga compensation and other/unreviewed MCP writes remain **unsupported** and fail at compilation. A bounded Saga exception supports only explicitly approved temporary single-executor Ubuntu/Windows Session cancellation: source `saga.on` declares `failure` and/or `cancel`, each reversible Session step declares `compensate: {kind: github.session.cancel}`, and Publish separately requires `approve_saga_compensation` plus its exact GitHub grants. Native Cloudflare Workflows rolls back registered Steps in reverse start order; dependent Steps follow reverse dependency order, while independent branches have no required order. A GitHub cancellation ACK is only a requested operation, never physical Session termination; the existing GitHub Attempt/Session reconciliation and TTL retain terminal authority. Other side effects are disallowed in Saga definitions, and no ACID rollback is claimed. The current `action.mcp.write` slice is restricted to static IMA `ima_create_note` and `ima_append_note` with one reviewed write per Plan; it does not provide arbitrary MCP writes, dynamic/foreach writes, automatic retry or write compensation. Arbitrary/credential-bearing HTTP requests remain unsupported; only the reviewed literal-target HTTP slice is available. Historical design-only gaps are not public MCP tools, valid Draft schemas or runnable examples. A configured Connection or discovered Action is never itself a Publish grant. An illustrative read-only MCP example only proves the definition compiles, not that the example tool exists or has been authorized.
 
 ### Conditional branch joins
 
@@ -619,7 +648,11 @@ An authorized delivery normalizes `inputs.github` from **signed JWT claims only*
 
 ## Repository identity cutover (Spec #607)
 
-The `session-actions` → `github-actions` change was a **production identity cutover**, not a new executor or a text-only rename. It completed on 2026-10-31 (see [Spec #607](https://github.com/lirtual/mcp-workers/issues/607)). The source and deployed Worker require the exact `lirtual/github-actions` name alongside the unchanged GitHub Repository ID `1430925009`; the old name is retained in historical evidence only and is not an approved execution identity.
+The `session-actions` → `github-actions` change was a **production identity cutover**, not a new executor or a text-only rename. It completed on 2026-10-31 (see [Spec #607](https://github.com/lirtual/mcp-workers/issues/607)). That section documents the earlier cutover; Spec #834 later selected a
+single, configured `autoactions/github-actions` repository. The old
+`lirtual/github-actions` name and repository ID `1430925009` are
+historical evidence, not the current approved dispatch source. Resolve
+the current immutable repository ID from the trusted executor catalog.
 
 The **historical pre-#834 rename** cutover followed the audited sequence in [Spec #607](https://github.com/lirtual/mcp-workers/issues/607): refresh all seven Action identities and effective Workflow versions; independently settle physical Task/Session and uncertain Runs; block new admissions; verify the exact GitHub OIDC `sub` and audience plus Tailscale workload trust; rename the **existing** repository without changing its ID; update the existing `WORKFLOW_ACTION_APPROVED_REPOSITORIES` production variable, trust and dependent consumers; perform the normal protected Worker release; and Validate/Publish the currently effective definitions **in place** under the new name, restoring five active definitions while leaving Chrome paused. Preserve every historical Version, Run and receipt without rewriting.
 
@@ -753,7 +786,7 @@ the phone's receipt must be checked separately from an upstream acceptance.
 Task/Session Actions. GitHub `workflow_dispatch.inputs` describes inputs,
 not a business output contract; a GitHub Job's physical status is not an
 Action result schema. Cloudflare reviewed Actions expose their existing
-`output_schema` through `workflow_capabilities`; MCP output declarations
+`output_schema` through the Action source manifest in `workflow_action_list`; MCP output declarations
 remain subject to the exact live Portal contract and publish grants.
 
 `workflow_validate({definition})` checks output field existence for literal

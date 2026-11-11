@@ -1,58 +1,43 @@
 ---
 name: workflow
-description: Operate the lirtual/mcp-workers Workflow MCP plugin: inspect, author, validate, publish, run, pause, cancel, or diagnose its durable Workflows and Actions. Use for @Workflow orchestration tasks, not ordinary GitHub Actions CI definitions or Vercel Workflow SDK.
+description: Operate the lirtual/mcp-workers Workflow MCP plugin to inspect, author, validate, publish, run, pause, cancel, or diagnose durable Workflows and Actions. For @Workflow tasks, not GitHub CI or other Workflow SDKs.
 ---
 
 # Workflow MCP operator
 
-Use the existing **Workflow** MCP tools for execution. This skill is an operator guide, not a source of capabilities, contracts, credentials, or additional authorization.
+This Skill documents static routing and DSL usage, not live contracts, credentials, permissions, or publication state. The MCP compiler, immutable Published Plan, Action source manifests, and live discovery remain authoritative. Do not request a capabilities overview before routine calls.
 
-## Route the request
+## Select the shortest safe route
 
-| Intent | Starting tools | Done when |
-| --- | --- | --- |
-| Inspect existing workflows | `workflow_list` → `workflow_get` | The requested Draft/Published state and limits are verified |
-| Author or change a workflow | `workflow_capabilities` → `workflow_validate` → `workflow_create` or `workflow_update` | A validated Draft at the intended revision exists; publication is a separate step |
-| Publish a reviewed Draft | `workflow_get` → `workflow_validate` → `workflow_publish` | The intended immutable Published Version is confirmed |
-| Execute an existing workflow | `workflow_get` → `workflow_run` → `workflow_status` / `workflow_result` | The actual Run outcome, not just admission, is established |
-| Diagnose, pause, or cancel | `workflow_status` / `workflow_result`; `workflow_pause` or `workflow_cancel` only as needed | Admission state and external effects are reported separately |
+| Intent | Tool route |
+| --- | --- |
+| Run an existing Published Workflow with a known ID and known inputs | `workflow_run` → `workflow_result`; only use `workflow_status` when unsettled |
+| Unknown Workflow ID | `workflow_list` → choose exact ID |
+| Unknown Published input contract | `workflow_get` → `published_run_interface`; never infer from editable Draft |
+| Inspect a particular Workflow | `workflow_get` |
+| Author or edit | This Skill → discovery only for external Actions → `workflow_validate({definition})` → `workflow_create` or `workflow_update` |
+| Publish | `workflow_get` → `workflow_validate` → explicit target-risk permission → `workflow_publish` |
+| Diagnose or cancel | `workflow_result` / `workflow_status` → `workflow_cancel` if explicitly required |
+| Pause, resume, or delete | Read current state, then the matching named tool only with authorization |
 
-For deletion, use `workflow_get`, check active Runs and published references, then use `workflow_delete` only with the user's explicit scope and revision. Deletion tombstones the Workflow; it does not erase historical receipts. Resume new admissions with `workflow_resume` only when requested.
+Use `workflow_action_list({})` only to choose source-reviewed GitHub/Cloudflare `action.run` candidates. For an `mcp.call`, explicitly call `workflow_action_list({source:"portal"})` to obtain the separately scoped reviewed Portal tool, actual input/output schema, example arguments, and `schema_digest`. Absence of a read tool does **not** prove a write tool is approved or unavailable: inspect the separate scope statuses. `workflow_connection_status` checks connection generation; a discovered candidate never grants Publish or runtime access. Do not use arbitrary Portal URLs, tools or unreviewed writes.
 
-## Discover and draft
+## Draft language quick reference
 
-1. Call `workflow_capabilities` without an ID only when exploring available capabilities. When a capability is known, query its specific `id` for a smaller compiler-aligned schema, constraints, and example. Use `workflow_action_list` to discover current source-reviewed GitHub Task/Session candidates from the single release-pinned executor (`refs/heads/main`); Publish requires explicit approval, and dispatch rechecks exact main SHA and successful push CI. Read connection state through `workflow_connection_status` when an external action needs it.
-2. Select currently supported capabilities and build the smallest definition. Use exact schema and action fields returned by the tools, not remembered examples or guessed values. A configured connection, discovered contract, compiler-valid definition, and publishable action are **different states**.
-3. Validate the YAML/JSON definition inline with `workflow_validate({definition})` **before** creating a Draft. Inspect every `issues[].code` and `path`; fix the definition and validate again. Inline validation does not create, publish, or dispatch.
-4. On user-authorized creation, call `workflow_create`. For edits, get the current Draft first and pass `expected_revision` to `workflow_update`. Validate the saved Draft with its `workflow_id` and revision before considering publication.
-
-Minimal inline-only definition (compile/validate, no external effect):
+A definition is YAML/JSON with `version: 1`, `name`, optional `inputs` and `triggers`, and bounded `steps`. For a simple manual workflow, a single result emitter is enough:
 
 ```json
-{
-  "version": 1,
-  "name": "Echo",
-  "inputs": {"message": "hello"},
-  "steps": [
-    {"id": "out", "uses": "result.emit", "with": {"data": {"ref": "inputs.message"}}}
-  ]
-}
+{"version":1,"name":"Echo","inputs":{"message":"hello"},"steps":[{"id":"out","uses":"result.emit","with":{"data":{"ref":"inputs.message"}}}]}
 ```
 
-For Cron use the current five-field UTC rules; for Webhook or GitHub push relay use the corresponding discovery result. Expressions, `needs`, branches, loops, and nested behavior must match the compiler, not general-purpose YAML or GitHub Actions syntax.
+Each Step needs a stable `id`. `needs` declares dependencies, `if` conditions are compiler-supported structured expressions (not executable scripts), and `{ "ref": "inputs.message" }` references a runtime value. Supported step families include `result.emit`, reviewed `mcp.call`, reviewed GitHub/Cloudflare `action.run`, limited `http.request`, and bounded `flow` operations (`repeat`, `foreach`, `until`, child, wait, wait_event). Cron uses a five-field UTC schedule; Webhook needs its independent bearer token; signed GitHub push relay is not a general webhook. Nested arbitrary loops, unapproved external writes and arbitrary commands are not supported. The existing README provides longer examples; `workflow_validate` is authoritative for exact supported shapes, limits and error paths.
 
-## Publish and execute
+For an external `mcp.call`, copy the actual `endpoint`, `tool`, `scope`, `input_schema` and optional `output_schema` from Portal discovery; the compiler and Publish check the exact schema digest. Use `workflow_validate({definition})` **before** creating a Draft; fix every structured issue. Inline Validate never writes D1, publishes or dispatches. Update an existing Draft with its latest `expected_revision`. Publishing freezes an immutable Plan and effect grants; no discovered Action, test result, or account authentication replaces a fresh Owner approval of the actual target and risks. Publication of Cron, Webhook or GitHub event triggers can admit future effects.
 
-1. Read the saved Draft, exact expected revision, and latest `workflow_validate` output. Take required operation scopes, schema digests, pinned Action identity, child version/digest, Cloudflare deployment identity, and HTTP URL/method **from live discovery and validation**. Never fabricate these grants or assume yesterday's versions remain current.
-2. Classify real effects (MCP writes, HTTP requests, GitHub execution, Cloudflare providers, public uploads, compensation). Obtain the user's explicit authorization for the actual target, impact, and risks before setting `workflow_publish` approval assertions. Authenticated approval fields are not proof that a human reviewed the operation.
-3. Publish the exact reviewed Draft only after all runtime grants and external prerequisites are met. Confirm the returned Published Version. Publishing is not running; a published Cron/Webhook/GitHub trigger can admit future Runs, so review trigger effects before publication.
-4. Run only an authorized Published Workflow. Use a stable `idempotency_key` for effectful manual admissions when applicable. An ordinary `workflow_run` may return a Run ID before completion: inspect `workflow_status` and `workflow_result` to determine outcome. These reads may reconcile already-admitted Runs.
-5. For EnvShare, preserve a one-time `delivery_key` from the initial response for the matching result request; do not log or guess it. Public Litterbox plaintext file disclosure requires fresh, explicit owner instruction and a separately approved eligible plan. Read sensitive Session credentials only on an explicit user request via the dedicated sensitive-data tool.
+## Execute and recover
 
-## Stop, recover, and report
+Use a stable `idempotency_key` for effectful runs. If the request was based on `workflow_get` and a changed Published Version would matter, pass the independent `expected_published_version_id` assertion to `workflow_run`. Do not confuse it with the internal trigger version parameter. Without the assertion, ordinary runs use the current Published Plan.
 
-- `workflow_pause` blocks **new** admissions, not active Runs. `workflow_cancel` requests cancellation for a supported Run/Step; acknowledgments and native child termination do not prove remote Session or other external effects ended. Force cancellation has separate prerequisites and can bypass cleanup.
-- Treat `unknown`, `indeterminate`, pending receipts, and transport timeouts as unresolved effects. Reconcile exact Run/Step and external terminal evidence before any new attempt; never blindly replay an effectful action or public upload.
-- `workflow_approval` is a one-use decision for an already waiting, version-pinned GitHub gate. Check exact Run/Step/Version and explicit user authorization; an approval wake is not GitHub success.
-- Revoking/enabling a Portal or HTTP connection changes its generation. Require explicit authorization; verify the fence and republish affected plans when re-enabled rather than replaying unknown work.
-- Report separately: Draft validity, Published Version, Run admission, Step state, external physical outcome, and anything unknown. Finish when evidence supports the requested goal; mark unperformed real-world checks as unverified.
+EnvShare: `inputs.text` accepts 1–16384 UTF-8 bytes; `ttl_seconds` defaults to 86400 (60–604800), `max_reads` defaults to 1 (1–10). Its `idempotency_key` is required. Preserve the initial one-time `delivery_key` privately and give it to `workflow_result` after success to obtain the share URL. It cannot be recovered from D1. Litterbox: public plaintext upload needs fresh explicit Owner approval, a top-level selected `file`, optional `inputs.time` (1h/12h/24h/72h, default 24h), a manual single-step eligible Published Plan and mandatory idempotency key. Never treat a URL in JSON as a selected file. Session `duration_minutes` (1–300, default 300) is overridable only where `published_run_interface` confirms an explicit Published binding.
+
+A queued Run ID is not completion. Read `workflow_result` for business outcomes, then `workflow_status` when still unsettled. These reads may reconcile an admitted Run. Never replay an Unknown/indeterminate external effect, failed upload, unconfirmed GitHub Attempt or one-time key. `workflow_pause` blocks **new** admissions, not active effects; cancellation acknowledgments do not prove physical termination. Connection revoke/enable changes generations and requires affected Plan republish. `workflow_delete` tombstones a safe Draft/paused Workflow, not its historical receipts. Report Draft, Published Version, Run/Step and physical outcome separately, marking unverified checks explicitly.

@@ -19,6 +19,7 @@ import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTermina
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
+import {publishedRunInterface} from './published-run-interface.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
@@ -179,7 +180,18 @@ export class WorkflowService {
         recorded_state:x.state,recorded_at:x.updated_at,
         attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
   }
-  async get(workflow_id:string){assertId(workflow_id);const row=await this.row(workflow_id);return workflowView(row);}
+  async get(workflow_id:string){
+    assertId(workflow_id);
+    const row=await this.row(workflow_id);
+    if(!row.active_version_id)return {...workflowView(row),published_run_interface:null};
+    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+      .bind(row.active_version_id,workflow_id).first<{plan:string}>();
+    if(!version)throw new StateError('published_version_missing');
+    let plan:Plan;
+    try{plan=JSON.parse(version.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+    return {...workflowView(row),
+      published_run_interface:publishedRunInterface(plan,row.active_version_id)};
+  }
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=? AND deleted_at IS NULL').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
     assertPublicActionSyntax(definition);
@@ -347,17 +359,17 @@ export class WorkflowService {
         ['invalid_repeat_count','invalid_repeat_template','unsupported_flow'].includes(code)?
         'Use flow: repeat with a literal times integer from 1 to 8 and one template Action; nested/dynamic loops are not supported. All expanded Steps must fit the maxSteps limit.':
         code.startsWith('invalid_github_event_')||code==='unsupported_github_event'?
-        'Use one push event with an exact repository name/id, branch ref and trusted .github/workflows/*.yml relay; declare inputs.github and consult workflow_capabilities.':
+        'Use one push event with an exact repository name/id, branch ref and trusted .github/workflows/*.yml relay; declare inputs.github and consult the Workflow Skill and validate the Draft.':
         code==='unsupported_trigger'||code==='invalid_triggers'?
-        'Use exactly one supported Cron or Webhook trigger from workflow_capabilities.':
+        'Use exactly one supported Cron or Webhook trigger in the Workflow Skill.':
         code==='invalid_cron_schedule'?
-        'Use one supported five-field UTC Cron schedule from workflow_capabilities; no timezone or Quartz extensions.':
+        'Use one supported five-field UTC Cron schedule in the Workflow Skill; no timezone or Quartz extensions.':
         code==='invalid_webhook_token_hash'?
         'Use only the lowercase SHA-256 hex digest of a securely random 32-byte Webhook bearer token; never include the raw token in a Draft.':
         code==='unsupported_capability'?
-        'Call workflow_capabilities and choose a supported Action.':
+        'Use the Workflow Skill and workflow_action_list for external Actions.':
         code==='unsupported_field'?
-        'Remove the unsupported field; use workflow_capabilities for the current schema.':
+        'Remove the unsupported field; consult the Workflow Skill and workflow_validate.':
         ['unknown_output_field','incompatible_output_type'].includes(code)?
         'Use a field and type declared by the source Step; inspect a literal result.emit output or the trusted Action output schema. Unknown dynamic outputs cannot be statically confirmed.':
         ['invalid_reference','invalid_step_reference'].includes(code)?
@@ -365,9 +377,9 @@ export class WorkflowService {
         code==='invalid_yaml_or_json'?
         'Submit valid YAML or JSON without duplicate keys.':
         ['invalid_step_count','excessive_parallelism','too_many_inputs'].includes(code)?
-        'Reduce the definition to the limits returned by workflow_capabilities.':
+        'Reduce the definition to the limits enforced by workflow_validate.':
         ['github_action_ref_mismatch','github_action_ref_unconfirmed'].includes(code)?
-        'Use a verified Tag. Only reviewed GitHub executor business Plans may use refs/heads/main after per-Run CI and SHA verification.':
+        'Use the currently reviewed GitHub executor ref (refs/heads/main); dispatch independently verifies the exact main SHA and successful CI.':
         ['github_action_contract_or_inputs_changed','github_action_not_found'].includes(code)?
         'Rediscover the released Action contract and inputs with workflow_action_list.':
         code==='github_action_repository_not_approved'?
@@ -874,8 +886,17 @@ export class WorkflowService {
     if(parent)throw new StateError('workflow_referenced_by_parent');
     throw new StateError('workflow_delete_conflict');
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile=false){
-    assertId(workflow_id);if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile=false,expected_published_version_id?:string){
+    assertId(workflow_id);
+    // Caller assertion is not an internal trigger identity. Check it before
+    // replay, ephemeral secret generation or any Run reservation.
+    if(expected_published_version_id){
+      assertId(expected_published_version_id);
+      const current=await this.row(workflow_id);
+      if(current.active_version_id!==expected_published_version_id)
+        throw new StateError('published_version_changed');
+    }
+    if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
     if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
       throw new StateError('reserved_idempotency_key');
@@ -931,7 +952,9 @@ export class WorkflowService {
     const wf=await this.row(workflow_id);
     if(wf.state!=='active'||!wf.active_version_id)throw new StateError('workflow_not_active');
     const version=wf.active_version_id;
-    if(expected_version_id&&expected_version_id!==version)throw new StateError('published_version_changed');
+    if((expected_version_id&&expected_version_id!==version)||
+       (expected_published_version_id&&expected_published_version_id!==version))
+      throw new StateError('published_version_changed');
     // Reject unsupported Action execution before reserving any durable Run
     // slot. Publication permits owner review, not dispatch authorization.
     const published=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
