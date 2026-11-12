@@ -446,6 +446,8 @@ jobs:
           # Repository Secrets are staged only for the selected Worker in this step.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ inputs.worker == 'raindrop-mcp-worker' && secrets.RAINDROP_ACCESS_TOKEN || '' }}
+          CLERK_SECRET_KEY: ${{ inputs.worker == 'raindrop-mcp-worker' && secrets.CLERK_SECRET_KEY || '' }}
+          CLERK_PILOT_RESOURCE: ${{ inputs.worker == 'raindrop-mcp-worker' && vars.CLERK_PILOT_RESOURCE || '' }}
           IMA_API_KEY: ${{ inputs.worker == 'ima-mcp-worker' && secrets.IMA_API_KEY || '' }}
           SSH_ENCRYPTION_KEY: ${{ inputs.worker == 'ssh-mcp-worker' && secrets.SSH_ENCRYPTION_KEY || '' }}
           ACTIONS_GITHUB_DISPATCH_TOKENS: ${{ inputs.worker == 'github-actions-mcp-worker' && secrets.ACTIONS_GITHUB_DISPATCH_TOKENS || '' }}
@@ -468,6 +470,10 @@ jobs:
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           RCA_PERMANENT_IDLE_DAYS: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.RCA_PERMANENT_IDLE_DAYS || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
+          CLERK_PILOT_PUBLISHABLE_KEY: ${{ inputs.worker == 'raindrop-mcp-worker' && vars.CLERK_PILOT_PUBLISHABLE_KEY || '' }}
+          CLERK_PILOT_OWNER_USER_ID: ${{ inputs.worker == 'raindrop-mcp-worker' && vars.CLERK_PILOT_OWNER_USER_ID || '' }}
+          CLERK_PILOT_ISSUER: ${{ inputs.worker == 'raindrop-mcp-worker' && vars.CLERK_PILOT_ISSUER || '' }}
+          CLERK_PILOT_RESOURCE: ${{ inputs.worker == 'raindrop-mcp-worker' && vars.CLERK_PILOT_RESOURCE || '' }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
