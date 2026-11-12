@@ -49,3 +49,17 @@
 - **安全限定：** 此独立测试 Worker 的单一 `lab_status` 仍没有 Owner user ID 白名单。虽然 Clerk 开发应用回读当前只有一位注册用户，但如果以后新增用户，当前路由存在多用户访问固定测试文本的可能。**不得接入任何真实 MCP 上游、凭据管理、User/Org 数据或生产工作流**。Owner user ID 及 client ID 的具体核对应在使用真实能力前实现并单独验收，避免把用户标识写入公开源码。现阶段保持运行版本不变，以免打断新建的真实 OAuth 会话，便于跨令牌生命周期测试。
 - **剩余真正关键门：** 在不主动重新登录、不断开测试插件、不改短生命周期为假阳性的前提下，于 Access Token 到期以后再直接调用同一 `lab_status`；配合 Clerk 管理端合法可见的 Grant/RT 元数据或事件，在不记录 Token/Secret 的前提下核实是否发生真正 Refresh。随后验证撤销与长期空闲会话边界。刷新失效或主动手工重新认证应标记 Fail，而非当作自动续期成功。
 - **部署状态：** T5 只读核对并记录验收证据；**没有新发布、Secret 读取/轮换、用户修改、Clerk 安全策略修改、ChatGPT 插件重连、主业务 Worker 修改或生产发布**。Spec 保持 Open，Draft PR #859 不合并到 main。
+
+
+## T6 Access Token 一天到期后的真实重访（2026-11-12 北京时间约 18:00）
+
+**唯一实际操作：** 在沿用 T5 已连接的 ChatGPT 自定义插件、未断开/重新授权、未修改开发 Clerk OAuth 参数或测试 Worker 的前提下，直接调用 `mcp__Spec853_Clerk_OAuth_Lab__lab_status({})`。返回 **`Spec853 lab: authenticated no-op`**，Pass。T5 首次开发用户创建时间为 2026-11-11 17:47:26 北京时间、首次受保护工具调用也发生在约 17:50；本轮调用已间隔**超过一天**。Clerk 官方 OAuth 文档明确 access token **expire after 1 day**、refresh token **never expire**；参见 https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth 。
+
+**相互独立的只读回读：** Clerk 实验开发实例用户数仍为 1，`oauth_jwt_access_tokens=false`、`aud_claim_enabled=true`、`pkce_required=true`、CIMD 广告开启；Cloudflare 专属测试 Worker 仍使用 `c7f2d3dc-fd9a-458a-9d3a-656ed06c94f3`（100%），唯一 Binding 仍是 `CLERK_SECRET_KEY:secret_text`、Preview 关闭，没有新发布或密钥轮换。开发应用的 `session_settings.maximum_lifetime=604800` 秒（7 天）是**登录会话配置**，不是 OAuth Refresh Token 已验证的生存期。
+
+**严格验收判定：**
+- `Pass` — **当前真实 ChatGPT 插件在首次授权超过 24 小时后，未经用户重新登录仍能访问受保护的测试 MCP 工具**。这是当前用户目标的一个重要功能性端到端证明，不只是“Connected”状态或模拟请求。
+- `Unknown` — **这一次是否实际发生了 `grant_type=refresh_token` 请求、是否换发/轮换 Refresh Token，以及该行为的精确时间**。当前 Clerk MCP API 不暴露 OAuth Grant 明细；尝试只读浏览 Clerk Dashboard 日志时，官方 agent session 返回 `agent_session_forbidden`。遵守限制，停止尝试，不读取 Token、不绕过权限，也不制造伪造日志。官方静态 Checker 的 `end_to_end_verified=false` 并不能替代本次实调用凭证，但也不提供 Refresh Grant 证明。
+- `Unknown` — 多周/长期空闲、7 天会话边界、Refresh Token 撤销、登录身份与客户端白名单、生产业务 Owner ID 限制。特别是本测试 Worker 尚未设置 Owner ID 白名单，只允许固定无副作用 `lab_status`，不能据此迁移生产权限。
+
+**结论：** 当前 Spec #853 的**24 小时后免手动重连功能门** Pass；Refresh 协议具体事件链路、长期授权稳定性仍需独立证据，**不需要重复等待一天进行同质验收**。保持已有测试插件与 Worker 不变。Draft PR #859 仍为 Draft、不合并 main；本次仅更新文档/Issue，不修改 Clerk、Cloudflare 运行时或 ChatGPT 插件设置。
