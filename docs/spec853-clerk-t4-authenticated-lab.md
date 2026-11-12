@@ -83,5 +83,13 @@
 ## T9 BrowserMCP LIRTUAL 直接读取现有 Client（2026-11-12）
 
 - **读到确切信息：** LIRTUAL Edge Profile 的 Clerk Dashboard `mcp-workers-spec853-oauth-lab / development → Configure → Developers → OAuth applications` 列出 `ChatGPT` / `CIMD` / `https://chatgpt.com/oauth/client.json` / 创建 2026-11-11；Scopes：`email`、`offline_access`、`openid`、`profile`。不再将本开发实例中已连接的 Client ID 记为 Unknown。
-- **仍缺权限门：** 客户端 `Actions` 菜单显示 `Explicitly allow`。这意味着尚未显式 allow，且开发实例设置仍允许非预注册兼容 Client。未触碰任何菜单写项；下一步若执行显式 allow，须随后回读权限，并用原 ChatGPT `lab_status` 验证无重连继续可用；严格模式启用同理需独立回读。
+- **T9 只读时点仍缺权限门（T10 已显式允许）：** 客户端 `Actions` 菜单显示 `Explicitly allow`。这意味着尚未显式 allow，且开发实例设置仍允许非预注册兼容 Client。未触碰任何菜单写项；下一步若执行显式 allow，须随后回读权限，并用原 ChatGPT `lab_status` 验证无重连继续可用；严格模式启用同理需独立回读。
 - **保持范围：** 未创建或调整 OAuth Client，未修改已建立的 ChatGPT/Clerk 会话，未触及真实 Sentry、Portal、Access Policy 或生产资源。
+
+## T10 开发实例显式允许 Client（2026-11-12）
+
+- 通过 BrowserMCP LIRTUAL Endpoint 对 Clerk Development 中现有且唯一的 `ChatGPT / CIMD / https://chatgpt.com/oauth/client.json` 点击 `Explicitly allow`；收据 completed，网站显示 `ChatGPT is explicitly allowed`，随后**重新导航页面**再次展开 Actions，菜单已无 `Explicitly allow`，此配置变化 **Pass**。
+- 不重新安装插件、不退出登录，再次直接调用 `lab_status({})` 返回 `Spec853 lab: authenticated no-op`，现有 OAuth 客户端继续可用 **Pass**。
+- 只读管理回读：`client_id_metadata_documents_only_allow_pre_registered_clients=false`，严格限制未知 Client **未执行**；DCR 仍关闭、PKCE 仍开启。不能因此宣称陌生 Client 已被真实拒绝。
+- BrowserMCP 仅针对菜单关闭 `Escape` 收到 `failed/forbidden/blocked_forbidden_target`（operation `e6625833-64be-477c-a722-c5d1949d4c29`），遵守安全拒绝并停止该页面进一步控制。不能将该操作误报为全局准入修改失败。测试 Worker 没有发布或更改。
+- 余项：Development 全局预注册限制、陌生 Client 拒绝、真实撤销、7 天后会话/刷新、Clerk Production 和 Sentry 最小权限迁移均尚未验收。保持 Draft PR。
