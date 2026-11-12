@@ -1,6 +1,6 @@
 # Spec #853 — MCP 独立插件长期 OAuth 续期设计（2026-11-12 验证更新）
 
-状态：**Cloudflare 托管 Portal 的固定 Grant 到期机制不满足严格无计划重登；Clerk Hobby 仍为候选，已完成隔离开发实例的真实 ChatGPT 首次连接、24 小时后免手动重连、Owner 校验及无副作用工具 E2E。Clerk Production、真实 Grant 事件、正式生产权限隔离和业务迁移均未验收。** 本文为当前设计事实源；不授权修改生产 Portal、Access、Secrets、DNS 或 ChatGPT 正式插件。
+状态：**Cloudflare 托管 Portal 的固定 Grant 到期机制不满足严格无计划重登；Clerk Development 的真实 ChatGPT 连接、24 小时后免手动重连、Owner 校验、CIMD 客户端显式允许与严格预注册准入配置均已 Pass。Clerk Production、真实 Refresh Grant/撤销、非 Owner 负面 E2E、7 天会话边界、正式业务权限隔离和生产迁移仍未验收。** 本文为当前设计事实源；不授权修改生产 Portal、Access、Secrets、DNS 或 ChatGPT 正式插件。
 
 ## 一、最终约束（已决策，不再重复提问）
 
@@ -125,7 +125,7 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 | 适配层最小化 | Sentry 官方 [API Scopes](https://docs.sentry.io/api/permissions/) 可用 `org:read`、`project:read`、`event:read` 授予只读 API 请求；[认证文档](https://docs.sentry.io/api/auth/) 支持内部 Integration Token 与 OAuth。Sentry 官方完整 MCP [README](https://github.com/sentry-official/sentry-mcp) 的通用工具权限并非只读 | **设计结论：** 必须先取得单一 Sentry 组织范围内**专用只读令牌/受限 OAuth**的可验证权限与最小工具需求；若可直接替换原有安全接入则优先，只有确需第三方适配时才设计**最多一个**没有任意目标地址、仅固定 Sentry 后端与固定只读工具的 Worker。不新增 KV/D1/Token Vault 或代理全 Portal。 |
 | OAuth 撤销与浏览器 Session | Clerk [OAuth 官方文档](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth) 声明 Opaque Token 可在线验证并即时撤销，Refresh Token 无固定到期，Clerk Hobby Browser Session 上限 7 天；当前 Lab SDK 合同覆盖模拟 revoked/provider-outage，实际 ChatGPT 超过 24 小时无需手动重连已 Pass | **Unknown：** 未执行真实 Clerk Grant 撤销、第二个真实非 Owner 用户授权和 7 天浏览器 Session 结束后的访问；现存 Lab OAuth 会话不可直接用破坏性撤销验证。没有这些证据不能声称长期授权/生产撤销门 Pass。 |
 
-**当前最短前进路径：** (1) 通过 Clerk 自身合法受控界面核对当前 Lab 的确切 `client_id` 和允许回调，再对同一个 Client 显式预注册、核实已授权连接仍可调用，然后切到 Pre-registered clients only；Clerk 管理 MCP 当前不提供 Client 列表/预注册操作，先不重连也不绕过 Dashboard 的浏览器 agent-session 拒绝。(2) 明确 Sentry 首个代表性只读工具和只能访问该组织/项目的 API Token 授权路径，验证 Token 有效 Scope 与无额外写权限；目前尚无符合证据的专属令牌，**不改现有生产连接或借用 Portal 凭据**。(3) 再做非生产真实第二用户/撤销验证及 Sentry 只读最小 E2E；之后需单独生产授权才能创建 Clerk Production、配置域名、正式准入、Sentry 发布/回退。
+**当前最短前进路径（T11 后）：** (1) Clerk Development 的实际 ChatGPT CIMD Client 身份、显式允许、严格仅预注册配置及原连接无重登 E2E 均已 Pass，**不要重复注册或再调整客户端准入**；尚缺真实未注册 Client 授权拒绝测试（配置生效不等于独立负面 E2E）。(2) 明确 Sentry 首个代表性只读工具与专用组织/项目范围 API Token，核验真实 Scope 与无写权限，**不借用 Portal 管理凭据**。(3) 在独立可恢复测试连接进行真实第二用户/撤销 E2E，并核对 7 天 Session 与 Refresh Grant 边界；通过后再针对 Clerk Production 和单插件试点申请精准生产授权。
 
 当前以上结论均为**准备与安全审查**，不是完整生产可用性；无需再重复 T5/T6/T7 已验证的相同认证成功路径，不应为了测撤销而破坏用户唯一成功连接。
 
@@ -143,3 +143,11 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **严格准入仍未启用：** Clerk 官方管理连接只读回读 OAuth 设置仍为 `client_id_metadata_documents_only_allow_pre_registered_clients=false`；DCR=false、PKCE S256=true、CIMD 宣告=true、OAuth JWT Access Token=false。**Pre-registered clients only=Not Met**，不能把“显式允许一个 Client”误称为“全局阻止其他 Client”。
 - **平台安全拒绝：** BrowserMCP 对当前 OAuth Applications 菜单尝试 `Escape` 的独立操作 `e6625833-64be-477c-a722-c5d1949d4c29` 返回 `failed / error_code=forbidden / safe_next_action=blocked_forbidden_target`。此失败只证明菜单关闭操作被平台保护阻断，不证明 Clerk 设置不可更改。**遵守拒绝后停止该页面的后续写交互，没有改走其他浏览器/连接器绕过保护。**
 - **影响与恢复：** 只有实验 Clerk Development 的现有 ChatGPT Client 获得显式允许，现存 OAuth Client/Refresh Grant 未撤销，Sentry/Cloudflare Portal/业务 Worker/Clerk Production/DNS/Secret/GitHub Settings 均未修改。后续只需在**同一个 Development 实例**通过正常授权 UI 的 `Developers → OAuth applications → Settings` 将 CIMD 入口设为 `Pre-registered clients only`，回读全局标志变为 true 后，在**不重新登录**情况下调用原 `lab_status` 验收。必须区分真实失败和未执行，出现授权失效应立即停止并恢复原策略，而不是重登遮掩。
+
+## 九、T11 仅允许预注册 CIMD 客户端真实配置验收（2026-11-12）
+
+- **目标和范围：** BrowserMCP LIRTUAL Edge Profile、Clerk `mcp-workers-spec853-oauth-lab` 的 **Development** 实例。T10 已先允许真实 ChatGPT CIMD `https://chatgpt.com/oauth/client.json`，保留 `email/offline_access/openid/profile` 授权范围与原有连接。
+- **执行：** `Developers → OAuth applications → Settings → Pre-registered clients only`；Clerk 弹窗 `Allow only pre-registered CIMD clients` 警示原有未注册客户端可能失效。确认 `Block unregistered clients`，页面出现 `Unsaved changes`，再按 `Save`，页面显示 `Saved!`。对应 BrowserMCP 事件回执均为 completed；**不能仅用 dispatch 视为成功**。
+- **独立验收：** Clerk 官方管理连接只读回读同一 Development Instance `ins_3Lx1I9V00eUZEIvYFV9TI7PHL0O`：`client_id_metadata_documents_only_allow_pre_registered_clients=true`，`client_id_metadata_documents_block_implicitly_allowed_clients=true`，DCR=false，PKCE=true，OAuth Opaque=true，Audience=true。全局严格准入**配置 Pass**。
+- **真实连接：** 未重新安装、退出登录或重新授权，当前 ChatGPT 连接直接调用 `lab_status({})`，返回精确 `Spec853 lab: authenticated no-op`；现有已允许 Client 在严格模式下的真实成功路径 **Pass**。
+- **证据边界：** 真实陌生 CIMD Client 授权被拒的负面 E2E、Refresh Grant 与实际 Token 撤销、7 天后续期、Clerk Production 和第三方 Sentry 最小只读权限仍 **Unknown**。本轮没有创建新 Client/用户，没有改 Cloudflare Portal、Worker、Sentry、Secret、DNS 或正式 ChatGPT 插件。Draft PR 保持未合并。

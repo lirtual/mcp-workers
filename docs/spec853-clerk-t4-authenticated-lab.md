@@ -93,3 +93,9 @@
 - 只读管理回读：`client_id_metadata_documents_only_allow_pre_registered_clients=false`，严格限制未知 Client **未执行**；DCR 仍关闭、PKCE 仍开启。不能因此宣称陌生 Client 已被真实拒绝。
 - BrowserMCP 仅针对菜单关闭 `Escape` 收到 `failed/forbidden/blocked_forbidden_target`（operation `e6625833-64be-477c-a722-c5d1949d4c29`），遵守安全拒绝并停止该页面进一步控制。不能将该操作误报为全局准入修改失败。测试 Worker 没有发布或更改。
 - 余项：Development 全局预注册限制、陌生 Client 拒绝、真实撤销、7 天后会话/刷新、Clerk Production 和 Sentry 最小权限迁移均尚未验收。保持 Draft PR。
+
+## T11 严格 CIMD 预注册准入配置 + 原连接 E2E（2026-11-12）
+
+- BrowserMCP LIRTUAL 在 Clerk **Development** 的 OAuth applications → Settings 选择 `Pre-registered clients only`，确认 `Block unregistered clients`，随后处理单独的 `Unsaved changes → Save`；Clerk UI 最终显示 `Saved!`。没有改变 Client Scopes 或登录状态。
+- Clerk 管理端**独立实时回读**：`client_id_metadata_documents_only_allow_pre_registered_clients=true`、`client_id_metadata_documents_block_implicitly_allowed_clients=true`、DCR=false、PKCE=true、CIMD=true、Audience=true、Opaque OAuth Access Token=true。此前 T10 开关为 false 的描述仅记录当时历史，**当前以此值为准**。
+- 原 ChatGPT Lab 插件未断开或重新授权，直接 `lab_status({})` → `Spec853 lab: authenticated no-op`。客户端预注册配置 Pass、现存正常连接 Pass；**未通过真实未知客户端做拒绝 E2E**，该负面项目仍 Unknown。Clerk Production、Portal 与 Sentry 生产均未改。
