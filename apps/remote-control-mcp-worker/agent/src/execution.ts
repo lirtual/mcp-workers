@@ -20,7 +20,19 @@ import {
   parseListSessions, parseReadProcessOutput, parseStartProcess,
 } from "./sessions.ts";
 
+export interface SessionIdleIdentity {
+  attempt_id: string;
+  github_run_id: number;
+  github_run_attempt: number;
+}
+export interface SessionIdleSnapshot extends SessionIdleIdentity {
+  observed_at_ms: number;
+  last_activity_ms: number | null;
+  state: "idle" | "busy" | "unknown";
+}
 export interface AgentExecutionOptions {
+  /** Only the verified GitHub-hosted Ubuntu transport enables local idle control. */
+  sessionIdle?: SessionIdleIdentity;
   log?: (event: string) => void;
   searchSessionTtlMs?: number;
   receiptDirectory?: string;
@@ -47,6 +59,8 @@ export interface AgentExecutionEngine {
   resetReadSessions(): Promise<void>;
   stopOwnedForRevocation(): Promise<"confirmed" | "uncertain">;
   freezeForUpgrade(): boolean;
+  freezeForIdle(): boolean;
+  sessionIdleSnapshot(): SessionIdleSnapshot | null;
   verifyUpgradeFreeze(): boolean;
   releaseUpgradeFreeze(): void;
   close(): Promise<void>;
@@ -68,7 +82,18 @@ export function defaultAgentShellPath(
 
 /** Must be constructed once per Agent process: shared inFlight map and receipts. */
 export function createAgentExecutionEngine(options: AgentExecutionOptions = {}): AgentExecutionEngine {
-  const emit = (log: AgentExecutionOptions["log"], event: string) => log?.(event);
+  let lastActivityMs: number | null = null;
+  let idleUnknown = false;
+  const noteActivity = () => {
+    if (!options.sessionIdle) return;
+    const now = Date.now();
+    if (!Number.isSafeInteger(now) || (lastActivityMs !== null && now < lastActivityMs)) idleUnknown = true;
+    else lastActivityMs = now;
+  };
+  const emit = (log: AgentExecutionOptions["log"], event: string) => {
+    if (event === "operation_admitted") noteActivity();
+    log?.(event);
+  };
   const log = options.log;
   const searches = new SearchSessions(options.searchSessionTtlMs);
   const sessions = new ManagedSessions(options.shellPath ?? defaultAgentShellPath(), options.sessionMaxLifetimeMs);
@@ -402,9 +427,16 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
           await receipts.update(id, "running", "Development command is starting.");
           try {
             const session = await sessions.start(processArgs.command, processArgs.timeoutMs, async (exited) => {
-              await receipts.update(id, exited.state, exited.termination_reason === "deadline_exceeded"
-                ? "Managed command exceeded the 60-minute deadline."
-                : "Development command session ended.", exited.session_id);
+              noteActivity(); // The idle window starts anew when a managed command ends.
+              try {
+                await receipts.update(id, exited.state, exited.termination_reason === "deadline_exceeded"
+                  ? "Managed command exceeded the 60-minute deadline."
+                  : "Development command session ended.", exited.session_id);
+              } catch {
+                // A completed process with an unconfirmed receipt is not proven idle.
+                if (options.sessionIdle) idleUnknown = true;
+                throw Error("Session exit receipt unavailable.");
+              }
             });
             // On quick exits the exit callback may settle first: never overwrite
             // a completed/failed receipt with an earlier running snapshot.
@@ -559,6 +591,8 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
       });
       return reply;
     }
+    if (["read_file", "read_multiple_files", "list_directory", "get_file_info",
+         "start_search", "get_more_search_results"].includes(String(body.tool))) noteActivity();
     emit(log, outcome.event);
     respond(200, {
       status: "completed",
@@ -579,23 +613,46 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
     if (upgradeFrozen) return {status:503,body:{status:"unavailable"}};
     activeCalls++;
     try {
-      return await executeToolCore(body, signal);
+      const reply = await executeToolCore(body, signal);
+      if (options.sessionIdle && reply?.status === 200 &&
+          (reply.body as {status?: string})?.status === "unknown") idleUnknown = true;
+      return reply;
     } finally { activeCalls--; }
+  }
+
+  function snapshot(): SessionIdleSnapshot | null {
+    if (!options.sessionIdle) return null;
+    const now = Date.now();
+    return {
+      attempt_id: options.sessionIdle.attempt_id,
+      github_run_id: options.sessionIdle.github_run_id,
+      github_run_attempt: options.sessionIdle.github_run_attempt,
+      observed_at_ms: now,
+      last_activity_ms: lastActivityMs,
+      state: idleUnknown || !Number.isSafeInteger(now) ||
+        (lastActivityMs !== null && lastActivityMs > now + 1000) ? "unknown" :
+        activeCalls > 0 || inFlight.size > 0 || !sessions.isQuiescentForUpgrade()
+          ? "busy" : "idle",
+    };
+  }
+
+  function freeze(): boolean {
+    if (upgradeFrozen) return false;
+    // Freeze first: all requests subsequently observe the admission gate.
+    upgradeFrozen = true;
+    if (activeCalls > 0 || inFlight.size > 0 || !sessions.isQuiescentForUpgrade()) {
+      upgradeFrozen = false;
+      return false;
+    }
+    return true;
   }
 
   return {
     executeTool,
     resetReadSessions: () => searches.close(),
-    freezeForUpgrade: () => {
-      if (upgradeFrozen) return false;
-      // Setting this first excludes any new admission in the same JS event loop.
-      upgradeFrozen = true;
-      if (activeCalls > 0 || inFlight.size > 0 || !sessions.isQuiescentForUpgrade()) {
-        upgradeFrozen = false;
-        return false;
-      }
-      return true;
-    },
+    freezeForUpgrade: freeze,
+    sessionIdleSnapshot: snapshot,
+    freezeForIdle: () => snapshot()?.state === "idle" && freeze(),
     verifyUpgradeFreeze: () => upgradeFrozen && !stopped &&
       activeCalls === 0 && inFlight.size === 0 &&
       sessions.isQuiescentForUpgrade(),
