@@ -1,7 +1,7 @@
 import {listUnifiedActions} from './action-catalog.ts';
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { discoverPortalTools } from './capabilities.ts';
+import { discoverPortalTools } from './portal-discovery.ts';
 import {portalAuthorization} from './portal-authorization.ts';
 import { WorkflowService, StateError, cleanError } from './store.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
