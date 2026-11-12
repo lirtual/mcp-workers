@@ -79,3 +79,9 @@
 - **Sentry 只读能力：** 连接器返回组织 `nfwt` 与项目 `scrape-relay`；Cloudflare 生产 Portal 仅只读查询确认 Sentry 后端 `https://mcp.sentry.dev/mcp`，`auth_type=bearer`，管理端上游状态 connected/ready，已暴露的工具清单 73 个且含写操作。不能把连接器的只读查询成功或工具名当作该 Bearer 的 `org:read/project:read/event:read` Scope 证据。正式计划需专用只读认证，禁止复用 Portal 管理凭据或直接代理全部工具。
 - **真实 User/撤销门：** 本轮未创建非 Owner 测试账号、未向任何客户端签发第二 Token、未撤销当前唯一 OAuth Grant，也未修改用户登录状态。这两项继续 `Unknown`；SDK/Workerd 的 42/42 静态/模拟 Pass 依然有效，不新增假验收。
 - **交付范围：** 仅文档事实审计和现有只读连接器调用，Cloudflare Worker `e5bbebb9-0e73-4529-a8b9-d21d3e13b705`、原 Clerk/Sentry/Portal 配置、生产端点、OAuth 客户端均不变。
+
+## T9 BrowserMCP LIRTUAL 直接读取现有 Client（2026-11-12）
+
+- **读到确切信息：** LIRTUAL Edge Profile 的 Clerk Dashboard `mcp-workers-spec853-oauth-lab / development → Configure → Developers → OAuth applications` 列出 `ChatGPT` / `CIMD` / `https://chatgpt.com/oauth/client.json` / 创建 2026-11-11；Scopes：`email`、`offline_access`、`openid`、`profile`。不再将本开发实例中已连接的 Client ID 记为 Unknown。
+- **仍缺权限门：** 客户端 `Actions` 菜单显示 `Explicitly allow`。这意味着尚未显式 allow，且开发实例设置仍允许非预注册兼容 Client。未触碰任何菜单写项；下一步若执行显式 allow，须随后回读权限，并用原 ChatGPT `lab_status` 验证无重连继续可用；严格模式启用同理需独立回读。
+- **保持范围：** 未创建或调整 OAuth Client，未修改已建立的 ChatGPT/Clerk 会话，未触及真实 Sentry、Portal、Access Policy 或生产资源。

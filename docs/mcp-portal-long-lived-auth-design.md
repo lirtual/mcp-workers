@@ -128,3 +128,10 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 **当前最短前进路径：** (1) 通过 Clerk 自身合法受控界面核对当前 Lab 的确切 `client_id` 和允许回调，再对同一个 Client 显式预注册、核实已授权连接仍可调用，然后切到 Pre-registered clients only；Clerk 管理 MCP 当前不提供 Client 列表/预注册操作，先不重连也不绕过 Dashboard 的浏览器 agent-session 拒绝。(2) 明确 Sentry 首个代表性只读工具和只能访问该组织/项目的 API Token 授权路径，验证 Token 有效 Scope 与无额外写权限；目前尚无符合证据的专属令牌，**不改现有生产连接或借用 Portal 凭据**。(3) 再做非生产真实第二用户/撤销验证及 Sentry 只读最小 E2E；之后需单独生产授权才能创建 Clerk Production、配置域名、正式准入、Sentry 发布/回退。
 
 当前以上结论均为**准备与安全审查**，不是完整生产可用性；无需再重复 T5/T6/T7 已验证的相同认证成功路径，不应为了测撤销而破坏用户唯一成功连接。
+
+## 七、T9 LIRTUAL BrowserMCP 核实已连接的 ChatGPT CIMD Client（2026-11-12）
+
+- **来源与环境：** 用户明确指定 BrowserMCP **LIRTUAL**（Edge、authorized/online/control-ready）；在用户已登录的 Clerk 开发实例 `mcp-workers-spec853-oauth-lab` 的 Dashboard，通过 `Configure → Developers → OAuth applications → Applications` 直接读取列表。此证据来自已存在的 Client 记录，而非仅凭公开的 `chatgpt.com/oauth/client.json` 推断。
+- **Client 已确认：** 唯一可见客户端为 `ChatGPT`，类型 `CIMD`，Client ID URL 精确为 `https://chatgpt.com/oauth/client.json`，创建于 2026-11-11；客户端记录的 Scopes 为 `email`、`offline_access`、`openid`、`profile`。当前 Lab 已连接 ChatGPT 客户端使用稳定 CIMD URL 的身份核对 **Pass**，前述 T8 `actual Client ID Unknown` 为历史检查时点状态，已被本次证据取代。
+- **Client admission 尚未收紧：** 在该客户端的 `Actions` 菜单可见 `Explicitly allow`，说明此客户端尚未被显式允许；与 Clerk 实例只读配置 `client_id_metadata_documents_only_allow_pre_registered_clients=false` 一致。**不能直接启用 Pre-registered clients only** 而不先为当前 Client 执行显式允许，否则可能导致现存 ChatGPT 连接失效。显式允许与全局严格模式是**两个独立状态和步骤**，各自需要回读与原插件无重连工具调用验收。
+- **本轮变更边界：** 只读操作客户端列表和菜单，**未**点击 `Explicitly allow`、`Edit scopes`、`Refresh metadata` 或 `Delete`；没有修改 Clerk/ChatGPT 连接或生产业务配置、未获取或复制 Token/Secret。客户端允许与严格准入仍然 **Not Met**，需在已确认当前 Client 的基础上按非生产安全变更门执行，并另行决定是否要求生产实例显式注册。
