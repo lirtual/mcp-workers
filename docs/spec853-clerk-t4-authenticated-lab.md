@@ -112,3 +112,10 @@
 - Sentry 官方 Org Auth Token API 仅允许 `org:ci`，**无法**签发 `org:read, project:read, team:read, event:read`。已避免创建无效凭据。
 - Sentry `nfwt` 的 Internal Integration 创建表单已通过 LIRTUAL BrowserMCP 只读打开：项目、团队、问题/事件、组织权限均可设置 Read，其他资源默认 No Access；Webhook/Alert 功能可保持未启用。未填写并提交创建表单、未签发 Token；原有 Org Tokens/Internal Integrations 仍无新增记录。
 - 官方远程 MCP direct auth 需 `Sentry-Bearer`，与 MCP OAuth `Bearer` 不同。是否能对单项目 `inspect` 实际列工具、是否存在跨资源拒绝，继续 Unknown，等待用户确认用 Internal Integration 创建专用只读凭据的新增生产配置对象。
+
+## T16 Sentry 只读测试与已暴露 Token 撤销（2026-11-12）
+
+- Sentry nfwt Internal Integration `spec853-sentry-readonly` 已真实保存；唯一 API Token 只读四 scopes，UI 后四位为 1640。用户将原 Token 贴入聊天，按暴露处理，并授权一次只读测试后立即撤销。
+- Sentry REST 获取 nfwt 项目列表返回 200，且目标 `scrape-relay` 是唯一可见项目；Sentry remote MCP `/mcp/nfwt/scrape-relay?skills=inspect` 携 `Sentry-Bearer` 返回 HTTP 200，但解析为 0 个工具，未执行真实只读工具调用，**MCP inspect E2E 不能标 Pass**。尝试 Token 管理 API 返回 403。
+- 用户在 Sentry 界面 Revoke 后，BrowserMCP LIRTUAL 回读 Integration Token 表格显示 `You haven't created any authentication tokens yet.`，不存在末尾 1640 的列表项。**Token 撤销 UI Pass、集成保留、当前 Token 0**；未对已撤销原值再次发起请求。
+- 本轮没有将 Token 原文提交至代码仓库、文档、Issue、CI 或正式配置；不得再使用该 Token，也不得将 Token 值作为复测材料。后续实际 MCP 工具调用需要安全渠道提供的独立测试 Token 与单独撤销，且仍不能视为 Clerk refresh 验收。

@@ -169,3 +169,12 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **权限与恢复：** 一个 Internal Integration 是比用户原先批准的“一枚原生 Organization Token”多一个持久配置对象，创建后还需检查实际签发凭据的 scopes 和 webhook 状态。应在用户确认这一替代对象后，才创建一个名称稳定的 `spec853-sentry-readonly` Integration、只读四权限、**零 webhook/alert**、只签发一枚 Token；若无法确认缺省权限为 No Access 则停止。不要在 ChatGPT 对话、Git、日志或跨浏览器工具输出凭据原文，凭据仅在 Sentry 安全上下文中保存。
 - **远程 MCP 协议差异：** [Sentry 官方 Toolkit](https://github.com/getsentry/toolkit) 说明 `https://mcp.sentry.dev/mcp` 的 direct token 模式使用 `Authorization: Sentry-Bearer ...` 而不是 MCP OAuth 的 `Bearer`，并可用 `?skills=inspect` 限制暴露工具；即使创建只读 Integration Token，仍须用真实 Token 在受控环境按正确 Header 验收，不可从 401 或工具清单推断成功。不经许可不将 Token 注入生产 Worker/Portal。
 - **状态：** **Blocked for authorization of the alternate production resource.** 当前范围内只读核查完成；无 Sentry Token/Integration 写入，也没有更改 Clerk、Cloudflare 或 ChatGPT 正式连接。待用户明确同意改为 Internal Integration + 一枚只读凭据，再沿现有授权连续执行。
+
+## 十二、T16 Sentry 最小只读凭据实测与泄露后撤销（2026-11-12）
+
+- 用户先保存了 `spec853-sentry-readonly` Internal Integration（Sentry nfwt），其 Organization、Project、Team、Issue & Event 均为 Read；Release、Distribution、Member、Alerts 为 No Access，未启用 CI/Webhook/Alert Action。Sentry UI 已可回读 Integration 持久化存在。
+- 用户从该 Integration 生成一枚仅拥有 `event:read`、`org:read`、`project:read`、`team:read` 的 API Token（列表中仅一枚，后四位 1640）。该 Token 原值曾由用户贴入聊天，**应视为暴露且不允许继续保留**。用户明确授权用该枚 Token 做一次只读 E2E 后立即撤销。
+- 在隔离的单次执行会话中通过标准输入临时传递凭据，未把值写入项目文件、Git、Issue 或结果输出。Sentry REST `GET /api/0/organizations/nfwt/projects/` 返回 **HTTP 200**，仅列出 `scrape-relay` 一个项目，验证项目列表读取成功；这不能单独证明 Token 对其他组织/项目无访问权限。
+- 对 `https://mcp.sentry.dev/mcp/nfwt/scrape-relay?skills=inspect` 发送 `Authorization: Sentry-Bearer` 的 `tools/list` JSON-RPC 请求，HTTP **200**，但简化解析得到工具数 **0**、未观测到实际工具调用，故 **MCP 功能 E2E 未通过/Unknown**，不能以 HTTP 成功当作工具链 Pass。尝试使用本只读凭据列管理 Token 接口返回 HTTP **403**（符合无 Token 管理权限）。
+- 用户在 Sentry 官方 UI 手动 Revoke 唯一 Token。随后通过 **BrowserMCP LIRTUAL** 只读回读当前 Integration 的 Token 区域为精确提示 `You haven't created any authentication tokens yet.`，且已不显示末尾 1640 的凭据。**撤销的管理界面状态 Pass；未再携凭据发请求做额外 401 验证（避免继续使用已暴露且已撤销的值）。** Integration 本身保留，Token 当前 0 枚。
+- **下一步边界：** 不再使用这枚已暴露的 Token；若需后续完整 MCP E2E，使用隔离的新凭据经受控渠道本地注入，不回贴到聊天、Git 或日志，完成真实 `tools/list`、调用代表性只读工具、拒绝写/跨项目验证，试验后撤销。没有批准重配生产 Portal、Clerk Production、Sentry 正式连接或业务 Worker。Clerk Refresh Grant、7 天边界、真正撤销实验仍待独立验收。
