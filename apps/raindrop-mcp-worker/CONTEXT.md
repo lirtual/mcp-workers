@@ -26,12 +26,13 @@ A write that reached the upstream request boundary but did not return enough evi
 ## Settled boundaries
 
 1. The current goal is to make existing capabilities reliable and add missing capabilities only when needed; exhaustive coverage of every public Raindrop API is not a release criterion.
-2. The Worker remains stateless and uses the existing MCP Portal plus separate `MCP_ACCESS_TOKEN` and `RAINDROP_ACCESS_TOKEN` credentials. It does not add D1, R2, KV, Queues, Workflows, or a new credential system.
+2. The current production Worker remains stateless and uses the MCP Portal plus separate `MCP_ACCESS_TOKEN` and `RAINDROP_ACCESS_TOKEN` credentials; source-only Clerk pilot details are in rule 9. It does not add D1, R2, KV, Queues, Workflows, or its own credential issuer.
 3. Existing tool names and invocation shapes are not compatibility constraints. The public contract may be replaced with resource/action tools grounded in official semantics and Worker limits.
 4. List operations are paginated and bounded. Batch writes require one explicit source collection and a non-empty explicit ID list; they never imply an entire collection or cross-collection server-side scan.
 5. Writes are not automatically retried or rolled back. Multi-request operations distinguish succeeded, failed, unknown, and not-executed scopes using available upstream evidence.
 6. Cleanup is preview-first and target-explicit. The Pro-only duplicate tool and filters are removed; custom automatic deduplication is out of scope. The Agent-facing contract does not perform automatic duplicate deletion.
 7. The Agent-facing tool contract excludes official suggestions and MCP Sampling / pure AI tag wrappers (historical Spec #145; final Free-plan reduction in PR #148). The conversation model owns inference; the Worker owns its 24 published Raindrop query and mutation operations. Historical suggestion code does not imply a published Agent tool.
 8. Live writes are accepted only against dedicated test collections and disposable test data. Account, sharing, import/export, backup, upload, and permanent-copy APIs remain out of scope until separately requested.
+9. Spec #853 adds an **opt-in, source-only** Clerk OAuth pilot at `/clerk/mcp`. Without an explicitly configured resource it stays 404; when enabled it validates the exact Owner, resource Audience, issuer, OAuth token type and `raindrop:read` Scope and exposes only `collection_list` (no MCP resources or mutations). The existing `/mcp` Portal ingress and its 24 tools remain unchanged. Neither production bindings nor deployment are authorized by this source change.
 
 The approved specification is published as a GitHub specification issue rather than committed as a repository spec file. The application ADR records the breaking public-contract decision; implementation tickets own concrete tool schemas, limits, tests, and rollout work.
