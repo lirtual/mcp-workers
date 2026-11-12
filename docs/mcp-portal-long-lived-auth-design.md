@@ -1,6 +1,6 @@
 # Spec #853 — MCP 独立插件长期 OAuth 续期设计（2026-11-12 验证更新）
 
-状态：**Cloudflare 托管 Portal 仍不能证明无固定 Grant 到期；Clerk Development 的 ChatGPT CIMD 显式允许、严格预注册、Owner 校验、24 小时后免重连及真实工具调用均已 Pass。T12 另观察到两种陌生 CIMD 发起授权被拒，但原因可能包含元数据解析失败；Sentry 官方支持 inspect 只读能力，但当前账户没有专用组织凭据。真实 Refresh Grant、撤销、7 天边界、生产 Sentry 凭据与迁移仍待验证。** 本文为当前设计事实源；不授权修改生产 Portal、Access、Secrets、DNS 或正式插件。
+状态：**Cloudflare 托管 Portal 仍不能证明无固定 Grant 到期；Clerk Development 的 ChatGPT CIMD 显式允许、严格预注册、Owner 校验、24 小时后免重连及真实工具调用均已 Pass。T12 另观察到两种陌生 CIMD 发起授权被拒，但原因可能包含元数据解析失败；Sentry 官方支持 inspect 只读能力，但当前账户没有专用组织凭据；Sentry 原生 Organization Auth Token 只能授予 org:ci，必须使用 Internal Integration 才能得到所需只读权限。真实 Refresh Grant、撤销、7 天边界、生产 Sentry 凭据与迁移仍待验证。** 本文为当前设计事实源；不授权修改生产 Portal、Access、Secrets、DNS 或正式插件。
 
 ## 一、最终约束（已决策，不再重复提问）
 
@@ -160,3 +160,12 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - Sentry 官方 MCP 源码与使用文档提供 inspect（只读）技能，以及基于 /mcp/{org}/{project} 的作用域和 ?skills=inspect 的工具筛选。读取来源：https://github.com/getsentry/toolkit/blob/main/README.md 及 https://github.com/getsentry/sentry-mcp/blob/main/packages/mcp-core/src/skills.ts 。专用只读 Sentry API Token 最小 scopes 是 org:read、project:read、team:read、event:read（https://docs.sentry.io/api/permissions/）；需要同时采用这些服务端 scopes 和 MCP skills 限制，不能仅靠隐藏工具实现真实权限隔离。
 - 对 https://mcp.sentry.dev/mcp/nfwt/scrape-relay?skills=inspect 发起无身份的 tools/list POST，真实返回 401 及 WWW-Authenticate: Bearer。此结果只证明路由有鉴权挑战，**不证明携带只读 Token 后的具体工具列表、跨组织拒绝或可用性**，这些须等专用 Token 后验收。也不意味着无需验证客户端长效授权。
 - 当前最小结论：**不新建高权限 Portal 代理、不自建 Sentry 73 工具镜像、不添加状态库或额外身份服务。** 若未来确需 Clerk 转译，仅以专用只读 Token 与固定 nfwt/scrape-relay 上游路径运行；正式凭据创建、注入及部署需要单独生产授权。Clerk 真实 Token 撤销、非 Owner 授权 E2E、7 天浏览器 Session 后 RT 行为仍 Unknown。
+
+## 十一、T13 Sentry Organization Token 类型与 Internal Integration 创建门（2026-11-12）
+
+- **用户授权的原请求边界：** 只在 Sentry `nfwt` 创建**一枚**专用只读 Organization Token，限定 `org:read`、`project:read`、`team:read`、`event:read`，不允许修改现有 Portal、Sentry 正式连接或发布生产 Worker。
+- **官方 API 证据与关键不兼容：** [Sentry Create an Org Auth Token](https://docs.sentry.io/api/organizations/create-an-org-auth-token/) 明确新一代原生 Org Auth Token **只能**授予 `org:ci`，且调用创建接口会生成一枚一次性展示的凭据。它**无法满足**本次四项只读权限，因此不能误创建 `org:ci` Token 当成已验收。
+- **推荐最小替代：** [Sentry Create a Token via Internal Integration](https://docs.sentry.io/api/guides/create-auth-token/) 明确推荐通过 `Custom Integrations → Internal Integration` 配置组织级凭据权限。BrowserMCP LIRTUAL 已在当前 `nfwt` 页面只读查看内部集成创建表单，显示 `Project`、`Team`、`Issue & Event`、`Organization` 可分别设为 Read，同时其余权限保持 No Access；Webhook URL、Headers、Alert Action、Schema、Webhook subscriptions 可保持空/关闭。未点击 `Save Changes`，没有创建 Integration 或 Token。
+- **权限与恢复：** 一个 Internal Integration 是比用户原先批准的“一枚原生 Organization Token”多一个持久配置对象，创建后还需检查实际签发凭据的 scopes 和 webhook 状态。应在用户确认这一替代对象后，才创建一个名称稳定的 `spec853-sentry-readonly` Integration、只读四权限、**零 webhook/alert**、只签发一枚 Token；若无法确认缺省权限为 No Access 则停止。不要在 ChatGPT 对话、Git、日志或跨浏览器工具输出凭据原文，凭据仅在 Sentry 安全上下文中保存。
+- **远程 MCP 协议差异：** [Sentry 官方 Toolkit](https://github.com/getsentry/toolkit) 说明 `https://mcp.sentry.dev/mcp` 的 direct token 模式使用 `Authorization: Sentry-Bearer ...` 而不是 MCP OAuth 的 `Bearer`，并可用 `?skills=inspect` 限制暴露工具；即使创建只读 Integration Token，仍须用真实 Token 在受控环境按正确 Header 验收，不可从 401 或工具清单推断成功。不经许可不将 Token 注入生产 Worker/Portal。
+- **状态：** **Blocked for authorization of the alternate production resource.** 当前范围内只读核查完成；无 Sentry Token/Integration 写入，也没有更改 Clerk、Cloudflare 或 ChatGPT 正式连接。待用户明确同意改为 Internal Integration + 一枚只读凭据，再沿现有授权连续执行。

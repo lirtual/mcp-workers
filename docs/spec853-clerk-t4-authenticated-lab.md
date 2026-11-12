@@ -106,3 +106,9 @@
 - Clerk 官方回读 strict-only=true、block-implicit=true、DCR=false、PKCE=true；原 ChatGPT lab_status 在上述测试后依然返回 Spec853 lab: authenticated no-op。
 - Sentry nfwt 的 Organization Tokens=0、Custom Internal Integrations=0（LIRTUAL 浏览器只读）；Sentry 官方 scoped inspect 路由在未提供凭据时 tools/list 返回 401 Bearer。只读工具权限/跨组织实际防护仍未进行有凭据 E2E。
 - 不读取或创建 Token、不撤销当前用户、不新建 Worker 或数据库、不修改 Sentry/Cloudflare 生产、Clerk Production 或正式 ChatGPT 插件。下一步是独立只读 Sentry 凭据及生产操作的明确授权，和可恢复的独立 Clerk 撤销测试。
+
+## T13 Org Token 类型不符与 Internal Integration 只读预检（2026-11-12）
+
+- Sentry 官方 Org Auth Token API 仅允许 `org:ci`，**无法**签发 `org:read, project:read, team:read, event:read`。已避免创建无效凭据。
+- Sentry `nfwt` 的 Internal Integration 创建表单已通过 LIRTUAL BrowserMCP 只读打开：项目、团队、问题/事件、组织权限均可设置 Read，其他资源默认 No Access；Webhook/Alert 功能可保持未启用。未填写并提交创建表单、未签发 Token；原有 Org Tokens/Internal Integrations 仍无新增记录。
+- 官方远程 MCP direct auth 需 `Sentry-Bearer`，与 MCP OAuth `Bearer` 不同。是否能对单项目 `inspect` 实际列工具、是否存在跨资源拒绝，继续 Unknown，等待用户确认用 Internal Integration 创建专用只读凭据的新增生产配置对象。
