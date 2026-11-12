@@ -65,16 +65,20 @@ test('never accepts a renamed/replaced Portal or incomplete inventory',()=>{
   }
 });
 function accessApplications(name, withPolicies=true){
-  const policies=()=>[
-    {id:'11111111-1111-4111-8111-111111111111',name:'WORKFLOWS',
+  const policies=(portal=false)=>[
+    {id:'7cec582c-4038-4fb0-9ad8-fcdb04af4adc',name:'WORKFLOWS',
       decision:'non_identity',precedence:1,reusable:true,
       include:[{service_token:{token_id:'fixture'}}]},
-    {id:'22222222-2222-4222-8222-222222222222',name:'Default Allow Rule',
+    {id:portal?'07204847-0459-4197-b3c3-2dbe2a47a550':
+      '659d043c-e957-4c91-9f33-2416c52ecbe5',
+      name:portal?'MCP Portal and Browser Owners':'Default Allow Rule',
       decision:'allow',precedence:2,reusable:true,
-      include:[{email:{email:'fixture@example.invalid'}}]},
+      include:(portal?['lirtual@qq.com','lirtual@outlook.com']:
+        ['lirtual@qq.com','lirtual@outlook.com','lirtual@gmail.com'])
+        .map(email=>({email:{email}}))},
   ];
-  return [{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies:policies()},
-    {name, type:'mcp',policies:withPolicies?policies():[]}];
+  return [{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies:policies(true)},
+    {name,type:'mcp',policies:withPolicies?policies():[]}];
 }
 function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,
   toolNames=EXPECTED_TOOLS,alreadyRegistered=false){
