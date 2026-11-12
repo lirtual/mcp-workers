@@ -74,6 +74,7 @@ export async function runUbuntuSessionRca(env:NodeJS.ProcessEnv=process.env):Pro
  try{
    await maintainAuthenticatedDeviceSession(ENDPOINT,keyPath,controller.signal,{
      receiptDirectory:path.join(path.dirname(file),'receipts'),
+     sessionIdle:e.physical,
      onState:state=>{if(state==='rejected')controller.abort();},
    });
  }finally{

@@ -338,6 +338,8 @@ export async function maintainAuthenticatedDeviceSession(
     capability?: "read-only" | "full";
     /** Durable receipt directory; native Windows passes its private user store. */
     receiptDirectory?: string;
+    /** Verified ephemeral Ubuntu Session only; not a permanent-device feature. */
+    sessionIdle?: import("./execution.ts").SessionIdleIdentity;
     /** Only an owner-installed permanent Mac/Windows task enables local upgrade IPC. */
     enableLocalUpgrade?: boolean;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -362,6 +364,7 @@ export async function maintainAuthenticatedDeviceSession(
   const shellAvailable = full;
   const execution = createAgentExecutionEngine({
     receiptDirectory: options.receiptDirectory,
+    sessionIdle: options.sessionIdle,
   });
   let upgradeControl: Awaited<ReturnType<typeof startUpgradeControl>> | undefined;
   if (full && (process.platform === "linux" ||

@@ -64,7 +64,13 @@ export async function startUpgradeControl(execution: AgentExecutionEngine, keyPa
       buffer += Buffer.from(chunk).toString("utf8");
       if (buffer.length > 32) { socket.destroy(); return; }
       if (!buffer.includes("\n")) return;
-      if (buffer === "freeze\n") {
+      if (buffer === "idle-status\n") {
+        const state = execution.sessionIdleSnapshot();
+        if (!state) socket.destroy();
+        else socket.end(JSON.stringify(state) + "\n");
+      } else if (buffer === "idle-freeze\n") {
+        socket.end(execution.freezeForIdle() ? "ready\n" : "busy\n");
+      } else if (buffer === "freeze\n") {
         socket.end(execution.freezeForUpgrade() ? "ready\n" : "busy\n");
       } else if (buffer === "verify-frozen\n") {
         // Read-only check: the remote owner admission must already have
