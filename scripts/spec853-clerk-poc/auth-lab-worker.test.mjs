@@ -13,15 +13,17 @@ function createClerkClient() {
       const bearer = request.headers.get("authorization");
       if (!bearer || !bearer.startsWith("Bearer ")) return { isAuthenticated: false };
       const token = bearer.slice(7);
-      if (!["good", "missing-scope", "wrong-type", "wrong-issuer", "no-owner"].includes(token)) {
+      if (!["good", "missing-scope", "wrong-type", "wrong-issuer", "no-owner", "wrong-owner", "revoked", "provider-down"].includes(token)) {
         return { isAuthenticated: false };
       }
+      if (token === "provider-down") throw new Error("synthetic Clerk verification 503");
+      if (token === "revoked") return { isAuthenticated: false };
       const wrongPayload = btoa(JSON.stringify({ iss: "https://evil.example.invalid" })).replace(/=/g, "");
       return {
         isAuthenticated: true,
         tokenType: token === "wrong-type" ? "session_token" : "oauth_token",
         token: token === "wrong-issuer" ? "eyJhbGciOiJSUzI1NiJ9." + wrongPayload + ".sig" : "opaque-test",
-        toAuth: () => ({ userId: token === "no-owner" ? "" : "user_test",
+        toAuth: () => ({ userId: token === "no-owner" ? "" : token === "wrong-owner" ? "user_other" : "user_test",
           scopes: token === "missing-scope" ? [] : ["profile"] }),
       };
     },
@@ -34,7 +36,7 @@ const moduleUrl = "data:text/javascript;base64," + Buffer.from(
 ).toString("base64");
 const worker = (await import(moduleUrl)).default;
 const origin = "https://spec853-clerk-oauth-lab.aiyaya.workers.dev";
-const env = { CLERK_SECRET_KEY: "synthetic-not-real" };
+const env = { CLERK_SECRET_KEY: "synthetic-not-real", CLERK_OWNER_USER_ID: "user_test" };
 const request = (path, method = "GET", bearer, body) => new Request(origin + path, {
   method,
   headers: bearer ? { authorization: "Bearer " + bearer } : {},
@@ -63,8 +65,29 @@ test("missing and unauthenticated bearer challenges are fail-closed", async () =
 });
 test("missing scope is 403 and wrong token type, owner, issuer fail closed", async () => {
   assert.equal((await call("tools/list", {}, "missing-scope")).status, 403);
-  for (const t of ["wrong-type", "no-owner", "wrong-issuer"])
+  for (const t of ["wrong-type", "no-owner", "wrong-owner", "wrong-issuer", "revoked", "provider-down"])
     assert.equal((await call("tools/list", {}, t)).status, 401, t);
+});
+test("missing, wrong or malformed Owner binding denies even a valid token", async () => {
+  const req = request("/mcp", "POST", "good", { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  for (const setting of [
+    { CLERK_SECRET_KEY: "synthetic-not-real" },
+    { ...env, CLERK_OWNER_USER_ID: "" },
+    { ...env, CLERK_OWNER_USER_ID: "user_other" },
+    { ...env, CLERK_OWNER_USER_ID: "user_test,user_other" },
+  ]) {
+    const r = await worker.fetch(req, setting);
+    assert.equal(r.status, 401);
+    assert.match(r.headers.get("www-authenticate"), /Bearer/);
+  }
+});
+test("no client-supplied email or RPC arguments can change Owner identity", async () => {
+  const r = await worker.fetch(new Request(origin + "/mcp", {
+    method: "POST",
+    headers: { authorization: "Bearer wrong-owner", "x-owner-user-id": "user_test" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { owner: "user_test" } }),
+  }), env);
+  assert.equal(r.status, 401);
 });
 test("initialize, tools/list, and no-op call require valid synthetic auth", async () => {
   const i = await call("initialize", {});
@@ -94,5 +117,5 @@ test("Worker source has no real secret, no direct upstream fetch, and only one C
   assert.equal((source.match(/from "@clerk\/backend"/g) || []).length, 1);
   assert.ok(!/sk_(?:test|live)_[A-Za-z0-9_-]{20,}/.test(source));
   assert.ok(!source.includes("await fetch("));
-  assert.ok(!source.includes("CLERK_OWNER_USER_ID"));
+  assert.ok(source.includes("env?.CLERK_OWNER_USER_ID"));
 });

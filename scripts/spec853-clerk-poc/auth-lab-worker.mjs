@@ -1,7 +1,7 @@
 /**
  * Spec #853 T4: isolated public OAuth interoperability probe.
  * NO production tools, no upstream permissions, no persistent state.
- * IMPORTANT: owner ID and long-term refresh behavior are separate gates.
+ * Owner identity comes from the isolated Worker environment, never from email.
  */
 import { createClerkClient } from "@clerk/backend";
 
@@ -67,6 +67,11 @@ export default {
     if (url.pathname !== "/mcp") return json({ error: "not_found" }, 404);
     const bearer = request.headers.get("authorization");
     if (!bearer?.startsWith("Bearer ") || !env?.CLERK_SECRET_KEY) return unauthorized();
+    // A verified token is insufficient without an exact configured Owner.
+    // Empty or malformed bindings MUST never turn the lab into allow-all.
+    const expectedOwner = env?.CLERK_OWNER_USER_ID;
+    if (typeof expectedOwner !== "string" ||
+        !/^user_[A-Za-z0-9]+$/.test(expectedOwner)) return unauthorized();
     try {
       const client = createClerkClient({
         secretKey: env.CLERK_SECRET_KEY,
@@ -79,10 +84,10 @@ export default {
       if (!state.isAuthenticated || state.tokenType !== "oauth_token" ||
           !jwtIssuerMatches(state.token)) return unauthorized();
       const auth = state.toAuth();
-      if (!auth?.userId) return unauthorized();
+      if (auth?.userId !== expectedOwner) return unauthorized();
       if (!Array.isArray(auth.scopes) || !auth.scopes.includes(REQUIRED_SCOPE)) return wrongScope();
-      // This *test-only* tool never reads users or calls upstream services;
-      // owner ID, revocation and multi-resource boundaries remain separate gates.
+      // This test tool never reads users or calls upstream services.
+      // Real revocation and cross-resource enforcement need separate E2E proof.
       if (request.method !== "POST") {
         return json({ error: "method_not_allowed" }, 405, { allow: "POST" });
       }
