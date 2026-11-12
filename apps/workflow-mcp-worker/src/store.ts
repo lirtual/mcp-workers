@@ -906,6 +906,8 @@ export class WorkflowService {
     if(idempotency_key){
       const original=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
       if(original){
+        if(expected_published_version_id&&original.version_id!==expected_published_version_id)
+          throw new StateError('published_version_changed');
         if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
         // A file-less workflow_run cannot use a prior file-backed Run key
         // to bypass the selected-file admission gate, even on replay.
@@ -1025,7 +1027,18 @@ export class WorkflowService {
     ).bind(id,workflow_id,version,id,idempotency_key??null,request_digest,inputJson,t,t,weight,workflow_id,version).run();
     if(!insert.meta.changes){
       if(idempotency_key){const prior=await this.db.prepare('SELECT * FROM runs WHERE workflow_id=? AND admission_key=?').bind(workflow_id,idempotency_key).first<RunRow>();
-        if(prior){if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');if(deliveryKey)throw new StateError('envshare_key_unrecoverable');if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&prior.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(prior);}}
+        if(prior){
+          if(expected_published_version_id&&prior.version_id!==expected_published_version_id)
+            throw new StateError('published_version_changed');
+          if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+          if(deliveryKey)throw new StateError('envshare_key_unrecoverable');
+          if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');
+          if(expected_version_id&&prior.version_id!==expected_version_id)
+            throw new StateError('published_version_changed');
+          return this.reconcileStart(prior);
+        }
+      }
+
       const latest=await this.row(workflow_id);
       if(latest.state!=='active')throw new StateError('workflow_not_active');
       if(latest.active_version_id!==version)throw new StateError('published_version_changed');
