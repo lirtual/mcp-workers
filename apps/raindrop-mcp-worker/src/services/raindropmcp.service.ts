@@ -6,7 +6,9 @@ import {
   UpstreamError,
   ValidationError,
 } from "../types/mcpErrors.js";
-import RaindropService, { type RaindropServiceConfig } from "./raindrop.service.js";
+import RaindropService, {
+  type RaindropServiceConfig,
+} from "./raindrop.service.js";
 
 const SERVER_VERSION = pkg.version;
 
@@ -26,6 +28,8 @@ export class RaindropMCPService {
   private server: McpServer;
   public raindropService: RaindropService;
   private resources: Record<string, any> = {};
+  private readonly exposedToolConfigs: typeof toolConfigs;
+  private readonly readonlyCollectionPilot: boolean;
   /**
    * Expose the MCP server instance for external control (e.g., connect, close).
    */
@@ -60,8 +64,17 @@ export class RaindropMCPService {
     };
   }
 
-  constructor(config: RaindropServiceConfig = {}) {
+  constructor(
+    config: RaindropServiceConfig = {},
+    options: { readonlyCollectionPilot?: boolean } = {},
+  ) {
     try {
+      // Clerk pilot registers only one explicitly reviewed read tool; it cannot
+      // reach mutations through tools/call or the direct helper entry point.
+      this.readonlyCollectionPilot = options.readonlyCollectionPilot === true;
+      this.exposedToolConfigs = this.readonlyCollectionPilot
+        ? toolConfigs.filter((tool) => tool.name === "collection_list")
+        : toolConfigs;
       this.raindropService = new RaindropService(config);
       this.server = new McpServer(
         {
@@ -79,8 +92,10 @@ export class RaindropMCPService {
       );
 
       this.registerDeclarativeTools();
-      this.registerResources();
-      this.registerResourceHandlers();
+      if (!this.readonlyCollectionPilot) {
+        this.registerResources();
+        this.registerResourceHandlers();
+      }
     } catch (err) {
       console.error("Failed to initialize RaindropMCPService:", err);
       throw err;
@@ -99,7 +114,7 @@ export class RaindropMCPService {
   }
 
   private registerDeclarativeTools() {
-    for (const config of toolConfigs) {
+    for (const config of this.exposedToolConfigs) {
       this.server.registerTool(
         config.name,
         {
@@ -173,7 +188,6 @@ export class RaindropMCPService {
         return { contents };
       }),
     );
-
   }
 
   /**
@@ -194,7 +208,7 @@ export class RaindropMCPService {
       };
     }>
   > {
-    return toolConfigs.map((config) => ({
+    return this.exposedToolConfigs.map((config) => ({
       id: config.name,
       name: config.name,
       description: config.description,
@@ -211,7 +225,7 @@ export class RaindropMCPService {
    * @returns Tool response
    */
   public async callTool(toolId: string, input: any): Promise<any> {
-    const config = toolConfigs.find((tool) => tool.name === toolId);
+    const config = this.exposedToolConfigs.find((tool) => tool.name === toolId);
     if (!config) {
       throw new Error(`Tool with id "${toolId}" not found.`);
     }
@@ -235,6 +249,11 @@ export class RaindropMCPService {
   public async readResource(
     uri: string,
   ): Promise<Array<{ uri: string; text: string }>> {
+    if (this.readonlyCollectionPilot) {
+      throw new NotFoundError(
+        "Resources are not exposed on the Clerk read-only pilot",
+      );
+    }
     if (!uri) {
       throw new ValidationError("Resource URI is required");
     }
@@ -331,6 +350,7 @@ export class RaindropMCPService {
     description?: string;
     mimeType?: string;
   }> {
+    if (this.readonlyCollectionPilot) return [];
     // Include our static resources and dynamic resource patterns
     const staticResources = Object.keys(this.resources).map((uri) => ({
       id: uri,

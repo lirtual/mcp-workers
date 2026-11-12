@@ -45,7 +45,7 @@ The Agent-facing MCP contract follows [Spec #145](https://github.com/lirtual/mcp
 
 Scoped high-impact writes retain their existing ID/collection validation, bounded batch limits, preview/digest confirmation where already implemented, and unknown-outcome no-replay rule. Explicit, sufficiently scoped instructions need no extra verbal confirmation, but cannot bypass any tool-mandated preview/confirmation step. Client-side approval is not a server-side authorization guarantee.
 
-Existing public read and write paths are exercised through MCP SDK `tools/list` and `tools/call` integration tests; no additional authentication, workflow, or approval service is introduced.
+The existing Portal read/write paths remain covered by MCP SDK `tools/list` and `tools/call` tests. No new token issuer, workflow, or approval service is introduced; the optional Clerk pilot is described below.
 
 ## Configuration
 
@@ -56,6 +56,15 @@ Optional Worker variable:
 - `RAINDROP_RATE_LIMIT_MAX_RETRIES` — bounded retry count for safe read requests; default `3`.
 
 Do not commit secret values to the repository.
+
+### Optional Clerk OAuth read-only pilot (source only)
+
+Spec #853 provides a separate `/clerk/mcp` endpoint, which remains **404 when no Clerk resource is configured**. This endpoint accepts only OAuth tokens verified by the Clerk SDK for the pinned issuer, Owner, exact resource Audience and `raindrop:read` scope. It registers only `collection_list`; write tools and MCP resources are unavailable. The existing Portal `/mcp` ingress and its credentials are unaffected.
+
+The pilot requires all of these *separate* opt-in bindings (none are added to the current production configuration): `CLERK_SECRET_KEY` (Secret), `CLERK_PILOT_PUBLISHABLE_KEY`, `CLERK_PILOT_OWNER_USER_ID`, `CLERK_PILOT_ISSUER`, and `CLERK_PILOT_RESOURCE` (Variables). The resource must be the Worker's exact public HTTPS URL ending in `/clerk/mcp`, and the issuer must be the intended Clerk instance's HTTPS origin. Clerk must be configured to grant `raindrop:read` for this resource. OAuth metadata is served at `/.well-known/oauth-protected-resource/clerk/mcp` only after configuration. Existing `RAINDROP_ACCESS_TOKEN` remains the separate upstream credential.
+
+This PR does **not** create Clerk Production, set secrets or variables, expose a new live URL, update Cloudflare Access, reconnect ChatGPT, or authorize Worker deployment. Before any production use, verify that the issuer/client/resource/scope are correct, that the existing Portal and Worker bindings are preserved, and that the new route is reachable only as intended.
+
 
 ## OpenAPI type generation
 
