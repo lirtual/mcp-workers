@@ -1,11 +1,7 @@
-# ADR-0003: 退役 GitHub Actions Environments，统一仓库级配置
+# ADR-0003: Repository-scoped GitHub Actions configuration
 
-Spec: [#849](https://github.com/lirtual/mcp-workers/issues/849) — ready-for-agent，Issue 发布不代表实施或生产授权。
+**Decision:** Use repository-level GitHub Actions Variables and Secrets for the maintained Workers and associated release jobs, without separate GitHub Environments. Source code, deployment manifests and protected release checks remain the authority for required names and their selected-Worker scope; do not duplicate full configuration inventories across documents.
 
-Status: **Accepted / Implemented and verified (2026-11-11)**. The 2 Variables and 6 Secrets were migrated with unchanged original bytes and independent source verification, PR #850 was merged, and all 10 GitHub Environments were deleted after separate Owner authorization with individual REST API readbacks. Current configuration: Repository Variables **6**, Secrets **10**, Environments **0**. No Cloudflare Worker or Agent production release occurred as part of this change.
+**Accepted trade-off:** Repository Secrets have a broader availability surface, and removing Environment reviewer gates is not equivalent to having branch protection. Manually triggered Owner/main release and preflight checks still apply but cannot prevent an identity with repository write authority from changing Workflow source. Reassess this decision if the set of writers or deployment triggers expands.
 
-Owner 决定将 `lirtual/mcp-workers` 余下 2 个 GitHub Actions Environment Variables、6 个 Environment Secrets 在**原值不变**的前提下迁至 Repository 级，移除工作流中的 Environment 依赖并最终删除全部 10 个 Environments。此处仅改变 GitHub Actions 配置来源，不改变 Cloudflare Worker 运行时绑定、业务数据或生产发布；不新建密钥代理、兼容层、审批系统或分支 Ruleset。
-
-明确接受三项非等价安全取舍：Repository Secrets 在仓库内的可用范围扩大；`remote-control-agent-release` 原人工审批/部署分支规则及 Raindrop Environment 规则被移除；`main` 继续无 Branch Protection/Ruleset。现有手动触发、Owner/main、候选版本及发布前校验保留，但不声称它们等同于平台级审批或可防止有写权限的身份修改工作流。现有单一直接管理员与低维护目标是此次取舍的依据；未来增加写入主体或变更触发链时重新审视风险。
-
-所有 GitHub Secrets 原字节保持一致是删除旧来源的先决条件。GitHub API 无法读回 Secret 原值，同名 Environment Secret 会覆盖 Repository Secret；因此必须先按平台允许的受控路径迁移并独立验证，失败或结果 Unknown 时保留旧来源、停止对应清理。生产配置切换前还须最小修正 Release 暂存步骤四项非目标 Worker 无条件 Secret 注入，并按可执行触发路径批量核对历史分支，避免旧引用自动重建 Environment；二者均复用既有工作流/测试，不新增长期控制。删除 Environments 和改变生产相关 GitHub Settings 另行授权。详见 [最终设计](../github-actions-config-scope-migration-design.md)。
+Secret values cannot be read back from GitHub API. An uncertain Secret migration, credential change or production configuration write must stop for independent confirmation; do not assume identical names mean identical bytes. Migration and accepted historical evidence remain in Git and the project Issues. This ADR does not authorize settings changes or production deployment.

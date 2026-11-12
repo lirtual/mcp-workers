@@ -1,45 +1,5 @@
 # mcp-workers
 
-Private source monorepo for independently deployed Cloudflare MCP Worker apps.
+Personal Cloudflare MCP Worker monorepo.
 
-## Applications
-
-- [GitHub Actions MCP](apps/github-actions-mcp-worker/README.md)
-- [Database MCP](apps/database-mcp-worker/README.md)
-- [IMA MCP](apps/ima-mcp-worker/README.md)
-- [Raindrop MCP](apps/raindrop-mcp-worker/README.md)
-- [Remote Control MCP](docs/remote-control/README.md)
-- [SSH MCP](apps/ssh-mcp-worker/README.md)
-- [Workflow MCP](apps/workflow-mcp-worker/README.md)
-- [Weixin Action Provider](https://github.com/lirtual/cloudflare-actions/tree/main/apps/weixin-mcp-worker) (separate source and publication)
-
-Each app owns its upstream domain, credentials, runtime, tests, and deployment. Source changes do not automatically delete or update any deployed Cloudflare Worker or MCP Portal connection.
-
-## Ingress policy
-
-The maintained Workers do **not** share a universal hostname: Workflow uses a custom domain with `workers_dev: false`; the independently maintained Weixin Provider has only an Access-protected Owner domain; Remote Control uses both `workers.dev` and a custom domain; other maintained Workers use `workers.dev`. All disable preview URLs. Obtain the actual Portal target from the Worker's configuration, not from its name.
-
-Each Worker requires runtime Secret `MCP_ACCESS_TOKEN`. The GitHub Repository Secret is the sole post-#849 release-time source; no same-name Worker Environment override is permitted after cutover. Matching Secret names never prove matching deployed values. See [ingress policy](docs/ingress-policy.md), [runtime configuration](docs/runtime-configuration.md), [manual bootstrap](docs/MANUAL-WORKER-BOOTSTRAP.md) and [token runbook](docs/mcp-shared-token-runbook.md).
-
-## MCP smoke runner
-
-Use the root smoke runner to verify one explicitly selected safe/read-only MCP tool over Streamable HTTP. The bearer token is read only from an environment variable, and tool result bodies are not printed.
-
-```bash
-MCP_ACCESS_TOKEN='<token>' pnpm smoke:mcp -- \
-  --url 'https://example.workers.dev/mcp' \
-  --tool 'explicit_safe_tool'
-```
-
-The runner also supports `--args-json` for explicit tool arguments and `--token-env` for a different environment variable name. The caller—not tool annotations—must select an operation known to be safe.
-
-## Remote Control public installation entry (Spec #24)
-
-The existing `remote-control-mcp-worker` is the intended host for the public
-`https://rca.lirtual.dpdns.org/` landing page, `/install.sh` (Linux/WSL2) and
-`/install.ps1` (Windows). These anonymous **GET-only** resources share the
-configured origin but never grant MCP permissions, expose device data or
-accept pairing approvals. `/mcp` and signed Agent/WebSocket endpoints retain
-their separate authentication.
-
-Public `/install.sh`, `/install.ps1`, and `/install-macos.sh` select one stable immutable `lirtual/mcp-workers` `/releases/latest` Agent Release. They do not pin a source commit or fall back to `lirtual/remote-control-agent`. Historical pin hashes remain test evidence only. Source bindings do **not** independently prove which version is live in production or that an installation succeeded. Publishing a Release, changing Cloudflare, and upgrading paired devices remain separately authorized operations.
+Each app owns its runtime and credentials. Source changes do not deploy Workers or authorize production changes.

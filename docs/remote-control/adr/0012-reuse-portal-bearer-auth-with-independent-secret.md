@@ -2,7 +2,7 @@
 
 Status: accepted. Date: 2026-10-12. Operator decision: K1=A ("confirm" in response to the explicit question about replacing OAuth with existing MCP Portal static Bearer plus a distinct token).
 
-Supersedes [ADR-0003](./0003-independent-oauth-for-direct-mcp-clients.md) (independent direct-client OAuth) and [ADR-0010](./0010-single-worker-oauth-and-mcp.md) (combined OAuth authorization and MCP Worker). Those documents remain as historical records.
+Supersedes ADR-0003 (independent direct-client OAuth) and ADR-0010 (combined OAuth authorization and MCP Worker). Those superseded alternatives are available in Git history.
 
 ## Context
 

@@ -1,105 +1,11 @@
-# Browser MCP Context
+# Browser MCP — context
 
-## Owner Access login and Review retirement (design 2026-11-04; production Pass 2026-11-05)
+Browser MCP controls a selected browser Profile through a paired extension, an authenticated Cloudflare Worker and a signed WebSocket connection. A Profile grant is not permission to act on every website; task scope and real page state still matter. The Browser MCP is independent of Remote Control's file/Shell tools.
 
-**Current Browser-only update (2026-11-10):** Activation uses only the reviewed
-`lirtual@qq.com` One-time PIN identity provider and exact Owner email. The Access
-app, Audience, 15m session, JWT checks and same-Profile one-use proof are unchanged;
-the release read-only gate now requires this single IdP. The historical SSO+OTP
-migration evidence below remains valid for its date, not a statement of current
-Browser configuration. EdgeSSH and other Owner entrypoints are outside this change.
-The release gate checks the reviewed activation OTP IdP, not the number of
-unrelated OTP providers in the organization. Separately on 2026-11-10, the
-`Browser` MCP Access app alone switched from the shared three-mailbox human
-Allow Policy to `Browser MCP Owner QQ Only` (exact `lirtual@qq.com`). The old
-shared Allow Policy now serves 12 other applications unchanged, and the
-`WORKFLOWS` Service Token remains at precedence 1. Independent Cloudflare
-app/policy readback passed; this is not a new human login E2E or a fix for the
-previously observed activation `Not found`.
+- Owner activation uses its existing exact-email and Cloudflare SSO/OTP checks. A public download or installed extension alone does not establish an Owner grant. Keep pairing, Owner entrypoint and site-level authority distinct.
+- Bind each browser operation to the authorized Profile, session, tab and stable operation intent; never silently retarget based on an array position or stale snapshot.
+- Operations with effects use receipts. An Unknown or interrupted operation must be reconciled against its original identity, not blindly replayed. Historical Unknown receipts remain queryable even though the former independent Owner Unknown Review UI has been retired.
+- Keep Owner Access, extension signing/pairing, protected endpoint routes, and bundled artifact/version integrity checks. The public extension landing page provides read-only installation assets, not MCP privileges.
+- Successful source tests, Worker publication, Portal sync and actual browser acceptance are separate states. A fresh credential, production configuration or release change still requires explicit authorization.
 
-**Current MCP Access policy readback (2026-11-12):** `Browser` and
-`MCP` Portal now share the reusable `MCP Portal and Browser Owners` rule,
-limited to `lirtual@qq.com` and `lirtual@outlook.com`. The previous
-2026-11-10 single-email description above is historical. Browser **Activation**
-remains a separate QQ-only OTP app; no Activation identity or browser runtime
-was changed in this correction.
-
-The Owner accepted [Cloudflare account SSO with OTP fallback for active Owner entrypoints](../../docs/owner-access-sso-browser-review-design.md): Browser Activation, Database Setup, and EdgeSSH retain their **exact Owner email** grants, distinct audiences, session durations and application-layer verification. The existing Cloudflare account-members identity provider can be reused; legacy Weixin, App Launcher and MCP/Portal sign-ins are not in this Owner-only scope. The 2026-11-04 approval was design-only; later scoped production authorizations and real logins are recorded in the [final acceptance](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813).
-
-[ADR 0004](docs/adr/0004-retire-owner-unknown-review.md) accepts complete retirement of the independent Browser Owner Unknown Review UI, routes, and dedicated Access application, while keeping Browser Activation's Access verification, same-Profile one-use proof, historic Unknown/owner-report receipts, immutable original intent keys and strict no-replay behavior. Recent-admission capacity stays at **100 still-Unknown operations created during the preceding 7 days** using the existing server `created_at`; older Unknowns remain untouched and queryable. ADR 0004 supersedes only ADR 0002's independent Unknown-review-channel requirement. The earlier isolation Waiver remains historical evidence, **not Pass**. The Browser source was later [published and independently verified](https://github.com/lirtual/mcp-workers/actions/runs/41871291888) as Worker version `3943aa81-23c1-4b31-805c-3a2a93e3846c` at 100% traffic; the old Review route now returns 404 and its dedicated Access application was [retired](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175). Three active Owner Access apps now use Cloudflare account-member SSO plus OTP, with exact Owner policy, audiences, and original sessions preserved; historical receipts, credentials and Durable Object namespace were not changed. The previous waiver remains historical, not retroactively Pass.
-
-Browser MCP owns **Browser Endpoint**, **Extension Grant**, Browser Control Session, owner pairing and revocation, WSS Connection Generation, Eligible Web Tab, Browser Operation, historical Owner Unknown Review, Operation Receipt, and Unknown Outcome. It is distinct from the Remote Control device/agent bounded context.
-
-**Historical #418 production acceptance (2026-10-31, v0.2.1):** T1 and #531 Profile-local Access activation/temporary pairing remain in use. T2 bounded top-document reading and guarded screenshots, T3 durable intent/prepare-execute/Unknown receipts, T4 fixed document-bound element interactions, and T6 separate LAN/private grants are implemented. [CI #41108805563](https://github.com/lirtual/mcp-workers/actions/runs/41108805563) and [production release #41109664992](https://github.com/lirtual/mcp-workers/actions/runs/41109664992) succeeded. Matching v0.2.1 / WSS 3 Chrome and Edge Profiles opened, read, scrolled and closed benign public tabs with durable completed receipts, and completed benign demo-form fill/select/checkbox interactions. This is **scoped native E2E Pass**, not universal T2–T7 negative, arbitrary third-party business or semantic DLP proof. Independent Owner OTP/Unknown-review physical-channel isolation was **Waived by Owner, not Pass**; see [#418 final acceptance](https://github.com/lirtual/mcp-workers/issues/418).
-
-- A Browser Endpoint identifies one profile-scoped extension install and its separately generated credential.
-- Extension Grant is the owner's persistent authorization, independent of Portal authentication.
-- Browser Control Session is locally enabled/stopped; transport online is independent.
-- Connection Generation is monotonically advanced on authenticated WSS replacement; stale generations grant no authority.
-- Endpoint Revocation is permanent for that identity; it rejects new admissions but does not reverse an already-issued website side effect.
-- Passwords and recognized OTP/secret fields are excluded from the curated read path. T2 can transmit bounded visible text and guarded screenshots transiently, but page content and images are never persisted in the DO.
-- Only an explicit browser toolbar gesture may initiate a new Access-backed activation. Authenticated MCP exposes Stop/Revoke, never Resume. Legacy manual pairing and local Resume routes are retired in Spec #531.
-- The extension ingress and activation callback accept only the published Chrome/Edge installation ID derived from the pinned public manifest key. This coarse identity allowlist does not attest extension code; Owner Access plus a same-Profile one-time local proof are still required.
-- Cloud STOP offline reconciliation is best-effort and distinguished from confirmed cloud revocation.
-- A live WSS is a transport signal, not browser readiness or website business success.
-
-Applicable T2–T10 semantics and the dated final acceptance status are tracked in [#418](https://github.com/lirtual/mcp-workers/issues/418). Superseded historical test checklists remain traceable; they are not new release blockers.
-
-T2 has scoped Chrome/Edge visible-text and sensitive/ordinary screenshot evidence. Complex logged-in sites, frames and dynamic targets are not universally guaranteed. The read relay uses a five-second bounded window and never queues offline work.
-
-Spec #531 supersedes historical manual pairing and Popup: toolbar activation uses Access verification plus one-use same-Profile proof. Temporary credentials stay in `chrome.storage.session` with a bounded server lease. Previous Access/temporary-session/Stop evidence lives in [#531](https://github.com/lirtual/mcp-workers/issues/531). Cross-version upgrade and live production rollback were Waived at #531 closure; the later v0.2.1 Chrome/Edge source update, reload and real control E2E are separately scoped Pass in [#418](https://github.com/lirtual/mcp-workers/issues/418). Unknown review is after-the-fact only and cannot approve execution.
-
-## 2026-10-31 authorization decision
-
-**Eligible Web Tab** means technically controllable, not business-safe. **Extension Grant** authorizes one Profile, not **User Task Authorization** for website effects or nonpublic cross-site transfers. DOM, screenshots and tool returns are untrusted task data. [ADR 0002](docs/adr/0002-profile-grant-not-business-authorization.md) defines the boundary. Independent Owner OTP/Unknown-review isolation is not technically attested by the extension; the Owner accepted this residual risk as a Waiver, not as Pass. Current version-matched Worker/Chrome/Edge E2E was verified separately from historical #531 evidence.
-
-## 2026-10-31 public extension distribution decision and release (#609)
-
-The [Browser MCP download page design](../../docs/browser-extension/DOWNLOAD-PAGE-DESIGN.md) has Owner consensus (Grill With Docs Q1–Q6=A) and **was implemented and published** by [PR #612](https://github.com/lirtual/mcp-workers/pull/612) and authorized [release #41179137851](https://github.com/lirtual/mcp-workers/actions/runs/41179137851). Live page, redirect, ZIP SHA-256 and restricted-route readback passed; matching installed Chrome/Edge runtime bytes were independently verified. A fresh distribution-only Reload was **Not performed** and must not be misreported as a new E2E Pass (prior unchanged-runtime Chrome/Edge Reload and control evidence is in #418). A public, anonymous **Extension Distribution** entry is a read-only installation artifact and information surface, **not** a Browser Endpoint, Extension Grant, User Task Authorization, or Access verification channel. Publishing a ZIP never pairs, enables or controls a Profile. The fixed public manifest key identifies the installation ID but does not authenticate extension code or Owner consent.
-
-The chosen distribution boundary is the **existing Browser Worker release**, with one reviewed Chrome/Edge ZIP and minimal landing page bundled as Cloudflare Worker Static Assets (CI provenance metadata is retained privately, not public), served on narrowly allowed public paths with Worker-first routing so /mcp, /extension/*, /activate/* and /owner/* retain their existing guards. The stable /download entry must resolve to the matching current Worker protocol/extension version; the release must fail closed on artifact/hash/version mismatch. Immutable ZIP filenames include the full content hash as well as the manifest version, because packaged installation documentation can change ZIP bytes independently of the extension runtime version. Local updates remain manual and preserve installed Profile identity only when verified. No new services, API grants, pairing modes, approval system or automatic updater are introduced. This is a packaging/release decision, not a new bounded context or a change to #418 browser operation semantics.
-
-## Spec #629 — modern semantic controls (v0.2.4 production)
-
-Released v0.2.4 / WSS 3 adds bounded, sensitive-filtered native choice and ARIA control metadata to the existing top-document snapshot. A custom list must be opened and freshly observed before a referenced option is clicked. Native select values are limited to an observed unambiguous option and rechecked before dispatch. Fixed Arrow/Home/End/Escape input on a combobox uses **synthetic** keyboard events; actual focus and selected state require independent new snapshots. `completed` is still event dispatch, never business outcome. An owner-local Options checkbox controls a 900ms noninteractive target marker; Stop/Revoke or expiry removes it. No debugger permission, extra Worker, arbitrary JS, coordinates, trusted pointer or broader CDP.
-
-**Release and acceptance:** Owner-authorized [release #41201119062](https://github.com/lirtual/mcp-workers/actions/runs/41201119062) published v0.2.4 / WSS 3 at reviewed main `eb0a9e0ddbbd1dad13770b89eab5da2da98b5c24`, Cloudflare version `30a83b4b-f210-46ee-8c63-1887c8b675ef` (100%). The official ZIP matched an independent source build by SHA-256. After owner-confirmed native Reload and ON, two separate version-matched Endpoints proved real Chrome/Edge scoped custom W3C ARIA combobox and native select observation → action → independent selected-state readback, followed by benign tab cleanup. See [#629 final acceptance](https://github.com/lirtual/mcp-workers/issues/629#issuecomment-6543644061). Older 0.2.3 and earlier sockets fail closed; no Tailscale credential operation was performed.
-
-**#629 real W3C regression (2026-10-31):** The online v0.2.3 profile successfully observed a select-only ARIA combobox named by `aria-labelledby` but two independent fresh click attempts failed `stale_element` without executing. The underlying snapshot registry retained visible `aria-labelledby` nodes as label dependencies, while the preflight equality check incorrectly compared only native HTML `labels`. The released 0.2.4 code uses the exact same bounded label dependency set at snapshot and preflight. This retains mutation fail-closed behavior while enabling unchanged accessible controls. Native cross-browser E2E subsequently passed under the approved release, with the scope recorded above.
-
-
-**Post-acceptance security follow-up (v0.2.5 released):** Recognition of sensitive fields and guarded screenshots must also inspect bounded `aria-labelledby` references, including non-visible label text. Missing, malformed or over-budget references on relevant fields fail closed. This is a targeted defense-in-depth fix, not a claim of a reproduced production data leak; the v0.2.5 authorized manual release and scoped live-browser revalidation are recorded in [#629](https://github.com/lirtual/mcp-workers/issues/629#issuecomment-6544114852).
-
-## 2026-10-31 proposed remembered-pairing idle lifetime and UI
-
-The Owner-approved [incremental design](docs/idle-pairing-and-options-design.md) and [ADR 0003](docs/adr/0003-remembered-pairing-idle-expiry.md) propose **ON-online holds authorization without a countdown; explicit OFF or long offline starts a server-enforced idle countdown (14 days by default, configurable by reviewed GitHub Actions Variable `BROWSER_REMEMBERED_IDLE_DAYS`), and expiry revokes the old Endpoint grant**. This replaces only the indefinite remembered-pairing lifetime and improves local Profile naming, discovery metadata, and Options presentation. Temporary grants, Access same-Profile proof, Stop/Revoke priority and Unknown receipts stay intact. **v0.2.6 implementation candidate:** lifecycle, variable and Profile UI have source/regression coverage; this is not yet a production Worker release or native Chrome/Edge acceptance. Current production remains v0.2.5.
-
-## Spec #804 Browser identity source (production released; Owner-accepted scoped Waiver)
-
-The protected Browser Release Worker obtains Zero Trust Organization `auth_domain`
-and the fixed reviewed Browser Activation Access App's `aud` through read-only
-Cloudflare requests. Repository `OWNER_EMAIL` remains the only maintained Owner
-identity Variable. Preflight compares this candidate with independently observed
-active production bindings and reuses the existing release state for staging,
-prepublication recheck and binding readback. `BROWSER_OWNER`, all four runtime
-identity bindings, strict JWT verification, 15-minute Owner-only activation
-and same-Profile one-use proof remain required. At the #804 release, activation
-supported SSO+OTP; the subsequent 2026-11-10 Browser Activation update selected
-QQ OTP-only without changing the other checks.
-
-The actual protected Runner permission proof passed in
-[Run #42748869402](https://github.com/lirtual/mcp-workers/actions/runs/42748869402).
-[Release #42752829111](https://github.com/lirtual/mcp-workers/actions/runs/42752829111)
-published Version `bd556e57-2c60-4fca-840c-e3091339abba` to 100%, with
-independent Cloudflare/Portal readback. Obsolete Repository
-`ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE`
-**GitHub sources** were separately authorized for deletion and each returned
-HTTP 404 on readback; the runtime audience binding remains mandatory.
-An actual post-release Cloudflare SSO login, Owner-confirmed OFF→ON activation
-and online/control-ready Edge Endpoint were observed; these do **not** prove a
-fresh instrumented same-Profile one-use proof consumption or replay rejection.
-The Owner explicitly marked fresh post-#804 physical proof/replay/cross-Profile
-retests **Waived, not Pass**, reusing prior #531 physical E2E and current tests
-([Spec #804 final Owner acceptance](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760463590)). Historical #733/#531/Owner Review evidence remains intact.
-The historical Weixin Access application was separately retired and read back
-absent ([separately authorized Weixin retirement](https://github.com/lirtual/mcp-workers/issues/804#issuecomment-6760249436)); Database Access remains in place.
+See the [Browser Skill](skills/browsermcp/SKILL.md), code and tests for exact current tool names, input bounds and connection behavior. Current architecture decisions: [Profile vs. business authorization](docs/adr/0002-profile-grant-not-business-authorization.md) and [Unknown Review retirement](docs/adr/0004-retire-owner-unknown-review.md).

@@ -1,6 +1,6 @@
 # MCP Portal 长期免重连设计（Grill With Docs）
 
-状态：Grill With Docs 四项决策已确认；本文件为设计阶段的最小方案，技术可行性与客户端 E2E 待验证；T0 现场证据见 [只读预检](./mcp-portal-auth-t0-20261111.md)；不构成生产变更或发布授权。日期：2026-11-11。
+状态：Grill With Docs 四项决策已确认；本文件为设计阶段的最小方案，技术可行性与客户端 E2E 待验证；T0 现场证据参见 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853)；不构成生产变更或发布授权。日期：2026-11-11。
 
 ## 目标与已决策项
 
