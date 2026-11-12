@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {compilePlan,PlanError} from '../src/plan.ts';
-import {WORKFLOW_DEFINITION_SCHEMA,workflowCapabilities} from '../src/capabilities.ts';
 import {compensateSession,compensateCancelledSessions,sagaReceiptId} from '../src/saga.ts';
 import type {Env} from '../src/store.ts';
 import type {requestGitHubActionCancellation} from '../src/github-action-cancel.ts';
@@ -43,13 +42,7 @@ test('Saga compiler requires declared policy, reviewed temporary Session compens
   {...sample(),steps:[{...step('first'),compensate:{kind:'arbitrary.write'}}]},
   {...sample(),steps:[step('first'),{id:'effect',uses:'http.request',with:{url:'https://example.com/',method:'POST',body:{}}}]},
  ])await assert.rejects(()=>compilePlan(invalid),PlanError);
- const props=WORKFLOW_DEFINITION_SCHEMA.properties;
- assert.ok(props.saga);
- assert.deepEqual(props.steps.items.properties.compensate.properties.kind.const,'github.session.cancel');
- const details=await workflowCapabilities({} as Env,'flow.saga');
- assert.equal(details.availability,'supported_with_grant');
- assert.equal((details.design_contract as {executable:boolean}).executable,true);
- assert.match((details.design_contract as {authorization:string}).authorization,/approve_saga_compensation/);
+
 });
 
 test('Compensator persists exactly one reservation; a cancellation ACK remains only requested',async t=>{

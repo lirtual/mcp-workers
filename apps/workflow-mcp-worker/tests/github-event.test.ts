@@ -6,7 +6,6 @@ import {generateKeyPair,SignJWT} from 'jose';
 import {handleGithubEvent,verifyGithubPushEvent} from '../src/github-event.ts';
 import {WorkflowService,StateError,type Env} from '../src/store.ts';
 import {compilePlan,PlanError} from '../src/plan.ts';
-import {workflowCapabilities} from '../src/capabilities.ts';
 import {admitScheduledCron} from '../src/scheduled.ts';
 
 const id='lirtual/mcp-workers',repoId=1414936394;
@@ -68,18 +67,9 @@ test('GitHub event compiler enforces one exact repository, branch, relay and dec
     {secret:'should-not-be-in-plan'},
   ])await assert.rejects(()=>compilePlan(wf(change)),PlanError);
   await assert.rejects(()=>compilePlan({...wf(),inputs:{other:null}}),PlanError);
-  const capability=await workflowCapabilities({
-    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:aud,
-    WORKFLOW_MCP_PORTAL_ENDPOINT:undefined,WORKFLOW_MCP_PORTAL_CLIENT_ID:undefined,
-    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:undefined,WORKFLOW_GITHUB_ACTION_IDENTITY:undefined,
-    WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
-  },'trigger.github_event');
-  assert.equal(capability.availability,'supported_with_relay');
-  const example=capability.example as {definition:unknown;digest:string};
-  assert.equal((await compilePlan(example.definition)).digest,example.digest);
-  const sample=example.definition as {inputs:Record<string,unknown>;steps:Array<{with:{data:{ref:string}}}>};
-  assert.equal(sample.steps[0].with.data.ref,'inputs.github');
-  assert.ok(Object.hasOwn(sample.inputs,'github'),'Advertised sample must reference a declared input');
+  assert.equal(wf().steps[0].with.data.ref,'inputs.github');
+  assert.ok(Object.hasOwn(wf().inputs,'github'),
+    'GitHub event Plan must declare its referenced input');
 });
 
 test('signed GitHub identity is verified against every immutable trigger binding',async()=>{

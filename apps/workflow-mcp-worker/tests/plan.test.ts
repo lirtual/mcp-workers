@@ -74,6 +74,12 @@ test('Workflow rejects duplicate YAML keys, unknown executable fields and oversi
 });
 
 
+test('removed static Capabilities cannot make uncompiled nested Flow executable',async()=>{
+  await assert.rejects(()=>compilePlan({version:1,name:'Unsupported nested flow',
+    steps:[{id:'block',flow:'block',steps:[{id:'emit',uses:'result.emit',
+      with:{data:1}}]}]}),PlanError);
+});
+
 test('Workflow canonical JSON uses locale-independent key ordering for version and Run hashes', () => {
   assert.equal(canonicalJsonString({a:1,B:2}),'{"B":2,"a":1}');
 });

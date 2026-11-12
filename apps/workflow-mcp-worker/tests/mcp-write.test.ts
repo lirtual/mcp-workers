@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {compilePlan,toolSchemaDigest} from '../src/plan.ts';
-import {reviewedPortalWriteTools,workflowCapabilities} from '../src/capabilities.ts';
+import {reviewedPortalWriteTools} from '../src/portal-discovery.ts';
 import {reviewedWriteArguments,reviewedWriteTool} from '../src/mcp-write-contract.ts';
 import {WorkflowService} from '../src/store.ts';
 import type {Env} from '../src/store.ts';
@@ -40,16 +40,7 @@ test('only source-reviewed IMA ima_create_note is discoverable; annotations neve
   assert.deepEqual(allowed[0]?.arguments,{content:'Owner-reviewed note content'});
   assert.deepEqual(await reviewedPortalWriteTools([upstream,upstream]),[]);
   assert.deepEqual(await reviewedPortalWriteTools([{...upstream,name:'append_note'}]),[]);
-  const env={WORKFLOW_MCP_PORTAL_ENDPOINT:endpoint,WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-id',
-    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret'};
-  const detail=await workflowCapabilities(env,'action.mcp.write',
-    async()=>({availability:'verified_contract' as const,tools:[],write_tools:allowed}));
-  assert.equal(detail.availability,'verified_contract');
-  assert.equal((detail.example as {validation:string}).validation,'compiler_valid_only');
-  const {definition:example,digest}=detail.example as {definition:unknown;digest:string};
-  assert.equal((await compilePlan(example)).digest,digest);
-  assert.deepEqual((detail.grant as {required:string[]}).required,
-    ['approved_operations','approve_mcp_write_execution','accept_target_risks']);
+
 });
 
 test('compiler only admits top-level literal reviewed writes and never a dynamic target or foreach write',async()=>{
@@ -181,12 +172,9 @@ test('only exact source-reviewed append note schema and bounded literal inputs a
   await assert.rejects(()=>compilePlan({...appendDefinition(),steps:[
     appendDefinition().steps[0],{...appendDefinition().steps[0],id:'append_again'}]}),
     /excessive_mcp_write_steps/);
-  const env={WORKFLOW_MCP_PORTAL_ENDPOINT:endpoint,WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-id',
-    WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret'};
-  const detail=await workflowCapabilities(env,'action.mcp.write',
-    async()=>({availability:'verified_contract' as const,tools:[],write_tools:contracts}));
-  assert.deepEqual((detail.discovered_tools as Array<{tool:string}>).map(x=>x.tool),
+  assert.deepEqual(contracts.map(x=>x.tool),
     ['ima_create_note','ima_append_note']);
+
 });
 
 test('append requires its own exact immutable write grant and fresh Connection generation',async()=>{

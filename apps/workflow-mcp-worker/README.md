@@ -77,7 +77,7 @@ new Draft/Publish/Run actions.
 
 新公开 Definition 不支持 `approval.required`；`workflow_approval` 已从公开 MCP 删除，历史等待审批的 Plan 不允许重新 Run。特殊 Bark/EnvShare/Litterbox/Session 继续走原有受控路径。以下旧 Spec 的示例和旧版发布参数仅供历史审计，不代表当前公开 API。
 
-## Capabilities
+## Supported operations
 
 - **Workflow management:** create and revise YAML/JSON Drafts, validate a bounded DAG, explicitly Publish an immutable Plan, run asynchronously (manually, via a published UTC Cron schedule, an authenticated Webhook, or a signed GitHub push relay), inspect status/results, pause/resume new admissions, and non-destructive Workflow deletion.
 - **MCP tool calls (`mcp.call`):** the existing read-only operations plus two source-reviewed write operations, IMA `ima_create_note` and `ima_append_note`. Both require the exact pinned Portal endpoint, tool, scope and schema digest plus `accept_target_risks: true`; write additionally requires `approve_mcp_write_execution: true`. Reviewed writes accept at most one top-level Step per Plan: create with literal `content` (1–2048 chars), or append with a literal existing numeric `note_id` (8–24 digits) and literal `content` (1–2048 chars). No folder, dynamic input or Foreach writes. Runtime verifies the live schema and explicitly reviewed tool before a single D1 dispatch reservation. Upstream `readOnlyHint` never authorizes a write; an unknown call result remains `indeterminate` without an automatic resend.
@@ -140,7 +140,7 @@ reference scopes, ordering, outcome propagation, cancellation, immutable
 grant inheritance boundaries, replay-stable step identity, expansion
 snapshots, and worst-case budget rules. It remains **unsupported** and non-executable; it is not a public
 MCP tool or part of the accepted compiler schema. The proposed
-shape is **not** in `WORKFLOW_DEFINITION_SCHEMA`, has no executable example,
+shape is **not** accepted by the current `compilePlan` compiler, has no executable example,
 and both inline Validate and Publish still reject it. In particular, nested
 foreach/while/repeat, multi-Action loop bodies, recursive child invocation
 and arbitrary compensating writes are **not** delivered by this design.

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { toolSchemaDigest } from '../src/plan.ts';
+import { toolSchemaDigest, canonicalJsonString } from '../src/plan.ts';
 import {cloudflareActionManifest,canonical} from '../src/cloudflare-action-contract.ts';
 import { PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import type { Env } from '../src/store.ts';
@@ -44,22 +45,29 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
   for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0017_http_connection_auth.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql',
      '0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  let beforeAdmissionInsert:(()=>void)|undefined;
   function prepare(sql:string){
     let args:any[]=[];
     return {
       bind(...values:any[]){args=values;return this;},
       async first(){return sqlite.prepare(sql).get(...args)??null;},
       async all(){return {results:sqlite.prepare(sql).all(...args)};},
-      async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}};},
+      async run(){
+        if(sql.includes('INSERT OR IGNORE INTO runs(')&&beforeAdmissionInsert){
+          const insert=beforeAdmissionInsert;beforeAdmissionInsert=undefined;insert();
+        }
+        return {meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}};
+      },
     };
   }
+  let nativeStatusReads=0,nativeStarts=0;
   const env={
     MCP_ACCESS_TOKEN:TOKEN,
     WORKFLOW_MCP_PORTAL_CLIENT_ID:PORTAL_ID,
     WORKFLOW_MCP_PORTAL_CLIENT_SECRET:PORTAL_SECRET,
     WORKFLOW_MCP_PORTAL_ENDPOINT:TRUSTED,
     DB:{prepare,async batch(items:{run:()=>Promise<unknown>}[]){return Promise.all(items.map(s=>s.run()));}},
-    WORKFLOW:{async create(){},async get(){return {async status(){return {status:'running'};}};}},
+    WORKFLOW:{async create(){nativeStarts++;},async get(){nativeStatusReads++;return {async status(){return {status:'running'};}};}},
   } as unknown as Env;
   let internetCalls=0,toolCalls=0;
   let portalListing:'reviewed'|'read_duplicate'|'write_drift'|'write_only'='reviewed';
@@ -267,15 +275,66 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(outcome.steps[0].status,'succeeded');
     assert.equal(outcome.result.content[0].text,'approved trusted echo');
     assert.equal(toolCalls,1,'exactly one tools/call');
+    const replay=await call('workflow_run',{
+      workflow_id:created.workflow_id,inputs:{message:'approved trusted echo'},
+      idempotency_key:'trusted-owner-e2e-'+created.workflow_id,
+      expected_published_version_id:published.published_version_id,
+    });
+    assert.equal(replay.run_id,run.run_id,'same-version replay remains supported');
+    assert.equal(replay.idempotent_replay,true);
+    assert.equal(toolCalls,1,'same-version replay must not re-execute Portal');
     const next=await call('workflow_publish',{workflow_id:created.workflow_id,
       expected_revision:2,approved_operations:[grant],accept_target_risks:true});
     assert.notEqual(next.published_version_id,published.published_version_id);
+    // A caller pinning V2 must NOT receive the old V1 Run for the same
+    // idempotency key, even when that V1 Run has already completed.
+    await call('workflow_run',{workflow_id:created.workflow_id,
+      inputs:{message:'approved trusted echo'},
+      idempotency_key:'trusted-owner-e2e-'+created.workflow_id,
+      expected_published_version_id:next.published_version_id},
+      'published_version_changed');
+    assert.equal(toolCalls,1,'V2 assertion cannot reconcile the V1 Run');
+    // A previously admitted but not yet started V1 Run must not enter
+    // reconciliation (which may create its original native instance).
+    sqlite.prepare("UPDATE runs SET start_state='reserved',outcome='queued' WHERE id=?")
+      .run(run.run_id);
+    const beforeRead=nativeStatusReads,beforeStart=nativeStarts;
+    await call('workflow_run',{workflow_id:created.workflow_id,
+      inputs:{message:'approved trusted echo'},
+      idempotency_key:'trusted-owner-e2e-'+created.workflow_id,
+      expected_published_version_id:next.published_version_id},
+      'published_version_changed');
+    assert.equal(nativeStatusReads,beforeRead,'V2 replay cannot observe an unstarted V1 Run');
+    assert.equal(nativeStarts,beforeStart,'V2 replay cannot start an unstarted V1 Run');
+    sqlite.prepare("UPDATE runs SET start_state='started',outcome='succeeded' WHERE id=?")
+      .run(run.run_id);
+    // Simulate a competing V1 reservation committed after the first
+    // idempotency lookup but before the V2 INSERT OR IGNORE.
+    const raceInputs={message:'racing admission'};
+    const raceKey='v1-raced-admission';
+    beforeAdmissionInsert=()=>{
+      const digest=createHash('sha256').update(canonicalJsonString(raceInputs)).digest('hex');
+      const priorId=crypto.randomUUID(),time=Date.now();
+      sqlite.prepare(`INSERT INTO runs(id,workflow_id,version_id,instance_id,
+        admission_key,request_digest,inputs,start_state,outcome,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,'reserved','queued',?,?)`).run(
+          priorId,created.workflow_id,published.published_version_id,priorId,
+          raceKey,digest,JSON.stringify(raceInputs),time,time);
+    };
+    await call('workflow_run',{workflow_id:created.workflow_id,
+      inputs:raceInputs,idempotency_key:raceKey,
+      expected_published_version_id:next.published_version_id},
+      'published_version_changed');
+    assert.equal(nativeStatusReads,beforeRead,'raced V1 Run cannot be reconciled');
+    assert.equal(nativeStarts,beforeStart,'raced V1 Run cannot start');
+    assert.equal((sqlite.prepare('SELECT version_id FROM runs WHERE admission_key=?')
+      .get(raceKey) as {version_id:string}).version_id,published.published_version_id);
     await call('workflow_run',{workflow_id:created.workflow_id,
       inputs:{message:'stale checked version'},idempotency_key:'stale-checked',
       expected_published_version_id:published.published_version_id},
       'published_version_changed');
     assert.equal(toolCalls,1,'stale version cannot call Portal');
-    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get() as {n:number}).n,1);
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get() as {n:number}).n,2);
     const newer=await call('workflow_get',{workflow_id:created.workflow_id});
     assert.equal(newer.published_run_interface.published_version_id,next.published_version_id);
 
