@@ -99,3 +99,10 @@
 - BrowserMCP LIRTUAL 在 Clerk **Development** 的 OAuth applications → Settings 选择 `Pre-registered clients only`，确认 `Block unregistered clients`，随后处理单独的 `Unsaved changes → Save`；Clerk UI 最终显示 `Saved!`。没有改变 Client Scopes 或登录状态。
 - Clerk 管理端**独立实时回读**：`client_id_metadata_documents_only_allow_pre_registered_clients=true`、`client_id_metadata_documents_block_implicitly_allowed_clients=true`、DCR=false、PKCE=true、CIMD=true、Audience=true、Opaque OAuth Access Token=true。此前 T10 开关为 false 的描述仅记录当时历史，**当前以此值为准**。
 - 原 ChatGPT Lab 插件未断开或重新授权，直接 `lab_status({})` → `Spec853 lab: authenticated no-op`。客户端预注册配置 Pass、现存正常连接 Pass；**未通过真实未知客户端做拒绝 E2E**，该负面项目仍 Unknown。Clerk Production、Portal 与 Sentry 生产均未改。
+
+## T12 陌生 CIMD 负面尝试与 Sentry 凭据边界（2026-11-12）
+
+- 测试了 Claude Code 和 OpenCode 两个真实有效的公开 CIMD metadata。未登录 CLI 授权请求先 302 Clerk sign-in；已有 LIRTUAL BrowserMCP 访问两条陌生 Client OAuth authorization URL，均显示 invalid_client / The Client ID Metadata Document could not be resolved。无新 Grant、无授权同意、无改 Client 策略。**陌生客户端未能完成授权=实际观察；错误究竟由严格准入还是元数据抓取导致=Unknown，不能伪标因果 Pass。**
+- Clerk 官方回读 strict-only=true、block-implicit=true、DCR=false、PKCE=true；原 ChatGPT lab_status 在上述测试后依然返回 Spec853 lab: authenticated no-op。
+- Sentry nfwt 的 Organization Tokens=0、Custom Internal Integrations=0（LIRTUAL 浏览器只读）；Sentry 官方 scoped inspect 路由在未提供凭据时 tools/list 返回 401 Bearer。只读工具权限/跨组织实际防护仍未进行有凭据 E2E。
+- 不读取或创建 Token、不撤销当前用户、不新建 Worker 或数据库、不修改 Sentry/Cloudflare 生产、Clerk Production 或正式 ChatGPT 插件。下一步是独立只读 Sentry 凭据及生产操作的明确授权，和可恢复的独立 Clerk 撤销测试。

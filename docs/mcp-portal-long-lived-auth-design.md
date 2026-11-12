@@ -1,6 +1,6 @@
 # Spec #853 — MCP 独立插件长期 OAuth 续期设计（2026-11-12 验证更新）
 
-状态：**Cloudflare 托管 Portal 的固定 Grant 到期机制不满足严格无计划重登；Clerk Development 的真实 ChatGPT 连接、24 小时后免手动重连、Owner 校验、CIMD 客户端显式允许与严格预注册准入配置均已 Pass。Clerk Production、真实 Refresh Grant/撤销、非 Owner 负面 E2E、7 天会话边界、正式业务权限隔离和生产迁移仍未验收。** 本文为当前设计事实源；不授权修改生产 Portal、Access、Secrets、DNS 或 ChatGPT 正式插件。
+状态：**Cloudflare 托管 Portal 仍不能证明无固定 Grant 到期；Clerk Development 的 ChatGPT CIMD 显式允许、严格预注册、Owner 校验、24 小时后免重连及真实工具调用均已 Pass。T12 另观察到两种陌生 CIMD 发起授权被拒，但原因可能包含元数据解析失败；Sentry 官方支持 inspect 只读能力，但当前账户没有专用组织凭据。真实 Refresh Grant、撤销、7 天边界、生产 Sentry 凭据与迁移仍待验证。** 本文为当前设计事实源；不授权修改生产 Portal、Access、Secrets、DNS 或正式插件。
 
 ## 一、最终约束（已决策，不再重复提问）
 
@@ -125,7 +125,7 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 | 适配层最小化 | Sentry 官方 [API Scopes](https://docs.sentry.io/api/permissions/) 可用 `org:read`、`project:read`、`event:read` 授予只读 API 请求；[认证文档](https://docs.sentry.io/api/auth/) 支持内部 Integration Token 与 OAuth。Sentry 官方完整 MCP [README](https://github.com/sentry-official/sentry-mcp) 的通用工具权限并非只读 | **设计结论：** 必须先取得单一 Sentry 组织范围内**专用只读令牌/受限 OAuth**的可验证权限与最小工具需求；若可直接替换原有安全接入则优先，只有确需第三方适配时才设计**最多一个**没有任意目标地址、仅固定 Sentry 后端与固定只读工具的 Worker。不新增 KV/D1/Token Vault 或代理全 Portal。 |
 | OAuth 撤销与浏览器 Session | Clerk [OAuth 官方文档](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth) 声明 Opaque Token 可在线验证并即时撤销，Refresh Token 无固定到期，Clerk Hobby Browser Session 上限 7 天；当前 Lab SDK 合同覆盖模拟 revoked/provider-outage，实际 ChatGPT 超过 24 小时无需手动重连已 Pass | **Unknown：** 未执行真实 Clerk Grant 撤销、第二个真实非 Owner 用户授权和 7 天浏览器 Session 结束后的访问；现存 Lab OAuth 会话不可直接用破坏性撤销验证。没有这些证据不能声称长期授权/生产撤销门 Pass。 |
 
-**当前最短前进路径（T11 后）：** (1) Clerk Development 的实际 ChatGPT CIMD Client 身份、显式允许、严格仅预注册配置及原连接无重登 E2E 均已 Pass，**不要重复注册或再调整客户端准入**；尚缺真实未注册 Client 授权拒绝测试（配置生效不等于独立负面 E2E）。(2) 明确 Sentry 首个代表性只读工具与专用组织/项目范围 API Token，核验真实 Scope 与无写权限，**不借用 Portal 管理凭据**。(3) 在独立可恢复测试连接进行真实第二用户/撤销 E2E，并核对 7 天 Session 与 Refresh Grant 边界；通过后再针对 Clerk Production 和单插件试点申请精准生产授权。
+**当前最短前进路径（T12 后）：** (1) Clerk 严格客户端准入无需再调整；已有两种陌生客户端未获授权，但授权拒绝归因尚未独立证明，避免为重复验收引入额外服务。 (2) Sentry 官方远程 MCP 已支持组织/项目约束和 inspect 只读 skills；现有 nfwt 组织没有 Organization Token 或 Internal Integration，创建专用最小权限凭据属于生产敏感写操作，须取得明确授权，并在无写权限的真实工具会话中验收。 (3) 如官方 Sentry MCP 现有 OAuth 满足长期免重登，优先直接使用；只有确实需要 Clerk 转译并具备独立只读凭据时才考虑固定单后端的轻量适配。另用可恢复的独立 Clerk 授权验证真实撤销和 7 天后刷新；不破坏唯一现存 ChatGPT 连接。
 
 当前以上结论均为**准备与安全审查**，不是完整生产可用性；无需再重复 T5/T6/T7 已验证的相同认证成功路径，不应为了测撤销而破坏用户唯一成功连接。
 
@@ -151,3 +151,12 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **独立验收：** Clerk 官方管理连接只读回读同一 Development Instance `ins_3Lx1I9V00eUZEIvYFV9TI7PHL0O`：`client_id_metadata_documents_only_allow_pre_registered_clients=true`，`client_id_metadata_documents_block_implicitly_allowed_clients=true`，DCR=false，PKCE=true，OAuth Opaque=true，Audience=true。全局严格准入**配置 Pass**。
 - **真实连接：** 未重新安装、退出登录或重新授权，当前 ChatGPT 连接直接调用 `lab_status({})`，返回精确 `Spec853 lab: authenticated no-op`；现有已允许 Client 在严格模式下的真实成功路径 **Pass**。
 - **证据边界：** 真实陌生 CIMD Client 授权被拒的负面 E2E、Refresh Grant 与实际 Token 撤销、7 天后续期、Clerk Production 和第三方 Sentry 最小只读权限仍 **Unknown**。本轮没有创建新 Client/用户，没有改 Cloudflare Portal、Worker、Sentry、Secret、DNS 或正式 ChatGPT 插件。Draft PR 保持未合并。
+
+## 十、T12 陌生 CIMD 拒绝与 Sentry 官方最小权限路径（2026-11-12）
+
+- Clerk 测试环境只读回读：strict pre-registration=true，block implicitly allowed=true，DCR=false，PKCE=true；原 ChatGPT Lab 的 lab_status 返回精确文本 Spec853 lab: authenticated no-op。此前 T5/T6/T7/T11 成功路径无需重复改动。
+- 两个公开且有效的第三方 CIMD 文档 HTTPS 200、JSON、client_id 自引用、包含 redirect_uris：Claude Code (https://claude.ai/oauth/claude-code-client-metadata) 与 OpenCode (https://opencode.ai/oauth/opencode/client.json)。在不携带 Cookie 的 CLI 授权请求均先 302 到 Clerk 登录页；在同一 LIRTUAL BrowserMCP Profile 打开这两个 authorization code + PKCE URL，均显示 invalid_client / The Client ID Metadata Document could not be resolved，没有到达授权同意界面或签发 Token。**观察到拒绝授权（Pass）；是否是严格准入策略而不是 Clerk 无法抓取第三方元数据所致（Unknown）**，不能伪造一个已验证的拒绝原因。未在 Clerk 新建 Client、User 或 Grant，也未点击 Consent。
+- 在 Sentry 官方 nfwt 登录管理页只读回读：MCP & CLI 指南支持将连接限制到具体组织/项目并隐藏不必要的发现工具；Organization Tokens 显示没有任何 Token，Custom Integrations 显示没有任何 Internal Integration。**不存在可核实的现成专属只读 Organization Token**。本轮没有创建 Integration/Token 或读取任何凭据。
+- Sentry 官方 MCP 源码与使用文档提供 inspect（只读）技能，以及基于 /mcp/{org}/{project} 的作用域和 ?skills=inspect 的工具筛选。读取来源：https://github.com/getsentry/toolkit/blob/main/README.md 及 https://github.com/getsentry/sentry-mcp/blob/main/packages/mcp-core/src/skills.ts 。专用只读 Sentry API Token 最小 scopes 是 org:read、project:read、team:read、event:read（https://docs.sentry.io/api/permissions/）；需要同时采用这些服务端 scopes 和 MCP skills 限制，不能仅靠隐藏工具实现真实权限隔离。
+- 对 https://mcp.sentry.dev/mcp/nfwt/scrape-relay?skills=inspect 发起无身份的 tools/list POST，真实返回 401 及 WWW-Authenticate: Bearer。此结果只证明路由有鉴权挑战，**不证明携带只读 Token 后的具体工具列表、跨组织拒绝或可用性**，这些须等专用 Token 后验收。也不意味着无需验证客户端长效授权。
+- 当前最小结论：**不新建高权限 Portal 代理、不自建 Sentry 73 工具镜像、不添加状态库或额外身份服务。** 若未来确需 Clerk 转译，仅以专用只读 Token 与固定 nfwt/scrape-relay 上游路径运行；正式凭据创建、注入及部署需要单独生产授权。Clerk 真实 Token 撤销、非 Owner 授权 E2E、7 天浏览器 Session 后 RT 行为仍 Unknown。
