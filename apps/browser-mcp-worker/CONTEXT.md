@@ -17,6 +17,13 @@ shared Allow Policy now serves 12 other applications unchanged, and the
 app/policy readback passed; this is not a new human login E2E or a fix for the
 previously observed activation `Not found`.
 
+**Current MCP Access policy readback (2026-11-12):** `Browser` and
+`MCP` Portal now share the reusable `MCP Portal and Browser Owners` rule,
+limited to `lirtual@qq.com` and `lirtual@outlook.com`. The previous
+2026-11-10 single-email description above is historical. Browser **Activation**
+remains a separate QQ-only OTP app; no Activation identity or browser runtime
+was changed in this correction.
+
 The Owner accepted [Cloudflare account SSO with OTP fallback for active Owner entrypoints](../../docs/owner-access-sso-browser-review-design.md): Browser Activation, Database Setup, and EdgeSSH retain their **exact Owner email** grants, distinct audiences, session durations and application-layer verification. The existing Cloudflare account-members identity provider can be reused; legacy Weixin, App Launcher and MCP/Portal sign-ins are not in this Owner-only scope. The 2026-11-04 approval was design-only; later scoped production authorizations and real logins are recorded in the [final acceptance](https://github.com/lirtual/mcp-workers/pull/715#issuecomment-6646761813).
 
 [ADR 0004](docs/adr/0004-retire-owner-unknown-review.md) accepts complete retirement of the independent Browser Owner Unknown Review UI, routes, and dedicated Access application, while keeping Browser Activation's Access verification, same-Profile one-use proof, historic Unknown/owner-report receipts, immutable original intent keys and strict no-replay behavior. Recent-admission capacity stays at **100 still-Unknown operations created during the preceding 7 days** using the existing server `created_at`; older Unknowns remain untouched and queryable. ADR 0004 supersedes only ADR 0002's independent Unknown-review-channel requirement. The earlier isolation Waiver remains historical evidence, **not Pass**. The Browser source was later [published and independently verified](https://github.com/lirtual/mcp-workers/actions/runs/41871291888) as Worker version `3943aa81-23c1-4b31-805c-3a2a93e3846c` at 100% traffic; the old Review route now returns 404 and its dedicated Access application was [retired](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175). Three active Owner Access apps now use Cloudflare account-member SSO plus OTP, with exact Owner policy, audiences, and original sessions preserved; historical receipts, credentials and Durable Object namespace were not changed. The previous waiver remains historical, not retroactively Pass.

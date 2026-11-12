@@ -29,6 +29,13 @@ that the original three-mailbox shared Allow rule still serves 12 other apps,
 and that `WORKFLOWS` Service Token, Audience and the 24h Browser MCP session
 are unchanged. Fresh human login E2E was not performed; the earlier activation
 `Not found` remains a separate unlocated symptom.
+**Current MCP Access policy readback (2026-11-12):** `Browser` and
+`MCP` Portal now share the reusable `MCP Portal and Browser Owners` rule,
+limited to `lirtual@qq.com` and `lirtual@outlook.com`. The previous
+2026-11-10 single-email description above is historical. Browser **Activation**
+remains a separate QQ-only OTP app; no Activation identity or browser runtime
+was changed in this correction.
+
 No extra Worker, DB migration, queue, or browser-extension protocol change is introduced.
 The historical Review Access application was removed **after** the authorized Worker release and readback: public `/owner/unknown/*` returns 404 while Browser Activation remains Access-protected ([retirement evidence](https://github.com/lirtual/mcp-workers/pull/716#issuecomment-6636929175)). The retired Review-only variables are absent from the new deployment; the original activation variables, Owner identity, and historical receipts remain intact. No new Worker or identity service was introduced.
 

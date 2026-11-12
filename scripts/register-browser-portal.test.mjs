@@ -5,7 +5,16 @@ import {attachBrowserPortal,BROWSER_TOOLS,BROWSER_UUIDV7_PATTERN,verifyBrowserTo
 const ids=['workflow','database','ima','raindrop','sentry','ssh','remote-control','github-actions','git-guardian','kdocs','apifox'];
 const newPortal=()=>({id:'mcp',name:'MCP',hostname:'mcp.lirtual.dpdns.org',code_mode:'opt_in',secure_web_gateway:true,servers:ids.map(server_id=>({server_id,default_disabled:false}))});
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-fixture',MCP_ACCESS_TOKEN:'shared-fixture'};
-const policies=[{id:'11111111-1111-4111-8111-111111111111',name:'WORKFLOWS',decision:'non_identity',reusable:true,precedence:1,include:[{service_token:{token_id:'fixture'}}]},{id:'22222222-2222-4222-8222-222222222222',name:'Default Allow Rule',decision:'allow',reusable:true,precedence:2,include:[{email:{email:'owner@invalid.test'}}]}];
+const policies=[
+  {id:'7cec582c-4038-4fb0-9ad8-fcdb04af4adc',
+    name:'WORKFLOWS',decision:'non_identity',reusable:true,precedence:1,
+    include:[{service_token:{token_id:'fixture'}}]},
+  {id:'07204847-0459-4197-b3c3-2dbe2a47a550',
+    name:'MCP Portal and Browser Owners',decision:'allow',
+    reusable:true,precedence:2,
+    include:[{email:{email:'lirtual@qq.com'}},
+      {email:{email:'lirtual@outlook.com'}}]},
+];
 const intentTools=new Set(['browser_click','browser_fill','browser_keypress','browser_scroll','browser_select','browser_tab_open','browser_tab_navigate','browser_tab_close','browser_operation_status']);
 const freshTools=()=>BROWSER_TOOLS.map(name=>{
   const tool={name};
@@ -17,11 +26,7 @@ const freshTools=()=>BROWSER_TOOLS.map(name=>{
     required:['endpoint_id'],additionalProperties:false};
   return tool;
 });
-const browserPolicies=()=>[policies[0],{
-  id:'07204847-0459-4197-b3c3-2dbe2a47a550',name:'Browser MCP Owner QQ Only',
-  decision:'allow',reusable:true,precedence:2,
-  include:[{email:{email:'lirtual@qq.com'}}],exclude:[],require:[],
-}];
+const browserPolicies=()=>structuredClone(policies);
 const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies},
   ...(enabled?[{name:'Browser',type:'mcp',policies:browserPolicies()}]:[])];
 test('the exact fixed 15 tools match public Browser MCP and five interaction actions',()=>{

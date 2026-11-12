@@ -31,35 +31,30 @@ When replacing another publisher, deploy, verify health and fail-closed MCP auth
 ## One-MCP Access policy gate (MCP server registration)
 
 A successful MCP server `sync`, `ready` status, and Portal attachment do
-**not** prove that ChatGPT can securely authenticate to the server. Cloudflare
-also creates an Access application (`type=mcp`) for each MCP server. Before
-attaching a server to One-MCP, verify that its Access application has the same
-two **reusable** policies, in the same order, as the trusted One-MCP
-(`type=mcp_portal`) application:
+**not** prove that ChatGPT can securely authenticate to the server. Before
+registering a server, the read-only gate checks the existing Cloudflare Access
+applications and their two ordered, reusable policies:
 
-1. `WORKFLOWS`: `non_identity` service-token selector (precedence 1).
-2. `Default Allow Rule`: `allow` for the approved email selectors (precedence 2).
+1. `WORKFLOWS` (precedence 1): the **same** reviewed service-token policy ID
+   `7cec582c-4038-4fb0-9ad8-fcdb04af4adc` for Portal and target.
+2. Owner Allow (precedence 2): the Portal and Browser share
+   `MCP Portal and Browser Owners` (ID
+   `07204847-0459-4197-b3c3-2dbe2a47a550`), limited to
+   `lirtual@qq.com` and `lirtual@outlook.com`. The other existing MCP
+   servers, including Workflow, use the separately reviewed
+   `Default Allow Rule` (ID
+   `659d043c-e957-4c91-9f33-2416c52ecbe5`), limited to those two emails
+   plus `lirtual@gmail.com`.
 
-**Browser-only scoped exception (approved 2026-11-10):** The existing `Browser`
-MCP Access application may use the reviewed dedicated reusable policy
-`Browser MCP Owner QQ Only` (`07204847-0459-4197-b3c3-2dbe2a47a550`) at
-precedence 2, with exactly the `lirtual@qq.com` email selector. Precedence 1
-remains the identical `WORKFLOWS` Service Token policy shared with Portal. The
-read-only registration gate pins the exception to `id=browser` and `name=Browser`;
-all other MCP applications must still have both exact Portal policy IDs. The
-shared `Default Allow Rule` continues to be used by 12 other applications
-without modification. The authorized 2026-11-10 Cloudflare cutover was
-independently read back: `Browser` now references `WORKFLOWS` (precedence 1)
-and its dedicated QQ-only policy (precedence 2); dedicated app_count=1,
-shared human app_count=12 and Workflow Service Token app_count=12. The Browser
-Audience, Portal target and 24h Access session remain unchanged. This is
-configuration readback, not a new authenticated QQ login E2E.
+The Owner policy IDs are deliberately distinct. The 2026-11-10 Browser-only
+QQ policy was subsequently updated to the Portal/Browser dual-email policy;
+the historical single-email readback remains dated evidence, not current
+configuration. This does **not** modify Cloudflare Access permissions.
 
-Verify reusable **policy IDs**, not just display names. Never add an
-`Everyone`, bypass, or unrestricted Allow rule. Missing, ambiguous or
-misordered policies and failed Access API reads are **release blockers**,
-not an acceptable partial success. Do not print selector email addresses,
-service tokens, or any upstream credentials.
+The gate checks the exact reusable policy IDs, names, selectors, allowed email
+sets, decisions and precedence. Missing, reordered, unreviewed or broader
+policies, `Everyone`, unauthorized extra emails and failed Access API reads
+remain **hard blockers**. Do not print tokens or unrelated private selectors.
 
 The shared `register-mcp-portal-server.mjs` helper (used by OpenList
 and HTTP) checks this invariant **before** Portal attachment. The existing
