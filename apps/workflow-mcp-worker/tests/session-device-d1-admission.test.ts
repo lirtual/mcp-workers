@@ -127,3 +127,65 @@ test('expired during final cancellation read is denied at the return boundary',a
     assert.deepEqual(result,{allowed:false});
   }finally{f.db.close();}
 });
+
+function useDynamicMain(db: DatabaseSync, frozenSha: string | null = 'c'.repeat(40)) {
+  const runtimePlan = structuredClone(plan);
+  runtimePlan.steps[0].with.action.ref = 'refs/heads/main';
+  db.prepare("UPDATE workflow_versions SET plan=? WHERE id='v'").run(JSON.stringify(runtimePlan));
+  db.prepare("UPDATE step_attempts SET ref=?,workflow_ref=?,resolved_sha=? WHERE attempt_id=?")
+    .run('refs/heads/main', action.repository+'/'+action.workflowPath+'@refs/heads/main',
+      frozenSha, attemptId);
+}
+
+test('dynamic main admits only the attempt-frozen physical SHA, not the published baseline', async () => {
+  const f=fixture();
+  try {
+    const runtimeSha='c'.repeat(40);
+    useDynamicMain(f.db,runtimeSha);
+    let inspectedSha: string | undefined;
+    const result=await f.admit({jobStart:async (runtime: {commitSha:string})=>{
+      inspectedSha=runtime.commitSha;
+      return Date.now()-60_000;
+    }});
+    assert.equal(result.allowed,true);
+    assert.equal(inspectedSha,runtimeSha);
+    assert.notEqual(inspectedSha,action.commitSha);
+  } finally {f.db.close();}
+});
+
+test('dynamic main with missing or invalid frozen SHA is denied', async () => {
+  for (const sha of [null,'g'.repeat(40)]) {
+    const f=fixture();
+    try {
+      useDynamicMain(f.db,sha);
+      assert.deepEqual(await f.admit(),{allowed:false});
+    } finally {f.db.close();}
+  }
+});
+
+test('session admission denies a changed frozen SHA before its final cancellation check', async () => {
+  const f=fixture();
+  try {
+    useDynamicMain(f.db);
+    const result=await f.admit({jobStart:async ()=>{
+      f.db.prepare("UPDATE step_attempts SET resolved_sha=? WHERE attempt_id=?")
+        .run('d'.repeat(40),attemptId);
+      return Date.now()-60_000;
+    }});
+    assert.deepEqual(result,{allowed:false});
+  } finally {f.db.close();}
+});
+
+test('dynamic main rejects an unreviewed branch ref', async () => {
+  const f=fixture();
+  try {
+    useDynamicMain(f.db);
+    const unreviewed='refs/heads/feature';
+    const bad=structuredClone(plan);
+    bad.steps[0].with.action.ref=unreviewed;
+    f.db.prepare("UPDATE workflow_versions SET plan=? WHERE id='v'").run(JSON.stringify(bad));
+    f.db.prepare("UPDATE step_attempts SET ref=?,workflow_ref=? WHERE attempt_id=?")
+      .run(unreviewed,action.repository+'/'+action.workflowPath+'@'+unreviewed,attemptId);
+    assert.deepEqual(await f.admit(),{allowed:false});
+  } finally {f.db.close();}
+});

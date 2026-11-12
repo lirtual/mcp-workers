@@ -4,6 +4,7 @@
  */
 import {verifyPinnedGitHubActionIdentity} from './github-action-oidc-claim.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
+import {actionForAttempt,isDynamicMainAction} from './github-action-main.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {publishedGitHubActionStep,type Plan} from './plan.ts';
@@ -20,7 +21,7 @@ export type SessionAdmission=typeof DENY | {
 type Row={
  attempt_id:string;run_id:string;step_id:string;state:string;session_state:string;
  capability_id:string;repository:string;repository_id:string;workflow_ref:string;
- ref:string;candidate_run_id:number|null;candidate_run_attempt:number|null;
+ ref:string;resolved_sha:string|null;candidate_run_id:number|null;candidate_run_attempt:number|null;
  owner_run_id:number|null;owner_run_attempt:number|null;
  plan:string;run_inputs:string;run_outcome:string;
  rca_duration_minutes:number|null;
@@ -51,7 +52,7 @@ const services:AdmissionServices={
 };
 const read=async(db:D1Database,attemptId:string)=>db.prepare(
   `SELECT a.attempt_id,a.run_id,a.step_id,a.state,a.capability_id,
-    a.repository,a.repository_id,a.workflow_ref,a.ref,
+    a.repository,a.repository_id,a.workflow_ref,a.ref,a.resolved_sha,
     a.candidate_run_id,a.candidate_run_attempt,a.owner_run_id,a.owner_run_attempt,
     s.state AS session_state,s.rca_duration_minutes,r.outcome AS run_outcome,
     r.inputs AS run_inputs,v.plan
@@ -85,13 +86,16 @@ function reviewedAction(row:Row, approval:AdmissionServices['approval'],currentE
     workflowPath:raw.workflowPath,commitSha:raw.commitSha,
     type:raw.type,contractDigest:raw.contractDigest,
   };
+  // Approve the immutable published identity, then inspect the Attempt-frozen main SHA.
+  const tagged=/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]{0,190}$/.test(row.ref);
+  const runtime=actionForAttempt(action,row.ref,plan.name,row.resolved_sha);
+  if(!runtime||(!tagged&&!isDynamicMainAction(action,row.ref,plan.name)))return null;
   if(!approval(plan.github_action_approvals,action) ||
     row.repository!==action.repository||row.repository_id!==String(action.repositoryId)||
     row.ref!==raw.ref||row.workflow_ref!==action.repository+'/'+action.workflowPath+'@'+row.ref||
-    !/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]{0,190}$/.test(row.ref)||
     row.ref.includes('..')||row.ref.includes('//'))return null;
   const defaults=(plan.inputs??{}) as Record<string,unknown>;
-  return {action,pinned:raw.inputs,defaults,supplied};
+  return {action:runtime,pinned:raw.inputs,defaults,supplied};
  }catch{return null;}
 }
 
@@ -136,6 +140,7 @@ export async function decideSessionAdmission(
      current.owner_run_id!==row.owner_run_id||
      current.owner_run_attempt!==row.owner_run_attempt||
      current.plan!==row.plan||current.run_inputs!==row.run_inputs||
+     current.resolved_sha!==row.resolved_sha||
      current.rca_duration_minutes!==row.rca_duration_minutes||
      deadline<=Date.now())return DENY;
   return {allowed:true,attempt_id:attemptId,
