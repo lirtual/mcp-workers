@@ -22,7 +22,11 @@ export const BROWSER_ACCESS_VARIABLES = Object.freeze([
 
 export const WORKER_VARIABLES = Object.freeze({
   "browser-mcp-worker": ["BROWSER_ACTIVATION_AUDIENCE", "BROWSER_REMEMBERED_IDLE_DAYS"],
-  "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
+  "raindrop-mcp-worker": [
+    "RAINDROP_RATE_LIMIT_MAX_RETRIES",
+    "CLERK_PILOT_PUBLISHABLE_KEY", "CLERK_PILOT_OWNER_USER_ID",
+    "CLERK_PILOT_ISSUER", "CLERK_PILOT_RESOURCE",
+  ],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "DATABASE_MAX_ROWS", "DATABASE_MAX_RESULT_BYTES", "DATABASE_MAX_SCHEMA_BYTES", "DATABASE_QUERY_TIMEOUT_MS",
@@ -91,6 +95,31 @@ export function collectWorkerVars(worker, env, options = {}) {
     if (typeof env.RCA_PERMANENT_IDLE_DAYS !== "string" ||
         !/^(?:[1-9]|[1-8][0-9]|90)$/.test(env.RCA_PERMANENT_IDLE_DAYS)) {
       throw Error("Invalid RCA_PERMANENT_IDLE_DAYS: expected decimal integer 1..90");
+    }
+  }
+  if (worker === "raindrop-mcp-worker") {
+    const keys = ["CLERK_PILOT_PUBLISHABLE_KEY", "CLERK_PILOT_OWNER_USER_ID",
+      "CLERK_PILOT_ISSUER", "CLERK_PILOT_RESOURCE"];
+    const selected = keys.filter(name => env[name] != null && env[name] !== "");
+    if (selected.length) {
+      if (selected.length !== keys.length || keys.some(name =>
+        typeof env[name] !== "string" || env[name].trim() !== env[name] ||
+        env[name].length > 1024 || /[\r\n]/.test(env[name])))
+        throw Error("Incomplete or invalid Raindrop Clerk pilot Variables");
+      if (!/^pk_(?:live|test)_[^\s]{8,}$/.test(env.CLERK_PILOT_PUBLISHABLE_KEY) ||
+          !/^user_[a-zA-Z0-9]+$/.test(env.CLERK_PILOT_OWNER_USER_ID))
+        throw Error("Invalid Raindrop Clerk pilot key or Owner ID");
+      let issuer, resource;
+      try {
+        issuer = new URL(env.CLERK_PILOT_ISSUER);
+        resource = new URL(env.CLERK_PILOT_RESOURCE);
+      } catch { throw Error("Invalid Raindrop Clerk pilot URLs"); }
+      if (issuer.protocol !== "https:" || issuer.href !== issuer.origin + "/" ||
+          env.CLERK_PILOT_ISSUER !== issuer.origin || issuer.username || issuer.password ||
+          resource.protocol !== "https:" || resource.username || resource.password ||
+          resource.pathname !== "/clerk/mcp" || resource.hash || resource.search ||
+          env.CLERK_PILOT_RESOURCE !== resource.href)
+        throw Error("Invalid Raindrop Clerk pilot issuer or resource");
     }
   }
   if (worker === "workflow-mcp-worker") {

@@ -30,6 +30,15 @@ export function collectBootstrapSecrets(worker, env) {
     }
     payload[name] = value;
   }
+  if (worker === "raindrop-mcp-worker") {
+    const enabled = typeof env.CLERK_PILOT_RESOURCE === "string" &&
+      env.CLERK_PILOT_RESOURCE.length > 0;
+    const supplied = typeof env.CLERK_SECRET_KEY === "string" &&
+      env.CLERK_SECRET_KEY.length > 0;
+    if (enabled !== supplied || (enabled && !env.CLERK_SECRET_KEY.trim()))
+      throw Error("Raindrop Clerk pilot Secret and resource must be configured together");
+    if (enabled) payload.CLERK_SECRET_KEY = env.CLERK_SECRET_KEY;
+  }
   if (worker === "database-mcp-worker") {
     Object.assign(payload,databaseCatalogStage(env).secrets);
   }

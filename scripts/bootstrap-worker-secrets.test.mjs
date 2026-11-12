@@ -114,3 +114,22 @@ test("Workflow Repository secrets never use reserved GITHUB_ names",()=>{
   assert.ok(names.includes("WORKFLOW_GITHUB_DISPATCH_TOKEN"));
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
 });
+
+test("Raindrop Clerk Secret is optional, worker-scoped, and requires an enabled resource", () => {
+  const normal = fixtures["raindrop-mcp-worker"];
+  const resource = "https://raindrop-mcp-worker.aiyaya.workers.dev/clerk/mcp";
+  assert.deepEqual(collectBootstrapSecrets("raindrop-mcp-worker", normal), normal);
+  assert.deepEqual(collectBootstrapSecrets("raindrop-mcp-worker", {
+    ...normal, CLERK_PILOT_RESOURCE: resource, CLERK_SECRET_KEY: "clerk-test-secret",
+  }), { ...normal, CLERK_SECRET_KEY: "clerk-test-secret" });
+  assert.throws(() => collectBootstrapSecrets("raindrop-mcp-worker", {
+    ...normal, CLERK_PILOT_RESOURCE: resource,
+  }), /Clerk pilot Secret/);
+  assert.throws(() => collectBootstrapSecrets("raindrop-mcp-worker", {
+    ...normal, CLERK_SECRET_KEY: "clerk-test-secret",
+  }), /Clerk pilot Secret/);
+  assert.deepEqual(collectBootstrapSecrets("ima-mcp-worker", {
+    ...fixtures["ima-mcp-worker"], CLERK_PILOT_RESOURCE: resource,
+    CLERK_SECRET_KEY: "clerk-test-secret",
+  }), fixtures["ima-mcp-worker"]);
+});

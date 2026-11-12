@@ -276,3 +276,44 @@ test('Spec #804 stages Browser runtime values only from protected candidate stat
     assert.throws(()=>readFileSync(output,'utf8'));
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+test("Raindrop Clerk release variables are optional as a complete validated tuple", () => {
+  const enabled = {
+    CLERK_PILOT_PUBLISHABLE_KEY: "pk_test_syntheticExample",
+    CLERK_PILOT_OWNER_USER_ID: "user_owner123",
+    CLERK_PILOT_ISSUER: "https://example.clerk.accounts.dev",
+    CLERK_PILOT_RESOURCE: "https://raindrop-mcp-worker.aiyaya.workers.dev/clerk/mcp",
+  };
+  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", {}), []);
+  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", enabled), [
+    ...Object.entries(enabled).map(([name,value]) => name + ":" + value),
+  ]);
+  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker",
+    { ...enabled, RAINDROP_RATE_LIMIT_MAX_RETRIES:"2" }), [
+    "RAINDROP_RATE_LIMIT_MAX_RETRIES:2",
+    ...Object.entries(enabled).map(([name,value]) => name + ":" + value),
+  ]);
+  assert.deepEqual(collectWorkerVars("ssh-mcp-worker", enabled), []);
+  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", {
+    ...enabled, CLERK_PILOT_PUBLISHABLE_KEY: "pk_live_base64Example==",
+  }).at(0), "CLERK_PILOT_PUBLISHABLE_KEY:pk_live_base64Example==");
+  for (const name of Object.keys(enabled)) {
+    const missing={...enabled};
+    delete missing[name];
+    assert.throws(() => collectWorkerVars("raindrop-mcp-worker", missing), /Clerk pilot/);
+  }
+  for (const patch of [
+    {CLERK_PILOT_RESOURCE:"http://raindrop.example.com/clerk/mcp"},
+    {CLERK_PILOT_RESOURCE:"https://raindrop.example.com/mcp"},
+    {CLERK_PILOT_RESOURCE:"https://raindrop.example.com/clerk/mcp?x=1"},
+    {CLERK_PILOT_RESOURCE:"https://user:password@raindrop.example.com/clerk/mcp"},
+    {CLERK_PILOT_ISSUER:"http://clerk.example.com"},
+    {CLERK_PILOT_ISSUER:"https://clerk.example.com/a"},
+    {CLERK_PILOT_OWNER_USER_ID:"bad"},
+    {CLERK_PILOT_PUBLISHABLE_KEY:"invalid"},
+    {CLERK_PILOT_OWNER_USER_ID:"user_good\nSECRET=bad"},
+  ]) {
+    assert.throws(() => collectWorkerVars("raindrop-mcp-worker",
+      { ...enabled, ...patch }), /Clerk pilot/i);
+  }
+});
