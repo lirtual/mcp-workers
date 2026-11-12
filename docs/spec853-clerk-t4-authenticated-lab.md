@@ -63,3 +63,11 @@
 - `Unknown` — 多周/长期空闲、7 天会话边界、Refresh Token 撤销、登录身份与客户端白名单、生产业务 Owner ID 限制。特别是本测试 Worker 尚未设置 Owner ID 白名单，只允许固定无副作用 `lab_status`，不能据此迁移生产权限。
 
 **结论：** 当前 Spec #853 的**24 小时后免手动重连功能门** Pass；Refresh 协议具体事件链路、长期授权稳定性仍需独立证据，**不需要重复等待一天进行同质验收**。保持已有测试插件与 Worker 不变。Draft PR #859 仍为 Draft、不合并 main；本次仅更新文档/Issue，不修改 Clerk、Cloudflare 运行时或 ChatGPT 插件设置。
+
+## T7 Owner 严格校验与 Cloudflare 独立测试 Worker 验收（2026-11-12）
+
+- **代码最小变更：** `auth-lab-worker.mjs` 要求 `env.CLERK_OWNER_USER_ID` 为合法单个 Clerk `user_...` ID，并与 Clerk SDK 成功校验的 `state.toAuth().userId` 完全相同；错误、空值或缺失均 401。原有固定 Audience、`profile` Scope、Issuer、`oauth_token` 类型、只允许 `lab_status` 单工具及无状态部署保持。开发用户数唯一只能作为核查，不能代替这个运行时限制。
+- **本地 42/42 Pass：** 其中 T7 合同覆盖非 Owner、伪造 Header/RPC Owner、Scope 缺失、SDK 返回已撤销、校验服务异常及 Owner 变量未配置等；另复用 Clerk SDK 合成签名和真实本地 workerd 验证。上述坏 Owner/撤销输入是**模拟令牌**，不能标为真实 Clerk OAuth 后台 E2E。
+- **唯一非生产改动：** PR #859 提交 `c886f2ac99c8051597c5288cdff1bd973a2518bc` CI Required/Application/GitGuardian 全 Pass 后，以 `--strict` 对独立 `spec853-clerk-oauth-lab` Worker 发布经过 hash 验证的 bundle（SHA-256 `d970325b4044a5466f67f2d15bd0f5af8a3d1703170dbcacad84ab1570b1b837`）。只新增 `CLERK_OWNER_USER_ID:plain_text`，保留已有 `CLERK_SECRET_KEY:secret_text`；不在 Git 中保存 Owner ID 值、Secret 或部署缓存。
+- **真实公网回读 Pass：** Version `e5bbebb9-0e73-4529-a8b9-d21d3e13b705` 承接 100%，`preview_urls=false`，两个绑定名称与类型符合，Owner 绑定值与已核对的唯一开发 User ID 一致。公开 PRM=200；无 Bearer / 伪 Bearer 均 401；同一 ChatGPT 已连接测试插件调用 `lab_status({})` 返回 `Spec853 lab: authenticated no-op`，保持了此前的授权连接。
+- **严格边界：** Owner 成功路径=Pass；无凭据与伪凭据公网拒绝=Pass；真实非 Owner Token、公网撤销即时生效与更换 Client admission=Unknown。无真实业务工具/后端、没有 Portal/Access/生产 Worker/DNS/ChatGPT 原连接修改。下一步生产迁移必须另行审查并授权。
