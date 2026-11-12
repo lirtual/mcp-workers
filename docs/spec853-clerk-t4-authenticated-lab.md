@@ -71,3 +71,11 @@
 - **唯一非生产改动：** PR #859 提交 `c886f2ac99c8051597c5288cdff1bd973a2518bc` CI Required/Application/GitGuardian 全 Pass 后，以 `--strict` 对独立 `spec853-clerk-oauth-lab` Worker 发布经过 hash 验证的 bundle（SHA-256 `d970325b4044a5466f67f2d15bd0f5af8a3d1703170dbcacad84ab1570b1b837`）。只新增 `CLERK_OWNER_USER_ID:plain_text`，保留已有 `CLERK_SECRET_KEY:secret_text`；不在 Git 中保存 Owner ID 值、Secret 或部署缓存。
 - **真实公网回读 Pass：** Version `e5bbebb9-0e73-4529-a8b9-d21d3e13b705` 承接 100%，`preview_urls=false`，两个绑定名称与类型符合，Owner 绑定值与已核对的唯一开发 User ID 一致。公开 PRM=200；无 Bearer / 伪 Bearer 均 401；同一 ChatGPT 已连接测试插件调用 `lab_status({})` 返回 `Spec853 lab: authenticated no-op`，保持了此前的授权连接。
 - **严格边界：** Owner 成功路径=Pass；无凭据与伪凭据公网拒绝=Pass；真实非 Owner Token、公网撤销即时生效与更换 Client admission=Unknown。无真实业务工具/后端、没有 Portal/Access/生产 Worker/DNS/ChatGPT 原连接修改。下一步生产迁移必须另行审查并授权。
+
+## T8 公共 CIMD 元数据与 Sentry 准入核查（2026-11-12）
+
+- **公共协议真实性：** 对实验 Clerk 开发 Issuer 的 `/.well-known/oauth-authorization-server` 和 OpenAI 稳定 CIMD `https://chatgpt.com/oauth/client.json` 均实际 GET 200，逐项读取了公开的 issuer、`authorization_response_iss_parameter_supported=true`、CIMD、Token Refresh、PKCE `S256`、`none` 与回调 URL。没有访问或缓存 Access/Refresh Token。ChatGPT 官方文档显示此 Clerk 元数据符合稳定 CIMD 的使用条件，但**实际已授权客户端记录的 Client ID 仍 Unknown**。
+- **正式 Client 门：** Clerk 开发实例当前未限制预注册（`client_id_metadata_documents_only_allow_pre_registered_clients=false`），DCR 已关闭。想切成严格预注册，必须先通过官方授权方式读取该开发实例的已连接 Client 元数据、将实际 Client 明确允许且限定 Scope、再切 admission 并实测原插件仍可用。已尝试的 Clerk Dashboard 代理会话遭平台 `agent_session_forbidden`，不能更换身份绕过；现有 Clerk 管理 MCP 也没有对应操作。本轮没有改动 Clerk 配置或 Client 状态。
+- **Sentry 只读能力：** 连接器返回组织 `nfwt` 与项目 `scrape-relay`；Cloudflare 生产 Portal 仅只读查询确认 Sentry 后端 `https://mcp.sentry.dev/mcp`，`auth_type=bearer`，管理端上游状态 connected/ready，已暴露的工具清单 73 个且含写操作。不能把连接器的只读查询成功或工具名当作该 Bearer 的 `org:read/project:read/event:read` Scope 证据。正式计划需专用只读认证，禁止复用 Portal 管理凭据或直接代理全部工具。
+- **真实 User/撤销门：** 本轮未创建非 Owner 测试账号、未向任何客户端签发第二 Token、未撤销当前唯一 OAuth Grant，也未修改用户登录状态。这两项继续 `Unknown`；SDK/Workerd 的 42/42 静态/模拟 Pass 依然有效，不新增假验收。
+- **交付范围：** 仅文档事实审计和现有只读连接器调用，Cloudflare Worker `e5bbebb9-0e73-4529-a8b9-d21d3e13b705`、原 Clerk/Sentry/Portal 配置、生产端点、OAuth 客户端均不变。
