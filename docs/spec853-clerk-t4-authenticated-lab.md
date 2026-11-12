@@ -119,3 +119,10 @@
 - Sentry REST 获取 nfwt 项目列表返回 200，且目标 `scrape-relay` 是唯一可见项目；Sentry remote MCP `/mcp/nfwt/scrape-relay?skills=inspect` 携 `Sentry-Bearer` 返回 HTTP 200，但解析为 0 个工具，未执行真实只读工具调用，**MCP inspect E2E 不能标 Pass**。尝试 Token 管理 API 返回 403。
 - 用户在 Sentry 界面 Revoke 后，BrowserMCP LIRTUAL 回读 Integration Token 表格显示 `You haven't created any authentication tokens yet.`，不存在末尾 1640 的列表项。**Token 撤销 UI Pass、集成保留、当前 Token 0**；未对已撤销原值再次发起请求。
 - 本轮没有将 Token 原文提交至代码仓库、文档、Issue、CI 或正式配置；不得再使用该 Token，也不得将 Token 值作为复测材料。后续实际 MCP 工具调用需要安全渠道提供的独立测试 Token 与单独撤销，且仍不能视为 Clerk refresh 验收。
+
+## T17 Clerk 真正 Refresh Token Grant 的可回读证据（2026-11-12）
+
+- 本次原 ChatGPT `lab_status({})` 仍直接返回 `Spec853 lab: authenticated no-op`；未重新登录、未断开测试连接、未改开发实例或 Worker。
+- BrowserMCP LIRTUAL 的 Clerk Development **Application Logs** 只读实际观察到 `oauth_token.created`，事件 ID `01a1cf33-f446-769f-8480-72bf3b9bc814`；页面时间 2026-11-12 18:00:51（显示时区未独立核实），`grant_type="refresh_token"`、`oauth_client_id="https://chatgpt.com/oauth/client.json"`、`resource=granted_resource="https://spec853-clerk-oauth-lab.aiyaya.workers.dev/mcp"`、`scopes="offline_access profile openid email"`。没有读取或转存任何 OAuth Token 原值/用户隐私/IP。
+- 该事件恰与 T5/T6 中 ChatGPT 首次授权后已超过 24h 且不重新授权成功调用受保护 MCP 的功能事实匹配。因此 **真实 Refresh Grant 事件 Pass**、**24 小时后静默续用 Pass**，把 T6 的 `Unknown: refresh_token grant` 更新为已解决的**历史 Unknown**；T6 原验收记录不重写为当时已知。
+- 本事件**不证明** Token Rotation、7 天浏览器登录 Session 到期后的独立性、长期空闲免重连、真实非 Owner/撤销的运行时边界或 Production Hobby 可用性；这些必须分别保留 Unknown。测试 Worker 的受保护 Owner / Scope / Audience 合同和现有 Developer 严格 CIMD 设置均保持。
