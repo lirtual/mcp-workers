@@ -73,11 +73,11 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 | 门 | 必须得到的真实证据 | 未通过时 |
 | --- | --- | --- |
 | P0：Portal 优先门 | 官方 Managed OAuth Grant 固定到期、现有可读配置、可安全恢复配置能力及 ChatGPT RT 实际刷新 | **Verified：官方承诺短效 Token 静默刷新、Grant 到期重新认证**；**Not Met（严格 Q1）**；实际 Grant TTL 与 ChatGPT 实际刷新仍 Unknown；因缺 `oauth_configuration`，生产配置最小安全试改 Blocked |
-| T0：Clerk 备选事实门 | Hobby $0 免卡、Production 注册要求、CIMD/PKCE/offline_access、1 天 Access Token 与无固定 RT 到期；当前 Portal 11 上游及 Access Policy | 仅当 P0 不满足时再推进 Clerk；账号级限制、Token 实例行为保持 Unknown |
+| T0：Clerk 备选事实门 | Hobby $0/免绑卡，Development OAuth 的 CIMD、PKCE、offline_access、Token 时钟及实际连接 | **Development 已 Verified**；Hobby Production 实际部署资格、生产资源受众与策略仍 Unknown，须生产变更独立授权 |
 | T1：非生产协议/Worker | 不使用真实生产 Token/数据，使用模拟 Clerk 风格 JWT/响应验证 issuer/exp/aud/scope/Owner、跨插件阻断、发现路由、Token/管理 Header 不泄漏、Workers Runtime 兼容与 fail-closed | **Pass（25 个合成合同 + 1 个本地 workerd 合同 + 2 个 Clerk 官方 SDK 与真实本地 workerd 测试；总计 28/28）**；证据见 [Clerk T1 PoC](./spec853-clerk-nonproduction-poc-20261111.md)；后续真实 Clerk SDK/ChatGPT Development 已额外 Pass，详见 T7；Production 仍 Unknown |
 | T2：权限等价性 | 不走 Portal 管理身份聚合捷径；每条后端路由、Service Auth、上游 MCP Token 独立约束且跨服务调用不可达；Opaque/在线撤销机制与计费可行 | **Blocked**，保持现有生产。不得为完成验证而允许聚合管理员权限 |
-| T3：另行授权的一个真实 Sentry 插件 | 在当前 Endpoint 与可回退身份核对后，真实 ChatGPT 首次登录、`offline_access`、成功签发 RT 的**非敏感证据**、Access Token 到期后**真实刷新事件**、7 天浏览器 Session 到期仍可静默刷新；错误 Owner/aud/scope/工具拒绝、撤销后拒绝及残余窗口 | **Unknown**；单次工具成功或“等了 24h 仍能调”不等于刷新日志验收 |
-| T4：长期目标 | 官方没有计划性 RT 硬到期 + 真实 ChatGPT 续期证据，未隐含付费升级/客户端注册门槛 | 达不到标 `Not Met`，不能用 90 天代替 |
+| T3：真实 ChatGPT 代表性 OAuth 续期 | ChatGPT Clerk Development 测试 MCP 完成首次授权、受保护工具调用、逾 24h 后自动续用与 Clerk 服务端真实 refresh_token Grant | **Pass（T5/T6/T17）**；Sentry 等正式业务插件的独有工具、后端最小权限和真实撤销 E2E 仍 Unknown，不冒充代表性刷新失败 |
+| T4：长期目标 | 官方 RT 无预设固定到期，ChatGPT 真实刷新已通过；长期稳定性结合实际使用发现问题再排查 | **当前机制准入 Pass（Development）**；7 天浏览器 Session 后和长时间闲置尚 Unknown，但**非计划性等待门禁**，不阻止继续做生产隔离与迁移准备 |
 | T5：逐插件迁移（另行授权） | 保留安装/开关独立；独有业务工具的授权边界、启动与只读调用逐项检查；等价共享机制的重复 E2E 标为 `Waived` 并标证据 | 任何异常停止该插件迁移，保留 Cloudflare 回退；其它插件不动 |
 
 不为证明“几个月有效”虚构等待；但**默认 1 天 Access Token**不能在半小时演示里证明真实 Refresh，除非 Provider 有真实受支持的短 TTL/刷新事件及可核实日志。不得记录 Token 本体。
@@ -125,7 +125,7 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 | 适配层最小化 | Sentry 官方 [API Scopes](https://docs.sentry.io/api/permissions/) 可用 `org:read`、`project:read`、`event:read` 授予只读 API 请求；[认证文档](https://docs.sentry.io/api/auth/) 支持内部 Integration Token 与 OAuth。Sentry 官方完整 MCP [README](https://github.com/sentry-official/sentry-mcp) 的通用工具权限并非只读 | **设计结论：** 必须先取得单一 Sentry 组织范围内**专用只读令牌/受限 OAuth**的可验证权限与最小工具需求；若可直接替换原有安全接入则优先，只有确需第三方适配时才设计**最多一个**没有任意目标地址、仅固定 Sentry 后端与固定只读工具的 Worker。不新增 KV/D1/Token Vault 或代理全 Portal。 |
 | OAuth 撤销与浏览器 Session | Clerk [OAuth 官方文档](https://clerk.com/docs/guides/configure/auth-strategies/oauth/how-clerk-implements-oauth) 声明 Opaque Token 可在线验证并即时撤销，Refresh Token 无固定到期，Clerk Hobby Browser Session 上限 7 天；当前 Lab SDK 合同覆盖模拟 revoked/provider-outage，实际 ChatGPT 超过 24 小时无需手动重连已 Pass | **Unknown：** 未执行真实 Clerk Grant 撤销、第二个真实非 Owner 用户授权和 7 天浏览器 Session 结束后的访问；现存 Lab OAuth 会话不可直接用破坏性撤销验证。没有这些证据不能声称长期授权/生产撤销门 Pass。 |
 
-**当前最短前进路径（T17 后）：** (1) ChatGPT → Clerk Development 的真实 OAuth Refresh Grant 与 24h 后受保护 MCP 工具调用均已 Pass，无需重复等待一天、重新登录、改短 Token 生命周期或新增刷新代理。 (2) 在不撤销当前唯一 ChatGPT 开发授权的前提下，采用可恢复的隔离 OAuth 连接补齐真实失效/撤销与非 Owner/跨 Resource 边界；7 天浏览器 Session 后刷新需保留独立真实证据，不能用服务端静态文档替代。 (3) 正式生产接入前单独核查 Clerk Hobby Production 的实际配置与最小权限、安全隔离、Sentry 原生 MCP `inspect` 工具调用；Sentry 测试 Token 已撤销且当前 0，若仍需该 E2E 必须使用独立安全凭据，不能复用已暴露 Token 或 Portal 管理身份。
+**当前最短前进路径（T19 决策）：** (1) T17 已有真实 ChatGPT → Clerk Refresh Grant 与逾 24h 后免手动重登证据，不再等待 7 天/30 天并将已安排的七天自动复核暂停；长周期留待实际使用观察。 (2) 先针对可改造的原生 MCP Worker 复用已验证的 Clerk SDK/Owner/Audience/Scope 机制，维持各插件独立、现有 Portal 及生产 Access 策略不变；不得为了迁移增加聚合高权限代理或 Token 存储服务。 (3) 正式上生产之前单独确认 Clerk Production 实例/域名/安全边界与指定试点 Worker 的部署授权；独立真实撤销、非 Owner 与第三方 Sentry 适配仍按各自权限风险保留后续验收，不得默默标 Pass。 PR #859 仅为非生产 PoC，目标仍为旧设计分支，且与最新 main 同名设计文件存在 add/add 冲突；先解决本次交付范围与合并策略，不直接将全部 PoC 试验脚手架合并主干。
 
 当前以上结论均为**准备与安全审查**，不是完整生产可用性；无需再重复 T5/T6/T7 已验证的相同认证成功路径，不应为了测撤销而破坏用户唯一成功连接。
 
@@ -195,5 +195,5 @@ ChatGPT 独立插件（各自 MCP URL / resource / scopes）
 - **官方撤销协议边界：** Clerk [revokeToken](https://clerk.com/docs/reference/backend/oauth-applications/revoke-token) 明确仅可使用 **Opaque OAuth Access Token 或 Refresh Token** 撤销相关 Grant，JWT Access Token 无法即时撤销。当前开发实例 `oauth_jwt_access_tokens=false`，此事实支持选择 Opaque 真实验收，但并不意味着已经调用 Clerk 撤销 API。
 - **真正 E2E 的最小前置条件：** 创建与现有 ChatGPT Lab **相互独立**、能在实验结束后完整撤销的合法开发 OAuth Grant，确认独立 Client/User/Resource 的实际授权及可恢复条件；其中非 Owner 拒绝需要另一个真实、非 Owner 用户持有合法的 Test-Only Grant。必须先证明撤销对象不会影响现有 ChatGPT 授权及自动续期观测，且可安全获取测试凭据而不暴露 Secret、Access/Refresh Token 原文。否则 **Blocked/Unknown，不以修改现有唯一 Owner ID、重新授权当前 ChatGPT 插件或强行复用其 Grant 替代**。禁止为满足单项验收新增长驻 Token 服务、数据库或 Cron。
 - **实际验收标准（待独立授权资源就绪）：** 在同一隔离 Grant 撤销前合法 `tools/list` 或 `lab_status` 返回 200（非 Owner 则预期 401）；通过 Clerk 官方方法撤销**指定的测试 Grant**后，持原 Opaque Access Token 再请求目标 MCP 应返回 401，Refresh 请求不能换发有效令牌。错误 Audience、Scope、Owner 与跨服务请求需独立拒绝，不产生任何工具副作用。保留无敏感信息的响应码和 Clerk `oauth_token.revoked` / `oauth_token.failed` 日志事件作证据；拒绝以失效后主动重新登录作为刷新成功。Unknown 写入结果先只读确认副作用，绝不盲目重试。
-- **七天会话边界：** T5 首次授权约为 2026-11-11 北京时间 17:50，开发应用浏览器登录 Session 上限为七天；**2026-11-18 17:50（北京时间）以后**才有对该原授权会话寿命的代表性自然时间检查价值。实际浏览器会话可能提前终止，需以有效登录 Session 证据及 ChatGPT 原连接成功调用和 Clerk Refresh Grant 日志交叉确认；不主动修改 TTL、重新认证或断开原连接。正常使用后长期免计划性重登仍必须与短期协议 Pass 分开判定。
-- **本轮严格状态：** `T18 / 本地非生产安全合同=Pass`；`T7 已证明的同类 workerd 机制复测=Waived`；`真实独立 Grant 撤销/真实非 Owner=Blocked（缺独立授权及安全令牌通道）`；`7 天浏览器 Session 之后免重登=Unknown（尚未到自然边界）`。没有新建用户/Client、发放或撤销 Grant、修改 Developer settings、生产资源或 ChatGPT 现有连接。
+- **七天及长期稳定性（运行观察，非当前发布等待门禁）：** 已有 2026-11-11 → 11-12 逾 24h 的 ChatGPT 受保护调用和 Clerk `grant_type=refresh_token` 事件双证据，验证机制可自动续期。2026-11-18 后的 Session 自然边界、长期闲置仍未知，但不值得专门等待七天再实施；2026-11-12 用户决定改为实际使用中观察。此前安排的七天定时复核已暂停，不主动修改 TTL、退出登录、撤销唯一 Grant 或新建定时检查。异常发生时按既有连接与日志实证排查。
+- **本轮严格状态（T18 既有证据 + T19 后续决策）：** `T18 / 本地非生产安全合同=Pass`；`T7 的同类 workerd 复测=Waived`；`真实独立 Grant 撤销/真实非 Owner=Blocked（缺独立授权及安全令牌通道）`；`7 天浏览器 Session/长期闲置=Unknown、改为运行观察，不再作为等待门禁`。没有新建用户/Client、发放或撤销 Grant、修改生产资源或 ChatGPT 现有连接。

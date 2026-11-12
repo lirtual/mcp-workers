@@ -132,4 +132,4 @@
 - Clerk Management 只读回读现有测试 App **仅一个 Development 实例、总共 1 名用户**，当前唯一真实 ChatGPT OAuth Grant 必须保留，不作为撤销对象；现有 `lab_status({})` 仍返回 `Spec853 lab: authenticated no-op`。
 - 实际在 Node.js 24.22.2 执行 `node --test scripts/spec853-clerk-poc/probe.test.mjs scripts/spec853-clerk-poc/auth-lab-worker.test.mjs`：**33 tests / 33 Pass / 0 Fail / 0 Skip**，包括合成 JWT 和 Stub SDK 的 Scope/Owner/Audience/异常/模拟撤销拒绝。未改运行时代码；T7 的官方 SDK+workerd 42/42 Pass 复用为 **Waived 本次重复运行**（不是本轮重新通过）。
 - 官方 Clerk OAuth revokeToken 可使用独立 Grant 的 Opaque Access Token 或 Refresh Token，不能直接撤销 JWT Access Token。未经独立合法授权凭据，不可把模拟撤销标真实 E2E；**不动当前唯一 ChatGPT Grant、不新建用不上的测试用户**。
-- 真实独立撤销、非 Owner/跨受众持合法 Clerk OAuth Token 的公网拒绝，以及 7 天登录会话自然到期后继续刷新均保持 **Unknown/Blocked**。具体安全测试门与自然时间边界见 Design T18；本轮无真实 OAuth 授权、撤销或服务器/Client 写入。
+- 真实独立撤销、非 Owner/跨受众持合法 Clerk OAuth Token 的公网拒绝，以及 7 天登录会话自然到期后继续刷新均保持 **Unknown/Blocked**，但 T17 的逾 24h ChatGPT 调用与真实 `refresh_token` Grant 已构成当前自动续期机制的充分正向证据。2026-11-12 用户决定不为长周期另设七天等待门禁；原定七天自动复核已暂停，后续按真实使用观察。真实撤销/非 Owner 的独立权限门仍不可因此视为 Pass。本轮无真实 OAuth 授权、撤销或服务器/Client 写入。
