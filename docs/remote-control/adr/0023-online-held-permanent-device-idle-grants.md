@@ -1,6 +1,6 @@
 # ADR-0023 — Server-enforced RCA permanent grants with online hold
 
-**Status: Accepted design consensus, 2026-11-01 (policy B, Grill Q1–Q12=A); implementation candidate in PR #664 / Agent #666. Not merged, released or production-verified.**
+**Status:** Accepted and implemented under [Spec #666](https://github.com/lirtual/mcp-workers/issues/666). Worker source [PR #664](https://github.com/lirtual/mcp-workers/pull/664) was merged on 2026-11-01; formal Worker/Agent delivery and scoped real Windows/WSL2 Stop/Resume acceptance completed on 2026-11-03. Natural 14-day expiration and real forced expiry were not physically exercised; deterministic tests covered expiry denial. Subsequent monorepo Agent release and device continuity were independently accepted under [Spec #803](https://github.com/lirtual/mcp-workers/issues/803) / [#810](https://github.com/lirtual/mcp-workers/issues/810), including explicit macOS real-device waiver. No new deployment or hardware test is implied by this ADR.
 
 ## Decision
 
@@ -34,8 +34,8 @@ timestamp, stale `last_connected_at`, open WSS, or client time for
 online proof. Reuse the existing 15-minute signed probe with bounded
 durable checkpoints instead of new high-frequency writes or timers.
 
-Use one optional reviewed release-time GitHub Actions Environment
-Variable `RCA_PERMANENT_IDLE_DAYS` (unset/empty = 14, strictly 1–90
+Use one optional reviewed repository-level GitHub Actions Variable
+`RCA_PERMANENT_IDLE_DAYS` on the RCA release path (unset/empty = 14, strictly 1–90
 decimal integer days); malformed nonempty values fail closed. Existing
 absolute deadlines are not retroactively changed by configuration.
 Existing ON-online grants remain valid; legacy offline grants get one
@@ -58,6 +58,4 @@ persistent revoked-key blacklist, second database, Cron or service.
 A legacy Worker rollback could bypass idle enforcement and must be
 independently checked **before** any authorized rollout/rollback.
 Existing operation effects cannot be undone; expired grants do not
-erase unresolved Unknown or re-authorize replay. See the
-[final design and acceptance conditions](../RCA-IDLE-GRANT-DESIGN.md).
-The original design Draft was extended to an implementation candidate; source/CI and release approvals remain separate. No PR merge, GitHub Release, real-device upgrade or production deployment is implied.
+erase unresolved Unknown or re-authorize replay. See [Spec #666](https://github.com/lirtual/mcp-workers/issues/666) for exact implementation and acceptance evidence, including the remaining Waived/Not performed cases. Current configuration and release gates are defined by `.github/workflows/release.yml`, its referenced scripts and tests. Future releases, credential/configuration changes and device mutations still require separate authorization; source/CI evidence is never a substitute for production readback.

@@ -45,4 +45,4 @@ Use this skill for CI efficiency audits and improvements, not routine GitHub Act
 
 ## Historical context (load only for these repositories)
 
-For work specifically concerning `lirtual/mcp-workers`, `lirtual/remote-control-agent`, `lirtual/github-actions`, `lirtual/cloudflare-actions` or `lirtual/scrape_relay`, read [`references/ci-review-2026-11.md`](references/ci-review-2026-11.md) only when past CI decisions or historical measurements materially help. Recheck all applicable facts at the current revision before acting.
+For work specifically concerning `lirtual/mcp-workers`, `lirtual/github-actions`, `lirtual/cloudflare-actions` or `lirtual/scrape_relay`, read [`references/ci-review-2026-11.md`](references/ci-review-2026-11.md) only when past CI decisions or historical measurements materially help. Recheck all applicable facts at the current revision before acting.
