@@ -126,3 +126,10 @@
 - BrowserMCP LIRTUAL 的 Clerk Development **Application Logs** 只读实际观察到 `oauth_token.created`，事件 ID `01a1cf33-f446-769f-8480-72bf3b9bc814`；页面时间 2026-11-12 18:00:51（显示时区未独立核实），`grant_type="refresh_token"`、`oauth_client_id="https://chatgpt.com/oauth/client.json"`、`resource=granted_resource="https://spec853-clerk-oauth-lab.aiyaya.workers.dev/mcp"`、`scopes="offline_access profile openid email"`。没有读取或转存任何 OAuth Token 原值/用户隐私/IP。
 - 该事件恰与 T5/T6 中 ChatGPT 首次授权后已超过 24h 且不重新授权成功调用受保护 MCP 的功能事实匹配。因此 **真实 Refresh Grant 事件 Pass**、**24 小时后静默续用 Pass**，把 T6 的 `Unknown: refresh_token grant` 更新为已解决的**历史 Unknown**；T6 原验收记录不重写为当时已知。
 - 本事件**不证明** Token Rotation、7 天浏览器登录 Session 到期后的独立性、长期空闲免重连、真实非 Owner/撤销的运行时边界或 Production Hobby 可用性；这些必须分别保留 Unknown。测试 Worker 的受保护 Owner / Scope / Audience 合同和现有 Developer 严格 CIMD 设置均保持。
+
+## T18 独立负面 Grant 验收预检（2026-11-12）
+
+- Clerk Management 只读回读现有测试 App **仅一个 Development 实例、总共 1 名用户**，当前唯一真实 ChatGPT OAuth Grant 必须保留，不作为撤销对象；现有 `lab_status({})` 仍返回 `Spec853 lab: authenticated no-op`。
+- 实际在 Node.js 24.22.2 执行 `node --test scripts/spec853-clerk-poc/probe.test.mjs scripts/spec853-clerk-poc/auth-lab-worker.test.mjs`：**33 tests / 33 Pass / 0 Fail / 0 Skip**，包括合成 JWT 和 Stub SDK 的 Scope/Owner/Audience/异常/模拟撤销拒绝。未改运行时代码；T7 的官方 SDK+workerd 42/42 Pass 复用为 **Waived 本次重复运行**（不是本轮重新通过）。
+- 官方 Clerk OAuth revokeToken 可使用独立 Grant 的 Opaque Access Token 或 Refresh Token，不能直接撤销 JWT Access Token。未经独立合法授权凭据，不可把模拟撤销标真实 E2E；**不动当前唯一 ChatGPT Grant、不新建用不上的测试用户**。
+- 真实独立撤销、非 Owner/跨受众持合法 Clerk OAuth Token 的公网拒绝，以及 7 天登录会话自然到期后继续刷新均保持 **Unknown/Blocked**。具体安全测试门与自然时间边界见 Design T18；本轮无真实 OAuth 授权、撤销或服务器/Client 写入。
