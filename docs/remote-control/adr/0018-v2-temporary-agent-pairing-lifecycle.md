@@ -3,7 +3,7 @@
 **Implementation checkpoint (2026-10-18; historical plan statements below do not define today's completion):** The relevant no-tombstone and single-code changes exist in the nonproduction stacked Draft #79, supported by real #71/#97 nonproduction acceptance and public Agent immutable TEST v0.1.8. Both native architecture CI checks have succeeded; *real externally paired native ARM64*, connected-device 24-hour expiry/Hibernation, genuine continuous #57 48-hour observation, and all formal merge/production authorization remain separate unfulfilled gates. There is no v1 production cutover.
 
 Status: **Accepted fixed 24-hour temporary grant and one-code pairing implemented in stacked nonproduction Draft #79.** Deterministic boundary and actual post-expiry offline refusal passed; real connected T+24h WSS/Hibernation/receipt continuity remains an explicit open #72/#75 gate. No production approval. Updated 2026-10-18.
-Related: [ADR-0015 — owner-reviewed pairing](./0015-v2-pairing-and-identity.md), [ADR-0017 — device removal without tombstones](./0017-v2-device-revocation-without-tombstones.md), [ADR-0016 — bounded managed commands](./0016-agent-local-receipts-and-bounded-commands.md), and [v2 Spec](../V2-MULTI-DEVICE-SPEC.md).
+Related: [ADR-0015 — owner-reviewed pairing](./0015-v2-pairing-and-identity.md), [ADR-0017 — device removal without tombstones](./0017-v2-device-revocation-without-tombstones.md), [ADR-0016 — bounded managed commands](./0016-agent-local-receipts-and-bounded-commands.md), and v2 Spec.
 
 ## Context and decision history
 

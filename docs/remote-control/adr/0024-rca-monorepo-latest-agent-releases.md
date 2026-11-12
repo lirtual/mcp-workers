@@ -10,4 +10,4 @@ The RCA Worker already lives in `lirtual/mcp-workers` while its five-platform na
 
 This decision **supersedes ADR-0020's future source/distribution-repository choice and pinned-repo migration strategy**, because `mcp-workers` is now public; it does not erase ADR-0020's historical release evidence or supersede the existing Ed25519, authorization, STOP, receipts and no-blind-replay safety boundaries. A single coordinated cutover still uses dependent gates: nonproduction test/build; separately authorized and independently verified first *stable* Agent Release; separately authorized Worker production release; and explicit real-device acceptance. No implementation, merge, publication, production or destructive-device authorization is conveyed by this ADR.
 
-See [final Grill With Docs design](../RCA-MONOREPO-DESIGN.md) for exact checks, failure policy and acceptance matrix.
+See [Spec #803](https://github.com/lirtual/mcp-workers/issues/803) and [Spec #810](https://github.com/lirtual/mcp-workers/issues/810) for historical decisions and acceptance.

@@ -1,73 +1,16 @@
-# MCP Worker ingress policy
+# MCP Worker ingress
 
-This records the maintained Wrangler ingress configuration, **not** proof of deployment or the exact One-MCP Portal inventory. The actual Cloudflare deployment and Portal registration must be verified independently.
+Ingress and authorization belong to each independently deployed Worker. Use its current Wrangler configuration, deployed route/hostname and Portal registration as the authority, not the repository name or another Worker's URL. A configuration containing `workers_dev: false` does not imply that a custom domain is public or accessible. Preview URLs and anonymous installation assets must not weaken MCP authentication.
 
-## Ingress contract
+Maintained ingress owners:
 
-- All maintained Workers use runtime Secret name `MCP_ACCESS_TOKEN` for MCP entry authentication. Upstream credentials remain separate.
-- All have `preview_urls: false`.
-- `workers_dev` is **not uniform**: Workflow and Weixin have `workers_dev: false`; Remote Control declares both `workers_dev: true` and the `rca.lirtual.dpdns.org` custom domain.
-- The `workers.dev` subdomain is `aiyaya.workers.dev` for Workers where enabled.
+- `browser-mcp-worker`: authenticated MCP and Profile activation; public extension download is read-only, not a pairing grant.
+- `database-mcp-worker`: authenticated database operations with independent database permissions.
+- `github-actions-mcp-worker`: authenticated GitHub API operations, not GitHub job authorization.
+- `ima-mcp-worker`: authenticated knowledge/notes operations.
+- `raindrop-mcp-worker`: authenticated bookmarks operations.
+- `remote-control-mcp-worker`: authenticated owner routing and device grant checks; public native installers do not approve devices.
+- `ssh-mcp-worker`: authenticated remote command/file effects with separate host authorization.
+- `workflow-mcp-worker`: authenticated durable Workflow control and independently approved runtime grants.
 
-## Configured MCP ingress endpoints
-
-| App | Worker | Wrangler route | Configured MCP URL |
-| --- | --- | --- | --- |
-| IMA | `ima-mcp-worker` | workers.dev | `https://ima-mcp-worker.aiyaya.workers.dev/mcp` |
-| Raindrop | `raindrop-mcp-worker` | workers.dev | `https://raindrop-mcp-worker.aiyaya.workers.dev/mcp` |
-| Database | `database-mcp-worker` | workers.dev | `https://database-mcp-worker.aiyaya.workers.dev/mcp` |
-| SSH | `ssh-mcp-worker` | workers.dev | `https://ssh-mcp-worker.aiyaya.workers.dev/mcp` |
-| GitHub Actions | `github-actions-mcp-worker` | workers.dev | `https://github-actions-mcp-worker.aiyaya.workers.dev/mcp` |
-| Remote Control | `remote-control-mcp-worker` | workers.dev + custom domain | `https://rca.lirtual.dpdns.org/mcp` |
-| Workflow | `workflow-mcp-worker` | custom domain only | `https://workflow.lirtual.dpdns.org/mcp` |
-| Weixin Action Provider | `weixin-mcp-worker` (existing physical Worker) | Access owner setup domain + internal Service Binding | No public MCP ingress; `weixin.lirtual.dpdns.org` is owner administration only |
-
-These are configured ingress addresses, not evidence of a successful production release, a live Portal mapping or an authenticated ChatGPT tool call. On 2026-11-10 the Database `database.lirtual.dpdns.org` legacy Custom Domain was detached, its exact AAAA DNS record removed automatically, and the obsolete domain-wide `Database MCP Owner Setup` Access application removed. The wildcard DNS record remains and may resolve that retired hostname; it does not establish a live Worker route. Independent readback confirmed the production Database Portal upstream is the workers.dev URL above (`ready`, 14 tools) and the independent `Database` MCP Access app is retained. Verify every release and actual Portal target independently.
-
-## Cutover rule
-
-When replacing another publisher, deploy, verify health and fail-closed MCP authorization, update MCP Portal, verify a safe call and logs, then retire the previous publisher. Do not keep two active production publishers for the same Worker.
-
-## One-MCP Access policy gate (MCP server registration)
-
-A successful MCP server `sync`, `ready` status, and Portal attachment do
-**not** prove that ChatGPT can securely authenticate to the server. Before
-registering a server, the read-only gate checks the existing Cloudflare Access
-applications and their two ordered, reusable policies:
-
-1. `WORKFLOWS` (precedence 1): the **same** reviewed service-token policy ID
-   `7cec582c-4038-4fb0-9ad8-fcdb04af4adc` for Portal and target.
-2. Owner Allow (precedence 2): the Portal and Browser share
-   `MCP Portal and Browser Owners` (ID
-   `07204847-0459-4197-b3c3-2dbe2a47a550`), limited to
-   `lirtual@qq.com` and `lirtual@outlook.com`. The other existing MCP
-   servers, including Workflow, use the separately reviewed
-   `Default Allow Rule` (ID
-   `659d043c-e957-4c91-9f33-2416c52ecbe5`), limited to those two emails
-   plus `lirtual@gmail.com`.
-
-The Owner policy IDs are deliberately distinct. The 2026-11-10 Browser-only
-QQ policy was subsequently updated to the Portal/Browser dual-email policy;
-the historical single-email readback remains dated evidence, not current
-configuration. This does **not** modify Cloudflare Access permissions.
-
-The gate checks the exact reusable policy IDs, names, selectors, allowed email
-sets, decisions and precedence. Missing, reordered, unreviewed or broader
-policies, `Everyone`, unauthorized extra emails and failed Access API reads
-remain **hard blockers**. Do not print tokens or unrelated private selectors.
-
-The shared `register-mcp-portal-server.mjs` helper (used by OpenList
-and HTTP) checks this invariant **before** Portal attachment. The existing
-registration script for Workflow also invokes the same
-read-only verifier before its Portal attachment steps. Other
-new registration scripts must adopt this gate before their first onboarding. The guard does **not** add or
-modify policies automatically, because changes to Access grants require a
-separate reviewed authorization. Re-run registration only after the
-missing policies are explicitly configured and the exact gate passes.
-
-After Portal and Access checks pass, perform actual ChatGPT tool discovery
-and representative scoped read + out-of-scope denial tests. Log and report
-each gate separately; do not call a service production-ready based on
-Portal sync alone.
-
-Browser T8：`browser-mcp-worker` 使用独立 `MCP_ACCESS_TOKEN`（同名 GitHub Environment Secret，不沿用共享值），无额外 Variable。Manifest Key 是公开安装标识，不是 Secret。当前 `workers_dev: false`、`preview_urls: false` 且没有生产路由；现有手动 Release 的 Browser 预检将阻断发布。不得以本次接线创建资源、写 Portal/Access 或切换凭据；参见 [T8 发布与验收边界](../apps/browser-mcp-worker/docs/t8-release.md)。
+Preserve per-Worker runtime Secrets, actual public/private route boundaries and Owner checks. A successful source build, Portal sync or read-only smoke check is not independent proof of production release or permission to execute external effects.
