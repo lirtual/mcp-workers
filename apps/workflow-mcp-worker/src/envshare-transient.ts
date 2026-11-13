@@ -1,3 +1,4 @@
+import {isAuxiliaryBarkPair} from './plan.ts';
 import {canonical} from './cloudflare-action-contract.ts';
 import {StateError} from './store.ts';
 const ABC='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -10,7 +11,7 @@ function decode(s:string){
 }
 const sha=async(v:Uint8Array|string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',typeof v==='string'?new TextEncoder().encode(v):Uint8Array.from(v))),b=>b.toString(16).padStart(2,'0')).join('');
 export const isEnvsharePlan=(p:{steps:Array<{uses:string;with:Record<string,unknown>}>})=>
- p.steps.length===1&&p.steps[0]?.uses==='action.run'&&p.steps[0].with.provider==='envshare'&&p.steps[0].with.action==='envshare.share_text';
+ (p.steps.length===1||isAuxiliaryBarkPair(p.steps as unknown as Parameters<typeof isAuxiliaryBarkPair>[0]))&&p.steps[0]?.uses==='action.run'&&p.steps[0].with.provider==='envshare'&&p.steps[0].with.action==='envshare.share_text';
 export async function encryptEnvshareAdmission(raw:Record<string,unknown>){
  if(Object.keys(raw).some(k=>!['text','ttl_seconds','max_reads'].includes(k))||
     typeof raw.text!=='string'||!raw.text||
