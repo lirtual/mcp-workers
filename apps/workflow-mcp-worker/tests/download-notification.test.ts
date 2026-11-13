@@ -210,6 +210,14 @@ test('Bark Download admits approved main only with a frozen verified SHA and one
  assert.equal(f.sends(),1);
 });
 
+test('Published offline-download permits one Bark send with verified Task completion',async t=>{
+ const f=await dynamicMainBarkDownload(t);
+ f.plan.name='offline-download';
+ const response=await runBarkAction(f.env,f.plan,f.notify,runId,f.ctx);
+ assert.equal(response.status,'succeeded');
+ assert.equal(f.sends(),1);
+});
+
 test('Bark Download main rejects invalid identity and missing physical SHA before any send',async t=>{
  const cases:[string,(f:Awaited<ReturnType<typeof dynamicMainBarkDownload>>)=>void][]=[
   ['missing frozen SHA',f=>{f.sql.exec('UPDATE step_attempts SET resolved_sha=NULL');}],
