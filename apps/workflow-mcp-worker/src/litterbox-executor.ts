@@ -84,11 +84,16 @@ export async function startLitterboxUpload(env:Env,args:{
  try{plan=JSON.parse(wf.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
  if(!isLitterboxPlan(plan))throw new StateError('litterbox_published_plan_required');
  const action=plan.steps[0]!,manifest=await cloudflareActionManifest('litterbox');
+ const paired=isAuxiliaryBarkPair(plan.steps);
+ const bark=paired?await cloudflareActionManifest('bark'):null;
+ const grants=plan.cloudflare_action_approvals;
  if(action.with.contract_digest!==manifest.contract_digest||
-   plan.cloudflare_action_approvals?.length!==1||
-   !plan.cloudflare_action_approvals.some(g=>g.provider==='litterbox'&&
+   grants?.length!==(paired?2:1)||
+   !grants.some(g=>g.provider==='litterbox'&&
     g.action===manifest.action&&g.executor==='cloudflare'&&
-    g.contract_digest===manifest.contract_digest))
+    g.contract_digest===manifest.contract_digest)||
+   (bark&&!grants.some(g=>g.provider==='bark'&&g.executor==='cloudflare'&&
+     g.action===bark.action&&g.contract_digest===bark.contract_digest)))
   throw new StateError('litterbox_approval_required');
  if(!env.ACTIONS)
   throw new StateError('cloudflare_provider_not_configured');
