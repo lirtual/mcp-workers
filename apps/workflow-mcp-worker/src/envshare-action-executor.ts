@@ -1,7 +1,7 @@
 import type {Env} from './store.ts';
 import type {Plan,Step} from './plan.ts';
 import {reviewedActionDeployment,cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
-import {evaluateArguments} from './plan.ts';
+import {evaluateArguments,isAuxiliaryBarkPair} from './plan.ts';
 
 type Result={status:'succeeded'|'failed'|'indeterminate';error_code?:string;
  output?:{status:'accepted';share_id:string}};
@@ -18,7 +18,8 @@ export async function runEnvshareAction(env:Env,plan:Plan,action:Step,runId:stri
  ctx?:{inputs:Record<string,unknown>;steps:Record<string,{status:string;output?:unknown}>}):Promise<Result>{
  const manifest=await cloudflareActionManifest('envshare');
  const db=env.DB,provider=env.ACTIONS;
- if(!plan.cloudflare_execution_approved||plan.triggers?.length||plan.steps.length!==1||
+ if(!plan.cloudflare_execution_approved||plan.triggers?.length||
+   (plan.steps.length!==1&&!isAuxiliaryBarkPair(plan.steps))||
    action.uses!=='action.run'||action.with.executor!=='cloudflare'||
    action.with.provider!=='envshare'||action.with.action!==manifest.action||
    action.with.contract_digest!==manifest.contract_digest)return failed('envshare_manual_approval_required');

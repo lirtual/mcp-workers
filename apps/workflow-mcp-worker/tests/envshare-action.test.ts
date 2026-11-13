@@ -136,4 +136,28 @@ test('single manual run persists only ciphertext and ID; original key works once
  assert.equal(posts,1);
  await assert.rejects(()=>service.result(run,'1'.repeat(16)),/invalid_envshare_key/);
  assert(!JSON.stringify(sql.prepare('SELECT inputs,result FROM runs WHERE id=?').get(run)).includes(delivery_key!));
+
+ // Spec #874: adding an auxiliary Bark step must preserve the manual,
+ // ciphertext-only EnvShare dispatch and its no-replay fence.
+ const bark=await cloudflareActionManifest('bark');
+ const pairedSource:any=await definition();
+ pairedSource.steps[0].id='share_pair';
+ pairedSource.steps.push({id:'notify_bark',needs:['share_pair'],uses:'action.run',
+  with:{executor:'cloudflare',provider:'bark',action:bark.action,
+   contract_digest:bark.contract_digest,input:{notification:{body:'Completed'}}}});
+ const paired=(await compilePlan(pairedSource)).plan;
+ paired.cloudflare_execution_approved=true;
+ paired.cloudflare_action_approvals=[...approved.cloudflare_action_approvals!,{
+  executor:'cloudflare',provider:'bark',action:bark.action,
+  contract_digest:bark.contract_digest,deployment_id:VERSION}];
+ sql.prepare("UPDATE runs SET outcome='running' WHERE id=?").run(run);
+ const pairedCtx={inputs:JSON.parse(row.inputs),steps:{}};
+ const firstPaired=await runPublishedCloudflareAction(env,paired,paired.steps[0]!,run,
+  undefined,pairedCtx);
+ assert.equal(firstPaired.status,'succeeded');
+ assert.equal(posts,2,'paired EnvShare executes exactly one additional Provider call');
+ const repeated=await runPublishedCloudflareAction(env,paired,paired.steps[0]!,run,
+  undefined,pairedCtx);
+ assert.equal(repeated.status,'indeterminate','paired Plan remains no-retry');
+ assert.equal(posts,2);
 });
