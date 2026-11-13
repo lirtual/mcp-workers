@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {newSessionDeviceIdentity} from '../src/session-device-identity.ts';
-import {registerSessionRcaDevice} from '../src/session-rca-client.ts';
+import {registerSessionRcaDevice,sessionTransportEnvironment} from '../src/session-rca-client.ts';
 const attempt={attempt_id:'123e4567-e89b-42d3-a456-426614174004',github_run_id:123,
   github_run_attempt:2,workflow_name:'ubuntu' as const};
 const fakeJwt='header.body.signature0123456789abcdefghijklmnop';
@@ -64,4 +64,33 @@ test('Session transport subprocess inherits only job tracking and safe runtime c
  assert.equal(environment.TS_OAUTH_CLIENT_SECRET,undefined);
  assert.equal(environment.NODE_OPTIONS,undefined);
  assert.equal(Object.values(environment).some(v=>v?.includes('SENSITIVE_')),false);
+});
+
+test('Ubuntu Session RCA loader paths cross the sanitized transport boundary without secrets',()=>{
+ const base={
+   GITHUB_ACTIONS:'true',GITHUB_WORKFLOW:'ubuntu',
+   GITHUB_REPOSITORY:'autoactions/github-actions',
+   SESSION_ACTION_RCA:'1',HOME:'/home/runner',RUNNER_TEMP:'/tmp/runner',
+   PATH:'/home/runner/.local/bin:/usr/bin',
+   BASH_ENV:'/home/runner/.config/session-actions/rca-env.bash',
+   GH_TOKEN:'SENSITIVE_GH_TOKEN',CLOUDFLARE_API_TOKEN:'SENSITIVE_CLOUDFLARE_TOKEN',
+   ACTIONS_ID_TOKEN_REQUEST_TOKEN:'SENSITIVE_GITHUB_OIDC_REQUEST',
+ };
+ const reviewed=sessionTransportEnvironment(base);
+ assert.equal(reviewed.SESSION_ACTION_RCA,'1');
+ assert.equal(reviewed.BASH_ENV,base.BASH_ENV);
+ assert.equal(reviewed.PATH,base.PATH);
+ assert.equal(reviewed.GH_TOKEN,undefined);
+ assert.equal(reviewed.CLOUDFLARE_API_TOKEN,undefined);
+ assert.equal(reviewed.ACTIONS_ID_TOKEN_REQUEST_TOKEN,undefined);
+ assert.equal(Object.values(reviewed).some(v=>v?.includes('SENSITIVE_')),false);
+ for(const override of [
+   {GITHUB_WORKFLOW:'windows'}, {GITHUB_REPOSITORY:'lirtual/github-actions'},
+   {SESSION_ACTION_RCA:'0'}, {BASH_ENV:'/tmp/arbitrary-file'},
+   {HOME:'relative/home'},
+ ]) {
+   const denied=sessionTransportEnvironment({...base,...override});
+   assert.equal(denied.SESSION_ACTION_RCA,undefined);
+   assert.equal(denied.BASH_ENV,undefined);
+ }
 });
