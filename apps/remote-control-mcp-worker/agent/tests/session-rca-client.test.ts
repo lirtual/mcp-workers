@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,rmSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {newSessionDeviceIdentity} from '../src/session-device-identity.ts';
 import {registerSessionRcaDevice,sessionTransportEnvironment} from '../src/session-rca-client.ts';
 const attempt={attempt_id:'123e4567-e89b-42d3-a456-426614174004',github_run_id:123,
@@ -92,5 +96,28 @@ test('Ubuntu Session RCA loader paths cross the sanitized transport boundary wit
    const denied=sessionTransportEnvironment({...base,...override});
    assert.equal(denied.SESSION_ACTION_RCA,undefined);
    assert.equal(denied.BASH_ENV,undefined);
+ }
+});
+
+test('reviewed Session transport actually loads the synthetic Bash credential file',{skip:process.platform!=='linux'},()=>{
+ const home=mkdtempSync(join(tmpdir(),'rca-env-proof-'));
+ try{
+  const state=join(home,'.config','session-actions');
+  mkdirSync(state,{recursive:true,mode:0o700});
+  const loader=join(state,'rca-env.bash');
+  writeFileSync(loader,'if [[ "${SESSION_ACTION_RCA:-}" == "1" ]]; then export GH_TOKEN=synthetic-only; fi\\n'.replace('\\\\n','\\n'),{mode:0o600});
+  const base={HOME:home,GITHUB_ACTIONS:'true',GITHUB_WORKFLOW:'ubuntu',
+    GITHUB_REPOSITORY:'autoactions/github-actions',SESSION_ACTION_RCA:'1',
+    BASH_ENV:loader,PATH:process.env.PATH||'/usr/bin'};
+  const run=(environment:NodeJS.ProcessEnv,command:string)=>
+    spawnSync('/bin/bash',['--noprofile','--norc','-c',command],{
+      env:environment,encoding:'utf8',timeout:3000});
+  const approved=run(sessionTransportEnvironment(base),'test "$GH_TOKEN" = synthetic-only');
+  assert.equal(approved.status,0,approved.stderr);
+  const denied=run(sessionTransportEnvironment({...base,SESSION_ACTION_RCA:'0'}),
+    'test -z "$GH_TOKEN"');
+  assert.equal(denied.status,0,denied.stderr);
+ }finally{
+  rmSync(home,{recursive:true,force:true});
  }
 });
