@@ -15,7 +15,7 @@ import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest, PLAN_LIMITS } from './plan.ts';
-import type { Plan, Step } from './plan.ts';
+import {isAuxiliaryBarkPair,type Plan,type Step} from './plan.ts';
 import {hasHistoricalTaggedGitHubAction} from './github-action-main.ts';
 import {hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import type { Env } from './store.ts';
@@ -448,7 +448,7 @@ async function runForeachStep(
         .bind(runId,entry.id,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),
           outcome.error_code??null,now()).run();
       collected.push(outcome.status==='succeeded'?outcome.output:null);
-      if(outcome.status==='succeeded')succeeded++;
+if(outcome.status==='succeeded')succeeded++;
       if(outcome.status==='indeterminate')return {status:'indeterminate',error_code:'foreach_child_indeterminate'};
       if(outcome.status==='failed')return {status:'failed',error_code:'foreach_child_failed'};
     }
@@ -851,6 +851,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       }
     }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
+    const auxiliaryNotificationId=isAuxiliaryBarkPair(plan.steps)?plan.steps[1]!.id:null;
     let emitted:unknown=null;
     let hasEmitted=false;
     let failed=false;
@@ -893,9 +894,11 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
         const ready=[...pending.values()].filter(s=>s.needs.every(n=>ctx.steps[n])).slice(0,plan.saga?1:8);
         if(!ready.length)throw Error('invalid_execution_graph');
         const outcomes=await Promise.all(ready.map(async (s:Step):Promise<Outcome>=>{
-          let result=(s.uses==='flow.wait'
+          let result:Outcome;
+          try{
+          result=(s.uses==='flow.wait'
             ? await runDurableWait(this.env,s,id,step,ctx.steps)
-            : s.uses==='flow.wait_event'
+: s.uses==='flow.wait_event'
             ? await runWaitForEvent(this.env,s,id,step,ctx.steps)
             : s.uses==='flow.child'
             ? await runAwaitedChild(this.env,plan,s,id,step,ctx)
@@ -994,6 +997,11 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
               throw Error('unsupported_capability');
             }catch{return {status:'failed',error_code:'step_execution_failed'};}
           })) as Outcome;
+          }catch{
+            if(s.id!==auxiliaryNotificationId)throw Error('step_unconfirmed');
+            // Bark may have been sent despite a lost response: never retry.
+            result={status:'indeterminate',error_code:'bark_step_unconfirmed'};
+          }
           if(result.status==='succeeded'&&plan.saga&&s.compensate){
             if(plan.saga_compensation_approved!==true){
               result={status:'indeterminate',error_code:'saga_approval_missing'};
@@ -1020,13 +1028,17 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
           .bind(id,s.id,result.status,result.output===undefined?null:JSON.stringify(result.output),result.error_code??null,now()).run();
           return result;
         }));
-        ready.forEach((s,i)=>{ctx.steps[s.id]=outcomes[i];pending.delete(s.id);if(outcomes[i].status==='failed')failed=true;
+        ready.forEach((s,i)=>{ctx.steps[s.id]=outcomes[i];pending.delete(s.id);
+          // An auxiliary Owner notification never changes the original effect.
+          if(s.id===auxiliaryNotificationId)return;
+          if(outcomes[i].status==='failed')failed=true;
           if(outcomes[i].status==='indeterminate'){
             uncertain=true;uncertainCode??=outcomes[i].error_code??'external_outcome_unknown';
           }
           if(s.uses==='result.emit'&&outcomes[i].status==='succeeded'){emitted=outcomes[i].output;hasEmitted=true;}});
       }
-      const output=limitResult(hasEmitted?emitted:ctx.steps[plan.steps.at(-1)!.id]?.output??null);
+      const businessResultStep=auxiliaryNotificationId?plan.steps[0]!.id:plan.steps.at(-1)!.id;
+      const output=limitResult(hasEmitted?emitted:ctx.steps[businessResultStep]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
       // Business failure is normally a structured Outcome, not a thrown
@@ -1054,4 +1066,3 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     }
   }
 }
-
