@@ -1,6 +1,6 @@
 # MCP 独立插件长期 OAuth 与统一接入设计（Grill With Docs）
 
-状态：**设计共识进行中**。2026-11-14 第一轮 Q1–Q3 已确认；第二轮尚未决定。此文档更新已验证的生产现状与设计边界，**不授权实施、发布、迁移插件、修改 OAuth/Access/Portal/Secrets 或生产数据**。问题及验收记录见 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853)。
+状态：**Grill With Docs 两轮决策已达成共识（2026-11-14）**；后续架构取舍仍以只读事实与安全验证为前提。此文档更新已验证的生产现状与设计边界，**不授权实施、发布、迁移插件、修改 OAuth/Access/Portal/Secrets 或生产数据**。问题及验收记录见 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853)。
 
 ## 目标与既定约束
 
@@ -13,6 +13,13 @@
 - **Q1=A，权限隔离**：每个 ChatGPT 插件独立 Resource/Audience、授权和业务工具边界。某个插件认证成功不代表可以访问其它上游或获得跨服务的管理员权限；不能仅依赖界面显示隐藏工具来假设安全隔离。
 - **Q2=A，第三方首次授权**：可接受第三方 MCP 在首次连接时按需完成一次自己的 OAuth 授权；Clerk 管理客户端到入口的 OAuth，不能替第三方签发上游授权。后续自动刷新取决于各自协议和真实能力，不能保证第三方永久免重登。
 - **Q3=A，分批迁移**：保留现有连接与回退路径；先用 Raindrop、Sentry、Git Guardian 等代表性服务验证通用机制，再逐个迁移。共享实现、版本、配置和安全边界等价时可复用验收，独有的权限及工具调用必须单独验证。
+
+### 2026-11-14 第二轮已确认决定
+
+- **Q4=A，按需扩展上游认证**：首批只针对已有真实样本的 Bearer MCP 建立最小通用接入；Custom Headers 与 None 可优先使用 Portal 原生配置，遇到实际接入对象时进行必要的权限和协议验证。产品能力覆盖不等于本项目实现或验收全部认证方式。
+- **Q4 补充：上游 OAuth 仅低成本复用时支持**：不为了“形式上支持全部认证”开发新 OAuth 授权服务器、Token Vault、刷新服务或周期任务。Portal 已支持 OAuth DCR 与手动客户端配置；但若 Clerk Gateway 到 Portal 只能走机器 Service Token，则 Portal 的用户级上游 OAuth（`on_behalf=true`）无法直接复用。必须有安全的实际路径，并评估首次同意、Refresh Token 的归属/撤销和凭据范围；否则明确标记 **Deferred / Unsupported in first phase**，保留原生直连或原 Portal 方案，不把管理员 OAuth 授权静默替换成用户 OAuth。
+- **Q5=A，不增加管理 UI**：优先沿用 Cloudflare Portal 的 MCP 注册和凭据管理，以及既有仓库配置、CI 和发布流程。新界面、单独仓库、身份系统、数据库等均需先证明真实缺口和明显的维护收益。
+- **决策顺序**：先验证“单个 Clerk Resource → 单个被允许的 Portal 上游”的执行权限与凭据边界，再决定是否有必要在同仓库新增一个薄 Worker；不能以单个拥有所有上游权限的 Service Token 作为默认方案。
 
 与此前 Spec #853 的长期目标保持一致：CIMD 仅允许已预注册 ChatGPT 客户端、PKCE、明确 Owner、拒绝无效/过期/跨资源 Token、Refresh Token 不进入日志或聊天、不开放匿名 DCR 或 Everyone/Bypass，不向 ChatGPT 下发 Portal 或上游机器凭据。
 
@@ -39,7 +46,13 @@
 
 **条件性备选：同仓库的最薄无状态入口 Worker。** 只有现有 Portal 无法满足客户端授权或资源隔离、且确有可验证的安全上游路径时，才考虑一个最小共享适配入口；不重写完整 MCP Portal，也不默认每个 MCP 添加业务代码或独立 Worker。它可以统一验证 Clerk 与分发请求，但**不能**因单一 Portal Service Token 拥有全部上游能力便宣称隔离。若 Portal 无法在上游执行边界限制权限，应寻找按资源隔离的上游凭据/执行边界，或将该上游标记 Blocked；不通过扩大机器权限绕过。
 
-上游认证可在设计上按 OAuth、Bearer、Custom Headers、None 建模，但具体协议处理应优先复用已可靠运行的 Portal 能力。涉及真正用户级上游 OAuth 时，需要额外核实首次 Consent、Refresh Token 归属、安全持有、撤销、受众与跨用户隔离；不能提前假设 Portal 能为任意第三方代理此流程。高风险 Secret、可写工具和跨上游转发需要单独验收。
+上游认证逻辑上按 OAuth、Bearer、Custom Headers、None 分类，但 Cloudflare Portal API 的实际 `auth_type` 为 `oauth`、`bearer` 和 `unauthenticated`；Custom Headers 属于 `bearer` 类型的 `auth_credentials` 配置，而非额外独立 `auth_type`。该差异不需要另起抽象或重复代码。优先复用 Portal 已可靠运行的能力。
+
+Cloudflare 官方文档确认：对服务令牌，Portal 及各上游 MCP Access 应用必须分别有匹配的 Service Auth Policy；只有 `on_behalf=false` 的上游可用，并使用其管理员凭据。令牌能看见哪些工具受上游 Access Policy 约束，但**不能**由“客户端看不见某工具”推断后端无法越权调用。每个独立 Clerk Resource 的机器凭据须最小作用域，并以服务端真实工具调用/拒绝验收验证；单个全上游管理 Token 不可取。共享 Worker 若持有多组 Secret，仍存在共同运行时的泄露影响面，需按实际威胁边界评估，不能声称物理隔离。
+
+真正的上游用户级 OAuth 需要首次 Consent、Refresh Token 归属、安全存储、撤销、受众与跨用户隔离。Portal 原生 OAuth 接入虽可配置，但 **Service Token 路径不能代表用户授权（`on_behalf=true`）**，因此不能将原生 OAuth 的配置简便误认为与 Clerk Gateway 组合也简便。若只为此能力而必须另建 Token Vault / Refresh 服务，则按 Q4 暂缓；若未来有已验证的原生低成本路径，单独开启并验收。Portal 已知的手动 OAuth 工具同步限制、上游管理员 Token 静默过期风险及仅远程 HTTP 支持，应在具体接入服务时按风险核对。
+
+高风险 Secret、可写工具、跨上游转发和授权失败后的副作用需要独立验收。
 
 ## 最小验收与迁移顺序（设计，未授权执行）
 
@@ -48,17 +61,21 @@
 3. **生产分批（另行授权）**：完成明确的对象、影响、停止条件与回退预检后，先低风险只读代表性工具，确认真实 ChatGPT 首次授权、工具访问和续期；随后每个上游独立验收专有工具与权限。保留未迁移插件和原 Portal，任何迁移失败先核实副作用再恢复。
 4. **状态分层**：Docs、Code、CI、Clerk、Cloudflare、ChatGPT、业务工具和长期刷新分别标 Pass、Fail、Waived 或 Unknown；真实令牌刷新无证据时不得把“已连接”作为其替代。
 
-## 下一轮仍需用户决策
+## 决策树收敛与事实门
 
-- **Q4：首次统一接入版本的认证覆盖范围**——只先交付已有真实 Bearer 样本，按明确需求验证和扩展其它模式，还是要求 OAuth/Headers/None 同一阶段全部独立实现？首先核实 Portal 已有的模式，避免重复开发。
-- **Q5：新增 MCP 的操作入口**——配置/现有 Portal 管理能力是否足够，还是要求新增独立管理界面？这直接决定是否产生长期 UI、凭据管理和授权面成本。
+- 两轮用户决策 **Q1=A、Q2=A、Q3=A、Q4=A（OAuth 条件支持）、Q5=A** 已确定。暂无需要用户猜测的 OAuth 产品细节或重复的方案选择；下一步由工程侧以证据判定可行性，不因当前某项能力 Unknown 而默认设计新组件。
+- **Gate 1 — Portal 安全复用**：核实能否为一个 Clerk Resource 采用仅访问一个指定 MCP 上游的独立 Access Service Token/Policy，并在实际请求的工具执行边界做到不跨 Resource、不越权。验证不能以可见工具列表或示例 API 策略替代。未验证为 **Unknown**；确认不能安全隔离为 **Fail/Blocked**。
+- **Gate 2 — 最小适配必要性**：先确认现有 Portal 是否可以直接接受并验证 Clerk OAuth；若不能，且 Gate 1 的单资源通道可安全成立，再考虑同仓库一个最薄、无状态的 Clerk 入口 Worker，复用 Portal 的上游凭据与协议能力。若连 Gate 1 也不成立，则保留现有连接，停止受影响路径，不能为了交付“统一”扩展全部机器身份权限。
+- **Gate 3 — 认证模式范围**：首批验证现有 Bearer，按需验证 Custom Headers/None；上游 OAuth 仅在实际支持安全、低成本原生复用时启用。Service Token + `on_behalf=true` 不成立是已知产品限制，不重复作为尝试路径。若要支持必须自建凭据代理，保持 Deferred，日后有实际需求再单独评估。
+- **Gate 4 — 可回退和业务 E2E**：现有 Portal、Raindrop Clerk、各插件连接及原有生产 Worker 不动。未来首次上线需单独核实生产授权范围、停止条件与回滚，真实 ChatGPT 插件授权与业务调用只能在被授权部署后认定 Pass；长期刷新单独记录。
+- 单个新 Worker、持久状态、独立 OAuth 管理或额外部署单元，**均不是当前的已决架构结论**。如证据表明不加新组件就能安全满足目标，直接复用即可。
 
-权限隔离与第三方按需 Consent 已由 Q1/Q2 决定；不再拿“允许单个 Gateway 共用所有上游高权限 Token”重复作为开放选项。是否新增 Worker、如何安全管理上游 OAuth 凭据和哪个功能需要单独 E2E，须先有当前 Portal 能力及真实协议证据，再按这些决策推进。**目前无新的生产实施授权。**
+**设计阶段完成用户层面的必要选择；技术可行性与生产验收仍未完成。本次文档更新没有授权任何生产改动。**
 
 ## 相关证据
 
 - [Spec #853 及 T17–T26 验收记录](https://github.com/lirtual/mcp-workers/issues/853)
 - [Raindrop Worker 的当前实现](../apps/raindrop-mcp-worker/src/clerk-pilot-auth.ts)
-- [Cloudflare MCP Portals 文档](https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/)
+- [Cloudflare MCP Portals 官方文档（含 Service Token / OAuth 的明确限制）](https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/)
 - [Cloudflare Managed OAuth 文档](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)
 - [ChatGPT 自定义 MCP 连接文档](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)
