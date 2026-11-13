@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGitHubAction } from '../src/github-action-contract.ts';
+import {reviewedGitHubOutputSource} from '../src/github-action-discovery.ts';
 
 const valid = `name: Linux test
 on:
@@ -80,4 +81,27 @@ test('Session enforces one job, cleanup guard =360 and user duration <=300, and 
  }
  const contract=parseGitHubAction(valid);
  assert.equal(contract.inputs.duration_minutes.default,10);
+});
+
+test('declared GitHub output fields change only the reviewed business contract and remain path-bound',()=>{
+ const base=parseGitHubAction(valid);
+ assert.equal(base.outputKind,undefined);
+ assert.equal(base.outputSchema,undefined);
+ const withTailnet=parseGitHubAction(valid.replace('  WORKFLOW_ACTION_TYPE: session',
+  '  WORKFLOW_ACTION_TYPE: session\n  WORKFLOW_ACTION_OUTPUT_KIND: tailnet'));
+ assert.equal(withTailnet.outputKind,'tailnet');
+ assert.deepEqual(Object.keys((withTailnet.outputSchema as any).properties.session.properties),
+  ['recorded_state','private_hostname','github_run_id']);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/ubuntu.yml',withTailnet),true);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/windows.yml',withTailnet),true);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/chrome.yml',withTailnet),false);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/custom.yml',withTailnet),false);
+ const web=parseGitHubAction(valid.replace('  WORKFLOW_ACTION_TYPE: session',
+  '  WORKFLOW_ACTION_TYPE: session\n  WORKFLOW_ACTION_OUTPUT_KIND: web'));
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/code-server.yml',web),true);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/ubuntu.yml',web),false);
+ for(const kind of ['custom','none']){
+  assert.throws(()=>parseGitHubAction(valid.replace('  WORKFLOW_ACTION_TYPE: session',
+   '  WORKFLOW_ACTION_TYPE: session\n  WORKFLOW_ACTION_OUTPUT_KIND: '+kind)),/invalid_output_declaration/);
+ }
 });
