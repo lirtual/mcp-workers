@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {compilePlan} from '../src/plan.ts';
+import {compilePlan,auxiliaryBarkStepId,type Plan} from '../src/plan.ts';
+import {settleVerifiedAuxiliaryBusiness} from '../src/auxiliary-bark-recovery.ts';
 import {cloudflareActionManifest} from '../src/cloudflare-action-contract.ts';
 
 async function candidate(kind:'dub'|'envshare'|'litterbox') {
@@ -47,8 +48,8 @@ const runId='11111111-1111-4111-8111-111111111111';
 const version='33333333-3333-4333-8333-333333333333';
 async function fixture(t:test.TestContext,kind:'dub'|'envshare'|'litterbox',trusted=true){
  const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());
- sql.exec("CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,inputs TEXT);");
- sql.exec("CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,output TEXT,PRIMARY KEY(run_id,step_id));");
+ sql.exec("CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,inputs TEXT,result TEXT,error_code TEXT,updated_at INTEGER);");
+ sql.exec("CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,output TEXT,error_code TEXT,updated_at INTEGER,PRIMARY KEY(run_id,step_id));");
  for(const file of ['0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
   sql.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
  const raw=await candidate(kind);
@@ -62,8 +63,8 @@ async function fixture(t:test.TestContext,kind:'dub'|'envshare'|'litterbox',trus
   litterbox:{status:'accepted',download_url:'https://litterbox.catbox.moe/file.zip'}};
  const inputs=kind==='dub'?{url:'https://example.com'}:kind==='envshare'?{ttl:86400,reads:2,key_digest:'x'}:
   {time:'24h',file_name:'file.zip'};
- sql.prepare('INSERT INTO runs VALUES(?,?,?)').run(runId,'running',JSON.stringify(inputs));
- sql.prepare('INSERT INTO run_steps VALUES(?,?,?,?)').run(runId,'business',trusted?'succeeded':'failed',JSON.stringify(outputs[kind]));
+ sql.prepare('INSERT INTO runs(id,outcome,inputs) VALUES(?,?,?)').run(runId,'running',JSON.stringify(inputs));
+ sql.prepare('INSERT INTO run_steps(run_id,step_id,status,output) VALUES(?,?,?,?)').run(runId,'business',trusted?'succeeded':'failed',JSON.stringify(outputs[kind]));
  sql.prepare('INSERT INTO cloudflare_action_invocations VALUES(?,?,?,?,?,?,?,?,?)').run(
   runId,'business','22222222-2222-4222-8222-222222222222','source','digest',0,business.contract_digest,version,1);
  const prepare=(query:string)=>{
@@ -83,7 +84,7 @@ async function fixture(t:test.TestContext,kind:'dub'|'envshare'|'litterbox',trus
  }} as unknown as Env;
  const ctx={inputs:{},steps:{business:{status:'succeeded',output:{status:'accepted',short_link:'https://evil.example'}}}};
  const call=()=>runBarkAction(env,plan,plan.steps[1]!,runId,ctx);
- return {call,sends:()=>sends,notification:()=>notification,sql};
+ return {call,sends:()=>sends,notification:()=>notification,sql,env,plan};
 }
 test('Bark uses only same-run persisted business receipts, not injected Step output; sends once',async t=>{
  for(const kind of ['dub','envshare','litterbox'] as const){
@@ -107,4 +108,77 @@ test('Bark cannot send when source business Step is failed, even if Context clai
   assert.equal((await f.call()).status,'failed');
   assert.equal(f.sends(),0);
  }
+});
+
+test('native interruption after verified Cloudflare success preserves business result and Bark Unknown without replay',async t=>{
+ for(const kind of ['dub','envshare','litterbox'] as const){
+  await t.test(kind,async sub=>{
+   const f=await fixture(sub,kind);
+   assert.equal(auxiliaryBarkStepId(f.plan),'notify');
+   assert.equal(await settleVerifiedAuxiliaryBusiness(f.env.DB,f.plan,runId),true);
+   const row=f.sql.prepare('SELECT outcome,result,error_code FROM runs').get() as any;
+   assert.equal(row.outcome,'succeeded');
+   assert.equal(JSON.parse(row.result).status,'accepted');
+   assert.equal(row.error_code,null);
+   const bark=f.sql.prepare("SELECT status,error_code FROM run_steps WHERE step_id='notify'").get() as any;
+   assert.equal(bark.status,'indeterminate');
+   assert.equal(bark.error_code,'bark_outcome_unconfirmed');
+   assert.equal(f.sends(),0,'recovering is read-only with respect to Provider');
+   assert.equal(await settleVerifiedAuxiliaryBusiness(f.env.DB,f.plan,runId),true);
+   assert.equal(f.sends(),0);
+  });
+ }
+});
+test('native recovery fails closed without trusted business proof and never overwrites cancellation',async t=>{
+ const f=await fixture(t,'dub',false);
+ assert.equal(await settleVerifiedAuxiliaryBusiness(f.env.DB,f.plan,runId),false);
+ assert.equal((f.sql.prepare('SELECT outcome FROM runs').get() as any).outcome,'running');
+ f.sql.prepare("UPDATE run_steps SET status='succeeded' WHERE step_id='business'").run();
+ f.sql.prepare("UPDATE cloudflare_action_invocations SET contract_digest='wrong' WHERE step_id='business'").run();
+ assert.equal(await settleVerifiedAuxiliaryBusiness(f.env.DB,f.plan,runId),false);
+ f.sql.prepare("UPDATE cloudflare_action_invocations SET contract_digest=? WHERE step_id='business'").run((await cloudflareActionManifest('dub')).contract_digest);
+ f.sql.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(runId);
+ assert.equal(await settleVerifiedAuxiliaryBusiness(f.env.DB,f.plan,runId),false);
+ assert.equal((f.sql.prepare('SELECT outcome FROM runs').get() as any).outcome,'cancelled');
+});
+test('the three new Session + Bark Plans are isolated, historical Chrome remains unchanged',async()=>{
+ for(const [name,path] of [['ubuntu','ubuntu'],['windows','windows'],['code-server','code-server'],['chrome','chrome']] as const){
+  const identity={repository:'autoactions/github-actions',repositoryId:10,workflowId:22,
+    workflowPath:'.github/workflows/'+path+'.yml',commitSha:'a'.repeat(40),
+    type:'session' as const,contractDigest:'b'.repeat(64)};
+  const plan={version:1,name,steps:[
+   {id:'business',uses:'github.run',needs:[],with:{capability:'github.action',action:{...identity,ref:'refs/heads/main'}}},
+   {id:'notify',uses:'action.run',needs:['business'],with:{executor:'cloudflare',provider:'bark',
+     action:'bark.send_notification',input:{session_step_id:'business',notification:{body:'Completed'}}}},
+  ]} as unknown as Plan;
+  assert.equal(auxiliaryBarkStepId(plan),name==='chrome'?null:'notify');
+  const injected=structuredClone(plan);(injected.steps[1]!.with.input as Record<string,unknown>).notification={body:'other'};
+  assert.equal(auxiliaryBarkStepId(injected),null);
+ }
+});
+test('recovery requires the exact owned signed Ready attempt for Session business',async t=>{
+ const sql=new DatabaseSync(':memory:');t.after(()=>sql.close());
+ sql.exec('CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,result TEXT,error_code TEXT,updated_at INTEGER)');
+ sql.exec('CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT,output TEXT,error_code TEXT,updated_at INTEGER,PRIMARY KEY(run_id,step_id))');
+ sql.exec('CREATE TABLE step_attempts(run_id TEXT,step_id TEXT,capability_id TEXT,candidate_run_id INTEGER,candidate_run_attempt INTEGER,owner_run_id INTEGER,owner_run_attempt INTEGER)');
+ sql.prepare('INSERT INTO runs(id,outcome) VALUES(?,?)').run(runId,'running');
+ sql.prepare('INSERT INTO run_steps(run_id,step_id,status,output) VALUES(?,?,?,?)').run(runId,'business','succeeded',JSON.stringify({session:{recorded_state:'ready',private_hostname:'session-ubuntu',github_run_id:42}}));
+ const identity={repository:'autoactions/github-actions',repositoryId:10,workflowId:22,
+  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
+  type:'session' as const,contractDigest:'b'.repeat(64)};
+ const plan={version:1,name:'ubuntu',steps:[
+  {id:'business',uses:'github.run',needs:[],with:{capability:'github.action',action:identity}},
+  {id:'notify',uses:'action.run',needs:['business'],with:{executor:'cloudflare',provider:'bark',action:'bark.send_notification',input:{session_step_id:'business',notification:{body:'Completed'}}}},
+ ],github_execution_approved:true,github_action_approvals:[identity]} as unknown as Plan;
+ const prepare=(query:string)=>{const bound=(args:unknown[])=>({
+  first:async<T>()=>(sql.prepare(query).get(...(args as []))??null) as T|null,
+  run:async()=>({meta:{changes:Number(sql.prepare(query).run(...(args as [])).changes)}}),
+ });return {...bound([]),bind:(...args:unknown[])=>bound(args)};};
+ const db={prepare} as unknown as D1Database;
+ assert.equal(await settleVerifiedAuxiliaryBusiness(db,plan,runId),false);
+ sql.prepare('INSERT INTO step_attempts VALUES(?,?,?,?,?,?,?)').run(runId,'business','github.action',42,1,43,1);
+ assert.equal(await settleVerifiedAuxiliaryBusiness(db,plan,runId),false);
+ sql.prepare('UPDATE step_attempts SET owner_run_id=42').run();
+ assert.equal(await settleVerifiedAuxiliaryBusiness(db,plan,runId),true);
+ assert.equal((sql.prepare('SELECT outcome FROM runs').get() as any).outcome,'succeeded');
 });
