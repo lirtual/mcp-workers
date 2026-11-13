@@ -564,7 +564,7 @@ function reviewedTerminalRunSql(sql) {
   );
 }
 
-export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false, requireUuRetired = false) {
+export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false, requireUuRetired = false, codeOnly = false) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow remote D1 readback unavailable");
@@ -692,11 +692,13 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
-  // D1 migration may change Session reservations even after the parent Run
-  // succeeded at Ready. Require a physically quiescent Tailnet before schema
-  // changes; completed-schema code-only releases use their separate gate.
-  if(!completeV20 || requireUuRetired) invariant(Number.isSafeInteger(row?.active_sessions) &&
-    row.active_sessions===0, "Workflow D1 migration blocked by active physical Sessions");
+  // D1 migrations require no physical Sessions. Only explicitly selected
+  // code-only releases on completed v21 may defer the Ready/Attempt safety
+  // classification to the independent strict code-release-check below.
+  const codeOnlyV21 = codeOnly && requireCompleteSchema && completeV21 && !requireUuRetired;
+  if((!completeV20 && !codeOnlyV21) || requireUuRetired)
+    invariant(Number.isSafeInteger(row?.active_sessions) && row.active_sessions===0,
+      "Workflow D1 migration blocked by active physical Sessions");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
     "Workflow first deployment requires empty production Run and Workflow state");
   return true;
@@ -1148,7 +1150,8 @@ async function main() {
     verifyWorkflowD1Readiness(JSON.parse(raw),
       process.env.WORKFLOW_FIRST_DEPLOY === "true",
       process.env.WORKFLOW_REQUIRE_COMPLETE_SCHEMA === "true",
-      process.env.UU_REQUIRE_CLEANUP_COMPLETE === "true");
+      process.env.UU_REQUIRE_CLEANUP_COMPLETE === "true",
+      process.env.WORKFLOW_CODE_ONLY === "true");
     console.log("Workflow production D1 migrations and Run-state gate verified");
     return;
   }
