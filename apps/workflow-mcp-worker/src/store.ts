@@ -1200,15 +1200,20 @@ export class WorkflowService {
     }
     // A web Quick Tunnel Session has no Tailnet hostname. Never advertise a
     // guessed MagicDNS host for it just because its GitHub job became Ready.
-    const tailnetSteps=new Map<string,string>(publishedPlan.steps.flatMap(step=>{
+    const tailnetSteps=new Map<string,{name:string;fixedHostname:boolean}>(publishedPlan.steps.flatMap(step=>{
       if(step.uses!=='github.run'||step.with.capability!=='github.action')return [];
-      const action=step.with.action as {repository?:unknown;repositoryId?:unknown;workflowPath?:unknown}|undefined;
+      const action=step.with.action as {repository?:unknown;repositoryId?:unknown;
+        workflowPath?:unknown;inputs?:unknown}|undefined;
       const executor=currentExecutorRepository(this.env.WORKFLOW_GITHUB_ACTION_IDENTITY);
       if(!executor||!action||action.repository!==executor.repository||
          action.repositoryId!==executor.repositoryId)return [];
       const name=action.workflowPath==='.github/workflows/windows.yml'?'session-windows':
         action.workflowPath==='.github/workflows/ubuntu.yml'?'session-ubuntu':null;
-      return name?[[step.id,name] as [string,string]]:[];
+      // Single-instance admission is independent of Tailnet hostname mode.
+      // Web Sessions never receive a fabricated private hostname.
+      const inputs=action.inputs&&typeof action.inputs==='object'&&!Array.isArray(action.inputs)
+        ?action.inputs as Record<string,unknown>:null;
+      return name?[[step.id,{name,fixedHostname:inputs?.session_mode==='fixed'}] as const]:[];
     }));
     const sessions=hasSessions?(await this.db.prepare(`SELECT s.step_id,s.state,s.session_url,s.fixed_key,
       s.updated_at,a.candidate_run_id,a.candidate_run_attempt,a.state AS attempt_state
@@ -1229,8 +1234,9 @@ export class WorkflowService {
           (record.candidate_run_id??0)>0
           && Number.isSafeInteger(record.candidate_run_attempt)
           && (record.candidate_run_attempt??0)>0
-          ?(record.fixed_key!==null?tailnetSteps.get(record.step_id)??null:
-            'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt):null,
+          ?(tailnetSteps.get(record.step_id)?.fixedHostname
+            ?tailnetSteps.get(record.step_id)?.name??null
+            :'sa-'+record.candidate_run_id+'-a'+record.candidate_run_attempt):null,
         attempt_state:record.attempt_state,
         physical_health:record.state==='terminated'?'terminated':'unverified'})):[];
     // The Session terminal state is written only after physical GitHub
