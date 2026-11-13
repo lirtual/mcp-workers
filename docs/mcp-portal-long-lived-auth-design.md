@@ -32,6 +32,31 @@
 5. 非生产 Clerk Lab 已捕获真实 ChatGPT Refresh Grant 并验证超过 24 小时的已授权调用；**生产环境短期 Token 到期后的实际自动刷新、真实撤销与非 Owner 拒绝仍 Unknown**。不能因成功登录、Discovery 或单次业务 E2E 将这些项标为 Pass。没有必要人为设置七天等待门禁。
 6. 旧 Portal /mcp、上游 Bearer 凭据、既有 Access Policy 和 ChatGPT 连接目前没有因 Raindrop Clerk 试点迁移或撤销。原版 Worker 保留为受控回退基线。
 
+## 2026-11-14 Portal Service Token / Access Policy 只读可行性审查
+
+**当前状态：控制面机制已有官方支持，现有生产配置不满足新 Gateway 的最小权限目标；实际数据面工具拒绝验收仍 Unknown。**
+
+### 实际资源与策略回读
+
+- Cloudflare Access 应用 API 返回 15 个应用，其中 Portal `MCP` 1 个、类型 `mcp` 的应用 11 个；MCP Portal 挂载 11 个上游，当前均为 `auth_type=bearer`、`on_behalf=false`，全部 Ready。
+- Access Service Token 列表仅有 1 条现存记录（名称 `workflow-mcp-worker`，只读返回标识符和到期元数据；不读取凭据值）。`WORKFLOWS` Reusable Policy（决策 `non_identity`）的唯一 Include 是该 Service Token。
+- **Portal 及 11 个 MCP Access 应用全部引用同一个 `WORKFLOWS` Policy**；从 Portal、Raindrop、Sentry、Git Guardian 四个应用的 **实际 Application Policies API** 分别回读已独立确认。Owner Allow Policy 与上述机器 Policy 同时存在。由此现有 Service Token 已被配置成可通过所有上游的 Service Auth 边界，**绝不可直接作为通用 Clerk Gateway 的共享机器身份**。
+- 当前 Portal 的每个上游映射 `default_disabled=false`；Cloudflare 文档支持 `default_disabled=true` 配合显式 `updated_tools` 列表缩小暴露面，但本项目尚无**实际排除工具后仍尝试通过构造 `tools/call` 的拒绝**证据。列表隐藏与服务端调用拒绝必须分开验证。
+
+### 机制成立与尚未证明的部分
+
+- Cloudflare [MCP Portals 官方契约](https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/) 要求机器调用同时在 Portal Access 应用及对应上游 MCP Access 应用获得 Service Auth；当上游不匹配该 Token Policy 时，文档说明该上游工具从客户端列表隐藏；`on_behalf=true` 上游不能用于 Service Token 会话。
+- 因而 **每个独立 Clerk Resource 使用一个仅被 Portal 和目标上游 MCP 应用允许的机器 Token** 是可检验的候选机制。该 Token 必须无法凭它自身访问其它 MCP Access 应用；原 `WORKFLOWS` Token 仍可能服务现有工作流，不能无授权就删除或重配。可以在验证时只对试点上游和 Portal **附加**最小策略，避免影响旧 Owner/Workflow 使用路径；但任何新 Token/Policy 或 Access App 变更均属需另行授权的生产配置写操作。
+- **控制面官方文档通过（Pass，产品能力级）**；**现有配置符合新 Gateway 最小权限（Fail）**；**按上游 Token 真正拒绝其它上游工具及隐藏工具的 MCP `tools/call`（Unknown）**；**Clerk Gateway 直接消费外部 JWT 的 Portal 原生能力（Unknown）**。不能声称门禁已全部通过。
+- 即便按上游建立独立 Token，单个 Gateway Worker 若同时持有多个凭据，Worker 代码/运行时被攻破时仍存在共同泄露边界。因此 **Token 粒度提供请求级最小权限，不等于部署级故障隔离**；应核实实际维护与安全收益后才决定是否要求更强的进程/部署隔离，默认不为抽象威胁新造一套系统。
+
+### 仅在获批范围内的最小验证路径
+
+1. 先只读记录 Portal 与目标上游的有效 Policy、旧 Token 依赖以及回滚基线，确保现有 `WORKFLOWS` 机器路径、Owner 访问不受影响。
+2. **经生产权限/Secret 写操作另行授权后**，仅对一个低风险上游试点创建限定 Portal + 单上游的凭据与 Service Auth Policy，保留现有 Policy，不修改其它上游；设置短、明确的实验停止与回滚条件。
+3. 用该试点凭据实际验证目标上游的只读 `tools/list` / `tools/call` 为 Pass，非目标上游不可见**且直接构造非目标工具的 `tools/call` 被拒绝**，明确测试被禁用工具的拒绝、错误 Resource/Audience/Owner/Scope 与凭据缺失的 fail-closed；不得只看管理 UI 或工具列表便宣布安全。
+4. 只在前述服务端拒绝实际通过后，进一步确认 Clerk 能否直接与 Portal 结合；若不能，才评估同仓库最薄认证适配 Worker。未通过时暂停受影响路径，保持现有 Portal 与 Raindrop Clerk 连接，不提升机器令牌权限，也不添加 Token Vault/刷新服务。
+
 ## 术语与责任边界
 
 - **ChatGPT 插件 / MCP Resource**：用户独立安装的连接及其唯一资源受众。共享域名或 Worker 不能意味着共享工具授权。
@@ -64,7 +89,7 @@ Cloudflare 官方文档确认：对服务令牌，Portal 及各上游 MCP Access
 ## 决策树收敛与事实门
 
 - 两轮用户决策 **Q1=A、Q2=A、Q3=A、Q4=A（OAuth 条件支持）、Q5=A** 已确定。暂无需要用户猜测的 OAuth 产品细节或重复的方案选择；下一步由工程侧以证据判定可行性，不因当前某项能力 Unknown 而默认设计新组件。
-- **Gate 1 — Portal 安全复用**：核实能否为一个 Clerk Resource 采用仅访问一个指定 MCP 上游的独立 Access Service Token/Policy，并在实际请求的工具执行边界做到不跨 Resource、不越权。验证不能以可见工具列表或示例 API 策略替代。未验证为 **Unknown**；确认不能安全隔离为 **Fail/Blocked**。
+- **Gate 1 — Portal 安全复用**：已确认 Portal 与 11 个上游共用唯一 `WORKFLOWS` Service Token，因此**现状 Fail**（不满足新 Gateway 所需的最小权限）。官方支持分别匹配 Portal 与指定上游的 Token Policy，属于**候选控制面 Pass**。新增最小权限身份与真实跨上游工具调用拒绝尚未执行，**数据面 Unknown**；未经授权不得更改既有生产 Access Policy/Secret。
 - **Gate 2 — 最小适配必要性**：先确认现有 Portal 是否可以直接接受并验证 Clerk OAuth；若不能，且 Gate 1 的单资源通道可安全成立，再考虑同仓库一个最薄、无状态的 Clerk 入口 Worker，复用 Portal 的上游凭据与协议能力。若连 Gate 1 也不成立，则保留现有连接，停止受影响路径，不能为了交付“统一”扩展全部机器身份权限。
 - **Gate 3 — 认证模式范围**：首批验证现有 Bearer，按需验证 Custom Headers/None；上游 OAuth 仅在实际支持安全、低成本原生复用时启用。Service Token + `on_behalf=true` 不成立是已知产品限制，不重复作为尝试路径。若要支持必须自建凭据代理，保持 Deferred，日后有实际需求再单独评估。
 - **Gate 4 — 可回退和业务 E2E**：现有 Portal、Raindrop Clerk、各插件连接及原有生产 Worker 不动。未来首次上线需单独核实生产授权范围、停止条件与回滚，真实 ChatGPT 插件授权与业务调用只能在被授权部署后认定 Pass；长期刷新单独记录。
