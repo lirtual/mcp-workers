@@ -79,6 +79,27 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
   compensate?: {kind:'github.session.cancel'};
 };
+/** The only permitted two-Cloudflare-Action Plan: a manual business effect followed
+ * by one optional, source-bound owner notification. No generic action chaining. */
+export function isAuxiliaryBarkPair(steps:readonly Step[]):boolean{
+ if(steps.length!==2)return false;
+ const [business,notify]=steps;
+ if(business?.uses!=='action.run'||business.with.executor!=='cloudflare'||
+    !['dub','envshare','litterbox'].includes(String(business.with.provider))||
+    business.with.action!==({dub:'dub.shorten_url',envshare:'envshare.share_text',
+      litterbox:'litterbox.upload_file'} as Record<string,string>)[String(business.with.provider)]||
+    business.needs?.length>0||business.if!==undefined||business.approval!==undefined||
+    notify?.uses!=='action.run'||notify.with.executor!=='cloudflare'||
+    notify.with.provider!=='bark'||notify.with.action!=='bark.send_notification'||
+    notify.needs?.length!==1||notify.needs[0]!==business.id||
+    notify.if!==undefined||notify.approval!==undefined||notify.needs_policy!==undefined)return false;
+ const input=notify.with.input;
+ if(!input||typeof input!=='object'||Array.isArray(input)||
+    Object.keys(input).length!==1||!Object.hasOwn(input,'notification'))return false;
+ const msg=(input as {notification?:unknown}).notification;
+ return msg!==null&&typeof msg==='object'&&!Array.isArray(msg)&&
+   Object.keys(msg).length===1&&(msg as {body?:unknown}).body==='Completed';
+}
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
 export type GithubEventTrigger = {type:'github_event';repository:string;repository_id:number;event:'push';ref:string;workflow_path:string};
@@ -776,9 +797,11 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   },0);
   if(totalWaitSeconds>PLAN_LIMITS.maxWaitSeconds)
     throw new PlanError('wait_budget_exceeded','/steps');
-  // At most one reviewed Cloudflare notification Action per Plan.
+  // Only the three reviewed, manually entered business -> Bark pairs may
+  // exceed the historical one-Cloudflare-Action limit.
   if(expanded.filter(x=>(x as {uses?:unknown;with?:{executor?:unknown}}).uses==='action.run'&&
-      (x as {with?:{executor?:unknown}}).with?.executor==='cloudflare').length>1)
+      (x as {with?:{executor?:unknown}}).with?.executor==='cloudflare').length>1&&
+      !isAuxiliaryBarkPair(expanded as Step[]))
     throw new PlanError('multiple_cloudflare_actions_unsupported','/steps');
   const steps:Step[]=[];
   const ids=new Set<string>();
@@ -872,7 +895,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
              (v as {ref?:unknown}).ref!=='inputs.'+field)
             throw new PlanError('litterbox_input_must_be_transient_reference',stepPath+'/with/input/'+field);
         }
-        if(expanded.length!==1||o.triggers?.length||needs.length||s.if!==undefined)
+        if(o.triggers?.length||needs.length||s.if!==undefined)
           throw new PlanError('litterbox_manual_single_step_only',stepPath);
       }else if(manifest.provider==='bark'){
         keys(input,['notification','session_step_id','download_step_id'],stepPath+'/with/input');
@@ -975,7 +998,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
          action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
         throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
     }
-    if(s.uses==='action.run'&&s.with.provider==='bark'&&
+if(s.uses==='action.run'&&s.with.provider==='bark'&&
        (s.with.input as {download_step_id?:string}).download_step_id!==undefined){
       const source=(s.with.input as {download_step_id:string}).download_step_id;
       const upstream=steps.find(x=>x.id===source);
@@ -1102,7 +1125,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   // A secret-bearing EnvShare Run may do exactly one reviewed, manual write.
   // No literal secret in the Plan, additional Step, Flow or event source.
   if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='envshare')){
-    if(triggers?.length||steps.length!==1||saga||
+    if(triggers?.length||(steps.length!==1&&!isAuxiliaryBarkPair(steps))||saga||
        (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
        steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
        steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
@@ -1111,7 +1134,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   // Transient Litterbox bytes must never originate from Plan literals,
   // scheduled/event admissions, other Steps, or serializable Run inputs.
   if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox')){
-    if(triggers?.length||steps.length!==1||saga||
+    if(triggers?.length||(steps.length!==1&&!isAuxiliaryBarkPair(steps))||saga||
        (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
        steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
        steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
