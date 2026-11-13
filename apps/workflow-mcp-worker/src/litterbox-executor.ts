@@ -1,7 +1,7 @@
 import {WorkflowService,StateError,type Env} from './store.ts';
 import {reviewedActionDeployment,cloudflareActionManifest,canonical} from './cloudflare-action-contract.ts';
 import {readBoundedAttachment,approvedAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
-import type {Plan} from './plan.ts';
+import {isAuxiliaryBarkPair,type Plan} from './plan.ts';
 
 const TTL=new Set(['1h','12h','24h','72h']);
 const FILE_NAME=/^[^\/\\\x00-\x1f\x7f]{1,160}$/u;
@@ -23,7 +23,7 @@ const safeLink=(v:unknown):v is string=>{
 };
 export const isLitterboxPlan=(p:Plan):boolean=>{
  const s=p.steps?.[0];
- if(p.steps.length!==1||p.triggers?.length||p.saga||
+ if((p.steps.length!==1&&!isAuxiliaryBarkPair(p.steps))||p.triggers?.length||p.saga||
     (p.inputs&&Object.keys(p.inputs).length!==0)||
     p.cloudflare_execution_approved!==true||
     s?.uses!=='action.run'||s.needs.length!==0||s.if!==undefined||
