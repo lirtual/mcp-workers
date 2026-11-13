@@ -15,6 +15,7 @@ import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAc
 import { currentExecutorRepository } from './github-action-catalog.ts';
 import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
 import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString, isAuxiliaryBarkPair, validateStaticOutputReferences } from './plan.ts';
+import {settleVerifiedAuxiliaryBusiness} from './auxiliary-bark-recovery.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
@@ -447,7 +448,7 @@ export class WorkflowService {
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const required=[...new Map(approvedMcpSteps(plan).map(s=>{
       const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
-        scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
+scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
       return [JSON.stringify(grant),grant] as const;
     })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
@@ -897,7 +898,7 @@ if(required.length){
     // Caller assertion is not an internal trigger identity. Check it before
     // replay, ephemeral secret generation or any Run reservation.
     if(expected_published_version_id){
-      assertId(expected_published_version_id);
+assertId(expected_published_version_id);
       const current=await this.row(workflow_id);
       if(current.active_version_id!==expected_published_version_id)
         throw new StateError('published_version_changed');
@@ -1111,6 +1112,19 @@ throw new StateError('reserved_idempotency_key');
   }
   private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
     if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
+    // The native engine may have stopped after the proven business effect but
+    // before Bark completed. Only an exact, still-immutable source receipt can
+    // repair this parent; never re-run the physical effect or the notification.
+    if(['complete','errored','terminated'].includes(native)&&row.outcome==='running'){
+      try{
+        const published=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(row.version_id).first<{plan:string}>();
+        if(published&&await settleVerifiedAuxiliaryBusiness(this.db,
+          JSON.parse(published.plan) as Plan,row.id))
+          return (await this.db.prepare('SELECT * FROM runs WHERE id=?')
+            .bind(row.id).first<RunRow>())!;
+      }catch{/* Missing proof retains existing indeterminate behavior. */}
+    }
     const terminalError=unresolvedNativeTerminalError(native,row.outcome);
     if(terminalError){
       await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code=?,updated_at=? WHERE id=? AND outcome IN ('queued','running')")
