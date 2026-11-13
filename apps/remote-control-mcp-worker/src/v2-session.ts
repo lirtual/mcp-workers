@@ -513,10 +513,14 @@ export async function listApprovedDevices(
               device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown;
               connected_at?: unknown;
             } | null;
-          const age = now - Number(device.last_verified_online_at);
+          // Permanent grants persist their verified-online timestamp; bounded
+          // temporary/Session grants use the authenticated socket checkpoint.
+          const verifiedAt = permanent(device)
+            ? device.last_verified_online_at : attachment?.last_auth_check_at;
+          const age = now - Number(verifiedAt);
           if (socket.readyState === WebSocket.OPEN && currentEpoch && attachment &&
-              Number.isSafeInteger(device.last_verified_online_at) &&
-              Number.isFinite(age) && age >= 0 && age < VERIFIED_ONLINE_LEASE_MS &&
+              Number.isSafeInteger(verifiedAt) &&
+              Number.isFinite(age) && age >= 0 && age < ONLINE_AUTH_LEASE_MS &&
               attachment.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
             if (typeof attachment.connected_at === "number" &&
