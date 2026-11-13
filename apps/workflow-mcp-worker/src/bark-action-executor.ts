@@ -87,7 +87,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       ctx?.steps[downloadId]?.status!=='succeeded'||upstream?.uses!=='flow.foreach'||
       upstream.with.max_items!==1||template?.uses!=='github.run'||typeof template.id!=='string'||
       !isWellFormedWorkflowGitHubRepository(pinned?.repository)||pinned.workflowPath!=='.github/workflows/download.yml'||
-      (dynamicMain&&(!trustedNotificationIdentity(pinned,plan)||plan.name!=='download'))||
+      (dynamicMain&&(!trustedNotificationIdentity(pinned,plan)||!['download','offline-download'].includes(plan.name)))||
       pinned.type!=='task'||typeof pinned.ref!=='string'||
       (!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)&&!dynamicMain)||
       typeof pinned.commitSha!=='string'||!/^[a-f0-9]{40}$/.test(pinned.commitSha))
