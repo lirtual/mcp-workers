@@ -1,74 +1,64 @@
-# MCP Portal 长期免重连设计（Grill With Docs）
+# MCP 独立插件长期 OAuth 与统一接入设计（Grill With Docs）
 
-状态：Grill With Docs 四项决策已确认；本文件为设计阶段的最小方案，技术可行性与客户端 E2E 待验证；T0 现场证据参见 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853)；不构成生产变更或发布授权。日期：2026-11-11。
+状态：**设计共识进行中**。2026-11-14 第一轮 Q1–Q3 已确认；第二轮尚未决定。此文档更新已验证的生产现状与设计边界，**不授权实施、发布、迁移插件、修改 OAuth/Access/Portal/Secrets 或生产数据**。问题及验收记录见 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853)。
 
-## 目标与已决策项
+## 目标与既定约束
 
-- Q1=A：追求正常使用期间无需计划性人工重连；短期访问令牌自动刷新。主动撤销、权限变化、异常安全事件或平台不可避免的限制可中断。
-- Q2=A：保留 ChatGPT 中各 MCP 插件的独立形态和访问边界，不改为单个聚合插件。
-- Q3=A：Cloudflare Managed OAuth 原生优先；若证实固定 Grant 到期无法达到 Q1，再单独设计、审查最小自托管 OAuth 兜底；该选择**不授权**开发、引入持久凭据或部署新服务。
-- Q4=A：选一个低风险独立插件作为真实 ChatGPT 刷新代表性验收，再分批迁移其他插件；允许必要的一次性重新授权/重建，不接受周期性手工重连成为常态。
-- 不能仅以延长登录 Cookie、关闭 Access 或提供永久静态 Bearer Token 作为达标证明。
-- 成功标准针对最终用户：长期使用已安装的独立 ChatGPT MCP 插件，不应因为固定日历期限而逐个重新授权。
+最终用户目标不是“所有请求必须经过 Clerk”，而是：ChatGPT 中多个 **独立 MCP 插件** 在首次连接后尽可能持续自动续期，不因固定期限而计划性逐个重登；仅在撤销、权限变化、风险、客户端令牌丢失或真实故障时重新登录。不能承诺永不重新登录，也不能把浏览器 Session、OAuth Access Token、Refresh Token/Grant 和 MCP Session 当成同一个期限。
 
-## 已查证的事实与证据层级
+新增上游 MCP 应尽量只登记地址、认证类型、凭据及最小权限，**不因自建或第三方而区别处理，也不修改第三方源码**。现有 Cloudflare MCP Portal、已有 Worker、Clerk Production 及项目 CI/发布流程应优先复用。保持个人可承受的免费、免绑信用卡与 Serverless 约束；没有必要不新增项目、数据库、Token Vault、Cron、长期进程或管理界面。
 
-### 现有生产只读配置（2026-11-11）
+### 2026-11-14 第一轮已确认决定
 
-1. Cloudflare Access 应用列表：唯一 MCP Portal 应用 MCP 指向 mcp.lirtual.dpdns.org，其 Access application.session_duration=24h；另有 11 个 type=mcp 应用，其 application.session_duration 均为 24h。
-2. MCP Portal /mcp 当前挂载 11 个上游；逐项 on_behalf=false，表示 Portal 使用预置的上游认证而不是对每个上游要求用户 OAuth。列表 ready 不等于终端用户认证 E2E 成功。
-3. Access GET 响应没有返回 oauth_configuration 字段，故不能根据缺席推断 Managed OAuth 未启用、Grant 期限或实际 Access Token 期限。24h application.session_duration **不能直接等同**于 OAuth grant.session_duration。
-4. 先前从 Portal 公开的 OAuth 授权服务发现信息成功读到 grant_types_supported 包含 authorization_code 和 refresh_token，scopes_supported 未返回；2026-11-11 T0 重新请求发现端点返回 200、明确支持 refresh_token，但仍缺少 scopes_supported；先前不同执行环境的 403 尚未归因，因此应将发现元数据的稳定可访问性、离线 Scope、实际发放 Token 类型视为待验证，不得将静态字段支持误认成已成功续期。
-5. 仓库共享 packages/portal-auth/src/index.ts 使用 MCP_ACCESS_TOKEN 固定 Bearer 入口鉴权，不提供 ChatGPT 侧 OAuth Server 或 Refresh Token 管理功能。不能通过改动该包来推断修复 ChatGPT 客户端续期。
-6. docs/ingress-policy.md 已约束各 MCP 应用 Access Policy（包括 Browser 专属例外），任何后续调整不能弱化这些现有安全边界。
+- **Q1=A，权限隔离**：每个 ChatGPT 插件独立 Resource/Audience、授权和业务工具边界。某个插件认证成功不代表可以访问其它上游或获得跨服务的管理员权限；不能仅依赖界面显示隐藏工具来假设安全隔离。
+- **Q2=A，第三方首次授权**：可接受第三方 MCP 在首次连接时按需完成一次自己的 OAuth 授权；Clerk 管理客户端到入口的 OAuth，不能替第三方签发上游授权。后续自动刷新取决于各自协议和真实能力，不能保证第三方永久免重登。
+- **Q3=A，分批迁移**：保留现有连接与回退路径；先用 Raindrop、Sentry、Git Guardian 等代表性服务验证通用机制，再逐个迁移。共享实现、版本、配置和安全边界等价时可复用验收，独有的权限及工具调用必须单独验证。
 
-### 官方产品契约（截至 2026-11-11）
+与此前 Spec #853 的长期目标保持一致：CIMD 仅允许已预注册 ChatGPT 客户端、PKCE、明确 Owner、拒绝无效/过期/跨资源 Token、Refresh Token 不进入日志或聊天、不开放匿名 DCR 或 Everyone/Bypass，不向 ChatGPT 下发 Portal 或上游机器凭据。
 
-- Cloudflare Managed OAuth：Access Token 建议 5–15 分钟；Grant session duration 是 Refresh Token 保持有效的期限，官方推荐非浏览器客户端使用 1–2 周。Access Token 到期可刷新并重评 Access Policy，**Grant 到期则必须重新认证**；示例周期不是本项目实际 Grant 配置，也不是已核实的最大值。公开 API schema 的 grant.session_duration 是时长字符串，未在已查字段中声明可以无期限滚动续期。文档：https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/
-- Cloudflare MCP Portals：新的 Portal 默认支持 Managed OAuth，2026-07-28 无状态 MCP 请求关联到用户授权 Grant；旧版客户端还存在 24 小时无活动过期的会话机制，不能混淆。文档：https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/
-- OpenAI 自定义 MCP：连接需要实际取得可持续续期的 Refresh Token；官方要求 OIDC/OAuth 的 discovery 能声明 offline_access 或等价刷新能力，并在必要时重新创建已发现旧元数据的应用。不提供“任意 OAuth 服务必然永久自动刷新”的保证。文档：https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt
-- 以上是官方机制支持边界，不是针对这 11 个 ChatGPT 插件已经完成的成功刷新 E2E 证据。
+## 已核实的实现与生产状态
 
-## 设计约束与不应采用的捷径
+1. Cloudflare 账号现有 **1 个 Portal（mcp.lirtual.dpdns.org）、11 个上游 MCP**；2026-11-14 只读回读全部 Ready、认证类型为 **Bearer** 且挂载均为 **on_behalf=false**。上游包括 Raindrop、Sentry、Git Guardian 等。这是 Portal 的上游配置数量，**不代表 ChatGPT 安装插件数、OAuth Grants 或独立 Client 的数量**。
+2. 当前 Portal 已承担上游 MCP 注册、工具枚举/选择、转发及预置上游凭据管理。Cloudflare 的产品层支持多种上游认证模式（例如 OAuth、Bearer、Custom Headers、None），但上述 **11 个实际生产上游仅有 Bearer 配置证据**；不能把产品支持等同于这些模式已在本项目验收。Portal 是否能够直接验证外部 Clerk OAuth、按每个独立 Resource 安全转发并保持长期客户端 Refresh，**尚未证实**。
+3. 现有 Raindrop Worker 将 Portal Bearer 入口 /mcp 与独立 Clerk 入口 /clerk/mcp 分开。前者仍提供原有 24 个工具；Clerk 入口只提供 collection_list，并强制核验 OAuth token type、Issuer、精确 Owner、Resource Audience、raindrop:read Scope。当前源码的 Clerk 逻辑与 Release Variables **仅为 Raindrop 定制**，不是通用 Gateway。
+4. **Clerk Production 已上线并经过真实业务 E2E**。Issuer 为 https://clerk.lirtual.dpdns.org，唯一预注册的 ChatGPT CIMD Client 经过检查；Raindrop 生产 Worker Version 88c0f704-c889-4808-920e-2142aeefc0e9 已发布 100%。受保护资源元数据、未认证 401 Bearer Challenge、Scope 指引和 HTTPS/PKCE Discovery 通过公网检查。ChatGPT 新插件 Raindrop Clerk 实际调用 collection_list 返回 4 个收藏夹，见 [T25](https://github.com/lirtual/mcp-workers/issues/853#issuecomment-6858294406) 和 [T26](https://github.com/lirtual/mcp-workers/issues/853#issuecomment-6858433695)。
+5. 非生产 Clerk Lab 已捕获真实 ChatGPT Refresh Grant 并验证超过 24 小时的已授权调用；**生产环境短期 Token 到期后的实际自动刷新、真实撤销与非 Owner 拒绝仍 Unknown**。不能因成功登录、Discovery 或单次业务 E2E 将这些项标为 Pass。没有必要人为设置七天等待门禁。
+6. 旧 Portal /mcp、上游 Bearer 凭据、既有 Access Policy 和 ChatGPT 连接目前没有因 Raindrop Clerk 试点迁移或撤销。原版 Worker 保留为受控回退基线。
 
-- 保持 Cloudflare Portal 及当前每个上游的 Access Policy、精确 Owner 访问范围、服务令牌绑定和操作权限。不能为了免登录改为 Everyone、Bypass 或向 ChatGPT 暴露 Cloudflare 服务令牌。
-- 不将上游的固定 MCP_ACCESS_TOKEN 放入 ChatGPT 插件，也不把持久有效的明文静态 Token 当成人类身份认证。
-- 明确区分四个时钟：Access 应用登录会话、OAuth Access Token、OAuth Refresh Token/Grant、MCP 协议会话。问题归因须有实际重连错误或令牌刷新验证。
-- 独立插件意味着独立客户端 OAuth 授权状态，不承诺同一 Portal 浏览器登录就能在 ChatGPT 自动修复所有插件；如需重新创建插件，应按受影响插件逐个确认，但尽可能避免重复迁移。
-- 后备 OAuth 代理如果使用 Portal service-token 凭据，本质上扩大了高权限机器身份，必须先论证完整用户身份验证、作用域、撤销、审计与托管泄露风险，不能把它当成默认轻量方案。
+## 术语与责任边界
 
-## 已确定的最小方案与实施前调查
+- **ChatGPT 插件 / MCP Resource**：用户独立安装的连接及其唯一资源受众。共享域名或 Worker 不能意味着共享工具授权。
+- **客户端授权（Clerk）**：ChatGPT 到受保护 MCP 入口的 OAuth；校验用户、客户端、Issuer、Audience、Scope、状态及必要的撤销结果。
+- **上游 MCP / 上游认证**：入口到具体业务服务的另一条信任关系。Bearer、Headers、None 或 OAuth 由上游约定决定；用户级 OAuth 的 Token 和刷新属于此边界，不能拿 Clerk Token 直接冒充。
+- **路由与工具边界**：入口把一个 Resource 映射到一个明确的上游身份及受许可的工具集。路由表不是权限证明；必须在真正可调用的执行边界禁止越界请求。
+- **凭据作用域**：即使某个机器 Service Token 技术上能调用整个 Portal，也不代表它可安全地给多个资源充当共同的上游管理身份。
 
-1. 仅只读确认实际 Portal 的 OAuth 授权服务元数据可发现性、Grant 配置读取途径、OAuth Token 的签发与刷新能力，区分配置已知、推断和未知；不采集或打印令牌。
-2. 先评估是否只需 Cloudflare 原生 OAuth 的配置调整和 ChatGPT 一次性重新发现，即可在既定安全边界内显著改善使用体验；“两周免登录”不能冒称“长期免计划性重连”。
-3. 对一款低风险独立插件执行代表性 ChatGPT Refresh Token E2E（未来需另行生产授权）。至少覆盖短期 Access Token 过期后的静默刷新、插件仍可用、错误授权与撤销后拒绝；Grant 硬过期应分别模拟/按实际观察，不伪造覆盖证据。
-4. 如果原生方案存在不可消除的定期 Grant 到期，严格目标 Q1=A 需要单独评估自托管长效授权/刷新边界是否值得其维护与安全成本；在完成这种取舍前不实施、不引入新服务。
-5. 验证代表性机制后按独立客户端分批迁移；无证据时不得把 11 个插件的认证状态统一称为 Pass。
+## 候选方案与实施前证据门
 
-## 设计决策树与后置条件
+**优先方案：复用现有 Portal，仅补足 Clerk 客户端 OAuth 与独立资源的安全适配。** 首先只读确认 Cloudflare Portal/Access 的公开契约与当前策略能否接受外部 Clerk 授权、是否能够为每个 MCP 独立约束 Portal 内实际可执行的工具、上游凭据和刷新，不把 Access 登录 IdP 的更换误认为替代 Cloudflare Managed OAuth 的 Grant 生命周期。没有证据前不能称原生 Portal 已支持此方案。
 
-- 本轮已确定 Q1=A、Q2=A、Q3=A、Q4=A；**目前没有必要的新增用户设计决策**。后续事实判断由工程核查完成，不要求用户猜测 OAuth 运行方式。
-- 前置事实门：获取 Cloudflare Access 当前 OAuth Grant 的真实配置/默认值、确认端点对 ChatGPT 可发现、是否签发 Refresh Token、ChatGPT 是否能持续刷新、是否有固定无法延长的到期边界。公开 GET 缺少 oauth_configuration 时不得假定默认值；不得用正常 24h Access session 代替 Grant 证据。
-- 如果原生能够达到 Q1，优先只做最小配置与必要的一次性插件重新发现；不引入独立 OAuth 服务。
-- 如果原生只能将人工重新登录延长到某个固定期限，应明确归类为**体验改善但目标未达成**；再对最小自托管兜底进行单独的安全、复杂度、滥用和维护成本评估。自托管也必须可撤销、最小权限、密钥隔离，不能以永久不失效的静态 Token 代替人类授权，更不能把单个 Portal 管理员 Service Token 直接发给 ChatGPT。
-- 如确需自托管兜底且涉及新增长期身份授权边界，需先提交新的具体风险和折中供用户确认；Q3=A 不意味着不经授权即可部署该方案。
-- 未来实施前决定低风险的代表性插件，先读取/工具列表/安全拒绝验收，不对生产数据或外部服务产生副作用；代表性刷新机制成功后逐插件验收独有连接范围，重复共享机制标记 Waived 而不是 Pass。
+**条件性备选：同仓库的最薄无状态入口 Worker。** 只有现有 Portal 无法满足客户端授权或资源隔离、且确有可验证的安全上游路径时，才考虑一个最小共享适配入口；不重写完整 MCP Portal，也不默认每个 MCP 添加业务代码或独立 Worker。它可以统一验证 Clerk 与分发请求，但**不能**因单一 Portal Service Token 拥有全部上游能力便宣称隔离。若 Portal 无法在上游执行边界限制权限，应寻找按资源隔离的上游凭据/执行边界，或将该上游标记 Blocked；不通过扩大机器权限绕过。
 
-## 非目标和剩余不确定性
+上游认证可在设计上按 OAuth、Bearer、Custom Headers、None 建模，但具体协议处理应优先复用已可靠运行的 Portal 能力。涉及真正用户级上游 OAuth 时，需要额外核实首次 Consent、Refresh Token 归属、安全持有、撤销、受众与跨用户隔离；不能提前假设 Portal 能为任意第三方代理此流程。高风险 Secret、可写工具和跨上游转发需要单独验收。
 
-- 本文并不证明 ChatGPT 对 Cloudflare OAuth 长期续期已经可用，也不保证第三方 OAuth 客户端提供无期限 Refresh Token；最终能力依赖客户端、授权服务器与产品政策共同支持。
-- 暂不为该设计增加 D1/KV/DO/后台定时器、Token 轮换服务、独立网络入口、额外 Access 策略或其他运维组件。
-- 设计阶段不进行改变实际 OAuth Grant 的写操作，也不触碰任何真实 Refresh Token 或登录凭据。
+## 最小验收与迁移顺序（设计，未授权执行）
 
-## 验收与变更边界
+1. **只读事实门**：确认 Portal 的 MCP 服务器/挂载关系、Access Policy、客户端 Grant 行为、是否支持外部 Clerk 入口、服务令牌实际权限、上游工具执行边界；不要读取任何真实 Token 明文。
+2. **非生产证明**：用已存在的 Bearer 上游及独立 MCP Resource 验证未授权访问、跨 Audience/Scope、非 Owner、错误/撤销 Token、跨上游工具调用均 fail-closed；不能由单纯显示工具列表或 Mock 证明真实隔离。对重定向、凭据外传、超时及未知写入结果使用现有 Worker 安全契约。
+3. **生产分批（另行授权）**：完成明确的对象、影响、停止条件与回退预检后，先低风险只读代表性工具，确认真实 ChatGPT 首次授权、工具访问和续期；随后每个上游独立验收专有工具与权限。保留未迁移插件和原 Portal，任何迁移失败先核实副作用再恢复。
+4. **状态分层**：Docs、Code、CI、Clerk、Cloudflare、ChatGPT、业务工具和长期刷新分别标 Pass、Fail、Waived 或 Unknown；真实令牌刷新无证据时不得把“已连接”作为其替代。
 
-- 设计与源代码：此轮仅文档；不修改 Worker、Cloudflare、ChatGPT 插件或任何 OAuth Client/Secret。
-- 任何未来生产改动：须另行明确授权对象、范围、凭据安全性和回退条件。
-- 强制检查：已安装插件不丢失、不越权，Access Policy 无变化，错误令牌拒绝、撤销后拒绝及既有 Access Token 残余窗口须实测，Token 刷新不需要用户操作；只有真实 ChatGPT 调用能证明客户端侧连接是否保留。
-- 无法证实无限期续期时，结论必须明确标记为受 Grant 生命周期限制，而不是宣称永久可用。
+## 下一轮仍需用户决策
 
-## 相关仓库契约
+- **Q4：首次统一接入版本的认证覆盖范围**——只先交付已有真实 Bearer 样本，按明确需求验证和扩展其它模式，还是要求 OAuth/Headers/None 同一阶段全部独立实现？首先核实 Portal 已有的模式，避免重复开发。
+- **Q5：新增 MCP 的操作入口**——配置/现有 Portal 管理能力是否足够，还是要求新增独立管理界面？这直接决定是否产生长期 UI、凭据管理和授权面成本。
 
-- packages/portal-auth/src/index.ts
-- docs/ingress-policy.md
-- CONTEXT-MAP.md
+权限隔离与第三方按需 Consent 已由 Q1/Q2 决定；不再拿“允许单个 Gateway 共用所有上游高权限 Token”重复作为开放选项。是否新增 Worker、如何安全管理上游 OAuth 凭据和哪个功能需要单独 E2E，须先有当前 Portal 能力及真实协议证据，再按这些决策推进。**目前无新的生产实施授权。**
+
+## 相关证据
+
+- [Spec #853 及 T17–T26 验收记录](https://github.com/lirtual/mcp-workers/issues/853)
+- [Raindrop Worker 的当前实现](../apps/raindrop-mcp-worker/src/clerk-pilot-auth.ts)
+- [Cloudflare MCP Portals 文档](https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/)
+- [Cloudflare Managed OAuth 文档](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)
+- [ChatGPT 自定义 MCP 连接文档](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)
