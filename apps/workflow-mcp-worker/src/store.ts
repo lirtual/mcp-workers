@@ -14,7 +14,8 @@ import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSess
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { currentExecutorRepository } from './github-action-catalog.ts';
 import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
-import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString } from './plan.ts';
+import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString, isAuxiliaryBarkPair, validateStaticOutputReferences } from './plan.ts';
+import {settleVerifiedAuxiliaryBusiness} from './auxiliary-bark-recovery.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
@@ -242,6 +243,11 @@ export class WorkflowService {
           expected.type==='session'&&isSessionDurationInputRef(given.duration_minutes)?
             {...given,duration_minutes:300}:given;
         await assertReviewedGitHubAction(expected,candidate,this.env.WORKFLOW_GITHUB_ACTION_IDENTITY,validated);
+        if(!isDynamic){
+          // Only a source re-fetched at the reviewed GitHub SHA supplies output fields.
+          plan.github_dynamic_input_contracts??={};
+          plan.github_dynamic_input_contracts[step.id]=candidate.contract;
+        }
         if(isDynamic){
           const controller=plan.steps[Number(path.split('/')[2])];
           if(!controller||controller.uses!=='flow.foreach'||candidate.contract.type!=='task')
@@ -264,6 +270,8 @@ export class WorkflowService {
       }
       approved.push(await reviewedGitHubAction(candidate));
     }
+    await validateStaticOutputReferences(plan.steps,plan.cloudflare_action_contracts,
+      plan.github_dynamic_input_contracts);
     return approved;
   }
   private async checkedChildWorkflows(plan:Plan,parentId?:string){
@@ -286,6 +294,7 @@ export class WorkflowService {
     // evidence, a child must not launch a GitHub Task or Session whose
     // physical lifecycle might outlast the child Workflow.
     if(childPlan.steps.some(s=>s.uses==='github.run'||s.uses==='http.request'||
+      (s.uses==='action.run'&&['envshare','litterbox'].includes(String(s.with.provider)))||
       (s.uses==='flow.foreach'&&
         (Array.isArray(s.with.templates)?s.with.templates:[s.with.template])
           .some((x:unknown)=>x!==null&&typeof x==='object'&&
@@ -439,7 +448,7 @@ export class WorkflowService {
     // Publishing an arbitrary Draft is not itself an external-operation grant.
     const required=[...new Map(approvedMcpSteps(plan).map(s=>{
       const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
-        scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
+scope:s.with.scope as 'read'|'write',schema_digest:s.with.schema_digest as string};
       return [JSON.stringify(grant),grant] as const;
     })).values()].sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
     const provided=approved_operations.slice().sort((a,b)=>JSON.stringify(a)<JSON.stringify(b)?-1:JSON.stringify(a)>JSON.stringify(b)?1:0);
@@ -447,7 +456,7 @@ export class WorkflowService {
     const hasMcpWrite=required.some(g=>g.scope==='write');
     if(hasMcpWrite!==approve_mcp_write_execution)
       throw new StateError('mcp_write_approval_required');
-    if(required.length){
+if(required.length){
       const portal=this.env.WORKFLOW_MCP_PORTAL_ENDPOINT;
       if(portal===undefined)throw new StateError('portal_target_not_configured');
       if(portal!==PRODUCTION_PORTAL_ENDPOINT ||
@@ -460,29 +469,27 @@ export class WorkflowService {
     const portalConnection=required.length?await portalAuthorization(this.db):null;
     if(portalConnection&&portalConnection.state!=='enabled')
       throw new StateError('portal_connection_revoked');
-    const hasCloudflare=plan.steps.some(s=>s.uses==='action.run');
+    const cloudflareSteps=plan.steps.filter(s=>s.uses==='action.run');
+    const hasCloudflare=cloudflareSteps.length>0;
     let cloudflareGrants:typeof approved_cloudflare_actions=[];
-    if(hasCloudflare){
-      const step=plan.steps.find(s=>s.uses==='action.run')!;
-      const bark=step.with.provider==='bark';
+    if(cloudflareSteps.length){
       const provider=this.env.ACTIONS;
       if(!provider)throw new StateError('cloudflare_provider_not_configured');
-      const contract=(plan.cloudflare_action_contracts?.[step.id]??await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
-      // Owner identity and a valid Provider Contract are not an independent
-      // grant for new high-risk effects. Normal public Publish only accepts
-      // source-reviewed auto-grantable effects; the existing exact manual
-      // Cloudflare grant path stays available for separately authorized work.
-      if(selfApproved&&needsExplicitCloudflareEffectGrant(contract))
-        throw new StateError('cloudflare_action_explicit_authorization_required');
-      // A staged Version ID is not proof of the bound Worker's version.
-      let live;
-      try{live=await provider.getContract(contract.action,contract.contract_digest);}
-      catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
-      const deployment=reviewedActionDeployment(live,contract.contract_digest);
-      if(!deployment)throw new StateError('cloudflare_provider_identity_mismatch');
-      cloudflareGrants=[{executor:'cloudflare',provider:contract.provider,
-        action:contract.action,contract_digest:contract.contract_digest,
-        deployment_id:deployment}];
+      cloudflareGrants=await Promise.all(cloudflareSteps.map(async step=>{
+        const bark=step.with.provider==='bark';
+        const contract=(plan.cloudflare_action_contracts?.[step.id]??await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
+        // Each business effect and the optional Bark has its own reviewed grant.
+        if(selfApproved&&needsExplicitCloudflareEffectGrant(contract))
+          throw new StateError('cloudflare_action_explicit_authorization_required');
+        let live;
+        try{live=await provider.getContract(contract.action,contract.contract_digest);}
+        catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
+        const deployment=reviewedActionDeployment(live,contract.contract_digest);
+        if(!deployment)throw new StateError('cloudflare_provider_identity_mismatch');
+        return {executor:'cloudflare' as const,provider:contract.provider as string,
+          action:contract.action as string,contract_digest:contract.contract_digest as string,
+          deployment_id:deployment};
+      }));
       if(selfApproved){
         approve_cloudflare_execution=true;
         approved_cloudflare_actions=cloudflareGrants;
@@ -891,7 +898,7 @@ export class WorkflowService {
     // Caller assertion is not an internal trigger identity. Check it before
     // replay, ephemeral secret generation or any Run reservation.
     if(expected_published_version_id){
-      assertId(expected_published_version_id);
+assertId(expected_published_version_id);
       const current=await this.row(workflow_id);
       if(current.active_version_id!==expected_published_version_id)
         throw new StateError('published_version_changed');
@@ -899,7 +906,7 @@ export class WorkflowService {
     if(idempotency_key!==undefined&&(idempotency_key.length>128||!safeId(idempotency_key)))throw new StateError('invalid_idempotency_key');
     // The platform's minute identity cannot be impersonated by manual callers.
     if((idempotency_key?.startsWith('cron-')||idempotency_key?.startsWith('webhook-')||idempotency_key?.startsWith('github-event-'))&&!expected_version_id)
-      throw new StateError('reserved_idempotency_key');
+throw new StateError('reserved_idempotency_key');
     let inputJson=json(inputs);
     let request_digest=await digest(canonicalJsonString(inputs));
     // An accepted admission keeps its pinned version across republish/pause.
@@ -987,10 +994,10 @@ export class WorkflowService {
     // Secret never reaches durable D1 inputs, Action outputs or ordinary result.
     // Litterbox bytes and signed file locator are never durable Run inputs.
     // Only workflow_run with an explicitly selected file may start this Plan.
-    const isLitterbox=activePlan.steps.length===1&&
-      activePlan.steps[0]?.uses==='action.run'&&
+    const isLitterbox=activePlan.steps[0]?.uses==='action.run'&&
       activePlan.steps[0].with.provider==='litterbox'&&
-      activePlan.steps[0].with.action==='litterbox.upload_file';
+      activePlan.steps[0].with.action==='litterbox.upload_file'&&
+      (activePlan.steps.length===1||isAuxiliaryBarkPair(activePlan.steps));
     if(isLitterbox!==allowTransientFile)throw new StateError('litterbox_file_tool_required');
     if(isLitterbox&&(!idempotency_key||expected_version_id||
       activePlan.cloudflare_execution_approved!==true||activePlan.triggers?.length))
@@ -1105,6 +1112,19 @@ export class WorkflowService {
   }
   private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
     if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
+    // The native engine may have stopped after the proven business effect but
+    // before Bark completed. Only an exact, still-immutable source receipt can
+    // repair this parent; never re-run the physical effect or the notification.
+    if(['complete','errored','terminated'].includes(native)&&row.outcome==='running'){
+      try{
+        const published=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+          .bind(row.version_id).first<{plan:string}>();
+        if(published&&await settleVerifiedAuxiliaryBusiness(this.db,
+          JSON.parse(published.plan) as Plan,row.id))
+          return (await this.db.prepare('SELECT * FROM runs WHERE id=?')
+            .bind(row.id).first<RunRow>())!;
+      }catch{/* Missing proof retains existing indeterminate behavior. */}
+    }
     const terminalError=unresolvedNativeTerminalError(native,row.outcome);
     if(terminalError){
       await this.db.prepare("UPDATE runs SET outcome='indeterminate',error_code=?,updated_at=? WHERE id=? AND outcome IN ('queued','running')")

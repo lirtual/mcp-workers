@@ -1,6 +1,6 @@
 import type {Env} from './store.ts';
-import type {Plan,Step} from './plan.ts';
-import {reviewedActionDeployment,canonical,cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
+import {isAuxiliaryBarkPair,type Plan,type Step} from './plan.ts';
+import {reviewedActionDeployment,canonical,cloudflareActionManifest,TRUSTED_BARK_SESSION_WORKFLOW_PATHS} from './cloudflare-action-contract.ts';
 import {evaluateArguments} from './plan.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
@@ -17,6 +17,9 @@ const NOTIFICATION_PATHS=new Set([
  '.github/workflows/chrome.yml',
  '.github/workflows/openlist.yml',
  '.github/workflows/download.yml',
+ '.github/workflows/ubuntu.yml',
+ '.github/workflows/windows.yml',
+ '.github/workflows/code-server.yml',
 ]);
 const trustedNotificationIdentity=(pinned:unknown,plan:Plan):boolean=>{
  if(!pinned||typeof pinned!=='object'||Array.isArray(pinned))return false;
@@ -78,7 +81,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
   if(downloadId!==undefined){
    const upstream=plan.steps.find(x=>x.id===downloadId);
    const template=upstream?.with.template as {id?:unknown;uses?:unknown;with?:{action?:unknown}}|undefined;
-   const pinned=template?.with?.action as {repository?:unknown;repositoryId?:unknown;workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+   const pinned=template?.with?.action as {repository?:unknown;repositoryId?:unknown;workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown;inputs?:unknown}|undefined;
    if(!isCurrentWorkflowGitHubAction(readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY),pinned as {repository:unknown;repositoryId:unknown}|undefined))
      return deny('github_action_executor_changed');
    const dynamicMain=typeof pinned?.ref==='string'&&
@@ -87,7 +90,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       ctx?.steps[downloadId]?.status!=='succeeded'||upstream?.uses!=='flow.foreach'||
       upstream.with.max_items!==1||template?.uses!=='github.run'||typeof template.id!=='string'||
       !isWellFormedWorkflowGitHubRepository(pinned?.repository)||pinned.workflowPath!=='.github/workflows/download.yml'||
-      (dynamicMain&&(!trustedNotificationIdentity(pinned,plan)||plan.name!=='download'))||
+      (dynamicMain&&(!trustedNotificationIdentity(pinned,plan)||!['download','offline-download'].includes(plan.name)))||
       pinned.type!=='task'||typeof pinned.ref!=='string'||
       (!/^refs\/tags\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pinned.ref)&&!dynamicMain)||
       typeof pinned.commitSha!=='string'||!/^[a-f0-9]{40}$/.test(pinned.commitSha))
@@ -112,12 +115,75 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
    if(!proof)return deny('download_completion_unverified');
    download={attempt_id:proof.attempt_id,workflow_ref:workflowRef,child_id:childId,repository:pinned.repository};
   }
-  let ready:{attempt_id:string;session_url:string;repository:string;workflow_ref:string}|undefined;
+  // The optional manual business -> Bark pair may consume only a durable,
+  // independently granted Provider receipt from the same Run. Never use a
+  // caller-provided output object or EnvShare secret as notification content.
+  let paired:{sourceId:string;invocationId:string;contractDigest:string;
+    title:string;body:string;url?:string}|undefined;
+  if(isAuxiliaryBarkPair(plan.steps)&&plan.steps[1]?.id===action.id){
+   const business=plan.steps[0]!;
+   const kind=business.with.provider as 'dub'|'envshare'|'litterbox';
+   const contract=await cloudflareActionManifest(kind);
+   if(business.with.contract_digest!==contract.contract_digest||
+      !plan.cloudflare_action_approvals?.some(g=>g.provider===kind&&
+        g.action===contract.action&&g.contract_digest===contract.contract_digest))
+     return deny('untrusted_business_reference');
+   const source=await db.prepare(`SELECT s.status,s.output,i.invocation_id,i.contract_digest
+     FROM run_steps s JOIN cloudflare_action_invocations i
+      ON s.run_id=i.run_id AND s.step_id=i.step_id
+     WHERE s.run_id=? AND s.step_id=?`)
+     .bind(runId,business.id).first<{status:string;output:string|null;
+       invocation_id:string;contract_digest:string}>();
+   if(source?.status!=='succeeded'||source.contract_digest!==contract.contract_digest||
+      !source.output)return deny('untrusted_business_reference');
+   let value:Record<string,unknown>;
+   try{
+    const parsed=JSON.parse(source.output) as unknown;
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw Error('invalid');
+    value=parsed as Record<string,unknown>;
+   }catch{return deny('untrusted_business_result');}
+   if(value.status!=='accepted')return deny('untrusted_business_result');
+   const inputsRow=await db.prepare('SELECT inputs FROM runs WHERE id=?')
+     .bind(runId).first<{inputs:string}>();
+   let inputs:Record<string,unknown>={};
+   try{
+    const data=JSON.parse(inputsRow?.inputs??'{}') as unknown;
+    if(data&&typeof data==='object'&&!Array.isArray(data))inputs=data as Record<string,unknown>;
+   }catch{return deny('untrusted_business_result');}
+   let details:{title:string;body:string;url?:string};
+   if(kind==='dub'){
+    if(typeof value.short_link!=='string'||
+      !/^https:\/\/dub\.sh\/[A-Za-z0-9_-]{3,64}$/.test(value.short_link))
+      return deny('untrusted_business_result');
+    details={title:'Short link created',body:'Short link created successfully',url:value.short_link};
+   }else if(kind==='litterbox'){
+    if(typeof value.download_url!=='string'||value.download_url.length>512||
+       !/^https:\/\/(?:litterbox|litter)\.catbox\.moe\/[A-Za-z0-9._%/-]+$/.test(value.download_url)||
+       typeof inputs.time!=='string'||!['1h','12h','24h','72h'].includes(inputs.time))
+      return deny('untrusted_business_result');
+    details={title:'Temporary file uploaded',body:'File is available for '+inputs.time,
+      url:value.download_url};
+   }else{
+    if(typeof value.share_id!=='string'||!/^[1-9A-HJ-NP-Za-km-z]{16,32}$/.test(value.share_id)||
+       !Number.isSafeInteger(inputs.ttl)||!Number.isSafeInteger(inputs.reads)||
+       Number(inputs.ttl)<60||Number(inputs.ttl)>604800||
+       Number(inputs.reads)<1||Number(inputs.reads)>10)
+      return deny('untrusted_business_result');
+    details={title:'Secure share created',
+      body:'Encrypted share created (TTL '+inputs.ttl+'s, max reads '+inputs.reads+'). Retrieve its link with the one-time delivery key.'};
+   }
+   paired={sourceId:business.id,invocationId:source.invocation_id,
+     contractDigest:contract.contract_digest,...details};
+  }
+  let ready:{attempt_id:string;session_url:string|null;repository:string;workflow_ref:string;
+    candidate_run_id:number|null;candidate_run_attempt:number|null}|undefined;
+  let tailnet:{hostname:string;githubRunId:number}|undefined;
+  let codeServerReady=false;
   let trustedWorkflowRef:string|undefined;
   if(sourceId!==undefined){
    const source=plan.steps.find(x=>x.id===sourceId);
    const pinned=source?.with.action as {repository?:unknown;repositoryId?:unknown;
-     workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown}|undefined;
+     workflowId?:unknown;workflowPath?:unknown;type?:unknown;ref?:unknown;commitSha?:unknown;inputs?:unknown}|undefined;
    if(!isCurrentWorkflowGitHubAction(readWorkflowGitHubExecutor(env.WORKFLOW_GITHUB_ACTION_IDENTITY),pinned as {repository:unknown;repositoryId:unknown}|undefined))
      return deny('github_action_executor_changed');
    // Keep immutable Tag grants, and allow only the five existing reviewed
@@ -132,11 +198,19 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       source?.uses!=='github.run'||!isWellFormedWorkflowGitHubRepository(pinned?.repository)||
       (pinned?.ref==='refs/heads/main'&&(!trustedNotificationIdentity(pinned,plan)||
        plan.name!==String(pinned.workflowPath).split('/').at(-1)?.replace(/\.ya?ml$/,'')))||
-      (typeof pinned.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath))||pinned.type!=='session'||
+      (typeof pinned.workflowPath!=='string'||!TRUSTED_BARK_SESSION_WORKFLOW_PATHS.has(pinned.workflowPath))||pinned.type!=='session'||
       !trustedRef)
     return deny('untrusted_session_reference');
+   const cli=pinned.workflowPath==='.github/workflows/ubuntu.yml'||
+     pinned.workflowPath==='.github/workflows/windows.yml';
+   const webCode=pinned.workflowPath==='.github/workflows/code-server.yml';
+   if((cli||webCode)&&(
+      !isDynamicMainAction(pinned as Parameters<typeof isDynamicMainAction>[0],String(pinned.ref),plan.name)||
+      plan.github_dynamic_input_contracts?.[sourceId]?.outputKind!==(cli?'tailnet':'web')))
+     return deny('untrusted_session_reference');
    trustedWorkflowRef=pinned.repository+'/'+pinned.workflowPath+'@'+pinned.ref;
-   const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref
+   const current=await db.prepare(`SELECT a.attempt_id,s.session_url,a.repository,a.workflow_ref,
+      a.candidate_run_id,a.candidate_run_attempt
      FROM session_executions s JOIN step_attempts a
      ON a.run_id=s.run_id AND a.step_id=s.step_id
      WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
@@ -147,13 +221,27 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
         WHERE c.attempt_id=a.attempt_id)`)
     .bind(runId,sourceId).first<typeof ready>();
    const raw=current?.session_url;
-   if(!current||typeof raw!=='string'||raw.length>180||
-      !/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/.test(raw)||
-      current.repository!==pinned.repository||current.workflow_ref!==trustedWorkflowRef)
+   if(!current||current.repository!==pinned.repository||
+      current.workflow_ref!==trustedWorkflowRef)
     return deny('session_ready_not_trusted');
-   const canonical=new URL(raw).href;
-   if(canonical!==raw&&canonical!==raw+'/')
-    return deny('session_ready_not_trusted');
+   if(cli){
+    const inputs=pinned.inputs&&typeof pinned.inputs==='object'&&!Array.isArray(pinned.inputs)
+      ?pinned.inputs as Record<string,unknown>:null;
+    const run=current.candidate_run_id,attempt=current.candidate_run_attempt;
+    if(raw!==null||!inputs||!['fixed','temporary'].includes(String(inputs.session_mode))||
+       !Number.isSafeInteger(run)||!Number.isSafeInteger(attempt)||
+       (run??0)<1||(attempt??0)<1)return deny('session_ready_not_trusted');
+    const fixed=pinned.workflowPath==='.github/workflows/ubuntu.yml'?'session-ubuntu':'session-windows';
+    tailnet={hostname:inputs.session_mode==='fixed'?fixed:'sa-'+run+'-a'+attempt,githubRunId:run!};
+   }else{
+    if(typeof raw!=='string'||raw.length>180||
+       !/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/.test(raw))
+      return deny('session_ready_not_trusted');
+    const canonical=new URL(raw).href;
+    if(canonical!==raw&&canonical!==raw+'/')
+      return deny('session_ready_not_trusted');
+    codeServerReady=webCode;
+   }
    if(!env.WORKFLOW_GITHUB_DISPATCH_TOKEN)return deny('session_physical_unconfirmed');
    let live;
    try{live=await inspect(db,current.attempt_id,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);}
@@ -173,7 +261,29 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
     throw Error('untrusted_download_notification');
    if(ready){
     if(Object.hasOwn(values,'url'))throw Error('untrusted_session_url');
-    values.url=new URL(ready.session_url).href;
+    if(tailnet){
+      if(Object.keys(values).length!==1||values.body!=='Completed')
+        throw Error('untrusted_tailnet_notification');
+      values.title=tailnet.hostname==='session-windows'||
+        String(tailnet.hostname).startsWith('sa-')&&plan.name==='windows'
+        ?'Windows Session ready':'Ubuntu Session ready';
+      values.body='Private hostname: '+tailnet.hostname+'; GitHub Run ID: '+tailnet.githubRunId;
+    }else{
+      values.url=new URL(ready.session_url!).href;
+      if(codeServerReady){
+        if(Object.keys(values).length!==2||values.body!=='Completed')
+          throw Error('untrusted_code_server_notification');
+        values.title='Code-server ready';
+        values.body='Temporary access link is ready';
+      }
+    }
+   }
+   if(paired){
+    if(Object.keys(values).length!==1||values.body!=='Completed')
+      throw Error('untrusted_paired_notification');
+    values.title=paired.title;
+    values.body=paired.body;
+    if(paired.url)values.url=paired.url;
    }
    if(typeof values.body!=='string')values.body=normalize(values.body);
    if(Object.keys(values).some(k=>!Object.hasOwn(manifest.input_schema.properties,k)))
@@ -197,7 +307,7 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       SELECT 1 FROM session_executions s JOIN step_attempts a
        ON a.run_id=s.run_id AND a.step_id=s.step_id
       WHERE s.run_id=? AND s.step_id=? AND s.state='ready'
-       AND s.session_url=? AND a.attempt_id=? AND a.state='claimed'
+       AND ${tailnet?'s.session_url IS NULL':'s.session_url=?'} AND a.attempt_id=? AND a.state='claimed'
        AND a.capability_id='github.action'
        AND a.repository=? AND a.workflow_ref=?
        AND a.owner_run_id=a.candidate_run_id
@@ -215,6 +325,13 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       AND a.owner_run_id=a.candidate_run_id
       AND a.owner_run_attempt=a.candidate_run_attempt
       AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id))`:'';
+  // Recheck the original successful Provider reservation atomically with
+  // the Bark reservation; no duplicate sends after an unknown ACK.
+  const pairedFence=paired?`AND EXISTS(
+    SELECT 1 FROM run_steps s JOIN cloudflare_action_invocations i
+     ON i.run_id=s.run_id AND i.step_id=s.step_id
+    WHERE s.run_id=? AND s.step_id=? AND s.status='succeeded'
+      AND i.invocation_id=? AND i.contract_digest=?)`:'';
   const fence=await db.prepare(`INSERT OR IGNORE INTO cloudflare_action_invocations
     (run_id,step_id,invocation_id,source_attempt_id,input_digest,
      binding_generation,contract_digest,deployment_id,created_at)
@@ -222,12 +339,14 @@ export async function runBarkAction(env:Env,plan:Plan,action:Step,runId:string,
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
     ${sourceFence}
     ${downloadFence}
+    ${pairedFence}
     AND EXISTS(SELECT 1 FROM cloudflare_action_gate WHERE id=1 AND state='open')
     AND NOT EXISTS(SELECT 1 FROM cloudflare_action_cancellations c
       WHERE c.run_id=? AND c.step_id=?)`)
-    .bind(runId,action.id,id,ready?.attempt_id??download?.attempt_id??id,inputDigest,manifest.contract_digest,version,
-      Date.now(),runId,...(ready?[runId,sourceId,ready.session_url,ready.attempt_id,ready.repository,trustedWorkflowRef]:[]),
+    .bind(runId,action.id,id,ready?.attempt_id??download?.attempt_id??paired?.invocationId??id,inputDigest,manifest.contract_digest,version,
+      Date.now(),runId,...(ready?[runId,sourceId,...(tailnet?[]:[ready.session_url]),ready.attempt_id,ready.repository,trustedWorkflowRef]:[]),
       ...(download?[downloadId,runId,download.child_id,download.attempt_id,download.repository,download.workflow_ref]:[]),
+      ...(paired?[runId,paired.sourceId,paired.invocationId,paired.contractDigest]:[]),
       runId,action.id).run();
   if(fence.meta.changes!==1){
    return await existing()?unknown('bark_receipt_unavailable'):deny('cloudflare_dispatch_not_admitted');

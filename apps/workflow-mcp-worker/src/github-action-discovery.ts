@@ -21,6 +21,17 @@ type Http = (request: Request) => Promise<Response>;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA = /^[a-f0-9]{40}$/i;
 const WORKFLOW = /^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/;
+const REVIEWED_OUTPUT_PATHS:Record<string,'tailnet'|'web'|'none'>={
+ '.github/workflows/ubuntu.yml':'tailnet',
+ '.github/workflows/windows.yml':'tailnet',
+ '.github/workflows/code-server.yml':'web',
+ '.github/workflows/chrome.yml':'web',
+ '.github/workflows/openlist.yml':'web',
+ '.github/workflows/download.yml':'none',
+};
+export function reviewedGitHubOutputSource(path:string,contract:DiscoveredAction):boolean{
+ return contract.outputKind===undefined||REVIEWED_OUTPUT_PATHS[path]===contract.outputKind;
+}
 const api = 'https://api.github.com';
 const headers = (token: string) => ({
   accept: 'application/vnd.github+json',
@@ -60,8 +71,10 @@ async function readWorkflow(
     yaml = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch { reject('invalid_contents'); }
   try {
+    const contract=parseGitHubAction(yaml!);
+    if(!reviewedGitHubOutputSource(path,contract))return undefined;
     return { repository: grant.repository, repositoryId: grant.repositoryId,
-      commitSha, workflowPath: path, workflowId: id, contract: parseGitHubAction(yaml!) };
+      commitSha, workflowPath: path, workflowId: id, contract };
   } catch {
     return undefined;
   }

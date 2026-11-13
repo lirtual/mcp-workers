@@ -131,6 +131,55 @@ test('one real native Run and D1 fence, one private RPC, no signed URL or bytes 
  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM runs').get()!.n,1);
 });
 
+test('paired Litterbox upload accepts only independently reviewed Bark grant and keeps file private',async t=>{
+ const m=await cloudflareActionManifest('bark');
+ const f=fixture(t);const original=await f.publish();
+ const plan:Plan={...original,steps:[...original.steps,{
+  id:'notify',uses:'action.run',needs:['upload'],with:{
+   executor:'cloudflare',provider:'bark',action:m.action,
+   contract_digest:m.contract_digest,input:{notification:{body:'Completed'}},
+  },
+ }],cloudflare_action_approvals:[...original.cloudflare_action_approvals!,{
+  executor:'cloudflare',provider:'bark',action:m.action,
+  contract_digest:m.contract_digest,deployment_id:VERSION,
+ }]};
+ f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(plan),VERSION);
+ const result=await startLitterboxUpload(f.env,{workflow_id:WF,file,idempotency_key:'paired-file01'});
+ assert.equal(result.status,'succeeded');
+ assert.equal(f.audit.posts,1);
+ assert.equal(f.audit.reads,1);
+ assert.equal(f.audit.nativeStarts,1);
+ const source=f.db.prepare('SELECT inputs FROM runs WHERE id=?').get(result.run_id) as {inputs:string};
+ assert(!source.inputs.includes(file.download_url));
+ assert(!source.inputs.includes(text));
+ assert.equal(JSON.parse(source.inputs).time,'24h');
+});
+
+test('Litterbox paired Plan denies forged Bark grant before any file read or Provider POST',async t=>{
+ for(const variation of ['missing','mismatch','extra'] as const){
+  await t.test(variation,async sub=>{
+   const m=await cloudflareActionManifest('bark');
+   const f=fixture(sub);const original=await f.publish();
+   const bark={executor:'cloudflare' as const,provider:'bark',action:m.action,
+    contract_digest:variation==='mismatch'?'bad':m.contract_digest,deployment_id:VERSION};
+   const plan:Plan={...original,steps:[...original.steps,{
+    id:'notify',uses:'action.run',needs:['upload'],with:{executor:'cloudflare',
+     provider:'bark',action:m.action,contract_digest:m.contract_digest,
+     input:{notification:{body:'Completed'}}},
+   }],cloudflare_action_approvals:[...original.cloudflare_action_approvals!,
+     ...(variation==='missing'?[]:[bark]),
+     ...(variation==='extra'?[{...bark,action:'unexpected'}]:[])]};
+   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(plan),VERSION);
+   await assert.rejects(()=>startLitterboxUpload(f.env,{workflow_id:WF,file,
+     idempotency_key:'invalid-pair01'}),/litterbox_approval_required/);
+   assert.equal(f.audit.reads,0);
+   assert.equal(f.audit.posts,0);
+   assert.equal(f.audit.nativeStarts,0);
+  });
+ }
+});
+
 test('stale explicit Published Version cannot read or disclose a selected file',async t=>{
  const f=fixture(t);await f.publish();
  await assert.rejects(()=>startLitterboxUpload(f.env,{

@@ -5,6 +5,13 @@ export const TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS = new Set([
  '.github/workflows/openlist.yml',
  '.github/workflows/chrome.yml',
 ]);
+// New Bark-only sources; do not expand the historical Weixin allowlist.
+export const TRUSTED_BARK_SESSION_WORKFLOW_PATHS = new Set([
+ ...TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS,
+ '.github/workflows/code-server.yml',
+ '.github/workflows/ubuntu.yml',
+ '.github/workflows/windows.yml',
+]);
 // Historical identity predicate: preserve immutable Plan/Run bytes, but never
 // allow an old or compatibility-spelled Weixin action to gain new execution.
 export function isRetiredWeixinAction(step:unknown):boolean{

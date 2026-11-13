@@ -12,8 +12,20 @@ export type DiscoveredAction = {
   type: 'task' | 'session';
   inputs: Record<string, ActionInput>;
   publicMain?: boolean;
+  outputKind?: 'tailnet'|'web'|'none';
+  outputSchema?: Record<string,unknown>;
 };
 
+const outputLeaf=(type:string)=>({type});
+const sessionOutput=(properties:Record<string,unknown>)=>({
+ type:'object',additionalProperties:false,required:['session'],properties:{
+  session:{type:'object',additionalProperties:false,required:Object.keys(properties),properties},
+ },
+});
+const REVIEWED_OUTPUTS={
+ tailnet:sessionOutput({recorded_state:outputLeaf('string'),private_hostname:outputLeaf('string'),github_run_id:outputLeaf('number')}),
+ web:sessionOutput({recorded_state:outputLeaf('string'),session_url:outputLeaf('string')}),
+} as const;
 const RESERVED = new Set(['attempt_id', 'dispatch_id', 'capability_id']);
 const allowedTypes = new Set(['string', 'choice', 'boolean', 'number']);
 const own = (value: unknown, key: string): unknown =>
@@ -35,6 +47,11 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
   const env = root.env;
   if (!record(env) || !literal(env.WORKFLOW_ACTION_TYPE) ||
       !['task', 'session'].includes(env.WORKFLOW_ACTION_TYPE)) fail('invalid_type');
+  const kind=env.WORKFLOW_ACTION_OUTPUT_KIND;
+  if(kind!==undefined&&(!literal(kind)||!['tailnet','web','none'].includes(kind)||
+      (env.WORKFLOW_ACTION_TYPE==='task'&&kind!=='none')||
+      (env.WORKFLOW_ACTION_TYPE==='session'&&kind==='none')))
+    fail('invalid_output_declaration');
   if (env.WORKFLOW_ACTION_PUBLIC !== undefined && env.WORKFLOW_ACTION_PUBLIC !== 'true')
     fail('invalid_public_declaration');
   if (!record(root.on) || !record(root.on.workflow_dispatch)) fail('missing_dispatch');
@@ -44,13 +61,15 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
   if (!record(root.jobs) || Object.keys(root.jobs).length === 0) fail('missing_jobs');
   for (const job of Object.values(root.jobs)) {
     if (!record(job)) fail('invalid_job');
-    if (own(job.env, 'WORKFLOW_ACTION_PUBLIC') !== undefined ||
+    if (own(job.env, 'WORKFLOW_ACTION_OUTPUT_KIND') !== undefined ||
+        own(job.env, 'WORKFLOW_ACTION_PUBLIC') !== undefined ||
         own(job.env, 'WORKFLOW_ACTION_TYPE') !== undefined ||
         (record(job.steps) && own(job.steps, 'WORKFLOW_ACTION_TYPE') !== undefined)) fail('shadowed_type');
     if (Array.isArray(job.steps)) {
       for (const step of job.steps) {
         if (own(own(step, 'env'), 'WORKFLOW_ACTION_TYPE') !== undefined ||
-            own(own(step, 'env'), 'WORKFLOW_ACTION_PUBLIC') !== undefined) fail('shadowed_type');
+            own(own(step, 'env'), 'WORKFLOW_ACTION_PUBLIC') !== undefined ||
+            own(own(step, 'env'), 'WORKFLOW_ACTION_OUTPUT_KIND') !== undefined) fail('shadowed_type');
       }
     }
   }
@@ -114,5 +133,7 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
       fail('invalid_session_duration');
   }
   return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs,
-    publicMain: env.WORKFLOW_ACTION_PUBLIC === 'true' };
+    publicMain: env.WORKFLOW_ACTION_PUBLIC === 'true',
+    ...(kind===undefined?{}:{outputKind:kind as 'tailnet'|'web'|'none'}),
+    ...(kind==='tailnet'||kind==='web'?{outputSchema:REVIEWED_OUTPUTS[kind]}:{}) };
 }

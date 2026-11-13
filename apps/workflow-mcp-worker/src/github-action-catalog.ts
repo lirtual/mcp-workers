@@ -18,7 +18,9 @@ type Http=(request:Request)=>Promise<Response>;
 async function describeSource(source:GitHubActionSource) {
   const reviewed=await reviewedGitHubAction(source);
   return {...reviewed,name:source.contract.name,inputs:source.contract.inputs,
-    output_schema_status:'not_declared' as const,
+    output_schema_status:source.contract.outputSchema?'declared' as const:
+      source.contract.outputKind==='none'?'none' as const:'not_declared' as const,
+    ...(source.contract.outputSchema?{output_schema:source.contract.outputSchema}:{}),
     ref:DYNAMIC_MAIN_REF,can_publish:true as const,
     availability:'publishable_after_owner_approval' as const};
 }

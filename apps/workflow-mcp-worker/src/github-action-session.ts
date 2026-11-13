@@ -330,14 +330,35 @@ export async function runPublishedGitHubActionSession(
   .bind(Date.now(),runId,stepPlan.id).run();
 
  for(let i=0;i<30;i++){
-  const snapshot=await db.prepare(`SELECT s.state,a.state AS attempt_state
+  const snapshot=await db.prepare(`SELECT s.state,s.session_url,a.state AS attempt_state,
+      a.candidate_run_id,a.candidate_run_attempt
     FROM session_executions s JOIN step_attempts a
     ON a.run_id=s.run_id AND a.step_id=s.step_id
     WHERE s.run_id=? AND s.step_id=? AND a.attempt_id=?`)
     .bind(runId,stepPlan.id,attemptId)
-    .first<{state:string;attempt_state:string}>();
-  if(snapshot?.state==='ready'&&snapshot.attempt_state==='claimed')
-   return {status:'succeeded',output:{session:{recorded_state:'ready'}}};
+    .first<{state:string;attempt_state:string;session_url:string|null;
+      candidate_run_id:number|null;candidate_run_attempt:number|null}>();
+  if(snapshot?.state==='ready'&&snapshot.attempt_state==='claimed'){
+   const kind=plan.github_dynamic_input_contracts?.[stepPlan.id]?.outputKind;
+   const session={recorded_state:'ready'} as Record<string,unknown>;
+   if(kind==='web'){
+    if(typeof snapshot.session_url!=='string'||!TUNNEL_URL.test(snapshot.session_url))
+      return {status:'indeterminate',error_code:'github_session_output_unverified'};
+    session.session_url=new URL(snapshot.session_url).href;
+   }else if(kind==='tailnet'){
+    const candidate=snapshot.candidate_run_id,attempt=snapshot.candidate_run_attempt;
+    const path=identity.workflowPath;
+    const name=path==='.github/workflows/ubuntu.yml'?'session-ubuntu':
+      path==='.github/workflows/windows.yml'?'session-windows':null;
+    const mode=inputs.session_mode;
+    if(!name||!Number.isSafeInteger(candidate)||!Number.isSafeInteger(attempt)||
+       (candidate??0)<1||(attempt??0)<1||!['fixed','temporary'].includes(mode))
+      return {status:'indeterminate',error_code:'github_session_output_unverified'};
+    session.private_hostname=mode==='fixed'?name:'sa-'+candidate+'-a'+attempt;
+    session.github_run_id=candidate;
+   }
+   return {status:'succeeded',output:{session}};
+  }
   // A verified physical terminal may race the native Ready waiter.
   // Inspect the durable Attempt first: a terminated Session paired with a
   // *verified* failed/cancelled physical job is a definite pre-Ready failure,

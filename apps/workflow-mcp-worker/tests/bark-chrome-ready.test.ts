@@ -134,7 +134,7 @@ test('compiler accepts reviewed Chrome Ready to Bark and rejects unreviewed sour
  assert.equal((await compilePlan(reviewed)).plan.steps[1]?.uses,'action.run');
  for(const change of [
   (p:Plan)=>{p.steps[1]!.needs=[];},
-  (p:Plan)=>{(p.steps[0]!.with.action as any).workflowPath='.github/workflows/windows.yml';},
+  (p:Plan)=>{(p.steps[0]!.with.action as any).workflowPath='.github/workflows/download.yml';},
   (p:Plan)=>{(p.steps[0]!.with.action as any).repository='untrusted/repo/extra';},
   (p:Plan)=>{(p.steps[1]!.with.input as any).session_step_id='another';},
   (p:Plan)=>{(p.steps[1]!.with.input as any).notification.url='https://evil.example';},
@@ -202,4 +202,51 @@ test('retired executor cannot create a new Bark side effect from an old signed S
  assert.deepEqual(await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect),
   {status:'failed',error_code:'github_action_executor_changed'});
  assert.equal(f.sends(),0);
+});
+
+test('reviewed Ubuntu/Windows physical Ready carries only proven private hostname and GitHub Run ID',async t=>{
+ for(const platform of ['ubuntu','windows'] as const){
+  await t.test(platform,async sub=>{
+   const f=await fixture(sub);useReviewedChromeMain(f);
+   f.plan.name=platform;
+   const action=f.plan.steps[0]!.with.action as any;
+   action.workflowPath='.github/workflows/'+platform+'.yml';
+   action.inputs={session_mode:'fixed',duration_minutes:300};
+   f.plan.github_action_approvals![0]!.workflowPath=action.workflowPath;
+   f.plan.github_dynamic_input_contracts={chrome_session:{name:platform,type:'session',inputs:{},outputKind:'tailnet'}};
+   (f.bark.with.input as any).notification={body:'Completed'};
+   f.sql.prepare('UPDATE session_executions SET session_url=NULL').run();
+   f.sql.prepare('UPDATE step_attempts SET workflow_ref=?').run(
+     action.repository+'/'+action.workflowPath+'@refs/heads/main');
+   let notification:any;
+   (f.env.ACTIONS as any).execute=async (_:string,input:any)=>{
+    notification=input.notification;
+    return {status:'accepted',input_digest:input.input_digest};
+   };
+   assert.equal((await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect)).status,'succeeded');
+   assert.equal(notification.title,platform==='ubuntu'?'Ubuntu Session ready':'Windows Session ready');
+   assert.match(notification.body,new RegExp('Private hostname: session-'+platform));
+   assert.match(notification.body,/GitHub Run ID: 42/);
+   assert.equal(notification.url,undefined);
+   assert.equal((await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect)).status,'indeterminate');
+  });
+ }
+});
+test('reviewed code-server Ready only uses signed HTTPS locator',async t=>{
+ const f=await fixture(t);useReviewedChromeMain(f);
+ f.plan.name='code-server';
+ const action=f.plan.steps[0]!.with.action as any;
+ action.workflowPath='.github/workflows/code-server.yml';
+ f.plan.github_action_approvals![0]!.workflowPath=action.workflowPath;
+ f.plan.github_dynamic_input_contracts={chrome_session:{name:'code-server',type:'session',inputs:{},outputKind:'web'}};
+ (f.bark.with.input as any).notification={body:'Completed'};
+ f.sql.prepare('UPDATE step_attempts SET workflow_ref=?').run(
+   action.repository+'/'+action.workflowPath+'@refs/heads/main');
+ let notification:any;
+ (f.env.ACTIONS as any).execute=async (_:string,input:any)=>{
+  notification=input.notification;return {status:'accepted',input_digest:input.input_digest};
+ };
+ assert.equal((await runBarkAction(f.env,f.plan,f.bark,runId,f.ctx,f.inspect)).status,'succeeded');
+ assert.equal(notification.url,url);
+ assert.equal(notification.title,'Code-server ready');
 });

@@ -2,7 +2,7 @@ import {validateJsonActionInput} from './action-input-schema.ts';
 import YAML from 'yaml';
 import {DOWNLOAD_COMPLETED_TEXT} from './download-notification-executor.ts';
 import {httpOperation,type HttpOperation} from './http-action.ts';
-import {cloudflareActionManifest,TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS,TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS,isRetiredWeixinAction} from './cloudflare-action-contract.ts';
+import {cloudflareActionManifest,TRUSTED_BARK_SESSION_WORKFLOW_PATHS,TRUSTED_WEIXIN_SESSION_WORKFLOW_PATHS,isRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {parseUtcCron, type CronTrigger} from './cron.ts';
 import { publicMcpEndpoint } from './mcp-public-fetch.ts';
 import {reviewedWriteArguments} from './mcp-write-contract.ts';
@@ -79,6 +79,59 @@ export type Step = {
   with: Record<string, unknown>; if?: unknown; approval?: {required:true};
   compensate?: {kind:'github.session.cancel'};
 };
+/** The only permitted two-Cloudflare-Action Plan: a manual business effect followed
+ * by one optional, source-bound owner notification. No generic action chaining. */
+/** Only the three new Ready notifications are auxiliary. Existing Chrome,
+ * OpenList and download Plans retain their original result semantics. */
+export function isAuxiliarySessionBark(plan:Pick<Plan,'name'|'steps'|'triggers'|'saga'>):boolean{
+ if(plan.steps.length!==2||plan.triggers?.length||plan.saga)return false;
+ const allowed:Record<string,string>={
+  ubuntu:'.github/workflows/ubuntu.yml',
+  windows:'.github/workflows/windows.yml',
+  'code-server':'.github/workflows/code-server.yml',
+ };
+ const [business,notify]=plan.steps;
+ if(business?.uses!=='github.run'||business.needs?.length||business.if!==undefined||
+    business.approval!==undefined||business.needs_policy!==undefined||
+    business.with.capability!=='github.action'||
+    (business.with.action as {type?:unknown;workflowPath?:unknown}|undefined)?.type!=='session'||
+    (business.with.action as {workflowPath?:unknown}|undefined)?.workflowPath!==allowed[plan.name]||
+    notify?.uses!=='action.run'||notify.with.executor!=='cloudflare'||
+    notify.with.provider!=='bark'||notify.with.action!=='bark.send_notification'||
+    notify.needs?.length!==1||notify.needs[0]!==business.id||notify.if!==undefined||
+    notify.approval!==undefined||notify.needs_policy!==undefined)return false;
+ const input=notify.with.input;
+ if(!input||typeof input!=='object'||Array.isArray(input)||
+    Object.keys(input).sort().join(',')!=='notification,session_step_id'||
+    (input as {session_step_id?:unknown}).session_step_id!==business.id)return false;
+ const notification=(input as {notification?:unknown}).notification;
+ return notification!==null&&typeof notification==='object'&&!Array.isArray(notification)&&
+    Object.keys(notification).length===1&&
+    (notification as {body?:unknown}).body==='Completed';
+}
+export function auxiliaryBarkStepId(plan:Plan):string|null{
+ return (isAuxiliaryBarkPair(plan.steps)||isAuxiliarySessionBark(plan))?
+  plan.steps[1]!.id:null;
+}
+export function isAuxiliaryBarkPair(steps:readonly Step[]):boolean{
+ if(steps.length!==2)return false;
+ const [business,notify]=steps;
+ if(business?.uses!=='action.run'||business.with.executor!=='cloudflare'||
+    !['dub','envshare','litterbox'].includes(String(business.with.provider))||
+    business.with.action!==({dub:'dub.shorten_url',envshare:'envshare.share_text',
+      litterbox:'litterbox.upload_file'} as Record<string,string>)[String(business.with.provider)]||
+    business.needs?.length>0||business.if!==undefined||business.approval!==undefined||
+    notify?.uses!=='action.run'||notify.with.executor!=='cloudflare'||
+    notify.with.provider!=='bark'||notify.with.action!=='bark.send_notification'||
+    notify.needs?.length!==1||notify.needs[0]!==business.id||
+    notify.if!==undefined||notify.approval!==undefined||notify.needs_policy!==undefined)return false;
+ const input=notify.with.input;
+ if(!input||typeof input!=='object'||Array.isArray(input)||
+    Object.keys(input).length!==1||!Object.hasOwn(input,'notification'))return false;
+ const msg=(input as {notification?:unknown}).notification;
+ return msg!==null&&typeof msg==='object'&&!Array.isArray(msg)&&
+   Object.keys(msg).length===1&&(msg as {body?:unknown}).body==='Completed';
+}
 export type ReadonlyOperation = { endpoint:string; tool:string; scope:'read'|'write'; schema_digest:string };
 export type WebhookTrigger = {type:'webhook';token_sha256:string};
 export type GithubEventTrigger = {type:'github_event';repository:string;repository_id:number;event:'push';ref:string;workflow_path:string};
@@ -183,7 +236,8 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
   }
   return unknownOutput;
 }
-async function validateStaticOutputReferences(steps:Step[],trustedManifests:Record<string,Record<string,unknown>>={}):Promise<void>{
+export async function validateStaticOutputReferences(steps:Step[],trustedManifests:Record<string,Record<string,unknown>>={},
+  trustedGitHubContracts:Record<string,DiscoveredAction>={}):Promise<void>{
   const manifests=new Map<string,Record<string,unknown>>();
   for(const s of steps)if(s.uses==='action.run'){
     const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic';
@@ -194,6 +248,12 @@ async function validateStaticOutputReferences(steps:Step[],trustedManifests:Reco
     if(parts[0]!=='steps'||parts[2]!=='output'||parts.length<3)return unknownOutput;
     const producer=steps.find(s=>s.id===parts[1]);
     if(producer?.uses==='result.emit')return literalOutputAt(producer.with.data,parts.slice(3),path);
+    if(producer?.uses==='github.run'){
+      const source=trustedGitHubContracts[producer.id];
+      if(!source)return unknownOutput; // Historic no-schema contracts stay readable.
+      if(!source.outputSchema)throw new PlanError('unknown_output_field',path);
+      return declaredOutputAt(source.outputSchema,parts.slice(3),path);
+    }
     if(producer?.uses==='action.run'){
       const schema=manifests.get(producer.id)?.output_schema;
       if(schema===undefined)throw new PlanError('unknown_output_field',path);
@@ -388,7 +448,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   if(o.saga!==undefined){
     const spec=object(o.saga,'invalid_saga');
     keys(spec,['on'],'/saga');
-    if(!Array.isArray(spec.on)||spec.on.length<1||spec.on.length>2||
+if(!Array.isArray(spec.on)||spec.on.length<1||spec.on.length>2||
        new Set(spec.on).size!==spec.on.length||
        spec.on.some(x=>x!=='failure'&&x!=='cancel'))
       throw new PlanError('invalid_saga','/saga/on');
@@ -776,9 +836,11 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   },0);
   if(totalWaitSeconds>PLAN_LIMITS.maxWaitSeconds)
     throw new PlanError('wait_budget_exceeded','/steps');
-  // At most one reviewed Cloudflare notification Action per Plan.
+  // Only the three reviewed, manually entered business -> Bark pairs may
+  // exceed the historical one-Cloudflare-Action limit.
   if(expanded.filter(x=>(x as {uses?:unknown;with?:{executor?:unknown}}).uses==='action.run'&&
-      (x as {with?:{executor?:unknown}}).with?.executor==='cloudflare').length>1)
+      (x as {with?:{executor?:unknown}}).with?.executor==='cloudflare').length>1&&
+      !isAuxiliaryBarkPair(expanded as Step[]))
     throw new PlanError('multiple_cloudflare_actions_unsupported','/steps');
   const steps:Step[]=[];
   const ids=new Set<string>();
@@ -836,7 +898,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
       if(isRetiredWeixinAction({uses:'action.run',with:withData}))
         throw new PlanError('weixin_action_retired',stepPath+'/with');
       const manifest=(trustedManifests[String(s.id)]??await cloudflareActionManifest(withData.action==='weixin.notify_download'?'download':withData.provider==='bark'?'bark':withData.action==='dub.shorten_url'?'dub':withData.action==='envshare.share_text'?'envshare':withData.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
-      if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
+if(withData.executor!==manifest.executor||withData.provider!==manifest.provider||
          withData.action!==manifest.action||withData.contract_digest!==manifest.contract_digest)
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
       const input=object(withData.input,'invalid_cloudflare_input');
@@ -872,7 +934,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
              (v as {ref?:unknown}).ref!=='inputs.'+field)
             throw new PlanError('litterbox_input_must_be_transient_reference',stepPath+'/with/input/'+field);
         }
-        if(expanded.length!==1||o.triggers?.length||needs.length||s.if!==undefined)
+        if(o.triggers?.length||needs.length||s.if!==undefined)
           throw new PlanError('litterbox_manual_single_step_only',stepPath);
       }else if(manifest.provider==='bark'){
         keys(input,['notification','session_step_id','download_step_id'],stepPath+'/with/input');
@@ -975,7 +1037,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
          action?.workflowPath!=='.github/workflows/download.yml'||action?.type!=='task')
         throw new PlanError('untrusted_download_reference','/steps/'+steps.indexOf(s)+'/with/input/download_step_id');
     }
-    if(s.uses==='action.run'&&s.with.provider==='bark'&&
+if(s.uses==='action.run'&&s.with.provider==='bark'&&
        (s.with.input as {download_step_id?:string}).download_step_id!==undefined){
       const source=(s.with.input as {download_step_id:string}).download_step_id;
       const upstream=steps.find(x=>x.id===source);
@@ -994,7 +1056,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
         const action=upstream?.with.action as {repository?:unknown;workflowPath?:unknown;type?:unknown}|undefined;
         if(!s.needs.includes(source)||upstream?.uses!=='github.run'||
            !isWellFormedWorkflowGitHubRepository(action?.repository)||
-           (typeof action?.workflowPath!=='string'||!TRUSTED_SIGNED_SESSION_WORKFLOW_PATHS.has(action.workflowPath))||action?.type!=='session')
+           (typeof action?.workflowPath!=='string'||!TRUSTED_BARK_SESSION_WORKFLOW_PATHS.has(action.workflowPath))||action?.type!=='session')
           throw new PlanError('untrusted_session_reference','/steps/'+steps.indexOf(s)+'/with/input/session_step_id');
       }
     }
@@ -1102,7 +1164,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   // A secret-bearing EnvShare Run may do exactly one reviewed, manual write.
   // No literal secret in the Plan, additional Step, Flow or event source.
   if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='envshare')){
-    if(triggers?.length||steps.length!==1||saga||
+    if(triggers?.length||(steps.length!==1&&!isAuxiliaryBarkPair(steps))||saga||
        (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
        steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
        steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
@@ -1111,7 +1173,7 @@ export async function compilePlan(source: string|unknown, publicDefinition=false
   // Transient Litterbox bytes must never originate from Plan literals,
   // scheduled/event admissions, other Steps, or serializable Run inputs.
   if(steps.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox')){
-    if(triggers?.length||steps.length!==1||saga||
+    if(triggers?.length||(steps.length!==1&&!isAuxiliaryBarkPair(steps))||saga||
        (o.inputs!==undefined&&Object.keys(o.inputs as Record<string,unknown>).length!==0)||
        steps[0]?.if!==undefined||steps[0]?.needs.length!==0||
        steps[0]?.needs_policy!==undefined||steps[0]?.approval!==undefined)
