@@ -105,7 +105,7 @@ test('reviewed Session transport actually loads the synthetic Bash credential fi
   const state=join(home,'.config','session-actions');
   mkdirSync(state,{recursive:true,mode:0o700});
   const loader=join(state,'rca-env.bash');
-  writeFileSync(loader,'if [[ "${SESSION_ACTION_RCA:-}" == "1" ]]; then export GH_TOKEN=synthetic-only; fi\\n'.replace('\\\\n','\\n'),{mode:0o600});
+  writeFileSync(loader,'if [[ "$SESSION_ACTION_RCA" == "1" ]]; then export GH_TOKEN=synthetic-only; fi\n',{mode:0o600});
   const base={HOME:home,GITHUB_ACTIONS:'true',GITHUB_WORKFLOW:'ubuntu',
     GITHUB_REPOSITORY:'autoactions/github-actions',SESSION_ACTION_RCA:'1',
     BASH_ENV:loader,PATH:process.env.PATH||'/usr/bin'};
