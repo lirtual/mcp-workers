@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newEnrollment } from "../agent/src/v2-enrollment.ts";
 import { signedSessionProof } from "../agent/src/v2-session-client.ts";
-import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof } from "../src/v2-session.ts";
+import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof, listApprovedDevices } from "../src/v2-session.ts";
 
 interface MockStore {
   get<T>(key: string): Promise<T | undefined>;
@@ -194,4 +194,83 @@ test("failed Hibernation attachment setup closes an accepted WSS instead of leak
   } finally {
     pairGlobal.WebSocketPair = previousPair;
   }
+});
+
+
+test("temporary and Workflow Session online reporting uses the current authenticated socket", async () => {
+  for (const grant_type of ["temporary", "session"] as const) {
+    const { records, store } = testStore();
+    const now = Date.now();
+    const approved_at = now - 2_000;
+    records.set("device:" + uuid, {
+      device_id: uuid, name: "session-test", public_key: "approved-key",
+      fingerprint: "0123456789abcdef01234567", approved_at, revoked: false, grant_type,
+      ...(grant_type === "temporary"
+        ? { expires_at: approved_at + 86_400_000 }
+        : {
+          expires_at: now + 300 * 60_000, session_attempt_id: uuid,
+          session_run_id: 43363250750, session_run_attempt: 1,
+          session_workflow_name: "ubuntu",
+        }),
+    });
+    records.set("session:epoch:" + uuid, "epoch-1");
+    let authAt = now - 1_000;
+    let open = true;
+    const socket = {
+      get readyState() { return open ? WebSocket.OPEN : WebSocket.CLOSED; },
+      deserializeAttachment: () => ({
+        device_id: uuid, epoch: "epoch-1",
+        connected_at: now - 2_000, last_auth_check_at: authAt,
+      }),
+    } as unknown as WebSocket;
+    const state = {
+      storage: store,
+      getWebSockets: (tag: string) => tag === "device:" + uuid ? [socket] : [],
+    } as unknown as DurableObjectState;
+    const listed = async () => (await listApprovedDevices(state, async () => true)).body as
+      Array<{ device_id: string; status: "online" | "offline" }>;
+
+    assert.equal((await listed())[0]?.status, "online",
+      grant_type + " should not require permanent-only last_verified_online_at");
+    authAt = now - 17 * 60_000;
+    assert.equal((await listed())[0]?.status, "offline", "stale authorization checkpoint");
+    authAt = now - 1_000;
+    records.set("session:epoch:" + uuid, "epoch-replaced");
+    assert.equal((await listed())[0]?.status, "offline", "superseded socket epoch");
+    records.set("session:epoch:" + uuid, "epoch-1");
+    open = false;
+    assert.equal((await listed())[0]?.status, "offline", "closed socket");
+    if (grant_type === "session") {
+      assert.deepEqual((await listApprovedDevices(state, async () => false)).body, [],
+        "Workflow no longer authorizes this physical Session");
+    }
+  }
+});
+
+test("permanent device online reporting still requires persisted verified timestamp", async () => {
+  const { records, store } = testStore();
+  const now = Date.now();
+  const device = {
+    device_id: uuid, name: "permanent-test", public_key: "approved-key",
+    fingerprint: "0123456789abcdef01234567", approved_at: now - 1_000,
+    revoked: false, grant_type: "permanent", idle_expires_at: now + 86_400_000,
+    last_verified_online_at: now - 17 * 60_000,
+  };
+  records.set("device:" + uuid, device);
+  records.set("session:epoch:" + uuid, "epoch-1");
+  const state = {
+    storage: store,
+    getWebSockets: () => [{
+      readyState: WebSocket.OPEN,
+      deserializeAttachment: () => ({
+        device_id: uuid, epoch: "epoch-1",
+        connected_at: now - 2_000, last_auth_check_at: now,
+      }),
+    }],
+  } as unknown as DurableObjectState;
+  const status = async () => ((await listApprovedDevices(state)).body as
+    Array<{status: string}>)[0]?.status;
+  assert.equal(await status(), "offline", "socket timestamp cannot replace durable permanent authorization");
+  records.set("device:" + uuid, { ...device, last_verified_online_at: now });
+  assert.equal(await status(), "online");
 });
