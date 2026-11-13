@@ -15,7 +15,8 @@ import { runPublishedGitHubActionSession } from './github-action-session.ts';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { evaluateArguments, evaluateCondition, toolSchemaDigest, PLAN_LIMITS } from './plan.ts';
-import {isAuxiliaryBarkPair,type Plan,type Step} from './plan.ts';
+import {auxiliaryBarkStepId,type Plan,type Step} from './plan.ts';
+import {settleVerifiedAuxiliaryBusiness} from './auxiliary-bark-recovery.ts';
 import {hasHistoricalTaggedGitHubAction} from './github-action-main.ts';
 import {hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import type { Env } from './store.ts';
@@ -447,7 +448,7 @@ async function runForeachStep(
       await db.prepare("INSERT INTO run_steps(run_id,step_id,status,output,error_code,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,step_id) DO UPDATE SET status=excluded.status,output=excluded.output,error_code=excluded.error_code,updated_at=excluded.updated_at WHERE run_steps.status IN ('waiting','running','waiting_approval')")
         .bind(runId,entry.id,outcome.status,outcome.output===undefined?null:JSON.stringify(outcome.output),
           outcome.error_code??null,now()).run();
-      collected.push(outcome.status==='succeeded'?outcome.output:null);
+collected.push(outcome.status==='succeeded'?outcome.output:null);
 if(outcome.status==='succeeded')succeeded++;
       if(outcome.status==='indeterminate')return {status:'indeterminate',error_code:'foreach_child_indeterminate'};
       if(outcome.status==='failed')return {status:'failed',error_code:'foreach_child_failed'};
@@ -851,7 +852,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       }
     }
     const pending=new Map(plan.steps.map(s=>[s.id,s]));
-    const auxiliaryNotificationId=isAuxiliaryBarkPair(plan.steps)?plan.steps[1]!.id:null;
+    const auxiliaryNotificationId=auxiliaryBarkStepId(plan);
     let emitted:unknown=null;
     let hasEmitted=false;
     let failed=false;
@@ -897,7 +898,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
           let result:Outcome;
           try{
           result=(s.uses==='flow.wait'
-            ? await runDurableWait(this.env,s,id,step,ctx.steps)
+? await runDurableWait(this.env,s,id,step,ctx.steps)
 : s.uses==='flow.wait_event'
             ? await runWaitForEvent(this.env,s,id,step,ctx.steps)
             : s.uses==='flow.child'
@@ -1046,8 +1047,12 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       if(plan.saga?.on.includes('failure')&&(failed||uncertain))
         throw Error('saga_compensation_trigger');
     }catch{
-      await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
-      throw Error('execution_interrupted');
+      let recovered=false;
+      try{recovered=await settleVerifiedAuxiliaryBusiness(db,plan,id);}catch{}
+      if(!recovered){
+        await db.prepare("UPDATE runs SET outcome='indeterminate',error_code='execution_interrupted',updated_at=? WHERE id=? AND outcome='running'").bind(now(),id).run();
+        throw Error('execution_interrupted');
+      }
     }finally{
       // The parent business Run can finish at Session Ready, but its GitHub
       // job is a separate physical resource. Keep THIS native Workflow
