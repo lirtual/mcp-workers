@@ -18,6 +18,11 @@ const STEP=/^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const TUNNEL_URL=/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com\/?$/;
 const WEB_PATHS=new Set(['.github/workflows/chrome.yml',
   '.github/workflows/code-server.yml','.github/workflows/openlist.yml']);
+// One in-flight physical Session per supported action type. The existing
+// partial UNIQUE index on fixed_key is the only concurrent admission fence.
+// Keep this separate from the Runner's Tailnet hostname choice.
+const SINGLETON_PATHS=new Set([...WEB_PATHS,
+  '.github/workflows/ubuntu.yml','.github/workflows/windows.yml']);
 export type SessionReservation='reserved'|'existing'|'fixed_conflict'|'full'|'denied';
 export type SessionRelease='released'|'already_released'|'held';
 
@@ -52,8 +57,10 @@ export async function reservePublishedSessionSlot(
  const mode=declaredInputs&&typeof declaredInputs==='object'&&!Array.isArray(declaredInputs)
   ?(declaredInputs as Record<string,unknown>).session_mode:undefined;
  if(mode!==undefined&&mode!=='fixed'&&mode!=='temporary')return 'denied';
- // Key derived only from the reviewed GitHub Action, not client input.
- const fixedKey=mode==='fixed'?String(reviewed.repositoryId)+':'+reviewed.workflowPath:null;
+ // Built-in types use their reviewed action identity regardless of hostname
+ // mode; other Session actions retain their explicit fixed/temporary choice.
+ const fixedKey=mode==='fixed'||SINGLETON_PATHS.has(reviewed.workflowPath)
+  ?String(reviewed.repositoryId)+':'+reviewed.workflowPath:null;
  const created=await db.prepare(`INSERT OR IGNORE INTO session_executions
    (run_id,step_id,slot,fixed_key,state,created_at,updated_at)
    SELECT ?,?,free.slot,?,'queued',?,? FROM (

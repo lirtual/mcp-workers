@@ -65,7 +65,85 @@ function fixture(){
  };
  return {db,adapter,claim};
 }
-test('fixed Session is unique; temporary Sessions coexist until global quota is full',async()=>{
+function useGenericTemporarySession(f:ReturnType<typeof fixture>){
+ // Other, unlisted action types retain the old opt-in fixed/temporary behavior.
+ const custom={...action,workflowPath:'.github/workflows/custom-test.yml'};
+ const current={...plan,github_action_approvals:[custom],steps:[{...plan.steps[0],
+  with:{...plan.steps[0].with,action:{...plan.steps[0].with.action,...custom}}}]};
+ f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(current),'v');
+}
+
+test('five approved Session types are individually singleton under the existing D1 unique key',async()=>{
+ const paths=['ubuntu','windows','chrome','code-server','openlist'];
+ for(const [index,name] of paths.entries()){
+  const f=fixture();
+  try{
+   const reviewed={...action,workflowPath:'.github/workflows/'+name+'.yml',
+    workflowId:action.workflowId+index};
+   // Temporary Tailnet hostnames may still be chosen; this does not bypass
+   // physical Session singleton admission for the same Action type.
+   const inputs={duration_minutes:5,
+    ...(name==='ubuntu'||name==='windows'?{session_mode:'temporary'}:{})};
+   const current={...plan,github_action_approvals:[reviewed],steps:[{...plan.steps[0],
+    with:{...plan.steps[0].with,action:{...reviewed,ref:'refs/tags/release-v1',inputs}}}]};
+   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+    .run(JSON.stringify(current),'v');
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved',name);
+   assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions').get()?.fixed_key,
+    '123:.github/workflows/'+name+'.yml',name);
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict',name);
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'existing',name);
+   f.claim(1,'claimed',true);
+   f.db.prepare("UPDATE session_executions SET state='ready',session_url=?")
+    .run(name==='chrome'||name==='code-server'||name==='openlist'
+     ?'https://test-example.trycloudflare.com':null);
+   const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},
+    WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env);
+   const ready=await service.status(run(1));
+   assert.equal(ready.sessions?.[0]?.session_mode,'fixed',name);
+   if(name==='ubuntu'||name==='windows'){
+    assert.equal(ready.sessions?.[0]?.private_hostname,'sa-42-a1',name);
+   }else{
+    assert.equal(ready.sessions?.[0]?.private_hostname,null,name);
+    assert.equal(ready.sessions?.[0]?.session_url,
+      'https://test-example.trycloudflare.com',name);
+   }
+   for(const state of ['stopping','uncertain'] as const){
+    f.db.prepare('UPDATE session_executions SET state=?').run(state);
+    assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict',
+     name+':'+state);
+   }
+   f.db.prepare("UPDATE step_attempts SET state='succeeded' WHERE run_id=?")
+    .run(run(1));
+   assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released',name);
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'reserved',name);
+  }finally{f.db.close();}
+ }
+});
+
+test('different singleton types coexist up to the unchanged global four-slot quota',async()=>{
+ const f=fixture();
+ try{
+  for(const [i,name] of ['ubuntu','windows','chrome','code-server','openlist'].entries()){
+   const reviewed={...action,workflowPath:'.github/workflows/'+name+'.yml',
+    workflowId:action.workflowId+i};
+   const current={...plan,github_action_approvals:[reviewed],steps:[{...plan.steps[0],
+    with:{...plan.steps[0].with,action:{...reviewed,ref:'refs/tags/release-v1',
+     inputs:{duration_minutes:5}}}}]};
+   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+    .run(JSON.stringify(current),'v');
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(i+1),'launch'),
+    i===4?'full':'reserved',name);
+  }
+  assert.equal(f.db.prepare("SELECT count(*) AS count FROM session_executions WHERE state!='terminated'")
+   .get()?.count,4);
+  f.claim(1,'succeeded',true);
+  assert.equal(await releaseVerifiedSessionSlot(f.adapter,run(1),'launch'),'released');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(5),'launch'),'reserved');
+ }finally{f.db.close();}
+});
+
+test('fixed Session is unique; nonstandard temporary Sessions retain existing behavior',async()=>{
  const f=fixture();
  try{
   const fixed={...plan,steps:[{...plan.steps[0],with:{...plan.steps[0].with,
@@ -92,9 +170,12 @@ test('fixed Session is unique; temporary Sessions coexist until global quota is 
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
   f.db.prepare("UPDATE session_executions SET state='uncertain' WHERE run_id=?").run(run(1));
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(2),'launch'),'fixed_conflict');
-  const temporary={...fixed,steps:[{...fixed.steps[0],with:{...fixed.steps[0].with,
+  const temporarySameType={...fixed,steps:[{...fixed.steps[0],with:{...fixed.steps[0].with,
    action:{...fixed.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'temporary'}}}}]};
-  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(temporary),'v');
+  f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+   .run(JSON.stringify(temporarySameType),'v');
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(3),'launch'),'fixed_conflict');
+  useGenericTemporarySession(f);
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(3),'launch'),'reserved');
   assert.equal(f.db.prepare('SELECT fixed_key FROM session_executions WHERE run_id=?').get(run(3))?.fixed_key,null);
   f.claim(1,'claimed',true);
@@ -131,6 +212,7 @@ test('fixed Windows and Ubuntu provide stable MagicDNS locators only after Ready
 test('four concurrent Sessions reserve distinct slots, fifth denied until physically settled',async()=>{
  const f=fixture();
  try{
+  useGenericTemporarySession(f);
   const result=await Promise.all([1,2,3,4].map(i=>reservePublishedSessionSlot(f.adapter,run(i),'launch')));
   assert.deepEqual(result,['reserved','reserved','reserved','reserved']);
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'existing');
@@ -154,6 +236,7 @@ test('four concurrent Sessions reserve distinct slots, fifth denied until physic
 test('workflow_list reports four durable quota holders even after parent success and allows locating a stuck Run',async()=>{
  const f=fixture();
  try{
+  useGenericTemporarySession(f);
   const service=new WorkflowService({DB:f.adapter,WORKFLOW:{},WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity} as Env);
   const empty=await service.list();
   assert.deepEqual(empty.active_sessions,[]);
@@ -184,6 +267,7 @@ test('workflow_list reports four durable quota holders even after parent success
 test('uncertain and stopping Sessions keep capacity until a verified physical terminal',async()=>{
  const f=fixture();
  try{
+  useGenericTemporarySession(f);
   for(let i=1;i<=4;i++)assert.equal(await reservePublishedSessionSlot(f.adapter,run(i),'launch'),'reserved');
   f.db.exec("UPDATE session_executions SET state='uncertain' WHERE slot=1");
   f.db.exec("UPDATE session_executions SET state='stopping' WHERE slot=2");
@@ -707,6 +791,7 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
 test('fifth Session is rejected before any GitHub outbound request',async()=>{
  const f=fixture();
  try{
+  useGenericTemporarySession(f);
   for(let i=1;i<=4;i++)
    assert.equal(await reservePublishedSessionSlot(f.adapter,run(i),'launch'),'reserved');
   let requests=0;
