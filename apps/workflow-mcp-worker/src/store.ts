@@ -14,7 +14,7 @@ import {containsDynamicForeachTaskInputs,validateForeachTaskInputTemplate,isSess
 import { reviewedGitHubAction, assertReviewedGitHubAction, type ReviewedGitHubAction } from './github-action-review.ts';
 import { currentExecutorRepository } from './github-action-catalog.ts';
 import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
-import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString, isAuxiliaryBarkPair } from './plan.ts';
+import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString, isAuxiliaryBarkPair, validateStaticOutputReferences } from './plan.ts';
 import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
@@ -242,6 +242,11 @@ export class WorkflowService {
           expected.type==='session'&&isSessionDurationInputRef(given.duration_minutes)?
             {...given,duration_minutes:300}:given;
         await assertReviewedGitHubAction(expected,candidate,this.env.WORKFLOW_GITHUB_ACTION_IDENTITY,validated);
+        if(!isDynamic){
+          // Only a source re-fetched at the reviewed GitHub SHA supplies output fields.
+          plan.github_dynamic_input_contracts??={};
+          plan.github_dynamic_input_contracts[step.id]=candidate.contract;
+        }
         if(isDynamic){
           const controller=plan.steps[Number(path.split('/')[2])];
           if(!controller||controller.uses!=='flow.foreach'||candidate.contract.type!=='task')
@@ -264,6 +269,8 @@ export class WorkflowService {
       }
       approved.push(await reviewedGitHubAction(candidate));
     }
+    await validateStaticOutputReferences(plan.steps,plan.cloudflare_action_contracts,
+      plan.github_dynamic_input_contracts);
     return approved;
   }
   private async checkedChildWorkflows(plan:Plan,parentId?:string){
