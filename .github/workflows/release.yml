@@ -850,6 +850,7 @@ jobs:
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
+          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
           WORKFLOW_REQUIRE_COMPLETE_SCHEMA: ${{ inputs.workflow_code_only && 'true' || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

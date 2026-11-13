@@ -610,6 +610,27 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     /UU retirement/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,active_sessions:1}),false,true,true),
     /active physical Sessions/);
+  // v21 is already fully applied. Code-only releases may keep a healthy Ready
+  // Session; the separate code-release-check still rejects unresolved activity.
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1}),false,true),/active physical Sessions/);
+  assert.equal(verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1}),false,true,false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1,active_runs:1}),false,true,false,true),
+    /active or indeterminate/);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1,rca_duration_column:0}),false,true,false,true),
+    /UU retirement migration\/schema drift/);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1}),false,true,true,true),
+    /active physical Sessions/);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...mainComplete,active_sessions:1,migration_count:19}),false,true,false,true),
+    /schema migrations/);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1,migration_count:19}),false,true,false,true),
+    /UU retirement migration\/schema drift/);
 
   for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},
     {migration_v17:0},{http_auth_table:0},{migration_v18:0},{cloudflare_gate_table:0},
