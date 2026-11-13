@@ -67,6 +67,18 @@ export function sessionTransportEnvironment(source:NodeJS.ProcessEnv):NodeJS.Pro
       entries.find(([name])=>name.toLowerCase()===key.toLowerCase())?.[1];
     if (typeof value==='string') clean[key]=value;
   }
+  // Only the reviewed Ubuntu Session RCA launcher may opt in to its fixed
+  // shell loader. The loader path and marker are not credentials; never
+  // forward GH_TOKEN, Cloudflare tokens or arbitrary BASH_ENV content.
+  if (source.GITHUB_ACTIONS==='true' &&
+      source.GITHUB_WORKFLOW==='ubuntu' &&
+      source.GITHUB_REPOSITORY==='autoactions/github-actions' &&
+      source.SESSION_ACTION_RCA==='1' &&
+      typeof source.HOME==='string' && source.HOME.startsWith('/') &&
+      source.BASH_ENV===source.HOME+'/.config/session-actions/rca-env.bash') {
+    clean.SESSION_ACTION_RCA='1';
+    clean.BASH_ENV=source.BASH_ENV;
+  }
   return clean;
 }
 
