@@ -204,7 +204,8 @@ function declaredOutputAt(schema:unknown,fields:string[],path:string):KnownOutpu
   }
   return unknownOutput;
 }
-async function validateStaticOutputReferences(steps:Step[],trustedManifests:Record<string,Record<string,unknown>>={}):Promise<void>{
+export async function validateStaticOutputReferences(steps:Step[],trustedManifests:Record<string,Record<string,unknown>>={},
+  trustedGitHubContracts:Record<string,DiscoveredAction>={}):Promise<void>{
   const manifests=new Map<string,Record<string,unknown>>();
   for(const s of steps)if(s.uses==='action.run'){
     const kind=s.with.action==='weixin.notify_download'?'download':s.with.provider==='bark'?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic';
@@ -215,6 +216,12 @@ async function validateStaticOutputReferences(steps:Step[],trustedManifests:Reco
     if(parts[0]!=='steps'||parts[2]!=='output'||parts.length<3)return unknownOutput;
     const producer=steps.find(s=>s.id===parts[1]);
     if(producer?.uses==='result.emit')return literalOutputAt(producer.with.data,parts.slice(3),path);
+    if(producer?.uses==='github.run'){
+      const source=trustedGitHubContracts[producer.id];
+      if(!source)return unknownOutput; // Historic no-schema contracts stay readable.
+      if(!source.outputSchema)throw new PlanError('unknown_output_field',path);
+      return declaredOutputAt(source.outputSchema,parts.slice(3),path);
+    }
     if(producer?.uses==='action.run'){
       const schema=manifests.get(producer.id)?.output_schema;
       if(schema===undefined)throw new PlanError('unknown_output_field',path);
