@@ -2,7 +2,7 @@
 
 Purpose: one Clerk-verified resource per independent ChatGPT MCP connection, with a single machine identity to the existing Cloudflare MCP Portal. This Worker contains no MCP-specific business logic.
 
-Canonical production origin: `https://mcp-gateway.lirtual.dpdns.org` (one Custom Domain, no legacy-host compatibility). OAuth Resources use this origin plus `/mcp/{server_id}`. 
+Canonical production origin: `https://mcp-gateway.lirtual.dpdns.org` (one Custom Domain, no legacy-host compatibility). OAuth Resources use this origin plus `/mcp/{server_id}`.
 
 Source of truth: Portal registers upstream servers and tools; Clerk registers the matching full HTTPS MCP resource. New MCP onboarding requires configuration in those two existing products, **not a Gateway code change or automated onboarding workflow**. Access policies must separately permit the one Gateway service token to reach each approved upstream.
 
