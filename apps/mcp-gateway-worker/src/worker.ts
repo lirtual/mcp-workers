@@ -26,6 +26,7 @@ const MAX_DISCOVERY_BYTES = 2_097_152;
 const JSON_MCP = "application/json";
 const SSE_MCP = "text/event-stream";
 const INITIAL_OAUTH_SCOPES = "openid offline_access";
+const MODERN_MCP_VERSION = "2026-07-28";
 
 function error(status: number, code: string, challenge?: string): Response {
   return Response.json(
@@ -126,10 +127,10 @@ async function readLimited(response: Response, maxBytes: number): Promise<string
   return new TextDecoder("utf-8", { fatal: true }).decode(body);
 }
 
-function filterDiscovery(body: string, mediaType: string, serverId: string): { body: string; contentType: string } | null {
+function filterDiscovery(body: string, mediaType: string, serverId: string, modern = false): { body: string; contentType: string } | null {
   if (mediaType.includes(JSON_MCP)) {
     try {
-      const safe = filterGatewayToolList(JSON.parse(body), serverId);
+      const safe = filterGatewayToolList(JSON.parse(body), serverId, modern);
       return safe ? { body: JSON.stringify(safe), contentType: JSON_MCP } : null;
     } catch {
       return null;
@@ -145,7 +146,7 @@ function filterDiscovery(body: string, mediaType: string, serverId: string): { b
     if (!data || data === "[DONE]") continue;
     let parsed: unknown;
     try { parsed = JSON.parse(data); } catch { return null; }
-    const filtered = filterGatewayToolList(parsed, serverId);
+    const filtered = filterGatewayToolList(parsed, serverId, modern);
     if (filtered === null) return null;
     found = true;
     // Recreate a minimal event: discard untrusted metadata and annotations.
@@ -154,7 +155,7 @@ function filterDiscovery(body: string, mediaType: string, serverId: string): { b
   return found ? { body: events.join(""), contentType: SSE_MCP } : null;
 }
 
-function upstreamHeaders(request: Request, env: Env): Headers | null {
+function upstreamHeaders(request: Request, env: Env, method: string, toolName: string | null, modern: boolean): Headers | null {
   const headers = new Headers({
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
@@ -165,6 +166,10 @@ function upstreamHeaders(request: Request, env: Env): Headers | null {
   if (version !== null) {
     if (!/^20[0-9]{2}-[0-9]{2}-[0-9]{2}$/.test(version)) return null;
     headers.set("Mcp-Protocol-Version", version);
+  }
+  if (modern) {
+    headers.set("Mcp-Method", method);
+    if (toolName !== null) headers.set("Mcp-Name", toolName);
   }
   // Do not accept a client-provided Portal session or forwarding credentials.
   if (request.headers.has("Mcp-Session-Id") || request.headers.has("cookie")) return null;
@@ -178,22 +183,34 @@ async function toolEnabledNow(
   headers: Headers,
   serverId: string,
   toolName: string,
+  modern: boolean,
 ): Promise<"enabled" | "disabled" | "unavailable"> {
   let cursor: string | undefined;
   const seen = new Set<string>();
   for (let page = 0; page < 16; page++) {
     const request = JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "tools/list",
-      ...(cursor ? { params: { cursor } } : {}),
+      ...(modern ? { params: {
+        ...(cursor ? { cursor } : {}),
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": MODERN_MCP_VERSION,
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      } } : (cursor ? { params: { cursor } } : {})),
     });
+    const discoveryHeaders = new Headers(headers);
+    if (modern) {
+      discoveryHeaders.set("Mcp-Method", "tools/list");
+      discoveryHeaders.delete("Mcp-Name");
+    }
     let response: Response;
     try {
-      response = await send(portalUrl, { method: "POST", redirect: "manual", headers, body: request });
+      response = await send(portalUrl, { method: "POST", redirect: "manual", headers: discoveryHeaders, body: request });
     } catch { return "unavailable"; }
     if (!response.ok) return "unavailable";
     const raw = await readLimited(response, MAX_DISCOVERY_BYTES);
     if (raw === null) return "unavailable";
-    const filtered = filterDiscovery(raw, response.headers.get("content-type") ?? "", serverId);
+    const filtered = filterDiscovery(raw, response.headers.get("content-type") ?? "", serverId, modern);
     if (!filtered) return "unavailable";
     let results: unknown[];
     try {
@@ -271,12 +288,25 @@ export async function gatewayFetch(
   let message: unknown;
   try { message = JSON.parse(raw); } catch { return error(400, "invalid_json"); }
   const decision = authorizeGatewayMessage(message, serverId, request.headers);
-  if (!decision.ok) return error(403, decision.reason);
-  const headers = upstreamHeaders(request, env);
+  if (!decision.ok) return error(decision.reason === "invalid_request" ? 400 : 403, decision.reason);
+  const bodyParams = (message as { params?: { _meta?: Record<string, unknown>; name?: string } }).params;
+  const modern = bodyParams?._meta?.["io.modelcontextprotocol/protocolVersion"] === MODERN_MCP_VERSION;
+  if (decision.method === "server/discover") {
+    return Response.json({
+      jsonrpc: "2.0", id: (message as { id: string | number }).id,
+      result: {
+        resultType: "complete", supportedVersions: [MODERN_MCP_VERSION],
+        capabilities: { tools: {} }, ttlMs: 0, cacheScope: "private",
+        _meta: { "io.modelcontextprotocol/serverInfo": { name: "mcp-gateway-worker", version: "0.1.0" } },
+      },
+    }, { headers: { "cache-control": "no-store" } });
+  }
+  const headers = upstreamHeaders(request, env, decision.method,
+    decision.method === "tools/call" ? bodyParams?.name ?? null : null, modern);
   if (!headers) return error(400, "invalid_mcp_headers");
   if (decision.method === "tools/call") {
     const toolName = (message as { params: { name: string } }).params.name;
-    const state = await toolEnabledNow(dependencies.sendPortal ?? fetch, env.PORTAL_MCP_URL, headers, serverId, toolName);
+    const state = await toolEnabledNow(dependencies.sendPortal ?? fetch, env.PORTAL_MCP_URL, headers, serverId, toolName, modern);
     if (state === "disabled") return error(403, "tool_not_available");
     if (state !== "enabled") return error(502, "portal_tools_unavailable");
   }
@@ -306,7 +336,7 @@ export async function gatewayFetch(
   let text: string | null;
   try { text = await readLimited(upstream, MAX_DISCOVERY_BYTES); } catch { return error(502, "portal_invalid_tools"); }
   if (text === null) return error(502, "portal_invalid_tools");
-  const safe = filterDiscovery(text, upstream.headers.get("content-type") ?? "", serverId);
+  const safe = filterDiscovery(text, upstream.headers.get("content-type") ?? "", serverId, modern);
   if (!safe) return error(502, "portal_invalid_tools");
   return new Response(safe.body, {
     status: 200,
