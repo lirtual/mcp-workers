@@ -1436,7 +1436,7 @@ test('Gateway manual release checks the exact Clerk-protected custom-domain reso
   const yaml = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const smoke = yaml.split('      - name: Check unauthenticated MCP surface without credentials')[1]?.split('\n      - name: ')[0];
   assert.ok(smoke, 'manual release unauthenticated smoke is missing');
-  assert.match(smoke, /elif \[\[ "\$SELECTED_WORKER" == "mcp-gateway-worker" \]\]; then\s+mcp_endpoint="https:\/\/gateway\.lirtual\.dpdns\.org\/mcp\/raindrop"/);
+  assert.match(smoke, /elif \[\[ "\$SELECTED_WORKER" == "mcp-gateway-worker" \]\]; then\s+mcp_endpoint="https:\/\/mcp-gateway\.lirtual\.dpdns\.org\/mcp\/raindrop"/);
   assert.match(smoke, /"\$SELECTED_WORKER" == "mcp-gateway-worker" && "\$FIRST_DEPLOY" == "true"/);
   assert.match(smoke, /401\|403\)/);
 });
