@@ -1308,7 +1308,7 @@ jobs:
           set -euo pipefail
           response="$(mktemp)"
           trap 'rm -f "$response"' EXIT
-          # A new Workers.dev hostname may briefly return 404 after the first publish.
+          # A new public route may briefly return 404 after the first publish.
           # Do not retry any non-404 status or hide a persistent routing failure.
           max_attempts=1
           if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
@@ -1317,11 +1317,16 @@ jobs:
           if [[ "$SELECTED_WORKER" == "github-actions-mcp-worker" && "$FIRST_DEPLOY" == "true" ]]; then
             max_attempts=12
           fi
+          if [[ "$SELECTED_WORKER" == "mcp-gateway-worker" && "$FIRST_DEPLOY" == "true" ]]; then
+            max_attempts=12
+          fi
           mcp_endpoint="https://${SELECTED_WORKER}.aiyaya.workers.dev/mcp"
           if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]]; then
             mcp_endpoint="https://workflow.lirtual.dpdns.org/mcp"
           elif [[ "$SELECTED_WORKER" == "browser-mcp-worker" ]]; then
             mcp_endpoint="https://browser.lirtual.dpdns.org/mcp"
+          elif [[ "$SELECTED_WORKER" == "mcp-gateway-worker" ]]; then
+            mcp_endpoint="https://gateway.lirtual.dpdns.org/mcp/raindrop"
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do
             status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' \
@@ -1335,7 +1340,7 @@ jobs:
                 ;;
               404)
                 if ((attempt < max_attempts)); then
-                  echo "New Workers.dev route not yet visible (HTTP 404; attempt $attempt/$max_attempts)"
+                  echo "New MCP route not yet visible (HTTP 404; attempt $attempt/$max_attempts)"
                   sleep 5
                   continue
                 fi
