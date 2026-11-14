@@ -1418,7 +1418,7 @@ test('Gateway source and live bindings are verified by the same protected releas
   const tampered = JSON.parse(source);
   tampered.routes[0].pattern = 'any-other.example.com';
   assert.throws(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)), /Gateway/);
-  tampered.routes[0].pattern = 'gateway.lirtual.dpdns.org';
+  tampered.routes[0].pattern = 'mcp-gateway.lirtual.dpdns.org';
   tampered.workers_dev = true;
   assert.throws(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)), /Gateway/);
 });
