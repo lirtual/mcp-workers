@@ -92,3 +92,44 @@ test('disallows execution notifications, unsupported top-level routing, and meth
   }
   assert.equal(authorizeGatewayMessage({ jsonrpc: '2.0', method: 'tools/list', id: 1, params: { cursor: 'page-two' } }, 'sentry', new Headers()).ok, true);
 });
+
+const modernMeta = {
+  'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+  'io.modelcontextprotocol/clientCapabilities': {},
+  'io.modelcontextprotocol/clientInfo': { name: 'ChatGPT', version: '1' },
+};
+const modernHeaders = (method, name) => new Headers({
+  'Mcp-Protocol-Version': '2026-07-28',
+  'Mcp-Method': method,
+  ...(name ? { 'Mcp-Name': name } : {}),
+});
+test('modern MCP metadata and matching transport headers allow discovery but not unauthorized methods', () => {
+  const discover = { jsonrpc: '2.0', id: 'd1', method: 'server/discover', params: { _meta: modernMeta } };
+  const list = { jsonrpc: '2.0', id: 'd2', method: 'tools/list', params: { _meta: modernMeta } };
+  const call = { jsonrpc: '2.0', id: 'd3', method: 'tools/call',
+    params: { name: 'sentry_issue_list', arguments: {}, _meta: modernMeta } };
+  for (const [payload, headers] of [[discover,modernHeaders('server/discover')],[list,modernHeaders('tools/list')],
+    [call,modernHeaders('tools/call','sentry_issue_list')]]) {
+    assert.equal(authorizeGatewayMessage(payload,'sentry',headers).ok,true, payload.method);
+  }
+  for (const [payload,headers] of [
+    [discover,new Headers()],
+    [list,modernHeaders('tools/call')],
+    [list,new Headers({'Mcp-Protocol-Version':'2025-11-25','Mcp-Method':'tools/list'})],
+    [{...list,params:{_meta:{...modernMeta,'io.modelcontextprotocol/clientCapabilities':null}}},modernHeaders('tools/list')],
+    [{...discover,params:{_meta:modernMeta,target:'raindrop'}},modernHeaders('server/discover')],
+    [{...call,params:{...call.params,name:'raindrop_collection_list'}},modernHeaders('tools/call','raindrop_collection_list')],
+    [call,modernHeaders('tools/call','raindrop_collection_list')],
+    [{...list,params:{cursor:'c',_meta:modernMeta,server_id:'other'}},modernHeaders('tools/list')],
+  ]) assert.equal(authorizeGatewayMessage(payload,'sentry',headers).ok,false,JSON.stringify(payload));
+});
+test('modern tools/list projection retains valid MCP cache fields but isolates tool namespace', () => {
+  const response={jsonrpc:'2.0',id:'m',result:{resultType:'complete',tools:[
+    {name:'sentry_issue_list',inputSchema:{type:'object',properties:{}}},
+    {name:'raindrop_collection_list'},{name:'portal_toggle_single_server'}
+  ],nextCursor:'next',ttlMs:3600000,cacheScope:'public',other:'do_not_copy'}};
+  assert.deepEqual(filterGatewayToolList(response,'sentry',true),{
+    jsonrpc:'2.0',id:'m',result:{tools:[{name:'sentry_issue_list',inputSchema:{type:'object',properties:{}}}],
+      nextCursor:'next',resultType:'complete',ttlMs:0,cacheScope:'private'}
+  });
+});

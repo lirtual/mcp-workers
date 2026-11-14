@@ -204,3 +204,109 @@ test("tools/call fails closed on a cyclic Portal pagination cursor", async () =>
   assert.equal(response.status, 502);
   assert.equal(calls, 2);
 });
+
+const modernMeta = {
+  'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+  'io.modelcontextprotocol/clientCapabilities': {},
+  'io.modelcontextprotocol/clientInfo': {name:'ChatGPT',version:'1'},
+};
+const modernRequest = (server, method, params = {}, name) =>
+  request(server,'POST',message(method,{...params,_meta:modernMeta}),{
+    'Mcp-Protocol-Version':'2026-07-28','Mcp-Method':method,
+    ...(name ? {'Mcp-Name':name}:{}),
+  });
+test('modern server/discover returns tools-only capabilities without Portal forwarding',async()=>{
+  let sent=false;
+  const response=await gatewayFetch(modernRequest('raindrop','server/discover'),env,{
+    verifyOAuth:async()=>true,sendPortal:async()=>{sent=true;return toolList()}
+  });
+  assert.equal(response.status,200);
+  assert.equal(sent,false);
+  const json=await response.json();
+  assert.deepEqual(json.result.supportedVersions,['2026-07-28']);
+  assert.deepEqual(json.result.capabilities,{tools:{}});
+  assert.equal(json.result.resultType,'complete');
+  assert.equal(json.result.cacheScope,'private');
+  assert.equal(json.result.ttlMs,0);
+});
+test('modern tools/list sends matching headers and retains required list result fields',async()=>{
+  let forwarded=false;
+  const response=await gatewayFetch(modernRequest('raindrop','tools/list'),env,{
+    verifyOAuth:async()=>true,
+    sendPortal:async(_,init)=>{
+      forwarded=true;
+      assert.equal(init.headers.get('Mcp-Protocol-Version'),'2026-07-28');
+      assert.equal(init.headers.get('Mcp-Method'),'tools/list');
+      assert.equal(init.headers.has('Mcp-Name'),false);
+      const msg=JSON.parse(init.body);
+      assert.equal(msg.params._meta['io.modelcontextprotocol/protocolVersion'],'2026-07-28');
+      return jsonResponse({jsonrpc:'2.0',id:1,result:{resultType:'complete',
+        tools:[{name:'raindrop_collection_list',inputSchema:{type:'object',properties:{}}},
+          {name:'sentry_issue_list'},{name:'portal_toggle_single_server'}],
+        ttlMs:300000,cacheScope:'public'}});
+    },
+  });
+  assert.equal(response.status,200);
+  assert.equal(forwarded,true);
+  const parsed=await response.json();
+  assert.deepEqual(parsed.result.tools.map(t=>t.name),['raindrop_collection_list']);
+  assert.equal(parsed.result.resultType,'complete');
+  assert.equal(parsed.result.ttlMs,0);
+  assert.equal(parsed.result.cacheScope,'private');
+});
+test('modern tool call validates live catalog with correct per-request headers and metadata',async()=>{
+  const calls=[];
+  const name='raindrop_collection_list';
+  const response=await gatewayFetch(modernRequest('raindrop','tools/call',{name,arguments:{}},name),env,{
+    verifyOAuth:async()=>true,
+    sendPortal:async(_,init)=>{
+      const msg=JSON.parse(init.body);
+      calls.push(msg.method);
+      assert.equal(init.headers.get('Mcp-Protocol-Version'),'2026-07-28');
+      assert.equal(init.headers.get('Mcp-Method'),msg.method);
+      assert.equal(init.headers.get('Mcp-Name'),msg.method==='tools/call'?name:null);
+      assert.equal(msg.params._meta['io.modelcontextprotocol/protocolVersion'],'2026-07-28');
+      assert.deepEqual(msg.params._meta['io.modelcontextprotocol/clientCapabilities'],{});
+      return msg.method==='tools/list'
+        ? jsonResponse({jsonrpc:'2.0',id:1,result:{resultType:'complete',tools:[{name}]}})
+        : jsonResponse({jsonrpc:'2.0',id:1,result:{resultType:'complete',content:[]}});
+    }
+  });
+  assert.equal(response.status,200);
+  assert.deepEqual(calls,['tools/list','tools/call']);
+});
+test('modern header/body mismatches fail closed before Portal requests',async()=>{
+  let forwarded=false;
+  const req=modernRequest('raindrop','tools/list');
+  req.headers.delete('Mcp-Method');
+  const response=await gatewayFetch(req,env,{verifyOAuth:async()=>true,sendPortal:async()=>{forwarded=true;return toolList()}});
+  assert.equal(response.status,400);
+  assert.equal(forwarded,false);
+});
+
+test('modern SSE tool-list response remains usable and scoped', async () => {
+  const response = await gatewayFetch(modernRequest('raindrop','tools/list'),env,{
+    verifyOAuth: async () => true,
+    sendPortal: async () => {
+      const result = JSON.stringify({jsonrpc:'2.0',id:1,result:{resultType:'complete',tools:[
+        {name:'raindrop_collection_list'},{name:'sentry_issue_list'}],ttlMs:120000,cacheScope:'public'}});
+      return new Response('event: message\ndata: '+result+'\n\n',
+        {headers:{'content-type':'text/event-stream'}});
+    },
+  });
+  assert.equal(response.status,200);
+  assert.match(response.headers.get('content-type')??'',/text\/event-stream/);
+  const text=await response.text();
+  const result=JSON.parse(text.slice(text.indexOf('data: ')+6).trim());
+  assert.deepEqual(result.result.tools.map(t=>t.name),['raindrop_collection_list']);
+  assert.equal(result.result.resultType,'complete');
+  assert.equal(result.result.cacheScope,'private');
+});
+test('modern discovery rejects invalid OAuth before revealing capabilities',async()=>{
+  let forwarded=false;
+  const response=await gatewayFetch(modernRequest('raindrop','server/discover'),env,{
+    verifyOAuth:async()=>false,sendPortal:async()=>{forwarded=true;return toolList();}
+  });
+  assert.equal(response.status,401);
+  assert.equal(forwarded,false);
+});

@@ -57,6 +57,19 @@ export function authorizeGatewayMessage(
     return { ok: false, reason: "invalid_request" };
   }
   const method = message.method;
+  const params = record(message.params);
+  const meta = record(params?._meta);
+  const version = meta?.["io.modelcontextprotocol/protocolVersion"];
+  const modern = version === "2026-07-28";
+  if (modern) {
+    if (!record(meta?.["io.modelcontextprotocol/clientCapabilities"]) ||
+        headers.get("Mcp-Protocol-Version") !== version ||
+        headers.get("Mcp-Method") !== method) {
+      return { ok: false, reason: "invalid_request" };
+    }
+  } else if (version !== undefined || headers.get("Mcp-Protocol-Version") === "2026-07-28") {
+    return { ok: false, reason: "invalid_request" };
+  }
   if (Object.keys(message).some((key) => !["jsonrpc", "id", "method", "params"].includes(key))) {
     return { ok: false, reason: "invalid_request" };
   }
@@ -67,9 +80,12 @@ export function authorizeGatewayMessage(
     // Executable operations must not be silently accepted as notifications.
     return { ok: false, reason: "invalid_request" };
   }
+  if (method === "server/discover" &&
+      (!modern || !params || Object.keys(params).some((key) => key !== "_meta"))) {
+    return { ok: false, reason: "invalid_request" };
+  }
   if (method === "tools/list" && message.params !== undefined) {
-    const params = record(message.params);
-    if (!params || Object.keys(params).some((key) => key !== "cursor") ||
+    if (!params || Object.keys(params).some((key) => key !== "cursor" && key !== "_meta") ||
         (params.cursor !== undefined && typeof params.cursor !== "string")) {
       return { ok: false, reason: "invalid_request" };
     }
@@ -90,7 +106,7 @@ export function authorizeGatewayMessage(
     }
     const name = params.name;
     const headerName = headers.get("Mcp-Name");
-    if (headerName !== null && headerName !== name) {
+    if (modern ? headerName !== name : (headerName !== null && headerName !== name)) {
       return { ok: false, reason: "invalid_request" };
     }
     return toolIsFrom(serverId, name)
@@ -98,7 +114,9 @@ export function authorizeGatewayMessage(
       : { ok: false, reason: "tool_not_allowed" };
   }
   if (headers.has("Mcp-Name")) return { ok: false, reason: "invalid_request" };
-  if (["initialize", "ping", "tools/list", "notifications/initialized"].includes(method)) {
+  if (method === "server/discover" && modern) return { ok: true, method };
+  if (["initialize", "ping", "tools/list", "notifications/initialized"].includes(method) &&
+      (!modern || method === "tools/list")) {
     return { ok: true, method };
   }
   return { ok: false, reason: "method_not_allowed" };
@@ -108,7 +126,7 @@ export function authorizeGatewayMessage(
  * Project a Portal tools/list response onto the current Clerk Resource.
  * Never return other Portal result fields or administrative tools.
  */
-export function filterGatewayToolList(payload: unknown, serverId: string): unknown | null {
+export function filterGatewayToolList(payload: unknown, serverId: string, modern = false): unknown | null {
   if (!validServerId(serverId)) return null;
   const response = record(payload);
   const result = record(response?.result);
@@ -121,6 +139,11 @@ export function filterGatewayToolList(payload: unknown, serverId: string): unkno
   });
   const projected: Record<string, unknown> = { tools };
   if (typeof result.nextCursor === "string") projected.nextCursor = result.nextCursor;
+  if (modern) {
+    projected.resultType = "complete";
+    projected.ttlMs = 0;
+    projected.cacheScope = "private";
+  }
   return {
     jsonrpc: "2.0",
     ...("id" in response ? { id: response.id } : {}),
