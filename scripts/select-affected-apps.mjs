@@ -8,6 +8,7 @@ export const APPLICATIONS = [
   'database-mcp-worker',
   'github-actions-mcp-worker',
   'ima-mcp-worker',
+  'mcp-gateway-worker',
   'raindrop-mcp-worker',
   'remote-control-mcp-worker',
   'ssh-mcp-worker',
@@ -17,7 +18,7 @@ export const APPLICATIONS = [
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
 // Weixin is published only by cloudflare-actions after the separately authorized handoff.
 // Browser reuses the manual production gate; provisioning remains separately authorized.
-export const RELEASE_WORKERS = [...APPLICATIONS];
+export const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'mcp-gateway-worker');
 
 function requiresAllApps(file) {
   return file === 'package.json'
