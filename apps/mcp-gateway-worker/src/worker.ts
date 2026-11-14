@@ -195,7 +195,6 @@ export async function gatewayFetch(
   if (!serverId) return error(404, "not_found");
   const metadataUrl = env.GATEWAY_ORIGIN + "/.well-known/oauth-protected-resource/mcp/" + serverId;
   const challenge = 'Bearer resource_metadata="' + metadataUrl + '"';
-  if (request.method !== "POST") return error(405, "method_not_allowed");
   if (request.headers.has("origin")) return error(403, "invalid_origin");
   const bearer = request.headers.get("authorization");
   if (!bearer || !/^Bearer [^\s]+$/.test(bearer)) return error(401, "unauthorized", challenge);
@@ -207,6 +206,7 @@ export async function gatewayFetch(
   } catch {
     return error(401, "unauthorized", challenge);
   }
+  if (request.method !== "POST") return error(405, "method_not_allowed");
   const length = request.headers.get("content-length");
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_REQUEST_BYTES)) {
     return error(413, "request_too_large");
