@@ -27,3 +27,7 @@ Required **non-secret** Variables include Database's `DATABASE_CONNECTIONS`; Bro
 Source deletion does not retire a Cloudflare Worker, remove a Portal client or expire a deployed token; retirement is separately authorized.
 
 Browser now has a production custom domain and Owner Access activation Variables; the historical T8 no-route/no-variable note is obsolete. The actual Browser Environment token override and Portal credential alignment remain unverified. See [runtime configuration](./runtime-configuration.md) for the current contract and separately authorized historical GitHub configuration cleanup candidates. No credential rotation or deployment is authorized by this runbook update.
+
+### Spec #878 Gateway isolation
+
+`mcp-gateway-worker` does **not** reuse the existing `MCP_ACCESS_TOKEN` or `WORKFLOWS` Service Auth policy. A separate, initially disabled Gateway Access Service Token may be enabled only after explicit Portal + narrowly selected upstream policies, independent Clerk Resource authorization and actual tool-denial tests are verified. The Gateway never forwards the Clerk Bearer upstream. For recovery, disable only the Gateway Token or remove its dedicated Access policies; preserve existing Workflow, Portal and Raindrop connections.

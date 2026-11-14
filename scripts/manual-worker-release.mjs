@@ -15,8 +15,9 @@ import { discoverBrowserActivationIdentity, verifyBrowserIdentityContinuity } fr
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
 import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
-const WORKERS = new Set(["browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
+const WORKERS = new Set(["mcp-gateway-worker", "browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 export const REQUIRED_SECRETS = {
+  "mcp-gateway-worker": ["CLERK_SECRET_KEY", "CF_ACCESS_CLIENT_SECRET"],
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
@@ -59,6 +60,7 @@ export function expectedDatabaseLimits(sourceConfig, env) {
 }
 
 const WORKER_ENTRIES = {
+  "mcp-gateway-worker": "src/worker.ts",
   "browser-mcp-worker": "src/worker.ts",
   "raindrop-mcp-worker": "src/worker.ts",
   "ima-mcp-worker": "src/index.ts",
@@ -129,6 +131,18 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       invariant(secretNames.has(name), "Required runtime Secret missing: " + name);
       invariant(!!find(name, "secret_text"), "Required Secret binding missing: " + name);
     }
+  }
+  if (worker === "mcp-gateway-worker" && options.mode !== "preflight") {
+    const expected = new Set([
+      "CLERK_SECRET_KEY", "CF_ACCESS_CLIENT_SECRET", "CLERK_PUBLISHABLE_KEY",
+      "CLERK_OWNER_USER_ID", "CLERK_ISSUER", "GATEWAY_ORIGIN",
+      "PORTAL_MCP_URL", "CF_ACCESS_CLIENT_ID",
+    ]);
+    invariant(bindings.length === expected.size &&
+      bindings.every(b => expected.has(b.name) &&
+        b.type === (REQUIRED_SECRETS[worker].includes(b.name) ? "secret_text" : "plain_text")) &&
+      secrets.length === REQUIRED_SECRETS[worker].length,
+      "Gateway live bindings not equal to reviewed Clerk and Access identities");
   }
   if (worker === "ssh-mcp-worker") {
     invariant(settings.observability?.enabled === true &&
@@ -883,6 +897,15 @@ export function readConfiguration(worker, content, reviewedManifest) {
     "Worker script name or entry differs from selected target");
   invariant(conf.keep_vars === false,
     "GitHub/Wrangler must own all runtime Variables; keep_vars must be false");
+  if (worker === "mcp-gateway-worker") {
+    invariant(conf.workers_dev === false && conf.preview_urls === false &&
+      Array.isArray(conf.routes) && conf.routes.length === 1 &&
+      conf.routes[0].custom_domain === true &&
+      conf.routes[0].pattern === "gateway.lirtual.dpdns.org" &&
+      JSON.stringify(conf.secrets?.required) === JSON.stringify(["CLERK_SECRET_KEY", "CF_ACCESS_CLIENT_SECRET"]) &&
+      !conf.vars && !conf.durable_objects && !conf.d1_databases,
+      "Gateway release origin, secrets or resource boundaries drifted");
+  }
   if (worker === "ssh-mcp-worker") {
     invariant(conf.observability?.enabled === true &&
       conf.observability?.logs?.invocation_logs === true,

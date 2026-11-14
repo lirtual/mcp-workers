@@ -82,3 +82,7 @@ export async function authenticatePortalRequest(
     request: new Request(request, { headers }),
   };
 }
+
+
+export { parseGatewayResource, authorizeGatewayMessage, filterGatewayToolList } from "./gateway-core.ts";
+export type { GatewayDecision } from "./gateway-core.ts";

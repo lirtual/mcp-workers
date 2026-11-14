@@ -22,6 +22,7 @@ export const BROWSER_ACCESS_VARIABLES = Object.freeze([
 
 export const WORKER_VARIABLES = Object.freeze({
   "browser-mcp-worker": ["BROWSER_ACTIVATION_AUDIENCE", "BROWSER_REMEMBERED_IDLE_DAYS"],
+  "mcp-gateway-worker": [],
   "raindrop-mcp-worker": [
     "RAINDROP_RATE_LIMIT_MAX_RETRIES",
     "CLERK_PILOT_PUBLISHABLE_KEY", "CLERK_PILOT_OWNER_USER_ID",
@@ -70,6 +71,26 @@ export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
+  if (worker === "mcp-gateway-worker") {
+    const values = [env.CLERK_PILOT_PUBLISHABLE_KEY, env.CLERK_PILOT_OWNER_USER_ID, env.CLERK_PILOT_ISSUER, env.MCP_GATEWAY_PORTAL_CLIENT_ID];
+    const routes = options.config?.routes;
+    if (values.some(v => typeof v !== "string" || !v.trim() || v.trim() !== v || /[\r\n]/.test(v)) ||
+      !/^pk_live_[A-Za-z0-9_]+$/.test(values[0]) ||
+      !/^user_[A-Za-z0-9]+$/.test(values[1]) ||
+      values[2] !== "https://clerk.lirtual.dpdns.org" ||
+      !Array.isArray(routes) || routes.length !== 1 || routes[0].custom_domain !== true ||
+      routes[0].pattern !== "gateway.lirtual.dpdns.org") {
+      throw Error("Gateway Clerk identity, Access client ID or Custom Domain missing or invalid");
+    }
+    variables.push(
+      "CLERK_PUBLISHABLE_KEY:" + values[0],
+      "CLERK_OWNER_USER_ID:" + values[1],
+      "CLERK_ISSUER:" + values[2],
+      "GATEWAY_ORIGIN:https://" + routes[0].pattern,
+      "PORTAL_MCP_URL:https://mcp.lirtual.dpdns.org/mcp",
+      "CF_ACCESS_CLIENT_ID:" + values[3],
+    );
+  }
   if (worker === "browser-mcp-worker") {
     if (["BROWSER_ACCESS_ISSUER", "BROWSER_OWNER_EMAIL", "BROWSER_ACTIVATION_ORIGIN"]
       .some(name => env[name] != null && env[name] !== ""))
@@ -194,7 +215,7 @@ async function main() {
     throw new Error("Worker vars must be staged inside runner temporary directory");
   }
   // Source config drives the single trusted origin; no extra GitHub Variable is required.
-  const config = ["remote-control-mcp-worker", "browser-mcp-worker"].includes(worker)
+  const config = ["remote-control-mcp-worker", "browser-mcp-worker", "mcp-gateway-worker"].includes(worker)
     ? JSON.parse((await readFile(join(process.cwd(), "apps", worker, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, "")) : undefined;
   // The Provider is verified at runtime and release; no persistent

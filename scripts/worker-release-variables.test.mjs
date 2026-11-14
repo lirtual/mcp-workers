@@ -317,3 +317,23 @@ test("Raindrop Clerk release variables are optional as a complete validated tupl
       { ...enabled, ...patch }), /Clerk pilot/i);
   }
 });
+
+test('Gateway release derives its origin and identity from existing configuration', () => {
+  const env = {
+    CLERK_PILOT_ISSUER: 'https://clerk.lirtual.dpdns.org',
+    CLERK_PILOT_OWNER_USER_ID: 'user_AbCd1234',
+    CLERK_PILOT_PUBLISHABLE_KEY: 'pk_live_Y2xlcmsubGlydHVhbC5kcGRucy5vcmck',
+    MCP_GATEWAY_PORTAL_CLIENT_ID: 'gateway-client-id',
+  };
+  const config = { routes: [{ pattern: 'gateway.lirtual.dpdns.org', custom_domain: true }] };
+  assert.deepEqual(originalCollectWorkerVars('mcp-gateway-worker', env, { config }), [
+    'CLERK_PUBLISHABLE_KEY:pk_live_Y2xlcmsubGlydHVhbC5kcGRucy5vcmck',
+    'CLERK_OWNER_USER_ID:user_AbCd1234',
+    'CLERK_ISSUER:https://clerk.lirtual.dpdns.org',
+    'GATEWAY_ORIGIN:https://gateway.lirtual.dpdns.org',
+    'PORTAL_MCP_URL:https://mcp.lirtual.dpdns.org/mcp',
+    'CF_ACCESS_CLIENT_ID:gateway-client-id',
+  ]);
+  assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', { ...env, MCP_GATEWAY_PORTAL_CLIENT_ID: '' }, { config }), /Gateway/);
+  assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', env, { config: {} }), /Gateway/);
+});

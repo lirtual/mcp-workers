@@ -29,6 +29,7 @@
 | `remote-control-mcp-worker` | 无额外 Secret | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_REPOSITORY` |
+| `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（不使用共享 `MCP_ACCESS_TOKEN`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`，Clerk 身份复用 `CLERK_PILOT_*` |
 
 ## 二、切换准入与不可逆清理
 
@@ -44,7 +45,7 @@ Repository Secrets 对仓库内符合条件的工作流开放，不能再视为�
 
 打开 [Release Worker](https://github.com/lirtual/mcp-workers/actions/workflows/release.yml)，固定 `main`，选择一个 `worker`；生产发布需显式授权并设置 `deploy_to_production=true`。当前工作流持续执行 Owner/main/SHA/CI/互斥与 Worker 范围检查，先行校验必需配置，再只针对所选 Worker 上传其运行时 Secret / Variable。
 
-- 全部 Worker 使用共享 `MCP_ACCESS_TOKEN`；`CLOUDFLARE_API_TOKEN` 仅供必要的受控发布步骤使用。
+- 原有八个业务 Worker 使用共享 `MCP_ACCESS_TOKEN`；`CLOUDFLARE_API_TOKEN` 仅供必要的受控发布步骤使用。
 - IMA 必需 `IMA_CLIENT_ID`（Repository Variable）和 `IMA_API_KEY`（Repository Secret），运行时分别为 `plain_text` / `secret_text`。
 - Workflow 必需 `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Repository Variable）和 `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`（Repository Secrets），原运行时绑定名不变。
 - SSH 继续用原始 `SSH_ENCRYPTION_KEY`；GitHub Actions MCP 继续用原始可多行 `ACTIONS_GITHUB_DISPATCH_TOKENS`；Raindrop 使用 `RAINDROP_ACCESS_TOKEN`。数据库继续使用现有命名密码 Secrets。
@@ -89,3 +90,7 @@ Database Access 仍保护整个数据库域名，需继续保留。
 Access Application/Audience、Owner Allow 邮箱、15m、Worker 运行时绑定及同 Profile
 证明不变。现行 Browser Release 门禁要求且仅允许此 OTP IdP，拒绝重引入 SSO。
 上述 #804 SSO 实测属于历史证据，不代表本次 OTP-only 切换后的新 E2E。
+
+### Spec #878 Gateway 受控手动发布
+
+`mcp-gateway-worker` 只能在 `main` 上由 Owner 手动使用 `Release Worker` 发布。仓库级 Secret `MCP_GATEWAY_PORTAL_CLIENT_SECRET` 在暂存时映射为运行时 `CF_ACCESS_CLIENT_SECRET`；Client ID 和现有 Clerk Resource 身份来自仓库级 Variables，运行时 `GATEWAY_ORIGIN` 从受审核的 `gateway.lirtual.dpdns.org` Wrangler Custom Domain 派生。独立 Gateway Service Token 初始保持 Disabled，绝不复用或修改既有 `WORKFLOWS` Access Policy。发布代码不能代替对特定 Portal 上游、Access Policy 和 Clerk Resource 的逐项授权及 E2E 验收；可先保持 Token 禁用并部署无法执行业务的入口。

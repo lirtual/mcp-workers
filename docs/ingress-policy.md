@@ -14,3 +14,7 @@ Maintained ingress owners:
 - `workflow-mcp-worker`: authenticated durable Workflow control and independently approved runtime grants.
 
 Preserve per-Worker runtime Secrets, actual public/private route boundaries and Owner checks. A successful source build, Portal sync or read-only smoke check is not independent proof of production release or permission to execute external effects.
+
+### Spec #878 Gateway isolation
+
+`mcp-gateway-worker` does **not** reuse the existing `MCP_ACCESS_TOKEN` or `WORKFLOWS` Service Auth policy. A separate, initially disabled Gateway Access Service Token may be enabled only after explicit Portal + narrowly selected upstream policies, independent Clerk Resource authorization and actual tool-denial tests are verified. The Gateway never forwards the Clerk Bearer upstream. For recovery, disable only the Gateway Token or remove its dedicated Access policies; preserve existing Workflow, Portal and Raindrop connections.
