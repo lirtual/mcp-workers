@@ -31,27 +31,30 @@
 
 
 
-### 2026-11-14 第三轮决策与最终自动接入方案
+### 第三轮最终方案：自动接入、Clerk 资源与安全停用
 
-- **Q6=A：一次接入请求，按序配置**。通过已授权的 Agent/既有 Cloudflare、Clerk 连接器依次处理；不要求用户先去 Portal Dashboard 操作，也不依赖 Portal 变更事件。用户若自行在 Dashboard 新增 MCP，现阶段**不会自动触发** Clerk/Gateway 同步；可再次提出“完成此 MCP 的接入”以续办。一次接入操作并不消除涉及生产 Token、Access Policy、上游凭据、Clerk Resource 等写入所需的独立授权。
-- **Q7=A：路由按 `server_id` 自动推导**。Gateway 对业务无感，使用严格规范化的 `/mcp/{server_id}` 推导 Portal 命名空间，不持有第二份逐 MCP 业务路由表。**动态路径不等于动态授权**：必须同时验证请求中的准确 Clerk Resource Audience、有效 Owner/Scope、该资源确已由 Clerk 注册、对应 `server_id` 确已挂载 Portal 且当前 Gateway Service Token 获授权访问；不能只根据 URL 文本推导为可访问资源。若 Clerk Resource 注册状态和 Portal 有效上游无法在请求时可靠核实，不能把“零路由表”宣称为安全 Pass，应先利用现有可验证的元数据或受控静态准入值，确有缺口时再评估最小补充，不新增同步数据库。
-- **Gateway 一枚机器凭据**：所有后续经明确批准准入的 MCP 共用**同一枚专用 Gateway Service Token**；新增 MCP 时只按需把该 Token 加入目标上游 Access Service Auth Policy，不新增机器 Token、不修改旧 Workflow Token。上游 URL、管理员 Bearer/Headers 凭据始终由 Portal 管理。Shared Token 泄露可能波及其所有获准上游，尤其高风险 MCP 必须逐批单独审查与授权。
-- **配置的单一事实来源**：Portal 管理上游注册、工具元数据、可用性与全局工具允许状态；Clerk 登记 MCP Resource/受众；Gateway 只做通用资源鉴权、单上游选择、MCP 执行方法/实际工具限制，不把每个业务工具的白名单复制成独立 Gateway 配置。若 Portal 工具禁用无法在真实 `tools/call` 边界阻断，再增加最小的 Gateway 工具拒绝机制；不依赖可见列表或工具描述作为授权证明。
-- **禁止多路复用绕权**：Gateway 只透出当前 `server_id` 的工具，真实 `tools/call` 必须按已核验的规范工具命名空间/目标拒绝别的上游；Portal 自带 `portal_*` 管理/切换/工具搜索和 Code Mode 间接执行入口不透传，禁止由查询参数开启 Code Mode；未知或未经验证的可执行 MCP 方法默认拒绝。MCP 新版请求头 `Mcp-Method`、`Mcp-Name` 必须与实际 body 一致，按已验证的真实客户端协议版本处理；不过度支持未使用的协议/扩展。只从固定 Portal 端点发送 Gateway 机器凭据，不转发至任意请求指定 URL，也不跟随带凭据重定向。
+**Q6=A、Q7=A；设计树 Q1–Q7 全部收敛。** 自动接入从一次已授权的用户请求或现有 Cloudflare/Clerk 连接器工作流开始，而非监听 Portal Dashboard 变化；Gateway 路由从已核实的 Portal `server_id` 推导 `/mcp/{server_id}`，不长期维护第二份逐 MCP 路由表。**路径匹配仅定位目标，不构成使用授权**；不能证明安全准入的候选资源一律 fail-closed。
 
-**一次接入完整路径（接入操作而非后台同步服务）：**
+**每新增一个 MCP，Clerk 究竟需要什么：**
 
-1. 接收一次新增 MCP 请求，核实目标 MCP URL（远程 HTTP）、上游认证能力、Portal 的 `server_id` 是否重复/冲突、需要何种工具及风险等级；优先复用已存在且确认等价的注册配置，避免重复写入。
-2. 完成只读生产影响与权限预检，确认各写操作对象、需要的授权、停止条件及可恢复状态。获准后调用 Portal API 新增/挂载 MCP 并核实 Ready；**Portal 更新 `servers` 数组是全量替换**，务必在写前回读完整现有映射、保留每个已有项和字段，写后逐项对账；并发改动或副作用不确定时暂停写入，重新回读，不盲目重试。
-3. 对目标上游的 Access 应用按需扩展**原有唯一 Gateway Service Token** 的服务级准入；生产权限变更仍独立授权，严禁把现有 `workflow-mcp-worker` Token 充当 Gateway 身份。
-4. 根据已验证 `server_id` 派生唯一 HTTPS Gateway Resource URL，通过 Clerk 已有程序化注册能力配置/核对该 MCP Resource；保留 CIMD 客户端预注册、PKCE、Owner、Issuer、Audience、Scope 等已证实的 Clerk 安全约束，不暗中开启匿名 DCR 或 Everyone。
-5. 用非敏感元数据与实际 MCP 请求验收当前 Resource 的正向工具、跨受众/其它 `server_id` 直接构造调用拒绝、被 Portal 禁用工具拒绝、Portal 自带/Code Mode 工具拒绝及协议头/body 不一致拒绝。只有业务和权限验收通过才返回“配置就绪”的独立 ChatGPT 插件 URL；**ChatGPT 首次安装/授权由用户完成**，也不能把一次真实工具成功等同于 Production Refresh Token 长期验证。
+- **复用一次性全局配置**：当前 Clerk Production 的 Issuer、Owner、已预注册的 ChatGPT CIMD 客户端、PKCE、Audience 开关、已有 Refresh 机制。不创建新的 Clerk 应用、OAuth 客户端、用户或密钥，也不为每个 MCP 创建独立的 OAuth 服务器。
+- **每个 MCP 注册一个完整 HTTPS Resource URL**：例如新 Gateway 的 `https://<gateway-domain>/mcp/sentry`；它既是客户端输入的 MCP 地址，也是 Clerk OAuth Access Token 需要精确匹配的 Resource Audience。用现有 `configure_mcp_server` 工具做 `dry_run` 预检，再在明确生产授权后注册/回读；已存在且等价的 URL 直接复用。此举不会自动实现 Gateway MCP/PRM 路由，也不代表 ChatGPT 已安装或已登录。当前生产 Clerk 只有 Raindrop 这个 MCP Resource。
+- **Scope 并非每个新 MCP 必配**：独立 Resource Audience、Owner 和业务工具边界可以覆盖单用户基本隔离。如果 Sentry 需要区分只读/写入等独立权限，才按实际需要在 Clerk OAuth Scopes 中新增必要的自定义 Scope、授予预注册的 ChatGPT 客户端，并在 Gateway 的 PRM/实际 Token 校验中保持一致。Clerk 广告 Scope 不会自动授权客户端，也不会自动让 Gateway 校验它。部分 OAuth 客户端会省略 `scope`，需实测 ChatGPT 的请求及 Clerk 默认 Scope 配置；避免为了每个 MCP 创造未使用的 Scope。
+- **长期授权复用现有机制**：Clerk `offline_access` / Refresh 是 ChatGPT 到 MCP 的客户端授权机制，不是 Gateway 到 Portal 的机器凭据，也不能替代第三方用户 OAuth。当前 Clerk Production `oauth_jwt_access_tokens=false`，Raindrop 的 SDK 验证已包含在线 Token 验证路径；不强制修改全局 Token 格式。OAuth Access Token 的到期/撤销、Refresh 的实际续期、Clerk 浏览器 Session 均为不同边界。生产真实静默刷新尚为 Unknown。
+- **下线时同时处理实际调用路径**：从 Clerk 注销 Resource 或删除 Scope **不代表已经签发的 Access Token 立即不可用**。必须先让 Gateway/Portal 针对该目标拒绝真实工具调用，再按已核实依赖撤销该 MCP 的唯一 Gateway Token 上游 Access 准入、相关 Clerk 授权/资源，验证旧 Token 与旧 URL 无法继续使用；不能撤销共享 Gateway Token 本体而导致其它 MCP 一起失联。
 
-**跨系统失败与恢复：** Portal、Access、Clerk 的写入不能当作原子事务。各阶段以其系统现有标识/URL 读取**实际已完成结果**作为续办断点，不创建新的 onboarding 数据库、流程锁或状态机；重试前核对部分成功的结果、身份和版本。若在 Portal Ready 后 Clerk 注册失败，只报告“部分配置、不可安装”、保留已存在的业务连接，按原步骤修复/续做；不要擅自删除既存 Portal 注册或凭据，误覆盖全量 Portal 挂载或重复扩权。需要回退某个**新建**资源时，以精确资源和影响为界取得必要生产授权，不影响原有 MCP 连接。
+**一次请求接入的最小安全顺序（涉及生产写入均须单独授权）：**
 
-**真实性与边界：** Cloudflare Portal MCP `servers` / `portals` 已有管理 API；Clerk 已提供 MCP Resource 注册动作，当前 Production 仅注册 Raindrop。Q6 的“单次自动配置”在**已有接口与执行工具层面可行**，但尚未实现、未验证完整跨系统 E2E；Q7 的安全动态路由、Portal 工具调用拒绝、Clerk 新资源真实 OAuth、客户端续期仍 **Unknown**。目前没有确认可靠的“在 Dashboard 手动保存后自动触发”的 Portal 事件；不开发定时扫描、Webhook 服务、管理 UI、数据库、独立仓库或第二套 Token。
+1. **只读预检**：核实新的远程 MCP HTTP URL、上游认证方式、`server_id` 的规范化和命名空间冲突、是否已在 Portal 注册/挂载、工具及风险、是否已有 Clerk Resource、现有唯一 Gateway Token 准入和恢复基线；同配置复用，不凭同名覆盖异物。
+2. **先准备业务与客户端资源**：经授权注册/挂载 Portal 上游并核实 Ready，按 `server_id` 派生完整 HTTPS Gateway URL，调用 Clerk MCP Resource 注册能力并核对元数据及当前设置。Portal `PUT` 的 `servers` 为**全数组替换**，必须写前回读并保留全部原上游挂载与字段，写后逐一对账；若有并发漂移或写入副作用 Unknown，停写回读，不能盲目重试。
+3. **最后扩大机器准入**：仅在前述资源准备和安全核验通过、明确生产授权存在时，把**同一枚专用 Gateway Service Token** 加入目标 MCP Access 应用的 Service Auth Policy。不得使用已有 `workflow-mcp-worker` Token 替代；不能一次性默认准入所有 11 个上游或自动扩大高风险服务权限。
+4. **实测然后交付**：核实精确 Clerk Audience、Owner、必要 Scope、只读业务正向调用、跨 Resource 和禁用工具反向拒绝，并确保 Portal 内置管理/工具搜索、Code Mode 和未知可执行方法被阻断；适用时对照真实 ChatGPT 协议验证 MCP 请求头/JSON body 一致。只有全部关键门禁 Pass 才返回“已配置、可在 ChatGPT 添加”的独立 URL；用户仍需首次安装和授权，生产自动 Refresh 是单独的验收项。
 
-**最终设计树审查：** Q1=A（独立 Resource / 实际工具权限）、Q2=A（第三方必要 OAuth 首次同意）、Q3=A（渐进迁移）、Q4=A（Bearer 优先，复杂上游 OAuth 延后）、Q5=A（不另建 UI）、**Q6=A（单次接入请求驱动）、Q7=A（server_id 派生路由）**。所有用户必要选择已覆盖，**Grill With Docs 结束**；未验证的机制留给实施阶段事实门，不另行制造用户选择或提前声称安全。
+**失败、幂等与停用**：Portal、Access、Clerk 三方没有原子事务。以各方真实标识和已有 URL 回读作为续办断点，不新增 onboarding 状态机、数据库、锁、Cron、同步事件监听器。若 Portal Ready 但 Clerk 注册失败，则保留真实状态、标未就绪并允许原地续办；不误删既有 Portal MCP 或凭据。Gateway 的动态 Resource 必须依托可信的 Clerk 注册/当前准入状态，不能仅靠合法 URL 和有效签名 Token 启用未知服务；注册后删除及旧 Access/Refresh Token 的行为仍要真实验证。无法仅通过现有元数据可靠证明准入时，优先采用最小已有控制或受控准入方式，不为保持零路由表而放宽授权。
+
+**Portal 工具权限与协议**：Portal 是上游工具启停的单一事实来源；Gateway 不复制整套工具白名单，但需要过滤 `tools/list`，在 `tools/call` 真实执行时限制为当前上游的业务工具、拒绝 `portal_*`、Code Mode、其它执行入口；核实 Portal 禁用的工具即使直接构造调用也被拒绝。当前 Portal 11 个映射均 `default_disabled=false`；高影响 MCP 在准入前按风险核实是否设显式允许工具，不能无授权改变现有连接。仅支持真实 ChatGPT 客户端所需 MCP 协议组合，避免预先兼容全部历史版本。
+
+**结论**：Cloudflare/Clerk 的管理接口已存在，Q6 的一次操作方案具备可用 API 基础；**端到端自动接入、Q7 动态授权准入、跨 MCP 工具隔离、停用旧 Token 和 Production 长期刷新仍为 Unknown**。这些是实施事实门，不是继续新增架构组件的理由；原 Portal、已上线 Raindrop Clerk 以及其它插件连接保留直至单独批准迁移。
 
 与此前 Spec #853 的长期目标保持一致：CIMD 仅允许已预注册 ChatGPT 客户端、PKCE、明确 Owner、拒绝无效/过期/跨资源 Token、Refresh Token 不进入日志或聊天、不开放匿名 DCR 或 Everyone/Bypass，不向 ChatGPT 下发 Portal 或上游机器凭据。
 
@@ -95,13 +98,13 @@
 - **客户端授权（Clerk）**：ChatGPT 到受保护 MCP 入口的 OAuth；校验用户、客户端、Issuer、Audience、Scope、状态及必要的撤销结果。
 - **上游 MCP / 上游认证**：入口到具体业务服务的另一条信任关系。Bearer、Headers、None 或 OAuth 由上游约定决定；用户级 OAuth 的 Token 和刷新属于此边界，不能拿 Clerk Token 直接冒充。
 - **路由与工具边界**：入口把一个 Resource 映射到一个明确的上游身份及受许可的工具集。路由表不是权限证明；必须在真正可调用的执行边界禁止越界请求。
-- **凭据作用域**：即使某个机器 Service Token 技术上能调用整个 Portal，也不代表它可安全地给多个资源充当共同的上游管理身份。
+- **凭据作用域**：唯一 Gateway Service Token 可访问所有被授权的上游，这是明确接受的共享凭据风险；每个 Clerk Resource 的正常请求由 Gateway 执行严格隔离，但并不能消除 Gateway/凭据泄露波及全部准入上游的风险。
 
 ## 候选方案与实施前证据门
 
 **优先方案：复用现有 Portal，仅补足 Clerk 客户端 OAuth 与独立资源的安全适配。** 首先只读确认 Cloudflare Portal/Access 的公开契约与当前策略能否接受外部 Clerk 授权、是否能够为每个 MCP 独立约束 Portal 内实际可执行的工具、上游凭据和刷新，不把 Access 登录 IdP 的更换误认为替代 Cloudflare Managed OAuth 的 Grant 生命周期。没有证据前不能称原生 Portal 已支持此方案。
 
-**条件性备选：同仓库的最薄无状态入口 Worker。** 只有现有 Portal 无法满足客户端授权或资源隔离、且确有可验证的安全上游路径时，才考虑一个最小共享适配入口；不重写完整 MCP Portal，也不默认每个 MCP 添加业务代码或独立 Worker。它可以统一验证 Clerk 与分发请求，但**不能**因单一 Portal Service Token 拥有全部上游能力便宣称隔离。若 Portal 无法在上游执行边界限制权限，应寻找按资源隔离的上游凭据/执行边界，或将该上游标记 Blocked；不通过扩大机器权限绕过。
+**条件性备选：同仓库的最薄无状态入口 Worker。** 只有现有 Portal 无法满足客户端授权或资源隔离、且确有可验证的安全上游路径时，才考虑一个最小共享适配入口；不重写完整 MCP Portal，也不默认每个 MCP 添加业务代码或独立 Worker。它可以统一验证 Clerk 与分发请求，但**不能**因单一 Portal Service Token 拥有全部上游能力便宣称隔离。若 Portal 与 Gateway 不能在实际工具调用边界做到跨 Resource 拒绝，则该接入路线保持 Blocked、旧连接继续使用；不通过第二枚 Gateway Token 或扩大已有 Workflow Token 权限绕过。
 
 上游认证逻辑上按 OAuth、Bearer、Custom Headers、None 分类，但 Cloudflare Portal API 的实际 `auth_type` 为 `oauth`、`bearer` 和 `unauthenticated`；Custom Headers 属于 `bearer` 类型的 `auth_credentials` 配置，而非额外独立 `auth_type`。该差异不需要另起抽象或重复代码。优先复用 Portal 已可靠运行的能力。
 
@@ -115,7 +118,7 @@ Cloudflare 官方文档确认：对服务令牌，Portal 及各上游 MCP Access
 
 - **运行位置**：Cloudflare Workers 边缘运行时；**源码位置**：继续放在 `lirtual/mcp-workers`，如果需要新增一个部署单元，建议 `apps/mcp-gateway-worker/`；复用现有 GitHub CI、Release Worker 及 Clerk 验证实现。不新建独立 GitHub 仓库、服务器或管理后台。Clerk 继续使用现有托管 Production 实例，**Clerk 本身不运行 Gateway**。
 - **暴露接口**：一个 Gateway 按**安全核验后的 Portal `server_id`** 推导多个独立受保护 MCP Resource，例如 `/mcp/raindrop`、`/mcp/sentry`（仅为拟议路径）。在 Clerk 程序化注册对应完整 HTTPS Resource URL，OAuth Protected Resource Metadata / 401 Challenge 与该业务入口一致。**不维护逐 MCP 的第二份路由注册表、工具目录、业务 Worker 分支或 MCP 专属 Service Token**；仅靠路径匹配不代表授权成立。
-- **核心处理**：按实际请求验证 Clerk OAuth Token 类型/有效性/Issuer/精确 Owner/完整 Resource Audience/必要 Scope 和 Resource 实际登记状态；按已验证 `server_id` 命名空间筛选 `tools/list`，在 `tools/call` 执行边界限制只能调用该 MCP，默认阻断 `portal_*` 内置工具、Code Mode、未知方法/查询参数，并核验协议请求头与 body 一致；首期优先支持真实 ChatGPT 所需的 Streamable HTTP 版本，不理解各业务参数语义。服务端仅用**唯一** Gateway Service Token 访问固定 Portal URL，严禁把入站 Clerk Token 发到上游或把 Portal Token 给 ChatGPT；遵循 Cloudflare Workers 的流式响应与拒绝带凭据重定向约束。
+- **核心处理**：按实际请求验证 Clerk OAuth Token 类型/有效性/Issuer/精确 Owner/完整 Resource Audience/必要 Scope 和 Resource 实际登记状态；按已验证 `server_id` 命名空间筛选 `tools/list`，在 `tools/call` 执行边界限制只能调用该 MCP，默认阻断 `portal_*` 内置工具、Code Mode、未知方法/查询参数，并核验所用协议版本下请求头与 body 一致；首期优先支持真实 ChatGPT 所需的 Streamable HTTP 版本，不理解各业务参数语义。服务端仅用**唯一** Gateway Service Token 访问固定 Portal URL，严禁把入站 Clerk Token 发到上游或把 Portal Token 给 ChatGPT；遵循 Cloudflare Workers 的流式响应与拒绝带凭据重定向约束。
 - **职责划分**：Gateway 只做“客户端授权 + 路由 + 执行权限检查 + 最小 MCP 协议适配”；Portal 继续做上游注册、认证、工具同步和上游转发。能由现有 Portal 原生完成的职责不复制。若 Portal 原生不能安全兼容该结构，优先停止并重新核查，而非增加复杂代理链。
 - **非目标**：不在首批同时迁移全部 11 个 MCP，不为不同 MCP、不同风险组再创建额外 Gateway Token；不自行实现上游业务代码、完整 OAuth 授权服务、Token Vault、MCP Portal 管理后台、数据库或定时任务。Gateway 当前仍是条件候选，未经授权不得创建生产 Worker。
 
