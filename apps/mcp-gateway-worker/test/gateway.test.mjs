@@ -35,6 +35,13 @@ test("unauthenticated MCP GET exposes a resource-specific 401 challenge for Cler
   const response = await gatewayFetch(new Request(origin + "/mcp/sentry"), env);
   assert.equal(response.status, 401);
   assert.match(response.headers.get("www-authenticate") ?? "", /oauth-protected-resource\/mcp\/sentry/);
+  assert.match(response.headers.get("www-authenticate") ?? "", /scope="openid offline_access"/);
+  const metadata = await gatewayFetch(new Request(origin + "/.well-known/oauth-protected-resource/mcp/sentry"), env);
+  assert.equal(metadata.status, 200);
+  const body = await metadata.json();
+  assert.deepEqual(body.scopes_supported, ["openid", "offline_access"]);
+  assert.equal(JSON.stringify(body).includes("public_metadata"), false);
+  assert.equal(JSON.stringify(body).includes("private_metadata"), false);
 });
 
 test("authenticated tool discovery projects the current server and strips caller credentials", async () => {
