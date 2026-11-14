@@ -5,6 +5,7 @@ import { BOOTSTRAP_SECRETS, collectBootstrapSecrets } from "./bootstrap-worker-s
 const fixtures = {
   "browser-mcp-worker": { MCP_ACCESS_TOKEN: "independent-browser-token" },
   "raindrop-mcp-worker": { MCP_ACCESS_TOKEN: "portal", RAINDROP_ACCESS_TOKEN: "raindrop" },
+  "mcp-gateway-worker": { CLERK_SECRET_KEY: "clerk-test", MCP_GATEWAY_PORTAL_CLIENT_SECRET: "gateway-test" },
   "ima-mcp-worker": { MCP_ACCESS_TOKEN: "portal", IMA_API_KEY: "ima-key" },
   "database-mcp-worker": { MCP_ACCESS_TOKEN: "portal", DATABASE_CONNECTIONS: "{}" },
   "ssh-mcp-worker": { MCP_ACCESS_TOKEN: "portal", SSH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") },
@@ -23,7 +24,7 @@ test("selected Worker receives only required named secrets (no JSON wrappers)", 
   for (const [worker, selected] of Object.entries(fixtures)) {
     const env = { ...selected, OTHER_WORKER_KEY: "do-not-copy", RAINDROP_MCP_SECRETS_JSON: "obsolete" };
     const parsed = collectBootstrapSecrets(worker, env);
-    assert.deepEqual(parsed, worker === "database-mcp-worker" ? {MCP_ACCESS_TOKEN:"portal"} : selected);
+    assert.deepEqual(parsed, worker === "database-mcp-worker" ? {MCP_ACCESS_TOKEN:"portal"} : worker === "mcp-gateway-worker" ? {CLERK_SECRET_KEY:"clerk-test",CF_ACCESS_CLIENT_SECRET:"gateway-test"} : selected);
     assert.equal(Object.hasOwn(parsed, "OTHER_WORKER_KEY"), false);
   }
 });
@@ -132,4 +133,14 @@ test("Raindrop Clerk Secret is optional, worker-scoped, and requires an enabled 
     ...fixtures["ima-mcp-worker"], CLERK_PILOT_RESOURCE: resource,
     CLERK_SECRET_KEY: "clerk-test-secret",
   }), fixtures["ima-mcp-worker"]);
+});
+
+test('Gateway release stages only its Clerk and dedicated Portal service credential', () => {
+  const env = { CLERK_SECRET_KEY: 'clerk-test', MCP_GATEWAY_PORTAL_CLIENT_SECRET: 'gateway-test', MCP_ACCESS_TOKEN: 'unrelated-old' };
+  assert.deepEqual(collectBootstrapSecrets('mcp-gateway-worker', env), {
+    CLERK_SECRET_KEY: 'clerk-test', CF_ACCESS_CLIENT_SECRET: 'gateway-test',
+  });
+  for (const key of ['CLERK_SECRET_KEY', 'MCP_GATEWAY_PORTAL_CLIENT_SECRET']) {
+    assert.throws(() => collectBootstrapSecrets('mcp-gateway-worker', { ...env, [key]: '' }), /Secret/);
+  }
 });

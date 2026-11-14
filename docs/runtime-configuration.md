@@ -4,7 +4,7 @@
 
 **Spec #392 and subsequent Bark-only retirement:** The legacy Weixin MCP Worker and release entry are no longer maintained in this repository. [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) owns the unified Action Provider; its current executable catalog contains no Weixin send operation. Historical data and recovery evidence are governed separately and are not deleted by GitHub configuration cleanup.
 
-The eight independently managed MCP Workers share an MCP-entry Secret **name**, not a uniform hostname, credential or logging policy. Authoritative release contracts: `.github/workflows/release.yml`, `scripts/bootstrap-worker-secrets.mjs`, `scripts/worker-release-variables.mjs`, `scripts/manual-worker-release.mjs` and each app's `wrangler.jsonc`.
+The eight original business MCP Workers share an MCP-entry Secret **name**, not a uniform hostname, credential or logging policy. Authoritative release contracts: `.github/workflows/release.yml`, `scripts/bootstrap-worker-secrets.mjs`, `scripts/worker-release-variables.mjs`, `scripts/manual-worker-release.mjs` and each app's `wrangler.jsonc`.
 
 Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的 OpenList Run `47739981-0534-4966-8034-1e79c1d17481`，在 D1 原始结果、Cloudflare 原生实例已完成，以及 GitHub Session 实际终止全部只读核对成功后，允许其不阻断发布门禁；业务状态仍是 `indeterminate`，不得重试发送或删除历史。所有其他未解决的 Run、Session 和 Attempt 保持原来的拒绝规则。该例外不构成通用忽略开关，部署不自动停止现有 Session。
 
@@ -13,7 +13,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 - Wrangler defines non-secret settings, Cloudflare bindings and required Secret names; never commit secret values.
 - Under Spec #804, Browser **release code** reads `auth_domain` from the Zero Trust Organization and `aud` from the fixed reviewed Access App; Repository `OWNER_EMAIL` is its sole maintained Owner identity Variable. The former GitHub Repository `ACCESS_TEAM_DOMAIN` and Browser Environment `BROWSER_ACTIVATION_AUDIENCE` sources were separately authorized for deletion on 2026-11-10 and each independently confirmed absent (HTTP 404); required Cloudflare runtime identity bindings remain. The GitHub Repository provides Secret `CLOUDFLARE_API_TOKEN`, the default `MCP_ACCESS_TOKEN` and Variable `CLOUDFLARE_ACCOUNT_ID`. Before Spec #849 cutover, a same-name GitHub Environment Secret could override the default; after verified Environment retirement no override remains. Without an override, the selected Worker release stages the Repository token; binding names do not establish whether deployed token values match. Shared Bearer values can widen the impact of credential disclosure, and existing Worker-specific security requirements are not waived by retaining the default.
 - The post-#849 release contract uses a single GitHub **Repository** source for all selected Workers, without job Environments. Only an independently authorized, `main`-only, manual **Release Worker** run publishes production. Editing a GitHub Secret alone does not rotate live credentials.
-- All Workers require `MCP_ACCESS_TOKEN`. `IMA_CLIENT_ID` and `WORKFLOW_MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
+- The eight original business MCP Workers require `MCP_ACCESS_TOKEN`; the independent `mcp-gateway-worker` instead uses Clerk OAuth and a dedicated Cloudflare Access service identity. `IMA_CLIENT_ID` and `WORKFLOW_MCP_PORTAL_CLIENT_ID` are required **plain-text Variables**, not Secrets.
 
 ## Worker-scoped configuration
 
@@ -27,6 +27,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `remote-control-mcp-worker` | 无 | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`；`SESSION_RUNTIME_DATA_KEY` 已按 #774 清理，不再是现行发布来源 | `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Repository）、`WORKFLOW_GITHUB_ACTION_REPOSITORY`（Repository） |
+| `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（运行时 `CF_ACCESS_CLIENT_SECRET`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`、原有 `CLERK_PILOT_*`（仅复用身份变量，不复用 Resource） |
 
 **Historical Spec #733 exception (2026-11-06, superseded):** GitHub Environment `ENCRYPTION_KEY` (SSH), `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` (Workflow) were originally kept as release inputs and mapped to canonical Worker runtime names. The #774 UU cleanup removed `SESSION_RUNTIME_DATA_KEY`. The subsequent authorized GitHub-source-only normalization replaces the remaining two with unchanged-byte `SSH_ENCRYPTION_KEY` and `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` inputs. Historical failed rename attempts and their audit evidence below remain unchanged; the source-only change does not deploy Workers or prove decryption.
 
@@ -200,3 +201,7 @@ permanent NXDOMAIN or that every possible future fallback is safe. The
 independently verified Worker Domain binding is absent. No Worker release,
 Portal change, credential rotation or database data modification occurred.
 These Stage B changes are separate from Browser Stage A delivery.
+
+### Spec #878 Gateway
+
+`mcp-gateway-worker` is an additional, separate Clerk-authenticated Gateway, not a ninth consumer of the shared ingress `MCP_ACCESS_TOKEN`. Its single immutable public origin is `https://gateway.lirtual.dpdns.org` (Wrangler Custom Domain), and the fixed upstream Portal is `https://mcp.lirtual.dpdns.org/mcp`. Source, CI and a manually selectable release contract do not prove production deployment. The dedicated `mcp-gateway-worker` Cloudflare Access Service Token remains disabled until scoped Portal/upstream service-auth policy checks, Clerk Resource admission, revocation and real execution boundaries are approved. Never add this identity to the shared `WORKFLOWS` policy.

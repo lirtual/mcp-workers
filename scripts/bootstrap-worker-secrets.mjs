@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 export const BOOTSTRAP_SECRETS = Object.freeze({
   "browser-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "raindrop-mcp-worker": ["MCP_ACCESS_TOKEN", "RAINDROP_ACCESS_TOKEN"],
+  "mcp-gateway-worker": ["CLERK_SECRET_KEY", "MCP_GATEWAY_PORTAL_CLIENT_SECRET"],
   "ima-mcp-worker": ["MCP_ACCESS_TOKEN", "IMA_API_KEY"],
   "database-mcp-worker": ["MCP_ACCESS_TOKEN"],
   "ssh-mcp-worker": ["MCP_ACCESS_TOKEN", "SSH_ENCRYPTION_KEY"],
@@ -29,6 +30,10 @@ export function collectBootstrapSecrets(worker, env) {
       throw new Error("Missing or empty bootstrap Secret: " + name);
     }
     payload[name] = value;
+  }
+  if (worker === "mcp-gateway-worker") {
+    payload.CF_ACCESS_CLIENT_SECRET = payload.MCP_GATEWAY_PORTAL_CLIENT_SECRET;
+    delete payload.MCP_GATEWAY_PORTAL_CLIENT_SECRET;
   }
   if (worker === "raindrop-mcp-worker") {
     const enabled = typeof env.CLERK_PILOT_RESOURCE === "string" &&

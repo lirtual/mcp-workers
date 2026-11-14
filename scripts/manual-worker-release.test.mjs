@@ -1156,7 +1156,7 @@ test("worker release documentation stays aligned with the selected-Worker contra
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const options = release.match(/\n\s+options:\n([\s\S]*?)\n\s+[a-z][a-z_]+:/);
   assert.ok(options, "missing worker release choice options");
-  const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-mcp-worker)$/gm)].map(m => m[1]).sort();
+  const selected = [...options[1].matchAll(/^\s+- ([a-z-]+-worker)$/gm)].map(m => m[1]).sort();
   const { RELEASE_WORKERS } = await import("./select-affected-apps.mjs");
   assert.deepEqual(selected, [...RELEASE_WORKERS].sort());
   assert.ok(selected.every(worker => Object.hasOwn(BOOTSTRAP_SECRETS, worker)));
@@ -1394,4 +1394,40 @@ test('Spec #804 prepublication gate rejects Access and active Worker drift witho
   },{...candidate.browserIdentity,audience:'b'.repeat(64)}),/identity_drift/);
   assert.ok(source.indexOf('manual-worker-release.mjs identity-recheck')<
     source.indexOf('Publish exactly selected Worker'));
+});
+
+test('Gateway source and live bindings are verified by the same protected release gate', () => {
+  const path = new URL('../apps/mcp-gateway-worker/wrangler.jsonc', import.meta.url);
+  const source = readFileSync(path, 'utf8');
+  assert.equal(readConfiguration('mcp-gateway-worker', source).workers_dev, false);
+  const names = ['CLERK_SECRET_KEY', 'CF_ACCESS_CLIENT_SECRET'];
+  const settings = {
+    bindings: [
+      ...names.map(name => ({ name, type: 'secret_text' })),
+      { name: 'CLERK_ISSUER', type: 'plain_text', text: 'https://clerk.lirtual.dpdns.org' },
+      ...['CLERK_PUBLISHABLE_KEY', 'CLERK_OWNER_USER_ID', 'GATEWAY_ORIGIN', 'PORTAL_MCP_URL', 'CF_ACCESS_CLIENT_ID'].map(name => ({ name, type: 'plain_text', text: 'test' })),
+    ],
+    observability: { enabled: true, logs: { invocation_logs: true } },
+  };
+  const inventory = names.map(name => ({ name }));
+  assert.equal(verifyBindings('mcp-gateway-worker', settings, inventory, { mode: 'readback' }), true);
+  assert.throws(() => verifyBindings('mcp-gateway-worker', settings, [], { mode: 'readback' }), /Secret/);
+  assert.throws(() => verifyBindings('mcp-gateway-worker', {
+    ...settings, bindings: [...settings.bindings, { name: 'UNREVIEWED', type: 'plain_text', text: 'untrusted' }],
+  }, inventory, { mode: 'readback' }), /Gateway/);
+  const tampered = JSON.parse(source);
+  tampered.routes[0].pattern = 'any-other.example.com';
+  assert.throws(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)), /Gateway/);
+  tampered.routes[0].pattern = 'gateway.lirtual.dpdns.org';
+  tampered.workers_dev = true;
+  assert.throws(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)), /Gateway/);
+});
+
+test('Gateway release secrets and variables are selected without leaking them into other workers', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(release, /MCP_GATEWAY_PORTAL_CLIENT_SECRET: \$\{\{ inputs\.worker == 'mcp-gateway-worker' && secrets\.MCP_GATEWAY_PORTAL_CLIENT_SECRET/);
+  assert.match(release, /MCP_GATEWAY_PORTAL_CLIENT_ID: \$\{\{ inputs\.worker == 'mcp-gateway-worker' && vars\.MCP_GATEWAY_PORTAL_CLIENT_ID/);
+  assert.match(release, /github\.actor == 'lirtual'/);
+  assert.match(release, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(release, /needs\.checks\.outputs\.release_ready == 'true'/);
 });

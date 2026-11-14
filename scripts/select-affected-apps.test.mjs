@@ -143,11 +143,11 @@ test('CI cancels only obsolete PR runs and isolates release callers', async () =
   assert.doesNotMatch(workflow, /^    concurrency:/m);
 });
 
-test('Gateway runs the shared CI checks but has no production release admission', async () => {
+test('Gateway runs shared CI and requires manual main-branch release admission', async () => {
   assert.deepEqual(selectAffectedApps(['apps/mcp-gateway-worker/src/worker.ts']), ['mcp-gateway-worker']);
   assert.ok(selectAffectedApps(['pnpm-lock.yaml']).includes('mcp-gateway-worker'));
   assert.ok(APPLICATIONS.includes('mcp-gateway-worker'));
-  assert.equal(RELEASE_WORKERS.includes('mcp-gateway-worker'), false);
+  assert.equal(RELEASE_WORKERS.includes('mcp-gateway-worker'), true);
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.equal(release.includes('\n          - mcp-gateway-worker\n'), false);
+  assert.equal(release.includes('\n          - mcp-gateway-worker\n'), true);
 });

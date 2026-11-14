@@ -18,7 +18,7 @@ export const APPLICATIONS = [
 // Only the selected main-branch manual workflow may deploy; CI never deploys.
 // Weixin is published only by cloudflare-actions after the separately authorized handoff.
 // Browser reuses the manual production gate; provisioning remains separately authorized.
-export const RELEASE_WORKERS = APPLICATIONS.filter(app => app !== 'mcp-gateway-worker');
+export const RELEASE_WORKERS = [...APPLICATIONS];
 
 function requiresAllApps(file) {
   return file === 'package.json'
