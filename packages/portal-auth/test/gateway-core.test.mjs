@@ -49,9 +49,10 @@ test('rejects unsupported execution surfaces, arrays and misleading MCP method h
 });
 
 test('permits protocol initialization and tool discovery but not Portal administration', () => {
-  for (const method of ['initialize', 'ping', 'tools/list', 'notifications/initialized']) {
+  for (const method of ['initialize', 'ping', 'tools/list']) {
     assert.equal(authorizeGatewayMessage({ jsonrpc: '2.0', id: 1, method }, 'sentry', new Headers()).ok, true);
   }
+  assert.equal(authorizeGatewayMessage({ jsonrpc: '2.0', method: 'notifications/initialized' }, 'sentry', new Headers()).ok, true);
   assert.equal(authorizeGatewayMessage({ jsonrpc: '2.0', method: 'portal/list' }, 'sentry', new Headers()).ok, false);
 });
 
@@ -74,4 +75,20 @@ test('tool discovery omits every other server and Portal tools without duplicati
     ], nextCursor: 'cursor-2' },
   });
   assert.equal(filterGatewayToolList({ jsonrpc: '2.0', result: { tools: 'bad' } }, 'sentry'), null);
+});
+
+test('disallows execution notifications, unsupported top-level routing, and method-specific parameter overrides', () => {
+  const call = { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'sentry_issue_list', arguments: {} } };
+  const cases = [
+    { ...call, id: undefined },
+    { ...call, id: null },
+    { ...call, id: { retry: true } },
+    { ...call, server_id: 'raindrop' },
+    { jsonrpc: '2.0', method: 'tools/list', params: { server_id: 'raindrop' }, id: 1 },
+    { jsonrpc: '2.0', method: 'notifications/initialized', id: 1 },
+  ];
+  for (const payload of cases) {
+    assert.equal(authorizeGatewayMessage(payload, 'sentry', new Headers()).ok, false, JSON.stringify(payload));
+  }
+  assert.equal(authorizeGatewayMessage({ jsonrpc: '2.0', method: 'tools/list', id: 1, params: { cursor: 'page-two' } }, 'sentry', new Headers()).ok, true);
 });

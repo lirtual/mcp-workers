@@ -57,6 +57,23 @@ export function authorizeGatewayMessage(
     return { ok: false, reason: "invalid_request" };
   }
   const method = message.method;
+  if (Object.keys(message).some((key) => !["jsonrpc", "id", "method", "params"].includes(key))) {
+    return { ok: false, reason: "invalid_request" };
+  }
+  if (method === "notifications/initialized") {
+    if ("id" in message) return { ok: false, reason: "invalid_request" };
+  } else if (!(typeof message.id === "string" ||
+      (typeof message.id === "number" && Number.isSafeInteger(message.id)))) {
+    // Executable operations must not be silently accepted as notifications.
+    return { ok: false, reason: "invalid_request" };
+  }
+  if (method === "tools/list" && message.params !== undefined) {
+    const params = record(message.params);
+    if (!params || Object.keys(params).some((key) => key !== "cursor") ||
+        (params.cursor !== undefined && typeof params.cursor !== "string")) {
+      return { ok: false, reason: "invalid_request" };
+    }
+  }
   const headerMethod = headers.get("Mcp-Method");
   if (headerMethod !== null && headerMethod !== method) {
     return { ok: false, reason: "invalid_request" };
