@@ -67,26 +67,39 @@ export function browserActivationOrigin(config) {
   return "https://" + host;
 }
 
+// The Gateway has one reviewed Wrangler Custom Domain; no separate GitHub hostname variable.
+export function gatewayOriginFromConfig(config) {
+  const routes = config?.routes;
+  if (!Array.isArray(routes) || routes.length !== 1 ||
+      routes[0]?.custom_domain !== true || typeof routes[0]?.pattern !== "string") {
+    throw Error("Gateway requires exactly one Custom Domain");
+  }
+  const host = routes[0].pattern;
+  if (host.length > 253 ||
+      !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)) {
+    throw Error("Invalid Gateway Custom Domain hostname");
+  }
+  return "https://" + host;
+}
+
 export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
   const variables = [];
   if (worker === "mcp-gateway-worker") {
     const values = [env.CLERK_PILOT_PUBLISHABLE_KEY, env.CLERK_PILOT_OWNER_USER_ID, env.CLERK_PILOT_ISSUER, env.MCP_GATEWAY_PORTAL_CLIENT_ID];
-    const routes = options.config?.routes;
+    const origin = gatewayOriginFromConfig(options.config);
     if (values.some(v => typeof v !== "string" || !v.trim() || v.trim() !== v || /[\r\n]/.test(v)) ||
       !/^pk_live_[A-Za-z0-9_]+$/.test(values[0]) ||
       !/^user_[A-Za-z0-9]+$/.test(values[1]) ||
-      values[2] !== "https://clerk.lirtual.dpdns.org" ||
-      !Array.isArray(routes) || routes.length !== 1 || routes[0].custom_domain !== true ||
-      routes[0].pattern !== "mcp-gateway.lirtual.dpdns.org") {
+      values[2] !== "https://clerk.lirtual.dpdns.org") {
       throw Error("Gateway Clerk identity, Access client ID or Custom Domain missing or invalid");
     }
     variables.push(
       "CLERK_PUBLISHABLE_KEY:" + values[0],
       "CLERK_OWNER_USER_ID:" + values[1],
       "CLERK_ISSUER:" + values[2],
-      "GATEWAY_ORIGIN:https://" + routes[0].pattern,
+      "GATEWAY_ORIGIN:" + origin,
       "PORTAL_MCP_URL:https://mcp.lirtual.dpdns.org/mcp",
       "CF_ACCESS_CLIENT_ID:" + values[3],
     );
