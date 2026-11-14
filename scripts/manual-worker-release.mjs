@@ -9,7 +9,7 @@ function databaseSecretNames(raw) {
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectWorkerVars, BROWSER_ACCESS_VARIABLES, browserActivationOrigin } from "./worker-release-variables.mjs";
+import { collectWorkerVars, BROWSER_ACCESS_VARIABLES, browserActivationOrigin, gatewayOriginFromConfig } from "./worker-release-variables.mjs";
 import { verifyWorkflowGitHubExecutor,parseVerifiedExecutorIdentity } from "./workflow-github-executor.mjs";
 import { discoverBrowserActivationIdentity, verifyBrowserIdentityContinuity } from "./browser-owner-access.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
@@ -899,9 +899,7 @@ export function readConfiguration(worker, content, reviewedManifest) {
     "GitHub/Wrangler must own all runtime Variables; keep_vars must be false");
   if (worker === "mcp-gateway-worker") {
     invariant(conf.workers_dev === false && conf.preview_urls === false &&
-      Array.isArray(conf.routes) && conf.routes.length === 1 &&
-      conf.routes[0].custom_domain === true &&
-      conf.routes[0].pattern === "mcp-gateway.lirtual.dpdns.org" &&
+      gatewayOriginFromConfig(conf).startsWith("https://") &&
       JSON.stringify(conf.secrets?.required) === JSON.stringify(["CLERK_SECRET_KEY", "CF_ACCESS_CLIENT_SECRET"]) &&
       !conf.vars && !conf.durable_objects && !conf.d1_databases,
       "Gateway release origin, secrets or resource boundaries drifted");

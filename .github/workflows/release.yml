@@ -1326,7 +1326,13 @@ jobs:
           elif [[ "$SELECTED_WORKER" == "browser-mcp-worker" ]]; then
             mcp_endpoint="https://browser.lirtual.dpdns.org/mcp"
           elif [[ "$SELECTED_WORKER" == "mcp-gateway-worker" ]]; then
-            mcp_endpoint="https://mcp-gateway.lirtual.dpdns.org/mcp/raindrop"
+            # Read the same single reviewed Wrangler route used to derive GATEWAY_ORIGIN.
+            mcp_endpoint="$(node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { gatewayOriginFromConfig } from "./scripts/worker-release-variables.mjs";
+              const config = JSON.parse(readFileSync("apps/mcp-gateway-worker/wrangler.jsonc", "utf8"));
+              process.stdout.write(gatewayOriginFromConfig(config) + "/mcp/raindrop");
+            ')"
           fi
           for ((attempt=1; attempt<=max_attempts; attempt++)); do
             status="$(curl --silent --show-error --max-time 12 --output "$response" --write-out '%{http_code}' \

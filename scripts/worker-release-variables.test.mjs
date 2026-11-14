@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectWorkerVars as originalCollectWorkerVars, remoteControlInstallOrigin, WORKER_VARIABLES } from "./worker-release-variables.mjs";
+import { readFileSync } from "node:fs";
+import { collectWorkerVars as originalCollectWorkerVars, remoteControlInstallOrigin, gatewayOriginFromConfig, WORKER_VARIABLES } from "./worker-release-variables.mjs";
 
 const externalRepository = "alternate-owner/private-actions";
 const externalIdentity = {repository:externalRepository,repositoryId:8090,ciWorkflowId:9010};
@@ -325,15 +326,30 @@ test('Gateway release derives its origin and identity from existing configuratio
     CLERK_PILOT_PUBLISHABLE_KEY: 'pk_live_Y2xlcmsubGlydHVhbC5kcGRucy5vcmck',
     MCP_GATEWAY_PORTAL_CLIENT_ID: 'gateway-client-id',
   };
-  const config = { routes: [{ pattern: 'mcp-gateway.lirtual.dpdns.org', custom_domain: true }] };
+  const config = JSON.parse(readFileSync(new URL('../apps/mcp-gateway-worker/wrangler.jsonc', import.meta.url), 'utf8'));
+  const origin = gatewayOriginFromConfig(config);
   assert.deepEqual(originalCollectWorkerVars('mcp-gateway-worker', env, { config }), [
     'CLERK_PUBLISHABLE_KEY:pk_live_Y2xlcmsubGlydHVhbC5kcGRucy5vcmck',
     'CLERK_OWNER_USER_ID:user_AbCd1234',
     'CLERK_ISSUER:https://clerk.lirtual.dpdns.org',
-    'GATEWAY_ORIGIN:https://mcp-gateway.lirtual.dpdns.org',
+    'GATEWAY_ORIGIN:' + origin,
     'PORTAL_MCP_URL:https://mcp.lirtual.dpdns.org/mcp',
     'CF_ACCESS_CLIENT_ID:gateway-client-id',
   ]);
+  const renamed = { routes: [{ pattern: 'renamed-gateway.example.org', custom_domain: true }] };
+  assert.equal(gatewayOriginFromConfig(renamed), 'https://renamed-gateway.example.org');
+  assert.ok(originalCollectWorkerVars('mcp-gateway-worker', env, { config: renamed })
+    .includes('GATEWAY_ORIGIN:https://renamed-gateway.example.org'));
+  for (const invalid of [
+    {}, { routes: [] }, { routes: [{ pattern: '*.example.org', custom_domain: true }] },
+    { routes: [{ pattern: 'example.org/path', custom_domain: true }] },
+    { routes: [{ pattern: 'example.org:8443', custom_domain: true }] },
+    { routes: [{ pattern: 'https://example.org', custom_domain: true }] },
+    { routes: [{ pattern: 'example.org', custom_domain: false }] },
+    { routes: [{ pattern: 'example.org', custom_domain: true }, { pattern: 'second.example.org', custom_domain: true }] },
+  ]) {
+    assert.throws(() => gatewayOriginFromConfig(invalid), /Gateway/);
+  }
   assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', { ...env, MCP_GATEWAY_PORTAL_CLIENT_ID: '' }, { config }), /Gateway/);
   assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', env, { config: {} }), /Gateway/);
 });
