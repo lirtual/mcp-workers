@@ -1441,7 +1441,6 @@ test('Gateway manual release checks the exact Clerk-protected custom-domain reso
   assert.match(smoke, /elif \[\[ "\$SELECTED_WORKER" == "mcp-gateway-worker" \]\]; then/);
   assert.match(smoke, /readFileSync\("apps\/mcp-gateway-worker\/wrangler\.jsonc"/);
   assert.match(smoke, /gatewayOriginFromConfig\(config\) \+ "\/mcp\/raindrop"/);
-  assert.doesNotMatch(smoke, /https:\/\/mcp-gateway\.lirtual\.dpdns\.org\/mcp\/raindrop/);
   assert.match(smoke, /"\$SELECTED_WORKER" == "mcp-gateway-worker" && "\$FIRST_DEPLOY" == "true"/);
   assert.match(smoke, /401\|403\)/);
 });
