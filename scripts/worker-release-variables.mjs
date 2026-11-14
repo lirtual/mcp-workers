@@ -79,7 +79,7 @@ export function collectWorkerVars(worker, env, options = {}) {
       !/^user_[A-Za-z0-9]+$/.test(values[1]) ||
       values[2] !== "https://clerk.lirtual.dpdns.org" ||
       !Array.isArray(routes) || routes.length !== 1 || routes[0].custom_domain !== true ||
-      routes[0].pattern !== "gateway.lirtual.dpdns.org") {
+      routes[0].pattern !== "mcp-gateway.lirtual.dpdns.org") {
       throw Error("Gateway Clerk identity, Access client ID or Custom Domain missing or invalid");
     }
     variables.push(

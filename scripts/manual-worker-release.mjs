@@ -901,7 +901,7 @@ export function readConfiguration(worker, content, reviewedManifest) {
     invariant(conf.workers_dev === false && conf.preview_urls === false &&
       Array.isArray(conf.routes) && conf.routes.length === 1 &&
       conf.routes[0].custom_domain === true &&
-      conf.routes[0].pattern === "gateway.lirtual.dpdns.org" &&
+      conf.routes[0].pattern === "mcp-gateway.lirtual.dpdns.org" &&
       JSON.stringify(conf.secrets?.required) === JSON.stringify(["CLERK_SECRET_KEY", "CF_ACCESS_CLIENT_SECRET"]) &&
       !conf.vars && !conf.durable_objects && !conf.d1_databases,
       "Gateway release origin, secrets or resource boundaries drifted");

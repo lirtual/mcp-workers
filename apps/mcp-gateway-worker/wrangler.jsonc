@@ -8,7 +8,7 @@
   "keep_vars": false,
   "routes": [
     {
-      "pattern": "gateway.lirtual.dpdns.org",
+      "pattern": "mcp-gateway.lirtual.dpdns.org",
       "custom_domain": true
     }
   ],
