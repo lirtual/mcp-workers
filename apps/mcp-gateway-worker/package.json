@@ -1,0 +1,19 @@
+{
+  "name": "mcp-gateway-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "check": "pnpm run typecheck && pnpm test && wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "@clerk/backend": "3.27.0",
+    "@mcp-workers/portal-auth": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "wrangler": "4.130.0"
+  }
+}
