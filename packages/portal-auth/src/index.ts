@@ -83,5 +83,3 @@ export async function authenticatePortalRequest(
   };
 }
 
-export { parseGatewayResource, authorizeGatewayMessage, filterGatewayToolList } from "./gateway-core.js";
-export type { GatewayDecision } from "./gateway-core.js";
