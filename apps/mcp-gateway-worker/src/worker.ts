@@ -170,6 +170,52 @@ function upstreamHeaders(request: Request, env: Env): Headers | null {
   return headers;
 }
 
+/** Resolve each execution against Portal's current tool catalog, not a copied allowlist. */
+async function toolEnabledNow(
+  send: typeof fetch,
+  portalUrl: string,
+  headers: Headers,
+  serverId: string,
+  toolName: string,
+): Promise<"enabled" | "disabled" | "unavailable"> {
+  let cursor: string | undefined;
+  const seen = new Set<string>();
+  for (let page = 0; page < 16; page++) {
+    const request = JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "tools/list",
+      ...(cursor ? { params: { cursor } } : {}),
+    });
+    let response: Response;
+    try {
+      response = await send(portalUrl, { method: "POST", redirect: "manual", headers, body: request });
+    } catch { return "unavailable"; }
+    if (!response.ok) return "unavailable";
+    const raw = await readLimited(response, MAX_DISCOVERY_BYTES);
+    if (raw === null) return "unavailable";
+    const filtered = filterDiscovery(raw, response.headers.get("content-type") ?? "", serverId);
+    if (!filtered) return "unavailable";
+    let results: unknown[];
+    try {
+      results = filtered.contentType === JSON_MCP
+        ? [JSON.parse(filtered.body)]
+        : filtered.body.split("\n\n").filter(Boolean).map((event) =>
+            JSON.parse(event.split("\n").find((line) => line.startsWith("data: "))!.slice(6)));
+    } catch { return "unavailable"; }
+    let nextCursor: string | undefined;
+    for (const data of results) {
+      const item = data as { result?: { tools?: { name?: string }[]; nextCursor?: string } };
+      if (!Array.isArray(item.result?.tools)) return "unavailable";
+      if (item.result.tools.some((tool) => tool.name === toolName)) return "enabled";
+      if (typeof item.result.nextCursor === "string") nextCursor = item.result.nextCursor;
+    }
+    if (!nextCursor) return "disabled";
+    if (seen.has(nextCursor)) return "unavailable";
+    seen.add(nextCursor);
+    cursor = nextCursor;
+  }
+  return "unavailable";
+}
+
 export async function gatewayFetch(
   request: Request,
   env: Env,
@@ -226,6 +272,12 @@ export async function gatewayFetch(
   if (!decision.ok) return error(403, decision.reason);
   const headers = upstreamHeaders(request, env);
   if (!headers) return error(400, "invalid_mcp_headers");
+  if (decision.method === "tools/call") {
+    const toolName = (message as { params: { name: string } }).params.name;
+    const state = await toolEnabledNow(dependencies.sendPortal ?? fetch, env.PORTAL_MCP_URL, headers, serverId, toolName);
+    if (state === "disabled") return error(403, "tool_not_available");
+    if (state !== "enabled") return error(502, "portal_tools_unavailable");
+  }
   let upstream: Response;
   try {
     upstream = await (dependencies.sendPortal ?? fetch)(env.PORTAL_MCP_URL, {

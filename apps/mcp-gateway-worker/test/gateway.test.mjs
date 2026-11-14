@@ -106,3 +106,94 @@ test("missing runtime configuration blocks upstream calls", async () => {
   const response = await gatewayFetch(request("sentry"), { ...env, CF_ACCESS_CLIENT_SECRET: "" });
   assert.equal(response.status, 503);
 });
+
+test("tools/call checks the live Portal tool list before performing a side effect", async () => {
+  const calls = [];
+  const resp = await gatewayFetch(request("sentry", "POST", message("tools/call", { name: "sentry_issue_list", arguments: {} })), env, {
+    verifyOAuth: async () => true,
+    sendPortal: async (_url, init) => {
+      const req = JSON.parse(init.body);
+      calls.push(req.method);
+      assert.equal(init.redirect, "manual");
+      if (req.method === "tools/list") return toolList();
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: { content: [] } });
+    },
+  });
+  assert.equal(resp.status, 200);
+  assert.deepEqual(calls, ["tools/list", "tools/call"]);
+});
+
+test("tools/call rejects a Portal-disabled or inaccessible tool before execution", async () => {
+  let forwardedExecution = false;
+  const resp = await gatewayFetch(request("sentry", "POST", message("tools/call", { name: "sentry_issue_update", arguments: {} })), env, {
+    verifyOAuth: async () => true,
+    sendPortal: async (_url, init) => {
+      if (JSON.parse(init.body).method === "tools/call") forwardedExecution = true;
+      return toolList();
+    },
+  });
+  assert.equal(resp.status, 403);
+  assert.equal(forwardedExecution, false);
+});
+
+test("tools/call fails closed when live Portal tool discovery is unavailable", async () => {
+  let executed = false;
+  const resp = await gatewayFetch(request("sentry", "POST", message("tools/call", { name: "sentry_issue_list" })), env, {
+    verifyOAuth: async () => true,
+    sendPortal: async (_url, init) => {
+      if (JSON.parse(init.body).method === "tools/call") executed = true;
+      return new Response(null, { status: 302, headers: { location: "https://evil.example.test" } });
+    },
+  });
+  assert.equal(resp.status, 502);
+  assert.equal(executed, false);
+});
+
+test("tools/call follows live Portal tool pagination without a second tool catalog", async () => {
+  const calls = [];
+  const response = await gatewayFetch(request("sentry", "POST", message("tools/call", { name: "sentry_issue_list" })), env, {
+    verifyOAuth: async () => true,
+    sendPortal: async (_url, init) => {
+      const req = JSON.parse(init.body);
+      calls.push(req.method);
+      if (req.method === "tools/call") return jsonResponse({ jsonrpc: "2.0", id: 1, result: { content: [] } });
+      if (!req.params?.cursor) return jsonResponse({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "raindrop_collection_list" }], nextCursor: "next" } });
+      assert.equal(req.params.cursor, "next");
+      return toolList();
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, ["tools/list", "tools/list", "tools/call"]);
+});
+
+test("tools/call checks the live Portal list when Portal uses SSE", async () => {
+  let executed = false;
+  const response = await gatewayFetch(request("sentry", "POST", message("tools/call", { name: "sentry_issue_list" })), env, {
+    verifyOAuth: async () => true,
+    sendPortal: async (_url, init) => {
+      const req = JSON.parse(init.body);
+      if (req.method === "tools/call") {
+        executed = true;
+        return jsonResponse({ jsonrpc: "2.0", id: 1, result: { content: [] } });
+      }
+      const data = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "sentry_issue_list" }] } });
+      return new Response(`event: message\ndata: ${data}\n\n`, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(executed, true);
+});
+
+test("tools/call fails closed on a cyclic Portal pagination cursor", async () => {
+  let calls = 0;
+  const response = await gatewayFetch(request("sentry", "POST", message("tools/call", { name: "sentry_issue_list" })), env, {
+    verifyOAuth: async () => true,
+    sendPortal: async (_url, init) => {
+      calls++;
+      assert.equal(JSON.parse(init.body).method, "tools/list");
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: { tools: [], nextCursor: "same" } });
+    },
+  });
+  assert.equal(response.status, 502);
+  assert.equal(calls, 2);
+});
