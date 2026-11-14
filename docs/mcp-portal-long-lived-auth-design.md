@@ -31,30 +31,22 @@
 
 
 
-### 第三轮最终方案：自动接入、Clerk 资源与安全停用
+### 最终接入方式：Portal + Clerk 双配置，Gateway 自动推导
 
-**Q6=A、Q7=A；设计树 Q1–Q7 全部收敛。** 自动接入从一次已授权的用户请求或现有 Cloudflare/Clerk 连接器工作流开始，而非监听 Portal Dashboard 变化；Gateway 路由从已核实的 Portal `server_id` 推导 `/mcp/{server_id}`，不长期维护第二份逐 MCP 路由表。**路径匹配仅定位目标，不构成使用授权**；不能证明安全准入的候选资源一律 fail-closed。
+**最新用户决定优先：** 原 Q6 的“一次请求自动注册 Portal/Clerk”已被取消。新增 MCP **只需在现有 Cloudflare MCP Portal 配置上游，再在现有 Clerk Production 注册 Gateway 对应的 HTTPS Resource URL**；Gateway 根据 Portal 已登记的 `server_id` 派生 `/mcp/{server_id}`，不建第二份路由表，不为每个 MCP 追加业务代码、Worker 或 Gateway Service Token。ChatGPT 中仍需由用户首次安装并授权独立插件。这是人工配置现有两个平台、Gateway 自动路由的方案，不是自动化接入编排。
 
-**每新增一个 MCP，Clerk 究竟需要什么：**
+**Portal 操作：** 登记/复用远程 HTTP MCP 地址、上游认证方式及工具允许状态，确认挂载到现有 Portal 且 Ready。一个专用 Gateway Service Token 继续作为唯一机器身份；若新上游尚未允许该 Token，需在目标 MCP Access App 的 Service Auth Policy 中授权**同一 Token**（不新增 Token）。Portal 通过 UI/现有管理 API 管理；如使用 PUT 更新，其服务器列表是全量覆盖，须保留已有挂载。生产修改需要具体对象、风险及授权。
 
-- **复用一次性全局配置**：当前 Clerk Production 的 Issuer、Owner、已预注册的 ChatGPT CIMD 客户端、PKCE、Audience 开关、已有 Refresh 机制。不创建新的 Clerk 应用、OAuth 客户端、用户或密钥，也不为每个 MCP 创建独立的 OAuth 服务器。
-- **每个 MCP 注册一个完整 HTTPS Resource URL**：例如新 Gateway 的 `https://<gateway-domain>/mcp/sentry`；它既是客户端输入的 MCP 地址，也是 Clerk OAuth Access Token 需要精确匹配的 Resource Audience。用现有 `configure_mcp_server` 工具做 `dry_run` 预检，再在明确生产授权后注册/回读；已存在且等价的 URL 直接复用。此举不会自动实现 Gateway MCP/PRM 路由，也不代表 ChatGPT 已安装或已登录。当前生产 Clerk 只有 Raindrop 这个 MCP Resource。
-- **Scope 并非每个新 MCP 必配**：独立 Resource Audience、Owner 和业务工具边界可以覆盖单用户基本隔离。如果 Sentry 需要区分只读/写入等独立权限，才按实际需要在 Clerk OAuth Scopes 中新增必要的自定义 Scope、授予预注册的 ChatGPT 客户端，并在 Gateway 的 PRM/实际 Token 校验中保持一致。Clerk 广告 Scope 不会自动授权客户端，也不会自动让 Gateway 校验它。部分 OAuth 客户端会省略 `scope`，需实测 ChatGPT 的请求及 Clerk 默认 Scope 配置；避免为了每个 MCP 创造未使用的 Scope。
-- **长期授权复用现有机制**：Clerk `offline_access` / Refresh 是 ChatGPT 到 MCP 的客户端授权机制，不是 Gateway 到 Portal 的机器凭据，也不能替代第三方用户 OAuth。当前 Clerk Production `oauth_jwt_access_tokens=false`，Raindrop 的 SDK 验证已包含在线 Token 验证路径；不强制修改全局 Token 格式。OAuth Access Token 的到期/撤销、Refresh 的实际续期、Clerk 浏览器 Session 均为不同边界。生产真实静默刷新尚为 Unknown。
-- **下线时同时处理实际调用路径**：从 Clerk 注销 Resource 或删除 Scope **不代表已经签发的 Access Token 立即不可用**。必须先让 Gateway/Portal 针对该目标拒绝真实工具调用，再按已核实依赖撤销该 MCP 的唯一 Gateway Token 上游 Access 准入、相关 Clerk 授权/资源，验证旧 Token 与旧 URL 无法继续使用；不能撤销共享 Gateway Token 本体而导致其它 MCP 一起失联。
+**Clerk 操作：** 继续使用已配置的一个 Production Application、Issuer、Owner、ChatGPT CIMD 客户端、PKCE、Audience 与 Refresh 机制，只为新 MCP 注册**一个完整 HTTPS MCP Resource URL**，例如 `https://<gateway-domain>/mcp/sentry`。不为每个 MCP 新建 Clerk App、Client、密钥或用户；自定义 Scope 仅在确需细分读写权限时配置。Gateway 的 PRM 与实际 OAuth Audience 精确匹配该 URL；Resource 注册本身不表示 ChatGPT 已连接，也不证明自动刷新已通过。
 
-**一次请求接入的最小安全顺序（涉及生产写入均须单独授权）：**
+**安全边界：** Gateway 解析和规范化 `server_id` 只是定位，不是授权；只有对应 Clerk Resource 确实登记、Token Issuer/Owner/Audience 有效、对应 Portal 上游挂载且被 Gateway Service Token 许可，才能执行业务。严格限制 `tools/list` 与 `tools/call` 为该上游，阻止 `portal_*` 管理及 Code Mode 间接调用；不把客户端 Clerk Token 送往 Portal。Portal 管理全局工具启停，需实测禁用工具的真实执行拒绝。Clerk Resource 登记/注销后的实际权限行为与同 Token 下跨资源拒绝仍为 Unknown，未证实时 fail-closed，不为了零路由表开放任意路径。
 
-1. **只读预检**：核实新的远程 MCP HTTP URL、上游认证方式、`server_id` 的规范化和命名空间冲突、是否已在 Portal 注册/挂载、工具及风险、是否已有 Clerk Resource、现有唯一 Gateway Token 准入和恢复基线；同配置复用，不凭同名覆盖异物。
-2. **先准备业务与客户端资源**：经授权注册/挂载 Portal 上游并核实 Ready，按 `server_id` 派生完整 HTTPS Gateway URL，调用 Clerk MCP Resource 注册能力并核对元数据及当前设置。Portal `PUT` 的 `servers` 为**全数组替换**，必须写前回读并保留全部原上游挂载与字段，写后逐一对账；若有并发漂移或写入副作用 Unknown，停写回读，不能盲目重试。
-3. **最后扩大机器准入**：仅在前述资源准备和安全核验通过、明确生产授权存在时，把**同一枚专用 Gateway Service Token** 加入目标 MCP Access 应用的 Service Auth Policy。不得使用已有 `workflow-mcp-worker` Token 替代；不能一次性默认准入所有 11 个上游或自动扩大高风险服务权限。
-4. **实测然后交付**：核实精确 Clerk Audience、Owner、必要 Scope、只读业务正向调用、跨 Resource 和禁用工具反向拒绝，并确保 Portal 内置管理/工具搜索、Code Mode 和未知可执行方法被阻断；适用时对照真实 ChatGPT 协议验证 MCP 请求头/JSON body 一致。只有全部关键门禁 Pass 才返回“已配置、可在 ChatGPT 添加”的独立 URL；用户仍需首次安装和授权，生产自动 Refresh 是单独的验收项。
+**停用：** 经独立生产授权，移除该上游对 Gateway 的可执行准入（不撤销其它服务共用的机器 Token）、处理 Clerk 对应 Resource/授权，验证旧 URL、旧 Access Token 和刷新后令牌均不能越权调用。现有 Raindrop 与 Portal 连接保持不变直到明确迁移。
 
-**失败、幂等与停用**：Portal、Access、Clerk 三方没有原子事务。以各方真实标识和已有 URL 回读作为续办断点，不新增 onboarding 状态机、数据库、锁、Cron、同步事件监听器。若 Portal Ready 但 Clerk 注册失败，则保留真实状态、标未就绪并允许原地续办；不误删既有 Portal MCP 或凭据。Gateway 的动态 Resource 必须依托可信的 Clerk 注册/当前准入状态，不能仅靠合法 URL 和有效签名 Token 启用未知服务；注册后删除及旧 Access/Refresh Token 的行为仍要真实验证。无法仅通过现有元数据可靠证明准入时，优先采用最小已有控制或受控准入方式，不为保持零路由表而放宽授权。
+**明确不实施：** “告诉 ChatGPT 一个 MCP URL → 自动注册两套平台 → 自动完成验证并返回独立插件地址”的 Agent 流程；跨系统事务、断点续办、失败补偿、Webhook/Cron/Queue、同步数据库或管理后台。每个平台的配置/排障使用原生能力，不新增持久接入状态。
 
-**Portal 工具权限与协议**：Portal 是上游工具启停的单一事实来源；Gateway 不复制整套工具白名单，但需要过滤 `tools/list`，在 `tools/call` 真实执行时限制为当前上游的业务工具、拒绝 `portal_*`、Code Mode、其它执行入口；核实 Portal 禁用的工具即使直接构造调用也被拒绝。当前 Portal 11 个映射均 `default_disabled=false`；高影响 MCP 在准入前按风险核实是否设显式允许工具，不能无授权改变现有连接。仅支持真实 ChatGPT 客户端所需 MCP 协议组合，避免预先兼容全部历史版本。
+**验收重点：** 预先在 Portal + Clerk 配好两个资源 → Gateway 同一枚 Token 下分别访问相应 MCP 并拒绝跨资源调用；配置第三个 MCP 后不需要任何 Gateway 代码、路由表或新 Token。用户首次连接与真实长期静默刷新单独验收。
 
-**结论**：Cloudflare/Clerk 的管理接口已存在，Q6 的一次操作方案具备可用 API 基础；**端到端自动接入、Q7 动态授权准入、跨 MCP 工具隔离、停用旧 Token 和 Production 长期刷新仍为 Unknown**。这些是实施事实门，不是继续新增架构组件的理由；原 Portal、已上线 Raindrop Clerk 以及其它插件连接保留直至单独批准迁移。
 
 与此前 Spec #853 的长期目标保持一致：CIMD 仅允许已预注册 ChatGPT 客户端、PKCE、明确 Owner、拒绝无效/过期/跨资源 Token、Refresh Token 不进入日志或聊天、不开放匿名 DCR 或 Everyone/Bypass，不向 ChatGPT 下发 Portal 或上游机器凭据。
 
@@ -135,7 +127,7 @@ Cloudflare 官方文档确认：对服务令牌，Portal 及各上游 MCP Access
 - **Gate 1 — Portal 安全复用**：已确认现有 `WORKFLOWS` Token 跨全部 11 个上游，因此**直接复用旧令牌为 Gateway 令牌是 Fail**。候选为**仅一枚新 Gateway Service Token**，通过 Portal/上游 Access Policy 逐批获准访问指定 MCP；无论该 Token 有权访问多少上游，Gateway 都必须对每个 Clerk Resource 的跨 MCP `tools/call` 做实际拒绝。控制面具备官方支持，**数据面 Unknown**；未经授权不得修改生产 Access Policy/Secret。
 - **Gate 2 — 最小适配必要性**：先确认现有 Portal 是否可以直接接受并验证 Clerk OAuth；若不能，且 Gate 1 的单资源通道可安全成立，再考虑同仓库一个最薄、无状态的 Clerk 入口 Worker，复用 Portal 的上游凭据与协议能力。若连 Gate 1 也不成立，则保留现有连接，停止受影响路径，不能为了交付“统一”扩展全部机器身份权限。
 - **Gate 3 — 认证模式范围**：首批验证现有 Bearer，按需验证 Custom Headers/None；上游 OAuth 仅在实际支持安全、低成本原生复用时启用。Service Token + `on_behalf=true` 不成立是已知产品限制，不重复作为尝试路径。若要支持必须自建凭据代理，保持 Deferred，日后有实际需求再单独评估。
-- **Gate 4 — 自动接入与可回退 E2E**：同一接入请求完成 Portal→单枚 Gateway Token 准入→Clerk Resource 注册→Gateway 路由与工具验证；新 Resource 失败、重复、并发修改及部分完成场景能通过回读续办、不覆盖原 Portal 数组。现有 Portal、Raindrop Clerk、旧插件与 Worker 保持不变。生产配置更改、上线与回滚需独立授权；ChatGPT 首次安装/授权、实际业务、长期刷新分别验收。
+- **Gate 4 — 双平台配置与安全路由 E2E**：在 Portal 与 Clerk 分别配置后，Gateway 从 server_id 自动推导路由并验证资源及工具权限；新 Resource 失败、重复、并发修改及部分完成场景能通过回读续办、不覆盖原 Portal 数组。现有 Portal、Raindrop Clerk、旧插件与 Worker 保持不变。生产配置更改、上线与回滚需独立授权；ChatGPT 首次安装/授权、实际业务、长期刷新分别验收。
 - 单个新 Worker、持久状态、独立 OAuth 管理或额外部署单元，**均不是当前的已决架构结论**。如证据表明不加新组件就能安全满足目标，直接复用即可。
 
 **设计阶段完成用户层面的必要选择；技术可行性与生产验收仍未完成。本次文档更新没有授权任何生产改动。**
