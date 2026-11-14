@@ -95,6 +95,25 @@ importers:
         specifier: 4.151.0
         version: 4.151.0(@cloudflare/workers-types@5.20261006.1)(@types/node@22.20.2)
 
+  apps/mcp-gateway-worker:
+    dependencies:
+      '@clerk/backend':
+        specifier: 3.27.0
+        version: 3.27.0(react@18.3.1)
+      '@mcp-workers/portal-auth':
+        specifier: workspace:*
+        version: link:../../packages/portal-auth
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260911.1
+        version: 5.20260911.1
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      wrangler:
+        specifier: 4.130.0
+        version: 4.130.0(@cloudflare/workers-types@5.20260911.1)
+
   apps/github-actions-mcp-worker:
     dependencies:
       '@mcp-workers/portal-auth':
