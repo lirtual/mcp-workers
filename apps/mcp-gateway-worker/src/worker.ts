@@ -25,6 +25,7 @@ const MAX_REQUEST_BYTES = 1_048_576;
 const MAX_DISCOVERY_BYTES = 2_097_152;
 const JSON_MCP = "application/json";
 const SSE_MCP = "text/event-stream";
+const INITIAL_OAUTH_SCOPES = "openid offline_access";
 
 function error(status: number, code: string, challenge?: string): Response {
   return Response.json(
@@ -235,12 +236,13 @@ export async function gatewayFetch(
       resource: env.GATEWAY_ORIGIN + "/mcp/" + id,
       authorization_servers: [env.CLERK_ISSUER],
       bearer_methods_supported: ["header"],
+      scopes_supported: INITIAL_OAUTH_SCOPES.split(" "),
     }, { headers: { "cache-control": "no-store" } });
   }
   const serverId = parseGatewayResource(request.url, env.GATEWAY_ORIGIN);
   if (!serverId) return error(404, "not_found");
   const metadataUrl = env.GATEWAY_ORIGIN + "/.well-known/oauth-protected-resource/mcp/" + serverId;
-  const challenge = 'Bearer resource_metadata="' + metadataUrl + '"';
+  const challenge = 'Bearer resource_metadata="' + metadataUrl + '", scope="' + INITIAL_OAUTH_SCOPES + '"';
   if (request.headers.has("origin")) return error(403, "invalid_origin");
   const bearer = request.headers.get("authorization");
   if (!bearer || !/^Bearer [^\s]+$/.test(bearer)) return error(401, "unauthorized", challenge);
