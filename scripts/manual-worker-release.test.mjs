@@ -1416,9 +1416,11 @@ test('Gateway source and live bindings are verified by the same protected releas
     ...settings, bindings: [...settings.bindings, { name: 'UNREVIEWED', type: 'plain_text', text: 'untrusted' }],
   }, inventory, { mode: 'readback' }), /Gateway/);
   const tampered = JSON.parse(source);
-  tampered.routes[0].pattern = 'any-other.example.com';
+  tampered.routes[0].pattern = 'renamed-gateway.example.org';
+  assert.doesNotThrow(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)));
+  tampered.routes[0].pattern = '*.example.org';
   assert.throws(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)), /Gateway/);
-  tampered.routes[0].pattern = 'mcp-gateway.lirtual.dpdns.org';
+  tampered.routes[0].pattern = 'renamed-gateway.example.org';
   tampered.workers_dev = true;
   assert.throws(() => readConfiguration('mcp-gateway-worker', JSON.stringify(tampered)), /Gateway/);
 });
@@ -1436,7 +1438,10 @@ test('Gateway manual release checks the exact Clerk-protected custom-domain reso
   const yaml = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const smoke = yaml.split('      - name: Check unauthenticated MCP surface without credentials')[1]?.split('\n      - name: ')[0];
   assert.ok(smoke, 'manual release unauthenticated smoke is missing');
-  assert.match(smoke, /elif \[\[ "\$SELECTED_WORKER" == "mcp-gateway-worker" \]\]; then\s+mcp_endpoint="https:\/\/mcp-gateway\.lirtual\.dpdns\.org\/mcp\/raindrop"/);
+  assert.match(smoke, /elif \\[\\[ "\\$SELECTED_WORKER" == "mcp-gateway-worker" \\]\\]; then/);
+  assert.match(smoke, /readFileSync\\("apps\\/mcp-gateway-worker\\/wrangler\\.jsonc"/);
+  assert.match(smoke, /gatewayOriginFromConfig\\(config\\) \\+ "\\/mcp\\/raindrop"/);
+  assert.doesNotMatch(smoke, /https:\\/\\/mcp-gateway\\.lirtual\\.dpdns\\.org\\/mcp\\/raindrop/);
   assert.match(smoke, /"\$SELECTED_WORKER" == "mcp-gateway-worker" && "\$FIRST_DEPLOY" == "true"/);
   assert.match(smoke, /401\|403\)/);
 });
