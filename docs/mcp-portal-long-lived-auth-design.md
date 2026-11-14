@@ -30,6 +30,30 @@
 - **风险取舍**：共享机器 Token 一旦泄露、或 Gateway 的授权/路由检查被突破，攻击者可能访问它获准的**全部上游**，包括未来批准纳入的高影响服务。单用户场景降低管理成本，但不消除该爆炸半径；SSH、Remote Control、Database、Workflow 等高影响 MCP **不会在首批试点直接迁移**，后续如纳入唯一 Token 须在真实风险、现有业务门禁与运行时拒绝实测通过后取得明确生产授权。若风险无法接受，则该 MCP 保持原入口，不通过新增第二枚 Gateway Token 规避用户的单 Token 约束。
 
 
+
+### 2026-11-14 第三轮：自动接入事实与选择（Grill With Docs 进行中）
+
+**已确认的目标：** 新增 MCP 的上游注册、Gateway 路由确定与 Clerk Resource 注册尽量通过一次接入操作自动完成，而非让用户在三个系统分别重复配置。自建和第三方 MCP 使用同一接入流程；最终在 ChatGPT 以独立插件安装，Gateway 仍只用一枚机器 Service Token。现阶段仅补设计，未运行自动化、未新增资源或改动生产。
+
+**平台事实与责任划分：**
+
+- Cloudflare Portal 已有上游 MCP `servers` 创建/读取 API，以及 `portals` 读取/更新 API，可以通过现有 Cloudflare 连接器完成注册与挂载；Portal 是上游 URL、认证方式和可用工具的权威来源。**更新 Portal 的 `servers` 映射是全数组替换**，不能直接只提交一个新元素覆盖原 11 个；必须回读当前映射、保存必要字段，并在获准写入时核验变更范围。
+- Clerk 已提供程序化 MCP Resource 注册能力，可以添加新的完整 HTTPS MCP URL 作为 OAuth Audience。2026-11-14 只读回读 Clerk Production 目前仅注册 `https://raindrop-mcp-worker.aiyaya.workers.dev/clerk/mcp`，且预注册客户端/CIMD、PKCE 等现有安全约束生效。新增 Resource 不能仅靠 Gateway 新路径自动假装已在 Clerk 获得授权；注册之后仍要核对发现元数据、资源/Scope 与实际客户端授权。
+- Portal 服务令牌是**Gateway → Portal** 的机器凭据；新增 MCP 时是按需**扩大同一 Token 对指定上游 Access 应用的许可**，不是每新增一个 MCP 新建 Token。原 Workflow Token 不挪用。生产 Token 权限扩展、Clerk Production 注册、Portal 上游注册/认证凭据写入均须明确对象/范围/副作用和有效授权。
+- Gateway 对业务无感，推荐从经过校验的 URL 路径 `/mcp/{server_id}` 解析 Portal 标识，并在真实请求中核对 Clerk 签发 Token 的精确 Resource Audience、Owner、Scope 与当前 Portal 的 MCP 上游及工具权限。优先验证**是否可不维护第二份逐 MCP 路由表**；不可通过 Gateway 暴露 Cloudflare 管理 API Token、任意上游 URL、Portal 管理/Code Mode 内置工具、未知 MCP 执行方法。新增 MCP 的普通业务工具应无需 Gateway 源码改动。
+- 目前已找到可操作的 Cloudflare 与 Clerk API；**没有确认“手工在 Portal Dashboard 保存新增上游”后可直接触发安全的 Gateway/Clerk 同步事件**。不应在未证实时承诺仅靠 Portal UI 保存即可全自动，不默认新增 webhook 代理、定时扫描、数据库、队列或长期同步任务。
+
+**候选的最小接入流程（待 Q6 确认入口触发方式）：** 一次发起（例如在 ChatGPT 请求接入）→ 核验上游 HTTP MCP 地址/认证、现有/冲突的 server_id 和风险→ 按有效授权配置 Portal 并确认 Ready → 核实/扩大**同一枚** Gateway Service Token 对该上游的服务级准入 → 生成唯一、固定的 Gateway Resource URL → 在 Clerk 注册该 Resource → 核验 PRM、错误 Audience/Owner、真实 MCP 工具与跨 Resource 拒绝 → 返回可在 ChatGPT 添加的独立插件 URL。**ChatGPT 用户侧首次添加/授权仍需用户操作，不把配置就绪冒充已安装。**
+
+**失败和幂等性：** 如果 Portal 注册已成功、Clerk 失败或验证不通过，自动化应回读真实状态、明确“未就绪”并允许原地继续/有依据的重试；不自动删除已存在的 MCP 或其上游凭据，也不将部分完成的 URL 宣称可供 ChatGPT 使用。若涉及生产写入，变更前需对各目标核实独立授权及恢复条件。
+
+**仍待本轮用户确认的必要取舍：**
+
+- **Q6 · 单次接入触发方式**：A（推荐）从一条用户接入请求/既有连接器驱动顺序配置，不依赖 Portal 修改事件；B 手工先在 Portal Dashboard 添加，上游保存后必须自动触发其它配置，这要求另行找到实际可靠事件源或新增监听机制。
+- **Q7 · Gateway 路由映射**：A（推荐）优先直接采用已登记的 Portal server_id 与 Clerk 精确 Resource Audience 自动派生路径，仅在事实证明必须时增加最小持久配置；B 为每个 MCP 长期保存一份显式 Gateway 路由注册表。两者都必须在实际工具调用处执行跨资源权限阻断，且不能让动态发现替代授权。
+
+待 Q6/Q7 达成共识后，应回写现有 [Spec #878](https://github.com/lirtual/mcp-workers/issues/878) 的验收标准及失败恢复路径，不创建重复 Spec；在决策完成前不把某个候选流程标为已实现。
+
 与此前 Spec #853 的长期目标保持一致：CIMD 仅允许已预注册 ChatGPT 客户端、PKCE、明确 Owner、拒绝无效/过期/跨资源 Token、Refresh Token 不进入日志或聊天、不开放匿名 DCR 或 Everyone/Bypass，不向 ChatGPT 下发 Portal 或上游机器凭据。
 
 ## 已核实的实现与生产状态
