@@ -1336,39 +1336,55 @@ throw new StateError('reserved_idempotency_key');
     const businessResult=row?.result?JSON.parse(row.result):null;
     let claim_url:string|undefined;
     let claim_status:string|undefined;
-    if(businessResult&&typeof businessResult==='object'&&!Array.isArray(businessResult)&&
-       Object.hasOwn(businessResult,'claim_receipt_ref')){
-      // A public Workflow result can never disclose a bearer secret. This
-      // method is reachable only after the existing Owner /mcp auth boundary.
-      const receipt=businessResult as Record<string,unknown>;
+    // A valid signed Callback is independent of later Run reconciliation.
+    // An indeterminate Run must not hide a claim that was already sealed.
+    const advertised=businessResult&&typeof businessResult==='object'&&
+      !Array.isArray(businessResult)&&Object.hasOwn(businessResult,'claim_receipt_ref')
+      ?businessResult as Record<string,unknown>:null;
+    if(advertised||['succeeded','failed','indeterminate','cancelled','start_unknown']
+      .includes(meta.status)){
       const source=await this.db.prepare(`SELECT v.plan FROM runs r
         JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
         .bind(run_id).first<{plan:string}>();
       let approved=false;
       try{approved=!!source&&isDropPlan(JSON.parse(source.plan) as Plan);}
       catch{approved=false;}
-      if(approved&&meta.status==='succeeded'&&
-         typeof receipt.claim_receipt_ref==='string'&&
-         typeof receipt.preview_url==='string'&&
-         typeof receipt.expires_at==='number'){
-        const saved=await this.db.prepare(`SELECT c.sealed_claim,c.preview_url,c.expires_at
-          FROM drop_claim_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id
-          WHERE a.run_id=? AND c.attempt_id=? AND a.capability_id='github.action'
-            AND a.state='succeeded'`)
-          .bind(run_id,receipt.claim_receipt_ref)
-          .first<{sealed_claim:string;preview_url:string;expires_at:number}>();
-        if(!saved||saved.expires_at<=Date.now())claim_status='expired';
-        else if(saved.preview_url===receipt.preview_url&&
-                saved.expires_at===receipt.expires_at&&
-                this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY){
-          try{claim_url=await openDropClaim({drop_claim_v:1,
-            preview_url:saved.preview_url,expires_at:saved.expires_at,
-            sealed_claim:saved.sealed_claim},receipt.claim_receipt_ref,
-            this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY);
-            claim_status='available';}
-          catch{claim_status='unavailable';}
-        }else claim_status='unavailable';
-      }else claim_status='unavailable';
+      if(approved){
+        // Never expose an orphan ciphertext row: an authenticated Callback
+        // receipt must also exist and agree on Attempt and public metadata.
+        const saved=await this.db.prepare(`SELECT c.attempt_id,c.sealed_claim,
+          c.preview_url,c.expires_at,cb.result_json AS callback_result
+          FROM drop_claim_receipts c
+          JOIN step_attempts a ON a.attempt_id=c.attempt_id
+          JOIN callback_receipts cb ON cb.attempt_id=a.attempt_id
+          WHERE a.run_id=? AND a.capability_id='github.action'
+            AND cb.outcome='succeeded'`)
+          .bind(run_id).first<{attempt_id:string;sealed_claim:string;
+            preview_url:string;expires_at:number;callback_result:string}>();
+        if(!saved)claim_status='unavailable';
+        else if(saved.expires_at<=Date.now())claim_status='expired';
+        else{
+          let callback:unknown;
+          try{callback=JSON.parse(saved.callback_result);}
+          catch{callback=null;}
+          const receipt=callback&&typeof callback==='object'&&!Array.isArray(callback)
+            ?callback as Record<string,unknown>:null;
+          const matches=receipt&&receipt.claim_receipt_ref===saved.attempt_id&&
+            receipt.preview_url===saved.preview_url&&
+            receipt.expires_at===saved.expires_at&&
+            (!advertised||(advertised.claim_receipt_ref===saved.attempt_id&&
+              advertised.preview_url===saved.preview_url&&
+              advertised.expires_at===saved.expires_at));
+          if(matches&&this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY){
+            try{claim_url=await openDropClaim({drop_claim_v:1,
+              preview_url:saved.preview_url,expires_at:saved.expires_at,
+              sealed_claim:saved.sealed_claim},saved.attempt_id,
+              this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY);
+              claim_status='available';}
+            catch{claim_status='unavailable';}
+          }else claim_status='unavailable';
+        }
+      }else if(advertised)claim_status='unavailable';
     }
     return limitResult({...meta,result:businessResult,
       ...(claim_url?{claim_url}:{}),...(claim_status?{claim_status}:{}),
