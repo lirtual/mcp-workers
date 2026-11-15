@@ -5,6 +5,7 @@ import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
 import {admitScheduledCron} from './scheduled.ts';
+import {expireDropClaimReceipts} from './drop-claim-receipt.ts';
 import {handleWorkflowWebhook} from './webhook.ts';
 import {handleWaitEvent} from './wait-event-ingress.ts';
 import {handleGithubEvent} from './github-event.ts';
@@ -16,6 +17,9 @@ const error=(status:number,code:string)=>Response.json({error:code},{status,head
 export default {
  async scheduled(controller:ScheduledController,env:Env):Promise<void>{
   if(!env.DB||!env.WORKFLOW)throw Error('workflow_bindings_missing');
+  // Reuse the existing minute tick; no extra scheduler or sensitive logging.
+  try{await expireDropClaimReceipts(env.DB);}
+  catch{console.warn('drop_claim_cleanup_unavailable');}
   const result=await admitScheduledCron(env,controller.scheduledTime);
   if(result.capacity_skipped||result.failed)
     console.warn('workflow_cron_tick',JSON.stringify(result));

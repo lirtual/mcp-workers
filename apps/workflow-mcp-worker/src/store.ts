@@ -22,6 +22,7 @@ import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {publishedRunInterface} from './published-run-interface.ts';
 import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
+import {openDropClaim} from './drop-claim-receipt.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
@@ -59,6 +60,9 @@ export type Env = {
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?: string;
   // Optional and inactive until independently authorized configuration.
   WORKFLOW_GITHUB_DROP_PUBLIC_KEY?: string;
+  // Dedicated reverse-direction key: only the Owner MCP result can decrypt
+  // a Runner-sealed Cloudflare claim. Never reuse a generic access token.
+  WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY?: string;
   // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
@@ -1329,7 +1333,45 @@ throw new StateError('reserved_idempotency_key');
       if(result?.status!=='accepted')throw new StateError('envshare_result_unavailable');
       share_url=await buildEnvshareLink(saved?JSON.parse(saved.inputs):null,result.share_id,delivery_key);
     }
-    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,
+    const businessResult=row?.result?JSON.parse(row.result):null;
+    let claim_url:string|undefined;
+    let claim_status:string|undefined;
+    if(businessResult&&typeof businessResult==='object'&&!Array.isArray(businessResult)&&
+       Object.hasOwn(businessResult,'claim_receipt_ref')){
+      // A public Workflow result can never disclose a bearer secret. This
+      // method is reachable only after the existing Owner /mcp auth boundary.
+      const receipt=businessResult as Record<string,unknown>;
+      const source=await this.db.prepare(`SELECT v.plan FROM runs r
+        JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
+        .bind(run_id).first<{plan:string}>();
+      let approved=false;
+      try{approved=!!source&&isDropPlan(JSON.parse(source.plan) as Plan);}
+      catch{approved=false;}
+      if(approved&&meta.status==='succeeded'&&
+         typeof receipt.claim_receipt_ref==='string'&&
+         typeof receipt.preview_url==='string'&&
+         typeof receipt.expires_at==='number'){
+        const saved=await this.db.prepare(`SELECT c.sealed_claim,c.preview_url,c.expires_at
+          FROM drop_claim_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id
+          WHERE a.run_id=? AND c.attempt_id=? AND a.capability_id='github.action'
+            AND a.state='succeeded'`)
+          .bind(run_id,receipt.claim_receipt_ref)
+          .first<{sealed_claim:string;preview_url:string;expires_at:number}>();
+        if(!saved||saved.expires_at<=Date.now())claim_status='expired';
+        else if(saved.preview_url===receipt.preview_url&&
+                saved.expires_at===receipt.expires_at&&
+                this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY){
+          try{claim_url=await openDropClaim({drop_claim_v:1,
+            preview_url:saved.preview_url,expires_at:saved.expires_at,
+            sealed_claim:saved.sealed_claim},receipt.claim_receipt_ref,
+            this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY);
+            claim_status='available';}
+          catch{claim_status='unavailable';}
+        }else claim_status='unavailable';
+      }else claim_status='unavailable';
+    }
+    return limitResult({...meta,result:businessResult,
+      ...(claim_url?{claim_url}:{}),...(claim_status?{claim_status}:{}),
       ...(share_url?{share_url}:{}),
       ...(artifactReferences.length?{artifact_references:artifactReferences}:{}),
       error_code:row?.error_code??null},64*1024);
