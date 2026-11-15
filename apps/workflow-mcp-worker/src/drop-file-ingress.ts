@@ -64,7 +64,8 @@ export async function sealDropFile(
  const cipher=new Uint8Array(await crypto.subtle.encrypt(
   {name:'AES-GCM',iv:nonce,additionalData:aad,tagLength:128},aes,plaintext));
  const envelope=encode(new TextEncoder().encode(JSON.stringify({
-  v:1,wrapped_key:encode(wrapped),nonce:encode(nonce),ciphertext:encode(cipher),
+  v:1,contract_digest:contractDigest.toLowerCase(),
+  wrapped_key:encode(wrapped),nonce:encode(nonce),ciphertext:encode(cipher),
  })));
  if(envelope.length>DROP_PART_SIZE*3)throw new StateError('drop_envelope_too_large');
  const result:SealedDropInputs={drop_attempt_id:attemptId.toLowerCase(),

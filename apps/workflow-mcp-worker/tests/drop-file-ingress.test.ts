@@ -24,6 +24,7 @@ const keys=generateKeyPairSync('rsa',{modulusLength:2048,
 function decode(parts:SealedDropInputs,id=attempt,hash=digest){
  const object=JSON.parse(Buffer.from([
   parts.drop_part_0,parts.drop_part_1,parts.drop_part_2].join(''),'base64url').toString());
+ assert.equal(object.contract_digest,hash);
  const wrapped=Buffer.from(object.wrapped_key,'base64url');
  const aes=privateDecrypt({key:keys.privateKey,padding:constants.RSA_PKCS1_OAEP_PADDING,
   oaepHash:'sha256'},wrapped);
