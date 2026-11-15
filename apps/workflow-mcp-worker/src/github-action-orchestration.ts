@@ -2,6 +2,7 @@ import {resolveSessionActionInputs} from './github-action-inputs.ts';
 import type { ReviewedGitHubAction } from './github-action-review.ts';
 import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
 import {isCurrentWorkflowGitHubAction,type WorkflowGitHubExecutor} from './workflow-github-executor.ts';
 import {resolveApprovedMainAction} from './github-action-main-preflight.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
@@ -93,6 +94,15 @@ export async function registerAndDispatchGitHubAction(
     throw Error('github_action_publication_missing');
    expectedInputs=resolveSessionActionInputs(pinned as Record<string,unknown>,
      plan.inputs,supplied);
+  }else if(isDropPlan(plan)){
+   // The only exception to frozen literal Task inputs. Admission sealed these
+   // three values for this Attempt, and no other Run/Task may substitute them.
+   let sealed:unknown;
+   try{sealed=JSON.parse(origin.inputs);}catch{throw Error('drop_envelope_invalid');}
+   if(!isSealedDropInputs(sealed)||sealed.drop_attempt_id!==data.attemptId)
+    throw Error('drop_attempt_binding_invalid');
+   expectedInputs={drop_part_0:sealed.drop_part_0,
+    drop_part_1:sealed.drop_part_1,drop_part_2:sealed.drop_part_2};
   }else{
    expectedInputs=Object.fromEntries(Object.entries(pinned as Record<string,unknown>).map(([key,value])=>{
     if(typeof value!=='string'&&typeof value!=='boolean'&&

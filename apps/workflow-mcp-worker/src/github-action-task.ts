@@ -9,6 +9,7 @@ import type {TerminalCasResult} from './github-action-terminal-cas.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
 import {readWorkflowGitHubExecutor,isCurrentWorkflowGitHubAction} from './workflow-github-executor.ts';
 
 type Outcome={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:unknown};
@@ -50,11 +51,26 @@ export async function runPublishedGitHubActionTask(
    return {status:'failed',error_code:'github_action_invalid_publication'};
   inputs[key]=String(value);
  }
+ // Only this exact approved, manual Drop Plan may replace three fixed placeholders.
+ // D1 has only ciphertext; the file URL is never loaded by this executor.
+ let sealedAttemptId:string|undefined;
+ if(isDropPlan(plan)){
+  const row=await env.DB.prepare('SELECT inputs FROM runs WHERE id=?')
+   .bind(runId).first<{inputs:string}>();
+  let sealed:unknown;
+  try{sealed=row?JSON.parse(row.inputs):null;}catch{return {status:'failed',error_code:'drop_envelope_invalid'};}
+  if(!isSealedDropInputs(sealed))
+   return {status:'failed',error_code:'drop_envelope_invalid'};
+  sealedAttemptId=sealed.drop_attempt_id;
+  inputs.drop_part_0=sealed.drop_part_0;
+  inputs.drop_part_1=sealed.drop_part_1;
+  inputs.drop_part_2=sealed.drop_part_2;
+ }
  const db=env.DB,token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const dispatched=await step.do('github-action-dispatch-'+stepPlan.id,{
   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
  },async()=>{
-  const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
+  const attemptId=sealedAttemptId??crypto.randomUUID(),dispatchId=crypto.randomUUID();
   const ack=await registerAndDispatchGitHubAction(db,{
    runId,stepId:stepPlan.id,attemptId,dispatchId,
    action:identity,ref:raw.ref as string,token,inputs,executorIdentity,

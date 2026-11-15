@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {generateKeyPair,SignJWT} from 'jose';
 import {runPublishedGitHubActionTask,recordSignedGitHubActionTaskResult} from '../src/github-action-task.ts';
+import {registerAndDispatchGitHubAction} from '../src/github-action-orchestration.ts';
 import {WorkflowService} from '../src/store.ts';
 import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
 import {publishedGitHubActionStep,type Plan} from '../src/plan.ts';
@@ -368,4 +369,44 @@ test('dynamic Task OIDC Claim and signed result bind to exact bounded child ID',
   assert.equal(f.post(),1,'reentry after missing native checkpoint does not re-dispatch');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
  }finally{f.db.close();}
+});
+
+test('Drop Task rejects missing encrypted Run admission before any GitHub request',async()=>{
+ const fixture=setup();
+ const dropAction={...action,workflowPath:'.github/workflows/drop.yml'};
+ const dropPlan:Plan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],
+  steps:[{id:'build',uses:'github.run',needs:[],with:{capability:'github.action',
+   action:{...dropAction,ref:'refs/heads/main',
+    inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ const outcome=await runPublishedGitHubActionTask(fixture.env,dropPlan,dropPlan.steps[0],
+  runId,fixture.step,async()=>{throw Error('external request must not happen');});
+ assert.deepEqual(outcome,{status:'failed',error_code:'drop_envelope_invalid'});
+ assert.equal(fixture.post(),0);
+});
+
+test('D1 Attempt binding blocks forged sealed Task inputs before any physical dispatch',async()=>{
+ const fixture=setup();
+ const dropAction={...action,workflowPath:'.github/workflows/drop.yml'};
+ const dropPlan:Plan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],
+  steps:[{id:'build',uses:'github.run',needs:[],with:{capability:'github.action',
+   action:{...dropAction,ref:'refs/heads/main',
+    inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ const originalAttempt='22222222-2222-4222-8222-222222222222';
+ const forgedAttempt='33333333-3333-4333-8333-333333333333';
+ const original={drop_attempt_id:originalAttempt,drop_part_0:'sealed',
+  drop_part_1:'',drop_part_2:''};
+ fixture.db.prepare('UPDATE workflow_versions SET plan=?').run(JSON.stringify(dropPlan));
+ fixture.db.prepare('UPDATE runs SET inputs=?').run(JSON.stringify(original));
+ let requests=0;
+ await assert.rejects(registerAndDispatchGitHubAction(fixture.adapter,{
+  runId,stepId:'build',attemptId:forgedAttempt,
+  dispatchId:'44444444-4444-4444-8444-444444444444',
+  action:dropAction,ref:'refs/heads/main',token:'test-token',
+  inputs:{drop_part_0:'sealed',drop_part_1:'',drop_part_2:''},
+  executorIdentity:{repository:repo,repositoryId:123,ciWorkflowId:999},
+ },async()=>{requests++;throw Error('unexpected network request');}),/drop_attempt_binding_invalid/);
+ assert.equal(requests,0);
+ assert.equal(fixture.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,0);
 });

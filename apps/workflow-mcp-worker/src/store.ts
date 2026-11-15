@@ -21,6 +21,7 @@ import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {publishedRunInterface} from './published-run-interface.ts';
+import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
@@ -56,6 +57,8 @@ export type Env = {
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?: string;
+  // Optional and inactive until independently authorized configuration.
+  WORKFLOW_GITHUB_DROP_PUBLIC_KEY?: string;
   // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
@@ -893,7 +896,7 @@ if(required.length){
     if(parent)throw new StateError('workflow_referenced_by_parent');
     throw new StateError('workflow_delete_conflict');
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile=false,expected_published_version_id?:string){
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile:false|true|'drop'=false,expected_published_version_id?:string){
     assertId(workflow_id);
     // Caller assertion is not an internal trigger identity. Check it before
     // replay, ephemeral secret generation or any Run reservation.
@@ -915,7 +918,7 @@ throw new StateError('reserved_idempotency_key');
       if(original){
         if(expected_published_version_id&&original.version_id!==expected_published_version_id)
           throw new StateError('published_version_changed');
-        if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+        if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':'litterbox_duplicate_admission');
         // A file-less workflow_run cannot use a prior file-backed Run key
         // to bypass the selected-file admission gate, even on replay.
         const oldPlan=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
@@ -934,7 +937,8 @@ throw new StateError('reserved_idempotency_key');
             status:original.outcome,start_state:original.start_state,idempotent_replay:true};
         }
         if(parsed.steps?.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox'))
-          throw new StateError('litterbox_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+          throw new StateError('litterbox_file_tool_required');
+        if(isDropPlan(parsed))throw new StateError('drop_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -998,7 +1002,11 @@ throw new StateError('reserved_idempotency_key');
       activePlan.steps[0].with.provider==='litterbox'&&
       activePlan.steps[0].with.action==='litterbox.upload_file'&&
       (activePlan.steps.length===1||isAuxiliaryBarkPair(activePlan.steps));
-    if(isLitterbox!==allowTransientFile)throw new StateError('litterbox_file_tool_required');
+    if(isLitterbox!==(allowTransientFile===true))throw new StateError('litterbox_file_tool_required');
+    const isDrop=isDropPlan(activePlan);
+    if(isDrop!==(allowTransientFile==='drop'))throw new StateError('drop_file_tool_required');
+    if(isDrop&&(!idempotency_key||expected_version_id||!isSealedDropInputs(inputs)))
+      throw new StateError('drop_manual_file_admission_required');
     if(isLitterbox&&(!idempotency_key||expected_version_id||
       activePlan.cloudflare_execution_approved!==true||activePlan.triggers?.length))
       throw new StateError('litterbox_manual_approval_required');
@@ -1037,7 +1045,7 @@ throw new StateError('reserved_idempotency_key');
         if(prior){
           if(expected_published_version_id&&prior.version_id!==expected_published_version_id)
             throw new StateError('published_version_changed');
-          if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+          if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':'litterbox_duplicate_admission');
           if(deliveryKey)throw new StateError('envshare_key_unrecoverable');
           if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');
           if(expected_version_id&&prior.version_id!==expected_version_id)
