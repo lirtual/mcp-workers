@@ -507,6 +507,10 @@ test('Spec87: Owner result decrypts an authenticated claim, never after expiry o
   fixture.db.prepare(`INSERT INTO drop_claim_receipts
    (attempt_id,sealed_claim,preview_url,expires_at,created_at) VALUES(?,?,?,?,?)`)
    .run(attempt,sealed,preview,expiry,Date.now());
+  fixture.db.prepare(`INSERT INTO callback_receipts
+   (callback_id,attempt_id,outcome,result_json,notification_delivered,created_at)
+   VALUES(?,?,'succeeded',?,1,?)`)
+   .run('cccccccc-cccc-4ccc-8ccc-cccccccccccc',attempt,JSON.stringify(result),Date.now());
   const env={...fixture.env,DB:adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
    WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY:keys.privateKey};
   const output=await new WorkflowService(env).result(runId);
@@ -518,10 +522,27 @@ test('Spec87: Owner result decrypts an authenticated claim, never after expiry o
    WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY:undefined}).result(runId);
   assert.equal(missing.claim_url,undefined);
   assert.equal(missing.claim_status,'unavailable');
+  // The signed receipt remains recoverable when GitHub reconciliation is
+  // Unknown: do not re-create a physical temporary account.
+  fixture.db.prepare("UPDATE runs SET outcome='indeterminate',result=NULL WHERE id=?")
+   .run(runId);
+  fixture.db.prepare("UPDATE step_attempts SET state='claimed' WHERE attempt_id=?")
+   .run(attempt);
+  const unknown=await new WorkflowService(env).result(runId);
+  assert.equal(unknown.status,'indeterminate');
+  assert.equal(unknown.result,null);
+  assert.equal(unknown.claim_url,claim);
+  assert.equal(unknown.claim_status,'available');
   fixture.db.prepare('UPDATE drop_claim_receipts SET expires_at=? WHERE attempt_id=?')
    .run(Date.now()-1,attempt);
   const expired=await new WorkflowService(env).result(runId);
   assert.equal(expired.claim_url,undefined);
   assert.equal(expired.claim_status,'expired');
+  fixture.db.prepare('UPDATE drop_claim_receipts SET expires_at=? WHERE attempt_id=?')
+   .run(expiry,attempt);
+  fixture.db.prepare('DELETE FROM callback_receipts WHERE attempt_id=?').run(attempt);
+  const orphan=await new WorkflowService(env).result(runId);
+  assert.equal(orphan.claim_url,undefined);
+  assert.equal(orphan.claim_status,'unavailable');
  }finally{fixture.db.close();}
 });
