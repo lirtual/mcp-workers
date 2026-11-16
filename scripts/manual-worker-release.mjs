@@ -785,7 +785,7 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
    WHERE s.state='ready' AND r.outcome='succeeded'
    AND a.state='claimed') AS confirmed_ready_sessions`;
 
-export function verifyWorkflowMigrationReadiness(response) {
+export function verifyWorkflowMigrationReadiness(response, approvedTerminalArtifact = false) {
   invariant(Array.isArray(response) && response.length === 1 &&
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow migration D1 readback unavailable");
@@ -795,6 +795,7 @@ export function verifyWorkflowMigrationReadiness(response) {
     "session_count","attempt_count","callback_count","cancellation_count",
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+    "reviewed_terminal_artifact_attempts",
   ];
   for (const key of nonnegative) {
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
@@ -805,10 +806,18 @@ export function verifyWorkflowMigrationReadiness(response) {
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
-    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
   ]) {
     invariant(row[key] === 0, "Workflow migration blocked by " + key);
   }
+  // Reuse the independently proven exact Artifact Task exception from the
+  // code-only gate; no other claimed Attempt may cross a D1 migration.
+  invariant(row.reviewed_terminal_artifact_attempts === (approvedTerminalArtifact ? 1 : 0),
+    "Workflow migration reviewed_terminal_artifact_attempts missing exact historical Artifact Attempt");
+  const reviewed = approvedTerminalArtifact ? row.reviewed_terminal_artifact_attempts : 0;
+  invariant(row.nonterminal_attempts === reviewed,
+    "Workflow migration blocked by nonterminal_attempts");
+  for (const key of ["nonterminated_sessions","undelivered_callbacks"])
+    invariant(row[key] === 0, "Workflow migration blocked by " + key);
   return {
     workflows: row.workflow_count,
     runs: row.run_count,
@@ -1159,7 +1168,8 @@ async function main() {
   if (mode === "migration-check") {
     invariant(worker === "workflow-mcp-worker", "Migration check restricted to Workflow");
     const observed = verifyWorkflowMigrationReadiness(
-      JSON.parse(await readFile("/dev/stdin", "utf8")));
+      JSON.parse(await readFile("/dev/stdin", "utf8")),
+      process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID === TWELFTH_TERMINAL_RUN_ID);
     console.log("Workflow migration D1 quiescence: PASS " +
       JSON.stringify(observed) + "; external GitHub/Cloudflare instance " +
       "and write-freeze checks NOT verified");

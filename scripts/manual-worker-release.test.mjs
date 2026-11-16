@@ -720,6 +720,7 @@ test("Workflow migration preflight requires all independent physical states sett
     attempt_count: 31, callback_count: 4, cancellation_count: 31,
     nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0, invalid_cancelled_steps: 0,
     nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
+    reviewed_terminal_artifact_attempts: 0,
   };
   const response = row => [{success: true, results: [row]}];
   for (const count of [18,19,20,21]) assert.deepEqual(
@@ -733,9 +734,28 @@ test("Workflow migration preflight requires all independent physical states sett
     workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
     cancellations: 31,
   });
+  const exactArtifact = {...ready, nonterminal_attempts: 1,
+    reviewed_terminal_artifact_attempts: 1};
+  assert.deepEqual(verifyWorkflowMigrationReadiness(response(exactArtifact),true),
+    {workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
+      cancellations: 31});
+  assert.throws(()=>verifyWorkflowMigrationReadiness(response(exactArtifact)),
+    /reviewed_terminal_artifact_attempts/);
+  assert.throws(()=>verifyWorkflowMigrationReadiness(response(ready),true),
+    /exact historical Artifact Attempt/);
+  for(const wrong of [
+    {...exactArtifact,nonterminal_attempts:2},
+    {...exactArtifact,reviewed_terminal_artifact_attempts:2},
+    {...exactArtifact,reviewed_terminal_artifact_attempts:0},
+    {...exactArtifact,nonterminal_runs:1},
+    {...exactArtifact,unresolved_steps:1},
+    {...exactArtifact,nonterminated_sessions:1},
+  ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response(wrong),true),
+    /blocked|exact historical Artifact Attempt/);
   for (const name of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
+    "reviewed_terminal_artifact_attempts",
   ]) {
     assert.throws(() => verifyWorkflowMigrationReadiness(
       response({...ready,[name]:1})), new RegExp(name));

@@ -49,6 +49,25 @@ test("protected release only skips a redundant apply, preserving full migration 
   assert.match(yaml.slice(detect,full),/id: workflow_schema[\s\S]*SELECT name FROM d1_migrations ORDER BY name[\s\S]*node scripts\/workflow-release-schema-selection\.mjs/);
   const conditional="steps.workflow_schema.outputs.apply_required == 'true'";
   assert.ok(yaml.slice(full,apply).includes(conditional));
+  const migrationGate=yaml.slice(full,apply);
+  const proofNames=[
+    ["TERMINAL", "terminal", "terminal_run_id"],
+    ["SECOND_TERMINAL", "terminal_second", "second_terminal_run_id"],
+    ["THIRD_TERMINAL", "terminal_third", "third_terminal_run_id"],
+    ["FOURTH_TERMINAL", "terminal_fourth", "fourth_terminal_run_id"],
+    ["FIFTH_TERMINAL", "terminal_fifth", "fifth_terminal_run_id"],
+    ["SIXTH_TERMINAL", "terminal_sixth", "sixth_terminal_run_id"],
+    ["SEVENTH_TERMINAL", "terminal_seventh", "seventh_terminal_run_id"],
+    ["EIGHTH_TERMINAL", "terminal_eighth", "eighth_terminal_run_id"],
+    ["NINTH_TERMINAL", "terminal_ninth", "ninth_terminal_run_id"],
+    ["TENTH_TERMINAL", "terminal_tenth", "tenth_terminal_run_id"],
+    ["ELEVENTH_TERMINAL", "terminal_eleventh", "eleventh_terminal_run_id"],
+    ["TWELFTH_TERMINAL", "terminal_twelfth", "twelfth_terminal_run_id"],
+  ];
+  for(const [name,step,output] of proofNames){
+    assert.ok(migrationGate.includes(`WORKFLOW_${name}_RUN_ID: \${{ steps.${step}.outputs.${output} }}`),
+      `migration gate must forward verified ${name} Run ID`);
+  }
   assert.ok(yaml.slice(apply,physical).includes(conditional));
   assert.match(yaml.slice(physical,publish),/node scripts\/manual-worker-release\.mjs code-release-check workflow-mcp-worker/);
   assert.match(yaml.slice(apply,physical),/wrangler d1 migrations apply workflow-mcp-db --remote/);

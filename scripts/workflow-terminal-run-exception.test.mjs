@@ -84,21 +84,21 @@ test("SQL exception is explicit for one proven Run; all new Session/Run counters
     release.indexOf("Verify Workflow release configuration"));
   assert.ok(release.indexOf("Verify historical terminal Run proof")<
     release.indexOf("Apply complete Workflow D1 migrations"));
-  assert.equal((release.match(/steps\.terminal\.outputs\.terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/steps\.terminal\.outputs\.terminal_run_id/g)||[]).length,4);
   assert.equal((release.match(/id <> '\$WORKFLOW_TERMINAL_RUN_ID'/g)||[]).length,2);
   assert.equal((release.match(/id <> '\$WORKFLOW_SECOND_TERMINAL_RUN_ID'/g)||[]).length,2);
-  assert.equal((release.match(/steps\.terminal_second\.outputs\.second_terminal_run_id/g)||[]).length,3);
-  assert.equal((release.match(/steps\.terminal_third\.outputs\.third_terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/steps\.terminal_second\.outputs\.second_terminal_run_id/g)||[]).length,4);
+  assert.equal((release.match(/steps\.terminal_third\.outputs\.third_terminal_run_id/g)||[]).length,4);
   assert.equal((release.match(/id <> '\$WORKFLOW_THIRD_TERMINAL_RUN_ID'/g)||[]).length,2);
-  assert.equal((release.match(/steps\.terminal_fourth\.outputs\.fourth_terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/steps\.terminal_fourth\.outputs\.fourth_terminal_run_id/g)||[]).length,4);
   assert.equal((release.match(/id <> '\$WORKFLOW_FOURTH_TERMINAL_RUN_ID'/g)||[]).length,2);
   assert.ok(release.indexOf("Verify fourth terminal E2E Run proof")<
     release.indexOf("Verify Workflow release configuration"));
-  assert.equal((release.match(/steps\.terminal_fifth\.outputs\.fifth_terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/steps\.terminal_fifth\.outputs\.fifth_terminal_run_id/g)||[]).length,4);
   assert.equal((release.match(/id <> '\$WORKFLOW_FIFTH_TERMINAL_RUN_ID'/g)||[]).length,2);
   assert.ok(release.indexOf("Verify fifth terminal E2E Run proof")<
     release.indexOf("Verify Workflow release configuration"));
-  assert.equal((release.match(/steps\.terminal_sixth\.outputs\.sixth_terminal_run_id/g)||[]).length,3);
+  assert.equal((release.match(/steps\.terminal_sixth\.outputs\.sixth_terminal_run_id/g)||[]).length,4);
   assert.equal((release.match(/id <> '\$WORKFLOW_SIXTH_TERMINAL_RUN_ID'/g)||[]).length,2);
   assert.ok(release.indexOf("Verify sixth terminal E2E Run proof")<
     release.indexOf("Verify Workflow release configuration"));
@@ -373,7 +373,7 @@ test("seventh exact download E2E: no Weixin invocation and independently complet
   assert.equal((scoped.match(new RegExp(id,"g"))||[]).length,2);
   assert.equal((unapproved.match(new RegExp(id,"g"))||[]).length,0);
   const release=readFileSync(".github/workflows/release.yml","utf8");
-  assert.equal(release.split("steps.terminal_seventh.outputs.seventh_terminal_run_id").length-1,3);
+  assert.equal(release.split("steps.terminal_seventh.outputs.seventh_terminal_run_id").length-1,4);
   assert.equal(release.split("id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID'").length-1,2);
   assert.ok(release.indexOf("Verify seventh terminal download Run proof")<
     release.indexOf("Verify Workflow release configuration"));
@@ -419,7 +419,7 @@ test('two exact Saga terminal exceptions require D1, live native, and physical G
  for(const [name,env] of [['ninth','NINTH'],['tenth','TENTH']]){
   assert.ok(yml.indexOf('Verify '+name+' terminal Saga Run proof')<
     yml.indexOf('Verify Workflow release configuration'));
-  assert.equal((yml.match(new RegExp('steps\\.terminal_'+name+'\\.outputs\\.'+name+'_terminal_run_id','g'))||[]).length,3);
+  assert.equal((yml.match(new RegExp('steps\\.terminal_'+name+'\\.outputs\\.'+name+'_terminal_run_id','g'))||[]).length,4);
   assert.equal((yml.match(new RegExp('id <> \'\\$WORKFLOW_'+env+'_TERMINAL_RUN_ID\'','g'))||[]).length,2);
  }
 });
@@ -459,7 +459,7 @@ test('eleventh exact terminal generic notification is safe only with native comp
  assert.throws(()=>verifyEleventhTerminalEvidence(data,native,[{status:'unknown'}]),/blocked/);
  assert.throws(()=>verifyEleventhTerminalEvidence(data,native,null),/blocked/);
  const release=readFileSync('.github/workflows/release.yml','utf8');
- assert.equal((release.match(/steps\.terminal_eleventh\.outputs\.eleventh_terminal_run_id/g)||[]).length,3);
+ assert.equal((release.match(/steps\.terminal_eleventh\.outputs\.eleventh_terminal_run_id/g)||[]).length,4);
  assert.equal((release.match(/id <> '\$WORKFLOW_ELEVENTH_TERMINAL_RUN_ID'/g)||[]).length,2);
  assert.ok(release.indexOf('Verify eleventh terminal generic Action proof')<
    release.indexOf('Verify Workflow release configuration'));
@@ -539,7 +539,7 @@ test("twelfth exact GitHub Artifact Task: native/D1/GitHub proof, fail-closed re
  changed.native.steps[0].output=JSON.stringify({attemptId:attempt,status:"unknown",runId:run,runAttempt:1});
  assert.throws(()=>verifyTwelfthTerminalEvidence(changed.d1,changed.native,changed.github),/blocked/);
  const release=readFileSync(".github/workflows/release.yml","utf8");
- assert.equal((release.match(/steps\.terminal_twelfth\.outputs\.twelfth_terminal_run_id/g)||[]).length,3);
+ assert.equal((release.match(/steps\.terminal_twelfth\.outputs\.twelfth_terminal_run_id/g)||[]).length,4);
  assert.equal((release.match(/id <> '\$WORKFLOW_TWELFTH_TERMINAL_RUN_ID'/g)||[]).length,2);
  assert.ok(release.indexOf("Verify twelfth terminal Artifact Task proof")<
   release.indexOf("Verify Workflow release configuration"));
