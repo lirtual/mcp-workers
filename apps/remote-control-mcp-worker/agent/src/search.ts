@@ -30,6 +30,8 @@ const PAGE_SIZE = 20;
 const MAX_ACTIVE_SEARCHES = 4;
 const MAX_SEARCH_DURATION_MS = 15_000;
 const SEARCH_SESSION_TTL_MS = 60_000;
+// Leave slack below the Durable Object read timeout for transport and serialization.
+const SEARCH_PAGE_WAIT_MS = 1_500;
 const MAX_DEPTH = 8;
 const MAX_ENTRIES = 20_000;
 const MAX_RESULTS = 500;
@@ -54,6 +56,7 @@ interface SearchSession {
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
   pending?: SearchResult;
+  pendingStep?: Promise<IteratorResult<SearchResult>>;
   busy: boolean;
 }
 
@@ -263,7 +266,7 @@ export class SearchSessions {
       signal: controller.signal,
     };
     const id = randomUUID();
-    const timer = setTimeout(() => void this.stop(id), this.sessionTtlMs);
+    const timer = setTimeout(() => void this.stop(id).catch(() => undefined), this.sessionTtlMs);
     timer.unref?.();
     const session: SearchSession = {
       id,
@@ -330,26 +333,65 @@ export class SearchSessions {
     return () => signal.removeEventListener("abort", cancel);
   }
 
+  private async nextWithinBudget(
+    session: SearchSession,
+    deadline: number,
+  ): Promise<IteratorResult<SearchResult> | null> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    // A timed-out page must keep the same iterator.next() in flight. Reissuing
+    // next() concurrently can lose results or violate async-generator ordering.
+    const pending = session.pendingStep ?? session.iterator.next();
+    session.pendingStep = pending;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => resolve(null), remaining);
+          timeout.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
   private async page(session: SearchSession): Promise<SearchPage> {
     if (session.busy) throw new SearchFailed("conflict");
     session.busy = true;
     try {
+      const deadline = Date.now() + SEARCH_PAGE_WAIT_MS;
       const results: SearchResult[] = [];
+      let waiting = false;
       if (session.pending) {
         results.push(session.pending);
         delete session.pending;
       }
       while (results.length < PAGE_SIZE) {
         if (!checkActive(session.state)) break;
-        const next = await session.iterator.next();
+        const next = await this.nextWithinBudget(session, deadline);
+        if (next === null) {
+          waiting = true;
+          break;
+        }
+        delete session.pendingStep;
         if (next.done) break;
         results.push(next.value);
       }
-      if (results.length === PAGE_SIZE && !session.state.signal.aborted && checkActive(session.state)) {
-        const next = await session.iterator.next();
-        if (!next.done) session.pending = next.value;
+      if (!waiting && results.length === PAGE_SIZE && checkActive(session.state)) {
+        const next = await this.nextWithinBudget(session, deadline);
+        if (next === null) {
+          waiting = true;
+        } else {
+          delete session.pendingStep;
+          if (!next.done) session.pending = next.value;
+        }
       }
-      const hasMore = session.pending !== undefined;
+      if (session.controller.signal.aborted) throw new SearchFailed("failed");
+      // An unfinished scan is always resumable, including zero matches and
+      // a page interrupted during lookahead.
+      const hasMore = waiting || session.pending !== undefined;
       return {
         results,
         has_more: hasMore,
@@ -365,6 +407,18 @@ export class SearchSessions {
     if (this.sessions.get(session.id) === session) this.sessions.delete(session.id);
     clearTimeout(session.timer);
     if (abort) session.controller.abort();
+    if (session.pendingStep) {
+      // Async-generator return() waits behind an already-running next().
+      // Free the public cursor immediately; finish cleanup when next settles.
+      void session.pendingStep.catch(() => undefined).then(async () => {
+        try {
+          await session.iterator.return(undefined);
+        } catch {
+          // An aborted scanner can already be closed.
+        }
+      });
+      return;
+    }
     try {
       await session.iterator.return(undefined);
     } catch {
