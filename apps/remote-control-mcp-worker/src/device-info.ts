@@ -34,7 +34,7 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
             ["native", "wsl2"].includes(String(v.environment)))))) ||
       !["linux", "windows", "darwin"].includes(String(v.os)) ||
       !["native", "wsl2", "container"].includes(String(v.environment)) ||
-      // Deployed Agents still report this legacy field. Validate and discard it.
+      // Reuse the already accepted legacy wire field as a validated, advisory hint.
       (v.capabilities !== undefined &&
         (!Array.isArray(v.capabilities) || v.capabilities.length < 1 ||
          v.capabilities.length > 3 || !v.capabilities.includes("read") ||
