@@ -40,6 +40,32 @@ test('source rejection categories reveal no URL, host, ID or SAS value',()=>{
  }
  assert.equal(inspectAttachmentUrl(file).reason,undefined);
 });
+test('unapproved file hosts expose only a finite provider family, never a hostname',()=>{
+ const cases=[
+  ['https://files2.oaiusercontent.com/path','openai'],
+  ['https://api.openai.com/path','openai'],
+  ['https://files.oaiusercontent.com.attacker.invalid/path','other'],
+  ['https://abc-def.blob.core.windows.net/path','azure_blob'],
+  ['https://a.blob.core.windows.net/path','azure_blob'],
+  ['https://blob.core.windows.net/path','azure_blob'],
+  ['https://abc.blob.core.windows.net.attacker.invalid/path','other'],
+  ['https://bucket.s3.amazonaws.com/path','aws'],
+  ['https://s3.us-east-1.amazonaws.com/path','aws'],
+  ['https://s3.amazonaws.com.attacker.invalid/path','other'],
+  ['https://127.0.0.1/path','other'],
+  ['https://unrecognized.example/path','other'],
+ ] as const;
+ for(const [download_url,host_family] of cases){
+  const candidate={...file,file_id:'SYNTHETIC_ID',download_url};
+  const checked=inspectAttachmentUrl(candidate);
+  assert.equal(checked.url,null);
+  assert.equal(checked.reason,'host_unapproved');
+  assert.equal(checked.host_family,host_family);
+  assert.equal(approvedAttachmentUrl(candidate),null);
+  for(const sensitive of [download_url,new URL(download_url).hostname,candidate.file_id])
+   assert.equal(JSON.stringify(checked).includes(sensitive),false);
+ }
+});
 test('fetches the one file with no credentials or redirect, hashes bounded bytes in memory',async()=>{
  let count=0;
  const text='test fixture no secrets';

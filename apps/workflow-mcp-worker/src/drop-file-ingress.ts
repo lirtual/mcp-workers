@@ -33,7 +33,8 @@ export async function sealDropFile(
  now=Date.now(),
 ):Promise<SealedDropInputs>{
  const source=inspectAttachmentUrl(file);
- if(!source.url)throw new StateError('drop_file_source_'+source.reason);
+ if(!source.url)throw new StateError('drop_file_source_'+source.reason+
+  (source.reason==='host_unapproved'?'_'+source.host_family:''));
  const url=source.url;
  const filename=file.file_name;
  if((filename!==undefined&&

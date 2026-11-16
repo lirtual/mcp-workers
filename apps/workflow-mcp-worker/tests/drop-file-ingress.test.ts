@@ -131,15 +131,24 @@ test('MCP workflow_run returns only a safe Drop rejection class before admission
  });
  await client.connect(transport);
  t.after(async()=>client.close());
- const rejected={...file,file_id:'SYNTHETIC_FILE_ID',
-  download_url:'https://not-approved.example/private.html?sig=SYNTHETIC_SAS_VALUE'};
- const response=await client.callTool({name:'workflow_run',arguments:{
-  workflow_id:attempt,idempotency_key:'drop-diagnostic-fixture',inputs:{},file:rejected,
- }});
- assert.equal(response.isError,true);
- const output=(response.content?.[0] as {text:string}).text;
- assert.deepEqual(JSON.parse(output),{error:'drop_file_source_host_unapproved'});
- assert.equal(planReads,1);
- for(const sensitive of [rejected.file_id,rejected.download_url,'not-approved.example',
-  'SYNTHETIC_SAS_VALUE'])assert.equal(output.includes(sensitive),false);
+ const cases=[
+  ['https://api.openai.com/private.html','openai'],
+  ['https://abc-def.blob.core.windows.net/private.html','azure_blob'],
+  ['https://bucket.s3.amazonaws.com/private.html','aws'],
+  ['https://not-approved.example/private.html','other'],
+ ] as const;
+ for(const [download_url,family] of cases){
+  const rejected={...file,file_id:'SYNTHETIC_FILE_ID',
+   download_url:download_url+'?sig=SYNTHETIC_SAS_VALUE'};
+  const response=await client.callTool({name:'workflow_run',arguments:{
+   workflow_id:attempt,idempotency_key:'drop-diagnostic-'+family,inputs:{},file:rejected,
+  }});
+  assert.equal(response.isError,true);
+  const output=(response.content?.[0] as {text:string}).text;
+  assert.deepEqual(JSON.parse(output),{error:'drop_file_source_host_unapproved_'+family});
+  for(const sensitive of [rejected.file_id,rejected.download_url,
+   new URL(rejected.download_url).hostname,'SYNTHETIC_SAS_VALUE'])
+   assert.equal(output.includes(sensitive),false);
+ }
+ assert.equal(planReads,cases.length);
 });
