@@ -222,11 +222,13 @@ test("device list shows only fresh reported read/write/Shell hints, never stale 
   records.set("device:" + uuid, device);
   records.set("session:epoch:" + uuid, "signed-epoch");
   let open = true;
+  let metadataReported = true;
   const socket = {
     get readyState() { return open ? WebSocket.OPEN : WebSocket.CLOSED; },
     deserializeAttachment: () => ({
       device_id: uuid, epoch: "signed-epoch",
       connected_at: connectedAt, last_auth_check_at: now - 1_000,
+      device_info_reported: metadataReported,
     }),
   } as unknown as WebSocket;
   const state = {
@@ -239,6 +241,9 @@ test("device list shows only fresh reported read/write/Shell hints, never stale 
   const unknown = { file_read: "unknown", file_write: "unknown", shell: "unknown" };
 
   assert.deepEqual(await hints(), full);
+  metadataReported = false;
+  assert.deepEqual(await hints(), unknown, "a signed socket is not fresh until its metadata frame is accepted");
+  metadataReported = true;
   records.set("device:" + uuid, { ...device, device_info: { ...info, capabilities: ["read"] } });
   assert.deepEqual(await hints(), {
     file_read: "reported_enabled", file_write: "reported_disabled", shell: "reported_disabled",
