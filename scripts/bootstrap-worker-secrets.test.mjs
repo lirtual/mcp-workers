@@ -98,8 +98,11 @@ test("Workflow Drop PEM Secrets are optional as a pair and scoped to Workflow on
     ...fixtures["remote-control-mcp-worker"],...withKeys
   }),fixtures["remote-control-mcp-worker"]);
   const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
-  for(const name of [publicName,privateName])
-    assert.ok(release.includes(name+": ${{ inputs.worker == 'workflow-mcp-worker' && secrets."+name+" || '' }}"));
+  // GitHub stores the public encryption key as a Variable, while the
+  // receipt decryption private key remains a Secret.
+  for(const [name,source] of [[publicName,"vars"],[privateName,"secrets"]])
+    assert.ok(release.includes(name+": ${{ inputs.worker == 'workflow-mcp-worker' && "+source+"."+name+" || '' }}"));
+  assert.ok(!release.includes("secrets."+publicName));
 });
 
 test("Workflow bootstrap stages only canonical runtime keys; missing mapped inputs fail closed", () => {
