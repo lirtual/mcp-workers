@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {generateKeyPairSync,privateDecrypt,createDecipheriv,constants} from 'node:crypto';
 import {isDropPlan,isSealedDropInputs,type SealedDropInputs} from '../src/drop-file-contract.ts';
 import {sealDropFile,startSelectedFile} from '../src/drop-file-ingress.ts';
+import {buildMcpServer} from '../src/tools.ts';
+import {createMcpHandler} from '@modelcontextprotocol/server';
+import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import type {Plan} from '../src/plan.ts';
 import type {Env} from '../src/store.ts';
 
@@ -73,13 +76,22 @@ test('ChatGPT fileParams may omit filename and MIME without losing attempt bindi
  const sealed=await sealDropFile(required,attempt,digest,keys.publicKey,1800000000000);
  assert.deepEqual(decode(sealed).file,required);
  await assert.rejects(sealDropFile({...required,file_name:null} as any,
-  attempt,digest,keys.publicKey),/drop_invalid_file_or_contract/);
+  attempt,digest,keys.publicKey),/drop_file_metadata_invalid/);
 });
 test('Reject invalid file, public key and truncated or oversized serialized inputs',async()=>{
  await assert.rejects(sealDropFile({...file,file_name:'script.js'},attempt,digest,keys.publicKey));
  await assert.rejects(sealDropFile({...file,file_name:'../index.html'},attempt,digest,keys.publicKey));
  await assert.rejects(sealDropFile({...file,download_url:'https://example.com/file.html'},
-  attempt,digest,keys.publicKey));
+  attempt,digest,keys.publicKey),/drop_file_source_host_unapproved/);
+ await assert.rejects(sealDropFile({...file,download_url:'http://files.oaiusercontent.com/a'},
+  attempt,digest,keys.publicKey),/drop_file_source_url_invalid/);
+ await assert.rejects(sealDropFile({...file,file_id:'   '},
+  attempt,digest,keys.publicKey),/drop_file_source_descriptor_invalid/);
+ await assert.rejects(sealDropFile({...file,download_url:
+  'https://selectedblob123.blob.core.windows.net/uploads/a.html?sv=x&sig=abc'},
+  attempt,digest,keys.publicKey),/drop_file_source_azure_sas_invalid/);
+ await assert.rejects(sealDropFile(file,attempt,'bad-digest',keys.publicKey),
+  /drop_file_contract_invalid/);
  await assert.rejects(sealDropFile(file,attempt,digest,'not PEM'),/drop_key_unavailable/);
  const valid=await sealDropFile(file,attempt,digest,keys.publicKey);
  assert.equal(isSealedDropInputs({...valid,drop_part_0:''}),false);
@@ -102,4 +114,32 @@ test('Selected-file entry fails closed before Run reservation without configured
    inputs:invalidInputs,idempotency_key:'drop-test'}),/file_inputs_invalid/);
  }
  assert.equal(reads,4);
+});
+test('MCP workflow_run returns only a safe Drop rejection class before admission',async t=>{
+ let planReads=0;
+ const env={DB:{prepare:(query:string)=>{
+  assert.match(query,/SELECT w.state,w.active_version_id,v.plan/);
+  return {bind:()=>({first:async()=>{
+   planReads++;
+   return {state:'active',active_version_id:attempt,plan:JSON.stringify(plan)};
+  }})};
+ }},WORKFLOW_GITHUB_DROP_PUBLIC_KEY:'not-needed-before-validation'} as unknown as Env;
+ const worker=createMcpHandler(()=>buildMcpServer(env),{legacy:'stateless'});
+ const client=new Client({name:'drop-rejection-fixture',version:'0.1.0'});
+ const transport=new StreamableHTTPClientTransport(new URL('https://workflow-fixture.invalid/mcp'),{
+  fetch:async(input,init)=>worker.fetch(new Request(input,init)),
+ });
+ await client.connect(transport);
+ t.after(async()=>client.close());
+ const rejected={...file,file_id:'SYNTHETIC_FILE_ID',
+  download_url:'https://not-approved.example/private.html?sig=SYNTHETIC_SAS_VALUE'};
+ const response=await client.callTool({name:'workflow_run',arguments:{
+  workflow_id:attempt,idempotency_key:'drop-diagnostic-fixture',inputs:{},file:rejected,
+ }});
+ assert.equal(response.isError,true);
+ const output=(response.content?.[0] as {text:string}).text;
+ assert.deepEqual(JSON.parse(output),{error:'drop_file_source_host_unapproved'});
+ assert.equal(planReads,1);
+ for(const sensitive of [rejected.file_id,rejected.download_url,'not-approved.example',
+  'SYNTHETIC_SAS_VALUE'])assert.equal(output.includes(sensitive),false);
 });
