@@ -204,7 +204,7 @@ test("device list shows only fresh reported read/write/Shell hints, never stale 
   const connectedAt = now - 2_000;
   const info = {
     hostname: "signed-host", os: "linux", os_version: "Ubuntu 24",
-    arch: "x64", environment: "native",
+    arch: "x64", environment: "native", agent_version: "v0.1.56",
     capabilities: ["read", "file_write", "shell"],
   };
   assert.deepEqual(parseDeviceInfo(JSON.stringify({kind: "device_info", ...info}))?.capabilities,
@@ -241,6 +241,11 @@ test("device list shows only fresh reported read/write/Shell hints, never stale 
   const unknown = { file_read: "unknown", file_write: "unknown", shell: "unknown" };
 
   assert.deepEqual(await hints(), full);
+  records.set("device:" + uuid, {
+    ...device, device_info: { ...info, agent_version: "v0.1.55" },
+  });
+  assert.deepEqual(await hints(), unknown, "legacy Agent claims must not become current capability hints");
+  records.set("device:" + uuid, device);
   metadataReported = false;
   assert.deepEqual(await hints(), unknown, "a signed socket is not fresh until its metadata frame is accepted");
   metadataReported = true;
