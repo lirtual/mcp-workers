@@ -68,6 +68,13 @@ test('Signed URL is encrypted for exact physical Attempt; no plaintext reaches d
  assert.throws(()=>decode(sealed,crypto.randomUUID()));
  assert.throws(()=>decode(sealed,attempt,'f'.repeat(64)));
 });
+test('ChatGPT fileParams may omit filename and MIME without losing attempt binding',async()=>{
+ const required={file_id:file.file_id,download_url:file.download_url};
+ const sealed=await sealDropFile(required,attempt,digest,keys.publicKey,1800000000000);
+ assert.deepEqual(decode(sealed).file,required);
+ await assert.rejects(sealDropFile({...required,file_name:null} as any,
+  attempt,digest,keys.publicKey),/drop_invalid_file_or_contract/);
+});
 test('Reject invalid file, public key and truncated or oversized serialized inputs',async()=>{
  await assert.rejects(sealDropFile({...file,file_name:'script.js'},attempt,digest,keys.publicKey));
  await assert.rejects(sealDropFile({...file,file_name:'../index.html'},attempt,digest,keys.publicKey));
