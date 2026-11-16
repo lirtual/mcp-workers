@@ -1,10 +1,13 @@
-/** Spec #87: one-shot, selected-file Drop admission.
- * The signed file locator is sealed in memory for the exact reviewed
- * GitHub Task Attempt. D1 receives ciphertext only, never the locator.
+/** Spec #87: one-shot admission for an approved selected file.
+ * The GitHub transport seals a short-lived locator for the exact reviewed
+ * Task Attempt. D1 receives ciphertext only, never the plaintext locator.
  */
 import {WorkflowService,StateError,type Env} from './store.ts';
 import {approvedAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
+import {selectedFilePlan} from './selected-file-plan.ts';
+import {cloudflareSelectedFilePlan} from './cloudflare-selected-file.ts';
+import {startCloudflareSelectedFile} from './cloudflare-selected-file-ingress.ts';
 import {isDropPlan,isSealedDropInputs,DROP_UUID,DROP_DIGEST,DROP_PART_SIZE,
  type SealedDropInputs} from './drop-file-contract.ts';
 import type {Plan} from './plan.ts';
@@ -92,7 +95,10 @@ export async function startSelectedFile(env:Env,args:{
  idempotency_key:string;expected_published_version_id?:string;
 }){
  const {plan,version}=await publishedPlan(env,args.workflow_id,args.expected_published_version_id);
- if(!isDropPlan(plan)){
+ const cloudflareCapability=cloudflareSelectedFilePlan(plan);
+ if(cloudflareCapability)return startCloudflareSelectedFile(env,args,cloudflareCapability,version);
+ const fileCapability=selectedFilePlan(plan);
+ if(!fileCapability&&!isDropPlan(plan)){
   const supplied=args.inputs;
   if(Object.keys(supplied).some(k=>k!=='time')||
      (supplied.time!==undefined&&typeof supplied.time!=='string'))
@@ -108,10 +114,10 @@ export async function startSelectedFile(env:Env,args:{
  if(!env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY)throw new StateError('drop_key_unavailable');
  const action=plan.steps[0]!.with.action as {contractDigest:string};
  const attemptId=crypto.randomUUID();
- const sealed=await sealDropFile(args.file,attemptId,action.contractDigest,
+ const sealed=await sealDropFile(args.file,attemptId,fileCapability?.contract_digest??action.contractDigest,
   env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY);
  const run=await new WorkflowService(env).start(args.workflow_id,sealed,args.idempotency_key,
-  undefined,'drop',version);
+  undefined,fileCapability?'github_selected_file':'drop',version);
  return {run_id:run.run_id,published_version_id:run.published_version_id,
   status:run.status,start_state:run.start_state};
 }

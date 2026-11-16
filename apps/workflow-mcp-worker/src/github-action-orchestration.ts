@@ -3,6 +3,7 @@ import type { ReviewedGitHubAction } from './github-action-review.ts';
 import { dispatchReviewedGitHubAction } from './github-action-dispatch.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
 import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
+import {selectedFilePlan} from './selected-file-plan.ts';
 import {isCurrentWorkflowGitHubAction,type WorkflowGitHubExecutor} from './workflow-github-executor.ts';
 import {resolveApprovedMainAction} from './github-action-main-preflight.ts';
 import { recordGithubDispatchResult } from './github-claim.ts';
@@ -94,9 +95,9 @@ export async function registerAndDispatchGitHubAction(
     throw Error('github_action_publication_missing');
    expectedInputs=resolveSessionActionInputs(pinned as Record<string,unknown>,
      plan.inputs,supplied);
-  }else if(isDropPlan(plan)){
-   // The only exception to frozen literal Task inputs. Admission sealed these
-   // three values for this Attempt, and no other Run/Task may substitute them.
+  }else if(isDropPlan(plan)||selectedFilePlan(plan)!==null){
+   // The reviewed encrypted-file adapter is the only exception to frozen
+   // literal Task inputs. Exactly one Attempt owns these three sealed slots.
    let sealed:unknown;
    try{sealed=JSON.parse(origin.inputs);}catch{throw Error('drop_envelope_invalid');}
    if(!isSealedDropInputs(sealed)||sealed.drop_attempt_id!==data.attemptId)

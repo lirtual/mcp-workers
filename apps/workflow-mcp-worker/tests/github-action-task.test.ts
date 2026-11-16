@@ -546,3 +546,56 @@ test('Spec87: Owner result decrypts an authenticated claim, never after expiry o
   assert.equal(orphan.claim_status,'unavailable');
  }finally{fixture.db.close();}
 });
+
+test('arbitrary reviewed file Task seals Owner Claim in the existing D1 receipt, never normal result',async()=>{
+ const f=setup();
+ f.db.exec(readFileSync(new URL('../migrations/0022_drop_claim_receipts.sql',import.meta.url),'utf8'));
+ const generic={...action,workflowPath:'.github/workflows/new-preview.yml'};
+ const policy={delivery:'github_encrypted_locator_v1' as const,
+  extensions:['.html','.zip'],max_bytes:10485760,
+  input_slots:['drop_part_0','drop_part_1','drop_part_2'] as ['drop_part_0','drop_part_1','drop_part_2'],
+  consent:'cloudflare_terms_v1' as const,receipt:'owner_claim_v1' as const};
+ const genericPlan:Plan={version:1,name:'not-drop',github_execution_approved:true,
+  github_action_approvals:[generic],
+  github_dynamic_input_contracts:{build:{name:'Generic',type:'task',
+   inputs:{drop_part_0:{type:'string',required:true},
+    drop_part_1:{type:'string',required:false,default:''},
+    drop_part_2:{type:'string',required:false,default:''}},selectedFile:policy}},
+  steps:[{id:'build',uses:'github.run',needs:[],with:{capability:'github.action',
+   action:{...generic,ref:'refs/heads/main',
+    inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+  .run(JSON.stringify(genericPlan),'v');
+ const attempt='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const signedWorkflowRef=repo+'/'+generic.workflowPath+'@refs/heads/main';
+ const {privateKey,publicKey}=await generateKeyPair('RS256');
+ const jwt=await new SignJWT({repository:repo,repository_id:'123',
+  workflow_ref:signedWorkflowRef,ref:'refs/heads/main',
+  sha,run_id:'42',run_attempt:'1',event_name:'workflow_dispatch'})
+  .setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+  .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+ f.db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,
+  dispatch_id,state,repository,repository_id,workflow_ref,ref,
+  candidate_run_id,candidate_run_attempt,resolved_sha,created_at,updated_at)
+  VALUES(?,?,'build','github.action',?,'confirmed',?,?,?,?,42,1,?,1,1)`)
+  .run(attempt,runId,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',repo,'123',
+   signedWorkflowRef,'refs/heads/main',sha);
+ try{
+  assert.equal(await verifyAndClaimPinnedGitHubAction(f.adapter,attempt,jwt,
+   audience,publicKey),true);
+  const payload={drop_claim_v:1,preview_url:'https://generic-preview.workers.dev',
+   expires_at:Date.now()+2000000,sealed_claim:'S'.repeat(250)};
+  const send=(v:Record<string,unknown>)=>recordSignedGitHubActionTaskResult(
+   f.adapter,attempt,jwt,audience,v,publicKey);
+  assert.equal(await send(payload),'recorded');
+  assert.equal(await send(payload),'already_recorded');
+  assert.equal(await send({...payload,sealed_claim:'H'.repeat(250)}),'denied');
+  const receipt=f.db.prepare('SELECT result_json FROM callback_receipts WHERE attempt_id=?')
+   .get(attempt) as {result_json:string};
+  assert(!receipt.result_json.includes(payload.sealed_claim));
+  assert.deepEqual(JSON.parse(receipt.result_json),{
+   preview_url:payload.preview_url,expires_at:payload.expires_at,claim_receipt_ref:attempt});
+  assert.equal(f.db.prepare('SELECT sealed_claim FROM drop_claim_receipts WHERE attempt_id=?')
+   .get(attempt)?.sealed_claim,payload.sealed_claim);
+ }finally{f.db.close();}
+});
