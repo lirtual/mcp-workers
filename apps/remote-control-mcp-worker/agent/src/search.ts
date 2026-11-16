@@ -281,7 +281,7 @@ export class SearchSessions {
     try {
       const page = await this.page(session);
       if (requestSignal?.aborted) throw new SearchFailed("failed");
-      if (!page.has_more) await this.dispose(session, false);
+      if (!page.has_more) await this.dispose(session, session.pendingStep !== undefined);
       return { ...page, ...(page.has_more ? { session_id: id } : {}) };
     } catch (error) {
       await this.dispose(session, true);
@@ -304,7 +304,7 @@ export class SearchSessions {
     try {
       const page = await this.page(session);
       if (requestSignal?.aborted) throw new SearchFailed("failed");
-      if (!page.has_more) await this.dispose(session, false);
+      if (!page.has_more) await this.dispose(session, session.pendingStep !== undefined);
       return { ...page, ...(page.has_more ? { session_id: sessionId } : {}) };
     } catch (error) {
       await this.dispose(session, true);
