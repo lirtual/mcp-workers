@@ -32,7 +32,7 @@ export async function sealDropFile(
  file:ChatGptFile,attemptId:string,contractDigest:string,pem:string,
  now=Date.now(),
 ):Promise<SealedDropInputs>{
- const source=inspectAttachmentUrl(file);
+ const source=inspectAttachmentUrl(file,true);
  if(!source.url)throw new StateError('drop_file_source_'+source.reason+
   (source.reason==='host_unapproved'?'_'+source.host_family:''));
  const url=source.url;
@@ -45,11 +45,13 @@ export async function sealDropFile(
  if(!DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
   throw new StateError('drop_file_contract_invalid');
  let expires=now+60*60*1000;
- if(url.hostname.endsWith('.blob.core.windows.net')){
-  const sas=Date.parse(url.searchParams.get('se')??'');
-  if(!Number.isFinite(sas)||sas<=now+60000)
+ // Honour a declared expiry without requiring service-specific SAS fields:
+ // a selected HTTPS file may be hosted on any public DNS hostname.
+ if(url.hostname.endsWith('.blob.core.windows.net')&&url.searchParams.has('se')){
+  const declared=Date.parse(url.searchParams.get('se')??'');
+  if(!Number.isFinite(declared)||declared<=now+60000)
    throw new StateError('drop_file_expiry_insufficient');
-  expires=Math.min(expires,sas-30000);
+  expires=Math.min(expires,declared-30000);
  }
  const issued=now;
  let key:CryptoKey;

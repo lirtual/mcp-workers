@@ -66,6 +66,20 @@ test('unapproved file hosts expose only a finite provider family, never a hostna
    assert.equal(JSON.stringify(checked).includes(sensitive),false);
  }
 });
+test('Drop-only source policy accepts public HTTPS DNS while legacy stays strict',()=>{
+ for(const url of ['https://cdn.example.com/site.html',
+  'https://bucket.s3.amazonaws.com/site.zip',
+  'https://files.oaiusercontent.com.alias.example/site.html']){
+  assert.equal(inspectAttachmentUrl({...file,download_url:url},true).url?.href,url);
+  assert.equal(inspectAttachmentUrl({...file,download_url:url}).url,null);
+  assert.equal(approvedAttachmentUrl({...file,download_url:url}),null);
+ }
+ for(const url of ['https://127.0.0.1/site.html','https://[::1]/site.html',
+  'https://localhost/site.html','http://cdn.example.com/site.html',
+  'https://cdn.example.com:443/site.html']){
+  assert.equal(inspectAttachmentUrl({...file,download_url:url},true).url,null);
+ }
+});
 test('fetches the one file with no credentials or redirect, hashes bounded bytes in memory',async()=>{
  let count=0;
  const text='test fixture no secrets';

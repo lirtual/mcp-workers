@@ -44,7 +44,9 @@ type AttachmentUrlCheck=
 // Rejected hosts are grouped into four non-authenticating diagnostic families.
 // Only the exact allowlist below can authorize a read; no host, URL, ID or SAS
 // value is returned to callers.
-export function inspectAttachmentUrl(file:unknown):AttachmentUrlCheck {
+// Drop's encrypted GitHub handoff accepts public HTTPS DNS sources; other
+// selected-file paths retain the existing trusted-host policy by default.
+export function inspectAttachmentUrl(file:unknown,allowUnlistedHost=false):AttachmentUrlCheck {
  if(!file||typeof file!=='object'||Array.isArray(file))
   return {url:null,reason:'descriptor_invalid'};
  const f=file as Record<string,unknown>;
@@ -59,6 +61,16 @@ export function inspectAttachmentUrl(file:unknown):AttachmentUrlCheck {
   if(url.protocol!=='https:'||url.port||url.username||url.password||
     url.hash||url.pathname==='/'||url.href!==f.download_url)
    return {url:null,reason:'url_invalid'};
+  if(allowUnlistedHost){
+   // Reject obvious non-public destinations early; the GitHub Runner enforces
+   // the actual public-IP rule while establishing the TLS connection.
+   const host=url.hostname;
+   if(!host.includes('.')||host==='localhost'||host.endsWith('.localhost')||
+     host.endsWith('.local')||host.endsWith('.internal')||
+     /^\d+(?:\.\d+){3}$/.test(host)||host.startsWith('['))
+    return {url:null,reason:'url_invalid'};
+   return {url};
+  }
   if(url.hostname==='files.oaiusercontent.com')return {url};
   if(!AZURE_BLOB_HOST.test(url.hostname))
    return {url:null,reason:'host_unapproved',
