@@ -1016,6 +1016,9 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
     assert.throws(()=>check([...bindings,...dropBindings.map(x=>x.name===missing?{...x,type:"plain_text"}:x)],
       [...secrets,...dropSecrets]),/Unexpected runtime Secret/);
   }
+  // A Drop key name must not bypass the pair gate by being exposed as a plain-text Variable.
+  assert.throws(()=>check([...bindings,...dropNames.map(name=>({name,type:"plain_text",text:"unexpected"}))],secrets),
+    /complete pair/);
   // A code-only release preserves deployed Variables: reject Audience drift
   // BEFORE deploy, not only during post-publication readback.
   const codeOnlyPreflight=(list=bindings)=>verifyBindings("workflow-mcp-worker",

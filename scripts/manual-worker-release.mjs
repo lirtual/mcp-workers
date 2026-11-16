@@ -500,7 +500,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
       bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),
       "Unexpected runtime Secret name or type after publication");
-    if (workflowDropSecrets.some(name => secretNames.has(name) || !!find(name, "secret_text")))
+    if (workflowDropSecrets.some(name => secretNames.has(name) || bindings.some(binding => binding.name === name)))
       invariant(workflowDropSecrets.every(name => secretNames.has(name) && !!find(name, "secret_text")),
         "Workflow Drop Secrets must be a complete pair");
     if (options.cleanupVerified) invariant(!cleanupLegacy.some(name => secretNames.has(name) ||
