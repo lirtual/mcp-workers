@@ -74,7 +74,7 @@ test("Workflow release always stages the dedicated Portal and GitHub credentials
 });
 
 
-test("Workflow Drop PEM Secrets are optional as a pair and scoped to Workflow only", () => {
+test("Workflow Drop PEM inputs are optional as a pair and scoped to Workflow only", () => {
   const makeRSA = () => generateKeyPairSync("rsa", {modulusLength:2048,
     publicKeyEncoding:{type:"spki",format:"pem"},
     privateKeyEncoding:{type:"pkcs8",format:"pem"}});

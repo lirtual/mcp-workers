@@ -1,6 +1,6 @@
 import {databaseCatalogStage} from './database-catalog-stage.mjs';
 import {createPrivateKey,createPublicKey} from 'node:crypto';
-// Stage only the selected Worker's Repository Secrets.
+// Stage only the selected Worker's GitHub Repository Secrets and Variables.
 // Used for EVERY authorized manual release, not only for first deployment.
 // Source scope must remain unambiguous; do not add Environment-bound jobs.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
