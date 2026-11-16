@@ -107,10 +107,11 @@ export async function startSelectedFile(env:Env,args:{
    ...(supplied.time===undefined?{}:{time:supplied.time as string}),
    idempotency_key:args.idempotency_key,expected_published_version_id:version});
  }
- // Admission-only consent: never serialize this flag into the sealed GitHub input.
- // The exact true value must come from this request, not repository configuration.
- if(Object.keys(args.inputs).length!==1||args.inputs.cloudflare_terms_accepted!==true)
-  throw new StateError('drop_terms_acceptance_required');
+ // The owner-initiated manual Run authorizes this selected-file upload.
+ // Cloudflare Terms and Privacy acceptance is a one-time prerequisite before
+ // the first temporary account; it is not a repeated Workflow input.
+ if(Object.keys(args.inputs).length!==0)
+  throw new StateError('file_inputs_invalid');
  if(!env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY)throw new StateError('drop_key_unavailable');
  const action=plan.steps[0]!.with.action as {contractDigest:string};
  const attemptId=crypto.randomUUID();

@@ -24,7 +24,7 @@ const plan:Plan={version:1,name:'new-preview',github_execution_approved:true,
  steps:[{id:'upload',uses:'github.run',needs:[],
   with:{capability:'github.action',action:{...action,ref:'refs/heads/main',inputs}}}]};
 
-test('generic reviewed file Task validates fresh Terms before any Run, regardless of Action name',async()=>{
+test('generic reviewed file Task accepts no redundant Terms input, regardless of Action name',async()=>{
  let reads=0;
  const version='11111111-2222-4333-8444-555555555555';
  const env={DB:{prepare:()=>({bind:()=>({first:async()=>{
@@ -34,11 +34,11 @@ test('generic reviewed file Task validates fresh Terms before any Run, regardles
   file_name:'index.html',mime_type:'text/html'};
  const run=(inputs:Record<string,unknown>)=>startSelectedFile(env,{workflow_id:version,
   file,inputs,idempotency_key:'file-contract-test'});
- await assert.rejects(run({cloudflare_terms_accepted:true}),/drop_key_unavailable/);
- for(const invalid of [{},{cloudflare_terms_accepted:false},{cloudflare_terms_accepted:'true'},
-  {cloudflare_terms_accepted:true,extra:1}])
-  await assert.rejects(run(invalid),/drop_terms_acceptance_required/);
- assert.equal(reads,5);
+ await assert.rejects(run({}),/drop_key_unavailable/);
+ for(const invalid of [{cloudflare_terms_accepted:true},
+  {cloudflare_terms_accepted:false},{time:'24h'}])
+  await assert.rejects(run(invalid),/file_inputs_invalid/);
+ assert.equal(reads,4);
 });
 
 test('Published file interface derives consent and policy from the reviewed Action, not its name',()=>{
@@ -48,8 +48,9 @@ test('Published file interface derives consent and policy from the reviewed Acti
  if(!('top_level_file' in value))throw Error('missing file capability');
  assert.deepEqual(value.top_level_file.extensions,['.html','.zip']);
  assert.equal(value.top_level_file.max_bytes,10485760);
- assert.deepEqual(value.inputs.cloudflare_terms_accepted,{type:'boolean',required:true,const:true,
-  note:'Fresh acceptance of Cloudflare Terms and Privacy for this one temporary deployment'});
+ assert.deepEqual(value.inputs,{});
+ assert.ok('terms' in value);
+ assert.equal(value.terms,'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment');
  assert.equal(value.idempotency_key,'required');
 });
 
