@@ -282,6 +282,8 @@ test('generic workflow_run carries optional fileParams and keeps ordinary calls 
  const run=listing.tools.find(tool=>tool.name==='workflow_run');
  assert(run);
  assert.deepEqual(run._meta?.['openai/fileParams'],['file']);
+ assert.match(run.description??'',/GitHub encrypted-locator file Task uses one-time Cloudflare Terms acceptance without a repeated per-Run flag/);
+ assert.match(run.description??'',/Cloudflare bounded-memory file Action requires fresh public-upload consent/);
  assert.equal((run.inputSchema.properties?.file as {type?:string}|undefined)?.type,'object');
  assert.equal((run.inputSchema.required??[]).includes('file'),false);
  const invoke=async(args:Record<string,unknown>)=>
