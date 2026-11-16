@@ -224,6 +224,62 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
   }
 });
 
+test("a socket send failure does not promise an operation was never dispatched", async () => {
+  const deviceId = randomUUID();
+  const operationId = "send-unknown-" + randomUUID();
+  const rows = new Map<string, unknown>([
+    ["device:" + deviceId, { device_id: deviceId, revoked: false,
+      last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
+    ["session:epoch:" + deviceId, "current"],
+  ]);
+  const socket = {
+    readyState: WebSocket.OPEN,
+    deserializeAttachment: () => ({ device_id: deviceId, epoch: "current" }),
+    send() { throw new Error("ambiguous transport failure"); },
+  } as unknown as WebSocket;
+  const owner = new V2OwnerCoordinator({
+    storage: { get: async <T>(key: string) => rows.get(key) as T | undefined },
+    getWebSockets: (tag: string) => tag === "device:" + deviceId ? [socket] : [],
+  } as unknown as DurableObjectState);
+  const reply = await owner.fetch(new Request("https://v2.internal/operation", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_id: deviceId, operation_id: operationId,
+      tool: "write_file", arguments: { path: "/tmp/not-sent", content: "x", mode: "append" } }),
+  }));
+  assert.equal(reply.status, 503);
+  assert.deepEqual(await reply.json(), { error: "timeout_unknown" });
+});
+
+test("Worker labels only proven pre-dispatch busy and offline as not dispatched", async () => {
+  const deviceId = randomUUID();
+  const operationId = "refused-" + randomUUID();
+  let reason = "busy";
+  const env = {
+    MCP_ACCESS_TOKEN: "authorized",
+    V2_OWNER: { idFromName: () => "owner", get: () => ({
+      fetch: async () => Response.json({ error: reason }, { status: 503 }),
+    }) },
+  } as unknown as Env;
+  async function call() {
+    const response = await worker.fetch(new Request("https://mcp.test/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer authorized" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call",
+        params: { name: "write_file", arguments: {
+          device_id: deviceId, operation_id: operationId,
+          path: "/tmp/not-sent", content: "x", mode: "append",
+        } } }),
+    }), env);
+    const body = await response.json() as { result: { content: Array<{ text: string }> } };
+    return JSON.parse(body.result.content[0]!.text);
+  }
+  assert.deepEqual(await call(), { operation_id: operationId, status: "busy", not_dispatched: true });
+  reason = "offline";
+  assert.deepEqual(await call(), { operation_id: operationId, status: "offline", not_dispatched: true });
+  reason = "timeout_unknown";
+  assert.deepEqual(await call(), { operation_id: operationId, status: "timeout_unknown" });
+});
+
 test("a read-only signed v2 Agent refuses mutation without dropping WSS", async () => {
   const stop = new AbortController();
   const responses: Array<{ kind: string; request_id: string; result: { operation_id: string; status: string } }> = [];
