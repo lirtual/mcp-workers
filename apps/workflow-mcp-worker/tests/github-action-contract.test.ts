@@ -105,3 +105,16 @@ test('declared GitHub output fields change only the reviewed business contract a
    '  WORKFLOW_ACTION_TYPE: session\n  WORKFLOW_ACTION_OUTPUT_KIND: '+kind)),/invalid_output_declaration/);
  }
 });
+
+test('reviewed Drop task is discoverable without opening arbitrary none-output tasks',()=>{
+ const task=parseGitHubAction(valid
+  .replace('  WORKFLOW_ACTION_TYPE: session',
+   '  WORKFLOW_ACTION_TYPE: task\n  WORKFLOW_ACTION_OUTPUT_KIND: none')
+  .replace('    timeout-minutes: 360','    timeout-minutes: 15'));
+ assert.equal(task.type,'task');
+ assert.equal(task.outputKind,'none');
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/drop.yml',task),true);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/download.yml',task),true);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/ubuntu.yml',task),false);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/unreviewed.yml',task),false);
+});
