@@ -40,12 +40,11 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
  const selected=selectedFilePlan(plan);
  if(selected){
    return {...base,kind:'manual_selected_file',
-     inputs:{cloudflare_terms_accepted:{type:'boolean',required:true,const:true,
-       note:'Fresh acceptance of Cloudflare Terms and Privacy for this one temporary deployment'}},
+     inputs:{},
      top_level_file:{required:true,source:'ChatGPT file descriptor',
        extensions:selected.file.extensions,max_bytes:selected.file.max_bytes},
      idempotency_key:'required',
-     approval:'fresh_owner_cloudflare_terms_and_temporary_account_authorization_required',
+     terms:'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment',
      unknown_result:'never_retry'};
  }
  if(isLitterboxPlan(plan)){
@@ -60,12 +59,11 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
  }
  if(isDropPlan(plan)){
    return {...base,kind:'drop_manual_file',
-     inputs:{cloudflare_terms_accepted:{type:'boolean',required:true,const:true,
-       note:'Fresh acceptance of Cloudflare Terms and Privacy for this one temporary deployment'}},
+     inputs:{},
      top_level_file:{required:true,source:'ChatGPT file descriptor',
        extensions:['.html','.zip'],max_bytes:10*1024*1024},
      idempotency_key:'required',
-     approval:'fresh_owner_cloudflare_terms_and_temporary_account_authorization_required',
+     terms:'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment',
      unknown_result:'never_retry'};
  }
  if(isEnvsharePlan(plan)&&!plan.triggers?.length&&

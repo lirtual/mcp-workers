@@ -86,14 +86,13 @@ test('Selected-file entry fails closed before Run reservation without configured
   reads++;return {state:'active',active_version_id:attempt,plan:JSON.stringify(plan)};
  }})})}} as unknown as Env;
  await assert.rejects(startSelectedFile(env,{workflow_id:attempt,file,
-  inputs:{cloudflare_terms_accepted:true},
+  inputs:{},
   idempotency_key:'drop-test',expected_published_version_id:attempt}),/drop_key_unavailable/);
  assert.equal(reads,1);
- for(const invalidInputs of [{},{cloudflare_terms_accepted:false},
-  {cloudflare_terms_accepted:'true'},
-  {cloudflare_terms_accepted:true,time:'24h'}]){
+ for(const invalidInputs of [{cloudflare_terms_accepted:true},
+  {cloudflare_terms_accepted:false},{time:'24h'}]){
   await assert.rejects(startSelectedFile(env,{workflow_id:attempt,file,
-   inputs:invalidInputs,idempotency_key:'drop-test'}),/drop_terms_acceptance_required/);
+   inputs:invalidInputs,idempotency_key:'drop-test'}),/file_inputs_invalid/);
  }
- assert.equal(reads,5);
+ assert.equal(reads,4);
 });
