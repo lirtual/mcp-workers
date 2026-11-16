@@ -184,7 +184,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     const batchFile = path.join(dir, "batch-budget.txt");
     await writeFile(batchFile, (String.fromCharCode(92).repeat(20) + "\n").repeat(1000), "utf8");
     const single = await callTool("read_file", { device_id: a, path: batchFile });
-    assert.equal(JSON.parse(single.body).result.isError, undefined);
+    assert.equal(JSON.parse(single.body).result.isError, false);
     const oversizedBatch = await callTool("read_files", { device_id: a, paths: [batchFile, batchFile] });
     assert.match(oversizedBatch.body, /response budget/i);
     assert.doesNotMatch(oversizedBatch.body, /batch-budget\.txt/);
