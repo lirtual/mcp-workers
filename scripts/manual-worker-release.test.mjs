@@ -354,7 +354,7 @@ test("SSH release requires EdgeSSH D1, own DO and scoped key", () => {
   assert.throws(() => verifyBindings(worker, settings, secrets.slice(0, 1)), /Secret missing/);
 });
 
-test("Workflow code-only release never stages secrets or runs migrations, preserves variables and rejects drift", () => {
+test("Workflow code-only release preserves Secrets and other Variables, pins Portal and rejects drift", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.match(workflow, /workflow_code_only:\n\s*description:.*no D1 migrations or secret upload/);
   assert.match(workflow, /WORKFLOW_CODE_ONLY: \$\{\{ inputs.workflow_code_only \}\}/);
@@ -367,7 +367,9 @@ test("Workflow code-only release never stages secrets or runs migrations, preser
   assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true/);
   const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
   assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
-  assert.match(deployment, /deploy_args=\(--keep-vars\)/);
+  assert.ok(deployment.includes('mapfile -t portal_pins < <(grep'));
+  assert.ok(deployment.includes('WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp-portal.lirtual.dpdns.org/mcp'));
+  assert.ok(deployment.includes('deploy_args=(--keep-vars --var "${portal_pins[0]}")'));
   assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
   assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
   assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
