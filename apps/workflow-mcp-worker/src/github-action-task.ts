@@ -9,6 +9,8 @@ import type {TerminalCasResult} from './github-action-terminal-cas.ts';
 import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspection.ts';
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
+import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
+import {isDropClaimCallback} from './drop-claim-receipt.ts';
 import {readWorkflowGitHubExecutor,isCurrentWorkflowGitHubAction} from './workflow-github-executor.ts';
 
 type Outcome={status:'succeeded'|'failed'|'indeterminate';error_code?:string;output?:unknown};
@@ -50,11 +52,26 @@ export async function runPublishedGitHubActionTask(
    return {status:'failed',error_code:'github_action_invalid_publication'};
   inputs[key]=String(value);
  }
+ // Only this exact approved, manual Drop Plan may replace three fixed placeholders.
+ // D1 has only ciphertext; the file URL is never loaded by this executor.
+ let sealedAttemptId:string|undefined;
+ if(isDropPlan(plan)){
+  const row=await env.DB.prepare('SELECT inputs FROM runs WHERE id=?')
+   .bind(runId).first<{inputs:string}>();
+  let sealed:unknown;
+  try{sealed=row?JSON.parse(row.inputs):null;}catch{return {status:'failed',error_code:'drop_envelope_invalid'};}
+  if(!isSealedDropInputs(sealed))
+   return {status:'failed',error_code:'drop_envelope_invalid'};
+  sealedAttemptId=sealed.drop_attempt_id;
+  inputs.drop_part_0=sealed.drop_part_0;
+  inputs.drop_part_1=sealed.drop_part_1;
+  inputs.drop_part_2=sealed.drop_part_2;
+ }
  const db=env.DB,token=env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
  const dispatched=await step.do('github-action-dispatch-'+stepPlan.id,{
   retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
  },async()=>{
-  const attemptId=crypto.randomUUID(),dispatchId=crypto.randomUUID();
+  const attemptId=sealedAttemptId??crypto.randomUUID(),dispatchId=crypto.randomUUID();
   const ack=await registerAndDispatchGitHubAction(db,{
    runId,stepId:stepPlan.id,attemptId,dispatchId,
    action:identity,ref:raw.ref as string,token,inputs,executorIdentity,
@@ -108,8 +125,18 @@ export async function runPublishedGitHubActionTask(
       WHERE a.attempt_id=? AND a.capability_id='github.action'
         AND a.state='succeeded' AND c.outcome='succeeded'`)
       .bind(attemptId).first<{result_json:string}>();
-    try{return {status:'succeeded',output:receipt?JSON.parse(receipt.result_json):null};}
-    catch{return {status:'indeterminate',error_code:'github_action_task_result_invalid'};}
+    try{
+     const output=receipt?JSON.parse(receipt.result_json):null;
+     if(isDropPlan(plan)){
+      // A physical upload can succeed even when its signed receipt is lost.
+      // Never misreport that case as a successful Drop preview.
+      if(!output||output.claim_receipt_ref!==attemptId||
+         typeof output.preview_url!=='string'||
+         !Number.isSafeInteger(output.expires_at)||output.expires_at<=Date.now())
+        return {status:'indeterminate',error_code:'drop_receipt_missing_or_expired'};
+     }
+     return {status:'succeeded',output};
+    }catch{return {status:'indeterminate',error_code:'github_action_task_result_invalid'};}
    }
    if(settled.state==='failed'||settled.state==='cancelled')
     return {status:'failed',error_code:settled.state==='cancelled'?
@@ -134,13 +161,45 @@ export async function recordSignedGitHubActionTaskResult(
  result:Record<string,unknown>,keys?:GithubActionKeys,
 ):Promise<'recorded'|'already_recorded'|'denied'>{
  if(!result||typeof result!=='object'||Array.isArray(result))return 'denied';
- const serialized=JSON.stringify(result);
- if(new TextEncoder().encode(serialized).byteLength>4096)return 'denied';
+ const incoming=JSON.stringify(result);
+ if(new TextEncoder().encode(incoming).byteLength>4096)return 'denied';
  const verified=await verifyPinnedGitHubActionIdentity(db,attemptId,jwt,audience,keys);
  if(!verified||verified.action.type!=='task')return 'denied';
  const {row}=verified;
  if(row.state!=='claimed'||row.owner_run_id!==row.candidate_run_id||
     row.owner_run_attempt!==row.candidate_run_attempt)return 'denied';
+ const published=await db.prepare(`SELECT v.plan FROM runs r
+    JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
+    .bind(row.run_id).first<{plan:string}>();
+ let drop=false;
+ try{drop=!!published&&isDropPlan(JSON.parse(published.plan) as Plan);}
+ catch{return 'denied';}
+ let savedResult:Record<string,unknown>=result;
+ if(drop){
+  // The bearer URL is sealed by the Runner BEFORE this HTTP request; this
+  // table is its only persisted ciphertext copy. Other result paths get a ref.
+  if(!isDropClaimCallback(result))return 'denied';
+  const insertedClaim=await db.prepare(`INSERT OR IGNORE INTO drop_claim_receipts
+    (attempt_id,sealed_claim,preview_url,expires_at,created_at)
+    SELECT ?,?,?,?,? WHERE EXISTS (
+      SELECT 1 FROM step_attempts a JOIN runs r ON r.id=a.run_id
+      WHERE a.attempt_id=? AND a.state='claimed' AND r.outcome IN ('queued','running')
+      AND a.owner_run_id=a.candidate_run_id
+      AND a.owner_run_attempt=a.candidate_run_attempt
+      AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c
+        WHERE c.attempt_id=a.attempt_id)
+    )`).bind(attemptId,result.sealed_claim,result.preview_url,
+      result.expires_at,Date.now(),attemptId).run();
+  const claim=await db.prepare(`SELECT sealed_claim,preview_url,expires_at
+    FROM drop_claim_receipts WHERE attempt_id=?`).bind(attemptId)
+    .first<{sealed_claim:string;preview_url:string;expires_at:number}>();
+  if(!claim||claim.sealed_claim!==result.sealed_claim||
+     claim.preview_url!==result.preview_url||claim.expires_at!==result.expires_at||
+     (insertedClaim.meta.changes!==1&&insertedClaim.meta.changes!==0))return 'denied';
+  savedResult={preview_url:result.preview_url,expires_at:result.expires_at,
+    claim_receipt_ref:attemptId};
+ }else if(Object.hasOwn(result,'sealed_claim')||Object.hasOwn(result,'drop_claim_v'))return 'denied';
+ const serialized=JSON.stringify(savedResult);
  const inserted=await db.prepare(`INSERT OR IGNORE INTO callback_receipts
   (callback_id,attempt_id,outcome,result_json,notification_delivered,created_at)
   SELECT ?,?,'succeeded',?,1,? WHERE EXISTS (

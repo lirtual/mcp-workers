@@ -61,6 +61,9 @@ test('read-only SQL targets exact historical IDs and never queries retired table
  const initial=uuReadinessSql('before'),after=uuReadinessSql('after');
  assert.match(initial,/FROM session_runtime_data/);
  assert.doesNotMatch(after,/FROM session_runtime_data/);
+ // The reviewed v21 cleanup snapshot must exclude later independent migrations.
+ assert.match(initial,/0020_github_action_main_sha\.sql/);
+ assert.doesNotMatch(initial,/0022_drop_claim_receipts\.sql/);
  for(const text of [initial,after]){
   assert.match(text,/unreviewed_runs/);
   assert.match(text,/unreviewed_steps/);

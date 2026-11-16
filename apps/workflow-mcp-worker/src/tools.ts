@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { discoverPortalTools } from './portal-discovery.ts';
 import {portalAuthorization} from './portal-authorization.ts';
 import { WorkflowService, StateError, cleanError } from './store.ts';
-import {startLitterboxUpload} from './litterbox-executor.ts';
+import {startSelectedFile} from './drop-file-ingress.ts';
 import type { Env } from './store.ts';
 
 const id=z.string().uuid();
@@ -78,7 +78,7 @@ export function buildMcpServer(env:Env){
  server.registerTool('workflow_delete',{description:'Tombstone a paused or never-published Workflow at its exact Draft revision. Rejects unsettled Runs, physical Sessions and published parent references; preserves Run, Version and receipt history. Repeated deletion is idempotent.',inputSchema:z.object({workflow_id:id,expected_revision:revision}).strict(),annotations:write},async({workflow_id,expected_revision})=>safe(()=>service.delete(workflow_id,expected_revision)));
  server.registerTool('workflow_resume',{description:'Allow new Run admissions for a previously paused published Workflow.',inputSchema:z.object({workflow_id:id}).strict(),annotations:write},async({workflow_id})=>safe(()=>service.resume(workflow_id)));
  server.registerTool('workflow_run',{
-   description:'Run an approved Published Workflow. Ordinary calls without a file start asynchronously and return the Run ID; EnvShare may also return a one-time delivery_key. An explicitly selected top-level file is accepted ONLY for a separately approved, manual, single-step Litterbox file Plan: inputs may contain only time (1h/12h/24h/72h), idempotency_key is mandatory, and the result reports the one-shot upload outcome. Public plaintext disclosure requires fresh Owner instruction; never retry an unknown upload. No arbitrary file URL or Provider is allowed.',
+   description:'Run an approved Published Workflow. Ordinary calls without a file start asynchronously and return the Run ID; EnvShare may also return a one-time delivery_key. A selected top-level file is accepted only for an exact approved manual Litterbox file Plan (inputs: optional time) or a source-reviewed single-step Drop Task Plan (no inputs; signed URL sealed for one Attempt). An idempotency_key is mandatory. Litterbox public disclosure requires fresh Owner approval; Drop requires separate service terms and deployment authorization. Never retry unknown effects. No arbitrary file URL or Provider is allowed.',
    inputSchema:z.object({
      workflow_id:id,inputs:z.record(z.string(),z.unknown()).optional(),
      idempotency_key:z.string().min(1).max(128).optional(),
@@ -90,12 +90,7 @@ export function buildMcpServer(env:Env){
  },async({workflow_id,inputs,idempotency_key,expected_published_version_id,file})=>safe(()=>{
    if(file===undefined)return service.start(workflow_id,inputs??{},idempotency_key,undefined,false,expected_published_version_id);
    if(!idempotency_key)throw new StateError('file_idempotency_key_required');
-   const selectedInputs=inputs??{};
-   if(Object.keys(selectedInputs).some(k=>k!=='time')||
-      (selectedInputs.time!==undefined&&typeof selectedInputs.time!=='string'))
-     throw new StateError('file_inputs_invalid');
-   return startLitterboxUpload(env,{workflow_id,file,
-     ...(selectedInputs.time===undefined?{}:{time:selectedInputs.time as string}),
+   return startSelectedFile(env,{workflow_id,file,inputs:inputs??{},
      idempotency_key,expected_published_version_id});
  }));
  server.registerTool('workflow_cancel',{description:'Request cancellation for a reviewed GitHub Action, a historical already-approved gate before its first durable GitHub Attempt, awaited child or native external event wait by Run/Step ID. A pending/approved gate or event wait must have no other active Steps; force requires an existing GitHub Attempt and cannot force-cancel an event wait. If a registered GitHub Attempt still has no confirmed physical Run identity, cancellation durably fences any later signed Claim without asserting physical termination. Once a physical Run is confirmed, existing GitHub cancellation and reconciliation govern. For children, check native Cloudflare termination but never infer external resource termination. An explicit force=true is accepted only after a prior normal cancellation and a verified still-running job has exceeded the guarded wait. Force may bypass cleanup. Repeated requests never re-POST an uncertain cancellation.',inputSchema:z.object({run_id:id,step_id:z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),force:z.literal(true).optional()}).strict(),annotations:externalWrite},async({run_id,step_id,force})=>safe(()=>service.cancel(run_id,step_id,force===true)));

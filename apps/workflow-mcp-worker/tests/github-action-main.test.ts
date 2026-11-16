@@ -38,7 +38,8 @@ const dispatch={runId:RID,stepId:'ubuntu',attemptId:AID,dispatchId:DID,
  action:approved,ref:DYNAMIC_MAIN_REF,token:'test-token',inputs:{duration_minutes:'5'},executorIdentity};
 
 function fake(o:{ci?:'success'|'failure'|'absent';changed?:boolean;
- moved?:boolean;throwPost?:boolean;onPost?:()=>void}={}){
+ moved?:boolean;throwPost?:boolean;onPost?:()=>void;
+ sourceYaml?:string;sourcePath?:string;sourceWorkflowId?:number}={}){
  let posts=0;
  const http=async(req:Request):Promise<Response>=>{
   const u=new URL(req.url);
@@ -56,10 +57,11 @@ function fake(o:{ci?:'success'|'failure'|'absent';changed?:boolean;
   if(u.pathname==='/repos/'+REPO+'/commits/main')
    return Response.json({sha:HEAD});
   if(u.pathname==='/repos/'+REPO+'/actions/workflows')
-   return Response.json({workflows:[{id:WF_ID,path:PATH,state:'active'}]});
-  if(u.pathname==='/repos/'+REPO+'/contents/'+PATH)
-   return Response.json({path:PATH,encoding:'base64',
-    content:btoa(o.changed?YAML.replace('default: 5','default: 6'):YAML)});
+   return Response.json({workflows:[{id:o.sourceWorkflowId??WF_ID,
+    path:o.sourcePath??PATH,state:'active'}]});
+  if(u.pathname==='/repos/'+REPO+'/contents/'+(o.sourcePath??PATH))
+   return Response.json({path:o.sourcePath??PATH,encoding:'base64',
+    content:btoa(o.sourceYaml??(o.changed?YAML.replace('default: 5','default: 6'):YAML))});
   if(u.pathname==='/repos/'+REPO+'/actions/workflows/ci.yml/runs')
    return Response.json({total_count:o.ci==='absent'?0:1,
     workflow_runs:o.ci==='absent'?[]:[{id:1234,workflow_id:394262523,
@@ -199,4 +201,44 @@ test('Unknown POST never retries, signed Claim and physical Run require frozen H
     head_branch:'main',head_sha:BASE,event:'workflow_dispatch',
    },DYNAMIC_MAIN_REF).state,'identity_mismatch');
  }finally{db.close();}
+});
+
+test('Drop sealed Attempt follows the full reviewed main/CI preflight and dispatch fence',async()=>{
+ const dropPath='.github/workflows/drop.yml',dropId=777;
+ const dropYaml=['name: drop','on:','  workflow_dispatch:','    inputs:',
+  '      attempt_id: {type: string, required: true}',
+  '      dispatch_id: {type: string, required: true}',
+  '      capability_id: {type: string, required: true}',
+  '      drop_part_0: {type: string, required: true}',
+  '      drop_part_1: {type: string, required: false}',
+  '      drop_part_2: {type: string, required: false}',
+  'env:','  WORKFLOW_ACTION_TYPE: task','  WORKFLOW_ACTION_PUBLIC: "true"',
+  'jobs:','  drop:','    runs-on: ubuntu-latest',
+  '    steps:','      - run: echo synthetic',''].join('\n');
+ const dropAction=await reviewedGitHubAction({
+  repository:REPO,repositoryId:REPO_ID,workflowId:dropId,workflowPath:dropPath,
+  commitSha:BASE,contract:parseGitHubAction(dropYaml),
+ });
+ const sealed={drop_attempt_id:AID,drop_part_0:'sealed-primary',
+  drop_part_1:'sealed-secondary',drop_part_2:''};
+ const dropPlan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],steps:[{id:'drop',uses:'github.run',needs:[],
+   with:{capability:'github.action',
+    action:{...dropAction,ref:DYNAMIC_MAIN_REF,
+     inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ const {db,adapter}=setup();
+ db.prepare('UPDATE workflow_versions SET plan=?').run(JSON.stringify(dropPlan));
+ db.prepare('UPDATE runs SET inputs=?').run(JSON.stringify(sealed));
+ const api=fake({sourceYaml:dropYaml,sourcePath:dropPath,sourceWorkflowId:dropId});
+ const out=await registerAndDispatchGitHubAction(adapter,{
+  ...dispatch,stepId:'drop',action:dropAction,
+  inputs:{drop_part_0:sealed.drop_part_0,drop_part_1:sealed.drop_part_1,drop_part_2:''},
+ },api.http);
+ assert.deepEqual(out,{status:'confirmed',runId:88,runAttempt:1});
+ assert.equal(api.posts(),1);
+ const attempt=db.prepare('SELECT attempt_id,ref,resolved_sha FROM step_attempts').get() as {
+  attempt_id:string;ref:string;resolved_sha:string};
+ assert.equal(attempt.attempt_id,AID);
+ assert.equal(attempt.ref,'refs/heads/main');
+ assert.equal(attempt.resolved_sha,HEAD);
 });

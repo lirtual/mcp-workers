@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
+import {createCipheriv,publicEncrypt,randomBytes,constants,generateKeyPairSync} from 'node:crypto';
 import {generateKeyPair,SignJWT} from 'jose';
 import {runPublishedGitHubActionTask,recordSignedGitHubActionTaskResult} from '../src/github-action-task.ts';
+import {registerAndDispatchGitHubAction} from '../src/github-action-orchestration.ts';
 import {WorkflowService} from '../src/store.ts';
 import {verifyAndClaimPinnedGitHubAction} from '../src/github-action-oidc-claim.ts';
 import {publishedGitHubActionStep,type Plan} from '../src/plan.ts';
@@ -368,4 +370,179 @@ test('dynamic Task OIDC Claim and signed result bind to exact bounded child ID',
   assert.equal(f.post(),1,'reentry after missing native checkpoint does not re-dispatch');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
  }finally{f.db.close();}
+});
+
+test('Drop Task rejects missing encrypted Run admission before any GitHub request',async()=>{
+ const fixture=setup();
+ const dropAction={...action,workflowPath:'.github/workflows/drop.yml'};
+ const dropPlan:Plan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],
+  steps:[{id:'build',uses:'github.run',needs:[],with:{capability:'github.action',
+   action:{...dropAction,ref:'refs/heads/main',
+    inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ const outcome=await runPublishedGitHubActionTask(fixture.env,dropPlan,dropPlan.steps[0],
+  runId,fixture.step,async()=>{throw Error('external request must not happen');});
+ assert.deepEqual(outcome,{status:'failed',error_code:'drop_envelope_invalid'});
+ assert.equal(fixture.post(),0);
+});
+
+test('D1 Attempt binding blocks forged sealed Task inputs before any physical dispatch',async()=>{
+ const fixture=setup();
+ const dropAction={...action,workflowPath:'.github/workflows/drop.yml'};
+ const dropPlan:Plan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],
+  steps:[{id:'build',uses:'github.run',needs:[],with:{capability:'github.action',
+   action:{...dropAction,ref:'refs/heads/main',
+    inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ const originalAttempt='22222222-2222-4222-8222-222222222222';
+ const forgedAttempt='33333333-3333-4333-8333-333333333333';
+ const original={drop_attempt_id:originalAttempt,drop_part_0:'sealed',
+  drop_part_1:'',drop_part_2:''};
+ fixture.db.prepare('UPDATE workflow_versions SET plan=?').run(JSON.stringify(dropPlan));
+ fixture.db.prepare('UPDATE runs SET inputs=?').run(JSON.stringify(original));
+ let requests=0;
+ await assert.rejects(registerAndDispatchGitHubAction(fixture.adapter,{
+  runId,stepId:'build',attemptId:forgedAttempt,
+  dispatchId:'44444444-4444-4444-8444-444444444444',
+  action:dropAction,ref:'refs/heads/main',token:'test-token',
+  inputs:{drop_part_0:'sealed',drop_part_1:'',drop_part_2:''},
+  executorIdentity:{repository:repo,repositoryId:123,ciWorkflowId:999},
+ },async()=>{requests++;throw Error('unexpected network request');}),/drop_attempt_binding_invalid/);
+ assert.equal(requests,0);
+ assert.equal(fixture.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,0);
+});
+
+test('Spec87: signed Drop Task persists sealed claim once, normal callback only gets an opaque reference',async()=>{
+ const fixture=setup();
+ fixture.db.exec(readFileSync(new URL('../migrations/0022_drop_claim_receipts.sql',import.meta.url),'utf8'));
+ const dropAction={...action,workflowPath:'.github/workflows/drop.yml'};
+ const dropPlan:Plan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],steps:[{id:'drop',uses:'github.run',needs:[],
+    with:{capability:'github.action',action:{...dropAction,ref:'refs/heads/main',
+      inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ fixture.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?')
+  .run(JSON.stringify(dropPlan),'v');
+ const attempt='99999999-9999-4999-8999-999999999999';
+ const actionRef=repo+'/.github/workflows/drop.yml@refs/heads/main';
+ const {privateKey,publicKey}=await generateKeyPair('RS256');
+ const jwt=await new SignJWT({repository:repo,repository_id:'123',
+  workflow_ref:actionRef,ref:'refs/heads/main',sha,run_id:'42',run_attempt:'1',
+  event_name:'workflow_dispatch'})
+  .setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com')
+  .setAudience(audience).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+ const payload={drop_claim_v:1,preview_url:'https://temp-preview.workers.dev',
+  expires_at:Date.now()+2700000,sealed_claim:'X'.repeat(500)};
+ try{
+  fixture.db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,
+   dispatch_id,state,repository,repository_id,workflow_ref,ref,
+   candidate_run_id,candidate_run_attempt,created_at,updated_at)
+   VALUES(?,?,'drop','github.action',?,'confirmed',?,?,?,?,42,1,1,1)`)
+   .run(attempt,runId,'88888888-8888-4888-8888-888888888888',repo,'123',actionRef,
+    'refs/heads/main');
+  fixture.db.prepare('UPDATE step_attempts SET resolved_sha=? WHERE attempt_id=?')
+   .run(sha,attempt);
+  assert.equal(await verifyAndClaimPinnedGitHubAction(fixture.adapter,attempt,jwt,
+   audience,publicKey),true);
+  const send=(receipt:Record<string,unknown>)=>recordSignedGitHubActionTaskResult(
+   fixture.adapter,attempt,jwt,audience,receipt,publicKey);
+  assert.equal(await send(payload),'recorded');
+  assert.equal(await send(payload),'already_recorded');
+  assert.equal(await send({...payload,sealed_claim:'Y'.repeat(500)}),'denied');
+  assert.equal(await send({claimUrl:'https://dash.cloudflare.com/claim-preview?claimToken=unsafe'}),'denied');
+  const callback=fixture.db.prepare('SELECT result_json FROM callback_receipts WHERE attempt_id=?')
+   .get(attempt) as {result_json:string};
+  assert.deepEqual(JSON.parse(callback.result_json),{
+   preview_url:payload.preview_url,expires_at:payload.expires_at,claim_receipt_ref:attempt});
+  assert.ok(!callback.result_json.includes(payload.sealed_claim));
+  assert.ok(!callback.result_json.includes('claim-preview'));
+  const sealed=fixture.db.prepare('SELECT sealed_claim FROM drop_claim_receipts WHERE attempt_id=?')
+   .get(attempt) as {sealed_claim:string};
+  assert.equal(sealed.sealed_claim,payload.sealed_claim);
+  assert.equal(fixture.db.prepare('SELECT count(*) n FROM callback_receipts').get()?.n,1);
+  assert.equal(fixture.db.prepare('SELECT count(*) n FROM drop_claim_receipts').get()?.n,1);
+ }finally{fixture.db.close();}
+});
+
+test('Spec87: Owner result decrypts an authenticated claim, never after expiry or without key',async()=>{
+ const fixture=setup();
+ const attempt='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const preview='https://test-owner.workers.dev';
+ const claim='https://dash.cloudflare.com/claim-preview?claimToken='+('Q'.repeat(64));
+ const expiry=Date.now()+2700000;
+ const keys=generateKeyPairSync('rsa',{modulusLength:2048,
+  publicKeyEncoding:{format:'pem',type:'spki'},
+  privateKeyEncoding:{format:'pem',type:'pkcs8'}});
+ const aes=randomBytes(32),nonce=randomBytes(12);
+ const cipher=createCipheriv('aes-256-gcm',aes,nonce);
+ cipher.setAAD(Buffer.from('drop-receipt-v1\n'+attempt+'\n'+preview+'\n'+expiry));
+ const ciphertext=Buffer.concat([cipher.update(JSON.stringify({
+  attemptId:attempt,claimUrl:claim,previewUrl:preview,expiresAt:expiry}),'utf8'),
+  cipher.final(),cipher.getAuthTag()]);
+ const wrapped=publicEncrypt({key:keys.publicKey,padding:constants.RSA_PKCS1_OAEP_PADDING,
+  oaepHash:'sha256'},aes);
+ const sealed=Buffer.from(JSON.stringify({v:1,wrapped_key:Buffer.from(wrapped).toString('base64url'),
+  nonce:Buffer.from(nonce).toString('base64url'),
+  ciphertext:ciphertext.toString('base64url')})).toString('base64url');
+ const dropAction={...action,workflowPath:'.github/workflows/drop.yml'};
+ const dropPlan:Plan={version:1,name:'drop',github_execution_approved:true,
+  github_action_approvals:[dropAction],steps:[{id:'drop',uses:'github.run',needs:[],
+    with:{capability:'github.action',action:{...dropAction,ref:'refs/heads/main',
+     inputs:{drop_part_0:'',drop_part_1:'',drop_part_2:''}}}}]};
+ const result={preview_url:preview,expires_at:expiry,claim_receipt_ref:attempt};
+ const adapter={prepare:(sql:string)=>({bind:(...args:unknown[])=>({
+  first:async()=>fixture.db.prepare(sql).get(...args as []),
+  all:async()=>({results:fixture.db.prepare(sql).all(...args as [])}),
+  run:async()=>({meta:{changes:fixture.db.prepare(sql).run(...args as []).changes}}),
+ })})} as unknown as D1Database;
+ try{
+  fixture.db.exec(readFileSync(new URL('../migrations/0022_drop_claim_receipts.sql',import.meta.url),'utf8'));
+  fixture.db.prepare('UPDATE workflow_versions SET plan=?').run(JSON.stringify(dropPlan));
+  fixture.db.prepare("UPDATE runs SET outcome='succeeded',result=?,start_state='started' WHERE id=?")
+   .run(JSON.stringify(result),runId);
+  fixture.db.prepare(`INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,
+    state,repository,repository_id,workflow_ref,ref,created_at,updated_at)
+    VALUES(?,?,'drop','github.action',?,'succeeded',?,?,?,?,1,1)`)
+   .run(attempt,runId,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',repo,'123',
+    repo+'/.github/workflows/drop.yml@refs/heads/main','refs/heads/main');
+  fixture.db.prepare(`INSERT INTO drop_claim_receipts
+   (attempt_id,sealed_claim,preview_url,expires_at,created_at) VALUES(?,?,?,?,?)`)
+   .run(attempt,sealed,preview,expiry,Date.now());
+  fixture.db.prepare(`INSERT INTO callback_receipts
+   (callback_id,attempt_id,outcome,result_json,notification_delivered,created_at)
+   VALUES(?,?,'succeeded',?,1,?)`)
+   .run('cccccccc-cccc-4ccc-8ccc-cccccccccccc',attempt,JSON.stringify(result),Date.now());
+  const env={...fixture.env,DB:adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:undefined,
+   WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY:keys.privateKey};
+  const output=await new WorkflowService(env).result(runId);
+  assert.equal(output.claim_url,claim);
+  assert.equal(output.claim_status,'available');
+  assert.deepEqual(output.result,result);
+  assert.ok(!JSON.stringify(output.result).includes('claimToken'));
+  const missing=await new WorkflowService({...env,
+   WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY:undefined}).result(runId);
+  assert.equal(missing.claim_url,undefined);
+  assert.equal(missing.claim_status,'unavailable');
+  // The signed receipt remains recoverable when GitHub reconciliation is
+  // Unknown: do not re-create a physical temporary account.
+  fixture.db.prepare("UPDATE runs SET outcome='indeterminate',result=NULL WHERE id=?")
+   .run(runId);
+  fixture.db.prepare("UPDATE step_attempts SET state='claimed' WHERE attempt_id=?")
+   .run(attempt);
+  const unknown=await new WorkflowService(env).result(runId);
+  assert.equal(unknown.status,'indeterminate');
+  assert.equal(unknown.result,null);
+  assert.equal(unknown.claim_url,claim);
+  assert.equal(unknown.claim_status,'available');
+  fixture.db.prepare('UPDATE drop_claim_receipts SET expires_at=? WHERE attempt_id=?')
+   .run(Date.now()-1,attempt);
+  const expired=await new WorkflowService(env).result(runId);
+  assert.equal(expired.claim_url,undefined);
+  assert.equal(expired.claim_status,'expired');
+  fixture.db.prepare('UPDATE drop_claim_receipts SET expires_at=? WHERE attempt_id=?')
+   .run(expiry,attempt);
+  fixture.db.prepare('DELETE FROM callback_receipts WHERE attempt_id=?').run(attempt);
+  const orphan=await new WorkflowService(env).result(runId);
+  assert.equal(orphan.claim_url,undefined);
+  assert.equal(orphan.claim_status,'unavailable');
+ }finally{fixture.db.close();}
 });

@@ -17,7 +17,7 @@ const kinds=new Map([['ACTIONS','service'],['DB','d1'],['WORKFLOW','workflow'],
  ['WORKFLOW_MCP_PORTAL_CLIENT_ID','plain_text'],['WORKFLOW_MCP_PORTAL_ENDPOINT','plain_text']]);
 const states=['queued','running','paused','waiting','waitingForPause','rollingBack'];
 const priorMigrations=readdirSync('apps/workflow-mcp-worker/migrations')
- .filter(x=>/^\d{4}_[a-z0-9_]+\.sql$/.test(x)&&x!==FILE).sort();
+ .filter(x=>/^\d{4}_[a-z0-9_]+\.sql$/.test(x)&&x<FILE).sort();
 check(priorMigrations.length===20,'expected twenty immutable source migrations');
 const quotedMigrations=priorMigrations.map(x=>"'"+x+"'").join(',');
 const ids=REVIEWED_HISTORICAL_RUN_IDS.map(id=>{check(UUID.test(id),'history ID');return "'"+id+"'";}).join(',');

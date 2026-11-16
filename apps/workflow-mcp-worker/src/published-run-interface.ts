@@ -1,6 +1,7 @@
 import type {Plan} from './plan.ts';
 import {isEnvsharePlan} from './envshare-transient.ts';
 import {isLitterboxPlan} from './litterbox-executor.ts';
+import {isDropPlan} from './drop-file-contract.ts';
 import {isSessionDurationInputRef} from './github-action-inputs.ts';
 
 type UnknownField={type:'not_declared';required:'not_declared';default:'not_declared'};
@@ -31,6 +32,14 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
        note:'File bytes are uploaded in plaintext to a public external service'},
      idempotency_key:'required',
      approval:'fresh_owner_public_upload_authorization_required',
+     unknown_result:'never_retry'};
+ }
+ if(isDropPlan(plan)){
+   return {...base,kind:'drop_manual_file',inputs:{},
+     top_level_file:{required:true,source:'ChatGPT file descriptor',
+       extensions:['.html','.zip'],max_bytes:10*1024*1024},
+     idempotency_key:'required',
+     approval:'fresh_owner_cloudflare_terms_and_temporary_account_authorization_required',
      unknown_result:'never_retry'};
  }
  if(isEnvsharePlan(plan)&&!plan.triggers?.length&&

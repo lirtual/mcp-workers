@@ -21,6 +21,8 @@ import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {publishedRunInterface} from './published-run-interface.ts';
+import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
+import {openDropClaim} from './drop-claim-receipt.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
 function draftName(definition:string):string {
@@ -56,6 +58,11 @@ export type Env = {
   // Separate GitHub-issued OIDC audience for immutable Action claims.
   // This is an identity binding, not an execution feature switch.
   WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE?: string;
+  // Optional and inactive until independently authorized configuration.
+  WORKFLOW_GITHUB_DROP_PUBLIC_KEY?: string;
+  // Dedicated reverse-direction key: only the Owner MCP result can decrypt
+  // a Runner-sealed Cloudflare claim. Never reuse a generic access token.
+  WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY?: string;
   // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
@@ -893,7 +900,7 @@ if(required.length){
     if(parent)throw new StateError('workflow_referenced_by_parent');
     throw new StateError('workflow_delete_conflict');
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile=false,expected_published_version_id?:string){
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile:false|true|'drop'=false,expected_published_version_id?:string){
     assertId(workflow_id);
     // Caller assertion is not an internal trigger identity. Check it before
     // replay, ephemeral secret generation or any Run reservation.
@@ -915,7 +922,7 @@ throw new StateError('reserved_idempotency_key');
       if(original){
         if(expected_published_version_id&&original.version_id!==expected_published_version_id)
           throw new StateError('published_version_changed');
-        if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+        if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':'litterbox_duplicate_admission');
         // A file-less workflow_run cannot use a prior file-backed Run key
         // to bypass the selected-file admission gate, even on replay.
         const oldPlan=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
@@ -934,7 +941,8 @@ throw new StateError('reserved_idempotency_key');
             status:original.outcome,start_state:original.start_state,idempotent_replay:true};
         }
         if(parsed.steps?.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox'))
-          throw new StateError('litterbox_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+          throw new StateError('litterbox_file_tool_required');
+        if(isDropPlan(parsed))throw new StateError('drop_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -998,7 +1006,11 @@ throw new StateError('reserved_idempotency_key');
       activePlan.steps[0].with.provider==='litterbox'&&
       activePlan.steps[0].with.action==='litterbox.upload_file'&&
       (activePlan.steps.length===1||isAuxiliaryBarkPair(activePlan.steps));
-    if(isLitterbox!==allowTransientFile)throw new StateError('litterbox_file_tool_required');
+    if(isLitterbox!==(allowTransientFile===true))throw new StateError('litterbox_file_tool_required');
+    const isDrop=isDropPlan(activePlan);
+    if(isDrop!==(allowTransientFile==='drop'))throw new StateError('drop_file_tool_required');
+    if(isDrop&&(!idempotency_key||expected_version_id||!isSealedDropInputs(inputs)))
+      throw new StateError('drop_manual_file_admission_required');
     if(isLitterbox&&(!idempotency_key||expected_version_id||
       activePlan.cloudflare_execution_approved!==true||activePlan.triggers?.length))
       throw new StateError('litterbox_manual_approval_required');
@@ -1037,7 +1049,7 @@ throw new StateError('reserved_idempotency_key');
         if(prior){
           if(expected_published_version_id&&prior.version_id!==expected_published_version_id)
             throw new StateError('published_version_changed');
-          if(allowTransientFile)throw new StateError('litterbox_duplicate_admission');
+          if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':'litterbox_duplicate_admission');
           if(deliveryKey)throw new StateError('envshare_key_unrecoverable');
           if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');
           if(expected_version_id&&prior.version_id!==expected_version_id)
@@ -1321,7 +1333,61 @@ throw new StateError('reserved_idempotency_key');
       if(result?.status!=='accepted')throw new StateError('envshare_result_unavailable');
       share_url=await buildEnvshareLink(saved?JSON.parse(saved.inputs):null,result.share_id,delivery_key);
     }
-    return limitResult({...meta,result:row?.result?JSON.parse(row.result):null,
+    const businessResult=row?.result?JSON.parse(row.result):null;
+    let claim_url:string|undefined;
+    let claim_status:string|undefined;
+    // A valid signed Callback is independent of later Run reconciliation.
+    // An indeterminate Run must not hide a claim that was already sealed.
+    const advertised=businessResult&&typeof businessResult==='object'&&
+      !Array.isArray(businessResult)&&Object.hasOwn(businessResult,'claim_receipt_ref')
+      ?businessResult as Record<string,unknown>:null;
+    if(advertised||['succeeded','failed','indeterminate','cancelled','start_unknown']
+      .includes(meta.status)){
+      const source=await this.db.prepare(`SELECT v.plan FROM runs r
+        JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
+        .bind(run_id).first<{plan:string}>();
+      let approved=false;
+      try{approved=!!source&&isDropPlan(JSON.parse(source.plan) as Plan);}
+      catch{approved=false;}
+      if(approved){
+        // Never expose an orphan ciphertext row: an authenticated Callback
+        // receipt must also exist and agree on Attempt and public metadata.
+        const saved=await this.db.prepare(`SELECT c.attempt_id,c.sealed_claim,
+          c.preview_url,c.expires_at,cb.result_json AS callback_result
+          FROM drop_claim_receipts c
+          JOIN step_attempts a ON a.attempt_id=c.attempt_id
+          JOIN callback_receipts cb ON cb.attempt_id=a.attempt_id
+          WHERE a.run_id=? AND a.capability_id='github.action'
+            AND cb.outcome='succeeded'`)
+          .bind(run_id).first<{attempt_id:string;sealed_claim:string;
+            preview_url:string;expires_at:number;callback_result:string}>();
+        if(!saved)claim_status='unavailable';
+        else if(saved.expires_at<=Date.now())claim_status='expired';
+        else{
+          let callback:unknown;
+          try{callback=JSON.parse(saved.callback_result);}
+          catch{callback=null;}
+          const receipt=callback&&typeof callback==='object'&&!Array.isArray(callback)
+            ?callback as Record<string,unknown>:null;
+          const matches=receipt&&receipt.claim_receipt_ref===saved.attempt_id&&
+            receipt.preview_url===saved.preview_url&&
+            receipt.expires_at===saved.expires_at&&
+            (!advertised||(advertised.claim_receipt_ref===saved.attempt_id&&
+              advertised.preview_url===saved.preview_url&&
+              advertised.expires_at===saved.expires_at));
+          if(matches&&this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY){
+            try{claim_url=await openDropClaim({drop_claim_v:1,
+              preview_url:saved.preview_url,expires_at:saved.expires_at,
+              sealed_claim:saved.sealed_claim},saved.attempt_id,
+              this.env.WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY);
+              claim_status='available';}
+            catch{claim_status='unavailable';}
+          }else claim_status='unavailable';
+        }
+      }else if(advertised)claim_status='unavailable';
+    }
+    return limitResult({...meta,result:businessResult,
+      ...(claim_url?{claim_url}:{}),...(claim_status?{claim_status}:{}),
       ...(share_url?{share_url}:{}),
       ...(artifactReferences.length?{artifact_references:artifactReferences}:{}),
       error_code:row?.error_code??null},64*1024);
