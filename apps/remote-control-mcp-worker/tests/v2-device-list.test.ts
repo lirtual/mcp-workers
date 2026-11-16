@@ -73,9 +73,9 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   }>;
   const publicDevices = devices.map(({ idle_expires_at, ...device }: {idle_expires_at?: number;[key:string]:unknown}) => device);
   assert.deepEqual(publicDevices, [
-    { device_id: onlineId, name: "home", status: "online", grant_type: "permanent" },
-    { device_id: staleId, name: "stale", status: "offline", grant_type: "permanent" },
-    { device_id: offlineId, name: "office", status: "offline", grant_type: "permanent" },
+    { device_id: onlineId, name: "home", status: "online", grant_type: "permanent", capability_hints: { file_read: "unknown", file_write: "unknown", shell: "unknown" } },
+    { device_id: staleId, name: "stale", status: "offline", grant_type: "permanent", capability_hints: { file_read: "unknown", file_write: "unknown", shell: "unknown" } },
+    { device_id: offlineId, name: "office", status: "offline", grant_type: "permanent", capability_hints: { file_read: "unknown", file_write: "unknown", shell: "unknown" } },
   ].sort((a, b) => a.device_id.localeCompare(b.device_id)));
   assert.equal(payload.result.content[0]!.text.includes("private-public-key"), false);
   assert.equal(devices.some(d => d.device_id === revokedId && d.status === "online"), false);
@@ -242,7 +242,7 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.equal(response.status, 200);
-  assert.deepEqual((await response.json() as Array<{idle_expires_at?: number}>).map(({idle_expires_at,...d})=>d), [{ device_id: id, name: "damaged", status: "offline", grant_type: "permanent" }]);
+  assert.deepEqual((await response.json() as Array<{idle_expires_at?: number}>).map(({idle_expires_at,...d})=>d), [{ device_id: id, name: "damaged", status: "offline", grant_type: "permanent", capability_hints: { file_read: "unknown", file_write: "unknown", shell: "unknown" } }]);
 });
 
 test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can come online again", async () => {
