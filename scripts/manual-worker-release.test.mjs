@@ -554,7 +554,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   const result = row => [{success:true,results:[row]}];
   const baseline = {
     migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,migration_v18:0,migration_v19:0,migration_v20:0,resolved_sha_column:0,rca_duration_column:0,portal_auth_table:0,mcp_fence_table:0,http_auth_table:0,cloudflare_gate_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
+    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,migration_v18:0,migration_v19:0,migration_v20:0,migration_v22:0,drop_claim_receipts_table:0,resolved_sha_column:0,rca_duration_column:0,portal_auth_table:0,mcp_fence_table:0,http_auth_table:0,cloudflare_gate_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
     capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
     child_terminate_fence_column:0,capacity_guard_trigger:0,
     locator_column:0,fixed_column:0,fixed_index:0,
@@ -602,6 +602,14 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
   assert.equal(verifyWorkflowD1Readiness(result(mainComplete),false,true),true);
   const uuRetired={...mainComplete,migration_count:21,migration_v21:1,runtime_table:0};
   assert.equal(verifyWorkflowD1Readiness(result(uuRetired),false,true,true),true);
+  const dropComplete={...uuRetired,migration_count:22,migration_v22:1,drop_claim_receipts_table:1};
+  assert.equal(verifyWorkflowD1Readiness(result(dropComplete),false,true,true),true);
+  assert.equal(verifyWorkflowD1Readiness(result(dropComplete),false,true),true);
+  for(const broken of [
+    {migration_v22:0},{drop_claim_receipts_table:0},{migration_count:21},
+    {migration_count:23},{migration_v21:0},{runtime_table:1},
+  ]) assert.throws(()=>verifyWorkflowD1Readiness(result({...dropComplete,...broken}),false,true),
+    /migration\/schema drift|schema migrations/);
   assert.throws(()=>verifyWorkflowD1Readiness(result(mainComplete),false,true,true),
     /UU retirement post-migration/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,runtime_table:1}),false,true,true),
@@ -610,12 +618,17 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
     /UU retirement/);
   assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,active_sessions:1}),false,true,true),
     /active physical Sessions/);
-  // v21 is already fully applied. Code-only releases may keep a healthy Ready
-  // Session; the separate code-release-check still rejects unresolved activity.
+  // Only v22 code-only releases may keep a healthy Ready Session;
+  // the separate code-release-check still rejects unresolved activity.
   assert.throws(()=>verifyWorkflowD1Readiness(
     result({...uuRetired,active_sessions:1}),false,true),/active physical Sessions/);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...uuRetired,active_sessions:1}),false,true,false,true),/active physical Sessions/);
   assert.equal(verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true,false,true),true);
+    result({...dropComplete,active_sessions:1}),false,true,false,true),true);
+  assert.throws(()=>verifyWorkflowD1Readiness(
+    result({...dropComplete,active_sessions:1,drop_claim_receipts_table:0}),false,true,false,true),
+    /migration\/schema drift/);
   assert.throws(()=>verifyWorkflowD1Readiness(
     result({...uuRetired,active_sessions:1,active_runs:1}),false,true,false,true),
     /active or indeterminate/);
@@ -715,7 +728,7 @@ test("Workflow remote D1 checks the exact old, intermediate and full schema", ()
 });
 test("Workflow migration preflight requires all independent physical states settled", () => {
   const ready = {
-    migration_count: 12, expected_migrations: 12,
+    migration_count: 12, expected_migrations: 12,drop_claim_receipts_table:0,
     workflow_count: 7, run_count: 58, session_count: 49,
     attempt_count: 31, callback_count: 4, cancellation_count: 31,
     nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0, invalid_cancelled_steps: 0,
@@ -723,11 +736,14 @@ test("Workflow migration preflight requires all independent physical states sett
     reviewed_terminal_artifact_attempts: 0,
   };
   const response = row => [{success: true, results: [row]}];
-  for (const count of [18,19,20,21]) assert.deepEqual(
-    verifyWorkflowMigrationReadiness(response({...ready,migration_count:count,expected_migrations:count})),
+  for (const count of [18,19,20,21,22]) assert.deepEqual(
+    verifyWorkflowMigrationReadiness(response({...ready,migration_count:count,expected_migrations:count,
+      drop_claim_receipts_table:count===22?1:0})),
     {workflows:7,runs:58,sessions:49,attempts:31,callbacks:4,cancellations:31});
   for (const wrong of [
+    {migration_count:23,expected_migrations:23},
     {migration_count:22,expected_migrations:22},
+    {migration_count:21,expected_migrations:21,drop_claim_receipts_table:1},
     {migration_count:19,expected_migrations:18},
   ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response({...ready,...wrong})),/exact reviewed/);
   assert.deepEqual(verifyWorkflowMigrationReadiness(response(ready)), {
@@ -796,14 +812,17 @@ test("Workflow migration preflight requires all independent physical states sett
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0017_http_connection_auth.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0019_session_rca_duration.sql/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0020_github_action_main_sha.sql/);
+  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0022_drop_claim_receipts.sql/);
   const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   assert.equal((release.match(/AS migration_v17/g)??[]).length,2);
   assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
   assert.equal((release.match(/AS migration_v19/g)??[]).length,2);
   assert.equal((release.match(/AS migration_v20/g)??[]).length,2);
   assert.equal((release.match(/AS migration_v21/g)??[]).length,2);
+  assert.equal((release.match(/AS migration_v22/g)??[]).length,2);
+  assert.equal((release.match(/AS drop_claim_receipts_table/g)??[]).length,2);
   assert.equal((release.match(/AS resolved_sha_column/g)??[]).length,2);
-  assert.match(release,/migrations\[@\].*eq 21/);
+  assert.match(release,/migrations\[@\].*eq 22/);
   assert.equal((release.match(/AS rca_duration_column/g)??[]).length,2);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
   assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/reviewed_terminal_artifact_attempts/);
@@ -856,7 +875,7 @@ test('cancelled Workflow Steps count as terminal only with matched cancelled Run
 
 test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
   const row={
-    migration_count:20,expected_migrations:20,resolved_sha_column:1,
+    migration_count:22,expected_migrations:22,drop_claim_receipts_table:1,resolved_sha_column:1,
     nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
     nonterminal_attempts:1,nonterminated_sessions:1,
     undelivered_callbacks:0,confirmed_ready_sessions:1,reviewed_terminal_artifact_attempts:0,verified_terminal_saga_receipts:0,
@@ -892,7 +911,9 @@ test("code-only release admits only confirmed Ready Sessions, not migrations",()
     unresolved_steps:1,verified_terminal_saga_receipts:1,
   })),{confirmed_ready_sessions:0});
   for(const broken of [
-    {migration_count:19},{expected_migrations:19},{resolved_sha_column:0},
+    {migration_count:21},{expected_migrations:21},{migration_count:20},
+    {drop_claim_receipts_table:0},
+    {drop_claim_receipts_table:2},{resolved_sha_column:0},{migration_count:19},{expected_migrations:19},
     {migration_count:18},{expected_migrations:18},
     {migration_count:12},{expected_migrations:12},
     {migration_count:13},{expected_migrations:13},
