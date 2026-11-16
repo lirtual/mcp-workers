@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {generateKeyPairSync} from "node:crypto";
+import {readFileSync} from "node:fs";
 import { BOOTSTRAP_SECRETS, collectBootstrapSecrets } from "./bootstrap-worker-secrets.mjs";
 
 const fixtures = {
@@ -71,6 +73,34 @@ test("Workflow release always stages the dedicated Portal and GitHub credentials
   }),fixtures["raindrop-mcp-worker"]);
 });
 
+
+test("Workflow Drop PEM Secrets are optional as a pair and scoped to Workflow only", () => {
+  const makeRSA = () => generateKeyPairSync("rsa", {modulusLength:2048,
+    publicKeyEncoding:{type:"spki",format:"pem"},
+    privateKeyEncoding:{type:"pkcs8",format:"pem"}});
+  // These are deliberately *different* pairs; each counterpart belongs on
+  // the reviewed GitHub Task, not in this Worker's runtime.
+  const filePair=makeRSA(), receiptPair=makeRSA();
+  const base=fixtures["workflow-mcp-worker"];
+  const publicName="WORKFLOW_GITHUB_DROP_PUBLIC_KEY";
+  const privateName="WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY";
+  const withKeys={...base,[publicName]:filePair.publicKey,
+    [privateName]:receiptPair.privateKey};
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",base),base);
+  assert.deepEqual(collectBootstrapSecrets("workflow-mcp-worker",withKeys),withKeys);
+  for(const name of [publicName,privateName]){
+    const missing={...withKeys};delete missing[name];
+    assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",missing),/Incomplete Workflow Drop/);
+    assert.throws(()=>collectBootstrapSecrets("workflow-mcp-worker",
+      {...withKeys,[name]:"malformed"}),/Invalid Workflow Drop RSA PEM/);
+  }
+  assert.deepEqual(collectBootstrapSecrets("remote-control-mcp-worker",{
+    ...fixtures["remote-control-mcp-worker"],...withKeys
+  }),fixtures["remote-control-mcp-worker"]);
+  const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+  for(const name of [publicName,privateName])
+    assert.ok(release.includes(name+": ${{ inputs.worker == 'workflow-mcp-worker' && secrets."+name+" || '' }}"));
+});
 
 test("Workflow bootstrap stages only canonical runtime keys; missing mapped inputs fail closed", () => {
   const worker = "workflow-mcp-worker";
