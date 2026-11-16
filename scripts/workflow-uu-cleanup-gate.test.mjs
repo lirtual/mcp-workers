@@ -77,7 +77,7 @@ test('generic migration still strictly rejects 12 old indeterminate Runs',()=>{
   session_count:8,attempt_count:182,callback_count:7,cancellation_count:0,
   nonterminal_runs:12,unresolved_starts:0,unresolved_steps:12,
   invalid_cancelled_steps:0,nonterminal_attempts:1,nonterminated_sessions:0,
-  undelivered_callbacks:0,reviewed_terminal_artifact_attempts:0};
+  undelivered_callbacks:0,reviewed_terminal_artifact_attempts:0,drop_claim_receipts_table:0};
  assert.throws(()=>verifyWorkflowMigrationReadiness([{success:true,results:[old]}]),
    /Workflow migration blocked by nonterminal_runs/);
 });
