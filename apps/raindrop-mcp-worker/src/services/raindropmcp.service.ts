@@ -29,7 +29,6 @@ export class RaindropMCPService {
   public raindropService: RaindropService;
   private resources: Record<string, any> = {};
   private readonly exposedToolConfigs: typeof toolConfigs;
-  private readonly readonlyCollectionPilot: boolean;
   /**
    * Expose the MCP server instance for external control (e.g., connect, close).
    */
@@ -64,17 +63,9 @@ export class RaindropMCPService {
     };
   }
 
-  constructor(
-    config: RaindropServiceConfig = {},
-    options: { readonlyCollectionPilot?: boolean } = {},
-  ) {
+  constructor(config: RaindropServiceConfig = {}) {
     try {
-      // Clerk pilot registers only one explicitly reviewed read tool; it cannot
-      // reach mutations through tools/call or the direct helper entry point.
-      this.readonlyCollectionPilot = options.readonlyCollectionPilot === true;
-      this.exposedToolConfigs = this.readonlyCollectionPilot
-        ? toolConfigs.filter((tool) => tool.name === "collection_list")
-        : toolConfigs;
+      this.exposedToolConfigs = toolConfigs;
       this.raindropService = new RaindropService(config);
       this.server = new McpServer(
         {
@@ -92,10 +83,8 @@ export class RaindropMCPService {
       );
 
       this.registerDeclarativeTools();
-      if (!this.readonlyCollectionPilot) {
-        this.registerResources();
-        this.registerResourceHandlers();
-      }
+      this.registerResources();
+      this.registerResourceHandlers();
     } catch (err) {
       console.error("Failed to initialize RaindropMCPService:", err);
       throw err;
@@ -249,11 +238,6 @@ export class RaindropMCPService {
   public async readResource(
     uri: string,
   ): Promise<Array<{ uri: string; text: string }>> {
-    if (this.readonlyCollectionPilot) {
-      throw new NotFoundError(
-        "Resources are not exposed on the Clerk read-only pilot",
-      );
-    }
     if (!uri) {
       throw new ValidationError("Resource URI is required");
     }
@@ -350,7 +334,6 @@ export class RaindropMCPService {
     description?: string;
     mimeType?: string;
   }> {
-    if (this.readonlyCollectionPilot) return [];
     // Include our static resources and dynamic resource patterns
     const staticResources = Object.keys(this.resources).map((uri) => ({
       id: uri,

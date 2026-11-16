@@ -29,7 +29,7 @@
 | `remote-control-mcp-worker` | 无额外 Secret | 无 |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_REPOSITORY` |
-| `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（不使用共享 `MCP_ACCESS_TOKEN`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`，Clerk 身份复用 `CLERK_PILOT_*` |
+| `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（不使用共享 `MCP_ACCESS_TOKEN`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`；Gateway 身份仍读取历史命名的 `CLERK_PILOT_*` GitHub Variables（不是 Raindrop 试点运行时绑定） |
 
 ## 二、切换准入与不可逆清理
 

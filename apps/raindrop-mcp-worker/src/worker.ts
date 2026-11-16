@@ -1,18 +1,11 @@
 /** Cloudflare Workers entry point for the Raindrop MCP server. */
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
-import {
-  authenticateClerkPilot,
-  clerkPilotMetadata,
-  CLERK_PILOT_PATH,
-  CLERK_PILOT_PRM_PATH,
-  type ClerkPilotBindings,
-} from "./clerk-pilot-auth.js";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import pkg from "../package.json";
 import { RaindropMCPService } from "./services/raindropmcp.service.js";
 import { createLogger } from "./utils/logger.js";
 
-interface Env extends ClerkPilotBindings {
+interface Env {
   RAINDROP_ACCESS_TOKEN: string;
   MCP_ACCESS_TOKEN: string;
   RAINDROP_RATE_LIMIT_MAX_RETRIES?: string;
@@ -25,19 +18,16 @@ const parseMaxReadRetries = (value: string | undefined): number => {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : 3;
 };
 
-const createHandler = (env: Env, readonlyCollectionPilot = false) =>
+const createHandler = (env: Env) =>
   createMcpHandler(
     () =>
-      new RaindropMCPService(
-        {
-          accessToken: env.RAINDROP_ACCESS_TOKEN,
-          maxReadRetries: parseMaxReadRetries(
-            env.RAINDROP_RATE_LIMIT_MAX_RETRIES,
-          ),
-          debugHttp: false,
-        },
-        { readonlyCollectionPilot },
-      ).getServer(),
+      new RaindropMCPService({
+        accessToken: env.RAINDROP_ACCESS_TOKEN,
+        maxReadRetries: parseMaxReadRetries(
+          env.RAINDROP_RATE_LIMIT_MAX_RETRIES,
+        ),
+        debugHttp: false,
+      }).getServer(),
     {
       legacy: "stateless",
       responseMode: "auto",
@@ -83,25 +73,6 @@ export default {
         protocolTarget: "2026-07-28",
         httpMode: "per-request",
       });
-    }
-
-    if (url.pathname === CLERK_PILOT_PRM_PATH && request.method === "GET") {
-      return clerkPilotMetadata(request, env);
-    }
-
-    if (url.pathname === CLERK_PILOT_PATH) {
-      // Do not create a new public ingress unless an explicit resource is configured.
-      if (!env.CLERK_PILOT_RESOURCE)
-        return jsonError(404, "not_found", "Not found");
-      const auth = await authenticateClerkPilot(request, env);
-      if (!auth.ok) return auth.response;
-      if (!env.RAINDROP_ACCESS_TOKEN)
-        return jsonError(
-          503,
-          "raindrop_auth_not_configured",
-          "Raindrop authentication is not configured.",
-        );
-      return createHandler(env, true).fetch(auth.request);
     }
 
     if (url.pathname !== "/mcp") {

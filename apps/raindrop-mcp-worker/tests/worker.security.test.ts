@@ -74,7 +74,9 @@ describe("Cloudflare Worker Portal authentication", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("WWW-Authenticate")).toBe("Bearer");
-    await expect(response.json()).resolves.toMatchObject({ error: "unauthorized" });
+    await expect(response.json()).resolves.toMatchObject({
+      error: "unauthorized",
+    });
   });
 
   it("rejects an invalid bearer credential before checking Raindrop auth", async () => {
@@ -84,7 +86,9 @@ describe("Cloudflare Worker Portal authentication", () => {
     );
 
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toMatchObject({ error: "unauthorized" });
+    await expect(response.json()).resolves.toMatchObject({
+      error: "unauthorized",
+    });
   });
 
   it("rejects a non-bearer Authorization scheme", async () => {
@@ -108,7 +112,9 @@ describe("Cloudflare Worker Portal authentication", () => {
     expect(response.status).toBe(403);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(response.headers.get("Access-Control-Allow-Headers")).toBeNull();
-    await expect(response.json()).resolves.toMatchObject({ error: "invalid_origin" });
+    await expect(response.json()).resolves.toMatchObject({
+      error: "invalid_origin",
+    });
   });
 
   it("does not provide a browser CORS preflight path", async () => {
@@ -180,6 +186,30 @@ describe("Cloudflare Worker Portal authentication", () => {
     );
 
     expect(response.status).toBe(204);
+  });
+
+  it("keeps the retired Clerk direct ingress closed even with stale bindings", async () => {
+    const stalePilot = {
+      CLERK_PILOT_RESOURCE: `${workerUrl}/clerk/mcp`,
+      CLERK_PILOT_PUBLISHABLE_KEY: "pk_test_synthetic",
+      CLERK_PILOT_OWNER_USER_ID: "user_owner",
+      CLERK_PILOT_ISSUER: "https://clerk.example.test",
+      CLERK_SECRET_KEY: "synthetic-secret",
+    };
+    for (const [path, method] of [
+      ["/clerk/mcp", "POST"],
+      ["/.well-known/oauth-protected-resource/clerk/mcp", "GET"],
+    ] as const) {
+      const response = await worker.fetch(
+        new Request(`${workerUrl}${path}`, {
+          method,
+          headers: { Authorization: "Bearer previously-issued-token" },
+        }),
+        env(stalePilot) as never,
+      );
+      expect(response.status).toBe(404);
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    }
   });
 
   it("does not treat normal JSON MCP traffic as a compatibility probe", async () => {
