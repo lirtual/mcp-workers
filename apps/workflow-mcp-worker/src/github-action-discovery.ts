@@ -28,6 +28,7 @@ const REVIEWED_OUTPUT_PATHS:Record<string,'tailnet'|'web'|'none'>={
  '.github/workflows/chrome.yml':'web',
  '.github/workflows/openlist.yml':'web',
  '.github/workflows/download.yml':'none',
+ '.github/workflows/drop.yml':'none',
 };
 export function reviewedGitHubOutputSource(path:string,contract:DiscoveredAction):boolean{
  return contract.outputKind===undefined||REVIEWED_OUTPUT_PATHS[path]===contract.outputKind;
