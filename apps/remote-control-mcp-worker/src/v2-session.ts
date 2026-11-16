@@ -1,5 +1,5 @@
 /** Authentication-only v2 WSS. This module never dispatches remote tools. */
-import { parseDeviceInfo, type DeviceInfo } from "./device-info.ts";
+import { parseDeviceInfo, supportsRuntimeHints, type DeviceInfo } from "./device-info.ts";
 const DOMAIN = "remote-control:v2:session:";
 const TTL_MS = 60_000;
 const te = new TextEncoder();
@@ -551,6 +551,7 @@ export async function listApprovedDevices(
     const reported = info?.capabilities;
     const freshReport = online && currentMetadataReported && currentConnectionAt !== undefined &&
       device.last_connected_at === currentConnectionAt &&
+      supportsRuntimeHints(info?.agent_version) &&
       Array.isArray(reported) && reported.includes("read");
     const capabilityHints: Record<"file_read" | "file_write" | "shell", CapabilityHint> = {
       file_read: freshReport ? "reported_enabled" : "unknown",
