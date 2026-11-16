@@ -644,12 +644,37 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
     assert.equal(finalPage.output, "-output");
     assert.equal(finalPage.eof, true);
 
+    // Byte-sized pages must not split UTF-8 code points into replacement characters.
+    const unicode = await callTool("start_process", { command: "printf '中😀B'", timeout_ms: 500 }, "unicode-output");
+    const unicodeId = (unicode.json as { session_id: string }).session_id;
+    const unicodeFirst = JSON.parse(completedText((await output(unicodeId, 0, 2)).json)) as {
+      offset: number; output: string; next_offset: number; eof: boolean;
+    };
+    assert.deepEqual(
+      { offset: unicodeFirst.offset, output: unicodeFirst.output, next_offset: unicodeFirst.next_offset, eof: unicodeFirst.eof },
+      { offset: 0, output: "中", next_offset: 3, eof: false },
+    );
+    const unicodeSecond = JSON.parse(completedText((await output(unicodeId, unicodeFirst.next_offset, 2)).json)) as {
+      output: string; next_offset: number; eof: boolean;
+    };
+    assert.deepEqual(
+      { output: unicodeSecond.output, next_offset: unicodeSecond.next_offset, eof: unicodeSecond.eof },
+      { output: "😀", next_offset: 7, eof: false },
+    );
+    const unicodeLast = JSON.parse(completedText((await output(unicodeId, unicodeSecond.next_offset, 1)).json)) as {
+      output: string; next_offset: number; eof: boolean;
+    };
+    assert.deepEqual(
+      { output: unicodeLast.output, next_offset: unicodeLast.next_offset, eof: unicodeLast.eof },
+      { output: "B", next_offset: 8, eof: true },
+    );
+
     const countFile = path.join(root, "count.txt");
     const longCommand = `printf x >> ${countFile}; sleep 0.2; printf '%s' '-done'`;
     const long = await callTool("start_process", { command: longCommand, timeout_ms: 5 }, "long-once");
     const longBody = long.json as { status: string; session_id: string };
     assert.equal(longBody.status, "running");
-    assert.deepEqual((JSON.parse(completedText((await callTool("list_sessions", {})).json)) as Array<{ session_id: string }>).map((item) => item.session_id).sort(), [longBody.session_id, shortBody.session_id].sort());
+    assert.deepEqual((JSON.parse(completedText((await callTool("list_sessions", {})).json)) as Array<{ session_id: string }>).map((item) => item.session_id).sort(), [longBody.session_id, shortBody.session_id, unicodeId].sort());
 
     const duplicate = await callTool("start_process", { command: longCommand, timeout_ms: 5 }, "long-once");
     assert.equal((duplicate.json as { session_id: string }).session_id, longBody.session_id);
@@ -701,6 +726,35 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
     assert.equal(events.includes("process_output_read"), true);
     assert.equal(events.join(" ").includes("short-output"), false);
     assert.equal(events.join(" ").includes(longCommand), false);
+  } finally {
+    await agent.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("requested 30-second command wait returns a running session within the relay budget", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remote-control-early-running-"));
+  const agent = await startAgent({
+    deviceToken: DEVICE_TOKEN,
+    receiptDirectory: path.join(root, "receipts"),
+    shellPath: "/bin/sh",
+  });
+  try {
+    const operationId = "slow-command-early-running";
+    const started = Date.now();
+    const response = await call(agent, {
+      tool: "start_process", operation_id: operationId,
+      arguments: { command: "sleep 6", timeout_ms: 30_000 },
+    });
+    const elapsed = Date.now() - started;
+    const body = response.json as { status: string; session_id?: string };
+    assert.equal(body.status, "running");
+    assert.match(body.session_id ?? "", /^[0-9a-f-]{36}$/);
+    assert.ok(elapsed < 4_800, `The command must not occupy the five-second relay slot: ${elapsed} ms`);
+    const receipt = await fetch(`${agent.baseUrl}/internal/operations/${operationId}`, {
+      headers: { "x-device-credential": DEVICE_TOKEN },
+    });
+    assert.equal((await receipt.json() as { session_id: string }).session_id, body.session_id);
   } finally {
     await agent.close();
     await rm(root, { recursive: true, force: true });
@@ -1897,6 +1951,7 @@ test("reads a disposable fixture through node:fs without vendor history or secre
   const blockedPath = path.join(fixtureDir, "blocked-SENTINEL.txt");
   const oversizedPath = path.join(fixtureDir, "oversized.txt");
   const scanPath = path.join(fixtureDir, "scan-bound.txt");
+  const largeTailPath = path.join(fixtureDir, "large-tail.txt");
   const lines = ["alpha", "beta", "GAMMA_SECRET_LINE", "delta"];
   await writeFile(fixturePath, `${lines.join("\n")}\n${FIXTURE_TEXT}\n`, "utf8");
   await writeFile(blockedPath, "ACCESS_SENTINEL_must_not_leak\n", "utf8");
@@ -1907,6 +1962,7 @@ test("reads a disposable fixture through node:fs without vendor history or secre
   const scanLine = "y\n";
   const scanCount = Math.ceil((MAX_SCAN_BYTES + 64) / scanLine.length);
   await writeFile(scanPath, `${scanSentinel}\n${scanLine.repeat(scanCount)}`, "utf8");
+  await writeFile(largeTailPath, `${"p".repeat(MAX_SCAN_BYTES + 32)}\r\n尾部😀\r\n终点\n`, "utf8");
   const events: string[] = [];
   const vendorHistory = path.join(os.homedir(), VENDOR_DIR);
   const vendorHistoryBefore = existsSync(vendorHistory);
@@ -1945,6 +2001,16 @@ test("reads a disposable fixture through node:fs without vendor history or secre
     assert.equal(completedText(tail.json), FIXTURE_TEXT);
     assert.equal(tail.text.includes(fixturePath), false);
     assert.equal(tail.text.includes("GAMMA_SECRET_LINE"), false);
+
+    const largeTail = await call(agent, {
+      tool: "read_file", arguments: { path: largeTailPath, offset: -2, length: 2 },
+    });
+    assert.equal(largeTail.status, 200);
+    assert.equal(completedText(largeTail.json), "尾部😀\n终点");
+    const largeTailTooFar = await call(agent, {
+      tool: "read_file", arguments: { path: largeTailPath, offset: -3, length: 1 },
+    });
+    assert.equal((largeTailTooFar.json as { status: string }).status, "failed");
 
     const fullWindow = await call(agent, {
       tool: "read_file",

@@ -11,6 +11,8 @@ const MAX_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_PAGE_BYTES = 16 * 1024;
 const MAX_PAGE_BYTES = 64 * 1024;
 const MAX_WAIT_MS = 30_000;
+// The coordinating DO holds a read/operation slot for at most five seconds.
+const MAX_RELAY_REPLY_WAIT_MS = 1_500;
 const MAX_SESSION_LIFETIME_MS = 60 * 60 * 1000;
 const DEADLINE_TERMINATION_GRACE_MS = 5_000;
 
@@ -336,7 +338,8 @@ export class ManagedSessions {
 
     if (waitMs > 0 && session.state === "running") {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([session.closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.min(waitMs, MAX_WAIT_MS)); })]);
+      // Prefer an early running session_id over an ambiguous DO timeout.
+      await Promise.race([session.closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.min(waitMs, MAX_WAIT_MS, MAX_RELAY_REPLY_WAIT_MS)); })]);
       if (timer) clearTimeout(timer);
     }
     return snapshot(session);
@@ -489,14 +492,25 @@ export class ManagedSessions {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     const data = Buffer.concat(session.chunks, session.outputBytes);
-    const end = Math.min(data.byteLength, offset + length);
+    // Offsets remain bytes, but pages must begin and end on UTF-8 code-point
+    // boundaries; otherwise valid Chinese/emoji output becomes replacement text.
+    let start = Math.min(offset, data.byteLength);
+    while (start > 0 && start < data.byteLength && (data[start]! & 0xc0) === 0x80) start -= 1;
+    let end = Math.min(data.byteLength, Math.max(start, offset + length));
+    while (end > start && end < data.byteLength && (data[end]! & 0xc0) === 0x80) end -= 1;
+    // A short requested page (1-3 bytes) must still make progress over one
+    // complete character; at most three extra bytes are returned.
+    if (end === start && start < data.byteLength) {
+      end = start + 1;
+      while (end < data.byteLength && (data[end]! & 0xc0) === 0x80) end += 1;
+    }
     return {
       ...snapshot(session),
-      offset,
+      offset: start,
       next_offset: end,
       eof: !this.ownsRunningProcess(session) && end >= data.byteLength,
       truncated: session.truncated,
-      output: data.subarray(Math.min(offset, data.byteLength), end).toString("utf8"),
+      output: data.subarray(start, end).toString("utf8"),
     };
   }
 

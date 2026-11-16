@@ -129,14 +129,39 @@ async function readForward(handle: FileHandle, offset: number, lineCount: number
 
 async function readFromEnd(handle: FileHandle, offset: number, lineCount: number): Promise<string> {
   const info = await handle.stat();
-  if (info.size > MAX_SCAN_BYTES) throw new ReadFailed();
-  const lines: string[] = [];
-  await forEachLine(handle, (line) => {
-    lines.push(line);
-    return "continue";
-  });
-  const start = Math.max(0, lines.length + offset);
-  return cappedJoin(lines.slice(start, start + lineCount));
+  if (info.size === 0) return "";
+  const chunks: Buffer[] = [];
+  let scanned = 0;
+  let position = info.size;
+  // Seek backward from EOF. A small tail window must not require scanning
+  // the beginning of an otherwise enormous file.
+  while (position > 0 && scanned < MAX_SCAN_BYTES) {
+    const length = Math.min(CHUNK_BYTES, position, MAX_SCAN_BYTES - scanned);
+    const start = position - length;
+    const chunk = Buffer.allocUnsafe(length);
+    let bytesRead: number;
+    try {
+      ({ bytesRead } = await handle.read(chunk, 0, length, start));
+    } catch (error) {
+      fail(error);
+    }
+    if (bytesRead !== length) throw new ReadFailed();
+    chunks.unshift(chunk);
+    scanned += length;
+    position = start;
+
+    const text = Buffer.concat(chunks, scanned).toString("utf8");
+    const lines = text.split(/\r\n|\r|\n/);
+    if (text.endsWith("\r") || text.endsWith("\n")) lines.pop();
+    // A non-zero start may cut through a UTF-8 character or a line. Never
+    // return the first, potentially incomplete line as part of the window.
+    if (position > 0) lines.shift();
+    if (position === 0 || lines.length >= -offset) {
+      const from = Math.max(0, lines.length + offset);
+      return cappedJoin(lines.slice(from, from + lineCount));
+    }
+  }
+  throw new ReadFailed();
 }
 
 export async function readLocalFile(read: LocalRead): Promise<string> {
