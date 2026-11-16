@@ -328,6 +328,7 @@ test('Gateway release derives its origin and identity from existing configuratio
   };
   const config = JSON.parse(readFileSync(new URL('../apps/mcp-gateway-worker/wrangler.jsonc', import.meta.url), 'utf8'));
   const origin = gatewayOriginFromConfig(config);
+  assert.equal(origin, 'https://mcp.lirtual.dpdns.org', 'Gateway release must target the reviewed single public origin');
   assert.deepEqual(originalCollectWorkerVars('mcp-gateway-worker', env, { config }), [
     'CLERK_PUBLISHABLE_KEY:pk_live_Y2xlcmsubGlydHVhbC5kcGRucy5vcmck',
     'CLERK_OWNER_USER_ID:user_AbCd1234',
