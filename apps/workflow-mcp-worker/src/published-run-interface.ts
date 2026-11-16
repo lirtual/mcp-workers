@@ -35,7 +35,9 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
      unknown_result:'never_retry'};
  }
  if(isDropPlan(plan)){
-   return {...base,kind:'drop_manual_file',inputs:{},
+   return {...base,kind:'drop_manual_file',
+     inputs:{cloudflare_terms_accepted:{type:'boolean',required:true,const:true,
+       note:'Fresh acceptance of Cloudflare Terms and Privacy for this one temporary deployment'}},
      top_level_file:{required:true,source:'ChatGPT file descriptor',
        extensions:['.html','.zip'],max_bytes:10*1024*1024},
      idempotency_key:'required',
