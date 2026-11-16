@@ -2,6 +2,8 @@
 
 状态：**Grill With Docs 决策树已结束（2026-11-14）**；Q1–Q7 和唯一 Gateway Service Token 等用户级取舍均已确认。设计和事实验证不等于实施验收；此文档**不授权实施、发布、迁移插件、修改 OAuth/Access/Portal/Secrets 或生产数据**。已验证的单插件生产试点见 [Spec #853](https://github.com/lirtual/mcp-workers/issues/853)，后续通用接入规范见 [Spec #878](https://github.com/lirtual/mcp-workers/issues/878)。
 
+> **时点说明（2026-11-16）：** 下文关于仅有一个 Service Token、`WORKFLOWS` 独立 Policy 与“拟创建 Gateway Token”的叙述是 2026-11-14 的历史审查基线，不是当前生产配置。现有 Gateway 与 Workflow 各保留独立机器 Token；`MCP Gateway Service Auth` 统一包含两枚 Token 的 Include 规则并挂载 Portal 和 11 个上游 Access 应用，旧 `WORKFLOWS` 可复用 Policy 已退役。
+
 ## 目标与既定约束
 
 最终用户目标不是“所有请求必须经过 Clerk”，而是：ChatGPT 中多个 **独立 MCP 插件** 在首次连接后尽可能持续自动续期，不因固定期限而计划性逐个重登；仅在撤销、权限变化、风险、客户端令牌丢失或真实故障时重新登录。不能承诺永不重新登录，也不能把浏览器 Session、OAuth Access Token、Refresh Token/Grant 和 MCP Session 当成同一个期限。
