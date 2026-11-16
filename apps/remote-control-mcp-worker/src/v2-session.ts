@@ -503,6 +503,7 @@ export async function listApprovedDevices(
     }
     let online = false;
     let currentConnectionAt: number | undefined;
+    let currentMetadataReported = false;
     const now = Date.now();
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.
@@ -513,7 +514,7 @@ export async function listApprovedDevices(
         try {
           const attachment = socket.deserializeAttachment() as {
               device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown;
-              connected_at?: unknown;
+              connected_at?: unknown; device_info_reported?: unknown;
             } | null;
           // Permanent grants persist their verified-online timestamp; bounded
           // temporary/Session grants use the authenticated socket checkpoint.
@@ -525,6 +526,7 @@ export async function listApprovedDevices(
               Number.isFinite(age) && age >= 0 && age < ONLINE_AUTH_LEASE_MS &&
               attachment.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
+            currentMetadataReported = attachment.device_info_reported === true;
             if (typeof attachment.connected_at === "number" &&
                 Number.isSafeInteger(attachment.connected_at) &&
                 attachment.connected_at >= 0 && attachment.connected_at <= now) {
@@ -547,7 +549,7 @@ export async function listApprovedDevices(
     // A signed Agent's self-report is a routing hint, not a Grant. Only
     // report current-socket metadata; old/offline/reconnected data is unknown.
     const reported = info?.capabilities;
-    const freshReport = online && currentConnectionAt !== undefined &&
+    const freshReport = online && currentMetadataReported && currentConnectionAt !== undefined &&
       device.last_connected_at === currentConnectionAt &&
       Array.isArray(reported) && reported.includes("read");
     const capabilityHints: Record<"file_read" | "file_write" | "shell", CapabilityHint> = {
