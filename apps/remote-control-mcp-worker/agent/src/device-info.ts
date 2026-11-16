@@ -25,7 +25,7 @@ export function classifyLinuxEnvironment(
   return isLinux && isContainer ? "container" : isLinux && isWsl2 ? "wsl2" : "native";
 }
 
-export function collectDeviceInfo() {
+export function collectDeviceInfo(capability: "read-only" | "full" = "read-only") {
   const platform = process.platform;
   const system = platform === "win32" ? "windows" : platform === "darwin" ? "darwin" : "linux";
   const kernel = os.release();
@@ -54,6 +54,8 @@ export function collectDeviceInfo() {
     os_version: clean(osVersion, 96) || "unknown",
     arch: clean(process.arch, 16) || "unknown",
     environment,
+    // Advisory only: the Agent still enforces Grant, OS ACLs and its runtime mode for every call.
+    capabilities: capability === "full" ? ["read", "file_write", "shell"] : ["read"],
     ...(release.version ? { agent_version: release.version } : {}),
   };
 }
