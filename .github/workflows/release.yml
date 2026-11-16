@@ -445,7 +445,7 @@ jobs:
         if: inputs.worker != 'workflow-mcp-worker' || inputs.workflow_code_only != true
         shell: bash
         env:
-          # Repository Secrets are staged only for the selected Worker in this step.
+          # Repository Secrets and Variables are staged only for the selected Worker.
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
           RAINDROP_ACCESS_TOKEN: ${{ inputs.worker == 'raindrop-mcp-worker' && secrets.RAINDROP_ACCESS_TOKEN || '' }}
           CLERK_SECRET_KEY: ${{ inputs.worker == 'mcp-gateway-worker' && secrets.CLERK_SECRET_KEY || '' }}
