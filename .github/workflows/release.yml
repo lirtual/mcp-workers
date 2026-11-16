@@ -48,7 +48,7 @@ on:
         required: false
         default: false
       workflow_code_only:
-        description: 'Workflow Worker only: deploy code with existing D1 schema and Secrets/Variables preserved; no D1 migrations or secret upload'
+        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve all other Variables/Secrets, no D1 migrations'
         required: false
         type: boolean
         default: false
@@ -1193,9 +1193,14 @@ jobs:
           if [[ "$WORKFLOW_CODE_ONLY" == "true" ]]; then
             [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]] || exit 1
             [[ ! -e "$RUNNER_TEMP/mcp-worker-secrets.json" ]] || { echo 'Code-only release must not stage Secrets' >&2; exit 1; }
-            # Wrangler retains deployed Secrets automatically; keep plain Variables
-            # without re-uploading either, after existing read-only binding gates.
-            deploy_args=(--keep-vars)
+            # Wrangler retains existing Secrets and unrelated Variables. Explicitly
+            # override only the reviewed Portal endpoint that a hostname cutover requires.
+            mapfile -t portal_pins < <(grep '^WORKFLOW_MCP_PORTAL_ENDPOINT:' "$RUNNER_TEMP/mcp-worker-variables.txt" || true)
+            [[ ${#portal_pins[@]} -eq 1 && "${portal_pins[0]}" == 'WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp-portal.lirtual.dpdns.org/mcp' ]] || {
+              echo 'Workflow code-only Portal endpoint pin missing or drifted' >&2
+              exit 1
+            }
+            deploy_args=(--keep-vars --var "${portal_pins[0]}")
           else
             # Existing releases always restage exactly the approved GitHub Secrets.
             test -s "$RUNNER_TEMP/mcp-worker-secrets.json"
