@@ -8,6 +8,7 @@ import test from "node:test";
 import { operationDigest } from "../src/operations.ts";
 import { MAX_RESULT_CHARS, MAX_SCAN_BYTES } from "../src/read-file.ts";
 import { SearchSessions, type SearchResult } from "../src/search.ts";
+import { collectDeviceInfo } from "../src/device-info.ts";
 import { startAgent, type RunningAgent } from "../src/server.ts";
 
 const DEVICE_TOKEN = "device-credential-for-tests";
@@ -59,6 +60,15 @@ function completedText(json: unknown): string {
   assert.equal(body.result.content[0]?.type, "text");
   return body.result.content[0]?.text ?? "";
 }
+
+test("Agent reports effective read-only/full runtime hints on the signed device metadata frame", () => {
+  const readOnly = collectDeviceInfo("read-only");
+  const full = collectDeviceInfo("full");
+  assert.deepEqual(readOnly.capabilities, ["read"]);
+  assert.deepEqual(full.capabilities, ["read", "file_write", "shell"]);
+  assert.equal(readOnly.kind, "device_info");
+  assert.equal(full.kind, "device_info");
+});
 
 test("agent package does not depend on Desktop Commander or an MCP client", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
