@@ -8,7 +8,7 @@ import {reviewedWriteArguments,reviewedWriteTool} from '../src/mcp-write-contrac
 import {WorkflowService} from '../src/store.ts';
 import type {Env} from '../src/store.ts';
 
-const endpoint='https://mcp.lirtual.dpdns.org/mcp';
+const endpoint='https://mcp-portal.lirtual.dpdns.org/mcp';
 const schema={type:'object',properties:{content:{type:'string',minLength:1},
   folder_id:{type:'string'},folder_name:{type:'string'}},required:['content'],
   '$schema':'https://json-schema.org/draft/2020-12/schema'};

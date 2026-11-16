@@ -46,7 +46,7 @@ function deferred(){
   return {promise,resolve};
 }
 
-const ECHO_GRANT:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+const ECHO_GRANT:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
 const echoStep=(id:string,args:Record<string,unknown>)=>({
   id,uses:'mcp.call',with:{endpoint:ECHO_GRANT.endpoint,tool:'echo',scope:'read',input_schema:PINNED_SCHEMA,arguments:args},
 });
@@ -76,7 +76,7 @@ function setup(t:test.TestContext){
     };
   }
   const env={
-    WORKFLOW_MCP_PORTAL_ENDPOINT:'https://mcp.lirtual.dpdns.org/mcp',
+    WORKFLOW_MCP_PORTAL_ENDPOINT:'https://mcp-portal.lirtual.dpdns.org/mcp',
     WORKFLOW_MCP_PORTAL_CLIENT_ID:'test-id',
     WORKFLOW_MCP_PORTAL_CLIENT_SECRET:'test-secret',
     DB:{prepare,async batch(statements:{run:()=>Promise<unknown>}[]){
@@ -289,12 +289,12 @@ test('unknown capability in a pinned Plan fails closed instead of becoming resul
 test('MCP Publish requires explicit matching read approval without a stage toggle',async t=>{
   const {service,env,sqlite}=setup(t);
   const steps=[{id:'read',uses:'mcp.call',with:{
-    endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
     input_schema:PINNED_SCHEMA,arguments:{value:'hello'},
   }}];
   const plan=JSON.stringify({version:1,name:'MCP approval gate',steps});
   const created=await service.create(plan);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,0);
   await assert.rejects(()=>service.publish(created.workflow_id,1),/external_approval_required/);
   await assert.rejects(()=>service.publish(created.workflow_id,1,[{...grant,tool:'other'}]),/external_approval_required/);
@@ -309,7 +309,7 @@ test('MCP Publish requires explicit matching read approval without a stage toggl
 
 test('MCP approved Run fails closed if pinned Portal is removed',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'test'}}}],{},[grant]);
   env.WORKFLOW_MCP_PORTAL_ENDPOINT=undefined;
   const oldFetch=globalThis.fetch;
@@ -326,7 +326,7 @@ test('MCP approved Run fails closed if pinned Portal is removed',async t=>{
 
 test('MCP approved read-only MCP tool invokes actual SDK only through scoped public fetch',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello',url:'https://example.org/opaque'},
   }}],{},[grant]);
@@ -354,7 +354,7 @@ test('MCP approved read-only MCP tool invokes actual SDK only through scoped pub
 
 test('approved MCP public read-only call succeeds through pinned Portal',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'hello MCP'}}}],{},[grant]);
   let publicCalls=0;
   const originalFetch=globalThis.fetch;
@@ -396,7 +396,7 @@ test('revoke and enable cannot revive a prior MCP Published Plan or dispatch too
 
 test('tampering immutable MCP approval cannot dispatch to a changed endpoint',async t=>{
   const {env,admit,run,service,sqlite}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'should not run'}}}],{},[grant]);
   const ver=sqlite.prepare('SELECT version_id FROM runs WHERE id=?').get(admitted.run_id) as {version_id:string};
   const row=sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(ver.version_id) as {plan:string};
@@ -412,7 +412,7 @@ test('tampering immutable MCP approval cannot dispatch to a changed endpoint',as
 
 test('remote tool without readOnlyHint is rejected before tools/call despite owner approval',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,arguments:{value:'do-not-invoke'}}}],{},[grant]);
   const originalFetch=globalThis.fetch;let toolCallCount=0;
   globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -438,7 +438,7 @@ test('MCP workflow_validate exposes exact schema-bound approval for owner review
   const {service,env}=setup(t);
   const created=await service.create(JSON.stringify({version:1,name:'Schema approval',steps:[{
     id:'read',uses:'mcp.call',with:{
-      endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+      endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
       input_schema:PINNED_SCHEMA,arguments:{value:'hello'},
     },
   }]}));
@@ -446,18 +446,18 @@ test('MCP workflow_validate exposes exact schema-bound approval for owner review
   assert.equal(validation.valid,true);
   if(!('required_approvals' in validation))throw Error('expected approval preview');
   assert.deepEqual(validation.required_approvals,[{
-    endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
     schema_digest:PINNED_DIGEST,
   }]);
   await assert.rejects(()=>service.publish(created.workflow_id,1,[{
-    endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+    endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
     schema_digest:'0'.repeat(64),
   }]),/external_approval_required/);
 });
 
 test('MCP remote inputSchema drift prevents tools/call, even when target and tool still match',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'},
@@ -487,7 +487,7 @@ test('MCP remote inputSchema drift prevents tools/call, even when target and too
 
 test('MCP tampered published expected schema fails before network dispatch',async t=>{
   const {env,admit,run,service,sqlite}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'},
@@ -506,7 +506,7 @@ test('MCP tampered published expected schema fails before network dispatch',asyn
 
 test('MCP remote outputSchema change prevents tools/call before dispatch',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'must not be sent'},
@@ -533,7 +533,7 @@ test('MCP remote outputSchema change prevents tools/call before dispatch',async 
 
 test('MCP lost tools/call response is indeterminate, never a confirmed failure or blind retry',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:grant.scope,
     input_schema:PINNED_SCHEMA,arguments:{value:'ack may be lost'},
@@ -566,7 +566,7 @@ test('MCP lost tools/call response is indeterminate, never a confirmed failure o
 
 test('MCP older Published Plan without trusted-target risk acknowledgment is blocked before network',async t=>{
   const {env,admit,run,service,sqlite}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'lookup',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',
     input_schema:PINNED_SCHEMA,arguments:{value:'must never dispatch'},
@@ -588,7 +588,7 @@ test('MCP older Published Plan without trusted-target risk acknowledgment is blo
 
 test('MCP unresolved Run-input reference is rejected before any trusted-target request',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,
     // delay_ms is optional in the declared MCP schema. Silently dropping this
@@ -608,7 +608,7 @@ test('MCP unresolved Run-input reference is rejected before any trusted-target r
 
 test('MCP stateful MCP DELETE cannot delay an already successful tools/call result',async t=>{
   const {env,admit,run,service}=setup(t);
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const admitted=await admit([{id:'read',uses:'mcp.call',with:{
     endpoint:grant.endpoint,tool:grant.tool,scope:'read',input_schema:PINNED_SCHEMA,
     arguments:{value:'acknowledged stateful result'},
@@ -698,7 +698,7 @@ test('retired fixed GitHub executor is neither publishable nor runnable',async t
 test('MCP refuses publish when Portal is not configured',async t=>{
   const {service,env,sqlite}=setup(t);
   env.WORKFLOW_MCP_PORTAL_ENDPOINT=undefined;
-  const grant:ReadonlyOperation={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
+  const grant:ReadonlyOperation={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',schema_digest:PINNED_DIGEST};
   const wf=await service.create(JSON.stringify({version:1,name:'requires pinned Portal',steps:[
     {id:'read',uses:'mcp.call',with:{endpoint:grant.endpoint,tool:grant.tool,scope:'read',
       input_schema:PINNED_SCHEMA,arguments:{value:'no dispatch'}}},
@@ -709,7 +709,7 @@ test('MCP refuses publish when Portal is not configured',async t=>{
 
 test('MCP pinned Portal refuses a different approved endpoint at Publish',async t=>{
   const {service,env,sqlite}=setup(t);
-  env.WORKFLOW_MCP_PORTAL_ENDPOINT='https://mcp.lirtual.dpdns.org/mcp';
+  env.WORKFLOW_MCP_PORTAL_ENDPOINT='https://mcp-portal.lirtual.dpdns.org/mcp';
   const grant:ReadonlyOperation={
     endpoint:'https://another.example.org/mcp',tool:'echo',scope:'read',
     schema_digest:PINNED_DIGEST,
@@ -1575,7 +1575,7 @@ test('mixed MCP reads and two staged Tasks deliver signed OIDC receipts in stric
  const savedFetch=globalThis.fetch;
  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
   const req=new Request(input,init),url=new URL(req.url),path=url.pathname;
-  if(url.hostname==='mcp.lirtual.dpdns.org'){
+  if(url.hostname==='mcp-portal.lirtual.dpdns.org'){
    if(req.method==='POST'){
     const request=await req.clone().json() as {method?:string};
     if(request.method==='tools/call')mcpCalls++;

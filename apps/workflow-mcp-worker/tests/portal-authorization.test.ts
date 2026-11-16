@@ -9,7 +9,7 @@ import type {Env} from '../src/store.ts';
 
 const workflowId='11111111-1111-4111-8111-111111111111';
 const runId='22222222-2222-4222-8222-222222222222';
-const portal='https://mcp.lirtual.dpdns.org/mcp';
+const portal='https://mcp-portal.lirtual.dpdns.org/mcp';
 const definition={version:1,name:'Reviewed MCP read',steps:[
  {id:'read',uses:'mcp.call',with:{endpoint:portal,tool:'ima_list_notebooks',scope:'read',
   arguments:{limit:1},input_schema:{type:'object',properties:{limit:{type:'integer'}}}}},

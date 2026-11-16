@@ -14,7 +14,7 @@ const entry=(name)=>({
     {name:name+'_danger',enabled:false,alias:'hidden'}],
 });
 const portal=(hasWorkflow=false)=>({
-  id:'mcp',name:'MCP',hostname:'mcp.lirtual.dpdns.org',
+  id:'mcp',name:'MCP',hostname:'mcp-portal.lirtual.dpdns.org',
   code_mode:'opt_in',secure_web_gateway:true,description:'Private production portal',
   servers:[...oldServers.map(entry),...(hasWorkflow?[entry('workflow')]:[])],
 });
@@ -77,7 +77,7 @@ function accessApplications(name, withPolicies=true){
         ['lirtual@qq.com','lirtual@outlook.com','lirtual@gmail.com'])
         .map(email=>({email:{email}}))},
   ];
-  return [{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies:policies(true)},
+  return [{name:'MCP',type:'mcp_portal',domain:'mcp-portal.lirtual.dpdns.org',policies:policies(true)},
     {name,type:'mcp',policies:withPolicies?policies():[]}];
 }
 function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,

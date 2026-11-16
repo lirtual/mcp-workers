@@ -48,7 +48,7 @@ test('independent DAG Step order is canonical and locale-independent', async () 
 test('Workflow readonly MCP arguments must be an object before Publish', async () => {
   for(const argumentsValue of [null,42,'not an object',['list']]) {
     const definition={version:1,name:'Invalid MCP args',steps:[
-      {id:'read',uses:'mcp.call',with:{endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',input_schema:{type:'object',properties:{}},arguments:argumentsValue}}
+      {id:'read',uses:'mcp.call',with:{endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',input_schema:{type:'object',properties:{}},arguments:argumentsValue}}
     ]};
     await assert.rejects(()=>compilePlan(definition),PlanError);
   }
@@ -377,7 +377,7 @@ test('bounded MCP read foreach pins its child tool contract and item expressions
   const source={version:1,name:'Readonly dynamic map',inputs:{items:['one','two']},steps:[
     {id:'each',flow:'foreach',items:{ref:'inputs.items'},max_items:2,
       template:{steps:[{id:'read',uses:'mcp.call',with:{
-        endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+        endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
         input_schema:{type:'object',properties:{value:{type:'string'}}},
         arguments:{value:{ref:'item.value'}},
       }}]}},
@@ -456,7 +456,7 @@ test('multi-step foreach rejects unreviewed external children, nested templates 
 });
 
 test('multi-step foreach compiles only pinned read-only MCP and earlier item output refs',async()=>{
- const mcp={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+ const mcp={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
    input_schema:{type:'object',properties:{value:{type:'string'}}},
    arguments:{value:{ref:'steps.prepare.output'}}};
  const source={version:1,name:'multi MCP read',inputs:{items:['a','b']},steps:[
@@ -598,7 +598,7 @@ test('pure dynamic while/until compiles with strict iteration and graph budget',
 });
 
 test('bounded while/until compile reviewed read-only MCP templates, without nested or write bodies',async()=>{
- const read={endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+ const read={endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
    input_schema:{type:'object',properties:{value:{type:'string'}}},
    arguments:{value:'safe literal'}};
  const source={version:1,name:'Reviewed loop',steps:[

@@ -9,7 +9,7 @@ import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
 const ROOT='https://api.cloudflare.com/client/v4/accounts/';
 const BASE='/access/ai-controls/mcp';
 const ORIGIN='https://workflow.lirtual.dpdns.org/mcp';
-const PORTAL_HOST='mcp.lirtual.dpdns.org';
+const PORTAL_HOST='mcp-portal.lirtual.dpdns.org';
 export const EXPECTED_TOOLS=[
   'workflow_action_list',
   'workflow_connection_status','workflow_connection_revoke','workflow_connection_enable',

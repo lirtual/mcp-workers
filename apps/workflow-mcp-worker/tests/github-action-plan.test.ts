@@ -177,7 +177,7 @@ test('strict three-stage emit Task emit reserves exact identities and preserves 
 test('mixed ordered read-only MCP and one literal Task compile with exact pinned child IDs',async()=>{
  const task={...action,type:'task' as const,inputs:{outcome:'success'}};
  const read={id:'read',uses:'mcp.call',with:{
-  endpoint:'https://mcp.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
+  endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',tool:'echo',scope:'read',
   input_schema:{type:'object',properties:{value:{type:'string'}}},
   arguments:{value:{ref:'item.value'}},
  }};
