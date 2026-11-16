@@ -34,8 +34,9 @@ export async function sealDropFile(
 ):Promise<SealedDropInputs>{
  const url=approvedAttachmentUrl(file);
  const filename=file.file_name;
- if(!url||!filename||!FILENAME.test(filename)||filename.startsWith('.')||
-    filename.trim()!==filename||
+ if(!url||(filename!==undefined&&
+    (typeof filename!=='string'||!FILENAME.test(filename)||filename.startsWith('.')||
+     filename.trim()!==filename))||
     (file.mime_type!==undefined&&(typeof file.mime_type!=='string'||file.mime_type.length>255))||
     !DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
   throw new StateError('drop_invalid_file_or_contract');
@@ -60,7 +61,8 @@ export async function sealDropFile(
  const plaintext=new TextEncoder().encode(JSON.stringify({
   attemptId:attemptId.toLowerCase(),contractDigest:contractDigest.toLowerCase(),
   issuedAt:issued,expiresAt:expires,file:{
-   file_id:file.file_id,download_url:file.download_url,file_name:filename,
+   file_id:file.file_id,download_url:file.download_url,
+   ...(filename===undefined?{}:{file_name:filename}),
    ...(file.mime_type===undefined?{}:{mime_type:file.mime_type}),
   },
  }));
