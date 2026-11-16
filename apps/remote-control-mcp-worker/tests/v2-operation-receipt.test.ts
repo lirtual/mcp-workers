@@ -90,8 +90,9 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
       path: markerA, content: "A\n", mode: "append" }, "denied")).http, 401);
     const missing = await call("write_file", { device_id: a, path: markerA, content: "A\n", mode: "append" });
     assert.equal(missing.data.result?.isError, true);
-    assert.equal((await call("write_file", { device_id: absent, operation_id: id,
-      path: markerA, content: "A\n", mode: "append" })).content.includes("timeout_unknown"), true);
+    const absentResult = JSON.parse((await call("write_file", { device_id: absent, operation_id: id,
+      path: markerA, content: "A\n", mode: "append" })).content);
+    assert.deepEqual(absentResult, { operation_id: id, status: "offline", not_dispatched: true });
 
     const writeA = await call("write_file", { device_id: a, operation_id: id,
       path: markerA, content: "A\n", mode: "append" });
