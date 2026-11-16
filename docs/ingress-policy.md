@@ -17,4 +17,4 @@ Preserve per-Worker runtime Secrets, actual public/private route boundaries and 
 
 ### Spec #878 Gateway isolation
 
-`mcp-gateway-worker` does **not** reuse the existing `MCP_ACCESS_TOKEN` or `WORKFLOWS` Service Auth policy. A separate, initially disabled Gateway Access Service Token may be enabled only after explicit Portal + narrowly selected upstream policies, independent Clerk Resource authorization and actual tool-denial tests are verified. The Gateway never forwards the Clerk Bearer upstream. For recovery, disable only the Gateway Token or remove its dedicated Access policies; preserve existing Workflow, Portal and Raindrop connections.
+`mcp-gateway-worker` does not reuse `MCP_ACCESS_TOKEN` or the Workflow Service Token credentials. The Portal and eleven upstream MCP Access apps now share the `MCP Gateway Service Auth` reusable policy, which has separate Include selectors for the two distinct machine tokens. The Gateway still enforces each Clerk Resource/tool boundary and never forwards the Clerk Bearer upstream. For Gateway-only recovery, disable its own token and verify affected routes; do not delete the shared policy or revoke the Workflow token.
