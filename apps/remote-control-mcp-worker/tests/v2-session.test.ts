@@ -216,7 +216,7 @@ test("device list shows only fresh reported read/write/Shell hints, never stale 
   const device = {
     device_id: uuid, name: "signed-host", public_key: "signed-key",
     fingerprint: "0123456789abcdef01234567", approved_at: now - 10_000,
-    revoked: false, grant_type: "temporary", expires_at: now + 86_400_000,
+    revoked: false, grant_type: "temporary", expires_at: now - 10_000 + 86_400_000,
     last_connected_at: connectedAt, device_info: info,
   };
   records.set("device:" + uuid, device);
