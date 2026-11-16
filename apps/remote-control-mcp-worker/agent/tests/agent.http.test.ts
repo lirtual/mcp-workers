@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { operationDigest } from "../src/operations.ts";
 import { MAX_RESULT_CHARS, MAX_SCAN_BYTES } from "../src/read-file.ts";
+import { SearchSessions, type SearchResult } from "../src/search.ts";
 import { startAgent, type RunningAgent } from "../src/server.ts";
 
 const DEVICE_TOKEN = "device-credential-for-tests";
@@ -2344,6 +2345,72 @@ test("searches fixture names and contents in pages, stops sessions, and rejects 
     await agent.close();
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("a slow search returns a resumable cursor before the relay timeout and stop is bounded", async () => {
+  const sessions = new SearchSessions();
+  const internals = sessions as unknown as { sessions: Map<string, unknown> };
+  const makeSlowSession = (id: string): void => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => undefined, 60_000);
+    timer.unref?.();
+    const iterator = (async function* (): AsyncGenerator<SearchResult> {
+      await new Promise((resolve) => setTimeout(resolve, 5_600));
+      yield { path: "slow-result.txt" };
+    })();
+    internals.sessions.set(id, {
+      id,
+      iterator,
+      state: {
+        startedAt: Date.now(),
+        entries: 0,
+        results: 0,
+        bytes: 0,
+        truncated: false,
+        signal: controller.signal,
+      },
+      controller,
+      timer,
+      busy: false,
+    });
+  };
+  makeSlowSession("slow-progress");
+  makeSlowSession("slow-stop");
+
+  try {
+    const startedAt = Date.now();
+    const [first, toStop] = await Promise.all([
+      sessions.more("slow-progress"),
+      sessions.more("slow-stop"),
+    ]);
+    assert.ok(Date.now() - startedAt < 4_000, "the first page must precede the DO 5s read timeout");
+    for (const page of [first, toStop]) {
+      assert.deepEqual(page.results, []);
+      assert.equal(page.status, "running");
+      assert.equal(page.has_more, true);
+      assert.equal(page.truncated, false);
+      assert.equal(typeof page.session_id, "string");
+    }
+
+    const stopStartedAt = Date.now();
+    const stopped = await sessions.stop("slow-stop");
+    assert.equal(stopped.status, "stopped");
+    assert.ok(Date.now() - stopStartedAt < 1_000, "stopping a pending search must not wait for its next match");
+    await assert.rejects(() => sessions.more("slow-stop"), { code: "not_found" });
+
+    const results: SearchResult[] = [...first.results];
+    let page = first;
+    for (let attempt = 0; page.has_more && attempt < 6; attempt += 1) {
+      page = await sessions.more("slow-progress");
+      results.push(...page.results);
+    }
+    assert.equal(page.status, "complete");
+    assert.equal(page.has_more, false);
+    assert.deepEqual(results, [{ path: "slow-result.txt" }]);
+    await assert.rejects(() => sessions.more("slow-progress"), { code: "not_found" });
+  } finally {
+    await sessions.close();
   }
 });
 
