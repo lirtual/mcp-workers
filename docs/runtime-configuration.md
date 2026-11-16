@@ -204,18 +204,30 @@ These Stage B changes are separate from Browser Stage A delivery.
 
 ### Spec #878 Gateway and Portal (2026-11-16)
 
-The production `mcp-gateway-worker` is the independent Clerk-authenticated entry at
-`https://mcp-gateway.lirtual.dpdns.org`, with one dedicated Gateway Service Token;
-it is not a consumer of the shared ingress `MCP_ACCESS_TOKEN`.
-The existing Cloudflare MCP Portal remains `id=mcp` with 11 upstream mappings.
-The one-time Portal hostname cutover target is `mcp-portal.lirtual.dpdns.org`,
-without a legacy alias or redirect. Current source/release guards use
-`https://mcp-portal.lirtual.dpdns.org/mcp` for Gateway `PORTAL_MCP_URL` and
-Workflow `WORKFLOW_MCP_PORTAL_ENDPOINT`.
+The existing `mcp-gateway-worker` is the independent Clerk-authenticated entry,
+with one dedicated Gateway Service Token; it is not a consumer of the shared
+ingress `MCP_ACCESS_TOKEN`. Its sole canonical public origin comes from the
+single `routes[0].pattern` in its `wrangler.jsonc`; the protected release
+derives `GATEWAY_ORIGIN` and the unauthenticated smoke URL from that source.
+The reviewed source target is `https://mcp.lirtual.dpdns.org` with no legacy
+hostname compatibility, while live deployment/Clerk state must be checked
+separately before claiming the cutover complete.
 
-As of the read-only preflight on 2026-11-16 the live Portal hostname and both
-Worker runtime endpoints still used the old hostname; source preparation is not
-production acceptance. Portal hostname, DNS, Access application and both manual
-Worker releases must be verified together, including the existing Gateway/Clerk
-business path and Workflow read-only path. See [Spec #878](https://github.com/lirtual/mcp-workers/issues/878)
-for the final release/rollback receipt and distinct production acceptance state.
+The same Cloudflare MCP Portal `id=mcp` uses
+`https://mcp-portal.lirtual.dpdns.org/mcp`, retains its 11 upstream mappings,
+and is unchanged by this Gateway-origin rename. The Gateway
+`PORTAL_MCP_URL` and Workflow `WORKFLOW_MCP_PORTAL_ENDPOINT` remain pinned
+to that Portal endpoint.
+
+Production Gateway hostname migration requires removing the obsolete Portal
+CNAME at `mcp.lirtual.dpdns.org` before attaching the new Worker Custom
+Domain, then a protected manual Gateway release and independent readback.
+The existing 11 Clerk Production Gateway Resource URLs must be replaced with
+`https://mcp.lirtual.dpdns.org/mcp/{server_id}` (exact Audience); the
+separate direct Raindrop Clerk Resource remains untouched. Affected ChatGPT
+plugins must reconnect/reauthorize as necessary. Do not rotate Secrets,
+expand Access permissions, create another Gateway/Portal or silently retain
+an old-origin alias. Retire the previous `mcp-gateway.lirtual.dpdns.org`
+Custom Domain only after real business calls and cross-Resource denial pass.
+See [Spec #878](https://github.com/lirtual/mcp-workers/issues/878)
+for execution evidence, outcome and rollback boundary.
