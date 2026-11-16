@@ -583,7 +583,7 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
     response[0]?.success === true && response[0]?.results?.length === 1,
     "Workflow remote D1 readback unavailable");
   const row = response[0].results[0];
-  // #774: v21 is a distinct verified schema state, NOT a synthetic v20 row.
+  // #774/#87: v21 retirement and v22 Drop receipts are distinct verified states.
   // Keep the v20 structural predicates unchanged for all historical versions.
   // Production already has migration 0005. A failed two-file deployment may
   // leave 0006 committed; permit a controlled resume but never publish the
@@ -697,20 +697,25 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   const completeV20 = row?.migration_count === 20 &&
     row?.migration_v20 === 1 && row?.resolved_sha_column === 1 &&
     reviewedV19Shape;
-  const completeV21=row?.migration_count===21 && row?.migration_v21===1 &&
+  const reviewedV21Structure=row?.migration_v21===1 &&
     row?.runtime_table===0 && row?.migration_v20===1 &&
     row?.resolved_sha_column===1 && reviewedV19Structure;
-  invariant(row?.migration_v21!==1 || completeV21,"UU retirement migration/schema drift");
-  if(requireUuRetired)invariant(completeV21,"UU retirement post-migration D1 readback missing");
-  invariant(base && (requireCompleteSchema ? (completeV20 || completeV21) : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || completeV18 || completeV19 || completeV20 || completeV21)),
+  const completeV21=row?.migration_count===21 && row?.migration_v22===0 &&
+    row?.drop_claim_receipts_table===0 && reviewedV21Structure;
+  const completeV22=row?.migration_count===22 && row?.migration_v22===1 &&
+    row?.drop_claim_receipts_table===1 && reviewedV21Structure;
+  invariant(row?.migration_v21!==1 || completeV21 || completeV22,"UU retirement migration/schema drift");
+  invariant(row?.migration_v22!==1 || completeV22,"Drop receipt migration/schema drift");
+  if(requireUuRetired)invariant(completeV21 || completeV22,"UU retirement post-migration D1 readback missing");
+  invariant(base && (requireCompleteSchema ? (completeV20 || completeV21 || completeV22) : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || completeV18 || completeV19 || completeV20 || completeV21 || completeV22)),
     "Workflow production D1 schema migrations missing, partial or drifted");
   invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
     "Workflow cannot redeploy while Runs are active or indeterminate");
   // D1 migrations require no physical Sessions. Only explicitly selected
-  // code-only releases on completed v21 may defer the Ready/Attempt safety
+  // code-only releases on completed v22 may defer the Ready/Attempt safety
   // classification to the independent strict code-release-check below.
-  const codeOnlyV21 = codeOnly && requireCompleteSchema && completeV21 && !requireUuRetired;
-  if((!completeV20 && !codeOnlyV21) || requireUuRetired)
+  const codeOnlyV22 = codeOnly && requireCompleteSchema && completeV22 && !requireUuRetired;
+  if((!completeV20 && !codeOnlyV22) || requireUuRetired)
     invariant(Number.isSafeInteger(row?.active_sessions) && row.active_sessions===0,
       "Workflow D1 migration blocked by active physical Sessions");
   if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
@@ -736,7 +741,8 @@ export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
     '0016_portal_connection_revocation.sql',
     '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql',
     '0019_session_rca_duration.sql','0020_github_action_main_sha.sql',
-   '0021_retire_uu_session_data.sql')) AS expected_migrations,
+   '0021_retire_uu_session_data.sql','0022_drop_claim_receipts.sql')) AS expected_migrations,
+ (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='drop_claim_receipts') AS drop_claim_receipts_table,
  (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
  (SELECT count(*) FROM workflows) AS workflow_count,
  (SELECT count(*) FROM runs) AS run_count,
@@ -791,7 +797,7 @@ export function verifyWorkflowMigrationReadiness(response, approvedTerminalArtif
     "Workflow migration D1 readback unavailable");
   const row = response[0].results[0];
   const nonnegative = [
-    "migration_count","expected_migrations","workflow_count","run_count",
+    "migration_count","expected_migrations","drop_claim_receipts_table","workflow_count","run_count",
     "session_count","attempt_count","callback_count","cancellation_count",
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
     "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
@@ -801,8 +807,9 @@ export function verifyWorkflowMigrationReadiness(response, approvedTerminalArtif
     invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
       "Workflow migration D1 count unavailable or invalid: " + key);
   }
-  invariant([12,13,14,15,16,17,18,19,20,21].includes(row.migration_count) &&
-    row.expected_migrations === row.migration_count,
+  invariant([12,13,14,15,16,17,18,19,20,21,22].includes(row.migration_count) &&
+    row.expected_migrations === row.migration_count &&
+    row.drop_claim_receipts_table === (row.migration_count === 22 ? 1 : 0),
     "Workflow migration requires the exact reviewed D1 migrations");
   for (const key of [
     "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
@@ -839,13 +846,13 @@ export function verifyWorkflowCodeReleaseReadiness(response, approvedTerminalArt
     "Workflow code-only release D1 readback unavailable");
   const row=response[0].results[0];
   for (const key of [
-    "migration_count","expected_migrations","nonterminal_runs",
+    "migration_count","expected_migrations","drop_claim_receipts_table","nonterminal_runs",
     "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
     "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
     "verified_terminal_saga_receipts","reviewed_terminal_artifact_attempts",
   ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
     "Workflow code-only release count unavailable or invalid: "+key);
-  invariant([20,21].includes(row.migration_count) &&
+  invariant(row.migration_count===22 && row.drop_claim_receipts_table===1 &&
     row.expected_migrations===row.migration_count &&
     row.resolved_sha_column===1,
     "Workflow code-only release blocked by D1 migration drift");
