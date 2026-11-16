@@ -3,7 +3,7 @@
  * Task Attempt. D1 receives ciphertext only, never the plaintext locator.
  */
 import {WorkflowService,StateError,type Env} from './store.ts';
-import {approvedAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
+import {inspectAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
 import {selectedFilePlan} from './selected-file-plan.ts';
 import {cloudflareSelectedFilePlan} from './cloudflare-selected-file.ts';
@@ -32,14 +32,17 @@ export async function sealDropFile(
  file:ChatGptFile,attemptId:string,contractDigest:string,pem:string,
  now=Date.now(),
 ):Promise<SealedDropInputs>{
- const url=approvedAttachmentUrl(file);
+ const source=inspectAttachmentUrl(file);
+ if(!source.url)throw new StateError('drop_file_source_'+source.reason);
+ const url=source.url;
  const filename=file.file_name;
- if(!url||(filename!==undefined&&
+ if((filename!==undefined&&
     (typeof filename!=='string'||!FILENAME.test(filename)||filename.startsWith('.')||
      filename.trim()!==filename))||
-    (file.mime_type!==undefined&&(typeof file.mime_type!=='string'||file.mime_type.length>255))||
-    !DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
-  throw new StateError('drop_invalid_file_or_contract');
+    (file.mime_type!==undefined&&(typeof file.mime_type!=='string'||file.mime_type.length>255)))
+  throw new StateError('drop_file_metadata_invalid');
+ if(!DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
+  throw new StateError('drop_file_contract_invalid');
  let expires=now+60*60*1000;
  if(url.hostname.endsWith('.blob.core.windows.net')){
   const sas=Date.parse(url.searchParams.get('se')??'');

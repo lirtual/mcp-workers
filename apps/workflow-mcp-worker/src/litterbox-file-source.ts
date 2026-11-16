@@ -15,8 +15,9 @@ const validFileId=(value:unknown):value is string=>
 // Exact Azure Blob public endpoint shape, not an Azure wildcard or proof of
 // OpenAI ownership. The ChatGPT-selected temporary URL is an external GET.
 // SAS is validated by Azure; here only the bounded URI shape is validated.
+const AZURE_BLOB_HOST=/^[a-z0-9]{3,24}\.blob\.core\.windows\.net$/;
 const approvedAzureBlobSas=(u:URL):boolean=>{
- if(!/^[a-z0-9]{3,24}\.blob\.core\.windows\.net$/.test(u.hostname))return false;
+ if(!AZURE_BLOB_HOST.test(u.hostname))return false;
  const path=u.pathname.split('/');
  if(path.length<3||!path[1]||!path[2])return false;
  const q=u.searchParams;
@@ -28,21 +29,35 @@ const approvedAzureBlobSas=(u:URL):boolean=>{
   (q.has('sr')&&!['b','bv','bs'].includes(one('sr')??'')))return false;
  return true;
 };
-export function approvedAttachmentUrl(file:unknown):URL|null {
- if(!file||typeof file!=='object'||Array.isArray(file))return null;
+type AttachmentUrlCheck={url:URL;reason?:never}|{url:null;reason:
+ 'descriptor_invalid'|'url_invalid'|'host_unapproved'|'azure_sas_invalid'};
+// A bounded, non-sensitive rejection class helps diagnose ChatGPT fileParams
+// without logging or returning the signed URL, hostname, file ID or SAS query.
+export function inspectAttachmentUrl(file:unknown):AttachmentUrlCheck {
+ if(!file||typeof file!=='object'||Array.isArray(file))
+  return {url:null,reason:'descriptor_invalid'};
  const f=file as Record<string,unknown>;
  if(Object.keys(f).some(k=>!['file_id','download_url','file_name','mime_type'].includes(k))||
-  !validFileId(f.file_id)||
-  typeof f.download_url!=='string'||f.download_url.length>4096)return null;
+  !validFileId(f.file_id)||typeof f.download_url!=='string')
+  return {url:null,reason:'descriptor_invalid'};
+ if(f.download_url.length===0||f.download_url.length>4096)
+  return {url:null,reason:'url_invalid'};
  try{
   const url=new URL(f.download_url);
   // Provider and D1 never receive this URL, its SAS signature, or file_id.
   if(url.protocol!=='https:'||url.port||url.username||url.password||
-    url.hash||url.pathname==='/'||url.href!==f.download_url)return null;
-  if(url.hostname!=='files.oaiusercontent.com'&&!approvedAzureBlobSas(url))
-    return null;
-  return url;
- }catch{return null;}
+    url.hash||url.pathname==='/'||url.href!==f.download_url)
+   return {url:null,reason:'url_invalid'};
+  if(url.hostname==='files.oaiusercontent.com')return {url};
+  if(!AZURE_BLOB_HOST.test(url.hostname))
+   return {url:null,reason:'host_unapproved'};
+  if(!approvedAzureBlobSas(url))
+   return {url:null,reason:'azure_sas_invalid'};
+  return {url};
+ }catch{return {url:null,reason:'url_invalid'};}
+}
+export function approvedAttachmentUrl(file:unknown):URL|null {
+ return inspectAttachmentUrl(file).url;
 }
 export class AttachmentReadError extends Error{
  code:string;

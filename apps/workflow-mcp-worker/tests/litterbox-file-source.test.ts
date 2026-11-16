@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {approvedAttachmentUrl,readBoundedAttachment,AttachmentReadError,
+import {approvedAttachmentUrl,inspectAttachmentUrl,readBoundedAttachment,AttachmentReadError,
  LITTERBOX_MAX_BYTES} from '../src/litterbox-file-source.ts';
 const file={file_id:'file_00000001',download_url:'https://files.oaiusercontent.com/test-fixture?token=disposable',
  mime_type:'text/plain',file_name:'fixture.txt'};
@@ -22,6 +22,23 @@ test('only exact OpenAI HTTPS file host and valid file ID can be fetched',()=>{
   assert.equal(approvedAttachmentUrl({...file,file_id:bad}),null);
  }
  assert.equal(approvedAttachmentUrl({...file,extra:'thing'}),null);
+});
+test('source rejection categories reveal no URL, host, ID or SAS value',()=>{
+ const selected=[
+  [{...file,file_id:'  '},'descriptor_invalid'],
+  [{...file,download_url:'http://files.oaiusercontent.com/x'},'url_invalid'],
+  [{...file,download_url:'https://not-approved.example/file'},'host_unapproved'],
+  [{...file,download_url:'https://selectedblob123.blob.core.windows.net/uploads/a.html?sig=x'},
+   'azure_sas_invalid'],
+ ] as const;
+ for(const [candidate,reason] of selected){
+  const checked=inspectAttachmentUrl(candidate);
+  assert.equal(checked.url,null);
+  assert.equal(checked.reason,reason);
+  assert.equal(JSON.stringify(checked).includes(candidate.download_url),false);
+  assert.equal(JSON.stringify(checked).includes(candidate.file_id),false);
+ }
+ assert.equal(inspectAttachmentUrl(file).reason,undefined);
 });
 test('fetches the one file with no credentials or redirect, hashes bounded bytes in memory',async()=>{
  let count=0;

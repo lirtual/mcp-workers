@@ -73,13 +73,22 @@ test('ChatGPT fileParams may omit filename and MIME without losing attempt bindi
  const sealed=await sealDropFile(required,attempt,digest,keys.publicKey,1800000000000);
  assert.deepEqual(decode(sealed).file,required);
  await assert.rejects(sealDropFile({...required,file_name:null} as any,
-  attempt,digest,keys.publicKey),/drop_invalid_file_or_contract/);
+  attempt,digest,keys.publicKey),/drop_file_metadata_invalid/);
 });
 test('Reject invalid file, public key and truncated or oversized serialized inputs',async()=>{
  await assert.rejects(sealDropFile({...file,file_name:'script.js'},attempt,digest,keys.publicKey));
  await assert.rejects(sealDropFile({...file,file_name:'../index.html'},attempt,digest,keys.publicKey));
  await assert.rejects(sealDropFile({...file,download_url:'https://example.com/file.html'},
-  attempt,digest,keys.publicKey));
+  attempt,digest,keys.publicKey),/drop_file_source_host_unapproved/);
+ await assert.rejects(sealDropFile({...file,download_url:'http://files.oaiusercontent.com/a'},
+  attempt,digest,keys.publicKey),/drop_file_source_url_invalid/);
+ await assert.rejects(sealDropFile({...file,file_id:'   '},
+  attempt,digest,keys.publicKey),/drop_file_source_descriptor_invalid/);
+ await assert.rejects(sealDropFile({...file,download_url:
+  'https://selectedblob123.blob.core.windows.net/uploads/a.html?sv=x&sig=abc'},
+  attempt,digest,keys.publicKey),/drop_file_source_azure_sas_invalid/);
+ await assert.rejects(sealDropFile(file,attempt,'bad-digest',keys.publicKey),
+  /drop_file_contract_invalid/);
  await assert.rejects(sealDropFile(file,attempt,digest,'not PEM'),/drop_key_unavailable/);
  const valid=await sealDropFile(file,attempt,digest,keys.publicKey);
  assert.equal(isSealedDropInputs({...valid,drop_part_0:''}),false);
