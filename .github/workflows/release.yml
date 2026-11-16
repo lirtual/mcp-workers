@@ -48,7 +48,7 @@ on:
         required: false
         default: false
       workflow_code_only:
-        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve all other Variables/Secrets, no D1 migrations'
+        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve other Variables/Secrets, no D1 migrations or secret upload'
         required: false
         type: boolean
         default: false
