@@ -1,6 +1,7 @@
 import type {Env} from './store.ts';
 import {canonical} from './cloudflare-action-contract.ts';
 import {listAvailableGitHubActions} from './github-action-catalog.ts';
+import {reviewedCloudflareFilePolicy} from './cloudflare-selected-file.ts';
 
 const ACTION=/^[a-z][a-z0-9_-]{0,31}\.[a-z][a-z0-9_-]{0,63}$/;
 const DEPLOYMENT=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
@@ -50,6 +51,8 @@ function inspectedManifest(actionId:string,raw:unknown){
      RESERVED_EFFECTS.has(raw.side_effect)))reject();
  validSchema(raw.input_schema);
  if(raw.output_schema!==undefined)validSchema(raw.output_schema);
+ if(raw.selected_file!==undefined&&(!reviewedCloudflareFilePolicy(raw.selected_file)||
+     raw.output_schema===undefined))reject();
  if(new TextEncoder().encode(JSON.stringify(raw)).byteLength>16*1024)reject();
  return raw;
 }
@@ -63,7 +66,8 @@ export async function discoverCloudflareActionCatalog(env:Pick<Env,'ACTIONS'>){
  try{found=await env.ACTIONS.listActions();}catch{throw Error('cloudflare_provider_unavailable');}
  if(!Array.isArray(found)||found.length>32)reject();
  const actions:Array<{action_id:string;executor:'cloudflare';provider:string;name:string;
-  description:string;input_schema:unknown;output_schema?:unknown;contract_digest:string;
+  description:string;input_schema:unknown;output_schema?:unknown;
+  selected_file?:unknown;contract_digest:string;
   deployment_id:string;availability:'supported_with_grant';manifest:Record<string,unknown>;}>=[];
  const seen=new Set<string>();let deployment:string|undefined;
  for(const item of found){
@@ -83,6 +87,7 @@ export async function discoverCloudflareActionCatalog(env:Pick<Env,'ACTIONS'>){
     description:String(manifest.description??manifest.side_effect),
     input_schema:manifest.input_schema,
     ...(manifest.output_schema===undefined?{}:{output_schema:manifest.output_schema}),
+    ...(manifest.selected_file===undefined?{}:{selected_file:manifest.selected_file}),
     contract_digest:info.contract_digest,deployment_id:info.deployment_id,
     availability:'supported_with_grant',manifest});
  }

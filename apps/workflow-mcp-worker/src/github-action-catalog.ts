@@ -21,6 +21,7 @@ async function describeSource(source:GitHubActionSource) {
     output_schema_status:source.contract.outputSchema?'declared' as const:
       source.contract.outputKind==='none'?'none' as const:'not_declared' as const,
     ...(source.contract.outputSchema?{output_schema:source.contract.outputSchema}:{}),
+    ...(source.contract.selectedFile?{selected_file:source.contract.selectedFile}:{}),
     ref:DYNAMIC_MAIN_REF,can_publish:true as const,
     availability:'publishable_after_owner_approval' as const};
 }

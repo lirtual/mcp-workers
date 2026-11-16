@@ -118,3 +118,30 @@ test('reviewed Drop task is discoverable without opening arbitrary none-output t
  assert.equal(reviewedGitHubOutputSource('.github/workflows/ubuntu.yml',task),false);
  assert.equal(reviewedGitHubOutputSource('.github/workflows/unreviewed.yml',task),false);
 });
+
+test('reviewed file capability is declared by source contract, independent of Action name',()=>{
+ const fixture=`name: Arbitrary reviewed file Task
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id: {type: string, required: true}
+      dispatch_id: {type: string, required: true}
+      capability_id: {type: string, required: true}
+      drop_part_0: {type: string, required: true}
+      drop_part_1: {type: string, required: false, default: ''}
+      drop_part_2: {type: string, required: false, default: ''}
+env:
+  WORKFLOW_ACTION_TYPE: task
+  WORKFLOW_ACTION_OUTPUT_KIND: none
+  WORKFLOW_ACTION_SELECTED_FILE: '{"delivery":"github_encrypted_locator_v1","extensions":[".html",".zip"],"max_bytes":10485760,"input_slots":["drop_part_0","drop_part_1","drop_part_2"],"consent":"cloudflare_terms_v1","receipt":"owner_claim_v1"}'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps: [{run: echo ok}]
+`;
+ const action=parseGitHubAction(fixture);
+ assert.deepEqual(action.selectedFile,{delivery:'github_encrypted_locator_v1',
+  extensions:['.html','.zip'],max_bytes:10485760,
+  input_slots:['drop_part_0','drop_part_1','drop_part_2'],
+  consent:'cloudflare_terms_v1',receipt:'owner_claim_v1'});
+});
