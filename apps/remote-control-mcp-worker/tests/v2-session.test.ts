@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newEnrollment } from "../agent/src/v2-enrollment.ts";
 import { signedSessionProof } from "../agent/src/v2-session-client.ts";
+import { parseDeviceInfo } from "../src/device-info.ts";
 import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof, listApprovedDevices } from "../src/v2-session.ts";
 
 interface MockStore {
@@ -206,6 +207,12 @@ test("device list shows only fresh reported read/write/Shell hints, never stale 
     arch: "x64", environment: "native",
     capabilities: ["read", "file_write", "shell"],
   };
+  assert.deepEqual(parseDeviceInfo(JSON.stringify({kind: "device_info", ...info}))?.capabilities,
+    ["read", "file_write", "shell"], "existing wire field is retained only after validation");
+  assert.equal(parseDeviceInfo(JSON.stringify({
+    kind: "device_info", ...info, capabilities: ["read", "admin"],
+  })), null, "unknown capability must be rejected, not reported");
+
   const device = {
     device_id: uuid, name: "signed-host", public_key: "signed-key",
     fingerprint: "0123456789abcdef01234567", approved_at: now - 10_000,
