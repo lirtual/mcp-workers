@@ -1004,6 +1004,18 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
   const check=(list=bindings,ss=secrets)=>
     verifyBindings("workflow-mcp-worker",{...settings,bindings:list},ss,{mode:"readback",expectedWorkflowIdentity:executorIdentity});
   assert.equal(check(),true);
+  const dropNames=["WORKFLOW_GITHUB_DROP_PUBLIC_KEY", "WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY"];
+  const dropBindings=dropNames.map(name=>({name,type:"secret_text"}));
+  const dropSecrets=dropNames.map(name=>({name}));
+  assert.equal(check([...bindings,...dropBindings],[...secrets,...dropSecrets]),true);
+  for(const missing of dropNames){
+    assert.throws(()=>check([...bindings,...dropBindings.filter(x=>x.name!==missing)],
+      [...secrets,...dropSecrets.filter(x=>x.name!==missing)]),/complete pair/);
+    assert.throws(()=>check([...bindings,...dropBindings],
+      [...secrets,...dropSecrets.filter(x=>x.name!==missing)]),/complete pair/);
+    assert.throws(()=>check([...bindings,...dropBindings.map(x=>x.name===missing?{...x,type:"plain_text"}:x)],
+      [...secrets,...dropSecrets]),/Unexpected runtime Secret/);
+  }
   // A code-only release preserves deployed Variables: reject Audience drift
   // BEFORE deploy, not only during post-publication readback.
   const codeOnlyPreflight=(list=bindings)=>verifyBindings("workflow-mcp-worker",

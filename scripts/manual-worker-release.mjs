@@ -491,12 +491,18 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   if (options.mode === "readback" && ["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker)) {
     const cleanupLegacy = worker === "database-mcp-worker"
       ? ["DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "DATABASE_KEY_ID"] : oldSecrets;
+    const workflowDropSecrets = worker === "workflow-mcp-worker"
+      ? ["WORKFLOW_GITHUB_DROP_PUBLIC_KEY", "WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY"] : [];
     const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...(options.cleanupVerified ? cleanupLegacy : oldSecrets),
+      ...workflowDropSecrets,
       ...(worker === "database-mcp-worker" ? references.secrets : []),
       ...(worker === "database-mcp-worker" && !options.cleanupVerified ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
       bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),
       "Unexpected runtime Secret name or type after publication");
+    if (workflowDropSecrets.some(name => secretNames.has(name) || !!find(name, "secret_text")))
+      invariant(workflowDropSecrets.every(name => secretNames.has(name) && !!find(name, "secret_text")),
+        "Workflow Drop Secrets must be a complete pair");
     if (options.cleanupVerified) invariant(!cleanupLegacy.some(name => secretNames.has(name) ||
       !!find(name, "secret_text")), "Legacy Secret cleanup not complete");
   }
