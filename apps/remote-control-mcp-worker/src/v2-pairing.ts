@@ -594,7 +594,10 @@ export class V2OwnerCoordinator {
     // persistent offline flag that could erase a newer signed epoch.
     for (const pending of this.pendingReads.values()) {
       if (pending.socket === socket) {
-        pending.resolve(Response.json({ error: "offline" }, { status: 503 }));
+        // The operation frame may already have executed before WSS disconnect.
+        // Only read-only requests can safely report offline here.
+        pending.resolve(Response.json({ error: pending.kind === "operation"
+          ? "timeout_unknown" : "offline" }, { status: 503 }));
       }
     }
   }
