@@ -29,10 +29,21 @@ const approvedAzureBlobSas=(u:URL):boolean=>{
   (q.has('sr')&&!['b','bv','bs'].includes(one('sr')??'')))return false;
  return true;
 };
-type AttachmentUrlCheck={url:URL;reason?:never}|{url:null;reason:
- 'descriptor_invalid'|'url_invalid'|'host_unapproved'|'azure_sas_invalid'};
-// A bounded, non-sensitive rejection class helps diagnose ChatGPT fileParams
-// without logging or returning the signed URL, hostname, file ID or SAS query.
+type HostFamily='openai'|'azure_blob'|'aws'|'other';
+const unapprovedHostFamily=(hostname:string):HostFamily=>{
+ const inDomain=(domain:string)=>hostname===domain||hostname.endsWith('.'+domain);
+ if(inDomain('oaiusercontent.com')||inDomain('openai.com'))return 'openai';
+ if(inDomain('blob.core.windows.net'))return 'azure_blob';
+ if(inDomain('amazonaws.com'))return 'aws';
+ return 'other';
+};
+type AttachmentUrlCheck=
+ {url:URL;reason?:never;host_family?:never}|
+ {url:null;reason:'descriptor_invalid'|'url_invalid'|'azure_sas_invalid';host_family?:never}|
+ {url:null;reason:'host_unapproved';host_family:HostFamily};
+// Rejected hosts are grouped into four non-authenticating diagnostic families.
+// Only the exact allowlist below can authorize a read; no host, URL, ID or SAS
+// value is returned to callers.
 export function inspectAttachmentUrl(file:unknown):AttachmentUrlCheck {
  if(!file||typeof file!=='object'||Array.isArray(file))
   return {url:null,reason:'descriptor_invalid'};
@@ -50,7 +61,8 @@ export function inspectAttachmentUrl(file:unknown):AttachmentUrlCheck {
    return {url:null,reason:'url_invalid'};
   if(url.hostname==='files.oaiusercontent.com')return {url};
   if(!AZURE_BLOB_HOST.test(url.hostname))
-   return {url:null,reason:'host_unapproved'};
+   return {url:null,reason:'host_unapproved',
+    host_family:unapprovedHostFamily(url.hostname)};
   if(!approvedAzureBlobSas(url))
    return {url:null,reason:'azure_sas_invalid'};
   return {url};
