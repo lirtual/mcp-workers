@@ -207,12 +207,18 @@ export function monitorDeviceSocket(
               ? null : readOnly(tool, request.arguments, socketWork.signal))
             .then(text => {
               if (settled || socketWork.signal.aborted || socket.readyState !== WebSocket.OPEN) return;
-              const valid = typeof text === "string" && text.length <= 65_536;
-              socket.send(JSON.stringify({
-                kind: "read_result", request_id: id,
-                status: valid ? "completed" : "failed",
-                ...(valid ? { text } : {}),
-              }));
+              const withinTextLimit = typeof text === "string" && text.length <= 65_536;
+              const successFrame = withinTextLimit ? JSON.stringify({
+                kind: "read_result", request_id: id, status: "completed", text,
+              }) : null;
+              // The signed WSS budget counts encoded bytes, including JSON escaping.
+              // Keep the socket alive and return a bounded, explicit failure.
+              socket.send(successFrame && Buffer.byteLength(successFrame, "utf8") <= 65_536
+                ? successFrame
+                : JSON.stringify({
+                    kind: "read_result", request_id: id, status: "failed",
+                    ...(typeof text === "string" ? { error: "result_too_large" } : {}),
+                  }));
             }).catch(() => {
               if (!settled && !socketWork.signal.aborted && socket.readyState === WebSocket.OPEN) {
                 try { socket.send(JSON.stringify({ kind: "read_result", request_id: id, status: "failed" })); }

@@ -38,6 +38,9 @@ function pairedReadErrorMessage(tool: string, code: unknown): string {
   if (code === "bad_request") {
     return "The requested read was rejected.";
   }
+  if (code === "result_too_large") {
+    return "The remote read exceeds the response budget; request fewer lines or files.";
+  }
   if (code === "read_failed") {
     if (tool === "list_directory") {
       return "The remote directory listing failed; check the path and the Agent account's read permissions.";

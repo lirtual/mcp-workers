@@ -124,6 +124,38 @@ test("a device-local invalid read returns failed and does not revoke the signed 
   assert.equal(socket.closeCount, 1);
 });
 
+test("read transport rejects JSON-expanded frames without dropping the signed connection", async (t) => {
+  const socket = new FakeSocket();
+  const stopped = new AbortController();
+  t.after(() => stopped.abort());
+  const monitored = monitorDeviceSocket(socket as unknown as WebSocket, stopped.signal,
+    { intervalMs: 60_000, timeoutMs: 10_000 },
+    async (_tool, args) => (args as { path: string }).path.endsWith("large")
+      ? String.fromCharCode(92).repeat(40_000)
+      : "READ_OK");
+
+  const oversizedId = randomUUID();
+  socket.event("message", { data: JSON.stringify({
+    kind: "read", request_id: oversizedId, tool: "read_file", arguments: { path: "/tmp/large" },
+  }) });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(socket.sent[0]!), {
+    kind: "read_result", request_id: oversizedId, status: "failed", error: "result_too_large",
+  });
+  assert.equal(socket.closeCount, 0);
+
+  const smallerId = randomUUID();
+  socket.event("message", { data: JSON.stringify({
+    kind: "read", request_id: smallerId, tool: "read_file", arguments: { path: "/tmp/small" },
+  }) });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(socket.sent[1]!), {
+    kind: "read_result", request_id: smallerId, status: "completed", text: "READ_OK",
+  });
+  stopped.abort();
+  assert.equal(await monitored, "aborted");
+});
+
 test("reconnect obtains a fresh challenge and stops on abort without executing commands", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-reconnect-"));
   const keyPath = path.join(dir, "device.pem");

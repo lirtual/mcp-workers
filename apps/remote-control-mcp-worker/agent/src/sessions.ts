@@ -256,16 +256,35 @@ export class ManagedSessions {
       deadlineExceeded: false,
     };
 
+    const markTruncated = () => {
+      // The fixed capture boundary can fall inside a UTF-8 code point.
+      // Drop only those final incomplete bytes and explicitly mark truncation.
+      const captured = Buffer.concat(session.chunks, session.outputBytes);
+      let start = captured.length - 1;
+      while (start >= 0 && (captured[start]! & 0xc0) === 0x80) start -= 1;
+      if (start >= 0) {
+        const lead = captured[start]!;
+        const width = lead >= 0xf0 && lead <= 0xf4 ? 4
+          : lead >= 0xe0 && lead <= 0xef ? 3
+          : lead >= 0xc2 && lead <= 0xdf ? 2 : 1;
+        if (captured.length - start < width) {
+          session.chunks = [captured.subarray(0, start)];
+          session.outputBytes = start;
+        }
+      }
+      session.truncated = true;
+    };
     const capture = (chunk: Buffer) => {
+      if (session.truncated) return;
       const remaining = MAX_OUTPUT_BYTES - session.outputBytes;
       if (remaining <= 0) {
-        session.truncated = true;
+        markTruncated();
         return;
       }
       const kept = chunk.subarray(0, remaining);
       session.chunks.push(Buffer.from(kept));
       session.outputBytes += kept.byteLength;
-      if (kept.byteLength < chunk.byteLength) session.truncated = true;
+      if (kept.byteLength < chunk.byteLength) markTruncated();
     };
     child.stdout?.on("data", capture);
     child.stderr?.on("data", capture);

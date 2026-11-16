@@ -716,6 +716,19 @@ test("start_process uses receipts once and managed sessions expose bounded outpu
     assert.equal(boundedLastPage.truncated, true);
     assert.equal(boundedLastPage.eof, true);
 
+    const unicodeBounded = await callTool("start_process", {
+      command: 'node -e "process.stdout.write(\'中\'.repeat(100000))"',
+      timeout_ms: 1000,
+    }, "bounded-unicode-output");
+    const unicodeBoundedId = (unicodeBounded.json as { session_id: string }).session_id;
+    const unicodeBoundary = JSON.parse(completedText((await output(unicodeBoundedId, 262_137, 10)).json)) as {
+      output: string; next_offset: number; truncated: boolean; eof: boolean;
+    };
+    assert.equal(unicodeBoundary.output, "中中");
+    assert.equal(unicodeBoundary.next_offset, 262_143);
+    assert.equal(unicodeBoundary.truncated, true);
+    assert.equal(unicodeBoundary.eof, true);
+
     const arbitraryShell = await callTool("start_process", { command: "true", shell: "/bin/bash" }, "shell-select");
     assert.equal(arbitraryShell.status, 400);
     const virtualCode = await callTool("node:local", { code: "process.exit(1)" });

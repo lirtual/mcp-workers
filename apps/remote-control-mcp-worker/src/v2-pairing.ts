@@ -448,6 +448,8 @@ export class V2OwnerCoordinator {
       } else if (reply.status === "completed" && typeof reply.text === "string" &&
           reply.text.length <= 65_536) {
         pending.resolve(Response.json({ status: "completed", text: reply.text }));
+      } else if (reply.status === "failed" && reply.error === "result_too_large") {
+        pending.resolve(Response.json({ error: "result_too_large" }, { status: 503 }));
       } else {
         pending.resolve(Response.json({ error: "read_failed" }, { status: 503 }));
       }
