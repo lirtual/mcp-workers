@@ -60,7 +60,7 @@ test('release only excludes the exact eighth Run after independent proof output'
   assert.equal((granted.match(new RegExp(runId,'g'))||[]).length,2);
   assert.equal((unknown.match(new RegExp(runId,'g'))||[]).length,0);
   const workflow=readFileSync('.github/workflows/release.yml','utf8');
-  assert.equal(workflow.split('steps.terminal_eighth.outputs.eighth_terminal_run_id').length-1,3);
+  assert.equal(workflow.split('steps.terminal_eighth.outputs.eighth_terminal_run_id').length-1,4);
   assert.equal(workflow.split("id <> '$WORKFLOW_EIGHTH_TERMINAL_RUN_ID'").length-1,2);
   assert.ok(workflow.indexOf('Verify eighth MCP no-dispatch Run proof')<
     workflow.indexOf('Verify Workflow release configuration'));
