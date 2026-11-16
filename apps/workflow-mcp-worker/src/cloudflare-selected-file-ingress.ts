@@ -76,7 +76,7 @@ export async function startCloudflareSelectedFile(env:Env,args:{
  const deployment=reviewedActionDeployment(identity,String(capability.manifest.contract_digest));
  if(!deployment)throw new StateError('cloudflare_provider_identity_mismatch');
  // One bounded GET before the first Run reservation; no redirect or origin expansion.
- const selected=await readBoundedAttachment(args.file);
+ const selected=await readBoundedAttachment(args.file,fetch,capability.policy.max_bytes);
  if(selected.size_bytes>capability.policy.max_bytes)
   throw new StateError('selected_file_size_limit');
  const meta={file_name:name,size_bytes:selected.size_bytes,

@@ -118,3 +118,17 @@ test('Azure Blob signed source inherits redirect and byte-limit safety',async()=
  const tooLarge=new Response('x',{headers:{'content-length':String(LITTERBOX_MAX_BYTES+1)}});
  await assert.rejects(()=>readBoundedAttachment(azure,async()=>tooLarge),/file_size_limit/);
 });
+
+test('reviewed Cloudflare file limit stops a larger response before buffering the full legacy 10 MiB',async()=>{
+ await assert.rejects(()=>readBoundedAttachment(file,
+  async()=>new Response(new Uint8Array(2048)),1024),/file_size_limit/);
+});
+
+test('small reviewed byte cap rejects chunked responses without Content-Length',async()=>{
+ const body=new ReadableStream<Uint8Array>({start(controller){
+  controller.enqueue(new Uint8Array(700));
+  controller.enqueue(new Uint8Array(700));controller.close();
+ }});
+ await assert.rejects(()=>readBoundedAttachment(file,async()=>new Response(body),1024),
+  /file_size_limit/);
+});

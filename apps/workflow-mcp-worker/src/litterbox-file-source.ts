@@ -48,11 +48,15 @@ export class AttachmentReadError extends Error{
  code:string;
  constructor(code:string){super(code);this.code=code;}
 }
-export async function readBoundedAttachment(file:ChatGptFile,fetcher:typeof fetch=fetch):Promise<{
+export async function readBoundedAttachment(
+ file:ChatGptFile,fetcher:typeof fetch=fetch,maxBytes=LITTERBOX_MAX_BYTES,
+):Promise<{
  bytes:Uint8Array;size_bytes:number;sha256:string;
 }>{
  const url=approvedAttachmentUrl(file);
  if(!url)throw new AttachmentReadError('file_source_unverified');
+ if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>LITTERBOX_MAX_BYTES)
+  throw new AttachmentReadError('file_size_limit');
  let response:Response;
  try{
   response=await fetcher(url.href,{method:'GET',redirect:'manual',
@@ -60,7 +64,7 @@ export async function readBoundedAttachment(file:ChatGptFile,fetcher:typeof fetc
  }catch{throw new AttachmentReadError('file_read_unknown');}
  if(response.status!==200||!response.body)throw new AttachmentReadError('file_read_unavailable');
  const size=response.headers.get('content-length');
- if(size!==null&&(!/^\d+$/.test(size)||Number(size)>LITTERBOX_MAX_BYTES))
+ if(size!==null&&(!/^\d+$/.test(size)||Number(size)>maxBytes))
    throw new AttachmentReadError('file_size_limit');
  const reader=response.body.getReader();
  const chunks:Uint8Array[]=[];
@@ -71,7 +75,7 @@ export async function readBoundedAttachment(file:ChatGptFile,fetcher:typeof fetc
    if(done)break;
    if(!(value instanceof Uint8Array))throw new AttachmentReadError('invalid_file_chunk');
    total+=value.byteLength;
-   if(total>LITTERBOX_MAX_BYTES)throw new AttachmentReadError('file_size_limit');
+   if(total>maxBytes)throw new AttachmentReadError('file_size_limit');
    chunks.push(value);
   }
  }catch(e){

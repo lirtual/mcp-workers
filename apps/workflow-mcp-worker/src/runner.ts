@@ -807,7 +807,8 @@ async function awaitSelectedFileReceipt(env:Env,plan:Plan,s:Step,runId:string,st
   const recorded=await receipt();
   if(recorded)return recorded;
   try{
-   await step.waitForEvent('workflow-'+s.id+'-selected-file',{
+   await step.waitForEvent('workflow-'+s.id+
+     (selected?'-selected-file':'-litterbox'),{
     type:(selected?'selected-file-complete-':'litterbox-complete-')+s.id,
     timeout:'180 seconds'});
   }catch{/* A lost wake is never evidence that the upload did not happen. */}
