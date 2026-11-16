@@ -197,6 +197,19 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
         arguments: upstreamArguments(parsed) }),
     });
     if (!response.ok) {
+      if (response.status === 503 && parsed.tool !== "get_operation_status") {
+        let reason: unknown;
+        try {
+          reason = (await response.json() as { error?: unknown }).error;
+        } catch { /* Unrecognized DO failures never imply safe retry. */ }
+        // Only the trusted DO's preflight busy/offline failures are known
+        // to precede socket dispatch. Every other failure remains Unknown.
+        if (reason === "busy" || reason === "offline") {
+          return toolText(id, JSON.stringify({
+            operation_id: operationId, status: reason, not_dispatched: true,
+          }));
+        }
+      }
       return toolText(id, JSON.stringify({ operation_id: operationId,
         status: parsed.tool === "get_operation_status" ? "unavailable" : "timeout_unknown" }));
     }
