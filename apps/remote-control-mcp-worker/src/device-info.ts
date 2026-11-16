@@ -6,6 +6,8 @@ export type DeviceInfo = {
   arch: string;
   environment: "native" | "wsl2" | "container";
   agent_version?: string;
+  /** Signed runtime feature report, advisory only; never grants filesystem or Shell permissions. */
+  capabilities?: Array<"read" | "file_write" | "shell">;
   /** Future native updater readiness, never inferred from a version or pairing. */
   upgrade_protocol?: "owner-one-shot-v1";
 };
@@ -45,6 +47,7 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
     arch: v.arch as string,
     environment: v.environment as DeviceInfo["environment"],
     ...(v.agent_version !== undefined ? { agent_version: v.agent_version as string } : {}),
+    ...(v.capabilities !== undefined ? { capabilities: v.capabilities as DeviceInfo["capabilities"] } : {}),
     ...(v.upgrade_protocol === "owner-one-shot-v1" ? { upgrade_protocol: v.upgrade_protocol } : {}),
   };
 }
