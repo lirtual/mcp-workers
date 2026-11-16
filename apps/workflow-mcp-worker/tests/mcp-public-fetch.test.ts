@@ -6,11 +6,11 @@ import { publicMcpEndpoint, scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } f
 const TARGET = 'https://mcp.example.org/mcp?tenant=one';
 
 test('owner-selected MCP Portal endpoint is pinned to production', () => {
-  assert.equal(PRODUCTION_PORTAL_ENDPOINT,'https://mcp.lirtual.dpdns.org/mcp');
+  assert.equal(PRODUCTION_PORTAL_ENDPOINT,'https://mcp-portal.lirtual.dpdns.org/mcp');
 });
 
 test('production Portal identity requires an exact URL and cannot be sent to other hosts', async () => {
-  assert.equal(PRODUCTION_PORTAL_ENDPOINT,'https://mcp.lirtual.dpdns.org/mcp');
+  assert.equal(PRODUCTION_PORTAL_ENDPOINT,'https://mcp-portal.lirtual.dpdns.org/mcp');
   const credentials={clientId:'production-fixture-id',clientSecret:'production-fixture-secret'};
   let reached=0;
   const send=(async(request:Request):Promise<Response>=>{
@@ -26,6 +26,10 @@ test('production Portal identity requires an exact URL and cannot be sent to oth
   assert.equal(reached,1);
   assert.throws(
     ()=>scopedPublicMcpFetch('https://retired.example.org/mcp',send,credentials,PRODUCTION_PORTAL_ENDPOINT),
+    /portal_auth_wrong_target/,
+  );
+  assert.throws(
+    ()=>scopedPublicMcpFetch('https://mcp.lirtual.dpdns.org/mcp',send,credentials,PRODUCTION_PORTAL_ENDPOINT),
     /portal_auth_wrong_target/,
   );
   assert.throws(

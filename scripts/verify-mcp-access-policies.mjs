@@ -3,7 +3,7 @@
 // authenticate callers. This check is read-only: it never creates broad Allow
 // rules, edits policies, or discloses selectors/credentials in errors or logs.
 const PORTAL = 'MCP';
-const PORTAL_HOSTNAME = 'mcp.lirtual.dpdns.org';
+const PORTAL_HOSTNAME = 'mcp-portal.lirtual.dpdns.org';
 // The Portal/Browser Owner policy was deliberately narrowed to two emails.
 // Workflow and other MCP workers still use the separately reviewed rule.
 const SERVICE_POLICY_ID='7cec582c-4038-4fb0-9ad8-fcdb04af4adc';

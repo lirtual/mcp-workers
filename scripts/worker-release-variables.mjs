@@ -100,7 +100,7 @@ export function collectWorkerVars(worker, env, options = {}) {
       "CLERK_OWNER_USER_ID:" + values[1],
       "CLERK_ISSUER:" + values[2],
       "GATEWAY_ORIGIN:" + origin,
-      "PORTAL_MCP_URL:https://mcp.lirtual.dpdns.org/mcp",
+      "PORTAL_MCP_URL:https://mcp-portal.lirtual.dpdns.org/mcp",
       "CF_ACCESS_CLIENT_ID:" + values[3],
     );
   }
@@ -158,7 +158,7 @@ export function collectWorkerVars(worker, env, options = {}) {
   }
   if (worker === "workflow-mcp-worker") {
     variables.push(
-      "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+      "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp-portal.lirtual.dpdns.org/mcp",
       "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action"
     );
     // Exactly one GitHub Repository Variable controls the selected executor.

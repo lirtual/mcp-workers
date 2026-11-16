@@ -20,7 +20,7 @@ const policies = (isPortal=false) => [
 ];
 export const fakeApps = (name='OpenList MCP') => [
   {id:'portal',name:'MCP',type:'mcp_portal',
-   domain:'mcp.lirtual.dpdns.org',policies:policies(true)},
+   domain:'mcp-portal.lirtual.dpdns.org',policies:policies(true)},
   {id:'app',name,type:'mcp',policies:policies()},
 ];
 export function fakeAccessAppResponse(apps=fakeApps(), total_pages=1) {

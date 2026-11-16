@@ -101,7 +101,7 @@ test("Workflow has pinned MCP Portal and GitHub Action OIDC identity without rol
     MCP_CALL_ENABLED:"true",GITHUB_EXECUTION_ENABLED:"false"
   });
   assert.deepEqual(fixed,[
-    "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp.lirtual.dpdns.org/mcp",
+    "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp-portal.lirtual.dpdns.org/mcp",
     "WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:workflow-github-action",
     "WORKFLOW_GITHUB_ACTION_IDENTITY:"+JSON.stringify(externalIdentity),
     "WORKFLOW_MCP_PORTAL_CLIENT_ID:test-id",
@@ -333,7 +333,7 @@ test('Gateway release derives its origin and identity from existing configuratio
     'CLERK_OWNER_USER_ID:user_AbCd1234',
     'CLERK_ISSUER:https://clerk.lirtual.dpdns.org',
     'GATEWAY_ORIGIN:' + origin,
-    'PORTAL_MCP_URL:https://mcp.lirtual.dpdns.org/mcp',
+    'PORTAL_MCP_URL:https://mcp-portal.lirtual.dpdns.org/mcp',
     'CF_ACCESS_CLIENT_ID:gateway-client-id',
   ]);
   const renamed = { routes: [{ pattern: 'renamed-gateway.example.org', custom_domain: true }] };

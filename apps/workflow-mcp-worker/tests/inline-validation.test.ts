@@ -94,7 +94,7 @@ test('MCP field errors include stable paths while inline validation stays D1-fre
   }} as unknown as Env);
   const base={version:1,name:'Read',steps:[{
     id:'read',uses:'mcp.call',with:{
-      endpoint:'https://mcp.lirtual.dpdns.org/mcp',
+      endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',
       tool:'ima_list_notebooks',scope:'read',arguments:{limit:1},
       input_schema:{type:'object',properties:{limit:{type:'number'}}},
     },
@@ -204,7 +204,7 @@ test('reviewed closed Cloudflare output schema rejects undeclared fields but acc
 test('untrusted MCP declared output and runtime inputs cannot be claimed as statically closed',async()=>{
  const service=new WorkflowService({DB:{prepare(){throw Error('no D1 access');}}} as unknown as Env);
  const definition={version:1,name:'Unknown outputs',steps:[
-   {id:'call',uses:'mcp.call',with:{endpoint:'https://mcp.lirtual.dpdns.org/mcp',
+   {id:'call',uses:'mcp.call',with:{endpoint:'https://mcp-portal.lirtual.dpdns.org/mcp',
      tool:'ima_list_notebooks',scope:'read',arguments:{},input_schema:{type:'object'},
      output_schema:{type:'object',additionalProperties:false,properties:{known:{type:'string'}}}}},
    {id:'done',uses:'result.emit',needs:['call'],with:{data:{ref:'steps.call.output.other'}}},

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {attachBrowserPortal,BROWSER_TOOLS,BROWSER_UUIDV7_PATTERN,verifyBrowserToolSchemas} from './register-browser-portal.mjs';
 const ids=['workflow','database','ima','raindrop','sentry','ssh','remote-control','github-actions','git-guardian','kdocs','apifox'];
-const newPortal=()=>({id:'mcp',name:'MCP',hostname:'mcp.lirtual.dpdns.org',code_mode:'opt_in',secure_web_gateway:true,servers:ids.map(server_id=>({server_id,default_disabled:false}))});
+const newPortal=()=>({id:'mcp',name:'MCP',hostname:'mcp-portal.lirtual.dpdns.org',code_mode:'opt_in',secure_web_gateway:true,servers:ids.map(server_id=>({server_id,default_disabled:false}))});
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-fixture',MCP_ACCESS_TOKEN:'shared-fixture'};
 const policies=[
   {id:'7cec582c-4038-4fb0-9ad8-fcdb04af4adc',
@@ -27,7 +27,7 @@ const freshTools=()=>BROWSER_TOOLS.map(name=>{
   return tool;
 });
 const browserPolicies=()=>structuredClone(policies);
-const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp.lirtual.dpdns.org',policies},
+const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp-portal.lirtual.dpdns.org',policies},
   ...(enabled?[{name:'Browser',type:'mcp',policies:browserPolicies()}]:[])];
 test('the exact fixed 15 tools match public Browser MCP and five interaction actions',()=>{
   const source=readFileSync(new URL('../apps/browser-mcp-worker/src/worker.ts',import.meta.url),'utf8');

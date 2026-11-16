@@ -227,7 +227,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
     if (options.mode === "readback") {
       invariant(find("WORKFLOW_MCP_PORTAL_ENDPOINT", "plain_text")?.text ===
-        "https://mcp.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
+        "https://mcp-portal.lirtual.dpdns.org/mcp", "Pinned Workflow MCP Portal drift");
       invariant(!bindings.some(x => ["GITHUB_EXECUTOR_REPOSITORY",
         "GITHUB_EXECUTOR_REPOSITORY_ID","GITHUB_EXECUTOR_REF",
         "GITHUB_EXECUTOR_AUDIENCE","GITHUB_TEST_WORKER_NAME",

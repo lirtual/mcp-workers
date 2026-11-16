@@ -202,6 +202,20 @@ independently verified Worker Domain binding is absent. No Worker release,
 Portal change, credential rotation or database data modification occurred.
 These Stage B changes are separate from Browser Stage A delivery.
 
-### Spec #878 Gateway
+### Spec #878 Gateway and Portal (2026-11-16)
 
-`mcp-gateway-worker` is an additional, separate Clerk-authenticated Gateway, not a ninth consumer of the shared ingress `MCP_ACCESS_TOKEN`. Its single immutable public origin is `https://gateway.lirtual.dpdns.org` (Wrangler Custom Domain), and the fixed upstream Portal is `https://mcp.lirtual.dpdns.org/mcp`. Source, CI and a manually selectable release contract do not prove production deployment. The dedicated `mcp-gateway-worker` Cloudflare Access Service Token remains disabled until scoped Portal/upstream service-auth policy checks, Clerk Resource admission, revocation and real execution boundaries are approved. Never add this identity to the shared `WORKFLOWS` policy.
+The production `mcp-gateway-worker` is the independent Clerk-authenticated entry at
+`https://mcp-gateway.lirtual.dpdns.org`, with one dedicated Gateway Service Token;
+it is not a consumer of the shared ingress `MCP_ACCESS_TOKEN`.
+The existing Cloudflare MCP Portal remains `id=mcp` with 11 upstream mappings.
+The one-time Portal hostname cutover target is `mcp-portal.lirtual.dpdns.org`,
+without a legacy alias or redirect. Current source/release guards use
+`https://mcp-portal.lirtual.dpdns.org/mcp` for Gateway `PORTAL_MCP_URL` and
+Workflow `WORKFLOW_MCP_PORTAL_ENDPOINT`.
+
+As of the read-only preflight on 2026-11-16 the live Portal hostname and both
+Worker runtime endpoints still used the old hostname; source preparation is not
+production acceptance. Portal hostname, DNS, Access application and both manual
+Worker releases must be verified together, including the existing Gateway/Clerk
+business path and Workflow read-only path. See [Spec #878](https://github.com/lirtual/mcp-workers/issues/878)
+for the final release/rollback receipt and distinct production acceptance state.

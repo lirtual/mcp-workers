@@ -7,7 +7,7 @@ import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
 export function portalPlan(portal) {
   assert.equal(portal?.id, 'mcp', 'portal_identity_drift');
   assert.equal(portal?.name, 'MCP', 'portal_identity_drift');
-  assert.equal(portal?.hostname, 'mcp.lirtual.dpdns.org', 'portal_identity_drift');
+  assert.equal(portal?.hostname, 'mcp-portal.lirtual.dpdns.org', 'portal_identity_drift');
   assert.ok(Array.isArray(portal.servers) && portal.servers.length >= 9,
     'portal_existing_servers_missing');
   const servers = portal.servers.map(portalServerMapping);
