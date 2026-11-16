@@ -384,7 +384,10 @@ export class V2OwnerCoordinator {
           ...(isOperation ? { operation_id: operationId } : {}),
         }));
       } catch {
-        this.pendingReads.get(requestId)?.resolve(Response.json({ error: "offline" }, { status: 503 }));
+        // A transport throw does not prove the operation frame was never sent.
+        this.pendingReads.get(requestId)?.resolve(Response.json(isOperation
+          ? { error: "timeout_unknown" }
+          : { error: "offline" }, { status: 503 }));
       }
     });
   }
