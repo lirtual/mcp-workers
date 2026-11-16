@@ -1,4 +1,5 @@
 import {databaseCatalogStage} from './database-catalog-stage.mjs';
+import {createPrivateKey,createPublicKey} from 'node:crypto';
 // Stage only the selected Worker's Repository Secrets.
 // Used for EVERY authorized manual release, not only for first deployment.
 // Source scope must remain unambiguous; do not add Environment-bound jobs.
@@ -51,6 +52,28 @@ export function collectBootstrapSecrets(worker, env) {
       payload.WORKFLOW_GITHUB_DISPATCH_TOKEN.length > 512 ||
       /\s/.test(payload.WORKFLOW_GITHUB_DISPATCH_TOKEN)))
     throw new Error("Invalid WORKFLOW_GITHUB_DISPATCH_TOKEN");
+  if (worker === "workflow-mcp-worker") {
+    // The two PEMs belong to different RSA pairs: GitHub decrypts the file,
+    // while Workflow decrypts the sealed claim receipt. Stage them together.
+    const publicName = "WORKFLOW_GITHUB_DROP_PUBLIC_KEY";
+    const privateName = "WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY";
+    const publicPem = env[publicName], privatePem = env[privateName];
+    if (publicPem || privatePem) {
+      if (!publicPem || !privatePem) throw Error("Incomplete Workflow Drop key configuration");
+      try {
+        const publicKey = createPublicKey(publicPem);
+        const privateKey = createPrivateKey(privatePem);
+        for (const key of [publicKey, privateKey]) {
+          if (key.asymmetricKeyType !== "rsa" ||
+              key.asymmetricKeyDetails?.modulusLength < 2048 ||
+              key.asymmetricKeyDetails?.modulusLength > 4096)
+            throw Error();
+        }
+      } catch { throw Error("Invalid Workflow Drop RSA PEM configuration"); }
+      payload[publicName] = publicPem;
+      payload[privateName] = privatePem;
+    }
+  }
   if (worker === "ssh-mcp-worker") {
     const key = payload.SSH_ENCRYPTION_KEY;
     if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, "base64").length !== 32 || Buffer.from(key, "base64").toString("base64") !== key) throw new Error("SSH_ENCRYPTION_KEY must be canonical Base64 for a 32-byte key");
