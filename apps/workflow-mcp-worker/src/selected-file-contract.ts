@@ -33,7 +33,7 @@ export function isReviewedGitHubSelectedFilePolicy(raw:unknown):raw is GitHubSel
     new Set(raw.extensions).size!==raw.extensions.length||
     (raw.extensions.includes('*')&&raw.extensions.length!==1)||
     !Array.isArray(raw.input_slots)||!exact(raw.input_slots,SLOTS)||
-    SLOTS.some((s,i)=>raw.input_slots[i]!==s))return false;
+    SLOTS.some((s,i)=>(raw.input_slots as string[])[i]!==s))return false;
  return true;
 }
 
