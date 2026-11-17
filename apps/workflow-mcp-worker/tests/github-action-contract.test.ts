@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGitHubAction } from '../src/github-action-contract.ts';
+import {parseGitHubSelectedFile} from '../src/selected-file-contract.ts';
 import {reviewedGitHubOutputSource} from '../src/github-action-discovery.ts';
 
 const valid = `name: Linux test
@@ -144,4 +145,29 @@ jobs:
   extensions:['.html','.zip'],max_bytes:10485760,
   input_slots:['drop_part_0','drop_part_1','drop_part_2'],
   consent:'cloudflare_terms_v1',receipt:'owner_claim_v1'});
+});
+
+test('GitHub selected-file source can review bounded alternate transport policy, not arbitrary protocols',()=>{
+ const slots={drop_part_0:{type:'string' as const,required:true},
+  drop_part_1:{type:'string' as const,required:false,default:''},
+  drop_part_2:{type:'string' as const,required:false,default:''}};
+ const policy={delivery:'github_encrypted_locator_v1',extensions:['.txt'],
+  max_bytes:2048,input_slots:['drop_part_0','drop_part_1','drop_part_2'],
+  consent:'owner_public_upload_v1',receipt:'reviewed_output_v1'};
+ assert.deepEqual(parseGitHubSelectedFile(JSON.stringify(policy),slots,'task','none'),policy);
+ for(const invalid of [
+  {...policy,extensions:['.TXT']},
+  {...policy,extensions:['.txt','.txt']},
+  {...policy,extensions:['*','.txt']},
+  {...policy,extensions:[]},
+  {...policy,max_bytes:0},
+  {...policy,max_bytes:10485761},
+  {...policy,consent:'caller_chooses'},
+  {...policy,receipt:'arbitrary_secret'},
+  {...policy,delivery:'plaintext_url_v1'},
+  {...policy,input_slots:['file_url']},
+ ]){
+  assert.throws(()=>parseGitHubSelectedFile(JSON.stringify(invalid),slots,'task','none'),
+   /github_action_invalid_selected_file/);
+ }
 });

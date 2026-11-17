@@ -11,7 +11,7 @@ import {startCloudflareSelectedFile} from './cloudflare-selected-file-ingress.ts
 import {isDropPlan,isSealedDropInputs,DROP_UUID,DROP_DIGEST,DROP_PART_SIZE,
  type SealedDropInputs} from './drop-file-contract.ts';
 import type {Plan} from './plan.ts';
-const FILENAME=/^[^\/\\\u0000-\u001f\u007f]{1,160}\.(?:html|zip)$/i;
+const FILENAME=/^[^\/\\\u0000-\u001f\u007f]{1,160}$/i;
 
 const encode=(bytes:Uint8Array):string=>{
  let binary='';
@@ -30,7 +30,7 @@ function parsePublicKey(pem:string):ArrayBuffer{
 }
 export async function sealDropFile(
  file:ChatGptFile,attemptId:string,contractDigest:string,pem:string,
- now=Date.now(),
+ now=Date.now(),extensions:readonly string[]=['.html','.zip'],
 ):Promise<SealedDropInputs>{
  const source=inspectAttachmentUrl(file,true);
  if(!source.url)throw new StateError('drop_file_source_'+source.reason+
@@ -39,7 +39,8 @@ export async function sealDropFile(
  const filename=file.file_name;
  if((filename!==undefined&&
     (typeof filename!=='string'||!FILENAME.test(filename)||filename.startsWith('.')||
-     filename.trim()!==filename))||
+     filename.trim()!==filename||
+     (!extensions.includes('*')&&!extensions.some(ext=>filename.toLowerCase().endsWith(ext)))))||
     (file.mime_type!==undefined&&(typeof file.mime_type!=='string'||file.mime_type.length>255)))
   throw new StateError('drop_file_metadata_invalid');
  if(!DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
@@ -118,13 +119,16 @@ export async function startSelectedFile(env:Env,args:{
  // The owner-initiated manual Run authorizes this selected-file upload.
  // Cloudflare Terms and Privacy acceptance is a one-time prerequisite before
  // the first temporary account; it is not a repeated Workflow input.
- if(Object.keys(args.inputs).length!==0)
+ if(fileCapability?.file.consent==='owner_public_upload_v1'){
+  if(Object.keys(args.inputs).length!==1||args.inputs.public_file_upload_accepted!==true)
+   throw new StateError('selected_file_public_upload_consent_required');
+ }else if(Object.keys(args.inputs).length!==0)
   throw new StateError('file_inputs_invalid');
  if(!env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY)throw new StateError('drop_key_unavailable');
  const action=plan.steps[0]!.with.action as {contractDigest:string};
  const attemptId=crypto.randomUUID();
  const sealed=await sealDropFile(args.file,attemptId,fileCapability?.contract_digest??action.contractDigest,
-  env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY);
+  env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY,Date.now(),fileCapability?.file.extensions);
  const run=await new WorkflowService(env).start(args.workflow_id,sealed,args.idempotency_key,
   undefined,fileCapability?'github_selected_file':'drop',version);
  return {run_id:run.run_id,published_version_id:run.published_version_id,
