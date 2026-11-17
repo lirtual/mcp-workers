@@ -199,7 +199,7 @@ test("reconnect obtains a fresh challenge and stops on abort without executing c
       const info = JSON.parse(socket.sent[0]!) as { kind: string; os: string };
       assert.equal(info.kind, "device_info");
       assert.ok(["linux", "windows", "darwin"].includes(info.os));
-      assert.equal(Object.hasOwn(info, "capabilities"), false);
+      assert.deepEqual(info.capabilities, ["read"], "an execution-free connection only reports read capability");
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -876,7 +876,7 @@ test("paired v2 agent exposes reads, writes and Shell without capability flags",
 test("minimal runtime metadata never includes device ID or secrets", () => {
   const info = collectDeviceInfo();
   assert.equal(info.kind, "device_info");
-  assert.equal(Object.hasOwn(info, "capabilities"), false);
+  assert.deepEqual(info.capabilities, ["read"], "default runtime metadata is read-only");
   assert.ok(info.hostname.length > 0 && info.hostname.length <= 64);
   assert.ok(info.os_version.length > 0 && info.os_version.length <= 96);
   assert.ok(["native", "wsl2", "container"].includes(info.environment));
@@ -954,7 +954,7 @@ test("Windows preview read-only capability rejects Shell and file mutations", as
 test("metadata is bounded and independent of execution permissions", () => {
   const readonly = collectDeviceInfo();
   assert.equal(readonly.kind, "device_info");
-  assert.equal(Object.hasOwn(readonly, "capabilities"), false);
+  assert.deepEqual(readonly.capabilities, ["read"], "read-only mode never claims write or Shell");
   assert.ok(readonly.hostname.length > 0 && readonly.hostname.length <= 64);
   assert.ok(readonly.os_version.length > 0 && readonly.os_version.length <= 96);
   assert.ok(["native", "wsl2", "container"].includes(readonly.environment));
