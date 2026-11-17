@@ -1,8 +1,9 @@
 /** Authentication-only v2 WSS. This module never dispatches remote tools. */
-import { parseDeviceInfo, type DeviceInfo } from "./device-info.ts";
+import { parseDeviceInfo, supportsRuntimeHints, type DeviceInfo } from "./device-info.ts";
 const DOMAIN = "remote-control:v2:session:";
 const TTL_MS = 60_000;
 const te = new TextEncoder();
+type CapabilityHint = "reported_enabled" | "reported_disabled" | "unknown";
 
 export interface V2Device {
   device_id: string;
@@ -488,7 +489,8 @@ export async function listApprovedDevices(
   const grants = await listLiveGrants(state.storage, Date.now(), idleMs);
   if (!grants.complete || grants.active.size > 64) return { status: 503, body: { error: "capacity" } };
   const stored = grants.active;
-  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; idle_expires_at?: number; owner_stopped?: boolean; grant_type: "permanent" | "temporary" | "session"; expires_at?: number; fingerprint?: string; session_attempt_id?: string; session_run_id?: number; session_run_attempt?: number; display_name?: string; name_ambiguous?: boolean; device_info?: DeviceInfo; last_connected_at?: number }> = [];
+  const devices: Array<{ device_id: string; name: string; status: "online" | "offline"; idle_expires_at?: number; owner_stopped?: boolean; grant_type: "permanent" | "temporary" | "session"; expires_at?: number; fingerprint?: string; session_attempt_id?: string; session_run_id?: number; session_run_attempt?: number; display_name?: string; name_ambiguous?: boolean; device_info?: DeviceInfo; last_connected_at?: number;
+    capability_hints: Record<"file_read" | "file_write" | "shell", CapabilityHint> }> = [];
   for (const [key, device] of stored) {
     if (!device || !isId(device.device_id) || key !== "device:" + device.device_id ||
         typeof device.name !== "string" || typeof device.revoked !== "boolean") continue;
@@ -501,6 +503,7 @@ export async function listApprovedDevices(
     }
     let online = false;
     let currentConnectionAt: number | undefined;
+    let currentMetadataReported = false;
     const now = Date.now();
     // Socket attachments can survive DO Hibernation, while JS Map state cannot.
     // A socket alone does not establish current authority: check its stored epoch.
@@ -511,7 +514,7 @@ export async function listApprovedDevices(
         try {
           const attachment = socket.deserializeAttachment() as {
               device_id?: unknown; epoch?: unknown; last_auth_check_at?: unknown;
-              connected_at?: unknown;
+              connected_at?: unknown; device_info_reported?: unknown;
             } | null;
           // Permanent grants persist their verified-online timestamp; bounded
           // temporary/Session grants use the authenticated socket checkpoint.
@@ -523,6 +526,7 @@ export async function listApprovedDevices(
               Number.isFinite(age) && age >= 0 && age < ONLINE_AUTH_LEASE_MS &&
               attachment.device_id === device.device_id && attachment.epoch === currentEpoch) {
             online = true;
+            currentMetadataReported = attachment.device_info_reported === true;
             if (typeof attachment.connected_at === "number" &&
                 Number.isSafeInteger(attachment.connected_at) &&
                 attachment.connected_at >= 0 && attachment.connected_at <= now) {
@@ -542,6 +546,20 @@ export async function listApprovedDevices(
       arch: info.arch, environment: info.environment,
       ...(info.agent_version !== undefined ? { agent_version: info.agent_version } : {}),
     };
+    // A signed Agent's self-report is a routing hint, not a Grant. Only
+    // report current-socket metadata; old/offline/reconnected data is unknown.
+    const reported = info?.capabilities;
+    const freshReport = online && currentMetadataReported && currentConnectionAt !== undefined &&
+      device.last_connected_at === currentConnectionAt &&
+      supportsRuntimeHints(info?.agent_version) &&
+      Array.isArray(reported) && reported.includes("read");
+    const capabilityHints: Record<"file_read" | "file_write" | "shell", CapabilityHint> = {
+      file_read: freshReport ? "reported_enabled" : "unknown",
+      file_write: !freshReport ? "unknown" :
+        reported!.includes("file_write") ? "reported_enabled" : "reported_disabled",
+      shell: !freshReport ? "unknown" :
+        reported!.includes("shell") ? "reported_enabled" : "reported_disabled",
+    };
     devices.push({ device_id: device.device_id, name: device.name,
       status: online ? "online" : "offline",
       grant_type: device.grant_type ?? "permanent",
@@ -556,6 +574,7 @@ export async function listApprovedDevices(
         session_run_attempt: device.session_run_attempt,
       } : {}),
       ...(publicInfo ? { device_info: publicInfo } : {}),
+      capability_hints: capabilityHints,
       ...(Number.isSafeInteger(lastConnectedAt) ? { last_connected_at: lastConnectedAt } : {}) });
   }
   // Keep the original label and full UUID intact. Duplicate labels get a hint,

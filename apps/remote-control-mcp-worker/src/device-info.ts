@@ -6,9 +6,21 @@ export type DeviceInfo = {
   arch: string;
   environment: "native" | "wsl2" | "container";
   agent_version?: string;
+  /** Signed runtime feature report, advisory only; never grants filesystem or Shell permissions. */
+  capabilities?: Array<"read" | "file_write" | "shell">;
   /** Future native updater readiness, never inferred from a version or pairing. */
   upgrade_protocol?: "owner-one-shot-v1";
 };
+
+/** First stable Agent build with runtime-derived (rather than legacy) capability hints.
+ * Older signed Agents may carry the same wire field, but those claims are ignored. */
+export function supportsRuntimeHints(version: unknown): boolean {
+  if (typeof version !== "string") return false;
+  const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]), minor = Number(match[2]), patch = Number(match[3]);
+  return major > 0 || minor > 1 || (minor === 1 && patch >= 56);
+}
 
 export function parseDeviceInfo(raw: string): DeviceInfo | null {
   if (raw.length > 1200) return null;
@@ -32,7 +44,7 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
             ["native", "wsl2"].includes(String(v.environment)))))) ||
       !["linux", "windows", "darwin"].includes(String(v.os)) ||
       !["native", "wsl2", "container"].includes(String(v.environment)) ||
-      // Deployed Agents still report this legacy field. Validate and discard it.
+      // Accept the existing wire field, but never promote old Agent claims into capability hints.
       (v.capabilities !== undefined &&
         (!Array.isArray(v.capabilities) || v.capabilities.length < 1 ||
          v.capabilities.length > 3 || !v.capabilities.includes("read") ||
@@ -45,6 +57,8 @@ export function parseDeviceInfo(raw: string): DeviceInfo | null {
     arch: v.arch as string,
     environment: v.environment as DeviceInfo["environment"],
     ...(v.agent_version !== undefined ? { agent_version: v.agent_version as string } : {}),
+    ...(v.capabilities !== undefined && supportsRuntimeHints(v.agent_version)
+      ? { capabilities: v.capabilities as DeviceInfo["capabilities"] } : {}),
     ...(v.upgrade_protocol === "owner-one-shot-v1" ? { upgrade_protocol: v.upgrade_protocol } : {}),
   };
 }

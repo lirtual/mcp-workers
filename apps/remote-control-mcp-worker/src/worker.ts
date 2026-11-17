@@ -38,6 +38,9 @@ function pairedReadErrorMessage(tool: string, code: unknown): string {
   if (code === "bad_request") {
     return "The requested read was rejected.";
   }
+  if (code === "result_too_large") {
+    return "The remote read exceeds the response budget; request fewer lines or files.";
+  }
   if (code === "read_failed") {
     if (tool === "list_directory") {
       return "The remote directory listing failed; check the path and the Agent account's read permissions.";
@@ -194,6 +197,19 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
         arguments: upstreamArguments(parsed) }),
     });
     if (!response.ok) {
+      if (response.status === 503 && parsed.tool !== "get_operation_status") {
+        let reason: unknown;
+        try {
+          reason = (await response.json() as { error?: unknown }).error;
+        } catch { /* Unrecognized DO failures never imply safe retry. */ }
+        // Only the trusted DO's preflight busy/offline failures are known
+        // to precede socket dispatch. Every other failure remains Unknown.
+        if (reason === "busy" || reason === "offline") {
+          return toolText(id, JSON.stringify({
+            operation_id: operationId, status: reason, not_dispatched: true,
+          }));
+        }
+      }
       return toolText(id, JSON.stringify({ operation_id: operationId,
         status: parsed.tool === "get_operation_status" ? "unavailable" : "timeout_unknown" }));
     }
@@ -218,7 +234,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
 const LIST_DEVICES_TOOL = {
   name: "list_devices",
   title: "List paired v2 devices",
-  description: "List approved paired devices, full UUIDs, status and last-reported OS/runtime/architecture/Agent version when available. Includes permanent/temporary grant and last authenticated connection time when known. Duplicate labels use display_name and name_ambiguous; always resolve an explicit full device_id, never guess. Does not execute commands.",
+  description: "List approved paired devices and full UUIDs with online status, OS/runtime and grant metadata. capability_hints are advisory Agent-reported file read/write/Shell support, or unknown when old/offline/stale; they never grant permissions. Duplicate names require an explicit full device_id. Does not execute commands.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 } as const;

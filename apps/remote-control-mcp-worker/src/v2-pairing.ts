@@ -384,7 +384,10 @@ export class V2OwnerCoordinator {
           ...(isOperation ? { operation_id: operationId } : {}),
         }));
       } catch {
-        this.pendingReads.get(requestId)?.resolve(Response.json({ error: "offline" }, { status: 503 }));
+        // A transport throw does not prove the operation frame was never sent.
+        this.pendingReads.get(requestId)?.resolve(Response.json(isOperation
+          ? { error: "timeout_unknown" }
+          : { error: "offline" }, { status: 503 }));
       }
     });
   }
@@ -448,6 +451,8 @@ export class V2OwnerCoordinator {
       } else if (reply.status === "completed" && typeof reply.text === "string" &&
           reply.text.length <= 65_536) {
         pending.resolve(Response.json({ status: "completed", text: reply.text }));
+      } else if (reply.status === "failed" && reply.error === "result_too_large") {
+        pending.resolve(Response.json({ error: "result_too_large" }, { status: 503 }));
       } else {
         pending.resolve(Response.json({ error: "read_failed" }, { status: 503 }));
       }
@@ -589,7 +594,10 @@ export class V2OwnerCoordinator {
     // persistent offline flag that could erase a newer signed epoch.
     for (const pending of this.pendingReads.values()) {
       if (pending.socket === socket) {
-        pending.resolve(Response.json({ error: "offline" }, { status: 503 }));
+        // The operation frame may already have executed before WSS disconnect.
+        // Only read-only requests can safely report offline here.
+        pending.resolve(Response.json({ error: pending.kind === "operation"
+          ? "timeout_unknown" : "offline" }, { status: 503 }));
       }
     }
   }

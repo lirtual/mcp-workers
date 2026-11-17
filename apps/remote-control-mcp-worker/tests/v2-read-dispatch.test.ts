@@ -172,6 +172,22 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     assert.match(sessions.body, /managed-session request failed/i);
     assert.match(sessions.body, /Shell\/session access enabled/i);
     assert.doesNotMatch(sessions.body, /device is unavailable/i);
+
+    // The signed WSS frame budget includes JSON escaping, not just text.length.
+    const escapingFile = path.join(dir, "escaping-budget.txt");
+    await writeFile(escapingFile, (String.fromCharCode(92).repeat(45) + "\n").repeat(1000), "utf8");
+    const oversizedRead = await callTool("read_file", { device_id: a, path: escapingFile });
+    assert.match(oversizedRead.body, /response budget/i);
+    assert.doesNotMatch(oversizedRead.body, /escaping-budget\.txt/);
+    assert.doesNotMatch(oversizedRead.body, /device is unavailable/i);
+
+    const batchFile = path.join(dir, "batch-budget.txt");
+    await writeFile(batchFile, (String.fromCharCode(92).repeat(20) + "\n").repeat(1000), "utf8");
+    const single = await callTool("read_file", { device_id: a, path: batchFile });
+    assert.equal(JSON.parse(single.body).result.isError, false);
+    const oversizedBatch = await callTool("read_files", { device_id: a, paths: [batchFile, batchFile] });
+    assert.match(oversizedBatch.body, /response budget/i);
+    assert.doesNotMatch(oversizedBatch.body, /batch-budget\.txt/);
   } finally {
     controllers.forEach(c => c.abort());
     await Promise.all(monitors);

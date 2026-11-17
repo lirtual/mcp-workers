@@ -207,12 +207,18 @@ export function monitorDeviceSocket(
               ? null : readOnly(tool, request.arguments, socketWork.signal))
             .then(text => {
               if (settled || socketWork.signal.aborted || socket.readyState !== WebSocket.OPEN) return;
-              const valid = typeof text === "string" && text.length <= 65_536;
-              socket.send(JSON.stringify({
-                kind: "read_result", request_id: id,
-                status: valid ? "completed" : "failed",
-                ...(valid ? { text } : {}),
-              }));
+              const withinTextLimit = typeof text === "string" && text.length <= 65_536;
+              const successFrame = withinTextLimit ? JSON.stringify({
+                kind: "read_result", request_id: id, status: "completed", text,
+              }) : null;
+              // The signed WSS budget counts encoded bytes, including JSON escaping.
+              // Keep the socket alive and return a bounded, explicit failure.
+              socket.send(successFrame && Buffer.byteLength(successFrame, "utf8") <= 65_536
+                ? successFrame
+                : JSON.stringify({
+                    kind: "read_result", request_id: id, status: "failed",
+                    ...(typeof text === "string" ? { error: "result_too_large" } : {}),
+                  }));
             }).catch(() => {
               if (!settled && !socketWork.signal.aborted && socket.readyState === WebSocket.OPEN) {
                 try { socket.send(JSON.stringify({ kind: "read_result", request_id: id, status: "failed" })); }
@@ -384,7 +390,7 @@ export async function maintainAuthenticatedDeviceSession(
       authenticatedDeviceId = connection.device_id;
       // Report once per authenticated socket, including each reconnect.
       // The runtime's read-only/full execution gate is separate from display metadata.
-      const runtimeInfo = collectDeviceInfo();
+      const runtimeInfo = collectDeviceInfo(full && execution ? "full" : "read-only");
       connection.socket.send(JSON.stringify(runtimeInfo));
       const connectedAt = performance.now();
       options.onState?.("connected");
