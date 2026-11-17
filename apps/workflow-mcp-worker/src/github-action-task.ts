@@ -128,7 +128,7 @@ export async function runPublishedGitHubActionTask(
       .bind(attemptId).first<{result_json:string}>();
     try{
      const output=receipt?JSON.parse(receipt.result_json):null;
-     if(isDropPlan(plan)||selectedFilePlan(plan)!==null){
+     if(isDropPlan(plan)||selectedFilePlan(plan)?.file.receipt==='owner_claim_v1'){
       // A physical upload can succeed even when its signed receipt is lost.
       // Never misreport that case as a successful Drop preview.
       if(!output||output.claim_receipt_ref!==attemptId||
@@ -174,7 +174,7 @@ export async function recordSignedGitHubActionTaskResult(
     .bind(row.run_id).first<{plan:string}>();
  let selectedFile=false;
  try{if(published){const plan=JSON.parse(published.plan) as Plan;
-  selectedFile=isDropPlan(plan)||selectedFilePlan(plan)!==null;}}
+  selectedFile=isDropPlan(plan)||selectedFilePlan(plan)?.file.receipt==='owner_claim_v1';}}
  catch{return 'denied';}
  let savedResult:Record<string,unknown>=result;
  if(selectedFile){

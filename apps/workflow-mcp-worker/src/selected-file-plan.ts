@@ -1,6 +1,6 @@
 /** Published, reviewed selected-file capability. A Plan name never grants access. */
 import type {Plan} from './plan.ts';
-import type {GitHubSelectedFileContract} from './selected-file-contract.ts';
+import {isReviewedGitHubSelectedFilePolicy,type GitHubSelectedFileContract} from './selected-file-contract.ts';
 import {isPublishedGitHubActionApproved,type ReviewedGitHubAction} from './github-action-review.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
 
@@ -30,12 +30,8 @@ export function selectedFilePlan(plan:Plan):ReviewedSelectedFile|null{
     !isDynamicMainAction(raw as ReviewedGitHubAction,raw.ref))return null;
  const source=plan.github_dynamic_input_contracts?.[step.id];
  const policy=source?.selectedFile;
- if(!source||source.type!=='task'||!policy||
-    policy.delivery!=='github_encrypted_locator_v1'||policy.receipt!=='owner_claim_v1'||
-    policy.consent!=='cloudflare_terms_v1'||policy.max_bytes!==10485760||
-    !Array.isArray(policy.extensions)||
-    !same(policy.extensions,['.html','.zip'])||
-    !same(policy.input_slots,['drop_part_0','drop_part_1','drop_part_2']))return null;
+ if(!source||source.type!=='task'||!isReviewedGitHubSelectedFilePolicy(policy))
+  return null;
  const identity:ReviewedGitHubAction={
   repository:raw.repository as string,repositoryId:raw.repositoryId as number,
   workflowId:raw.workflowId as number,workflowPath:raw.workflowPath as string,

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {selectedFilePlan} from '../src/selected-file-plan.ts';
 import {publishedRunInterface} from '../src/published-run-interface.ts';
-import {startSelectedFile} from '../src/drop-file-ingress.ts';
+import {sealDropFile,startSelectedFile} from '../src/drop-file-ingress.ts';
 import type {Env} from '../src/store.ts';
 import type {Plan} from '../src/plan.ts';
 
@@ -58,4 +58,40 @@ test('selected file admission follows the published reviewed Action capability, 
  const capability=selectedFilePlan(plan);
  assert.deepEqual(capability,{delivery:'github_encrypted_locator_v1',step_id:'upload',
   file:selectedFile,contract_digest:action.contractDigest});
+});
+
+test('alternate reviewed GitHub file policy changes disclosure, file types and result handling',async()=>{
+ const alternative={...selectedFile,extensions:['.txt'],max_bytes:2048,
+  consent:'owner_public_upload_v1' as const,receipt:'reviewed_output_v1' as const};
+ const newPlan:Plan={...plan,github_dynamic_input_contracts:{
+  upload:{...plan.github_dynamic_input_contracts!.upload!,selectedFile:alternative}}};
+ const capability=selectedFilePlan(newPlan);
+ assert.equal(capability?.file,alternative);
+ const published=publishedRunInterface(newPlan,'11111111-2222-4333-8444-555555555555');
+ assert.equal(published.kind,'manual_selected_file');
+ assert.deepEqual(published.inputs,{public_file_upload_accepted:{
+  type:'boolean',required:true,const:true,
+  note:'Fresh authorization to send this file to the reviewed public GitHub Action'}});
+ assert.ok('top_level_file' in published);
+ if(!('top_level_file' in published))throw Error('missing file capability');
+ assert.deepEqual(published.top_level_file.extensions,['.txt']);
+ assert.equal(published.top_level_file.max_bytes,2048);
+ assert.equal('terms' in published,false);
+ assert.equal('approval' in published,true);
+ const version='11111111-2222-4333-8444-555555555555';
+ const env={DB:{prepare:()=>({bind:()=>({first:async()=>({
+  state:'active',active_version_id:version,plan:JSON.stringify(newPlan)})})})}} as unknown as Env;
+ const file={file_id:'opaque',download_url:'https://files.oaiusercontent.com/note.txt',
+  file_name:'note.txt',mime_type:'text/plain'};
+ const run=(inputs:Record<string,unknown>)=>startSelectedFile(env,{workflow_id:version,
+  file,inputs,idempotency_key:'alternate-file'});
+ for(const inputs of [{},{public_file_upload_accepted:false},
+  {public_file_upload_accepted:true,extra:true}])
+  await assert.rejects(run(inputs),/selected_file_public_upload_consent_required/);
+ await assert.rejects(run({public_file_upload_accepted:true}),/drop_key_unavailable/);
+ const attempt='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const digest='a'.repeat(64);
+ await assert.rejects(sealDropFile(file,attempt,digest,'invalid'),/drop_file_metadata_invalid/);
+ await assert.rejects(sealDropFile(file,attempt,digest,'invalid',Date.now(),['.txt']),
+  /drop_key_unavailable/);
 });

@@ -40,11 +40,15 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
  const selected=selectedFilePlan(plan);
  if(selected){
    return {...base,kind:'manual_selected_file',
-     inputs:{},
+     inputs:selected.file.consent==='owner_public_upload_v1'
+       ?{public_file_upload_accepted:{type:'boolean',required:true,const:true,
+         note:'Fresh authorization to send this file to the reviewed public GitHub Action'}}:{},
      top_level_file:{required:true,source:'ChatGPT file descriptor',
        extensions:selected.file.extensions,max_bytes:selected.file.max_bytes},
      idempotency_key:'required',
-     terms:'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment',
+     ...(selected.file.consent==='cloudflare_terms_v1'
+       ?{terms:'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment'}
+       :{approval:'fresh_owner_public_upload_authorization_required'}),
      unknown_result:'never_retry'};
  }
  if(isLitterboxPlan(plan)){
