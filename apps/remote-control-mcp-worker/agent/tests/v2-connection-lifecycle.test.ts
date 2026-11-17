@@ -199,7 +199,7 @@ test("reconnect obtains a fresh challenge and stops on abort without executing c
       const info = JSON.parse(socket.sent[0]!) as { kind: string; os: string; capabilities: string[] };
       assert.equal(info.kind, "device_info");
       assert.ok(["linux", "windows", "darwin"].includes(info.os));
-      assert.deepEqual(info.capabilities, ["read"], "an execution-free connection only reports read capability");
+      assert.deepEqual(info.capabilities, ["read", "file_write", "shell"], "default full runtime reports the supported operations");
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
