@@ -44,6 +44,7 @@ jobs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
       remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
       agent_native_changed: ${{ steps.scope.outputs.agent_native_changed }}
+      rust_candidate_changed: ${{ steps.scope.outputs.rust_candidate_changed }}
       canonical_owner_email: ${{ steps.canonical_owner.outputs.email }}
       canonical_workflow_executor_repository: ${{ steps.canonical_workflow_executor.outputs.repository }}
     steps:
@@ -173,6 +174,26 @@ jobs:
       candidate_tag: v0.0.0-ci
     permissions:
       contents: read
+
+  rust-agent-candidate:
+    name: RCA Rust Gate 0 (nonproduction)
+    needs: checks
+    if: needs.checks.outputs.rust_candidate_changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: Validate Rust contract (no Agent build or publish)
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
 
   database-integration:
     name: Database integration

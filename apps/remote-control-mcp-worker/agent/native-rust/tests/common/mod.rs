@@ -1,0 +1,17 @@
+//! Public RFC 8032 test-vector seed: construct a throwaway PKCS#8 PEM
+//! in memory so no private-key-shaped fixture is committed to the repository.
+use ed25519_dalek::SigningKey;
+use pkcs8::{EncodePrivateKey, LineEnding};
+
+#[allow(dead_code)]
+pub fn test_pem() -> String {
+    let seed: [u8; 32] = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
+        0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
+        0x7f, 0x60,
+    ];
+    SigningKey::from_bytes(&seed)
+        .to_pkcs8_pem(LineEnding::LF)
+        .unwrap()
+        .to_string()
+}
