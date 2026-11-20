@@ -84,7 +84,7 @@ pub struct ReceiptStore {
     pub directory: PathBuf,
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     ![".", ".."].contains(&id)
         && (1..=128).contains(&id.len())
         && id

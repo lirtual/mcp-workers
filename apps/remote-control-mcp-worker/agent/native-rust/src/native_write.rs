@@ -68,6 +68,10 @@ fn normalized_path(raw: &str) -> Option<PathBuf> {
     normalized.is_absolute().then_some(normalized)
 }
 
+pub(crate) fn valid_write_args(value: &Value) -> bool {
+    parse_write_args(value).is_ok()
+}
+
 fn parse_write_args(value: &Value) -> Result<WriteArgs, NativeWriteError> {
     let object = value.as_object().ok_or(NativeWriteError::InvalidInput)?;
     if object.len() != 3
