@@ -1,5 +1,5 @@
-//! Native Node-compatible write_file core, not yet connected to a shipping Agent.
-//! A verified WSS lease must be checked by the caller before invoking write_file.
+//! Node-compatible receipt-guarded file mutations, not connected to a shipping Agent.
+//! A verified WSS lease must be checked before any operation admission or file effect.
 //! Receipt admission precedes effects, and an uncertain effect is never retried.
 use crate::native_read::permitted_path;
 use crate::receipts::{Admission, Receipt, ReceiptError, ReceiptStore};
@@ -15,7 +15,7 @@ const MAX_CONTENT_BYTES: usize = 49_152;
 
 #[derive(Debug, Error)]
 pub enum NativeWriteError {
-    #[error("invalid write_file operation arguments")]
+    #[error("invalid native file operation arguments")]
     InvalidInput,
     #[error("operation lease was revoked before any target effect")]
     LeaseRevoked,
@@ -112,9 +112,82 @@ fn parse_write_args(value: &Value) -> Result<WriteArgs, NativeWriteError> {
     })
 }
 
+struct PathArgs {
+    target: PathBuf,
+    normalized: Value,
+}
+
+/// Shared Node path-only argument contract for create_directory/delete_file.
+pub(crate) fn valid_path_args(value: &Value) -> bool {
+    parse_path_args(value).is_ok()
+}
+
+fn parse_path_args(value: &Value) -> Result<PathArgs, NativeWriteError> {
+    let object = value.as_object().ok_or(NativeWriteError::InvalidInput)?;
+    if object.len() != 1 {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let raw = object
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or(NativeWriteError::InvalidInput)?;
+    if !permitted_path(raw) {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let target = normalized_path(raw).ok_or(NativeWriteError::InvalidInput)?;
+    let normalized = json!({
+        "path": target.to_str().ok_or(NativeWriteError::InvalidInput)?
+    });
+    Ok(PathArgs { target, normalized })
+}
+
+#[derive(Clone, Copy)]
+enum PathMutation {
+    CreateDirectory,
+    DeleteFile,
+}
+
+impl PathMutation {
+    fn tool_name(self) -> &'static str {
+        match self {
+            Self::CreateDirectory => "create_directory",
+            Self::DeleteFile => "delete_file",
+        }
+    }
+}
+
+fn path_effect(mutation: PathMutation, target: &Path) -> Result<(), EffectFailure> {
+    let result = match mutation {
+        PathMutation::CreateDirectory => fs::create_dir(target),
+        PathMutation::DeleteFile => {
+            let meta = fs::symlink_metadata(target).map_err(classify_path_error)?;
+            if !meta.file_type().is_file() {
+                return Err(EffectFailure::NotRegular);
+            }
+            fs::remove_file(target)
+        }
+    };
+    result.map_err(classify_path_error)
+}
+
+fn classify_path_error(error: std::io::Error) -> EffectFailure {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::PermissionDenied
+        | ErrorKind::NotFound
+        | ErrorKind::AlreadyExists
+        | ErrorKind::IsADirectory
+        | ErrorKind::NotADirectory
+        | ErrorKind::InvalidInput
+        | ErrorKind::Unsupported => EffectFailure::NoTargetEffect,
+        _ => EffectFailure::Unknown,
+    }
+}
+
 #[derive(Clone, Copy)]
 enum EffectFailure {
     NoTargetEffect,
+    NotRegular,
     Unknown,
 }
 
@@ -275,9 +348,8 @@ impl NativeWriteExecutor {
         Ok(self.receipts.get(id)?)
     }
 
-    /// Require the authenticated connection lease before admission and again
-    /// after receipt persistence, immediately before any filesystem effect.
-    /// The callback must reflect live revocation/Stop, not a snapshot.
+    /// A live authenticated lease is checked before receipt admission and
+    /// again after the running state is persisted, immediately before effect.
     pub fn write_file_with_lease(
         &mut self,
         id: &str,
@@ -288,13 +360,66 @@ impl NativeWriteExecutor {
             return Err(NativeWriteError::LeaseRevoked);
         }
         let args = parse_write_args(arguments)?;
-        let admission = self.receipts.admit(id, "write_file", &args.normalized)?;
+        self.mutate_with_receipt(id, "write_file", &args.normalized, lease_active, || {
+            effect(&args)
+        })
+    }
+
+    pub fn create_directory_with_lease(
+        &mut self,
+        id: &str,
+        arguments: &Value,
+        lease_active: impl FnMut() -> bool,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        self.path_mutation_with_lease(id, PathMutation::CreateDirectory, arguments, lease_active)
+    }
+
+    pub fn delete_file_with_lease(
+        &mut self,
+        id: &str,
+        arguments: &Value,
+        lease_active: impl FnMut() -> bool,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        self.path_mutation_with_lease(id, PathMutation::DeleteFile, arguments, lease_active)
+    }
+
+    fn path_mutation_with_lease(
+        &mut self,
+        id: &str,
+        mutation: PathMutation,
+        arguments: &Value,
+        mut lease_active: impl FnMut() -> bool,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        if !lease_active() {
+            return Err(NativeWriteError::LeaseRevoked);
+        }
+        let args = parse_path_args(arguments)?;
+        self.mutate_with_receipt(
+            id,
+            mutation.tool_name(),
+            &args.normalized,
+            lease_active,
+            || path_effect(mutation, &args.target),
+        )
+    }
+
+    /// One authoritative receipt/lease state machine for every file mutation.
+    /// Admitted/running/unknown receipts must never re-enter a target effect.
+    fn mutate_with_receipt(
+        &mut self,
+        id: &str,
+        tool: &str,
+        normalized: &Value,
+        mut lease_active: impl FnMut() -> bool,
+        perform: impl FnOnce() -> Result<(), EffectFailure>,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        let admission = self.receipts.admit(id, tool, normalized)?;
         match admission {
             Admission::Same(receipt) => {
                 let state = match receipt.state.as_str() {
                     "completed" => "completed",
                     "failed" => "failed",
-                    _ => "unknown", // admitted/running/unknown must never re-execute
+                    _ => "unknown",
                 };
                 return Ok(WriteOutcome {
                     state,
@@ -305,13 +430,13 @@ impl NativeWriteExecutor {
                 return Ok(WriteOutcome {
                     state: "conflict",
                     receipt: Some(receipt),
-                })
+                });
             }
             Admission::Full => {
                 return Ok(WriteOutcome {
                     state: "unavailable",
                     receipt: None,
-                })
+                });
             }
             Admission::New(_) => {}
         }
@@ -330,9 +455,9 @@ impl NativeWriteExecutor {
                 receipt: Some(receipt),
             });
         }
-        let result = effect(&args);
-        let (state, summary, no_effect) = match result {
+        let (state, summary, no_effect) = match perform() {
             Ok(()) => ("completed", "Operation completed.", false),
+            Err(EffectFailure::NotRegular) => ("failed", "The target is not a regular file.", true),
             Err(EffectFailure::NoTargetEffect) => ("failed", "Operation did not complete.", true),
             Err(EffectFailure::Unknown) => {
                 ("unknown", "Operation outcome cannot be established.", false)

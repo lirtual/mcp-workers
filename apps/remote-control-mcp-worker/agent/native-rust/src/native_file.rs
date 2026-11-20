@@ -107,9 +107,10 @@ use serde_json::{json, Value};
 
 pub(crate) enum NativeFileCommand {
     Read(ReadCommand),
-    Write {
+    Mutation {
         request_id: String,
         operation_id: String,
+        tool: String,
         arguments: Value,
     },
     Status {
@@ -149,9 +150,18 @@ pub(crate) fn parse_native_file_frame(frame: &str) -> Result<NativeFileCommand, 
     let arguments = object.get("arguments").ok_or(())?;
     match tool {
         "write_file" if crate::native_write::valid_write_args(arguments) => {
-            Ok(NativeFileCommand::Write {
+            Ok(NativeFileCommand::Mutation {
                 request_id: request_id.to_owned(),
                 operation_id: operation_id.to_owned(),
+                tool: tool.to_owned(),
+                arguments: arguments.clone(),
+            })
+        }
+        "create_directory" | "delete_file" if crate::native_write::valid_path_args(arguments) => {
+            Ok(NativeFileCommand::Mutation {
+                request_id: request_id.to_owned(),
+                operation_id: operation_id.to_owned(),
+                tool: tool.to_owned(),
                 arguments: arguments.clone(),
             })
         }
@@ -205,14 +215,28 @@ fn execute_native_file(
         }
         let response = match command {
             NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
-            NativeFileCommand::Write {
+            NativeFileCommand::Mutation {
                 request_id,
                 operation_id,
+                tool,
                 arguments,
             } => {
-                let result = writes.write_file_with_lease(&operation_id, &arguments, || {
-                    request.lease().is_active()
-                });
+                let result = match tool.as_str() {
+                    "write_file" => writes.write_file_with_lease(&operation_id, &arguments, || {
+                        request.lease().is_active()
+                    }),
+                    "create_directory" => {
+                        writes.create_directory_with_lease(&operation_id, &arguments, || {
+                            request.lease().is_active()
+                        })
+                    }
+                    "delete_file" => {
+                        writes.delete_file_with_lease(&operation_id, &arguments, || {
+                            request.lease().is_active()
+                        })
+                    }
+                    _ => return Err(NativeFileError::Policy),
+                };
                 let outcome = match result {
                     Ok(outcome) => outcome,
                     Err(NativeWriteError::LeaseRevoked) => continue,
@@ -253,8 +277,9 @@ fn execute_native_file(
 }
 
 /// A non-installable file runtime: receipt exclusivity is obtained before
-/// signed WSS admission. Only native file reads, write_file and receipt query
-/// are allowed; Shell, sessions, install and upgrade are rejected with 1008.
+/// signed WSS admission. Only native file reads, write_file, create_directory,
+/// delete_file and receipt lookup are allowed; Shell/sessions/install/upgrade
+/// are rejected with 1008.
 pub fn run_native_file_session(
     endpoint: &str,
     private_pem: &str,
