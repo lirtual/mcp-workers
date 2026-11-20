@@ -23,6 +23,12 @@ Verified seams:
 
 - Gate 1 **native `move_file` candidate**: strict source/destination path validation and Node-compatible lexical normalization; source must lstat as a regular file, source and destination must differ, and only a same-filesystem hardlink-then-unlink move is attempted (no overwrite or implicit copy). If source unlink fails, the new destination hardlink is removed; failed rollback becomes a guarded Unknown receipt. The existing shared SQLite/lease state machine preserves same-ID no-replay and cross-tool conflict after restart. `native_move.rs` tests inode preservation, target collision, invalid/symlink/directory sources, same-resolved-path refusal, revoked leases and a real permission-induced unlink rollback on ordinary Linux users. Signed WSS also rejects invalid move frames with policy 1008. A disposable local Wrangler Worker + SQLite DO + temporary Owner Grant returned completed for Owner MCP move, same-ID safe replay, changed-intent conflict and revoked-grant challenge refusal. Physical Windows/macOS hardlink/ACL behavior remains unverified; no shipping Agent has been changed.
 
+### Linux process-boundary tracer (nonproduction only)
+
+`cargo run --locked --bin rca-native-nonprod -- --local DEVICE_UUID /tmp/rca-rust-probe-UNIQUE` launches the existing signed native file session as a standalone Linux process. It only connects to the **exact** local Wrangler address `http://127.0.0.1:8777/` and requires a separately approved disposable identity at `gate0-test-key.pem` directly under `/tmp` in an owner-owned, non-symlinked `rca-rust-probe-*` directory (0700; identity 0600, single link). A validated `gate0-test-key.pem.owner-stopped` marker blocks connection; invalid markers fail closed. SIGINT/SIGTERM stop the bounded reconnect loop. Existing Node Agent state paths, root execution and production endpoints are rejected.
+
+This is **not** an installed CLI, filesystem sandbox, pairing client, supervisor or released Agent. A disposable local Worker can still authorize file operations with the current OS user's permissions; execute it only in an isolated, throwaway test host with known temporary file targets. The CLI process rejection/Stop tests are in `tests/nonprod_cli.rs`; the independently verified real-Owner WSS/file contract remains in the opt-in `wrangler_native_file.rs`. Combining both into a real Owner → **CLI process** → receipt roundtrip is still a separate nonproduction acceptance check, not yet Pass.
+
 Test in a **disposable** checkout:
 
 ```sh
