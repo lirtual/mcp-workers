@@ -141,6 +141,151 @@ fn parse_path_args(value: &Value) -> Result<PathArgs, NativeWriteError> {
     Ok(PathArgs { target, normalized })
 }
 
+struct EditArgs {
+    target: PathBuf,
+    old_string: String,
+    new_string: String,
+    expected_replacements: usize,
+    normalized: Value,
+}
+
+/// Node's edit_block admits exact UTF-8 replacements with an optional
+/// expected_replacements count of one, never an arbitrary edit script.
+pub(crate) fn valid_edit_args(value: &Value) -> bool {
+    parse_edit_args(value).is_ok()
+}
+
+fn parse_edit_args(value: &Value) -> Result<EditArgs, NativeWriteError> {
+    let object = value.as_object().ok_or(NativeWriteError::InvalidInput)?;
+    if object.len() < 3
+        || object.len() > 4
+        || object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "file_path" | "old_string" | "new_string" | "expected_replacements"
+            )
+        })
+    {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let raw = object
+        .get("file_path")
+        .and_then(Value::as_str)
+        .ok_or(NativeWriteError::InvalidInput)?;
+    if !permitted_path(raw) {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let target = normalized_path(raw).ok_or(NativeWriteError::InvalidInput)?;
+    let old_string = object
+        .get("old_string")
+        .and_then(Value::as_str)
+        .ok_or(NativeWriteError::InvalidInput)?;
+    let new_string = object
+        .get("new_string")
+        .and_then(Value::as_str)
+        .ok_or(NativeWriteError::InvalidInput)?;
+    if old_string.is_empty()
+        || old_string.len() > MAX_CONTENT_BYTES
+        || new_string.len() > MAX_CONTENT_BYTES
+        || old_string.contains('\0')
+        || new_string.contains('\0')
+    {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let expected = match object.get("expected_replacements") {
+        None => 1,
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .or_else(|| {
+                number.as_f64().and_then(|value| {
+                    (value.is_finite() && value.fract() == 0.0 && (1.0..=1000.0).contains(&value))
+                        .then_some(value as u64)
+                })
+            })
+            .ok_or(NativeWriteError::InvalidInput)?,
+        _ => return Err(NativeWriteError::InvalidInput),
+    };
+    if !(1..=1000).contains(&expected) {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let normalized = json!({
+        "file_path": target.to_str().ok_or(NativeWriteError::InvalidInput)?,
+        "old_string": old_string,
+        "new_string": new_string,
+        "expected_replacements": expected,
+    });
+    Ok(EditArgs {
+        target,
+        old_string: old_string.to_owned(),
+        new_string: new_string.to_owned(),
+        expected_replacements: expected as usize,
+        normalized,
+    })
+}
+
+fn unchanged_identity(original: &fs::Metadata, current: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if original.dev() != current.dev()
+            || original.ino() != current.ino()
+            || original.ctime() != current.ctime()
+            || original.ctime_nsec() != current.ctime_nsec()
+        {
+            return false;
+        }
+    }
+    original.is_file()
+        && current.is_file()
+        && original.len() == current.len()
+        && original.modified().ok() == current.modified().ok()
+}
+
+/// Each read uses one file descriptor, checking for changes across the read.
+/// This is the same best-effort precommit validation as Node, not an external
+/// writer CAS or a guarantee against races after the final validation.
+fn read_stable_file(target: &Path) -> Result<(Vec<u8>, fs::Metadata), EffectFailure> {
+    use std::io::Read;
+    let mut file = fs::File::open(target).map_err(|_| EffectFailure::NoTargetEffect)?;
+    let before = file.metadata().map_err(|_| EffectFailure::NoTargetEffect)?;
+    if !before.is_file() {
+        return Err(EffectFailure::NoTargetEffect);
+    }
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .map_err(|_| EffectFailure::NoTargetEffect)?;
+    let after = file.metadata().map_err(|_| EffectFailure::NoTargetEffect)?;
+    if !unchanged_identity(&before, &after) {
+        return Err(EffectFailure::NoTargetEffect);
+    }
+    Ok((content, before))
+}
+
+fn edit_effect(args: &EditArgs) -> Result<(), EffectFailure> {
+    let (bytes, identity) = read_stable_file(&args.target)?;
+    let original = std::str::from_utf8(&bytes).map_err(|_| EffectFailure::InvalidUtf8)?;
+    if original.matches(&args.old_string).count() != args.expected_replacements {
+        return Err(EffectFailure::ReplacementCountMismatch);
+    }
+    let replacement = original.replace(&args.old_string, &args.new_string);
+    let (current_bytes, current_identity) = read_stable_file(&args.target)?;
+    if !unchanged_identity(&identity, &current_identity) || current_bytes != bytes {
+        return Err(EffectFailure::NoTargetEffect);
+    }
+    // In-place writing preserves symlink/hardlink/open-handle inode semantics.
+    // After a successful truncate, any error is Unknown, never safe to replay.
+    let mut handle = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&args.target)
+        .map_err(|_| EffectFailure::NoTargetEffect)?;
+    handle
+        .write_all(replacement.as_bytes())
+        .map_err(|_| EffectFailure::Unknown)?;
+    handle.sync_all().map_err(|_| EffectFailure::Unknown)
+}
+
 struct MoveArgs {
     source: PathBuf,
     destination: PathBuf,
@@ -254,6 +399,8 @@ enum EffectFailure {
     NotRegular,
     SourceNotRegular,
     SamePath,
+    InvalidUtf8,
+    ReplacementCountMismatch,
     Unknown,
 }
 
@@ -449,6 +596,21 @@ impl NativeWriteExecutor {
         self.path_mutation_with_lease(id, PathMutation::DeleteFile, arguments, lease_active)
     }
 
+    pub fn edit_block_with_lease(
+        &mut self,
+        id: &str,
+        arguments: &Value,
+        mut lease_active: impl FnMut() -> bool,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        if !lease_active() {
+            return Err(NativeWriteError::LeaseRevoked);
+        }
+        let args = parse_edit_args(arguments)?;
+        self.mutate_with_receipt(id, "edit_block", &args.normalized, lease_active, || {
+            edit_effect(&args)
+        })
+    }
+
     pub fn move_file_with_lease(
         &mut self,
         id: &str,
@@ -543,6 +705,14 @@ impl NativeWriteExecutor {
                 ("failed", "The source is not a regular file.", true)
             }
             Err(EffectFailure::SamePath) => ("failed", "Source and destination must differ.", true),
+            Err(EffectFailure::InvalidUtf8) => {
+                ("failed", "The file is not valid UTF-8 text.", true)
+            }
+            Err(EffectFailure::ReplacementCountMismatch) => (
+                "failed",
+                "Expected text replacement count did not match.",
+                true,
+            ),
             Err(EffectFailure::NoTargetEffect) => ("failed", "Operation did not complete.", true),
             Err(EffectFailure::Unknown) => {
                 ("unknown", "Operation outcome cannot be established.", false)
