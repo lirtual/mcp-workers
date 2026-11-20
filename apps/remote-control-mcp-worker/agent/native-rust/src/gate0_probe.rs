@@ -133,7 +133,10 @@ impl Gate0Probe {
                 None => json!({"operation_id":id,"status":"not_found"}),
             }
         } else if tool == "write_file" {
-            if args.len() != 2 || args.get("path").and_then(Value::as_str) != self.target.to_str() {
+            if args.len() != 3
+                || args.get("path").and_then(Value::as_str) != self.target.to_str()
+                || args.get("mode").and_then(Value::as_str) != Some("rewrite")
+            {
                 return Err(ProbeError::InvalidFrame);
             }
             let text = args

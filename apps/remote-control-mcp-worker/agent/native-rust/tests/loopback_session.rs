@@ -95,17 +95,17 @@ fn local_worker(listener: TcpListener, probe_path: String) {
         request_for(
             "probe-effect",
             "11111111-1111-1111-1111-111111111111",
-            json!({"path":probe_path,"content":"once"}),
+            json!({"path":probe_path,"content":"once","mode":"rewrite"}),
         ),
         request_for(
             "probe-effect",
             "22222222-2222-2222-2222-222222222222",
-            json!({"path":probe_path,"content":"once"}),
+            json!({"path":probe_path,"content":"once","mode":"rewrite"}),
         ),
         request_for(
             "probe-effect",
             "33333333-3333-3333-3333-333333333333",
-            json!({"path":probe_path,"content":"changed"}),
+            json!({"path":probe_path,"content":"changed","mode":"rewrite"}),
         ),
     ];
     for (index, frame) in requests.iter().enumerate() {
@@ -210,7 +210,7 @@ fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
         .handle(&request_for(
             "probe-effect",
             "55555555-5555-5555-5555-555555555555",
-            json!({"path":target,"content":"once"}),
+            json!({"path":target,"content":"once","mode":"rewrite"}),
         ))
         .unwrap();
     assert_eq!(

@@ -53,7 +53,7 @@ fn out_of_scope_and_malformed_frames_cannot_admit_an_effect() {
         "kind":"operation", "tool":"write_file",
         "request_id":"11111111-1111-1111-1111-111111111111",
         "operation_id":"out-of-scope",
-        "arguments":{"path":outside,"content":"no"},
+        "arguments":{"path":outside,"content":"no","mode":"rewrite"},
     })
     .to_string();
     assert!(matches!(
@@ -61,6 +61,20 @@ fn out_of_scope_and_malformed_frames_cannot_admit_an_effect() {
         Err(ProbeError::InvalidFrame)
     ));
     assert!(!outside.exists());
+
+    // The real Worker sends mode; append cannot admit a receipt or effect.
+    let append = json!({
+        "kind":"operation", "tool":"write_file",
+        "request_id":"99999999-9999-9999-9999-999999999999",
+        "operation_id":"append-rejected",
+        "arguments":{"path":root.path().join("probe.txt"),"content":"unsafe","mode":"append"},
+    })
+    .to_string();
+    assert!(matches!(
+        probe.handle(&append),
+        Err(ProbeError::InvalidFrame)
+    ));
+    assert!(!root.path().join("probe.txt").exists());
 
     let status: Value = serde_json::from_str(
         &probe
