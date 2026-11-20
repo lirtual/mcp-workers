@@ -4,6 +4,8 @@ use rca_native_agent::session::{connect_authenticated, HeartbeatTiming, SessionE
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use tungstenite::handshake::server::{Request, Response};
@@ -190,4 +192,62 @@ fn worker_policy_close_must_not_be_treated_as_reconnectable_transport_error() {
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     assert!(matches!(agent.receive_text(), Err(SessionError::Policy)));
     worker.join().unwrap();
+}
+
+#[test]
+fn transport_heartbeat_and_grant_probe_run_while_an_operation_is_busy() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        let request=json!({"kind":"operation","request_id":"33333333-3333-3333-3333-333333333333","operation_id":"test-long-operation","tool":"write_file","arguments":{"path":"/tmp/probe","content":"once","mode":"rewrite"}}).to_string();
+        socket.send(Message::Text(request.into())).unwrap();
+        let mut pings = 0usize;
+        let mut auths = 0usize;
+        loop {
+            let incoming = socket.read().unwrap().to_text().unwrap().to_owned();
+            if incoming == "rc-v2:ping" {
+                pings += 1;
+                socket.send(Message::Text("rc-v2:pong".into())).unwrap();
+            } else if let Some(nonce) = incoming.strip_prefix("rc-v2:auth:") {
+                auths += 1;
+                socket
+                    .send(Message::Text(format!("rc-v2:auth-ok:{nonce}").into()))
+                    .unwrap();
+            } else {
+                let output: serde_json::Value = serde_json::from_str(&incoming).unwrap();
+                assert_eq!(output["kind"], "operation_result");
+                assert!(
+                    pings >= 1 && auths >= 1,
+                    "heartbeat and Grant checks must continue through a slow operation"
+                );
+                server_stop.store(true, Ordering::SeqCst);
+                return;
+            }
+        }
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<String>(4);
+    let (answers_tx, answers_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let request = requests_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request).unwrap()["kind"],
+            "operation"
+        );
+        thread::sleep(Duration::from_millis(700));
+        answers_tx.send(json!({"kind":"operation_result","request_id":"33333333-3333-3333-3333-333333333333","result":{"operation_id":"test-long-operation","status":"completed"}}).to_string()).unwrap();
+    });
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    agent
+        .set_heartbeat_timing(HeartbeatTiming {
+            interval: Duration::from_millis(250),
+            timeout: Duration::from_millis(150),
+            auth_interval: Duration::from_millis(350),
+        })
+        .unwrap();
+    agent.pump(&stop, &requests_tx, &answers_rx).unwrap();
+    worker.join().unwrap();
+    server.join().unwrap();
 }

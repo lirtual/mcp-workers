@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::io::{self, Read};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tungstenite::client::IntoClientRequest;
@@ -40,6 +42,8 @@ pub enum SessionError {
     Policy,
     #[error("RCA authorization nonce entropy unavailable")]
     Entropy,
+    #[error("RCA Agent execution channel unavailable or at capacity")]
+    Queue,
 }
 
 #[derive(Deserialize)]
@@ -118,81 +122,123 @@ impl AuthenticatedSocket {
         Ok(())
     }
 
-    pub fn receive_text(&mut self) -> Result<String, SessionError> {
-        loop {
-            let now = Instant::now();
-            if self
-                .awaiting_pong
-                .is_some_and(|since| now.duration_since(since) >= self.timing.timeout)
-            {
-                let _ = self.socket.close(None);
-                return Err(SessionError::HeartbeatTimeout);
-            }
-            if self
-                .awaiting_auth
-                .as_ref()
-                .is_some_and(|(_, since)| now.duration_since(*since) >= self.timing.timeout)
-            {
-                let _ = self.socket.close(None);
-                return Err(SessionError::AuthorizationTimeout);
-            }
-            if self.awaiting_pong.is_none()
-                && now.duration_since(self.last_ping) >= self.timing.interval
-            {
-                self.socket
-                    .send(tungstenite::Message::Text("rc-v2:ping".into()))?;
-                self.awaiting_pong = Some(now);
-                self.last_ping = now;
-            }
-            if self.awaiting_auth.is_none()
-                && now.duration_since(self.last_auth_probe_sent) >= self.timing.auth_interval
-            {
-                let mut random = [0u8; 16];
-                getrandom::fill(&mut random).map_err(|_| SessionError::Entropy)?;
-                let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-                self.socket.send(tungstenite::Message::Text(
-                    format!("rc-v2:auth:{nonce}").into(),
-                ))?;
-                self.awaiting_auth = Some((nonce, now));
-                self.last_auth_probe_sent = now;
-            }
-            match self.socket.read() {
-                Ok(tungstenite::Message::Text(frame)) if frame == "rc-v2:pong" => {
-                    // An unsolicited or duplicated pong is not admission.
-                    if self.awaiting_pong.is_some() {
-                        self.awaiting_pong = None;
-                    }
+    /// One bounded socket read; liveness always advances even if a separate
+    /// execution worker is busy. Callers may poll outbound responses between reads.
+    pub fn poll_text(&mut self) -> Result<Option<String>, SessionError> {
+        let now = Instant::now();
+        if self
+            .awaiting_pong
+            .is_some_and(|since| now.duration_since(since) >= self.timing.timeout)
+        {
+            let _ = self.socket.close(None);
+            return Err(SessionError::HeartbeatTimeout);
+        }
+        if self
+            .awaiting_auth
+            .as_ref()
+            .is_some_and(|(_, since)| now.duration_since(*since) >= self.timing.timeout)
+        {
+            let _ = self.socket.close(None);
+            return Err(SessionError::AuthorizationTimeout);
+        }
+        if self.awaiting_pong.is_none()
+            && now.duration_since(self.last_ping) >= self.timing.interval
+        {
+            self.socket
+                .send(tungstenite::Message::Text("rc-v2:ping".into()))?;
+            self.awaiting_pong = Some(now);
+            self.last_ping = now;
+        }
+        if self.awaiting_auth.is_none()
+            && now.duration_since(self.last_auth_probe_sent) >= self.timing.auth_interval
+        {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|_| SessionError::Entropy)?;
+            let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+            self.socket.send(tungstenite::Message::Text(
+                format!("rc-v2:auth:{nonce}").into(),
+            ))?;
+            self.awaiting_auth = Some((nonce, now));
+            self.last_auth_probe_sent = now;
+        }
+        match self.socket.read() {
+            Ok(tungstenite::Message::Text(frame)) if frame == "rc-v2:pong" => {
+                // An unsolicited or duplicated pong is not admission.
+                if self.awaiting_pong.is_some() {
+                    self.awaiting_pong = None;
                 }
-                Ok(tungstenite::Message::Text(frame)) if frame.starts_with("rc-v2:auth-ok:") => {
-                    // Stale/duplicate ACKs never satisfy a newer nonce.
-                    if self.awaiting_auth.as_ref().is_some_and(|(nonce, _)| {
-                        frame.as_str() == format!("rc-v2:auth-ok:{nonce}")
-                    }) {
-                        self.awaiting_auth = None;
-                    }
-                }
-                Ok(tungstenite::Message::Text(frame)) if frame.len() <= 65_536 => {
-                    return Ok(frame.to_string());
-                }
-                // Tungstenite queues a matching transport-level pong.
-                Ok(tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_)) => {}
-                Ok(tungstenite::Message::Close(Some(frame)))
-                    if frame.code == tungstenite::protocol::frame::coding::CloseCode::Policy =>
+            }
+            Ok(tungstenite::Message::Text(frame)) if frame.starts_with("rc-v2:auth-ok:") => {
+                // Stale/duplicate ACKs never satisfy a newer nonce.
+                if self
+                    .awaiting_auth
+                    .as_ref()
+                    .is_some_and(|(nonce, _)| frame.as_str() == format!("rc-v2:auth-ok:{nonce}"))
                 {
-                    return Err(SessionError::Policy);
+                    self.awaiting_auth = None;
                 }
-                Err(tungstenite::Error::Io(ref e))
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                    ) => {}
-                Err(error) => return Err(SessionError::Ws(error)),
-                _ => {
-                    let _ = self.socket.close(None);
-                    return Err(SessionError::Protocol);
-                }
+            }
+            Ok(tungstenite::Message::Text(frame)) if frame.len() <= 65_536 => {
+                return Ok(Some(frame.to_string()));
+            }
+            // Tungstenite queues a matching transport-level pong.
+            Ok(tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_)) => {}
+            Ok(tungstenite::Message::Close(Some(frame)))
+                if frame.code == tungstenite::protocol::frame::coding::CloseCode::Policy =>
+            {
+                return Err(SessionError::Policy);
+            }
+            Err(tungstenite::Error::Io(ref e))
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) => {}
+            Err(error) => return Err(SessionError::Ws(error)),
+            _ => {
+                let _ = self.socket.close(None);
+                return Err(SessionError::Protocol);
             }
         }
+        Ok(None)
+    }
+
+    /// Compatibility helper for the one-shot Gate 0 probe.
+    pub fn receive_text(&mut self) -> Result<String, SessionError> {
+        loop {
+            if let Some(frame) = self.poll_text()? {
+                return Ok(frame);
+            }
+        }
+    }
+
+    /// Transport owns the WebSocket and performs liveness checks even while
+    /// an independent executor processes a command. The bounded incoming
+    /// queue fails closed instead of buffering unlimited remote requests.
+    /// A new connection must use new channels: stale responses never cross
+    /// WebSocket incarnations or get replayed automatically.
+    pub fn pump(
+        &mut self,
+        stop: &AtomicBool,
+        incoming: &SyncSender<String>,
+        outgoing: &Receiver<String>,
+    ) -> Result<(), SessionError> {
+        while !stop.load(Ordering::Acquire) {
+            for _ in 0..4 {
+                match outgoing.try_recv() {
+                    Ok(reply) => self.send_text(&reply)?,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                }
+            }
+            let frame = match self.poll_text() {
+                Ok(value) => value,
+                Err(_) if stop.load(Ordering::Acquire) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            if let Some(frame) = frame {
+                incoming.try_send(frame).map_err(|_| SessionError::Queue)?;
+            }
+        }
+        Ok(())
     }
 }
 
