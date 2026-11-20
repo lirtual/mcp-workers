@@ -158,3 +158,159 @@ fn malformed_remote_operation_closes_1008_without_writing_file() {
     );
     assert_eq!(std::fs::read_to_string(file).unwrap(), "unchanged");
 }
+
+#[cfg(unix)]
+#[test]
+fn authenticated_transport_executes_disposable_write_with_durable_receipt_only_once() {
+    use rca_native_agent::gate0_probe::Gate0Probe;
+    use rca_native_agent::native_file::run_disposable_file_session;
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::Builder::new()
+        .prefix("rca-rust-probe-")
+        .tempdir()
+        .unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target = root.path().join("probe.txt");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let target_for_worker = target.clone();
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(listener);
+        for (request_id, content, expected) in [
+            ("11111111-1111-1111-1111-111111111111", "once", "completed"),
+            ("22222222-2222-2222-2222-222222222222", "once", "completed"),
+            (
+                "33333333-3333-3333-3333-333333333333",
+                "changed",
+                "conflict",
+            ),
+        ] {
+            let request = json!({"kind":"operation","request_id":request_id,
+                "operation_id":"one-test-effect","tool":"write_file",
+                "arguments":{"path":target_for_worker,"content":content,"mode":"rewrite"}})
+            .to_string();
+            socket.send(Message::Text(request.into())).unwrap();
+            let reply: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(reply["request_id"], request_id);
+            assert_eq!(reply["result"]["status"], expected);
+        }
+        socket
+            .send(Message::Text(
+                json!({"kind":"read","request_id":REQUEST_ID,
+            "tool":"read_file","arguments":{"path":target_for_worker}})
+                .to_string()
+                .into(),
+            ))
+            .unwrap();
+        let reply: Value =
+            serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(reply["status"], "completed");
+        assert_eq!(reply["text"], "once");
+        worker_stop.store(true, Ordering::Release);
+    });
+    let result = run_disposable_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        root.path(),
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "once");
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let mut reopened = Gate0Probe::new(root.path()).unwrap();
+    let status = reopened
+        .handle(
+            &json!({"kind":"operation",
+        "request_id":"44444444-4444-4444-4444-444444444444",
+        "operation_id":"one-test-effect","tool":"get_operation_status",
+        "arguments":{"operation_id":"one-test-effect"}})
+            .to_string(),
+        )
+        .unwrap();
+    let persisted: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(persisted["result"]["status"], "completed");
+    assert_eq!(persisted["result"]["receipt"]["tool_name"], "write_file");
+}
+
+#[cfg(unix)]
+#[test]
+fn disposable_file_session_revocation_closes_before_any_target_write() {
+    use rca_native_agent::native_file::{run_disposable_file_session, DisposableFileError};
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::Builder::new()
+        .prefix("rca-rust-probe-")
+        .tempdir()
+        .unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target = root.path().join("probe.txt");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(listener);
+        socket
+            .send(Message::Text(
+                json!({"kind":"revoke_cleanup","request_id":REQUEST_ID})
+                    .to_string()
+                    .into(),
+            ))
+            .unwrap();
+        let reply: Value =
+            serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(reply["kind"], "revoke_cleanup_result");
+        assert_eq!(reply["status"], "uncertain");
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_disposable_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        root.path(),
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(DisposableFileError::Session(SessionError::Policy))
+        ),
+        "{result:?}"
+    );
+    assert!(!target.exists(), "revoked session must not start a write");
+}
+
+#[cfg(unix)]
+#[test]
+fn disposable_file_runtime_rejects_unsafe_root_before_network_access() {
+    use rca_native_agent::gate0_probe::ProbeError;
+    use rca_native_agent::native_file::{run_disposable_file_session, DisposableFileError};
+    let ordinary = tempfile::tempdir().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_disposable_file_session(
+        "http://127.0.0.1:9/",
+        &common::test_pem(),
+        DEVICE_ID,
+        ordinary.path(),
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(DisposableFileError::Probe(ProbeError::UnsafeRoot))
+        ),
+        "{result:?}"
+    );
+    assert!(!stop.load(Ordering::Acquire));
+}
