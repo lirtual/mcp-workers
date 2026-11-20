@@ -32,6 +32,14 @@ pub enum SessionError {
     Io(#[from] io::Error),
     #[error("RCA Worker did not select rc-v2")]
     Protocol,
+    #[error("RCA transport heartbeat timed out")]
+    HeartbeatTimeout,
+    #[error("RCA authorization proof liveness timed out")]
+    AuthorizationTimeout,
+    #[error("RCA Worker permanently rejected this session (close 1008)")]
+    Policy,
+    #[error("RCA authorization nonce entropy unavailable")]
+    Entropy,
 }
 
 #[derive(Deserialize)]
@@ -40,12 +48,68 @@ struct Challenge {
     nonce: String,
 }
 
+/// Existing Worker hibernation heartbeat contract (60s request, 20s deadline).
+#[derive(Debug, Clone, Copy)]
+pub struct HeartbeatTiming {
+    pub interval: Duration,
+    pub timeout: Duration,
+    pub auth_interval: Duration,
+}
+
+impl Default for HeartbeatTiming {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(60),
+            timeout: Duration::from_secs(20),
+            auth_interval: Duration::from_secs(900),
+        }
+    }
+}
+
 pub struct AuthenticatedSocket {
     pub device_id: String,
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    timing: HeartbeatTiming,
+    last_ping: Instant,
+    awaiting_pong: Option<Instant>,
+    last_auth: Instant,
+    awaiting_auth: Option<(String, Instant)>,
 }
 
 impl AuthenticatedSocket {
+    /// Default timing is the existing Node Agent's 60s/20s contract. Tests may
+    /// choose shorter timing against a disposable loopback Worker.
+    pub fn set_heartbeat_timing(&mut self, timing: HeartbeatTiming) -> Result<(), SessionError> {
+        if timing.timeout.is_zero()
+            || timing.interval <= timing.timeout
+            || timing.auth_interval <= timing.timeout
+        {
+            return Err(SessionError::Protocol);
+        }
+        self.timing = timing;
+        self.last_ping = Instant::now();
+        self.awaiting_pong = None;
+        self.last_auth = Instant::now();
+        self.awaiting_auth = None;
+        self.configure_read_poll()
+    }
+
+    fn configure_read_poll(&mut self) -> Result<(), SessionError> {
+        let timeout = self
+            .timing
+            .timeout
+            .min(Duration::from_secs(1))
+            .max(Duration::from_millis(20));
+        // A successful TLS/WS handshake has a 10s dial timeout; persistent
+        // sockets instead poll for liveness without treating idle as failure.
+        match self.socket.get_mut() {
+            MaybeTlsStream::Plain(stream) => stream.set_read_timeout(Some(timeout))?,
+            MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(Some(timeout))?,
+            _ => return Err(SessionError::Protocol),
+        }
+        Ok(())
+    }
+
     pub fn send_text(&mut self, frame: &str) -> Result<(), SessionError> {
         if frame.len() > 65_536 {
             return Err(SessionError::Protocol);
@@ -56,13 +120,73 @@ impl AuthenticatedSocket {
 
     pub fn receive_text(&mut self) -> Result<String, SessionError> {
         loop {
-            match self.socket.read()? {
-                tungstenite::Message::Text(frame) if frame.len() <= 65_536 => {
+            let now = Instant::now();
+            if self
+                .awaiting_pong
+                .is_some_and(|since| now.duration_since(since) >= self.timing.timeout)
+            {
+                let _ = self.socket.close(None);
+                return Err(SessionError::HeartbeatTimeout);
+            }
+            if self
+                .awaiting_auth
+                .as_ref()
+                .is_some_and(|(_, since)| now.duration_since(*since) >= self.timing.timeout)
+            {
+                let _ = self.socket.close(None);
+                return Err(SessionError::AuthorizationTimeout);
+            }
+            if self.awaiting_pong.is_none()
+                && now.duration_since(self.last_ping) >= self.timing.interval
+            {
+                self.socket
+                    .send(tungstenite::Message::Text("rc-v2:ping".into()))?;
+                self.awaiting_pong = Some(now);
+                self.last_ping = now;
+            }
+            if self.awaiting_auth.is_none()
+                && now.duration_since(self.last_auth) >= self.timing.auth_interval
+            {
+                let mut random = [0u8; 16];
+                getrandom::fill(&mut random).map_err(|_| SessionError::Entropy)?;
+                let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+                self.socket.send(tungstenite::Message::Text(
+                    format!("rc-v2:auth:{nonce}").into(),
+                ))?;
+                self.awaiting_auth = Some((nonce, now));
+                self.last_auth = now;
+            }
+            match self.socket.read() {
+                Ok(tungstenite::Message::Text(frame)) if frame == "rc-v2:pong" => {
+                    // An unsolicited or duplicated pong is not admission.
+                    if self.awaiting_pong.is_some() {
+                        self.awaiting_pong = None;
+                    }
+                }
+                Ok(tungstenite::Message::Text(frame)) if frame.starts_with("rc-v2:auth-ok:") => {
+                    // Stale/duplicate ACKs never satisfy a newer nonce.
+                    if self.awaiting_auth.as_ref().is_some_and(|(nonce, _)| {
+                        frame.as_str() == format!("rc-v2:auth-ok:{nonce}")
+                    }) {
+                        self.awaiting_auth = None;
+                    }
+                }
+                Ok(tungstenite::Message::Text(frame)) if frame.len() <= 65_536 => {
                     return Ok(frame.to_string());
                 }
-                // Tungstenite queues the matching pong. Control frames do not
-                // terminate a valid Agent session or enter operation dispatch.
-                tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+                // Tungstenite queues a matching transport-level pong.
+                Ok(tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_)) => {}
+                Ok(tungstenite::Message::Close(Some(frame)))
+                    if frame.code == tungstenite::protocol::frame::coding::CloseCode::Policy =>
+                {
+                    return Err(SessionError::Policy);
+                }
+                Err(tungstenite::Error::Io(ref e))
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => return Err(SessionError::Ws(error)),
                 _ => {
                     let _ = self.socket.close(None);
                     return Err(SessionError::Protocol);
@@ -202,10 +326,17 @@ pub fn connect_authenticated(
         let _ = socket.close(None);
         return Err(SessionError::Protocol);
     }
-    Ok(AuthenticatedSocket {
+    let mut authenticated = AuthenticatedSocket {
         device_id: device_id.to_owned(),
         socket,
-    })
+        timing: HeartbeatTiming::default(),
+        last_ping: Instant::now(),
+        awaiting_pong: None,
+        last_auth: Instant::now(),
+        awaiting_auth: None,
+    };
+    authenticated.configure_read_poll()?;
+    Ok(authenticated)
 }
 
 #[cfg(test)]
