@@ -285,3 +285,139 @@ fn invalid_write_arguments_close_1008_without_receipt_admission() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn signed_file_session_creates_directory_and_deletes_regular_file_with_receipts() {
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let created = root.path().join("created");
+    let forbidden = root.path().join("forbidden");
+    let target = created.join("target.txt");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server_created = created.clone();
+    let server_forbidden = forbidden.clone();
+    let server_target = target.clone();
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(listener);
+        let mut command =
+            |index: u32, tool: &str, operation_id: &str, arguments: Value, status: &str| {
+                let request_id = format!("00000000-0000-0000-0000-{index:012}");
+                socket
+                    .send(Message::Text(
+                        request(&request_id, tool, operation_id, arguments).into(),
+                    ))
+                    .unwrap();
+                let reply: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                assert_eq!(reply["request_id"], request_id);
+                assert_eq!(reply["kind"], "operation_result");
+                assert_eq!(reply["result"]["status"], status);
+                assert_eq!(reply["result"]["operation_id"], operation_id);
+            };
+        command(
+            1,
+            "create_directory",
+            "mkdir-id",
+            json!({"path":server_created}),
+            "completed",
+        );
+        command(
+            2,
+            "create_directory",
+            "mkdir-id",
+            json!({"path":server_created}),
+            "completed",
+        );
+        command(
+            3,
+            "create_directory",
+            "mkdir-id",
+            json!({"path":server_forbidden}),
+            "conflict",
+        );
+        assert!(!server_forbidden.exists());
+        command(
+            4,
+            "write_file",
+            "write-id",
+            json!({"path":server_target, "content":"first", "mode":"rewrite"}),
+            "completed",
+        );
+        command(
+            5,
+            "delete_file",
+            "unlink-id",
+            json!({"path":server_target}),
+            "completed",
+        );
+        assert!(!server_target.exists());
+        std::fs::write(&server_target, "replacement").unwrap();
+        command(
+            6,
+            "delete_file",
+            "unlink-id",
+            json!({"path":server_target}),
+            "completed",
+        );
+        assert_eq!(
+            std::fs::read_to_string(&server_target).unwrap(),
+            "replacement"
+        );
+        command(
+            7,
+            "get_operation_status",
+            "unlink-id",
+            json!({"operation_id":"unlink-id"}),
+            "completed",
+        );
+        socket
+            .send(Message::Text(
+                request(
+                    "00000000-0000-0000-0000-000000000008",
+                    "delete_file",
+                    "invalid",
+                    json!({"path":server_target,"recursive":true}),
+                )
+                .into(),
+            ))
+            .unwrap();
+        match socket.read().unwrap() {
+            Message::Close(Some(frame)) => assert_eq!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Policy
+            ),
+            other => panic!("expected invalid mutation policy close, got {other:?}"),
+        }
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_native_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(rca_native_agent::native_file::NativeFileError::Session(
+                SessionError::Policy
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "replacement");
+    let receipts = ReceiptStore::open(&receipt_dir).unwrap();
+    for (id, tool) in [
+        ("mkdir-id", "create_directory"),
+        ("unlink-id", "delete_file"),
+    ] {
+        let receipt = receipts.get(id).unwrap().unwrap();
+        assert_eq!(receipt.state, "completed");
+        assert_eq!(receipt.tool_name, tool);
+    }
+    assert!(receipts.get("invalid").unwrap().is_none());
+}

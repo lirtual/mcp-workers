@@ -345,8 +345,8 @@ impl AuthenticatedSocket {
         result
     }
 
-    /// Strict file candidate: admit only native reads, write_file and receipt
-    /// queries. All unexpected frames close 1008 before execution queueing.
+    /// Strict file candidate: admit only native reads, bounded file mutations
+    /// and receipt queries. Unexpected frames close 1008 before queueing.
     pub fn pump_native_file(
         &mut self,
         stop: &Arc<AtomicBool>,

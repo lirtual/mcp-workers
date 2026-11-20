@@ -155,6 +155,44 @@ fn actual_owner_mcp_write_read_receipt_and_revoke_roundtrip() {
         }
         println!("REAL_WORKER_NATIVE_FILE_WRITE_READ_IDEMPOTENCY_RECEIPT_PASSED");
 
+        let created = root.join("owner-created-dir");
+        let create_args = json!({"device_id":device_id,"operation_id":"owner-mkdir-001",
+            "path":created});
+        let create = tool("create_directory", create_args.clone())?;
+        if create["status"] != "completed" || !created.is_dir() {
+            return Err(format!("Owner directory create failed: {create}"));
+        }
+        if tool("create_directory", create_args)?["status"] != "completed" {
+            return Err("Owner directory create was not idempotent".into());
+        }
+        let disposable = created.join("only-this-file.txt");
+        std::fs::write(&disposable, "delete me").map_err(|_| "test file setup failed")?;
+        let delete_args = json!({"device_id":device_id,"operation_id":"owner-delete-001",
+            "path":disposable});
+        let deleted = tool("delete_file", delete_args.clone())?;
+        if deleted["status"] != "completed" || disposable.exists() {
+            return Err(format!(
+                "Owner delete_file did not remove regular file: {deleted}"
+            ));
+        }
+        std::fs::write(&disposable, "replacement").map_err(|_| "test file recreation failed")?;
+        if tool("delete_file", delete_args)?["status"] != "completed"
+            || std::fs::read_to_string(&disposable).unwrap() != "replacement"
+        {
+            return Err("Owner repeated delete_file was not no-replay".into());
+        }
+        let directory_delete = tool(
+            "delete_file",
+            json!({"device_id":device_id,
+            "operation_id":"owner-dir-reject-001","path":created}),
+        )?;
+        if directory_delete["status"] != "failed" || !created.is_dir() {
+            return Err(format!(
+                "Owner delete_file accepted a directory: {directory_delete}"
+            ));
+        }
+        println!("REAL_WORKER_NATIVE_DIRECTORY_CREATE_DELETE_NO_REPLAY_PASSED");
+
         let revoke = tool("revoke_device", json!({"device_id":device_id}))?;
         if revoke["status"] != "revoked" {
             return Err(format!("revoke did not settle: {revoke}"));
