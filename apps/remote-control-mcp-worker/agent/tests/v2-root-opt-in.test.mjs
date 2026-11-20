@@ -79,7 +79,7 @@ spec.loader.exec_module(mod)
 tty = types.SimpleNamespace(isatty=lambda: True)
 with mock.patch.object(mod.os, "getuid", return_value=0), \
      mock.patch.object(mod.sys, "stdin", tty), mock.patch.object(mod.sys, "stdout", tty), \
-     mock.patch.dict(os.environ, {"HOME": mod.pwd.getpwuid(0).pw_dir}):
+     mock.patch.dict(os.environ, {"HOME": mod.pwd.getpwuid(0).pw_dir}, clear=True):
     mod.root_opt_in(True)
     for flag, stage in [(False, False), (True, True)]:
         try: mod.root_opt_in(flag, stage)
@@ -89,6 +89,10 @@ with mock.patch.object(mod.os, "getuid", return_value=0), \
         try: mod.root_opt_in(True)
         except ValueError: pass
         else: raise AssertionError("inherited HOME bypass")
+    with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1001/bus"}):
+        try: mod.root_opt_in(True)
+        except ValueError: pass
+        else: raise AssertionError("inherited session bus bypass")
 print("PY_BOOTSTRAP_ROOT_GATE_OK")
 `;
   const result = spawnSync("python3", ["-B", "-c", source, bootstrap],
