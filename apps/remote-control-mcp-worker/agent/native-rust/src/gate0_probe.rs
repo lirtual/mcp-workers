@@ -5,7 +5,7 @@ use crate::identity::valid_device_id;
 use crate::receipts::{Admission, ReceiptError, ReceiptStore};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -70,11 +70,49 @@ impl Gate0Probe {
         }
         let req: Value = serde_json::from_str(frame).map_err(|_| ProbeError::InvalidFrame)?;
         let object = req.as_object().ok_or(ProbeError::InvalidFrame)?;
-        if object.len() != 5 || req["kind"] != "operation" {
-            return Err(ProbeError::InvalidFrame);
-        }
         let request_id = req["request_id"].as_str().ok_or(ProbeError::InvalidFrame)?;
         if !valid_device_id(request_id) {
+            return Err(ProbeError::InvalidFrame);
+        }
+        if req["kind"] == "read" && object.len() == 4 && req["tool"] == "read_file" {
+            let args = req["arguments"]
+                .as_object()
+                .ok_or(ProbeError::InvalidFrame)?;
+            if args.len() != 1 || args.get("path").and_then(Value::as_str) != self.target.to_str() {
+                return Err(ProbeError::InvalidFrame);
+            }
+            let read = (|| -> std::io::Result<String> {
+                let mut open = OpenOptions::new();
+                open.read(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    open.custom_flags(libc::O_NOFOLLOW);
+                }
+                let file = open.open(&self.target)?;
+                if !file.metadata()?.is_file() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "not a file",
+                    ));
+                }
+                let mut bytes = Vec::new();
+                file.take(4_097).read_to_end(&mut bytes)?;
+                if bytes.len() > 4_096 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "too large",
+                    ));
+                }
+                String::from_utf8(bytes)
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"))
+            })();
+            return Ok(match read {
+                Ok(text) => json!({"kind":"read_result","request_id":request_id,"status":"completed","text":text}).to_string(),
+                Err(_) => json!({"kind":"read_result","request_id":request_id,"status":"failed"}).to_string(),
+            });
+        }
+        if object.len() != 5 || req["kind"] != "operation" {
             return Err(ProbeError::InvalidFrame);
         }
         let id = req["operation_id"]

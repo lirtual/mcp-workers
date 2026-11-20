@@ -6,7 +6,7 @@ Verified seams:
 
 - Node 24's `operationDigest` custom JSON ordering, floating-point formatting and SHA-256, using fixed independent golden cases.
 - Node 24's Ed25519 PKCS#8/SPKI session and Owner-intent signing transcripts; disposable public test seed generated in memory.
-- Isolated loopback signed WebSocket challenge, explicit denial/invalid subprotocol rejection, bounded TCP/TLS/WebSocket handshake, ping-frame handling, and one test-only write through the guarded Rust `Gate0Probe` with persistent receipt and no-blind-replay on reconnect.
+- Isolated loopback signed WebSocket challenge, explicit denial/invalid subprotocol rejection, bounded TCP/TLS/WebSocket handshake, ping-frame handling, and one test-only read/write roundtrip through the guarded Rust `Gate0Probe` with persistent receipt and no-blind-replay on reconnect.
 - Negative Gate 0 tests reject public/symlinked/wrong-name roots, out-of-scope paths and malformed/oversized frames before mutation.
 - Durable SQLite `user_version=1` receipts, legacy JSON import, exclusive ownership, interrupted-operation Unknown and no-blind-replay, with a Node → Rust → Node interoperability test.
 

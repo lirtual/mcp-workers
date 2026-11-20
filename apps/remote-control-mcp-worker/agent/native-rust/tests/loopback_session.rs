@@ -136,6 +136,25 @@ fn local_worker(listener: TcpListener, probe_path: String) {
             if index == 2 { "conflict" } else { "completed" }
         );
     }
+    socket
+        .send(Message::Text(
+            json!({
+                "kind":"read","tool":"read_file",
+                "request_id":"66666666-6666-6666-6666-666666666666",
+                "arguments":{"path":probe_path}
+            })
+            .to_string()
+            .into(),
+        ))
+        .unwrap();
+    let response: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(response["kind"], "read_result");
+    assert_eq!(
+        response["request_id"],
+        "66666666-6666-6666-6666-666666666666"
+    );
+    assert_eq!(response["status"], "completed");
+    assert_eq!(response["text"], "once");
     socket.close(None).unwrap();
 }
 
@@ -158,7 +177,7 @@ fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
     let mut probe = Gate0Probe::new(tmp.path()).unwrap();
     let mut socket = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     assert_eq!(socket.device_id, DEVICE_ID);
-    for _ in 0..3 {
+    for _ in 0..4 {
         let incoming = socket.receive_text().unwrap();
         let response = probe.handle(&incoming).unwrap();
         socket.send_text(&response).unwrap();

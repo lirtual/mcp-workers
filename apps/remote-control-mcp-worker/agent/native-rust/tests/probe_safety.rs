@@ -77,6 +77,21 @@ fn out_of_scope_and_malformed_frames_cannot_admit_an_effect() {
     )
     .unwrap();
     assert_eq!(status["result"]["status"], "not_found");
+
+    // Even the fixed read target must not follow a pre-existing symlink.
+    let secret = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(secret.path(), "outside-secret").unwrap();
+    let target = root.path().join("probe.txt");
+    std::os::unix::fs::symlink(secret.path(), &target).unwrap();
+    let read = json!({
+        "kind":"read", "tool":"read_file",
+        "request_id":"33333333-3333-3333-3333-333333333333",
+        "arguments":{"path":target},
+    })
+    .to_string();
+    let response: Value = serde_json::from_str(&probe.handle(&read).unwrap()).unwrap();
+    assert_eq!(response["status"], "failed");
+    assert!(response.get("text").is_none());
     assert!(matches!(
         probe.handle("rc-v2:ping"),
         Err(ProbeError::InvalidFrame)
