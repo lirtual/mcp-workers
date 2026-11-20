@@ -65,7 +65,8 @@ try{
   assert.equal((await response('/mcp',{method:'POST'})).status,401);
   const inventory=await rpc('tools/list');assert.equal(inventory.status,200);
   const names=inventory.data.result.tools.map(t=>t.name);
-  assert.equal(names.length,15);assert.ok(!names.includes('browser_pair'));
+  assert.equal(names.length,17);assert.ok(!names.includes('browser_pair'));
+  assert.ok(names.includes('browser_cdp')&&names.includes('browser_cdp_events'));
   const oldClaim=await extension('claim',{code:'a'.repeat(24),alias:'Legacy'});assert.equal(oldClaim.status,404);
   assert.equal((await extension('resume',{endpoint_id:crypto.randomUUID(),credential:'b'.repeat(64)})).status,404);
   const attempt_id=crypto.randomUUID(),proof='c'.repeat(64);

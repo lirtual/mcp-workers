@@ -15,7 +15,7 @@ const policies=[
     include:[{email:{email:'lirtual@qq.com'}},
       {email:{email:'lirtual@outlook.com'}}]},
 ];
-const intentTools=new Set(['browser_click','browser_fill','browser_keypress','browser_scroll','browser_select','browser_tab_open','browser_tab_navigate','browser_tab_close','browser_operation_status']);
+const intentTools=new Set(['browser_click','browser_fill','browser_keypress','browser_scroll','browser_select','browser_tab_open','browser_tab_navigate','browser_tab_close','browser_operation_status','browser_cdp']);
 const freshTools=()=>BROWSER_TOOLS.map(name=>{
   const tool={name};
   if(intentTools.has(name))tool.inputSchema={type:'object',
@@ -29,14 +29,14 @@ const freshTools=()=>BROWSER_TOOLS.map(name=>{
 const browserPolicies=()=>structuredClone(policies);
 const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp-portal.lirtual.dpdns.org',policies},
   ...(enabled?[{name:'Browser',type:'mcp',policies:browserPolicies()}]:[])];
-test('the exact fixed 15 tools match public Browser MCP and five interaction actions',()=>{
+test('the exact 17 tools preserve the original 15 and match public Browser MCP plus five interaction actions',()=>{
   const source=readFileSync(new URL('../apps/browser-mcp-worker/src/worker.ts',import.meta.url),'utf8');
   const interactions=readFileSync(new URL('../apps/browser-mcp-worker/src/interactions.ts',import.meta.url),'utf8');
   const named=[...source.matchAll(/name:"(browser_[a-z_]+)"/g)].map(x=>x[1]);
   const actions=['click','fill','keypress','scroll','select'].map(x=>'browser_'+x);
   assert.match(interactions,/interactionActions = \["click","fill","keypress","scroll","select"\]/);
   assert.deepEqual([...new Set([...named,...actions])].sort(),BROWSER_TOOLS);
-  assert.equal(BROWSER_TOOLS.length,15);
+  assert.equal(BROWSER_TOOLS.length,17);
   assert.ok(source.includes(BROWSER_UUIDV7_PATTERN), 'the expected UUIDv7 pattern must match the Browser Worker source');
   verifyBrowserToolSchemas(freshTools());
 });

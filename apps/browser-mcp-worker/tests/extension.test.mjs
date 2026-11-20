@@ -9,6 +9,7 @@ const dirname=path.dirname(fileURLToPath(import.meta.url));
 const source=fs.readFileSync(path.join(dirname,"../extension/background.js"),"utf8");
 const observation=fs.readFileSync(path.join(dirname,"../extension/observation.js"),"utf8");
 const mutations=fs.readFileSync(path.join(dirname,"../extension/mutations.js"),"utf8");
+const cdp=fs.readFileSync(path.join(dirname,"../extension/cdp.js"),"utf8");
 const id="11111111-1111-4111-8111-111111111111";
 const credential="a".repeat(64);
 const service="https://browser-mcp-worker.invalid";
@@ -57,6 +58,14 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
       onInstalled:{addListener(fn){installed=fn;}}
     }
   };
+  let onCdpEvent,onCdpDetach;
+  if(options.debugger)chrome.debugger={
+    attach:async(target,version)=>{events.push({type:"debugger-attach",target,version});},
+    sendCommand:async(target,method,params)=>{events.push({type:"debugger-command",target,method,params});return {result:{type:"number",value:2}};},
+    detach:async target=>{events.push({type:"debugger-detach",target});},
+    onEvent:{addListener(fn){onCdpEvent=fn;}},
+    onDetach:{addListener(fn){onCdpDetach=fn;}}
+  };
   class Socket {static OPEN=1;constructor(){this.readyState=0;this.OPEN=1;this.CLOSED=3;sockets.push(this);if(options.fastOpen)queueMicrotask(()=>{this.readyState=1;this.onopen?.();});} send(data){events.push({type:"socket-send",data});} close(){this.readyState=3;}}
   const fetch=async(url,opts)=>{
     events.push({type:"fetch",url,body:JSON.parse(opts.body),localState:{...local}});
@@ -66,7 +75,8 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
     BROWSER_MCP_SERVICE_ORIGIN:service,importScripts:()=>{}});
   ctx.importScripts=(name)=>{if(name==="config.js")return;
     if(name==="observation.js")return vm.runInContext(observation,ctx);
-    assert.equal(name,"mutations.js");vm.runInContext(mutations,ctx);};
+    if(name==="mutations.js")return vm.runInContext(mutations,ctx);
+    assert.equal(name,"cdp.js");vm.runInContext(cdp,ctx);};
   vm.runInContext(source,ctx);
   await new Promise(resolve=>setTimeout(resolve,5));
   async function send(type,props={}){
@@ -75,7 +85,9 @@ async function setup(initial={},respond=async()=>{throw Error("network_offline")
     });
   }
   const sendSpoof=(type,sender,extra={})=>new Promise(resolve=>handler({type,...extra},sender,resolve));
-  return {local,session,events,createdTabs,send,sendSpoof,chrome,startup,installed,click:()=>actionClick(),external:(message,sender)=>new Promise(resolve=>externalHandler(message,sender,resolve)),alarm:()=>alarm({name:"browser-activation"}),removed:tabId=>onRemoved(tabId),ctx,sockets};
+  return {local,session,events,createdTabs,send,sendSpoof,chrome,startup,installed,click:()=>actionClick(),external:(message,sender)=>new Promise(resolve=>externalHandler(message,sender,resolve)),alarm:()=>alarm({name:"browser-activation"}),removed:tabId=>onRemoved(tabId),ctx,sockets,
+    emitCdpEvent:(source,method,params)=>onCdpEvent?.(source,method,params),
+    emitCdpDetach:source=>onCdpDetach?.(source)};
 }
 test("native Options browser tab may read status and set Temporary, but spoofed senders remain denied",async()=>{
   const e=await setup({authorization:"stopped",activation_protocol:2});
@@ -532,4 +544,125 @@ test("toolbar state icons preserve existing priority and replace oversized text 
   await expectIcon("AUTH");
   e.local.authorization="revoked";
   await expectIcon("REV");
+});
+
+
+test("CDP stays locally disabled until Owner opts in; executes once and detaches on Stop",async()=>{
+  const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{debugger:true});
+  const ws=e.sockets[0],intent_key="019a2b3c-4d5e-7aaa-8bbb-1234567890ab";
+  const command={endpoint_id:id,intent_key,action:"cdp",tab_id:73,
+    commands:[{method:"Runtime.evaluate",params:{expression:"1+1"}}]};
+  ws.readyState=1;ws.onopen();
+  await ws.onmessage({data:JSON.stringify({type:"authenticated",endpoint_id:id,generation:11})});
+  const deniedOp="77777777-7777-4777-8777-777777777777";
+  await ws.onmessage({data:JSON.stringify({type:"prepare_request",operation_id:deniedOp,
+    intent_key,generation:11,command})});
+  const sent=()=>e.events.filter(v=>v.type==="socket-send").map(v=>JSON.parse(v.data));
+  assert.equal(sent().find(v=>v.operation_id===deniedOp)?.error_code,"cdp_disabled");
+  assert.equal(e.events.filter(v=>v.type==="debugger-attach").length,0);
+  assert.equal((await e.send("advanced-cdp",{enabled:true})).enabled,true);
+  const op="88888888-8888-4888-8888-888888888888";
+  await ws.onmessage({data:JSON.stringify({type:"prepare_request",operation_id:op,
+    intent_key,generation:11,command})});
+  assert.equal(sent().find(v=>v.type==="prepare_result"&&v.operation_id===op)?.accepted,true);
+  const execute={type:"execute_request",operation_id:op,intent_key,generation:11,execute_token:"a".repeat(64)};
+  await ws.onmessage({data:JSON.stringify(execute)});
+  await ws.onmessage({data:JSON.stringify(execute)});
+  assert.equal(e.events.filter(v=>v.type==="debugger-command").length,1);
+  assert.equal(e.events.filter(v=>v.type==="debugger-command")[0].method,"Runtime.evaluate");
+  const result=sent().find(v=>v.type==="execute_result"&&v.operation_id===op);
+  assert.equal(result.state,"completed");
+  assert.equal(result.data.commands[0].result.result.value,2);
+  assert.equal(sent().find(v=>v.type==="cdp_progress"&&v.operation_id===op)?.executed_count,1);
+  const subscription={type:"read_request",request_id:"99999999-9999-4999-8999-999999999999",
+    generation:11,tool:"cdp_events",tab_id:73,action:"subscribe",events:["Network.requestWillBeSent"]};
+  await ws.onmessage({data:JSON.stringify(subscription)});
+  assert.equal(sent().find(v=>v.request_id===subscription.request_id)?.data?.subscribed,true);
+  for(let i=0;i<71;i++)await e.emitCdpEvent({tabId:73},"Network.requestWillBeSent",{requestId:"burst-"+i});
+  const read={...subscription,request_id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",action:"read",events:undefined,cursor:0,limit:32};
+  await ws.onmessage({data:JSON.stringify(read)});
+  const observed=sent().find(v=>v.request_id===read.request_id);
+  assert.equal(observed.data.events.length,32);
+  assert.equal(observed.data.dropped,7);
+  assert.equal(observed.data.overflow,true);
+  assert.equal(observed.data.events[0].params.requestId,"burst-7");
+  // Large transient event payloads must page below the WSS response budget.
+  for(let i=0;i<8;i++)await e.emitCdpEvent({tabId:73},"Network.requestWillBeSent",
+    {requestId:"large-"+i,body:"x".repeat(25000)});
+  const bigRead={...read,request_id:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",cursor:71,limit:64};
+  await ws.onmessage({data:JSON.stringify(bigRead)});
+  const large=sent().find(v=>v.request_id===bigRead.request_id).data;
+  assert.ok(large.events.length>0&&large.events.length<8);
+  assert.ok(JSON.stringify(large).length<131500);
+  assert.ok(large.cursor>71&&large.cursor<79,"caller may page remaining events");
+  await e.send("stop");
+  assert.equal(e.local.browser_advanced_cdp_enabled,false);
+  assert.ok(e.events.some(v=>v.type==="debugger-detach"));
+});
+
+
+test("CDP deadline stops later commands even when a prior send resolves late",async()=>{
+  const e=await setup({service,endpoint_id:id,credential,authorization:"enabled" },undefined,{debugger:true});
+  await e.send("advanced-cdp",{enabled:true});
+  const NativeDate=e.ctx.Date;
+  let tick=1000,commands=0;
+  e.ctx.Date=class extends NativeDate {static now(){return tick;}};
+  e.chrome.debugger.sendCommand=async()=>{
+    commands++;
+    tick+=7000;
+    return {result:{value:1}};
+  };
+  const result=await e.ctx.browserCdpExecute({tab_id:73,commands:[
+    {method:"Runtime.evaluate",params:{expression:"1"}},
+    {method:"Runtime.evaluate",params:{expression:"2"}}
+  ]},async()=>true);
+  assert.equal(result.state,"unknown");
+  assert.equal(result.data.error_code,"cdp_timeout");
+  assert.equal(commands,1,"a late command must not start the next browser effect");
+  await e.send("stop");
+});
+
+test("CDP event reads never attach; unsubscribe detaches and flood callbacks stay bounded",async()=>{
+  const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{debugger:true});
+  await e.send("advanced-cdp",{enabled:true});
+  const permit=async()=>true;
+  const read={tab_id:73,action:"read",cursor:0,limit:64};
+  assert.equal((await e.ctx.browserCdpEvents(read,permit)).error_code,"not_subscribed");
+  assert.equal(e.events.filter(v=>v.type==="debugger-attach").length,0);
+  await e.ctx.browserCdpEvents({tab_id:73,action:"subscribe",events:["Network.requestWillBeSent"]},permit);
+  await Promise.all(Array.from({length:100},(_,i)=>
+    e.emitCdpEvent({tabId:73},"Network.requestWillBeSent",{requestId:"flood-"+i})));
+  const page=await e.ctx.browserCdpEvents(read,permit);
+  assert.equal(page.events.length,1,"only one policy-checking event can be in flight");
+  assert.equal(page.dropped,99);
+  await e.ctx.browserCdpEvents({tab_id:73,action:"unsubscribe"},permit);
+  assert.ok(e.events.some(v=>v.type==="debugger-detach"));
+  assert.equal((await e.ctx.browserCdpEvents(read,permit)).error_code,"not_subscribed");
+  await e.send("stop");
+});
+
+test("delayed advanced-CDP Enable cannot overtake Stop and failed CDP cleanup cannot block Stop",async()=>{
+  const e=await setup({service,endpoint_id:id,credential,authorization:"enabled"},undefined,{debugger:true});
+  const save=e.chrome.storage.local.set;
+  let released,started;
+  const entered=new Promise(resolve=>{started=resolve;});
+  e.chrome.storage.local.set=async values=>{
+    if(values.browser_advanced_cdp_enabled===true){
+      started();
+      await new Promise(resolve=>{released=resolve;});
+    }
+    if(Object.keys(values).length===1&&values.browser_advanced_cdp_enabled===false)
+      throw Error("cdp_storage_failure");
+    return save(values);
+  };
+  const enabling=e.send("advanced-cdp",{enabled:true});
+  await entered;
+  const stopping=e.send("stop");
+  released();
+  await assert.rejects(enabling,/(local_authorization_changed|cdp_storage_failure)/);
+  const stopped=await stopping;
+  assert.equal(stopped.authorization,"stopped");
+  assert.equal(e.local.authorization,"stopped");
+  assert.equal(e.local.browser_advanced_cdp_enabled,false);
+  assert.equal((await e.send("status")).advanced_cdp.enabled,false);
 });

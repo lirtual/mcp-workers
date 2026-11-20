@@ -6,7 +6,7 @@ const root=new URL('../extension/',import.meta.url);
 const html=fs.readFileSync(new URL('options.html',root),'utf8');
 const source=fs.readFileSync(new URL('options.js',root),'utf8');
 function options(){
-  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
+  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','advanced-cdp','visual-feedback'];
   const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:'',value:'',disabled:false,onclick:null,onchange:null}]));
   const messages=[],state={alias:'chrome',authorization:'enabled',connection:'online',last_update:Date.now(),
     pairing_mode:'permanent',sensitive_permissions:{lan:false,private:false,native_private:false},
@@ -50,7 +50,7 @@ test('Options Revoke requires confirmation; lifetime becomes editable only when 
 });
 
 function renameOptions({confirmCloud=true}={}){
-  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','visual-feedback'];
+  const ids=['status','summary','action-feedback','identity','expiry','warning','alias','save-alias','prepair','lifetime','locate','stop','revoke','ack','lan','private','advanced-cdp','visual-feedback'];
   const nodes=Object.fromEntries(ids.map(id=>[id,{id,textContent:'',value:'',disabled:false,onclick:null,onchange:null,oninput:null}]));
   const endpoint_id='11111111-1111-4111-8111-111111111111';
   const state={alias:'11111111',authorization:'enabled',connection:'online',endpoint_id,
