@@ -5,11 +5,12 @@ use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Deserialize;
 use serde_json::json;
-use std::io::Read;
-use std::net::TcpStream;
-use std::time::Duration;
+use std::io::{self, Read};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::HandshakeError;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::protocol::{WebSocket, WebSocketConfig};
 use tungstenite::stream::MaybeTlsStream;
@@ -27,6 +28,8 @@ pub enum SessionError {
     Http(#[from] reqwest::Error),
     #[error("RCA WebSocket connection failed: {0}")]
     Ws(#[from] tungstenite::Error),
+    #[error("RCA WebSocket TCP connection failed: {0}")]
+    Io(#[from] io::Error),
     #[error("RCA Worker did not select rc-v2")]
     Protocol,
 }
@@ -52,11 +55,18 @@ impl AuthenticatedSocket {
     }
 
     pub fn receive_text(&mut self) -> Result<String, SessionError> {
-        match self.socket.read()? {
-            tungstenite::Message::Text(frame) if frame.len() <= 65_536 => Ok(frame.to_string()),
-            _ => {
-                let _ = self.socket.close(None);
-                Err(SessionError::Protocol)
+        loop {
+            match self.socket.read()? {
+                tungstenite::Message::Text(frame) if frame.len() <= 65_536 => {
+                    return Ok(frame.to_string());
+                }
+                // Tungstenite queues the matching pong. Control frames do not
+                // terminate a valid Agent session or enter operation dispatch.
+                tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+                _ => {
+                    let _ = self.socket.close(None);
+                    return Err(SessionError::Protocol);
+                }
             }
         }
     }
@@ -149,9 +159,40 @@ pub fn connect_authenticated(
     config.max_write_buffer_size = 73_728;
     config.max_message_size = Some(65_536);
     config.max_frame_size = Some(65_536);
-    // The offered subprotocol carries a signed proof. Never forward it through a redirect.
+    // Resolve and connect explicitly so a stalled TCP dial or TLS/WS upgrade
+    // cannot wait forever. Do not follow redirects with a signed proof.
+    let host = origin.host_str().ok_or(SessionError::Endpoint)?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = origin
+        .port_or_known_default()
+        .ok_or(SessionError::Endpoint)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last_error = io::Error::new(io::ErrorKind::AddrNotAvailable, "no RCA address");
+    let mut connected = None;
+    for address in (host, port).to_socket_addrs()? {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match TcpStream::connect_timeout(&address, remaining) {
+            Ok(stream) => {
+                connected = Some(stream);
+                break;
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    let stream = connected.ok_or(SessionError::Io(last_error))?;
+    stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let (mut socket, response) =
-        tungstenite::client::connect_with_config(request, Some(config), 0)?;
+        tungstenite::client_tls_with_config(request, stream, Some(config), None).map_err(
+            |error| match error {
+                HandshakeError::Failure(failure) => SessionError::Ws(failure),
+                HandshakeError::Interrupted(_) => SessionError::Protocol,
+            },
+        )?;
     if response
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)

@@ -1,9 +1,9 @@
 //! SQLite receipt seam for the Node Agent's user_version=1 schema.
 //! An admitted external effect may not be blindly replayed after restart.
-//! Deliberately not wired to OS mutations until Gate 0 integration passes.
+//! The disposable Gate0Probe is the only caller allowed to trigger a file effect.
 use crate::digest::operation_digest;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -51,7 +51,7 @@ pub enum ReceiptError {
     NotFound,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Receipt {
     pub operation_id: String,
     pub tool_name: String,

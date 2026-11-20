@@ -1,10 +1,9 @@
 //! Disposable loopback signed-WebSocket tracer: no Worker, Owner Grant or
 //! production identity is contacted. This proves the Rust seams can compose,
 //! not that the full five-platform Agent is ready.
-use rca_native_agent::receipts::{Admission, ReceiptStore};
+use rca_native_agent::gate0_probe::Gate0Probe;
 use rca_native_agent::session::connect_authenticated;
 use serde_json::{json, Value};
-use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
@@ -110,8 +109,16 @@ fn local_worker(listener: TcpListener, probe_path: String) {
         ),
     ];
     for (index, frame) in requests.iter().enumerate() {
+        if index == 0 {
+            socket.send(Message::Ping(vec![42].into())).unwrap();
+        }
         socket.send(Message::Text(frame.clone().into())).unwrap();
-        let received = socket.read().unwrap();
+        let received = loop {
+            match socket.read().unwrap() {
+                Message::Pong(_) => continue,
+                result => break result,
+            }
+        };
         let answer: Value = serde_json::from_str(received.to_text().unwrap()).unwrap();
         assert_eq!(answer["kind"], "operation_result");
         assert_eq!(
@@ -134,76 +141,59 @@ fn local_worker(listener: TcpListener, probe_path: String) {
 
 #[test]
 fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::Builder::new()
+        .prefix("rca-rust-probe-")
+        .tempdir()
+        .unwrap();
     let target = tmp.path().join("probe.txt");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let worker_path = target.to_str().unwrap().to_owned();
     let worker = thread::spawn(move || local_worker(listener, worker_path));
-    let mut store = ReceiptStore::open(&tmp.path().join("receipts")).unwrap();
+
+    // tempfile creates this directory with the process umask; restrict it
+    // explicitly before the production-equivalent private-state gate.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut probe = Gate0Probe::new(tmp.path()).unwrap();
     let mut socket = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     assert_eq!(socket.device_id, DEVICE_ID);
-
-    let mut writes = 0;
     for _ in 0..3 {
-        let frame = socket.receive_text().unwrap();
-        let request: Value = serde_json::from_str(&frame).unwrap();
-        assert_eq!(request["kind"], "operation");
-        assert_eq!(request["tool"], "write_file");
-        let args = request["arguments"].clone();
-        // This write is an explicitly confined test-only adapter, not a
-        // permissive generic filesystem handler or a production tool.
-        assert_eq!(args["path"], target.to_str().unwrap());
-        let id = request["operation_id"].as_str().unwrap();
-        let result = match store.admit(id, "write_file", &args).unwrap() {
-            Admission::New(_) => {
-                writes += 1;
-                let mut file = OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&target)
-                    .unwrap();
-                file.write_all(args["content"].as_str().unwrap().as_bytes())
-                    .unwrap();
-                file.sync_all().unwrap();
-                store
-                    .update(id, "completed", "test write done", None, false)
-                    .unwrap();
-                "completed"
-            }
-            Admission::Same(receipt) => {
-                assert_eq!(receipt.state, "completed");
-                "completed"
-            }
-            Admission::Conflict(_) => "conflict",
-            Admission::Full => panic!("unexpected full receipt store"),
-        };
-        let reply = json!({
-            "kind":"operation_result","request_id":request["request_id"],
-            "result":{"operation_id":id,"status":result}
-        });
-        socket.send_text(&reply.to_string()).unwrap();
+        let incoming = socket.receive_text().unwrap();
+        let response = probe.handle(&incoming).unwrap();
+        socket.send_text(&response).unwrap();
     }
     drop(socket);
-    drop(store);
+    drop(probe);
     worker.join().unwrap();
-    assert_eq!(writes, 1);
+
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "once");
-    let mut reopened = ReceiptStore::open(&tmp.path().join("receipts")).unwrap();
+    let mut reopened = Gate0Probe::new(tmp.path()).unwrap();
+    let status = reopened
+        .handle(
+            &json!({
+                "kind":"operation", "tool":"get_operation_status",
+                "request_id":"44444444-4444-4444-4444-444444444444",
+                "operation_id":"probe-effect",
+                "arguments":{"operation_id":"probe-effect"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    let parsed: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(parsed["result"]["status"], "completed");
+    assert_eq!(parsed["result"]["receipt"]["operation_id"], "probe-effect");
+    let duplicate = reopened
+        .handle(&request_for(
+            "probe-effect",
+            "55555555-5555-5555-5555-555555555555",
+            json!({"path":target,"content":"once"}),
+        ))
+        .unwrap();
     assert_eq!(
-        reopened.get("probe-effect").unwrap().unwrap().state,
+        serde_json::from_str::<Value>(&duplicate).unwrap()["result"]["status"],
         "completed"
     );
-    assert!(matches!(
-        reopened
-            .admit(
-                "probe-effect",
-                "write_file",
-                &json!({"path":target,"content":"once"})
-            )
-            .unwrap(),
-        Admission::Same(_)
-    ));
 }
 
 #[test]
