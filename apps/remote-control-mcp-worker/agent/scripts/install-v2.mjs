@@ -127,10 +127,11 @@ export function assertRootOptIn({
   }
   for (let current = home; ; current = path.dirname(current)) {
     const info = inspect(current);
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw new Error("Root HOME has an unsafe symlink or path component.");
+    if (!info.isDirectory() || info.isSymbolicLink() ||
+        info.uid !== 0 || (info.mode & 0o022) !== 0) {
+      throw new Error("Root HOME has an unsafe or writable parent path.");
     }
-    if (current === home && (info.uid !== 0 || (info.mode & 0o077) !== 0)) {
+    if (current === home && (info.mode & 0o077) !== 0) {
       throw new Error("Root HOME must be owned and private to UID 0.");
     }
     if (current === path.dirname(current)) break;

@@ -112,6 +112,10 @@ export function localManagerInventory({home=os.homedir(),source=fileURLToPath(im
   if(process.getuid()===0){
     if(home!==os.userInfo().homedir||process.env.HOME!==home)
       throw Error("Root manager refuses an inherited or foreign HOME");
+    const rootHome=lstatSafe(home);
+    if(!rootHome||!rootHome.isDirectory()||rootHome.isSymbolicLink()||
+       rootHome.uid!==0||(rootHome.mode&0o077)!==0)
+      throw Error("Root manager requires a private UID 0 HOME");
     if((process.env.XDG_RUNTIME_DIR&&process.env.XDG_RUNTIME_DIR!=="/run/user/0")||
        (process.env.DBUS_SESSION_BUS_ADDRESS&&
         process.env.DBUS_SESSION_BUS_ADDRESS!=="unix:path=/run/user/0/bus"))

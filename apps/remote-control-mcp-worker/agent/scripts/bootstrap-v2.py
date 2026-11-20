@@ -366,9 +366,10 @@ def root_opt_in(allow_root, stage_only=False):
     home = pathlib.Path(account_home)
     for item in (home, *home.parents):
         info = item.lstat()
-        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
-            raise ValueError("Unsafe root HOME path")
-        if item == home and (info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o077):
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022):
+            raise ValueError("Unsafe or writable root HOME path")
+        if item == home and stat.S_IMODE(info.st_mode) & 0o077:
             raise ValueError("Root HOME must be UID 0 private")
     if (os.environ.get("XDG_RUNTIME_DIR") not in (None, "/run/user/0") or
             os.environ.get("DBUS_SESSION_BUS_ADDRESS") not in

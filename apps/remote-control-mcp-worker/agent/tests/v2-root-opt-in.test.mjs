@@ -37,6 +37,7 @@ test("root opt-in rejects non-TTY and inherited or unsafe identities", () => {
     { inspect: () => ({ ...privateStat(), isSymbolicLink: () => true }) },
     { inspect: () => ({ ...privateStat(), uid: 1001 }) },
     { inspect: () => ({ ...privateStat(), mode: 0o40777 }) },
+    { inspect: current => current === "/" ? { ...privateStat(), mode: 0o40777 } : privateStat() },
   ]) assert.throws(() => assertRootOptIn({ ...root, ...overrides }));
 });
 
