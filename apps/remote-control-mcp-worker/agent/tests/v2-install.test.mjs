@@ -66,7 +66,7 @@ test("editable device label defaults to hostname without altering identity rules
 
 test("minimal Linux v2 CLI supports install, explicit paired-key resume, upgrade, and safe uninstall", () => {
   assert.deepEqual(parseInstallArgs(["--endpoint", "https://rc.example.org", "--name", "office"]), {
-    action: "install", endpoint: "https://rc.example.org", name: "office", foreground: false, showFingerprint: false,
+    action: "install", endpoint: "https://rc.example.org", name: "office", foreground: false, showFingerprint: false, allowRoot: false,
   });
   assert.equal(parseInstallArgs(["--resume", "--endpoint", "https://rc.example.org"]).action, "resume");
   assert.equal(parseInstallArgs(["--upgrade", "--endpoint", "https://rc.example.org"]).action, "upgrade");
@@ -246,7 +246,7 @@ test("WSL2 shares the Linux-only Agent, with no Windows Shell or host auto-wakeu
 test("foreground is opt-in and cannot uninstall, upgrade, or duplicate flags", () => {
   assert.deepEqual(parseInstallArgs([
     "--foreground", "--endpoint", "https://rc.example.org", "--name", "grokbot",
-  ]), { action: "install", endpoint: "https://rc.example.org", name: "grokbot", foreground: true, showFingerprint: false });
+  ]), { action: "install", endpoint: "https://rc.example.org", name: "grokbot", foreground: true, showFingerprint: false, allowRoot: false });
   assert.equal(parseInstallArgs(["--resume", "--foreground", "--endpoint", "https://rc.example.org"]).action, "resume");
   for (const args of [
     ["--foreground", "--uninstall"],

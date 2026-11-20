@@ -109,7 +109,15 @@ function readDeviceId(home,relative){
   return s;
 }
 export function localManagerInventory({home=os.homedir(),source=fileURLToPath(import.meta.url)}={}){
-  if(process.getuid()===0)throw Error("Do not run rca as root");
+  if(process.getuid()===0){
+    if(home!==os.userInfo().homedir||process.env.HOME!==home)
+      throw Error("Root manager refuses an inherited or foreign HOME");
+    if((process.env.XDG_RUNTIME_DIR&&process.env.XDG_RUNTIME_DIR!=="/run/user/0")||
+       (process.env.DBUS_SESSION_BUS_ADDRESS&&
+        process.env.DBUS_SESSION_BUS_ADDRESS!=="unix:path=/run/user/0/bus"))
+      throw Error("Root manager refuses an inherited non-root bus");
+    if(!process.env.XDG_RUNTIME_DIR)process.env.XDG_RUNTIME_DIR="/run/user/0";
+  }
   if(!path.isAbsolute(home)||path.normalize(home)!==home)throw Error("Untrusted home");
   checkedPath(home,{directory:true,privatePath:false});
   for(const part of [".local",".local/share",".local/share/mcp-workers",STORE,STORE+"/programs"]){
@@ -207,10 +215,10 @@ export function trustedInstalledEndpoint(unit){
 export function dispatchLocalManager(args,{inventory=localManagerInventory,status=localManagerStatus,
   invoke=spawnSync,stdin=process.stdin,stdout=process.stdout,stderr=process.stderr}={}){
   const cmd=args[0]??"help";
-  if(args.length>2)throw Error("Too many rca arguments");
+  if(args.length>(cmd==="pair"?3:1))throw Error("Too many rca arguments");
   if(args.length>1&&cmd!=="pair")throw Error("Only documented rca subcommands are accepted");
   if(cmd==="help"||cmd==="--help"||cmd==="-h"){
-    stdout.write("rca [status|version|logs|pair [HTTPS endpoint]|stop|start|upgrade|uninstall] — Python-free Draft CLI\n");
+    stdout.write("rca [status|version|logs|pair [HTTPS endpoint] [--allow-root]|stop|start|upgrade|uninstall]\n");
     stdout.write("Upgrade from the approved Worker: rca upgrade.\n");
     return 0;
   }
@@ -223,10 +231,15 @@ export function dispatchLocalManager(args,{inventory=localManagerInventory,statu
     return 0;
   }
   if(cmd==="pair"){
+    const allowRoot=args.slice(1).includes("--allow-root");
+    if((process.getuid()===0)!==allowRoot)throw Error("Root pairing requires explicit --allow-root");
     if(!stdin.isTTY||!stdout.isTTY)throw Error("Device pairing requires a real local terminal");
     const state=inventory();
     const bound=trustedInstalledEndpoint(state.unit);
-    const requested=args[1];
+    const restArgs=args.slice(1).filter(value=>value!=="--allow-root");
+    if(restArgs.length>1||args.slice(1).filter(value=>value==="--allow-root").length>1)
+      throw Error("Ambiguous pairing arguments");
+    const requested=restArgs[0];
     if(requested&&requested!==new URL(requested).origin+"/")
       throw Error("Only a clean HTTPS Worker origin is accepted");
     if(requested&&(new URL(requested).protocol!=="https:" ||
@@ -237,7 +250,8 @@ export function dispatchLocalManager(args,{inventory=localManagerInventory,statu
     checkedPath(installer,{mode:0o600});
     const executable=path.join(state.root,"bin/node");
     checkedPath(executable,{mode:0o700});
-    const result=invoke(executable,[installer,"--endpoint",endpoint],{
+    const result=invoke(executable,[installer,"--endpoint",endpoint,
+      ...(allowRoot?["--allow-root"]:[])],{
       stdio:"inherit",env:{...process.env,RC_AGENT_NO_POST_START:"1"},
     });
     return result.error||result.signal||result.status!==0?1:0;

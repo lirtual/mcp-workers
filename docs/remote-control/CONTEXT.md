@@ -7,6 +7,7 @@ Remote Control is a single-owner MCP Worker backed by a signed per-device WebSoc
 - Pairing requires an explicit Owner grant tied to a device identity. A temporary grant is bounded and nonrenewable; permanent grants retain independent revocation and online/idle rules. Neither installation nor a valid MCP token alone grants a device.
 - GitHub-hosted temporary Session devices require independent Workflow physical Attempt authorization; an approved personal device is not a substitute for a Session grant.
 - The Agent's OS account and host permission model remain authoritative. Native process ownership, session stops, device revocation and receipts must fail closed when identity cannot be verified.
+- Linux v2 defaults to a non-root Agent. UID 0 enrollment is an explicit local exception: `--allow-root`, real target-terminal TTY, exact risk confirmation, and root-owned private HOME/identity are mandatory. A permanent root Agent additionally needs an already available root `systemd --user` manager with linger; the installer does not enable linger or use a system-level unit. Root unattended upgrade remains disallowed. Independent cloud Owner pairing and existing receipt controls are unchanged.
 
 **Effects and recovery**
 
