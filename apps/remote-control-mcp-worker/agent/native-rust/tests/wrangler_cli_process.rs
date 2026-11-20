@@ -188,5 +188,98 @@ fn owner_file_receipt_and_sigterm_reach_real_cli_process() {
     let persisted = fs::metadata(&receipt_path).expect("durable SQLite receipt after CLI exit");
     assert!(persisted.is_file() && persisted.len() > 0);
     assert_eq!(persisted.permissions().mode() & 0o077, 0);
-    println!("REAL_WRANGLER_OWNER_TO_CLI_RECEIPT_NO_REPLAY_SIGTERM_PASSED");
+    // A separate process reopens the persisted identity/receipts after the
+    // first CLI has exited. Test actual Owner revocation while WSS is active.
+    let mut resumed = ScopedChild(
+        Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+            .args(["--local", &device_id])
+            .arg(root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("restart real Rust CLI with the same disposable state"),
+    );
+    let restarted_target = root.path().join("owner-cli-after-restart.txt");
+    let restart_request = json!({"device_id":device_id,
+        "operation_id":"cli-owner-restart-001", "path":restarted_target,
+        "content":"fresh process", "mode":"rewrite"});
+    let deadline = Instant::now() + Duration::from_secs(35);
+    loop {
+        if let Some(status) = resumed.0.try_wait().unwrap() {
+            panic!("native CLI did not resume its disposable Grant: {status}");
+        }
+        let answer = owner_call(&client, &owner_token, "write_file", restart_request.clone());
+        if answer["status"] == "completed" {
+            break;
+        }
+        assert!(
+            answer["status"] == "offline" || answer["status"] == "busy",
+            "restart did not become Owner-ready: {answer}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "restarted CLI did not become ready"
+        );
+        thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(
+        fs::read_to_string(&restarted_target).unwrap(),
+        "fresh process"
+    );
+    assert_eq!(
+        owner_call(
+            &client,
+            &owner_token,
+            "revoke_device",
+            json!({"device_id":device_id})
+        )["status"],
+        "revoked"
+    );
+
+    let prohibited = root.path().join("MUST-NOT-EXIST-AFTER-REVOKE.txt");
+    let response = client
+        .post("http://127.0.0.1:8777/mcp")
+        .bearer_auth(&owner_token)
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"write_file",
+                "arguments":{"device_id":device_id,
+                    "operation_id":"cli-owner-after-revoke-001",
+                    "path":prohibited,"content":"MUST-NOT-WRITE","mode":"rewrite"}}}))
+        .send()
+        .expect("Owner remains reachable after device revocation");
+    if response.status().as_u16() == 200 {
+        let body: Value = response.json().unwrap();
+        let status = body["result"]["content"][0]["text"]
+            .as_str()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .unwrap_or(Value::Null);
+        assert!(
+            body["result"]["isError"] == true
+                || status["status"]
+                    .as_str()
+                    .is_some_and(|state| state != "completed"),
+            "revoked device accepted a new file mutation: {body}"
+        );
+    } else {
+        assert!(
+            response.status().is_client_error(),
+            "unexpected Owner response"
+        );
+    }
+    let revoke_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if resumed.0.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < revoke_deadline,
+            "revoked active CLI did not stop after WSS closure"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !prohibited.exists(),
+        "revoked device caused a new file effect"
+    );
+    println!("REAL_WRANGLER_OWNER_TO_CLI_RECEIPT_RESTART_REVOKE_PASSED");
 }
