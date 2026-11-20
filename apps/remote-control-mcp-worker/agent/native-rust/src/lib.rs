@@ -6,5 +6,6 @@ pub mod identity;
 pub mod native_browse;
 pub mod native_file;
 pub mod native_read;
+pub mod native_write;
 pub mod receipts;
 pub mod session;
