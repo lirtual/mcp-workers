@@ -17,6 +17,8 @@ const MAX_CONTENT_BYTES: usize = 49_152;
 pub enum NativeWriteError {
     #[error("invalid write_file operation arguments")]
     InvalidInput,
+    #[error("operation lease was revoked before any target effect")]
+    LeaseRevoked,
     #[error(transparent)]
     Receipt(#[from] ReceiptError),
 }
@@ -269,13 +271,18 @@ impl NativeWriteExecutor {
         Ok(self.receipts.get(id)?)
     }
 
-    /// Caller must verify the authenticated operation lease immediately before
-    /// entering this function. An existing receipt is never executed again.
-    pub fn write_file(
+    /// Require the authenticated connection lease before admission and again
+    /// after receipt persistence, immediately before any filesystem effect.
+    /// The callback must reflect live revocation/Stop, not a snapshot.
+    pub fn write_file_with_lease(
         &mut self,
         id: &str,
         arguments: &Value,
+        mut lease_active: impl FnMut() -> bool,
     ) -> Result<WriteOutcome, NativeWriteError> {
+        if !lease_active() {
+            return Err(NativeWriteError::LeaseRevoked);
+        }
         let args = parse_write_args(arguments)?;
         let admission = self.receipts.admit(id, "write_file", &args.normalized)?;
         match admission {
@@ -306,6 +313,19 @@ impl NativeWriteExecutor {
         }
         self.receipts
             .update(id, "running", "Operation is in progress.", None, false)?;
+        if !lease_active() {
+            let receipt = self.receipts.update(
+                id,
+                "failed",
+                "Lease revoked before any effect.",
+                None,
+                true,
+            )?;
+            return Ok(WriteOutcome {
+                state: "failed",
+                receipt: Some(receipt),
+            });
+        }
         let result = effect(&args);
         let (state, summary, no_effect) = match result {
             Ok(()) => ("completed", "Operation completed.", false),

@@ -1,5 +1,24 @@
 //! Independent Node write_file contract cases. No production device or Worker.
-use rca_native_agent::native_write::{NativeWriteError, NativeWriteExecutor};
+use rca_native_agent::native_write::{NativeWriteError, NativeWriteExecutor, WriteOutcome};
+
+// Only the test harness supplies an always-live lease. Transport callers must
+// use the mandatory live lease callback directly.
+trait WriteForTests {
+    fn write_file(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<WriteOutcome, NativeWriteError>;
+}
+impl WriteForTests for NativeWriteExecutor {
+    fn write_file(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        self.write_file_with_lease(id, arguments, || true)
+    }
+}
 use rca_native_agent::receipts::ReceiptStore;
 use serde_json::json;
 use std::fs;
@@ -226,6 +245,36 @@ fn conflicting_tool_receipt_does_not_execute_file_write() {
             .unwrap()
             .state,
         "conflict"
+    );
+    assert!(!target.exists());
+}
+
+#[test]
+fn revocation_before_or_during_admission_prevents_file_effect() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("would-mutate.txt");
+    let args = json!({"path":target,"content":"forbidden","mode":"rewrite"});
+    let mut writer = executor(&root);
+    assert!(matches!(
+        writer.write_file_with_lease("before-lease", &args, || false),
+        Err(NativeWriteError::LeaseRevoked)
+    ));
+    assert!(writer.get_receipt("before-lease").unwrap().is_none());
+    let mut calls = 0;
+    let outcome = writer
+        .write_file_with_lease("during-lease", &args, || {
+            calls += 1;
+            calls == 1
+        })
+        .unwrap();
+    assert_eq!(outcome.state, "failed");
+    assert_eq!(
+        calls, 2,
+        "recheck lease after SQLite admission and running state"
+    );
+    assert_eq!(
+        writer.write_file("during-lease", &args).unwrap().state,
+        "failed"
     );
     assert!(!target.exists());
 }
