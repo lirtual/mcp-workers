@@ -98,23 +98,29 @@ impl CleanupStatus {
 /// A revoked lease does not imply the underlying OS operation was rolled back:
 /// interrupted or unknown operations require normal idempotent receipt recovery.
 #[derive(Clone, Debug)]
-pub struct ExecutionLease(Arc<AtomicBool>);
+pub struct ExecutionLease {
+    live: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
 
 impl ExecutionLease {
-    fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(true)))
+    fn new(stop: &Arc<AtomicBool>) -> Self {
+        Self {
+            live: Arc::new(AtomicBool::new(true)),
+            stop: Arc::clone(stop),
+        }
     }
 
     pub fn is_active(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.live.load(Ordering::Acquire) && !self.stop.load(Ordering::Acquire)
     }
 
     fn revoke(&self) {
-        self.0.store(false, Ordering::Release);
+        self.live.store(false, Ordering::Release);
     }
 
     fn same_incarnation(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.live, &other.live)
     }
 }
 
@@ -308,7 +314,7 @@ impl AuthenticatedSocket {
     /// outcomes via the operation receipt protocol, not blindly retry them.
     pub fn pump(
         &mut self,
-        stop: &AtomicBool,
+        stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
         outgoing: &Receiver<ExecutionResponse>,
     ) -> Result<(), SessionError> {
@@ -321,12 +327,12 @@ impl AuthenticatedSocket {
     /// of callback outcome, ordinary queued work was revoked first.
     pub fn pump_with_cleanup<F: FnOnce() -> CleanupStatus>(
         &mut self,
-        stop: &AtomicBool,
+        stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
         outgoing: &Receiver<ExecutionResponse>,
         cleanup: F,
     ) -> Result<(), SessionError> {
-        let lease = ExecutionLease::new();
+        let lease = ExecutionLease::new(stop);
         let result = self.pump_scoped(stop, incoming, outgoing, &lease, cleanup);
         lease.revoke();
         result
@@ -334,7 +340,7 @@ impl AuthenticatedSocket {
 
     fn pump_scoped<F: FnOnce() -> CleanupStatus>(
         &mut self,
-        stop: &AtomicBool,
+        stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
         outgoing: &Receiver<ExecutionResponse>,
         lease: &ExecutionLease,
@@ -355,6 +361,11 @@ impl AuthenticatedSocket {
                 Err(_) if stop.load(Ordering::Acquire) => return Ok(()),
                 Err(error) => return Err(error),
             };
+            // A local Stop may arrive while the blocking read is pending.
+            // Prevent that frame from becoming executable after Stop.
+            if stop.load(Ordering::Acquire) {
+                return Ok(());
+            }
             if let Some(frame) = frame {
                 if let Some(request_id) = revocation_request_id(&frame)? {
                     lease.revoke(); // Abort queued and in-flight operations before cleanup.
@@ -418,7 +429,8 @@ fn retryable(error: &SessionError) -> bool {
             | tungstenite::Error::AlreadyClosed,
         ) => true,
         SessionError::Ws(tungstenite::Error::Http(response)) => {
-            response.status().as_u16() == 429 || response.status().as_u16() >= 500
+            [408, 425, 429].contains(&response.status().as_u16())
+                || response.status().as_u16() >= 500
         }
         _ => false,
     }
@@ -462,7 +474,7 @@ pub fn maintain_authenticated_transport(
     endpoint: &str,
     private_pem: &str,
     device_id: &str,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
     incoming: &SyncSender<ExecutionRequest>,
     outgoing: &Receiver<ExecutionResponse>,
     timing: HeartbeatTiming,
@@ -536,7 +548,7 @@ pub fn connect_authenticated(
     if [401, 403, 404].contains(&status) {
         return Err(SessionError::Rejected(status));
     }
-    if status == 429 || status >= 500 {
+    if [408, 425, 429].contains(&status) || status >= 500 {
         return Err(SessionError::Unavailable(status));
     }
     if status != 200 {
@@ -687,7 +699,16 @@ mod tests {
         ] {
             assert!(!retryable(&error), "{error}");
         }
-        assert!(retryable(&SessionError::Unavailable(503)));
+        for code in [408, 425, 429, 503] {
+            assert!(retryable(&SessionError::Unavailable(code)));
+            let response = tungstenite::http::Response::builder()
+                .status(code)
+                .body(None)
+                .unwrap();
+            assert!(retryable(&SessionError::Ws(tungstenite::Error::Http(
+                Box::new(response)
+            ))));
+        }
         let stop = AtomicBool::new(true);
         let before = Instant::now();
         wait_or_stop(Duration::from_secs(30), &stop);

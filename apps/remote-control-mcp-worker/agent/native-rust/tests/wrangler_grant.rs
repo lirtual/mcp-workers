@@ -38,7 +38,7 @@ fn real_worker_authorizes_periodic_probe_then_rejects_revoked_identity() {
         .unwrap();
     let (requests_tx, requests_rx) = mpsc::sync_channel(2);
     let (_answers_tx, answers_rx) = mpsc::channel();
-    let stop = AtomicBool::new(false);
+    let stop = Arc::new(AtomicBool::new(false));
     let running = Arc::new(AtomicBool::new(true));
     let notifier = Arc::clone(&running);
     thread::spawn(move || {

@@ -276,7 +276,7 @@ fn policy_close_revokes_queued_write_before_executor_starts() {
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
     let (_answers_tx, answers_rx) = mpsc::channel();
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    let stop = AtomicBool::new(false);
+    let stop = Arc::new(AtomicBool::new(false));
     assert!(matches!(
         agent.pump(&stop, &requests_tx, &answers_rx),
         Err(SessionError::Policy)
@@ -386,7 +386,7 @@ fn worker_revoke_cleanup_revokes_queued_work_and_defaults_to_unconfirmed() {
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
     let (_answers_tx, answers_rx) = mpsc::channel();
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    let stop = AtomicBool::new(false);
+    let stop = Arc::new(AtomicBool::new(false));
     assert!(matches!(
         agent.pump(&stop, &requests_tx, &answers_rx),
         Err(SessionError::Policy)
@@ -404,7 +404,7 @@ fn worker_revoke_cleanup_revokes_queued_work_and_defaults_to_unconfirmed() {
 }
 
 #[test]
-fn verified_local_cleanup_may_be_confirmed_only_by_explicit_callback() {
+fn explicit_cleanup_callback_controls_synthetic_confirmed_ack_only() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
@@ -417,7 +417,7 @@ fn verified_local_cleanup_may_be_confirmed_only_by_explicit_callback() {
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
     let (_answers_tx, answers_rx) = mpsc::channel();
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    let stop = AtomicBool::new(false);
+    let stop = Arc::new(AtomicBool::new(false));
     let callback = || rca_native_agent::session::CleanupStatus::Confirmed;
     assert!(matches!(
         agent.pump_with_cleanup(&stop, &requests_tx, &answers_rx, callback),
@@ -449,22 +449,28 @@ fn websocket_upgrade_http_403_is_permanent_identity_rejection() {
 }
 
 #[test]
-fn worker_503_challenge_is_temporary_not_identity_revocation() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
-    let worker = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0u8; 4096];
-        assert!(stream.read(&mut request).unwrap() > 0);
-        write!(
-            stream,
-            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
-    });
-    let result = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID);
-    assert!(matches!(result, Err(SessionError::Unavailable(503))));
-    worker.join().unwrap();
+fn worker_temporary_408_425_503_challenges_are_retryable_not_revocations() {
+    for (status, reason) in [
+        (408, "Request Timeout"),
+        (425, "Too Early"),
+        (503, "Service Unavailable"),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            write!(
+                stream,
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let result = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID);
+        assert!(matches!(result, Err(SessionError::Unavailable(code)) if code == status));
+        worker.join().unwrap();
+    }
 }
 
 #[test]
@@ -486,4 +492,65 @@ fn superseded_socket_finishes_without_claiming_permanent_revocation() {
         Err(SessionError::Superseded)
     ));
     worker.join().unwrap();
+}
+
+#[test]
+fn local_stop_arriving_during_blocking_read_does_not_enqueue_following_operation() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        thread::sleep(Duration::from_millis(150));
+        server_stop.store(true, Ordering::Release);
+        socket
+            .send(Message::Text(
+                json!({"kind":"operation","request_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})
+                    .to_string()
+                    .into(),
+            ))
+            .unwrap();
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
+    let (_answers_tx, answers_rx) = mpsc::channel();
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    assert!(agent.pump(&stop, &requests_tx, &answers_rx).is_ok());
+    assert!(
+        requests_rx.try_recv().is_err(),
+        "an operation after local Stop must not queue"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn stop_atomically_invalidates_previously_queued_request_even_before_pump_notices() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        socket
+            .send(Message::Text(
+                json!({"kind":"operation","request_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"})
+                    .to_string()
+                    .into(),
+            ))
+            .unwrap();
+        thread::sleep(Duration::from_millis(500));
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
+    let (_answers_tx, answers_rx) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let pump_stop = Arc::clone(&stop);
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    let pump = thread::spawn(move || agent.pump(&pump_stop, &requests_tx, &answers_rx));
+    let queued = requests_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(queued.frame_if_active().is_some());
+    stop.store(true, Ordering::Release);
+    assert!(
+        queued.frame_if_active().is_none(),
+        "Stop must revoke lease before next socket poll"
+    );
+    assert!(pump.join().unwrap().is_ok());
+    server.join().unwrap();
 }

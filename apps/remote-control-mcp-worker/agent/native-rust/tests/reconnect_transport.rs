@@ -88,7 +88,7 @@ fn transient_transport_failure_redials_with_new_challenge_but_policy_stops() {
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
     let (_answers_tx, answers_rx) = mpsc::channel();
-    let stop = AtomicBool::new(false);
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
     let result = maintain_authenticated_transport(
         &endpoint,
         &common::test_pem(),
