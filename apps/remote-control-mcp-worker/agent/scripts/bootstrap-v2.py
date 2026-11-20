@@ -358,7 +358,9 @@ def root_opt_in(allow_root, stage_only=False):
         if allow_root:
             raise ValueError("--allow-root is only valid under UID 0")
         return
-    if not allow_root or stage_only or not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if stage_only:
+        raise ValueError("Stage-only verification requires a non-root account")
+    if not allow_root or not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Root pairing requires --allow-root in a real local terminal")
     account_home = pwd.getpwuid(0).pw_dir
     if not os.path.isabs(account_home) or os.environ.get("HOME") != account_home:
