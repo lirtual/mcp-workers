@@ -227,6 +227,49 @@ fn actual_owner_mcp_file_mutation_and_revoke_roundtrip() {
         }
         println!("REAL_WORKER_NATIVE_MOVE_NO_REPLAY_PASSED");
 
+        let edited = root.join("owner-edit-target.txt");
+        std::fs::write(&edited, "alpha alpha").map_err(|_| "edit setup failed")?;
+        let edit_args = json!({"device_id":device_id,"operation_id":"owner-edit-001",
+            "file_path":edited,"old_string":"alpha","new_string":"beta",
+            "expected_replacements":2});
+        let changed = tool("replace_text", edit_args.clone())?;
+        if changed["status"] != "completed"
+            || std::fs::read_to_string(&edited).unwrap() != "beta beta"
+        {
+            return Err(format!(
+                "Owner replace_text did not edit exact count: {changed}"
+            ));
+        }
+        std::fs::write(&edited, "alpha restored").map_err(|_| "edit retry setup failed")?;
+        if tool("replace_text", edit_args)?["status"] != "completed"
+            || std::fs::read_to_string(&edited).unwrap() != "alpha restored"
+        {
+            return Err("Owner repeat replace_text had an effect".into());
+        }
+        let changed_intent = tool(
+            "replace_text",
+            json!({"device_id":device_id,
+            "operation_id":"owner-edit-001","file_path":edited,"old_string":"alpha",
+            "new_string":"different","expected_replacements":2}),
+        )?;
+        if changed_intent["status"] != "conflict" {
+            return Err(format!(
+                "Owner edit changed intent did not conflict: {changed_intent}"
+            ));
+        }
+        let mismatch = tool(
+            "replace_text",
+            json!({"device_id":device_id,
+            "operation_id":"owner-edit-count-002","file_path":edited,"old_string":"alpha",
+            "new_string":"do-not-write","expected_replacements":2}),
+        )?;
+        if mismatch["status"] != "failed"
+            || std::fs::read_to_string(&edited).unwrap() != "alpha restored"
+        {
+            return Err(format!("Owner edit mismatch modified source: {mismatch}"));
+        }
+        println!("REAL_WORKER_NATIVE_EDIT_EXACT_COUNT_NO_REPLAY_PASSED");
+
         let revoke = tool("revoke_device", json!({"device_id":device_id}))?;
         if revoke["status"] != "revoked" {
             return Err(format!("revoke did not settle: {revoke}"));
