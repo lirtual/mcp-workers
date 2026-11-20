@@ -27,7 +27,7 @@ Verified seams:
 
 `cargo run --locked --bin rca-native-nonprod -- --local DEVICE_UUID /tmp/rca-rust-probe-UNIQUE` launches the existing signed native file session as a standalone Linux process. It only connects to the **exact** local Wrangler address `http://127.0.0.1:8777/` and requires a separately approved disposable identity at `gate0-test-key.pem` directly under `/tmp` in an owner-owned, non-symlinked `rca-rust-probe-*` directory (0700; identity 0600, single link). A validated `gate0-test-key.pem.owner-stopped` marker blocks connection; invalid markers fail closed. SIGINT/SIGTERM stop the bounded reconnect loop. Existing Node Agent state paths, root execution and production endpoints are rejected.
 
-This is **not** an installed CLI, filesystem sandbox, pairing client, supervisor or released Agent. A disposable local Worker can still authorize file operations with the current OS user's permissions; execute it only in an isolated, throwaway test host with known temporary file targets. The CLI process rejection/Stop tests are in `tests/nonprod_cli.rs`; the independently verified real-Owner WSS/file contract remains in the opt-in `wrangler_native_file.rs`. Combining both into a real Owner → **CLI process** → receipt roundtrip is still a separate nonproduction acceptance check, not yet Pass.
+This is **not** an installed CLI, filesystem sandbox, pairing client, supervisor or released Agent. A disposable local Worker can still authorize file operations with the current OS user's permissions; execute it only in an isolated, throwaway test host with known temporary file targets. The CLI process rejection/Stop tests are in `tests/nonprod_cli.rs`; the real-Owner WSS/file library contract remains in the opt-in `wrangler_native_file.rs`. The opt-in `wrangler_cli_process.rs` now verifies a **real Owner MCP → local Wrangler/SQLite DO → separate CLI subprocess** with a fresh temporary Grant: write/read, durable status, same-ID no-replay, changed-intent conflict and clean SIGTERM (Pass on an isolated Linux runner). Its test identity and Owner token must come from a separately approved private `/tmp/rca-gate1-file-*` fixture, not an installed Agent; the fixture Grant was revoked and test files removed after verification. This does not validate live Owner revocation during a running CLI session, installation or upgrade.
 
 Test in a **disposable** checkout:
 
@@ -35,6 +35,12 @@ Test in a **disposable** checkout:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
+
+# Opt-in only: local Wrangler on 127.0.0.1:8777 and a fresh, privately
+# approved temporary fixture (native-test-key.pem, device-id, owner-token).
+RCA_LOCAL_NATIVE_FILE_ROOT=/tmp/rca-gate1-file-TEST cargo test --locked \
+  --test wrangler_cli_process owner_file_receipt_and_sigterm_reach_real_cli_process \
+  -- --ignored --exact --nocapture
 ```
 
 Node 24 is required only for the interop test. The Rust library does not require Node at runtime.
