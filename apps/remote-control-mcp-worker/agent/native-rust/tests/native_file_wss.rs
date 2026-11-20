@@ -535,3 +535,97 @@ fn signed_file_session_moves_regular_file_with_idempotence_and_rejects_bad_moves
     assert_eq!(store.get("move-id").unwrap().unwrap().state, "completed");
     assert!(store.get("invalid-move").unwrap().is_none());
 }
+
+#[test]
+fn signed_file_session_edits_exact_text_with_receipt_and_policy_denial() {
+    let root = tempfile::tempdir().unwrap();
+    let receipts = root.path().join("receipts");
+    let target = root.path().join("edit.txt");
+    std::fs::write(&target, "red red").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server_target = target.clone();
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(listener);
+        let args = json!({"file_path":server_target,"old_string":"red",
+            "new_string":"blue","expected_replacements":2});
+        for (request_id, changed, expected) in [
+            ("00000000-0000-0000-0000-000000000111", false, "completed"),
+            ("00000000-0000-0000-0000-000000000112", false, "completed"),
+            ("00000000-0000-0000-0000-000000000113", true, "conflict"),
+        ] {
+            let payload = if changed {
+                json!({"file_path":server_target,"old_string":"red",
+                    "new_string":"different","expected_replacements":2})
+            } else {
+                args.clone()
+            };
+            socket
+                .send(Message::Text(
+                    request(request_id, "edit_block", "edit-op", payload).into(),
+                ))
+                .unwrap();
+            let reply: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(reply["request_id"], request_id);
+            assert_eq!(reply["result"]["status"], expected);
+        }
+        socket
+            .send(Message::Text(
+                request(
+                    "00000000-0000-0000-0000-000000000114",
+                    "get_operation_status",
+                    "edit-op",
+                    json!({"operation_id":"edit-op"}),
+                )
+                .into(),
+            ))
+            .unwrap();
+        let status: Value =
+            serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(status["result"]["status"], "completed");
+        assert_eq!(status["result"]["receipt"]["tool_name"], "edit_block");
+
+        socket
+            .send(Message::Text(
+                request(
+                    "00000000-0000-0000-0000-000000000115",
+                    "edit_block",
+                    "invalid-edit",
+                    json!({"file_path":server_target,"old_string":"","new_string":"x"}),
+                )
+                .into(),
+            ))
+            .unwrap();
+        match socket.read().unwrap() {
+            Message::Close(Some(frame)) => assert_eq!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Policy
+            ),
+            other => panic!("expected policy 1008 for invalid edit, got {other:?}"),
+        }
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_native_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipts,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(rca_native_agent::native_file::NativeFileError::Session(
+                SessionError::Policy
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "blue blue");
+    let store = ReceiptStore::open(&receipts).unwrap();
+    assert_eq!(store.get("edit-op").unwrap().unwrap().state, "completed");
+    assert!(store.get("invalid-edit").unwrap().is_none());
+}
