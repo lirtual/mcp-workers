@@ -1,6 +1,6 @@
 # RCA Rust Native Agent — Gate 0 candidate
 
-This crate is an unshipped, isolated migration candidate for [Spec #914](https://github.com/lirtual/mcp-workers/issues/914). The TypeScript/Node Agent remains authoritative and is not replaced by this crate. No CLI, installer, Worker or Release workflow currently executes Rust.
+This crate is an unshipped, isolated migration candidate for [Spec #914](https://github.com/lirtual/mcp-workers/issues/914). The TypeScript/Node Agent remains authoritative and is not replaced by this crate. No supported Agent CLI, installer, Worker or Release workflow currently executes Rust.
 
 Verified seams:
 
@@ -19,5 +19,17 @@ cargo test --locked --all-targets
 ```
 
 Node 24 is required only for the interop test. The Rust library does not require Node at runtime.
+
+### Disposable real-Worker verification adapter (not yet executed)
+
+The `gate0_nonprod` Cargo **example** is a bounded, unshipped, Unix-only adapter for a future dedicated preview Worker. It deliberately refuses the production hostname and all hosts outside `rca-rust-gate0-*.workers.dev`. It reads only `gate0-test-key.pem` inside an owner-private absolute `rca-rust-probe-*` directory; this must be a separately created, **throwaway** PKCS#8 identity (0600), approved only in a disposable nonproduction Owner Grant. Never copy an existing paired Agent key or receipt folder. It handles 1–8 prearranged frames and exits; reconnect/status verification requires a fresh process and challenge while preserving only that same disposable SQLite directory.
+
+```sh
+cargo run --locked --example gate0_nonprod -- \\
+  https://rca-rust-gate0-TEST.account.workers.dev/ DEVICE_UUID \\
+  /absolute/rca-rust-probe-TEST 1
+```
+
+The preview Worker/Owner Grant has **not** been created or used, so this example is readiness tooling, not evidence of a real WSS Gate 0 Pass.
 
 **Not yet accepted:** real TLS WSS / nonproduction Worker Owner Grant, end-to-end DNS/handshake deadline and heartbeat/periodic auth/reconnect lifecycle, production file/Shell handlers, cross-platform private paths/Windows ACLs, five-platform CLI/install/lifecycle, GitHub-hosted Sessions, release/rollback; #912 root and #911 Legacy. The local test-only effect is not a production executor. The current candidate refuses unchecked non-Unix private state. Never point it at a real paired device, current identity, or live receipt directory while another Agent can run.
