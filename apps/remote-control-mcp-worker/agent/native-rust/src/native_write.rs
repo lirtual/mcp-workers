@@ -141,6 +141,69 @@ fn parse_path_args(value: &Value) -> Result<PathArgs, NativeWriteError> {
     Ok(PathArgs { target, normalized })
 }
 
+struct MoveArgs {
+    source: PathBuf,
+    destination: PathBuf,
+    normalized: Value,
+}
+
+/// The Worker and Node Agent admit exactly a source/destination pair.
+pub(crate) fn valid_move_args(value: &Value) -> bool {
+    parse_move_args(value).is_ok()
+}
+
+fn parse_move_args(value: &Value) -> Result<MoveArgs, NativeWriteError> {
+    let object = value.as_object().ok_or(NativeWriteError::InvalidInput)?;
+    if object.len() != 2 {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let source_raw = object
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or(NativeWriteError::InvalidInput)?;
+    let dest_raw = object
+        .get("destination")
+        .and_then(Value::as_str)
+        .ok_or(NativeWriteError::InvalidInput)?;
+    if source_raw == dest_raw || !permitted_path(source_raw) || !permitted_path(dest_raw) {
+        return Err(NativeWriteError::InvalidInput);
+    }
+    let source = normalized_path(source_raw).ok_or(NativeWriteError::InvalidInput)?;
+    let destination = normalized_path(dest_raw).ok_or(NativeWriteError::InvalidInput)?;
+    let normalized = json!({
+        "source": source.to_str().ok_or(NativeWriteError::InvalidInput)?,
+        "destination": destination.to_str().ok_or(NativeWriteError::InvalidInput)?
+    });
+    Ok(MoveArgs {
+        source,
+        destination,
+        normalized,
+    })
+}
+
+/// Match Node's no-overwrite link+unlink move, including rollback of a
+/// newly made hardlink if source unlink fails; never copy across volumes.
+fn move_effect(args: &MoveArgs) -> Result<(), EffectFailure> {
+    if args.source == args.destination {
+        return Err(EffectFailure::SamePath);
+    }
+    let meta = fs::symlink_metadata(&args.source).map_err(classify_path_error)?;
+    if !meta.file_type().is_file() {
+        return Err(EffectFailure::SourceNotRegular);
+    }
+    fs::hard_link(&args.source, &args.destination).map_err(classify_path_error)?;
+    if fs::remove_file(&args.source).is_ok() {
+        return Ok(());
+    }
+    // The source did not unlink. A successful rollback restores the
+    // original visible names; an unconfirmed rollback must remain Unknown.
+    if fs::remove_file(&args.destination).is_ok() {
+        Err(EffectFailure::NoTargetEffect)
+    } else {
+        Err(EffectFailure::Unknown)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum PathMutation {
     CreateDirectory,
@@ -179,7 +242,8 @@ fn classify_path_error(error: std::io::Error) -> EffectFailure {
         | ErrorKind::IsADirectory
         | ErrorKind::NotADirectory
         | ErrorKind::InvalidInput
-        | ErrorKind::Unsupported => EffectFailure::NoTargetEffect,
+        | ErrorKind::Unsupported
+        | ErrorKind::CrossesDevices => EffectFailure::NoTargetEffect,
         _ => EffectFailure::Unknown,
     }
 }
@@ -188,6 +252,8 @@ fn classify_path_error(error: std::io::Error) -> EffectFailure {
 enum EffectFailure {
     NoTargetEffect,
     NotRegular,
+    SourceNotRegular,
+    SamePath,
     Unknown,
 }
 
@@ -383,6 +449,21 @@ impl NativeWriteExecutor {
         self.path_mutation_with_lease(id, PathMutation::DeleteFile, arguments, lease_active)
     }
 
+    pub fn move_file_with_lease(
+        &mut self,
+        id: &str,
+        arguments: &Value,
+        mut lease_active: impl FnMut() -> bool,
+    ) -> Result<WriteOutcome, NativeWriteError> {
+        if !lease_active() {
+            return Err(NativeWriteError::LeaseRevoked);
+        }
+        let args = parse_move_args(arguments)?;
+        self.mutate_with_receipt(id, "move_file", &args.normalized, lease_active, || {
+            move_effect(&args)
+        })
+    }
+
     fn path_mutation_with_lease(
         &mut self,
         id: &str,
@@ -458,6 +539,10 @@ impl NativeWriteExecutor {
         let (state, summary, no_effect) = match perform() {
             Ok(()) => ("completed", "Operation completed.", false),
             Err(EffectFailure::NotRegular) => ("failed", "The target is not a regular file.", true),
+            Err(EffectFailure::SourceNotRegular) => {
+                ("failed", "The source is not a regular file.", true)
+            }
+            Err(EffectFailure::SamePath) => ("failed", "Source and destination must differ.", true),
             Err(EffectFailure::NoTargetEffect) => ("failed", "Operation did not complete.", true),
             Err(EffectFailure::Unknown) => {
                 ("unknown", "Operation outcome cannot be established.", false)

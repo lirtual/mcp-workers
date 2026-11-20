@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "requires isolated local Wrangler/SQLite DO and a disposable, approved test identity"]
-fn actual_owner_mcp_write_read_receipt_and_revoke_roundtrip() {
+fn actual_owner_mcp_file_mutation_and_revoke_roundtrip() {
     let root = std::env::var("RCA_LOCAL_NATIVE_FILE_ROOT").expect("explicit test root required");
     let root = Path::new(&root);
     assert!(
@@ -192,6 +192,40 @@ fn actual_owner_mcp_write_read_receipt_and_revoke_roundtrip() {
             ));
         }
         println!("REAL_WORKER_NATIVE_DIRECTORY_CREATE_DELETE_NO_REPLAY_PASSED");
+
+        let moved_source = root.join("owner-move-source.txt");
+        let moved_target = root.join("owner-move-target.txt");
+        std::fs::write(&moved_source, "hardlink move").map_err(|_| "move source setup failed")?;
+        let move_args = json!({"device_id":device_id,"operation_id":"owner-move-001",
+            "source":moved_source,"destination":moved_target});
+        let moved = tool("move_file", move_args.clone())?;
+        if moved["status"] != "completed"
+            || moved_source.exists()
+            || std::fs::read_to_string(&moved_target).unwrap() != "hardlink move"
+        {
+            return Err(format!(
+                "Owner move_file did not atomically transfer name: {moved}"
+            ));
+        }
+        std::fs::write(&moved_source, "new source").map_err(|_| "move retry setup failed")?;
+        if tool("move_file", move_args)?["status"] != "completed"
+            || std::fs::read_to_string(&moved_source).unwrap() != "new source"
+            || std::fs::read_to_string(&moved_target).unwrap() != "hardlink move"
+        {
+            return Err("Owner repeated move_file had another effect".into());
+        }
+        let move_conflict = tool(
+            "move_file",
+            json!({"device_id":device_id,
+            "operation_id":"owner-move-001","source":moved_source,
+            "destination":root.join("other-destination")}),
+        )?;
+        if move_conflict["status"] != "conflict" {
+            return Err(format!(
+                "changed move intent did not conflict: {move_conflict}"
+            ));
+        }
+        println!("REAL_WORKER_NATIVE_MOVE_NO_REPLAY_PASSED");
 
         let revoke = tool("revoke_device", json!({"device_id":device_id}))?;
         if revoke["status"] != "revoked" {
