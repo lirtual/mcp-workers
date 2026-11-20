@@ -165,6 +165,14 @@ pub(crate) fn parse_native_file_frame(frame: &str) -> Result<NativeFileCommand, 
                 arguments: arguments.clone(),
             })
         }
+        "move_file" if crate::native_write::valid_move_args(arguments) => {
+            Ok(NativeFileCommand::Mutation {
+                request_id: request_id.to_owned(),
+                operation_id: operation_id.to_owned(),
+                tool: tool.to_owned(),
+                arguments: arguments.clone(),
+            })
+        }
         "get_operation_status"
             if arguments.as_object().is_some_and(|args| {
                 args.len() == 1
@@ -235,6 +243,9 @@ fn execute_native_file(
                             request.lease().is_active()
                         })
                     }
+                    "move_file" => writes.move_file_with_lease(&operation_id, &arguments, || {
+                        request.lease().is_active()
+                    }),
                     _ => return Err(NativeFileError::Policy),
                 };
                 let outcome = match result {
@@ -278,7 +289,7 @@ fn execute_native_file(
 
 /// A non-installable file runtime: receipt exclusivity is obtained before
 /// signed WSS admission. Only native file reads, write_file, create_directory,
-/// delete_file and receipt lookup are allowed; Shell/sessions/install/upgrade
+/// delete_file, move_file and receipt lookup are allowed; Shell/sessions/install/upgrade
 /// are rejected with 1008.
 pub fn run_native_file_session(
     endpoint: &str,

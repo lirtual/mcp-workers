@@ -421,3 +421,117 @@ fn signed_file_session_creates_directory_and_deletes_regular_file_with_receipts(
     }
     assert!(receipts.get("invalid").unwrap().is_none());
 }
+
+#[test]
+fn signed_file_session_moves_regular_file_with_idempotence_and_rejects_bad_moves() {
+    let root = tempfile::tempdir().unwrap();
+    let receipts = root.path().join("receipts");
+    let source = root.path().join("source.txt");
+    let destination = root.path().join("destination.txt");
+    std::fs::write(&source, "preserve inode and contents").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server_source = source.clone();
+    let server_dest = destination.clone();
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(listener);
+        for (id, from, to, expected) in [
+            (
+                "00000000-0000-0000-0000-000000000101",
+                &server_source,
+                &server_dest,
+                "completed",
+            ),
+            (
+                "00000000-0000-0000-0000-000000000102",
+                &server_source,
+                &server_dest,
+                "completed",
+            ),
+            (
+                "00000000-0000-0000-0000-000000000103",
+                &server_source,
+                &server_source,
+                "conflict",
+            ),
+        ] {
+            // The conflict changes intent to a different normalized destination
+            // while preserving the same operation ID; raw same-path is a policy failure.
+            let changed = if expected == "conflict" {
+                json!({"source":from, "destination":server_dest.with_extension("other")})
+            } else {
+                json!({"source":from,"destination":to})
+            };
+            socket
+                .send(Message::Text(
+                    request(id, "move_file", "move-id", changed).into(),
+                ))
+                .unwrap();
+            let reply: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(reply["kind"], "operation_result");
+            assert_eq!(reply["request_id"], id);
+            assert_eq!(reply["result"]["status"], expected);
+        }
+        socket
+            .send(Message::Text(
+                request(
+                    "00000000-0000-0000-0000-000000000104",
+                    "get_operation_status",
+                    "move-id",
+                    json!({"operation_id":"move-id"}),
+                )
+                .into(),
+            ))
+            .unwrap();
+        let status: Value =
+            serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(status["result"]["status"], "completed");
+        assert_eq!(status["result"]["receipt"]["tool_name"], "move_file");
+        socket
+            .send(Message::Text(
+                request(
+                    "00000000-0000-0000-0000-000000000105",
+                    "move_file",
+                    "invalid-move",
+                    json!({"source":server_dest,"destination":server_dest}),
+                )
+                .into(),
+            ))
+            .unwrap();
+        match socket.read().unwrap() {
+            Message::Close(Some(frame)) => assert_eq!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Policy
+            ),
+            other => panic!("expected rejected same-path move, got {other:?}"),
+        }
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_native_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipts,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(rca_native_agent::native_file::NativeFileError::Session(
+                SessionError::Policy
+            ))
+        ),
+        "{result:?}"
+    );
+    assert!(!source.exists());
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        "preserve inode and contents"
+    );
+    let store = ReceiptStore::open(&receipts).unwrap();
+    assert_eq!(store.get("move-id").unwrap().unwrap().state, "completed");
+    assert!(store.get("invalid-move").unwrap().is_none());
+}
