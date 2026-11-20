@@ -1,5 +1,5 @@
 //! Nonproduction signed WSS login against the existing RCA Worker interface.
-//! No automatic reconnect, local operation executor, or automatic Owner Grant is provided.
+//! No installed Agent lifecycle, local operation executor, or automatic Owner Grant is provided.
 use crate::identity::{signed_session_proof, valid_device_id};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
@@ -25,6 +25,8 @@ pub enum SessionError {
     Endpoint,
     #[error("Agent identity is not authorized (HTTP {0})")]
     Rejected(u16),
+    #[error("RCA Worker is temporarily unavailable (HTTP {0})")]
+    Unavailable(u16),
     #[error("invalid or mismatched device challenge")]
     Challenge,
     #[error("RCA challenge request failed: {0}")]
@@ -41,6 +43,8 @@ pub enum SessionError {
     AuthorizationTimeout,
     #[error("RCA Worker permanently rejected this session (close 1008)")]
     Policy,
+    #[error("RCA signed session was replaced by another active socket")]
+    Superseded,
     #[error("RCA authorization nonce entropy unavailable")]
     Entropy,
     #[error("RCA Agent execution channel unavailable or at capacity")]
@@ -265,6 +269,15 @@ impl AuthenticatedSocket {
             {
                 return Err(SessionError::Policy);
             }
+            Ok(tungstenite::Message::Close(Some(frame)))
+                if frame.code == tungstenite::protocol::frame::coding::CloseCode::Normal
+                    && frame.reason == "superseded" =>
+            {
+                return Err(SessionError::Superseded);
+            }
+            Ok(tungstenite::Message::Close(_)) => {
+                return Err(SessionError::Ws(tungstenite::Error::ConnectionClosed));
+            }
             Err(tungstenite::Error::Io(ref e))
                 if matches!(
                     e.kind(),
@@ -389,6 +402,95 @@ fn revocation_request_id(frame: &str) -> Result<Option<String>, SessionError> {
     Ok(Some(request_id.to_owned()))
 }
 
+/// Only network/liveness faults are retryable. In particular, 401/403/404,
+/// 1008, invalid signed protocol, stale executor queues and malformed state
+/// must not silently turn into repeated fresh admission attempts.
+fn retryable(error: &SessionError) -> bool {
+    match error {
+        SessionError::Http(_)
+        | SessionError::Io(_)
+        | SessionError::Unavailable(_)
+        | SessionError::HeartbeatTimeout
+        | SessionError::AuthorizationTimeout => true,
+        SessionError::Ws(
+            tungstenite::Error::Io(_)
+            | tungstenite::Error::ConnectionClosed
+            | tungstenite::Error::AlreadyClosed,
+        ) => true,
+        SessionError::Ws(tungstenite::Error::Http(response)) => {
+            response.status().as_u16() == 429 || response.status().as_u16() >= 500
+        }
+        _ => false,
+    }
+}
+
+#[derive(Default)]
+struct ReconnectBackoff {
+    failures: u32,
+}
+
+impl ReconnectBackoff {
+    fn next_delay(&mut self, elapsed: Option<Duration>, heartbeat: Duration) -> Duration {
+        // A brief successful handshake cannot reset the escalation window.
+        // Match the Node Agent: two healthy heartbeat periods reset backoff.
+        if elapsed.is_some_and(|duration| duration >= heartbeat.saturating_mul(2)) {
+            self.failures = 0;
+        }
+        let delay = Duration::from_secs((1u64 << self.failures.min(5)).min(30));
+        self.failures = self.failures.saturating_add(1);
+        delay
+    }
+}
+
+fn wait_or_stop(duration: Duration, stop: &AtomicBool) {
+    let deadline = Instant::now() + duration;
+    while !stop.load(Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+}
+
+/// A nonproduction transport lifetime. Every reconnect starts a NEW HTTP
+/// challenge and signed WSS proof, and pump creates a fresh execution lease.
+/// This function intentionally does not create an operation executor or reuse
+/// previous execution work. A stop or superseding socket ends gracefully;
+/// owner policy or incompatible protocol ends permanently.
+pub fn maintain_authenticated_transport(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    stop: &AtomicBool,
+    incoming: &SyncSender<ExecutionRequest>,
+    outgoing: &Receiver<ExecutionResponse>,
+    timing: HeartbeatTiming,
+) -> Result<(), SessionError> {
+    let mut backoff = ReconnectBackoff::default();
+    while !stop.load(Ordering::Acquire) {
+        let elapsed = match connect_authenticated(endpoint, private_pem, device_id) {
+            Ok(mut socket) => {
+                socket.set_heartbeat_timing(timing)?;
+                let connected_at = Instant::now();
+                match socket.pump(stop, incoming, outgoing) {
+                    Ok(()) | Err(SessionError::Superseded) => return Ok(()),
+                    Err(error) if !retryable(&error) => return Err(error),
+                    Err(_) => {}
+                }
+                Some(connected_at.elapsed())
+            }
+            Err(error) if !retryable(&error) => return Err(error),
+            Err(_) => None,
+        };
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        wait_or_stop(backoff.next_delay(elapsed, timing.interval), stop);
+    }
+    Ok(())
+}
+
 fn trusted_endpoint(address: &str) -> Result<Url, SessionError> {
     let url = Url::parse(address).map_err(|_| SessionError::Endpoint)?;
     let local =
@@ -433,6 +535,9 @@ pub fn connect_authenticated(
     let status = response.status().as_u16();
     if [401, 403, 404].contains(&status) {
         return Err(SessionError::Rejected(status));
+    }
+    if status == 429 || status >= 500 {
+        return Err(SessionError::Unavailable(status));
     }
     if status != 200 {
         return Err(SessionError::Challenge);
@@ -506,6 +611,11 @@ pub fn connect_authenticated(
     let (mut socket, response) =
         tungstenite::client_tls_with_config(request, stream, Some(config), None).map_err(
             |error| match error {
+                HandshakeError::Failure(tungstenite::Error::Http(response))
+                    if [401, 403, 404].contains(&response.status().as_u16()) =>
+                {
+                    SessionError::Rejected(response.status().as_u16())
+                }
                 HandshakeError::Failure(failure) => SessionError::Ws(failure),
                 HandshakeError::Interrupted(_) => SessionError::Protocol,
             },
@@ -550,5 +660,37 @@ mod tests {
         }
         assert!(trusted_endpoint("https://mcp.example.org/").is_ok());
         assert!(trusted_endpoint("http://127.0.0.1:3000/").is_ok());
+    }
+
+    #[test]
+    fn reconnect_uses_capped_backoff_until_two_healthy_heartbeat_periods() {
+        let mut retry = ReconnectBackoff::default();
+        let short = Some(Duration::from_millis(20));
+        let delays = (0..7)
+            .map(|_| retry.next_delay(short, Duration::from_secs(60)).as_secs())
+            .collect::<Vec<_>>();
+        assert_eq!(delays, [1, 2, 4, 8, 16, 30, 30]);
+        assert_eq!(
+            retry.next_delay(Some(Duration::from_secs(120)), Duration::from_secs(60)),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn permanent_rejections_never_enter_retry_and_stop_interrupts_delay() {
+        for error in [
+            SessionError::Rejected(401),
+            SessionError::Policy,
+            SessionError::Superseded,
+            SessionError::Protocol,
+            SessionError::Queue,
+        ] {
+            assert!(!retryable(&error), "{error}");
+        }
+        assert!(retryable(&SessionError::Unavailable(503)));
+        let stop = AtomicBool::new(true);
+        let before = Instant::now();
+        wait_or_stop(Duration::from_secs(30), &stop);
+        assert!(before.elapsed() < Duration::from_secs(1));
     }
 }

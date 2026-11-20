@@ -426,3 +426,64 @@ fn verified_local_cleanup_may_be_confirmed_only_by_explicit_callback() {
     assert!(requests_rx.try_recv().is_err());
     server.join().unwrap();
 }
+
+#[test]
+fn websocket_upgrade_http_403_is_permanent_identity_rejection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let worker = thread::spawn(move || {
+        let (first, _) = listener.accept().unwrap();
+        challenge(first);
+        let (mut second, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        assert!(second.read(&mut request).unwrap() > 0);
+        write!(
+            second,
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+    });
+    let result = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID);
+    assert!(matches!(result, Err(SessionError::Rejected(403))));
+    worker.join().unwrap();
+}
+
+#[test]
+fn worker_503_challenge_is_temporary_not_identity_revocation() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        assert!(stream.read(&mut request).unwrap() > 0);
+        write!(
+            stream,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+    });
+    let result = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID);
+    assert!(matches!(result, Err(SessionError::Unavailable(503))));
+    worker.join().unwrap();
+}
+
+#[test]
+fn superseded_socket_finishes_without_claiming_permanent_revocation() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let worker = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        socket
+            .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "superseded".into(),
+            })))
+            .unwrap();
+    });
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    assert!(matches!(
+        agent.receive_text(),
+        Err(SessionError::Superseded)
+    ));
+    worker.join().unwrap();
+}
