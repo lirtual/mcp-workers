@@ -1,0 +1,199 @@
+use rca_native_agent::receipts::{Admission, ReceiptError, ReceiptStore};
+use rusqlite::Connection;
+use serde_json::json;
+use std::{fs, path::Path};
+use tempfile::TempDir;
+
+fn folder(tmp: &TempDir) -> std::path::PathBuf {
+    tmp.path().join("receipts")
+}
+
+fn private_write(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+#[test]
+fn same_id_never_reexecutes_and_different_intent_conflicts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    let mut store = ReceiptStore::open(&directory).unwrap();
+    let args = json!({"path":"/tmp/example","content":"first"});
+    assert!(matches!(
+        store.admit("op-1", "write_file", &args).unwrap(),
+        Admission::New(_)
+    ));
+    let new_receipt = store.get("op-1").unwrap().unwrap();
+    assert_eq!(new_receipt.state, "admitted");
+    assert!(matches!(
+        store.admit("op-1", "write_file", &args).unwrap(),
+        Admission::Same(_)
+    ));
+    assert!(matches!(
+        store
+            .admit(
+                "op-1",
+                "write_file",
+                &json!({"content":"second","path":"/tmp/example"})
+            )
+            .unwrap(),
+        Admission::Conflict(_)
+    ));
+    store
+        .update("op-1", "completed", "Done.", None, false)
+        .unwrap();
+    drop(store);
+    let mut reopened = ReceiptStore::open(&directory).unwrap();
+    assert!(matches!(
+        reopened.admit("op-1", "write_file", &args).unwrap(),
+        Admission::Same(_)
+    ));
+    assert_eq!(reopened.get("op-1").unwrap().unwrap().state, "completed");
+}
+
+#[test]
+fn interrupted_and_unknown_are_guarded_across_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    let args = json!({"path":"/tmp/unknown"});
+    {
+        let mut store = ReceiptStore::open(&directory).unwrap();
+        assert!(matches!(
+            store.admit("op-2", "delete_file", &args).unwrap(),
+            Admission::New(_)
+        ));
+        store
+            .update("op-2", "running", "Dispatched.", None, false)
+            .unwrap();
+    }
+    let mut store = ReceiptStore::open(&directory).unwrap();
+    assert_eq!(store.get("op-2").unwrap().unwrap().state, "unknown");
+    assert!(matches!(
+        store.admit("op-2", "delete_file", &args).unwrap(),
+        Admission::Same(_)
+    ));
+    assert!(matches!(
+        store
+            .admit("op-2", "delete_file", &json!({"path":"/tmp/other"}))
+            .unwrap(),
+        Admission::Conflict(_)
+    ));
+    store
+        .update("op-2", "unknown", "Not proven.", None, false)
+        .unwrap();
+    drop(store);
+    assert_eq!(
+        ReceiptStore::open(&directory)
+            .unwrap()
+            .get("op-2")
+            .unwrap()
+            .unwrap()
+            .state,
+        "unknown"
+    );
+}
+
+#[test]
+fn second_writer_cannot_claim_the_same_live_receipt_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    let first = ReceiptStore::open(&directory).unwrap();
+    assert!(ReceiptStore::open(&directory).is_err());
+    drop(first);
+    assert!(ReceiptStore::open(&directory).is_ok());
+}
+
+#[test]
+fn retired_gui_tools_are_read_only_and_upgrades_remain_serial() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    let mut store = ReceiptStore::open(&directory).unwrap();
+    assert!(matches!(
+        store.admit("gui", "browser_click", &json!({})),
+        Err(ReceiptError::InvalidOperation)
+    ));
+    assert!(matches!(
+        store
+            .admit("up-1", "upgrade_agent", &json!({"version":"test"}))
+            .unwrap(),
+        Admission::New(_)
+    ));
+    assert!(matches!(
+        store
+            .admit("up-2", "upgrade_agent", &json!({"version":"test"}))
+            .unwrap(),
+        Admission::Full
+    ));
+}
+
+#[test]
+fn previous_json_history_is_migrated_and_never_replayed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let historical = json!({
+        "version":1,
+        "receipts":[{
+            "operation_id":"old-1","tool_name":"browser_click",
+            "argument_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state":"running","created_at":"2026-10-01T00:00:00.000Z",
+            "updated_at":"2026-10-01T00:00:01.000Z"
+        },{
+            "operation_id":"old-2","tool_name":"write_file",
+            "argument_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "state":"unknown","created_at":"2026-10-01T00:00:00.000Z",
+            "updated_at":"2026-10-01T00:00:01.000Z"
+        }]
+    });
+    let text = historical.to_string();
+    private_write(&directory.join("operation-receipts.json"), &text);
+    let store = ReceiptStore::open(&directory).unwrap();
+    assert_eq!(store.get("old-1").unwrap().unwrap().state, "unknown");
+    assert_eq!(store.get("old-2").unwrap().unwrap().state, "unknown");
+    assert_eq!(
+        fs::read_to_string(directory.join("operation-receipts.pre-sqlite.json")).unwrap(),
+        text
+    );
+    assert_eq!(
+        fs::read_to_string(directory.join("operation-receipts.json")).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn unrecognized_schema_and_unsafe_state_path_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    let store = ReceiptStore::open(&directory).unwrap();
+    drop(store);
+    let sqlite = directory.join("operation-receipts.sqlite");
+    let db = Connection::open(&sqlite).unwrap();
+    db.pragma_update(None, "user_version", 2).unwrap();
+    drop(db);
+    assert!(matches!(
+        ReceiptStore::open(&directory),
+        Err(ReceiptError::Incompatible)
+    ));
+
+    let tmp2 = tempfile::tempdir().unwrap();
+    let dir2 = folder(&tmp2);
+    fs::create_dir(&dir2).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir2, fs::Permissions::from_mode(0o777)).unwrap();
+    }
+    assert!(matches!(
+        ReceiptStore::open(&dir2),
+        Err(ReceiptError::UnsafePath)
+    ));
+}

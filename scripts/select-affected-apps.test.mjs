@@ -37,6 +37,20 @@ test('a nested Agent edit selects Remote Control compatibility checks, and a Wor
   assert.equal(ssh.apps.includes('remote-control-mcp-worker'), false);
 });
 
+test('Rust-only candidate changes run Rust CI without rebuilding the five unchanged Node packages', () => {
+  const rust = selectionDetails(['apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs']);
+  assert.equal(rust.rustCandidateChanged, true);
+  assert.equal(rust.agentNativeChanged, false);
+  assert.equal(rust.remoteControlChanged, true);
+  const mixed = selectionDetails([
+    'apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs',
+    'apps/remote-control-mcp-worker/agent/src/v2-main.ts',
+  ]);
+  assert.equal(mixed.rustCandidateChanged, true);
+  assert.equal(mixed.agentNativeChanged, true);
+  assert.equal(selectionDetails(['apps/remote-control-mcp-worker/src/worker.ts']).rustCandidateChanged, false);
+});
+
 test('shared dependency inputs schedule native Agent CI, unlike unrelated Worker edits', () => {
   for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
     const selection = selectionDetails([file]);
