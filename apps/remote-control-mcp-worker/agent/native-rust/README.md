@@ -1,6 +1,6 @@
-# RCA Rust Native Agent — Gate 0 candidate
+# RCA Rust Native Agent — Gate 0 verified / Gate 1 candidate
 
-This crate is an unshipped, isolated migration candidate for [Spec #914](https://github.com/lirtual/mcp-workers/issues/914). The TypeScript/Node Agent remains authoritative and is not replaced by this crate. No supported Agent CLI, installer, Worker or Release workflow currently executes Rust.
+This crate is an unshipped migration candidate for [Spec #914](https://github.com/lirtual/mcp-workers/issues/914). Gate 0 passed and merged in PR #915; Gate 1 transport work is in [Draft PR #916](https://github.com/lirtual/mcp-workers/pull/916). The TypeScript/Node Agent remains authoritative. No supported Agent CLI, installer, Worker or Release workflow executes Rust.
 
 Verified seams:
 
@@ -8,8 +8,9 @@ Verified seams:
 - Node 24's Ed25519 PKCS#8/SPKI session and Owner-intent signing transcripts; disposable public test seed generated in memory.
 - Isolated loopback signed WebSocket challenge, explicit denial/invalid subprotocol rejection, bounded TCP connect and per-I/O TLS/WebSocket handshake waits, ping-frame handling, and one test-only read/write roundtrip through the guarded Rust `Gate0Probe` with persistent receipt and no-blind-replay on reconnect.
 - Negative Gate 0 tests reject public/symlinked/wrong-name roots, out-of-scope paths, append-mode writes and malformed/oversized frames before mutation.
-- Actual Worker source (`src/worker.ts`) in isolated local Wrangler with a SQLite Durable Object and throwaway temporary Owner Grant: signed Rust WebSocket, fresh file write, process restart, persisted same-ID status, idempotent same-ID replay, different-intent conflict and successful file read. The same path also passed over a short-lived Cloudflare Quick Tunnel with verified HTTPS/WSS.
+- Actual Worker source (`src/worker.ts`) with SQLite Durable Object and throwaway temporary Owner Grant: signed Rust WebSocket, fresh file write, process restart, persisted same-ID status, idempotent same-ID replay, different-intent conflict and successful file read. Verified over local Wrangler, a short-lived HTTPS/WSS Cloudflare Quick Tunnel, and a disposable **Cloudflare-hosted** Worker account.
 - Durable SQLite `user_version=1` receipts, legacy JSON import, exclusive ownership, interrupted-operation Unknown and no-blind-replay, with a Node → Rust → Node interoperability test.
+- Gate 1 signed WSS `rc-v2:ping/pong`, per-nonce periodic Grant validation, bounded transport queue, connection-specific revocable execution leases and response incarnation isolation. Bounded 1/2/4/8/16/30s reconnect reclaims a fresh signed challenge on transient faults (including 408/425/429/5xx); HTTP 401/403/404, 1008 and incompatible protocol stop permanently, `superseded` ends cleanly. A shared Stop signal fences already queued requests immediately and prevents new post-Stop admissions. A real local Wrangler + SQLite DO temporary Grant passed the 30-second rate gate, valid auth ACK, Owner `revoke_cleanup`, 1008 closure and fresh challenge denial. No real process execution or cleanup is provided by this transport crate.
 
 Test in a **disposable** checkout:
 
@@ -41,6 +42,6 @@ cargo run --locked --example gate0_nonprod -- \
   /tmp/rca-rust-probe-TEST 1 --quick-tunnel
 ```
 
-2026-11-20 evidence: both the isolated local Worker and HTTPS/WSS Quick Tunnel tests passed with a disposable temporary grant. The latter used real signed WSS to the actual Worker implementation, but **not a Cloudflare-hosted deployment**. No production Worker, existing paired device, account secret or release was changed. The temporary tunnel, local Wrangler and test identities are removed after verification.
+2026-11-20 evidence: isolated Wrangler, HTTPS/WSS Quick Tunnel, and disposable Cloudflare-hosted Worker tests passed with temporary grants. No production Worker, existing paired device, account secret or release was changed. All disposable local/tunnel/hosted test credentials and Worker resources are removed or allowed to expire after verification.
 
-**Not yet accepted:** Cloudflare-hosted Worker runtime (the tunnel terminates at local Wrangler), end-to-end DNS/handshake deadline and heartbeat/periodic auth/reconnect lifecycle, production file/Shell handlers, cross-platform private paths/Windows ACLs, five-platform CLI/install/lifecycle, GitHub-hosted Sessions, release/rollback; #912 root and #911 Legacy. The local test-only effect is not a production executor. The current candidate refuses unchecked non-Unix private state. Never point it at a real paired device, current identity, or live receipt directory while another Agent can run.
+**Gate 1 remains Partial:** transport reconnect/backoff is tested but not yet integrated with an installed executable; cancellation integration for real in-flight file/Shell operations, production file/search/managed process dispatch, cross-platform private paths/Windows ACLs, five-platform CLI/install/lifecycle, GitHub-hosted Sessions, release/rollback; #912 root and #911 Legacy remain independently gated. The cleanup callback may return `confirmed` only after the future real executor verifies all owned processes stopped; otherwise the current transport reports `uncertain`. Worker rate-limits Grant probes for the first 30 seconds and again within 30 seconds after a prior probe; the default Rust cadence is 15 minutes. The local test-only effect is not a production executor. The current candidate refuses unchecked non-Unix private state. Never point it at a real paired device, current identity, or live receipt directory while another Agent can run.

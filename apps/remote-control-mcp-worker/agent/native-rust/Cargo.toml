@@ -9,6 +9,7 @@ description = "Nonproduction Rust migration candidate for the RCA native Agent"
 base64 = "0.22"
 ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem"] }
 libc = "0.2"
+getrandom = "0.3"
 rusqlite = { version = "0.43", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
