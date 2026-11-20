@@ -1,6 +1,7 @@
 //! Nonproduction signed WSS login against the existing RCA Worker interface.
 //! No installed Agent lifecycle, local operation executor, or automatic Owner Grant is provided.
 use crate::identity::{signed_session_proof, valid_device_id};
+use crate::native_read::parse_read_frame;
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Deserialize;
@@ -15,7 +16,8 @@ use thiserror::Error;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::HandshakeError;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
-use tungstenite::protocol::{WebSocket, WebSocketConfig};
+use tungstenite::protocol::frame::coding::CloseCode;
+use tungstenite::protocol::{CloseFrame, WebSocket, WebSocketConfig};
 use tungstenite::stream::MaybeTlsStream;
 use url::Url;
 
@@ -322,6 +324,27 @@ impl AuthenticatedSocket {
         self.pump_with_cleanup(stop, incoming, outgoing, || CleanupStatus::Uncertain)
     }
 
+    /// A strict read-only candidate pump. No operation frame or unrecognized
+    /// payload may enter the executor queue; violations close with policy 1008.
+    pub fn pump_native_read(
+        &mut self,
+        stop: &Arc<AtomicBool>,
+        incoming: &SyncSender<ExecutionRequest>,
+        outgoing: &Receiver<ExecutionResponse>,
+    ) -> Result<(), SessionError> {
+        let lease = ExecutionLease::new(stop);
+        let result = self.pump_scoped(
+            stop,
+            incoming,
+            outgoing,
+            &lease,
+            || CleanupStatus::Uncertain,
+            true,
+        );
+        lease.revoke();
+        result
+    }
+
     /// The caller may report Confirmed only after aborting and verifying every
     /// owned process. Bound cleanup to the Worker's 2.5s ACK window. Regardless
     /// of callback outcome, ordinary queued work was revoked first.
@@ -333,7 +356,7 @@ impl AuthenticatedSocket {
         cleanup: F,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
-        let result = self.pump_scoped(stop, incoming, outgoing, &lease, cleanup);
+        let result = self.pump_scoped(stop, incoming, outgoing, &lease, cleanup, false);
         lease.revoke();
         result
     }
@@ -345,11 +368,12 @@ impl AuthenticatedSocket {
         outgoing: &Receiver<ExecutionResponse>,
         lease: &ExecutionLease,
         cleanup: F,
+        native_read_only: bool,
     ) -> Result<(), SessionError> {
         while !stop.load(Ordering::Acquire) {
             for _ in 0..4 {
                 match outgoing.try_recv() {
-                    Ok(reply) if reply.lease.same_incarnation(lease) => {
+                    Ok(reply) if reply.lease.same_incarnation(lease) && reply.lease.is_active() => {
                         self.send_text(&reply.frame)?;
                     }
                     Ok(_) => {} // Discard results from a prior socket incarnation.
@@ -377,6 +401,15 @@ impl AuthenticatedSocket {
                             "status":status.as_str()})
                         .to_string(),
                     );
+                    return Err(SessionError::Policy);
+                }
+                if native_read_only && parse_read_frame(&frame).is_err() {
+                    // A signed connection is not an authorization to interpret
+                    // unexpected traffic. Keep failure scoped to this socket.
+                    let _ = self.socket.close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: "invalid native read request".into(),
+                    }));
                     return Err(SessionError::Policy);
                 }
                 incoming
@@ -470,6 +503,12 @@ fn wait_or_stop(duration: Duration, stop: &AtomicBool) {
 /// This function intentionally does not create an operation executor or reuse
 /// previous execution work. A stop or superseding socket ends gracefully;
 /// owner policy or incompatible protocol ends permanently.
+#[derive(Clone, Copy)]
+struct TransportMode {
+    timing: HeartbeatTiming,
+    native_read_only: bool,
+}
+
 pub fn maintain_authenticated_transport(
     endpoint: &str,
     private_pem: &str,
@@ -479,13 +518,66 @@ pub fn maintain_authenticated_transport(
     outgoing: &Receiver<ExecutionResponse>,
     timing: HeartbeatTiming,
 ) -> Result<(), SessionError> {
+    maintain_transport_mode(
+        endpoint,
+        private_pem,
+        device_id,
+        stop,
+        incoming,
+        outgoing,
+        TransportMode {
+            timing,
+            native_read_only: false,
+        },
+    )
+}
+
+/// Native read-only WSS transport, with strict frame validation before the
+/// executor receives any request. The full Agent is not yet implemented.
+pub fn maintain_native_read_transport(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    stop: &Arc<AtomicBool>,
+    incoming: &SyncSender<ExecutionRequest>,
+    outgoing: &Receiver<ExecutionResponse>,
+    timing: HeartbeatTiming,
+) -> Result<(), SessionError> {
+    maintain_transport_mode(
+        endpoint,
+        private_pem,
+        device_id,
+        stop,
+        incoming,
+        outgoing,
+        TransportMode {
+            timing,
+            native_read_only: true,
+        },
+    )
+}
+
+fn maintain_transport_mode(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    stop: &Arc<AtomicBool>,
+    incoming: &SyncSender<ExecutionRequest>,
+    outgoing: &Receiver<ExecutionResponse>,
+    mode: TransportMode,
+) -> Result<(), SessionError> {
     let mut backoff = ReconnectBackoff::default();
     while !stop.load(Ordering::Acquire) {
         let elapsed = match connect_authenticated(endpoint, private_pem, device_id) {
             Ok(mut socket) => {
-                socket.set_heartbeat_timing(timing)?;
+                socket.set_heartbeat_timing(mode.timing)?;
                 let connected_at = Instant::now();
-                match socket.pump(stop, incoming, outgoing) {
+                let pump = if mode.native_read_only {
+                    socket.pump_native_read(stop, incoming, outgoing)
+                } else {
+                    socket.pump(stop, incoming, outgoing)
+                };
+                match pump {
                     Ok(()) | Err(SessionError::Superseded) => return Ok(()),
                     Err(error) if !retryable(&error) => return Err(error),
                     Err(_) => {}
@@ -498,7 +590,7 @@ pub fn maintain_authenticated_transport(
         if stop.load(Ordering::Acquire) {
             break;
         }
-        wait_or_stop(backoff.next_delay(elapsed, timing.interval), stop);
+        wait_or_stop(backoff.next_delay(elapsed, mode.timing.interval), stop);
     }
     Ok(())
 }
