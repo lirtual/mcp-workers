@@ -1,6 +1,6 @@
-//! Existing Worker rc-v2 transport contract, exercised through a real signed
-//! loopback challenge and WebSocket rather than a simulated session state.
-use rca_native_agent::session::{connect_authenticated, HeartbeatTiming};
+//! Existing Worker rc-v2 contract through a real signed loopback challenge/WSS.
+//! This tests transport framing, not durable grant revocation inside the DO.
+use rca_native_agent::session::{connect_authenticated, HeartbeatTiming, SessionError};
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 use tungstenite::handshake::server::{Request, Response};
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
-use tungstenite::Message;
+use tungstenite::{Message, WebSocket};
 
 mod common;
 const DEVICE_ID: &str = "12345678-1234-1234-1234-123456789abc";
@@ -39,30 +39,38 @@ fn challenge(mut stream: TcpStream) {
     write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
 }
 
-#[test]
+// Every behavior test must enforce the identical signed protocol handshake.
 #[allow(clippy::result_large_err)]
+fn accept_signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
+    let (http, _) = listener.accept().unwrap();
+    challenge(http);
+    let (ws, _) = listener.accept().unwrap();
+    ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    tungstenite::accept_hdr(ws, |request: &Request, mut response: Response| {
+        let offered = request
+            .headers()
+            .get(SEC_WEBSOCKET_PROTOCOL)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            offered.starts_with("rc-v2, rcv2."),
+            "signed proof subprotocol missing"
+        );
+        response
+            .headers_mut()
+            .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
+        Ok(response)
+    })
+    .unwrap()
+}
+
+#[test]
 fn signed_agent_survives_worker_heartbeat_before_receiving_operation() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let worker = thread::spawn(move || {
-        let (http, _) = listener.accept().unwrap();
-        challenge(http);
-        let (ws, _) = listener.accept().unwrap();
-        ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut socket = tungstenite::accept_hdr(ws, |req: &Request, mut response: Response| {
-            assert!(req
-                .headers()
-                .get(SEC_WEBSOCKET_PROTOCOL)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("rc-v2, rcv2."));
-            response
-                .headers_mut()
-                .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
-            Ok(response)
-        })
-        .unwrap();
+        let mut socket = accept_signed_socket(listener);
         assert_eq!(socket.read().unwrap().to_text().unwrap(), "rc-v2:ping");
         socket.send(Message::Text("rc-v2:pong".into())).unwrap();
         let request=json!({"kind":"read","tool":"read_file","request_id":"11111111-1111-1111-1111-111111111111","arguments":{"path":"/tmp/safe"}}).to_string();
@@ -77,35 +85,15 @@ fn signed_agent_survives_worker_heartbeat_before_receiving_operation() {
             auth_interval: Duration::from_secs(2),
         })
         .unwrap();
-    let message = agent.receive_text().unwrap();
-    let expected = worker.join().unwrap();
-    assert_eq!(message, expected);
+    assert_eq!(agent.receive_text().unwrap(), worker.join().unwrap());
 }
 
 #[test]
-#[allow(clippy::result_large_err)]
 fn signed_agent_refreshes_worker_grant_with_unique_matching_authorization_probe() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let worker = thread::spawn(move || {
-        let (http, _) = listener.accept().unwrap();
-        challenge(http);
-        let (ws, _) = listener.accept().unwrap();
-        ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut socket = tungstenite::accept_hdr(ws, |req: &Request, mut response: Response| {
-            assert!(req
-                .headers()
-                .get(SEC_WEBSOCKET_PROTOCOL)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("rc-v2, rcv2."));
-            response
-                .headers_mut()
-                .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
-            Ok(response)
-        })
-        .unwrap();
+        let mut socket = accept_signed_socket(listener);
         let probe = socket.read().unwrap().to_text().unwrap().to_owned();
         let nonce = probe
             .strip_prefix("rc-v2:auth:")
@@ -129,26 +117,69 @@ fn signed_agent_refreshes_worker_grant_with_unique_matching_authorization_probe(
             auth_interval: Duration::from_millis(250),
         })
         .unwrap();
-    let message = agent.receive_text().unwrap();
-    assert_eq!(message, worker.join().unwrap());
+    assert_eq!(agent.receive_text().unwrap(), worker.join().unwrap());
 }
 
 #[test]
-#[allow(clippy::result_large_err)]
+fn silent_worker_cannot_satisfy_transport_heartbeat_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let worker = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        assert_eq!(socket.read().unwrap().to_text().unwrap(), "rc-v2:ping");
+        thread::sleep(Duration::from_millis(400)); // Keep TCP alive, but deliberately omit pong.
+    });
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    agent
+        .set_heartbeat_timing(HeartbeatTiming {
+            interval: Duration::from_millis(250),
+            timeout: Duration::from_millis(150),
+            auth_interval: Duration::from_secs(2),
+        })
+        .unwrap();
+    assert!(matches!(
+        agent.receive_text(),
+        Err(SessionError::HeartbeatTimeout)
+    ));
+    worker.join().unwrap();
+}
+
+#[test]
+fn stale_authorization_ack_cannot_satisfy_current_nonce_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let worker = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        let probe = socket.read().unwrap().to_text().unwrap().to_owned();
+        assert!(probe.starts_with("rc-v2:auth:"));
+        socket
+            .send(Message::Text(
+                format!("rc-v2:auth-ok:{}", "0".repeat(32)).into(),
+            ))
+            .unwrap();
+        thread::sleep(Duration::from_millis(400)); // Wrong nonce cannot clear pending deadline.
+    });
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    agent
+        .set_heartbeat_timing(HeartbeatTiming {
+            interval: Duration::from_secs(2),
+            timeout: Duration::from_millis(150),
+            auth_interval: Duration::from_millis(250),
+        })
+        .unwrap();
+    assert!(matches!(
+        agent.receive_text(),
+        Err(SessionError::AuthorizationTimeout)
+    ));
+    worker.join().unwrap();
+}
+
+#[test]
 fn worker_policy_close_must_not_be_treated_as_reconnectable_transport_error() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let worker = thread::spawn(move || {
-        let (http, _) = listener.accept().unwrap();
-        challenge(http);
-        let (ws, _) = listener.accept().unwrap();
-        let mut socket = tungstenite::accept_hdr(ws, |_: &Request, mut response: Response| {
-            response
-                .headers_mut()
-                .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
-            Ok(response)
-        })
-        .unwrap();
+        let mut socket = accept_signed_socket(listener);
         socket
             .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
                 code: tungstenite::protocol::frame::coding::CloseCode::Policy,
@@ -157,10 +188,6 @@ fn worker_policy_close_must_not_be_treated_as_reconnectable_transport_error() {
             .unwrap();
     });
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    let result = agent.receive_text();
-    assert!(matches!(
-        result,
-        Err(rca_native_agent::session::SessionError::Policy)
-    ));
+    assert!(matches!(agent.receive_text(), Err(SessionError::Policy)));
     worker.join().unwrap();
 }

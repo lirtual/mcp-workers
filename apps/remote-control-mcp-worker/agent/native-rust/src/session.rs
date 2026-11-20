@@ -72,7 +72,7 @@ pub struct AuthenticatedSocket {
     timing: HeartbeatTiming,
     last_ping: Instant,
     awaiting_pong: Option<Instant>,
-    last_auth: Instant,
+    last_auth_probe_sent: Instant,
     awaiting_auth: Option<(String, Instant)>,
 }
 
@@ -89,7 +89,7 @@ impl AuthenticatedSocket {
         self.timing = timing;
         self.last_ping = Instant::now();
         self.awaiting_pong = None;
-        self.last_auth = Instant::now();
+        self.last_auth_probe_sent = Instant::now();
         self.awaiting_auth = None;
         self.configure_read_poll()
     }
@@ -145,7 +145,7 @@ impl AuthenticatedSocket {
                 self.last_ping = now;
             }
             if self.awaiting_auth.is_none()
-                && now.duration_since(self.last_auth) >= self.timing.auth_interval
+                && now.duration_since(self.last_auth_probe_sent) >= self.timing.auth_interval
             {
                 let mut random = [0u8; 16];
                 getrandom::fill(&mut random).map_err(|_| SessionError::Entropy)?;
@@ -154,7 +154,7 @@ impl AuthenticatedSocket {
                     format!("rc-v2:auth:{nonce}").into(),
                 ))?;
                 self.awaiting_auth = Some((nonce, now));
-                self.last_auth = now;
+                self.last_auth_probe_sent = now;
             }
             match self.socket.read() {
                 Ok(tungstenite::Message::Text(frame)) if frame == "rc-v2:pong" => {
@@ -332,7 +332,7 @@ pub fn connect_authenticated(
         timing: HeartbeatTiming::default(),
         last_ping: Instant::now(),
         awaiting_pong: None,
-        last_auth: Instant::now(),
+        last_auth_probe_sent: Instant::now(),
         awaiting_auth: None,
     };
     authenticated.configure_read_poll()?;
