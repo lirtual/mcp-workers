@@ -60,6 +60,10 @@ fn actual_owner_mcp_read_file_roundtrips_through_sqlite_do_and_native_rust() {
         std::fs::read_to_string(&path).unwrap(),
         "RCA_RUST_NATIVE_READ_WORKER_OK\n"
     );
+    // Disposable directory owned by this test; no existing device/user files.
+    let browse = root.join("browse-test");
+    std::fs::create_dir(&browse).unwrap();
+    std::fs::write(browse.join("sample.txt"), "browse-sample\n").unwrap();
     let endpoint = "http://127.0.0.1:8777/";
     let stop = Arc::new(AtomicBool::new(false));
     let agent_stop = Arc::clone(&stop);
@@ -122,6 +126,45 @@ fn actual_owner_mcp_read_file_roundtrips_through_sqlite_do_and_native_rust() {
             return Err("Owner MCP did not receive the complete Rust read_file text".into());
         }
         println!("REAL_WORKER_NATIVE_READ_OWNER_ROUNDTRIP_PASSED");
+
+        let browse_calls = [
+            ("read_files", json!({"device_id":device_id,"paths":[path,root.join("absent.txt")]}),
+                "# file 1\nstatus: ok\nRCA_RUST_NATIVE_READ_WORKER_OK\n# file 2\nstatus: failed\nmessage: The file read failed.\ntruncated: false"),
+            ("list_directory", json!({"device_id":device_id,"path":browse,"depth":1}),
+                "depth: 1\ntruncated: false\nfile sample.txt"),
+        ];
+        for (name, arguments, expected) in browse_calls {
+            let response = rpc(name, arguments, owner_token);
+            if response.status().as_u16() != 200 {
+                return Err(format!("{name} Owner HTTP {}", response.status()));
+            }
+            let body: Value = response
+                .json()
+                .map_err(|_| format!("{name} JSON invalid"))?;
+            let actual = body["result"]["content"][0]["text"].as_str().unwrap_or("");
+            if body["result"]["isError"] != Value::Bool(false) || actual != expected {
+                return Err(format!("{name} Worker→Rust text mismatch: {actual:?}"));
+            }
+        }
+        let response = rpc(
+            "stat_file",
+            json!({"device_id":device_id,"path":browse.join("sample.txt")}),
+            owner_token,
+        );
+        if response.status().as_u16() != 200 {
+            return Err(format!("stat_file Owner HTTP {}", response.status()));
+        }
+        let body: Value = response
+            .json()
+            .map_err(|_| "stat_file reply JSON invalid")?;
+        let text = body["result"]["content"][0]["text"].as_str().unwrap_or("");
+        if body["result"]["isError"] != Value::Bool(false)
+            || !text.starts_with("type: file\nsize: 14\n")
+            || !text.contains("\nmtime_ms: ")
+        {
+            return Err(format!("stat_file Worker→Rust text mismatch: {text:?}"));
+        }
+        println!("REAL_WORKER_NATIVE_BROWSE_OWNER_ROUNDTRIP_PASSED");
 
         let revoke = rpc("revoke_device", json!({"device_id":device_id}), owner_token);
         let revoke_body: Value = revoke.json().map_err(|_| "Owner revoke reply invalid")?;

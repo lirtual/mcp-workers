@@ -80,9 +80,9 @@ fn missing_file_directory_fifo_and_oversize_do_not_leak_text() {
     assert!(!path.is_empty());
 }
 #[test]
-fn unsupported_read_only_tools_remain_out_of_scope_and_fail_closed() {
+fn non_migrated_read_only_tools_remain_out_of_scope_and_fail_closed() {
     let frame = json!({"kind":"read","request_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        "tool":"list_directory","arguments":{"path":"/tmp"}})
+        "tool":"start_search","arguments":{"path":"/tmp"}})
     .to_string();
     assert!(matches!(
         parse_read_frame(&frame),

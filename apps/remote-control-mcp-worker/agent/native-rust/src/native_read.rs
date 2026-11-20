@@ -1,6 +1,6 @@
-//! Nonproduction read_file execution against the existing rc-v2 read_result wire format.
+//! Nonproduction read-only file execution against the existing rc-v2 read_result wire format.
 //! Only an already authenticated, leased WSS session may call this module.
-//! Other read capabilities and every mutation remain deliberately unavailable.
+//! Search, process inspection and every mutation remain deliberately unavailable.
 use serde_json::{json, Map, Value};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -31,6 +31,10 @@ pub enum ReadCommand {
         request_id: String,
         options: ReadOptions,
     },
+    Browse {
+        request_id: String,
+        command: crate::native_browse::BrowseCommand,
+    },
     Failed {
         request_id: String,
     },
@@ -49,7 +53,7 @@ fn valid_request_id(value: &str) -> bool {
     })
 }
 
-fn permitted_path(path: &str) -> bool {
+pub(crate) fn permitted_path(path: &str) -> bool {
     if path.is_empty() || path.encode_utf16().count() > 4096 || path.contains('\0') {
         return false;
     }
@@ -122,7 +126,7 @@ fn permitted_path(path: &str) -> bool {
     }
 }
 
-fn integer_in_range(value: &Value, min: i64, max: i64) -> Option<i64> {
+pub(crate) fn integer_in_range(value: &Value, min: i64, max: i64) -> Option<i64> {
     // JSON 1.0 and -0.0 are integers to Node's Number.isInteger.
     let number = value.as_f64()?;
     (number.is_finite() && number.fract() == 0.0 && number >= min as f64 && number <= max as f64)
@@ -163,12 +167,15 @@ fn parse_options(value: &Value) -> Option<ReadOptions> {
 }
 
 fn read_tool(tool: &str) -> bool {
-    // Do not pretend that the rest of the Node read surface was migrated.
-    tool == "read_file"
+    // The remainder of the Node read surface is still deliberately unavailable.
+    matches!(
+        tool,
+        "read_file" | "read_multiple_files" | "list_directory" | "get_file_info"
+    )
 }
 
-/// Parse the complete signed WSS read envelope before any file is touched.
-/// Only read_file is admitted; other tools remain out of this slice.
+/// Parse the complete authenticated WSS read envelope before any file is touched.
+/// Unknown tools are policy errors; invalid arguments of known read tools fail closed.
 pub fn parse_read_frame(frame: &str) -> Result<ReadCommand, ReadFrameError> {
     if frame.len() > MAX_WIRE_BYTES {
         return Err(ReadFrameError::Policy);
@@ -200,6 +207,11 @@ pub fn parse_read_frame(frame: &str) -> Result<ReadCommand, ReadFrameError> {
                 options,
             });
         }
+    } else if let Some(command) = crate::native_browse::parse_browse_options(tool, args) {
+        return Ok(ReadCommand::Browse {
+            request_id: request_id.to_owned(),
+            command,
+        });
     }
     Ok(ReadCommand::Failed {
         request_id: request_id.to_owned(),
@@ -328,6 +340,14 @@ fn read_local(options: &ReadOptions) -> Result<String, ()> {
     }
 }
 
+pub(crate) fn read_default_path(path: &str) -> Result<String, ()> {
+    read_local(&ReadOptions {
+        path: path.to_owned(),
+        offset: 0,
+        length: 1000,
+    })
+}
+
 /// Build a bounded owner read_result. Excessive text is never partially sent.
 pub fn execute_read_frame(command: &ReadCommand) -> String {
     let (id, result) = match command {
@@ -335,6 +355,10 @@ pub fn execute_read_frame(command: &ReadCommand) -> String {
             request_id,
             options,
         } => (request_id, read_local(options)),
+        ReadCommand::Browse {
+            request_id,
+            command,
+        } => (request_id, crate::native_browse::execute_browse(command)),
         ReadCommand::Failed { request_id } => (request_id, Err(())),
     };
     if let Ok(text) = result {
@@ -396,8 +420,8 @@ pub enum NativeReadExecutorError {
 }
 
 /// Complete but non-installable read-only candidate loop. The channels are
-/// bounded; the file executor runs independently of heartbeat and grant probes.
-/// This deliberately provides no device_info, install, upgrade or Shell path.
+/// bounded; the executor runs independently of heartbeat and grant probes.
+/// This deliberately provides no device_info, search, install, upgrade or Shell path.
 pub fn run_native_read_session(
     endpoint: &str,
     private_pem: &str,
